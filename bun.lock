@@ -7,6 +7,7 @@
       "devDependencies": {
         "prettier": "^3.8.3",
         "prettier-plugin-svelte": "^3.5.1",
+        "prettier-plugin-tailwindcss": "^0.7.2",
         "turbo": "^2.9.6",
       },
     },
@@ -24,6 +25,10 @@
         "drizzle-kit": "^0.31.10",
         "typescript": "^5.9.3",
       },
+    },
+    "apps/bridge": {
+      "name": "@repo/bridge",
+      "version": "0.1.0",
     },
     "apps/web": {
       "name": "@repo/web",
@@ -181,6 +186,8 @@
     "@polka/url": ["@polka/url@1.0.0-next.29", "", {}, "sha512-wwQAWhWSuHaag8c4q/KN/vCoeOJYshAIvMQwD4GpSb3OiZklFfvAgmj0VCBBImRpuF/aFgIRzllXlVX93Jevww=="],
 
     "@repo/back": ["@repo/back@workspace:apps/back"],
+
+    "@repo/bridge": ["@repo/bridge@workspace:apps/bridge"],
 
     "@repo/web": ["@repo/web@workspace:apps/web"],
 

@@ -1,0 +1,23 @@
+# Dependencies + build outputs
+node_modules
+.turbo
+.svelte-kit
+build
+dist
+
+# Python (bridge)
+apps/bridge/.venv
+apps/bridge/uv.lock
+apps/bridge/**/__pycache__
+
+# Locks + generated
+bun.lock
+*.lock
+
+# Env / local
+.env
+.env.*
+.mcp.json
+
+# Migrations (drizzle-generated)
+apps/back/migrations
