@@ -11,15 +11,9 @@
     "sourceMap": true,
     "strict": true,
     "paths": {
-      "$lib": [
-        "./src/lib"
-      ],
-      "$lib/*": [
-        "./src/lib/*"
-      ],
-      "@back/*": [
-        "../back/src/*"
-      ]
+      "$lib": ["./src/lib"],
+      "$lib/*": ["./src/lib/*"],
+      "@back/*": ["../back/src/*"]
     },
     "moduleResolution": "bundler"
   }

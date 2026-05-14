@@ -1,16 +1,17 @@
 {
-  "name": "m4",
+  "name": "c3po",
   "private": true,
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "format": "prettier --write \"**/*.{ts,tsx,svelte,json,md}\"",
     "check-types": "turbo run check-types",
     "start": "turbo run start"
   },
   "devDependencies": {
     "prettier": "^3.8.3",
     "prettier-plugin-svelte": "^3.5.1",
+    "prettier-plugin-tailwindcss": "^0.7.2",
     "turbo": "^2.9.6"
   },
   "engines": {
