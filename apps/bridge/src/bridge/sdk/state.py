@@ -1,22 +1,24 @@
-"""LowState + sim_state subscribers for the G1 (unitree_hg IDL family).
+"""LowState + sportmodestate (or sim_state) subscribers for the G1.
 
 Maintains the most recent messages from each topic in thread-safe slots.
 `get_state()` returns a typed dict matching the shape we expose to the LLM via MCP.
 
-Topics:
-  - `rt/lowstate` (`unitree_hg::msg::dds_::LowState_`): real-robot-equivalent
-    state — IMU + motors + FSM mode + tick. **No global XYZ pose** on this
-    topic; pose comes from a separate channel.
-  - `rt/sim_state` (`std_msgs::msg::dds_::String_`, sim-only): JSON-encoded
-    snapshot from Isaac Sim that includes `root_pose` (world-frame x/y/z + qwxyz).
-    Real G1 won't publish this; the subscriber stays alive but returns None
-    when no message has arrived.
+Topic names come from `g1_protocol.topics_for(SIM_MODE)` so the same code
+works against Isaac Sim (`rt/lowstate`, `rt/sim_state`) and against a real
+G1 (`rt/lf/lowstate`, `rt/lf/sportmodestate`). FSM mode index → human label
+goes through `g1_protocol.mode_label`.
+
+Faults: not exposed inside `LowState_` on G1 — real-G1 firmware publishes them
+as separate WebRTC `errors`/`add_error`/`rm_error` messages. Once the WebRTC
+transport is wired up, plug `bridge.sdk.faults.decode` here. For now, the
+faults field stays `[]` (sim has no fault stream).
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -24,24 +26,14 @@ from typing import Any
 
 import structlog
 
+from bridge.sdk import g1_protocol
+
 log = structlog.get_logger(__name__)
 
-LOWSTATE_TOPIC = "rt/lowstate"
-SIM_STATE_TOPIC = "rt/sim_state"
-
-
-# G1's `mode_machine` field is an FSM index. The exact mapping is firmware-
-# dependent; this table covers the common values seen in unitree_sim_isaaclab
-# and on real G1 EDU. Unknown values fall back to "unknown".
-_POSTURE_BY_MODE: dict[int, str] = {
-    0: "idle",
-    1: "balance",
-    2: "stand",
-    3: "walking",
-    4: "damp",
-    5: "sit",
-    9: "lie_down",
-}
+_SIM_MODE = os.environ.get("SIM_MODE", "stub")
+_TOPICS = g1_protocol.topics_for(_SIM_MODE)
+LOWSTATE_TOPIC = _TOPICS.lowstate
+SIM_STATE_TOPIC = _TOPICS.sportmodestate
 
 
 @dataclass
@@ -163,7 +155,7 @@ class StateSampler:
         if lowstate_age > 1.0:
             faults.append(f"stale_lowstate_{lowstate_age:.1f}s")
 
-        posture = _POSTURE_BY_MODE.get(low.mode_machine, "unknown")
+        posture = g1_protocol.mode_label(low.mode_machine)
 
         # Pose is sim-only. If sim_state hasn't arrived (real robot, or sim
         # without the bridge), leave it null.
