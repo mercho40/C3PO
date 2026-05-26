@@ -370,6 +370,137 @@ async def point_at(ctx: Context) -> dict:
     return {**await run_g1_request("point_at", ctx), "env": SIM_MODE}
 
 
+@mcp.tool()
+async def zero_torque(ctx: Context) -> dict:
+    """Enter Zero Torque mode — actuators receive no command. Limp robot.
+
+    On the G1 FSM: legal only from Damp. From Zero Torque you can only go
+    back to Damp. Use as the "fully off" terminal state when storing the
+    robot or stepping away.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("zero_torque", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def start_walking(ctx: Context) -> dict:
+    """Enter Walk mode — locomotion FSM activates; arm gestures become available.
+
+    On the G1 FSM: legal only from Preparation. Until you call this, walk_to /
+    turn / wave / point_at won't get a meaningful response on real hardware.
+    Typical sequence: damp → prepare → start_walking → walk_to / wave.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("start_walking", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def sit_g1(ctx: Context) -> dict:
+    """Enter Seating mode — robot adopts a seated posture.
+
+    G1 firmware mode index 3 on api_id=7101. Typically reached from Damp;
+    the exact accepted-from-set depends on firmware. Use for a calm,
+    low-energy presentation state.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("sit_g1", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def lie_up(ctx: Context) -> dict:
+    """Enter Lie-Up mode — robot transitions to a face-up lying pose.
+
+    G1 firmware mode index 702 on api_id=7101. Legal target from Damp.
+    Useful pre-storage state and starting pose for recovery sequences.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("lie_up", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def squat(ctx: Context) -> dict:
+    """Enter Squat mode — robot crouches to a lowered stance.
+
+    G1 firmware Squat (mode 2) and SquatUp (706) collapse to the same
+    physical pose at different control gains. From Squat you can only go to
+    Damp on the FSM, so this is a terminal posture until you reset.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("squat", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def shake_hand(ctx: Context) -> dict:
+    """Extend the right hand for a handshake.
+
+    G1 firmware "shake hands" (api_id=7106, data=27). Requires a locomotion-
+    active FSM state (Walk / Walk(waist) / Run) on real hardware.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("shake_hand", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def hug(ctx: Context) -> dict:
+    """Open arms wide for a hug.
+
+    G1 firmware "hug" (api_id=7106, data=19). Requires a locomotion-active
+    FSM state. The hug gesture is one of the four that the firmware hides
+    while in Run mode — prefer Walk or Walk(waist) for this one.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("hug", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def clap(ctx: Context) -> dict:
+    """Bring hands together to clap.
+
+    G1 firmware "clap" (api_id=7106, data=17). Requires a locomotion-active
+    FSM state.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("clap", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def release_arm(ctx: Context) -> dict:
+    """Return arms to a neutral / idle position.
+
+    G1 firmware "release arm" (api_id=7106, data=99). Call this after any
+    other gesture to settle the arms back to their default hanging pose.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("release_arm", ctx), "env": SIM_MODE}
+
+
 # ---------------------------------------------------------------------------
 # Tool: say
 # ---------------------------------------------------------------------------
