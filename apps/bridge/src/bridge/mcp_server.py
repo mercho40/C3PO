@@ -299,6 +299,78 @@ def stop_everything() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Tools: G1 high-level posture + gesture skills
+# ---------------------------------------------------------------------------
+# Each of these wraps a request to either `rt/api/sport/request` (api_id=7101,
+# full-body modes) or `rt/api/arm/request` (api_id=7106, upper-limb gestures).
+# Today, Isaac Sim's `unitree_sim_isaaclab` scene doesn't subscribe to those
+# topics, so the dispatcher returns `phase=logged_only` — the request was
+# constructed but not delivered. When the WebRTC Transport lands (spec §16)
+# and SIM_MODE=real, the same skills produce actual motion.
+#
+# Adding more skills (zero_torque, sit_g1, lie_up, squat, shake_hand, hug,
+# clap, release_arm, …) is a one-liner — see g1_protocol.SKILL_REQUESTS for
+# the full catalogue.
+
+
+@mcp.tool()
+async def damp(ctx: Context) -> dict:
+    """Engage damping mode — set all joints to zero stiffness. Safety transition.
+
+    On the G1 FSM: only legal from Preparation, Walk, Walk(waist), Run, Squat,
+    ZeroTorque. From Damp you can transition to ZeroTorque, Preparation,
+    SquatUp, or LieUp. This is the canonical "come to rest" target.
+
+    Isaac Sim: logged only (sim doesn't subscribe to `rt/api/sport/request`).
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("damp", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def prepare(ctx: Context) -> dict:
+    """Enter Preparation mode — required gateway to Walk / Walk(waist) / Run.
+
+    On the G1 FSM: legal only from Damp. From Preparation, you can transition
+    to Walk, Walk(waist), Run, or back to Damp.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("prepare", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def wave(ctx: Context) -> dict:
+    """Wave the upper arm — friendly greeting gesture.
+
+    G1 firmware "high wave" (api_id=7106, data=26). Note: arm gestures require
+    a locomotion-active FSM state (Walk / Walk(waist) / Run) on real hardware.
+
+    Isaac Sim: logged only (sim doesn't subscribe to `rt/api/arm/request`).
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("wave", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
+async def point_at(ctx: Context) -> dict:
+    """Extend the right arm forward — closest available "point" gesture.
+
+    G1 firmware "forward push" (api_id=7106, data=36). Like `wave`, requires
+    a locomotion-active FSM state on real hardware.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("point_at", ctx), "env": SIM_MODE}
+
+
+# ---------------------------------------------------------------------------
 # Tool: say
 # ---------------------------------------------------------------------------
 
