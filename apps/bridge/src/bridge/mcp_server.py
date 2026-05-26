@@ -1,15 +1,26 @@
-"""C3PO bridge — stdio MCP server (Phase 0a stubs).
+"""C3PO bridge — stdio MCP server.
 
 Exposes the robot's skills as MCP tools so Claude Code (or any MCP client)
-can drive the bridge directly. In Phase 0a all tools are stubs that log + return
-fake data — no Unitree SDK, no DDS, no Isaac Sim involvement. Phase 0b replaces
-the stubs with real DDS calls when SIM_MODE != 'stub'.
+can drive the bridge directly.
+
+Modes:
+- `SIM_MODE=stub`: tools log and return fake data — for wiring validation.
+- `SIM_MODE=isaac`: DDS is initialised at import; `get_state` reads live
+  `rt/lowstate` + `rt/sim_state`; `walk_to` drives Isaac Sim via
+  `rt/run_command/cmd` with a body-frame velocity loop.
+
+Long-running tools (today: `walk_to`) use the shared task lifecycle in
+`bridge.skills.task_runtime`: each invocation creates a `Task` row, the
+skill checks `task.cancel_event` between iterations, and progress is
+emitted through MCP's `ctx.report_progress` when a `Context` is passed.
+The companion `cancel_task` and `list_active_tasks` tools provide
+visibility / control across the registry.
 
 Run:
     uv run python -m bridge.mcp_server
 
-Registered in `.mcp.json` as `c3po-bridge`. Default transport is stdio, which is
-what Claude Code's MCP client expects.
+Registered in `.mcp.json` as `c3po-bridge`. Default transport is stdio, which
+is what Claude Code's MCP client expects.
 """
 
 from __future__ import annotations
@@ -20,7 +31,7 @@ import uuid
 from typing import Annotated, Literal
 
 import structlog
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 
 log = structlog.get_logger(__name__)
@@ -45,8 +56,10 @@ mcp = FastMCP(
     instructions=(
         "Tools for controlling a Unitree G1 humanoid robot (or its Isaac Sim "
         "emulation). In stub mode, tools log and return fake data. In isaac/real "
-        "mode, get_state reads live DDS state; walk_to and say remain stubs "
-        "until Phase 1."
+        "mode, get_state reads live DDS state and walk_to/turn actually drive "
+        "the robot. Long-running tools return a task_id; use cancel_task to "
+        "interrupt one task, stop_everything to halt all motion, and "
+        "list_active_tasks to see what's in flight."
     ),
 )
 
@@ -81,7 +94,6 @@ def get_state() -> dict:
             "stub": True,
         }
 
-    # isaac / real / mujoco_local — read from the live DDS subscriber.
     from bridge.sdk.state import get_sampler
 
     state = get_sampler().get_state()
@@ -93,7 +105,8 @@ def get_state() -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def walk_to(
+async def walk_to(
+    ctx: Context,
     target_x_meters_world_frame: Annotated[
         float, Field(description="Target X coordinate in meters, world frame.")
     ],
@@ -118,7 +131,7 @@ def walk_to(
             le=300.0,
             description=(
                 "Maximum seconds to spend walking before giving up. The current "
-                "Isaac Sim policy walks at ~13% of commanded velocity, so allow "
+                "Isaac Sim policy walks at ~10-15% of commanded velocity, so allow "
                 "generous time per metre."
             ),
         ),
@@ -126,10 +139,15 @@ def walk_to(
 ) -> dict:
     """Walk the robot toward a world-frame XY position and stop near it.
 
-    Stub mode: logs and returns a fake result.
-    Isaac/real mode: drives the robot via Isaac Sim's velocity command channel
-    (`rt/run_command/cmd`) until within `stop_distance_m` of the target or
-    `timeout_s` elapses. Synchronous — returns when motion is finished.
+    Stub mode: logs and returns a fake result with a task_id.
+    Isaac/real mode: creates a Task in the registry and drives the robot via
+    `rt/run_command/cmd` with a body-frame velocity loop. Emits progress
+    notifications via `ctx.report_progress` during the walk. Returns the
+    final task dict when motion finishes (arrived / timeout / cancelled / failed).
+
+    To interrupt in flight, call `cancel_task(task_id)` from another MCP
+    session or direct Python — for the current stdio transport, mid-flight
+    cancel from the same Claude session isn't possible while this tool blocks.
     """
     log.info(
         "walk_to.called",
@@ -156,12 +174,127 @@ def walk_to(
 
     from bridge.skills.walk_to import run as run_walk_to
 
-    result = run_walk_to(
+    result = await run_walk_to(
         target_x=target_x_meters_world_frame,
         target_y=target_y_meters_world_frame,
         stop_distance_m=stop_distance_m,
         timeout_s=timeout_s,
+        ctx=ctx,
     )
+    return {**result, "env": SIM_MODE}
+
+
+# ---------------------------------------------------------------------------
+# Tool: turn
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def turn(
+    ctx: Context,
+    delta_yaw_radians: Annotated[
+        float,
+        Field(
+            ge=-6.2832,
+            le=6.2832,
+            description=(
+                "How far to rotate, in radians. POSITIVE = counterclockwise "
+                "(left turn from the robot's point of view); NEGATIVE = clockwise "
+                "(right turn). 90° left ≈ 1.5708; 180° ≈ 3.1416 (or -3.1416)."
+            ),
+        ),
+    ],
+    timeout_s: Annotated[
+        float,
+        Field(
+            ge=5.0,
+            le=120.0,
+            description=(
+                "Maximum seconds to spend rotating before giving up. Walk policy "
+                "yaw is slow under small errors — allow 30s+ per 90° if accuracy matters."
+            ),
+        ),
+    ] = 30.0,
+    tolerance_degrees: Annotated[
+        float,
+        Field(
+            ge=0.5,
+            le=20.0,
+            description="Stop when within this many degrees of the target yaw.",
+        ),
+    ] = 3.0,
+) -> dict:
+    """Rotate the robot in place by a yaw delta.
+
+    Stub mode: logs and returns a fake task dict.
+    Isaac/real mode: creates a Task and drives `rt/run_command/cmd` with pure
+    yaw velocity until error is within tolerance or timeout elapses. Reports
+    progress via `ctx.report_progress`. Cancellable via `cancel_task` or
+    `stop_everything`.
+    """
+    log.info(
+        "turn.called",
+        delta_yaw_radians=delta_yaw_radians,
+        timeout_s=timeout_s,
+        tolerance_degrees=tolerance_degrees,
+        sim_mode=SIM_MODE,
+    )
+
+    if SIM_MODE == "stub":
+        task_id = f"tsk_{uuid.uuid4().hex[:12]}"
+        time.sleep(0.2)
+        return {
+            "task_id": task_id,
+            "status": "ok",
+            "message": (
+                f"[STUB] Would rotate by {delta_yaw_radians:+.4f} rad "
+                f"(~{delta_yaw_radians * 180 / 3.14159:.1f}°). No motion executed."
+            ),
+            "env": SIM_MODE,
+            "stub": True,
+        }
+
+    import math
+
+    from bridge.skills.turn import run as run_turn
+
+    result = await run_turn(
+        delta_yaw_radians=delta_yaw_radians,
+        timeout_s=timeout_s,
+        tolerance_radians=math.radians(tolerance_degrees),
+        ctx=ctx,
+    )
+    return {**result, "env": SIM_MODE}
+
+
+# ---------------------------------------------------------------------------
+# Tool: stop_everything
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def stop_everything() -> dict:
+    """Halt all motion immediately and cancel any in-flight tasks.
+
+    Safety-critical: cancels every running task in the registry (each skill
+    observes the cancel signal between iterations and ramps down velocity)
+    AND independently sends a zero-velocity burst to the run-command channel
+    for ~0.4 s in case the policy is still in motion. Synchronous and fast.
+
+    Stub mode is a no-op aside from logging.
+    """
+    log.warning("stop_everything.called", sim_mode=SIM_MODE)
+
+    if SIM_MODE == "stub":
+        return {
+            "cancelled_task_ids": [],
+            "cancelled_count": 0,
+            "stop_burst_duration_s": 0.0,
+            "env": SIM_MODE,
+            "stub": True,
+        }
+
+    from bridge.skills.stop_everything import run as run_stop
+
+    result = run_stop()
     return {**result, "env": SIM_MODE}
 
 
@@ -196,6 +329,78 @@ def say(
         "env": SIM_MODE,
         "stub": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Tool: cancel_task
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def cancel_task(
+    task_id: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Task ID returned by a long-running tool (e.g. `walk_to`'s "
+                "result.task_id). Sets the task's cancel signal; the running "
+                "skill will observe it between iterations and stop motion cleanly."
+            ),
+        ),
+    ],
+) -> dict:
+    """Request graceful cancellation of an in-flight task.
+
+    Note: with the current stdio MCP transport, this cannot interrupt a tool
+    that the *same* Claude session is currently waiting on — the bridge is
+    busy handling that call. It's useful for: (a) direct Python clients,
+    (b) tests, (c) a future HTTP MCP transport where multiple connections
+    can interleave.
+    """
+    from bridge.skills.task_runtime import get_registry
+
+    registry = get_registry()
+    ok = registry.cancel(task_id)
+    if not ok:
+        existing = registry.get(task_id)
+        if existing is None:
+            return {"task_id": task_id, "ok": False, "reason": "unknown_task_id"}
+        if existing.cancel_event.is_set():
+            return {"task_id": task_id, "ok": False, "reason": "cancel_already_requested"}
+        return {
+            "task_id": task_id,
+            "ok": False,
+            "reason": f"task_not_running (status={existing.status})",
+        }
+    return {"task_id": task_id, "ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Tool: list_active_tasks
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_active_tasks(
+    include_recent: Annotated[
+        bool,
+        Field(
+            description=(
+                "If true, also include recently-completed tasks (up to 5 minutes "
+                "old) so you can inspect the last walk's result."
+            ),
+        ),
+    ] = False,
+) -> dict:
+    """List running tasks (and optionally recently-completed ones)."""
+    from bridge.skills.task_runtime import get_registry
+
+    registry = get_registry()
+    active = [t.to_dict() for t in registry.list_active()]
+    payload: dict = {"active": active, "active_count": len(active)}
+    if include_recent:
+        recent = [t.to_dict() for t in registry.list_recent(limit=10)]
+        payload["recent"] = recent
+    return payload
 
 
 # ---------------------------------------------------------------------------

@@ -782,3 +782,156 @@ The long-term default is the third row. `apps/back` calls Anthropic's regular Me
 - **Internal agent** — Claude running inside `apps/back` driving the robot via the skill registry.
 - **External MCP client** — Claude Code, Claude Desktop, or any MCP-capable client driving via MCP.
 - **Reflex cancel** — bridge-local fast-path cancel triggered by safety phrases without an LLM round-trip (~100–300 ms).
+- **Transport** — the bridge's pluggable connection layer to the robot. Two implementations: DDS (Isaac Sim today) and WebRTC (real G1 over native Wi-Fi). Skills are transport-agnostic.
+
+---
+
+## 16. Transport abstraction
+
+The bridge supports two connection paths to the robot, selected at startup by `SIM_MODE`:
+
+| `SIM_MODE`     | Transport        | Target                                           |
+| -------------- | ---------------- | ------------------------------------------------ |
+| `stub`         | none (in-memory) | tools log + return fake data                     |
+| `isaac`        | DDS (CycloneDDS) | Isaac Sim + `unitree_sim_isaaclab` on Ubuntu LAN |
+| `mujoco_local` | DDS (CycloneDDS) | local `unitree_mujoco` (deferred / unused today) |
+| `real`         | WebRTC           | a real G1 (firmware ≥ 1.5.1) on native Wi-Fi     |
+
+### 16.1 The seam
+
+Skills (`apps/bridge/src/bridge/skills/*`) speak through a `Transport` interface, never directly to DDS or WebRTC:
+
+```python
+class Transport(Protocol):
+    async def connect(self) -> None: ...
+    async def close(self) -> None: ...
+    def subscribe(self, topic: str, msg_type: type, on_message: Callable) -> None: ...
+    def publish(self, topic: str, message: Any) -> None: ...
+    def request(self, topic: str, api_id: int, param: str | dict) -> None: ...
+    @property
+    def is_connected(self) -> bool: ...
+```
+
+Topic _names_ come from `bridge.sdk.g1_protocol.topics_for(SIM_MODE)` (already wired). The Transport implementation maps each call to its wire — a DDS publish on `isaac`, a JSON DataChannel send on `real`.
+
+Skill implementations stay identical: `walk_to` calls `transport.publish(topics.run_command, "[vx, vy, vyaw, h]")` on sim, or transitions through `transport.request(topics.sport_request, 7101, {"data": Mode.WALK})` and then a velocity stream on real.
+
+### 16.2 DDS implementation (`bridge/sdk/transport/dds.py` — planned refactor)
+
+Wraps the existing `unitree_sdk2py.core.channel.ChannelFactoryInitialize`, `ChannelSubscriber`, `ChannelPublisher`. Connection setup is `init_dds` (already in `sdk/connection.py`). The current `mcp_server.py` boot sequence and `StateSampler` move under this Transport.
+
+Dependencies on this path: `cyclonedds==0.10.2` (Python bindings, builds against the local C library at `CYCLONEDDS_HOME`), `unitree_sdk2_python` (with the `b2`-import patch).
+
+### 16.3 WebRTC implementation (`bridge/sdk/transport/webrtc.py` — planned)
+
+For real G1 over native Wi-Fi. Mirrors the protocol reverse-engineered in legion1581/unitree_ui (MIT). One `RTCPeerConnection`:
+
+```
+PeerConnection
+├── DataChannel "data"      ── DDS topics as JSON envelopes  ─┐
+├── Video transceiver       ── camera (recvonly)              │ shared across
+└── Audio transceiver       ── mic (in) + speaker (out)       │ skills, state,
+                                                              │ voice, video
+```
+
+Handshake on connect:
+
+1. Discover the robot's IP (UDP multicast scan or supplied `ROBOT_HOST`).
+2. SDP offer/answer with **AES-128-GCM envelope** (firmware ≥ 1.5.1 — see `unitree_ui/src/api/aes-key-derive.ts`).
+3. DataChannel opens; robot sends a validation challenge as `{type:"validation"}`; bridge replies with the MD5-derived key.
+4. Heartbeat ping/pong (`{type:"heartbeat"}`) every N seconds.
+5. Subscribe to needed topics; the robot starts emitting `{type:"msg", topic:"rt/lf/lowstate", data:...}` envelopes.
+
+Dependencies on this path: `aiortc` (or `legion1581/unitree_webrtc_connect` as a head start — same protocol, already in Python). **No CycloneDDS needed** for a `real`-only deployment.
+
+Wire-format helpers we already shipped:
+
+- `bridge.sdk.g1_protocol.topics_for(SIM_MODE)` — real-G1 topic profile.
+- `bridge.sdk.g1_protocol.SKILL_REQUESTS["damp" | "wave" | ...]` — pre-built `(topic_kind, api_id, param)` triples for each skill.
+- `bridge.sdk.faults.decode(record)` — for the `errors` / `add_error` / `rm_error` stream that arrives over the DataChannel.
+
+### 16.4 Cutover strategy
+
+When the real robot is days away:
+
+1. Extract existing DDS code from `connection.py` + `_locomotion.py` + `state.py` into `transport/dds.py` (mechanical, no behaviour change — sim regression-tested).
+2. Add `transport/webrtc.py` against `legion1581/unitree_webrtc_connect`. Goal: `get_state` returns real `rt/lf/lowstate` and `walk_to` issues `rt/api/sport/request, api_id=7101, {"data": 500}` followed by velocity stream.
+3. Pin `unitree_sdk2_python` + `cyclonedds` as **optional** deps (only installed for `SIM_MODE=isaac`). A pure-`real` install becomes much lighter.
+4. Each skill gains a `_transport_mode` check; skills that don't translate (e.g. Isaac Sim's `run_command/cmd` shortcut) raise on the wrong transport.
+
+---
+
+## 17. Peripheral connection paths
+
+The robot has more than locomotion — camera, mic, speakers, LiDAR. Plan per peripheral, with the **bridge as the multiplexer**: it owns every connection to the robot and re-exposes streams to the supervisor UI / agent / VLM consumers.
+
+### 17.1 Camera (Intel RealSense D435i)
+
+| Path            | Real G1 (≥ 1.5.1)                                                                                                                                                                                        | Isaac Sim                                                                                                                               |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire            | WebRTC video transceiver, recvonly. After `rtc_inner_req: disable_traffic_saving` + `vid: on`, the robot pushes the camera stream.                                                                       | Optional — Isaac Lab's RTX rendering can emit an RGB topic. Off by default; not enabled in the current `unitree_sim_isaaclab` G1 scene. |
+| Bridge          | aiortc track listener stores the latest decoded frame (jpeg or raw); exposes `get_frame()` (sync, for VLM) and a relay endpoint that forwards the track to the supervisor UI.                            | If we enable a sim camera later, subscribe to the topic, decode to numpy.                                                               |
+| Supervisor UI   | Separate browser↔bridge WebRTC peer connection negotiated via Elysia; bridge proxies the robot track. Renders in a normal `<video>` element. PIP-style swap with the 3D viewport (UX from `unitree_ui`). | Same shape; bridge fakes a frame source when sim camera is off.                                                                         |
+| Skills using it | `look()` and `describe_scene()` (Phase 2) — both call `get_frame()` then ship the JPEG to a VLM and return the caption.                                                                                  |
+
+### 17.2 LiDAR (Livox Mid360)
+
+| Path                | Real G1                                                                                                                                                                                                                                                                                            | Isaac Sim                                                                            |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Wire                | **Not surfaced by Explorer** (per `unitree_ui/docs/lidar.md`). Two options: (a) publish `"ON"` to `rt/utlidar/switch` over the WebRTC DataChannel and see if firmware accepts it for G1; (b) SSH the Jetson, run a Mid360 driver that publishes the cloud on a DDS topic the bridge subscribes to. | Isaac Sim supports LiDAR sensors via Isaac Lab; not configured in current G1 scenes. |
+| Format (if enabled) | `rt/utlidar/voxel_map_compressed` — LZ4-block + 128×128×Z bit-packed occupancy grid (MSB-first within byte). `resolution` and `origin` in the envelope.                                                                                                                                            | Standard `sensor_msgs/PointCloud2` (or whatever Isaac is configured to emit).        |
+| Bridge              | Decode LZ4 via `lz4.block.decompress`; iterate occupancy bits to point list; emit a downsampled cloud event to subscribers.                                                                                                                                                                        | Same shape but parse `PointCloud2` directly.                                         |
+| Supervisor UI       | Three.js voxel mesh, decoded client-side (port `libvoxel.wasm` directly — it's MIT) or server-side.                                                                                                                                                                                                | Same.                                                                                |
+| Phase               | **v2** — out of v1 scope. The decoder + topic name are documented for when we tackle it.                                                                                                                                                                                                           |
+
+### 17.3 Microphone (G1 4-mic array)
+
+| Path            | Real G1                                                                                                                                                                                                            | Isaac Sim                                                                      |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| Wire            | WebRTC audio transceiver, the incoming half. Single mixed channel (firmware does the beamforming internally; direction-of-arrival is not exposed in Explorer).                                                     | None — sim has no audio.                                                       |
+| Bridge          | aiortc audio track → continuous PCM stream. Two consumers: (a) wake-word engine (`openWakeWord`) listens continuously; (b) when wake fires, the post-wake audio buffer goes to streaming STT (Deepgram WebSocket). | Stub — bridge optionally accepts an audio file as a synthetic mic for testing. |
+| Skills using it | The voice loop (Phase 4) — wake → STT → agent turn. Also a future `listen_for_sound(duration_s)` reactive perception skill.                                                                                        |
+
+### 17.4 Speakers (G1 onboard speaker)
+
+| Path            | Real G1                                                                                                                                     | Isaac Sim                                 |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Wire            | WebRTC audio transceiver, the outgoing half (the `sendrecv` direction). Push Opus-encoded audio frames; firmware plays them on the speaker. | None.                                     |
+| Bridge          | TTS produces PCM → Opus → aiortc audio track sender. Cartesia is the v1 provider; outputs streamable Opus or PCM.                           | Falls back to local macOS `say` or no-op. |
+| Skills using it | `say(text, voice)` — the existing stub becomes real here (Phase 4).                                                                         |
+
+### 17.5 Dexterous hands (G1 Dex3-1, 7-DOF each)
+
+| Path            | Real G1                                                                                                                                         | Isaac Sim                                                                                                                                                |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| State topic     | `rt/lf/dex3/{left,right}/state` (MotorStates\_)                                                                                                 | `rt/dex1/{left,right}/state` — note the **`dex1` not `dex3` naming** in the sim scene (the previous Inspire-Hand reset had different topic names again). |
+| Command topic   | `rt/api/dex3/{left,right}/request` (api_id TBC)                                                                                                 | `rt/dex1/{left,right}/cmd` (MotorCmds\_, accepts q/dq/tau/kp/kd directly).                                                                               |
+| Bridge          | Same skill shape: `set_hand_pose(side, joint_q[7])`. Pose presets (open / closed / pinch / point) stored in `g1_protocol.HAND_POSES` (planned). | Same skill, different topic + 1-DOF gripper instead of 7-DOF hand.                                                                                       |
+| Skills using it | `grip(side)`, `release(side)`, `point_at` (combined with arm gesture) — Phase 2.                                                                |
+
+### 17.6 Summary — what the bridge owns
+
+In the WebRTC era, the bridge is the **single point of contact for everything the robot emits or accepts**:
+
+```
+                            ┌──────────────────────────────────┐
+                            │       apps/bridge (Python)       │
+                            │                                  │
+                            │  Transport (WebRTC / DDS)        │
+                            │  ├── DataChannel  → topics       │
+                            │  ├── Video        → frame ring   │
+                            │  ├── Audio in     → STT pipe     │
+                            │  └── Audio out    → TTS pipe     │
+                            │                                  │
+                            │  Skill Runtime · Voice loop      │
+                            │  MCP / WS server                 │
+                            └──────────────────────────────────┘
+                                  │             │           │
+                       Topic JSON │      Video  │      Audio│
+                                  ▼             ▼           ▼
+                    apps/back (commands)   supervisor UI   robot speakers / mic
+                                          (browser, relay
+                                           via Elysia)
+```
+
+The bridge then exposes per-modality APIs to the rest of the system: typed skill calls (existing), `GET /camera/frame.jpg` (planned), `POST /tts` (planned), `WS /audio/in` (planned).

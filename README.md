@@ -2,7 +2,7 @@
 
 An embodiment layer for LLMs — give Claude (or any MCP-capable model) a body in the form of a Unitree G1 humanoid.
 
-The system is sim-first against Isaac Sim on a separate Ubuntu host; the same code path drives a real G1 on the LAN once hardware arrives. Architecture, components, libraries, and wire formats live in [`docs/SPEC.md`](docs/SPEC.md).
+It runs today against Isaac Sim on a separate Ubuntu host over DDS; the same code path drives a real G1 on the LAN. Architecture, components, libraries, and wire formats live in [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Stack
 
