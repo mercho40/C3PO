@@ -28,11 +28,12 @@ from bridge.sdk.go2_protocol import GO2_TOPICS, SportCmd, sport_cmd_label
 from bridge.sdk.transport.webrtc_go2 import (
     Go2ConnectionConfig,
     Go2WebRTCClient,
-    LEGACY_PORT,
 )
 
 HOST = os.environ.get("GO2_HOST")
-PORT = int(os.environ.get("GO2_PORT", str(LEGACY_PORT)))
+# Default to V3 port (9991) since current firmware uses it. Set GO2_PORT=8081
+# explicitly to force the legacy /offer path on older robots.
+PORT = int(os.environ.get("GO2_PORT", "9991"))
 
 
 async def main() -> int:

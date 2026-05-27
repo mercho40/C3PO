@@ -11,6 +11,7 @@ dependencies = [
     "cyclonedds==0.10.2",
     "unitree-sdk2py",
     "aiortc>=1.14.0",
+    "go2-webrtc-connect>=0.2.1",
 ]
 
 [dependency-groups]

@@ -50,7 +50,7 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 import structlog
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 
 log = structlog.get_logger(__name__)
 
@@ -107,7 +107,7 @@ class Go2ConnectionConfig:
     port: int = LEGACY_PORT
     path: str = LEGACY_PATH
     sdp_timeout_s: float = 10.0
-    validation_timeout_s: float = 5.0
+    validation_timeout_s: float = 20.0
     heartbeat_period_s: float = HEARTBEAT_PERIOD_S
 
 
@@ -194,7 +194,18 @@ class Go2WebRTCClient:
         """Negotiate SDP, open the DataChannel, complete validation."""
         log.info("go2.webrtc.connect.start", host=self._config.host, port=self._config.port)
 
-        self._pc = RTCPeerConnection()
+        # Empty iceServers — we're on the robot's local network (often AP
+        # mode with no internet) so STUN discovery would just time out.
+        # The robot's SDP answer carries the host candidate we need.
+        self._pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+
+        @self._pc.on("iceconnectionstatechange")
+        def _on_ice_state():
+            log.info("go2.webrtc.ice.state", state=self._pc.iceConnectionState)
+
+        @self._pc.on("connectionstatechange")
+        def _on_conn_state():
+            log.info("go2.webrtc.conn.state", state=self._pc.connectionState)
         # Same transceiver shape as the official mobile app + legion1581 UI.
         self._pc.addTransceiver("video", direction="recvonly")
         self._pc.addTransceiver("audio", direction="sendrecv")
@@ -203,10 +214,39 @@ class Go2WebRTCClient:
         self._channel.on("close", self._on_channel_close)
         self._channel.on("message", self._on_channel_message)
 
+        @self._channel.on("error")
+        def _on_channel_error(error: Any) -> None:
+            log.error("go2.webrtc.channel.error", error=repr(error))
+
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
 
-        answer_sdp = await self._exchange_sdp_legacy(self._pc.localDescription.sdp)
+        # Filter our local SDP to only candidates on the robot's subnet — aiortc
+        # gathers from every interface, and pairs that traverse non-routable
+        # interfaces stick in IN_PROGRESS and starve the working pair.
+        local_sdp = self._filter_sdp_to_subnet(self._pc.localDescription.sdp)
+
+        if self._config.port == NEW_PORT:
+            from bridge.sdk.transport.webrtc_v3_sdp import exchange_sdp_v3
+
+            v3 = await exchange_sdp_v3(
+                self._config.host,
+                local_sdp,
+                port=self._config.port,
+                sdp_timeout_s=self._config.sdp_timeout_s,
+            )
+            answer_sdp = v3.answer_sdp
+        else:
+            answer_sdp = await self._exchange_sdp_legacy(local_sdp)
+
+        # Filter the answer too — drop ICE candidates not on the robot's subnet
+        # (the robot advertises link-local 169.254.x.x candidates that never work)
+        # and strip `a=ice-options:trickle` so aiortc doesn't wait for trickle
+        # candidates that never arrive.
+        answer_sdp = self._filter_sdp_to_subnet(answer_sdp)
+        answer_sdp = "\n".join(
+            line for line in answer_sdp.splitlines() if not line.startswith("a=ice-options:")
+        )
         await self._pc.setRemoteDescription(
             RTCSessionDescription(sdp=answer_sdp, type="answer"),
         )
@@ -424,6 +464,50 @@ class Go2WebRTCClient:
                 raise RuntimeError(f"unexpected /offer response shape: {answer!r}")
             log.info("go2.webrtc.sdp.recv", answer_bytes=len(sdp))
             return sdp
+
+    def _filter_sdp_to_subnet(self, sdp: str) -> str:
+        """Drop `a=candidate:` lines that aren't on the robot's /24.
+
+        aiortc gathers candidates from every local interface; if the Mac has
+        a second network (corp LAN, VPN, etc.) it advertises those too. Pairs
+        that traverse non-routable interfaces sit in IN_PROGRESS forever and
+        starve the one good pair, so we strip them on both sides.
+        """
+        # Extract the /24 prefix of the robot's host. Works for 192.168.12.1
+        # → "192.168.12.". IPv6 / IPv4 edge cases are out of scope today.
+        try:
+            host_parts = self._config.host.split(".")
+            if len(host_parts) != 4:
+                return sdp  # don't filter if host isn't a v4 dotted-quad
+            subnet_prefix = ".".join(host_parts[:3]) + "."
+        except Exception:
+            return sdp
+
+        out: list[str] = []
+        kept = 0
+        dropped = 0
+        for line in sdp.splitlines():
+            if not line.startswith("a=candidate:"):
+                out.append(line)
+                continue
+            # Layout: a=candidate:<foundation> <component> <transport> <priority> <ip> <port> ...
+            parts = line.split()
+            if len(parts) < 5:
+                out.append(line)
+                continue
+            ip = parts[4]
+            if ip.startswith(subnet_prefix):
+                out.append(line)
+                kept += 1
+            else:
+                dropped += 1
+        log.info(
+            "go2.webrtc.sdp.filter",
+            subnet=subnet_prefix,
+            candidates_kept=kept,
+            candidates_dropped=dropped,
+        )
+        return "\n".join(out)
 
     async def _heartbeat_loop(self) -> None:
         period = self._config.heartbeat_period_s
