@@ -10,6 +10,7 @@ dependencies = [
     "python-dotenv>=1",
     "cyclonedds==0.10.2",
     "unitree-sdk2py",
+    "aiortc>=1.14.0",
 ]
 
 [dependency-groups]
