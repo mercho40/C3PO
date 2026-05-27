@@ -7,8 +7,6 @@ os.environ.pop("CYCLONEDDS_URI", None)
 from cyclonedds.domain import DomainParticipant  # noqa: E402
 from cyclonedds.topic import Topic  # noqa: E402
 from cyclonedds.sub import Subscriber, DataReader  # noqa: E402
-from cyclonedds.idl import IdlStruct  # noqa: E402
-from cyclonedds.idl.types import default  # noqa: E402
 
 # unitree_sim_isaaclab uses std_msgs::dds_::String_ for these.
 from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_  # type: ignore  # noqa: E402
