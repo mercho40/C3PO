@@ -3,9 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "uv run --project . python -m bridge.main",
     "mcp": "uv run --project . python -m bridge.mcp_server",
-    "build": "uv sync",
+    "build": "uv sync && bash scripts/postsync.sh",
     "check-types": "echo 'mypy not yet configured'",
     "test": "uv run --project . pytest"
   }
