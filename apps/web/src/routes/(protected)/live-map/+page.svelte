@@ -1,8 +1,9 @@
 <script lang="ts">
-  import Sidebar from '$lib/components/sidebar.svelte';
-  import DashboardTopbar from '$lib/components/dashboard-topbar.svelte';
-  import WorldMap from '$lib/components/world-map.svelte';
-  import MapStatCard from '$lib/components/map-stat-card.svelte';
+  import Sidebar from "$lib/components/sidebar.svelte";
+  import DashboardTopbar from "$lib/components/dashboard-topbar.svelte";
+  import WorldMap from "$lib/components/world-map.svelte";
+  import MapStatCard from "$lib/components/map-stat-card.svelte";
+  import { Input } from "$lib/components/ui/input";
 </script>
 
 <div class="flex h-screen flex-col bg-neutral-800">
@@ -29,10 +30,9 @@
             <!-- Right Sidebar with search and stats -->
             <div class="flex flex-col gap-4">
               <!-- Search input -->
-              <input
-                type="text"
+              <Input
                 placeholder="Search location..."
-                class="w-full rounded-lg bg-neutral-700 px-4 py-3 text-sm text-white placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-600"
+                class="border-transparent bg-neutral-700 text-white placeholder:text-neutral-400"
               />
 
               <!-- Stats Grid 2x2 -->

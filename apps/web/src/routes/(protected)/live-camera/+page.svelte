@@ -1,8 +1,8 @@
 <script lang="ts">
-  import Sidebar from '$lib/components/sidebar.svelte';
-  import DashboardTopbar from '$lib/components/dashboard-topbar.svelte';
-  import CameraFeed from '$lib/components/camera-feed.svelte';
-  import CameraControls from '$lib/components/camera-controls.svelte';
+  import Sidebar from "$lib/components/sidebar.svelte";
+  import DashboardTopbar from "$lib/components/dashboard-topbar.svelte";
+  import CameraFeed from "$lib/components/camera-feed.svelte";
+  import CameraControls from "$lib/components/camera-controls.svelte";
 </script>
 
 <div class="flex h-screen flex-col bg-neutral-800">
@@ -33,7 +33,9 @@
             </div>
 
             <!-- Stats below -->
-            <div class="rounded-lg bg-neutral-700 p-6 text-white ring-1 ring-neutral-600">
+            <div
+              class="rounded-lg bg-neutral-700 p-6 text-white ring-1 ring-neutral-600"
+            >
               <h3 class="mb-4 text-lg font-semibold">Recording History</h3>
               <div class="space-y-2 text-sm text-neutral-300">
                 <p>No recordings yet. Start recording to see history here.</p>

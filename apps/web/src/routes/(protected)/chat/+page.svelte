@@ -1,7 +1,7 @@
 <script lang="ts">
-  import Sidebar from '$lib/components/sidebar.svelte';
-  import DashboardTopbar from '$lib/components/dashboard-topbar.svelte';
-  import ChatBox from '$lib/components/chat-box.svelte';
+  import Sidebar from "$lib/components/sidebar.svelte";
+  import DashboardTopbar from "$lib/components/dashboard-topbar.svelte";
+  import ChatBox from "$lib/components/chat-box.svelte";
 </script>
 
 <div class="flex h-screen flex-col bg-neutral-800">

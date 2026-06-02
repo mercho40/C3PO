@@ -1,13 +1,15 @@
 <script lang="ts">
-  import { Card, CardContent } from '$lib/components/ui/card';
+  import { Card, CardContent } from "$lib/components/ui/card";
 
   let { percentage = 87, radius = 45 } = $props();
 
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (percentage / 100) * circumference;
+  let circumference = $derived(2 * Math.PI * radius);
+  let offset = $derived(circumference - (percentage / 100) * circumference);
 </script>
 
-<Card class="flex items-center justify-center bg-neutral-700 text-white ring-neutral-600">
+<Card
+  class="flex items-center justify-center bg-neutral-700 text-white ring-neutral-600"
+>
   <CardContent class="flex items-center justify-center p-8">
     <div class="relative h-48 w-48">
       <svg class="h-full w-full" viewBox="0 0 120 120">
