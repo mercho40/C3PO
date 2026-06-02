@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "mcp": "uv run --project . python -m bridge.mcp_server",
+    "serve:http": "BRIDGE_TRANSPORT=http SIM_MODE=stub uv run --project . python -m bridge.mcp_server",
     "build": "uv sync && bash scripts/postsync.sh",
     "check-types": "echo 'mypy not yet configured'",
     "test": "uv run --project . pytest"
