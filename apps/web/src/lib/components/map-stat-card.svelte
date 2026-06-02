@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { Card, CardContent } from '$lib/components/ui/card';
+  import { Card, CardContent } from "$lib/components/ui/card";
 
-  let { title = 'Regions', value = '0' } = $props();
+  let { title = "Regions", value = "0" } = $props();
 </script>
 
 <Card class="bg-neutral-700 text-white ring-neutral-600">

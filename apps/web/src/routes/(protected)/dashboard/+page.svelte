@@ -1,9 +1,9 @@
 <script lang="ts">
-  import Sidebar from '$lib/components/sidebar.svelte';
-  import DashboardTopbar from '$lib/components/dashboard-topbar.svelte';
-  import StatusCard from '$lib/components/status-card.svelte';
-  import CircularProgress from '$lib/components/circular-progress.svelte';
-  import MapCard from '$lib/components/map-card.svelte';
+  import Sidebar from "$lib/components/sidebar.svelte";
+  import DashboardTopbar from "$lib/components/dashboard-topbar.svelte";
+  import StatusCard from "$lib/components/status-card.svelte";
+  import CircularProgress from "$lib/components/circular-progress.svelte";
+  import MapCard from "$lib/components/map-card.svelte";
 </script>
 
 <div class="flex h-screen flex-col bg-neutral-800">

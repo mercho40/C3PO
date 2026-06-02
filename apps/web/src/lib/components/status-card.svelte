@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
+  import {
+    Card,
+    CardContent,
+    CardHeader,
+    CardTitle,
+  } from "$lib/components/ui/card";
 
-  let { title = 'Status', content = '' } = $props();
-
+  let { title = "Status", content = "" } = $props();
 </script>
 
 <Card class="bg-neutral-700 text-white ring-neutral-600">

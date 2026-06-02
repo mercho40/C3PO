@@ -7,6 +7,9 @@ declare global {
     interface Locals {
       user: CookieSession["user"] | null;
     }
+    interface PageData {
+      user: CookieSession["user"] | null;
+    }
   }
 }
 
