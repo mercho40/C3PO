@@ -3,6 +3,7 @@ import { auth } from "@back/lib/auth";
 import { cors } from "@elysiajs/cors";
 import { skillsRoutes } from "@back/routes/skills";
 import { tasksRoutes } from "@back/routes/tasks";
+import { stateRoutes } from "@back/routes/state";
 
 // user middleware (compute user and session and pass to routes)
 const betterAuth = new Elysia({ name: "better-auth" })
@@ -37,6 +38,7 @@ const app = new Elysia()
   .get("/health", () => ({ status: "ok", timestamp: Date.now() }))
   .use(skillsRoutes)
   .use(tasksRoutes)
+  .use(stateRoutes)
   .listen(3000);
 
 console.log(

@@ -1,6 +1,9 @@
 {
   "name": "c3po",
   "private": true,
+  "overrides": {
+    "@sinclair/typebox": "0.34.49"
+  },
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",

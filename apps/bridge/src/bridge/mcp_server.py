@@ -40,6 +40,14 @@ SIM_MODE = os.environ.get("SIM_MODE", "stub")
 ROBOT_HOST = os.environ.get("ROBOT_HOST", "127.0.0.1")
 DDS_DOMAIN_ID = int(os.environ.get("DDS_DOMAIN_ID", "0"))
 
+# Back↔bridge link: how this server is reached. Default is stdio (what Claude
+# Code's MCP client expects). Set BRIDGE_TRANSPORT=http to expose FastMCP's
+# streamable-http transport so `apps/back` can connect as an MCP client
+# (see apps/back/src/bridge/client.ts). stdio stays untouched either way.
+BRIDGE_TRANSPORT = os.environ.get("BRIDGE_TRANSPORT", "stdio")
+BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
+BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8000"))
+
 # Initialize DDS up-front when not in stub mode. We do this at import time so
 # the subscriber is alive and accumulating LowState messages before the first
 # tool call lands.
@@ -61,6 +69,8 @@ mcp = FastMCP(
         "interrupt one task, stop_everything to halt all motion, and "
         "list_active_tasks to see what's in flight."
     ),
+    host=BRIDGE_HOST,
+    port=BRIDGE_PORT,
 )
 
 
@@ -611,9 +621,24 @@ def list_active_tasks(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Run the MCP server on stdio (default for Claude Code / Claude Desktop)."""
-    log.info("c3po-bridge.start", sim_mode=SIM_MODE, transport="stdio")
-    mcp.run()  # default transport is stdio
+    """Run the MCP server.
+
+    Default transport is stdio (Claude Code / Claude Desktop). Set
+    ``BRIDGE_TRANSPORT=http`` to serve FastMCP's streamable-http transport at
+    ``http://{BRIDGE_HOST}:{BRIDGE_PORT}/mcp`` — how ``apps/back`` connects.
+    """
+    if BRIDGE_TRANSPORT in ("http", "streamable-http"):
+        log.info(
+            "c3po-bridge.start",
+            sim_mode=SIM_MODE,
+            transport="streamable-http",
+            host=BRIDGE_HOST,
+            port=BRIDGE_PORT,
+        )
+        mcp.run(transport="streamable-http")
+    else:
+        log.info("c3po-bridge.start", sim_mode=SIM_MODE, transport="stdio")
+        mcp.run()  # default transport is stdio
 
 
 if __name__ == "__main__":
