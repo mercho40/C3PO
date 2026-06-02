@@ -10,8 +10,9 @@ import { Elysia } from "elysia";
 
 import { stateRoutes } from "../src/routes/state";
 import { skillsRoutes } from "../src/routes/skills";
+import { tasksRoutes } from "../src/routes/tasks";
 
-const app = new Elysia().use(stateRoutes).use(skillsRoutes);
+const app = new Elysia().use(stateRoutes).use(skillsRoutes).use(tasksRoutes);
 
 async function show(label: string, req: Request) {
   const res = await app.handle(req);
@@ -25,12 +26,24 @@ const json = (path: string, payload: unknown) =>
     body: JSON.stringify(payload),
   });
 
-await show("GET /state         ", new Request("http://localhost/state"));
+await show("GET  /state           ", new Request("http://localhost/state"));
 await show(
-  "POST say (valid)   ",
-  json("/skills/say/invoke", { text: "hi from route" }),
+  "POST say invoke       ",
+  json("/skills/say/invoke", { text: "hi" }),
 );
-await show("POST say (bad body)", json("/skills/say/invoke", { text: 123 }));
-await show("POST unknown skill ", json("/skills/nope/invoke", {}));
+await show(
+  "POST say dry-run      ",
+  json("/skills/say/dry-run", { text: "hi" }),
+);
+await show(
+  "POST say dry-run (bad)",
+  json("/skills/say/dry-run", { text: 123 }),
+);
+await show("POST cancel (unknown) ", json("/tasks/tsk_nope/cancel", {}));
+await show(
+  "GET  /tasks           ",
+  new Request("http://localhost/tasks?include_recent=true"),
+);
+await show("POST unknown invoke   ", json("/skills/nope/invoke", {}));
 
 process.exit(0);

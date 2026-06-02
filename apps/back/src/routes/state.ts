@@ -9,11 +9,25 @@ import { Elysia } from "elysia";
 
 import { callTool, BridgeUnavailableError } from "../bridge/client";
 
+/** Shape returned by the bridge's `get_state` tool. */
+export type RobotState = {
+  pose: {
+    x_meters_world: number;
+    y_meters_world: number;
+    yaw_radians_world: number;
+  };
+  battery_pct: number | null;
+  posture: string;
+  faults: string[];
+  env: string;
+  stub?: boolean;
+};
+
 export const stateRoutes = new Elysia().get(
   "/state",
   async ({ status }) => {
     try {
-      return await callTool("get_state");
+      return (await callTool("get_state")) as RobotState;
     } catch (err) {
       if (err instanceof BridgeUnavailableError)
         return status(502, { error: "bridge_unavailable" });

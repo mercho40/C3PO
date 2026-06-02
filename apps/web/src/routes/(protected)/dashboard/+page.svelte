@@ -4,6 +4,18 @@
   import StatusCard from "$lib/components/status-card.svelte";
   import CircularProgress from "$lib/components/circular-progress.svelte";
   import MapCard from "$lib/components/map-card.svelte";
+
+  let { data } = $props();
+
+  const state = $derived(data.state);
+  const statusText = $derived(
+    state
+      ? state.faults.length
+        ? `${state.posture} · ${state.faults.length} fault(s)`
+        : `${state.posture} · ${state.env}`
+      : "Bridge offline",
+  );
+  const battery = $derived(Math.round(state?.battery_pct ?? 0));
 </script>
 
 <div class="flex h-screen flex-col bg-neutral-800">
@@ -22,16 +34,14 @@
         <div class="space-y-6">
           <!-- Grid Layout for cards -->
           <div class="grid gap-6">
-            <!-- Row 1: Status + Network Latency + Progress -->
+            <!-- Row 1: Status + Network Latency + Battery -->
             <div class="grid grid-cols-3 gap-6">
-              <!-- Status Card (spans 1) -->
-              <StatusCard title="Status*" />
-
-              <!-- Network Latency Card (spans 1) -->
-              <StatusCard title="Network Latency" />
-
-              <!-- Circular Progress (spans 1) -->
-              <CircularProgress percentage={87} />
+              <StatusCard title="Status" content={statusText} />
+              <StatusCard
+                title="Network Latency"
+                content={data.online ? `${data.latencyMs} ms` : "—"}
+              />
+              <CircularProgress percentage={battery} />
             </div>
 
             <!-- Row 2: Map (full width) -->

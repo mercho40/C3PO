@@ -1,23 +1,36 @@
 /**
- * /tasks routes — cancel + list.
+ * /tasks routes — cancel + list, proxied to the bridge over MCP.
  *
- * Placeholder: returns 501 until the bridge↔back WS lands (Phase 3).
- * Today, drive these via MCP (`cancel_task`, `list_active_tasks`).
+ * POST /tasks/:task_id/cancel  → bridge `cancel_task` (graceful).
+ * GET  /tasks                  → bridge `list_active_tasks`.
  */
 
 import { Elysia, t } from "elysia";
 
+import {
+  callTool,
+  BridgeUnavailableError,
+  BridgeToolError,
+} from "../bridge/client";
+
 export const tasksRoutes = new Elysia({ prefix: "/tasks" })
   .post(
     "/:task_id/cancel",
-    ({ params: { task_id }, status }) =>
-      status(501, {
-        error: "not_implemented",
-        message:
-          "Cancel through Elysia not wired yet. Use mcp__c3po-bridge__cancel_task " +
-          "in Claude Code for now; this endpoint becomes a thin WS proxy in Phase 3.",
-        task_id,
-      }),
+    async ({ params: { task_id }, status }) => {
+      try {
+        return await callTool("cancel_task", { task_id });
+      } catch (err) {
+        if (err instanceof BridgeUnavailableError)
+          return status(502, { error: "bridge_unavailable", task_id });
+        if (err instanceof BridgeToolError)
+          return status(502, {
+            error: "tool_error",
+            task_id,
+            detail: err.detail,
+          });
+        return status(502, { error: "bridge_error", task_id });
+      }
+    },
     {
       params: t.Object({ task_id: t.String() }),
       body: t.Optional(
@@ -30,21 +43,24 @@ export const tasksRoutes = new Elysia({ prefix: "/tasks" })
         }),
       ),
       detail: {
-        summary:
-          "Cancel a task (placeholder — returns 501 until bridge WS lands).",
+        summary: "Request graceful cancellation of an in-flight task.",
         tags: ["tasks"],
       },
     },
   )
   .get(
     "/",
-    ({ query, status }) =>
-      status(501, {
-        error: "not_implemented",
-        message:
-          "Use mcp__c3po-bridge__list_active_tasks for now; this becomes a thin WS proxy in Phase 3.",
-        include_recent: query?.include_recent === "true",
-      }),
+    async ({ query, status }) => {
+      try {
+        return await callTool("list_active_tasks", {
+          include_recent: query?.include_recent === "true",
+        });
+      } catch (err) {
+        if (err instanceof BridgeUnavailableError)
+          return status(502, { error: "bridge_unavailable" });
+        return status(502, { error: "bridge_error" });
+      }
+    },
     {
       query: t.Object({
         include_recent: t.Optional(
@@ -52,8 +68,7 @@ export const tasksRoutes = new Elysia({ prefix: "/tasks" })
         ),
       }),
       detail: {
-        summary:
-          "List active tasks (placeholder — returns 501 until bridge WS lands).",
+        summary: "List active tasks (and optionally recently-completed ones).",
         tags: ["tasks"],
       },
     },
