@@ -75,6 +75,9 @@
 
 @theme inline {
 	--font-sans: 'Geist Variable', sans-serif;
+	--font-display: 'Inter', 'Geist Variable', sans-serif;
+	--font-heading: 'Space Grotesk', 'Geist Variable', sans-serif;
+	--font-mono: 'JetBrains Mono', ui-monospace, monospace;
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
