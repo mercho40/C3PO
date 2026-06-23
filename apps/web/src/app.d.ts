@@ -6,6 +6,7 @@ declare global {
   namespace App {
     interface Locals {
       user: CookieSession["user"] | null;
+      session: CookieSession["session"] | null;
     }
     interface PageData {
       user: CookieSession["user"] | null;

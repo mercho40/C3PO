@@ -136,7 +136,7 @@
       C3PO
     </h1>
     <p class="mt-6 max-w-[660px] text-lg leading-relaxed text-[#8a96ad]">
-      Una espacio para operar robots. Comandos por voz, telemetría en tiempo real,
+      Un espacio para operar robots. Comandos por voz, telemetría en tiempo real,
       navegación autónoma y control de seguridad — todo desde el navegador.
     </p>
     <form
@@ -243,7 +243,7 @@
         <div class="col-span-2 md:col-span-1">
           <img src="/logo.svg" alt="C3PO" class="mb-4 h-8 w-auto object-contain drop-shadow-[0_0_12px_rgba(126,229,255,0.45)]" />
           <p class="mb-6 max-w-xs text-sm leading-relaxed text-[#8a96ad]">
-            Controlá cualquier robot Unitree con lenguaje natural. Sin código, sin ingenieros de robótica.
+            Controlá cualquier robot Unitree con lenguaje natural.
           </p>
           <div class="flex items-center gap-3">
             <a href="https://linkedin.com" aria-label="LinkedIn" class="flex size-8 items-center justify-center rounded-lg border border-[rgba(180,210,255,0.08)] text-[#8a96ad] transition-colors hover:border-[rgba(180,210,255,0.3)] hover:text-[#eaf1ff]">
@@ -267,31 +267,5 @@
             <li><a href="/dashboard" class="transition-colors hover:text-[#eaf1ff]">Dashboard</a></li>
           </ul>
         </div>
-        <!-- Hardware -->
-        <div>
-          <h4 class="mb-4 text-xs font-semibold tracking-widest text-[#eaf1ff] uppercase">Hardware</h4>
-          <ul class="space-y-3 text-sm text-[#8a96ad]">
-            <li><span>Unitree G1</span></li>
-            <li><span>Unitree Go2</span></li>
-            <li><span>Isaac Sim</span></li>
-          </ul>
-        </div>
-        <!-- Tecnología -->
-        <div>
-          <h4 class="mb-4 text-xs font-semibold tracking-widest text-[#eaf1ff] uppercase">Tecnología</h4>
-          <ul class="space-y-3 text-sm text-[#8a96ad]">
-            <li><a href="https://anthropic.com" target="_blank" rel="noopener noreferrer" class="transition-colors hover:text-[#eaf1ff]">Claude AI · Anthropic</a></li>
-            <li><span>Unitree SDK2</span></li>
-            <li><span>DDS / WebRTC</span></li>
-            <li><span>SvelteKit · Elysia</span></li>
-          </ul>
-        </div>
-      </div>
-
-      <div class="mt-12 flex flex-col items-center justify-between gap-3 border-t border-[rgba(180,210,255,0.08)] pt-6 sm:flex-row">
-        <p class="text-xs text-[#8a96ad]">© 2026 C3PO. Proyecto Final · Ingeniería.</p>
-        <p class="text-xs text-[#8a96ad]">Hecho con Claude · Buenos Aires, Argentina</p>
-      </div>
-    </div>
   </footer>
 </div>
