@@ -37,8 +37,11 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
+    "@ai-sdk/svelte": "^4.0.209",
     "@elysiajs/eden": "^1.4.8",
+    "ai": "^6.0.209",
     "better-auth": "^1.5.5",
-    "elysia": "^1.4.28"
+    "elysia": "^1.4.28",
+    "svelte-exmarkdown": "^5.0.2"
   }
 }
