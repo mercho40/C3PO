@@ -28,7 +28,7 @@
       <Input
         bind:value={query}
         {placeholder}
-        class="font-mono h-full w-full rounded-none border-0 bg-transparent p-0 text-[12px] text-[#eaf1ff] shadow-none placeholder:text-[#8a96ad] focus-visible:ring-0"
+        class="font-mono h-full w-full rounded-none border-0 bg-transparent p-0 text-[12px] text-[#eaf1ff] shadow-none placeholder:text-[#8a96ad] focus-visible:ring-0 dark:bg-transparent"
       />
     </div>
     <DropdownMenu.Root>

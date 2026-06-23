@@ -16,7 +16,15 @@
  */
 
 import { anthropic } from "@ai-sdk/anthropic";
-import { jsonSchema, stepCountIs, streamText, tool, type ToolSet } from "ai";
+import {
+  convertToModelMessages,
+  jsonSchema,
+  stepCountIs,
+  streamText,
+  tool,
+  type ToolSet,
+  type UIMessage,
+} from "ai";
 
 import { listSkills } from "@back/skills";
 import {
@@ -97,15 +105,16 @@ const ADAPTIVE_THINKING =
   !MODEL.includes("haiku");
 
 /**
- * Run one operator turn as a streaming result. The caller returns
+ * Run an operator chat turn as a streaming result. `messages` is the UIMessage
+ * history from the chat client. The caller returns
  * `result.toUIMessageStreamResponse()` from the Elysia route; Elysia streams it
- * to the client and `useChat` renders the tokens + tool calls live.
+ * to the client and `@ai-sdk/svelte`'s Chat renders tokens + tool calls live.
  */
-export function runAgentStream(message: string) {
+export async function runAgentChat(messages: UIMessage[]) {
   return streamText({
     model: anthropic(MODEL),
     system: buildSystemPrompt(),
-    prompt: message,
+    messages: await convertToModelMessages(messages),
     tools: buildTools(),
     stopWhen: stepCountIs(MAX_STEPS),
     ...(ADAPTIVE_THINKING
