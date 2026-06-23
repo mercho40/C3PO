@@ -9,20 +9,27 @@
     Settings,
   } from "@lucide/svelte";
   import { page } from "$app/state";
+  import * as Avatar from "$lib/components/ui/avatar/index.js";
+  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Separator } from "$lib/components/ui/separator/index.js";
 
   const navItems = [
     { label: "Inicio", href: "/dashboard", icon: Activity },
     { label: "Mapa en vivo", href: "/live-map", icon: Map },
     { label: "Cámaras", href: "/live-camera", icon: Video },
     { label: "Chat", href: "/chat", icon: MessageSquare },
-    { label: "Control por voz", href: "/voice-control", icon: Mic },
-    { label: "Salud", href: "/health", icon: HeartPulse },
+  ];
+
+  // Routes not built yet — shown but disabled so they don't 404.
+  const pendingItems = [
+    { label: "Control por voz", icon: Mic },
+    { label: "Salud", icon: HeartPulse },
   ];
 
   const user = $derived(page.data.user);
-  const displayName = $derived(user?.name ?? user?.email ?? "Perfil");
+  const displayName = $derived(String(user?.name ?? user?.email ?? "Perfil"));
   const initials = $derived(
-    (displayName as string)
+    displayName
       .split(/\s+/)
       .map((part) => part[0] ?? "")
       .join("")
@@ -61,32 +68,52 @@
         <span>{item.label}</span>
       </a>
     {/each}
+    {#each pendingItems as item (item.label)}
+      {@const Icon = item.icon}
+      <span
+        aria-disabled="true"
+        class="relative flex cursor-not-allowed items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 text-[13px] text-[#8a96ad]/40"
+      >
+        <Icon class="size-3.5 shrink-0" />
+        <span>{item.label}</span>
+        <Badge
+          variant="outline"
+          class="ml-auto border-[rgba(180,210,255,0.18)] px-1.5 py-0 text-[9px] tracking-wide text-[#8a96ad] uppercase"
+          >Pronto</Badge
+        >
+      </span>
+    {/each}
   </nav>
 
-  <div class="mt-5 px-2">
-    <span
-      class="font-mono text-[9px] tracking-[0.22em] text-[#8a96ad]/70 uppercase"
+  <Separator class="my-2 bg-[rgba(180,210,255,0.08)]" />
+
+  <div class="px-2">
+    <span class="font-mono text-[9px] tracking-[0.22em] text-[#8a96ad]/70 uppercase"
       >Sistema</span
     >
   </div>
-  <nav class="flex flex-col gap-1">
-    <a
-      href="/settings"
-      class="flex items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 text-[13px] text-[#8a96ad] transition-colors hover:bg-[rgba(159,197,255,0.06)] hover:text-[#c6dcff]"
-    >
-      <Settings class="size-3.5 shrink-0" />
-      <span>Configuración</span>
-    </a>
-  </nav>
-
-  <a
-    href="/settings"
-    class="mt-auto flex items-center gap-2.5 rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[#0c1220] p-3.5 transition-colors hover:border-[rgba(159,197,255,0.25)]"
+  <span
+    aria-disabled="true"
+    class="flex cursor-not-allowed items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 text-[13px] text-[#8a96ad]/40"
   >
-    <span
-      class="flex size-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#9fc5ff] to-[#4a7dd1] font-mono text-[11px] font-bold text-[#06121c]"
-      >{initials}</span
+    <Settings class="size-3.5 shrink-0" />
+    <span>Configuración</span>
+    <Badge
+      variant="outline"
+      class="ml-auto border-[rgba(180,210,255,0.18)] px-1.5 py-0 text-[9px] tracking-wide text-[#8a96ad] uppercase"
+      >Pronto</Badge
     >
+  </span>
+
+  <div
+    class="mt-auto flex items-center gap-2.5 rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[#0c1220] p-3.5"
+  >
+    <Avatar.Root class="size-7 shrink-0">
+      <Avatar.Fallback
+        class="bg-gradient-to-br from-[#9fc5ff] to-[#4a7dd1] font-mono text-[11px] font-bold text-[#06121c]"
+        >{initials}</Avatar.Fallback
+      >
+    </Avatar.Root>
     <span class="truncate text-xs text-[#eaf1ff]">{displayName}</span>
-  </a>
+  </div>
 </aside>

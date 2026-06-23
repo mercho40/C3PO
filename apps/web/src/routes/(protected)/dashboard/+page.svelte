@@ -1,6 +1,18 @@
 <script lang="ts">
   import CircularProgress from "$lib/components/circular-progress.svelte";
-  import { Play, Square, Send, MapPin, Maximize2, ChevronRight, Map } from "@lucide/svelte";
+  import {
+    Play,
+    Square,
+    Send,
+    MapPin,
+    Maximize2,
+    ChevronRight,
+    Map,
+  } from "@lucide/svelte";
+  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
+  import { Progress } from "$lib/components/ui/progress/index.js";
 
   let { data } = $props();
 
@@ -41,10 +53,19 @@
       <h2 class="text-base font-bold tracking-[0.12em] text-[#8a96ad] uppercase">Estado del sistema</h2>
       <div class="mt-5 flex items-center gap-4">
         <span class="text-xl text-[#eaf1ff]">BIPED-01</span>
-        <span class="flex items-center gap-2 rounded-full border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.04)] px-3 py-1.5">
-          <span class="size-1.5 rounded-sm {online ? 'bg-[#5ee7a1] shadow-[0px_0px_10px_rgba(94,231,161,0.6)]' : 'bg-[#ff4d6a] shadow-[0px_0px_10px_rgba(255,77,106,0.6)]'}"></span>
-          <span class="font-mono text-[11px] tracking-[0.1em] text-[#8a96ad] uppercase">{online ? "Conectado" : "Offline"}</span>
-        </span>
+        <Badge
+          variant="outline"
+          class="gap-2 rounded-full px-3 py-1.5 font-mono text-[11px] tracking-[0.1em] uppercase {online
+            ? 'border-[rgba(94,231,161,0.3)] bg-[rgba(94,231,161,0.08)] text-[#5ee7a1]'
+            : 'border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.08)] text-[#ff4d6a]'}"
+        >
+          <span
+            class="size-1.5 rounded-sm {online
+              ? 'bg-[#5ee7a1] shadow-[0px_0px_10px_rgba(94,231,161,0.6)]'
+              : 'bg-[#ff4d6a] shadow-[0px_0px_10px_rgba(255,77,106,0.6)]'}"
+          ></span>
+          {online ? "Conectado" : "Offline"}
+        </Badge>
       </div>
       <div class="mt-5 grid grid-cols-2 gap-2.5">
         {@render statTile("Red", online ? `${data.latencyMs} ms` : "—")}
@@ -64,12 +85,7 @@
               <span class="font-heading text-[10px] tracking-[0.06em] text-[#8a96ad] uppercase">{m.label}</span>
               <span class="font-mono text-xs text-[#eaf1ff]">{m.value}<span class="text-[#8a96ad]"> {m.unit}</span></span>
             </div>
-            <div class="h-1 w-full overflow-hidden rounded-full bg-[rgba(180,210,255,0.08)]">
-              <div
-                class="h-full rounded-full bg-gradient-to-r from-[#4a7dd1] to-[#7ee5ff] shadow-[0px_0px_12px_rgba(126,229,255,0.55)]"
-                style="width:{m.pct}%"
-              ></div>
-            </div>
+            <Progress value={m.pct} class="h-1 bg-[rgba(180,210,255,0.08)]" />
           </div>
         {/each}
       </div>
@@ -106,27 +122,33 @@
         <span class="font-mono text-[10px] tracking-[0.16em] text-[#8a96ad] uppercase">2 acciones</span>
       </div>
       <div class="mt-4 grid grid-cols-2 gap-2.5">
-        <button class="flex flex-col items-start gap-2 rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-4 text-left transition-colors hover:border-[rgba(159,197,255,0.25)]">
+        <Button
+          variant="outline"
+          class="flex h-auto flex-col items-start gap-2 rounded-[10px] border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-4 text-left transition-colors hover:border-[rgba(159,197,255,0.25)] hover:bg-[rgba(180,210,255,0.04)]"
+        >
           <span class="flex size-7 items-center justify-center rounded-[7px] bg-[rgba(159,197,255,0.14)] text-[#9fc5ff]">
             <Play class="size-3.5" />
           </span>
           <span class="font-heading text-base text-[#eaf1ff]">Iniciar guía</span>
           <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">Activar modo ruta</span>
-        </button>
-        <button class="flex flex-col items-start gap-2 rounded-[10px] border border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.05)] p-4 text-left transition-colors hover:bg-[rgba(255,77,106,0.1)]">
+        </Button>
+        <Button
+          variant="outline"
+          class="flex h-auto flex-col items-start gap-2 rounded-[10px] border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.05)] p-4 text-left transition-colors hover:border-[rgba(255,77,106,0.45)] hover:bg-[rgba(255,77,106,0.1)]"
+        >
           <span class="flex size-7 items-center justify-center rounded-[7px] bg-[rgba(255,77,106,0.12)] text-[#ff8aa0]">
             <Square class="size-3.5" />
           </span>
           <span class="font-heading text-base text-[#ff8aa0]">PARAR</span>
           <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">Detener movimiento</span>
-        </button>
+        </Button>
       </div>
       <form class="mt-auto flex items-center gap-2.5 rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-3" onsubmit={(e) => e.preventDefault()}>
         <Send class="size-3.5 shrink-0 text-[#8a96ad]" />
-        <input
+        <Input
           bind:value={command}
           placeholder="Decile al robot qué hacer…"
-          class="font-mono w-full bg-transparent text-xs text-[#eaf1ff] placeholder:text-[#8a96ad] focus:outline-none"
+          class="font-mono h-auto w-full rounded-none border-0 bg-transparent p-0 text-xs text-[#eaf1ff] shadow-none placeholder:text-[#8a96ad] focus-visible:ring-0"
         />
       </form>
     </section>
@@ -135,7 +157,14 @@
     <section class="flex flex-1 flex-col rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828] p-6">
       <div class="flex items-center justify-between">
         {@render sectionLabel("Última ubicación conocida")}
-        <Maximize2 class="size-3 text-[#8a96ad]" />
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Expandir mapa"
+          class="size-6 text-[#8a96ad] hover:bg-[rgba(180,210,255,0.06)] hover:text-[#eaf1ff]"
+        >
+          <Maximize2 class="size-3" />
+        </Button>
       </div>
       <div class="relative mt-3.5 min-h-[260px] flex-1 overflow-hidden rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[radial-gradient(ellipse_at_center,#0c1220,#04070d)]">
         <svg class="absolute inset-0 size-full" viewBox="0 0 707 309" preserveAspectRatio="none">
