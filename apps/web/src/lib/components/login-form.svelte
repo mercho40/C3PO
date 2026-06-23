@@ -25,7 +25,7 @@
       { email, password },
       {
         onSuccess: () => {
-          window.location.href = "/";
+          window.location.href = "/dashboard";
         },
         onError: (ctx) => {
           error = ctx.error.message;
