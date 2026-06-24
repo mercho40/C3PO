@@ -1,5 +1,7 @@
 <script lang="ts">
   import { Camera, Share2, Maximize2 } from "@lucide/svelte";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { Badge } from "$lib/components/ui/badge/index.js";
 
   const detections = [
     { label: "person · 0.94", color: "#9ae5f8", left: "16%", top: "38%", width: "13%", height: "31%" },
@@ -35,15 +37,28 @@
   <section class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828]">
     <!-- Toolbar -->
     <div class="flex items-center gap-2 border-b border-[rgba(180,210,255,0.08)] bg-[#06121c] px-[18px] py-3.5">
-      <button class="flex items-center gap-2 rounded-full border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.03)] px-3.5 py-1.5 font-mono text-[10px] tracking-[0.12em] text-[#eaf1ff] uppercase transition-colors hover:border-[rgba(159,197,255,0.25)]">
+      <Button
+        variant="outline"
+        size="sm"
+        class="h-auto gap-2 rounded-full border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.03)] px-3.5 py-1.5 font-mono text-[10px] tracking-[0.12em] text-[#eaf1ff] uppercase hover:border-[rgba(159,197,255,0.25)] hover:bg-[rgba(180,210,255,0.03)] hover:text-[#eaf1ff]"
+      >
         <Camera class="size-3" /> Captura
-      </button>
-      <button class="flex items-center gap-2 rounded-full border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.03)] px-3.5 py-1.5 font-mono text-[10px] tracking-[0.12em] text-[#eaf1ff] uppercase transition-colors hover:border-[rgba(159,197,255,0.25)]">
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        class="h-auto gap-2 rounded-full border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.03)] px-3.5 py-1.5 font-mono text-[10px] tracking-[0.12em] text-[#eaf1ff] uppercase hover:border-[rgba(159,197,255,0.25)] hover:bg-[rgba(180,210,255,0.03)] hover:text-[#eaf1ff]"
+      >
         <Share2 class="size-3" /> Compartir
-      </button>
-      <button aria-label="Pantalla completa" class="flex size-[26px] items-center justify-center rounded-full border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.03)] text-[#eaf1ff] transition-colors hover:border-[rgba(159,197,255,0.25)]">
+      </Button>
+      <Button
+        variant="outline"
+        size="icon"
+        aria-label="Pantalla completa"
+        class="size-[26px] rounded-full border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.03)] text-[#eaf1ff] hover:border-[rgba(159,197,255,0.25)] hover:bg-[rgba(180,210,255,0.03)] hover:text-[#eaf1ff]"
+      >
         <Maximize2 class="size-3" />
-      </button>
+      </Button>
     </div>
 
     <!-- Feed canvas -->
@@ -84,8 +99,14 @@
       </div>
 
       <!-- top-left overlay -->
-      <div class="font-mono absolute top-4 left-4 flex flex-col gap-1 text-[11px] tracking-wide">
-        <span class="text-[#9ae5f8]">● EN VIVO</span>
+      <div class="font-mono absolute top-4 left-4 flex flex-col items-start gap-1 text-[11px] tracking-wide">
+        <Badge
+          variant="outline"
+          class="gap-1.5 rounded-full border-[rgba(126,229,255,0.3)] bg-[rgba(126,229,255,0.08)] px-2 py-0.5 font-mono text-[10px] tracking-[0.1em] text-[#9ae5f8] uppercase"
+        >
+          <span class="size-1.5 rounded-full bg-[#9ae5f8] shadow-[0px_0px_8px_#7ee5ff]"></span>
+          EN VIVO
+        </Badge>
         <span class="text-[#eaf1ff]">FOV 110° · IR off</span>
         <span class="text-[#8a96ad]">+47.6062, -122.3321</span>
       </div>

@@ -86,14 +86,15 @@
           </div>
           <div class="grid w-full max-w-lg gap-2 sm:grid-cols-2">
             {#each suggestions as s (s.title)}
-              <button
+              <Button
                 type="button"
+                variant="outline"
                 onclick={() => suggest(s.action)}
-                class="flex h-auto flex-col items-start gap-0.5 rounded-xl border border-[rgba(180,210,255,0.12)] bg-[rgba(180,210,255,0.02)] px-4 py-3 text-left transition-colors hover:border-[rgba(159,197,255,0.3)] hover:bg-[rgba(159,197,255,0.06)]"
+                class="flex h-auto flex-col items-start gap-0.5 rounded-xl border-[rgba(180,210,255,0.12)] bg-[rgba(180,210,255,0.02)] px-4 py-3 text-left whitespace-normal hover:border-[rgba(159,197,255,0.3)] hover:bg-[rgba(159,197,255,0.06)]"
               >
                 <span class="text-[13px] text-[#eaf1ff]">{s.title}</span>
                 <span class="text-[12px] text-[#8a96ad]">{s.label}</span>
-              </button>
+              </Button>
             {/each}
           </div>
         </div>

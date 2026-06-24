@@ -1,5 +1,7 @@
 <script lang="ts">
   import { Navigation, Clock, Plus, Minus } from "@lucide/svelte";
+  import * as ToggleGroup from "$lib/components/ui/toggle-group/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
 
   const layers = ["Satélite", "Oscuro", "Terreno"];
   let activeLayer = $state("Oscuro");
@@ -59,17 +61,24 @@
   <section class="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828]">
     <!-- Layer toolbar -->
     <div class="flex items-center gap-2 border-b border-[rgba(180,210,255,0.08)] bg-[#06121c] px-[18px] py-3.5">
-      {#each layers as layer (layer)}
-        <button
-          onclick={() => (activeLayer = layer)}
-          class="rounded-full border px-3.5 py-1.5 font-mono text-[10px] tracking-[0.12em] uppercase transition-colors {activeLayer ===
-          layer
-            ? 'border-transparent bg-gradient-to-b from-[#c6dcff] to-[#9fc5ff] font-bold text-[#06121c] shadow-[0px_8px_28px_-10px_rgba(126,229,255,0.55)]'
-            : 'border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.03)] text-[#eaf1ff]'}"
-        >
-          {layer}
-        </button>
-      {/each}
+      <ToggleGroup.Root
+        type="single"
+        value={activeLayer}
+        onValueChange={(v) => {
+          if (v) activeLayer = v;
+        }}
+        spacing={2}
+        class="gap-2"
+      >
+        {#each layers as layer (layer)}
+          <ToggleGroup.Item
+            value={layer}
+            class="h-auto rounded-full border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.03)] px-3.5 py-1.5 font-mono text-[10px] tracking-[0.12em] text-[#eaf1ff] uppercase hover:bg-[rgba(180,210,255,0.06)] hover:text-[#eaf1ff] data-[state=on]:border-transparent data-[state=on]:bg-gradient-to-b data-[state=on]:from-[#c6dcff] data-[state=on]:to-[#9fc5ff] data-[state=on]:font-bold data-[state=on]:text-[#06121c] data-[state=on]:shadow-[0px_8px_28px_-10px_rgba(126,229,255,0.55)]"
+          >
+            {layer}
+          </ToggleGroup.Item>
+        {/each}
+      </ToggleGroup.Root>
     </div>
 
     <!-- Map canvas -->
@@ -122,13 +131,23 @@
 
       <!-- Zoom -->
       <div class="absolute right-5 bottom-5 flex flex-col overflow-hidden rounded-lg border border-[rgba(180,210,255,0.18)] bg-[rgba(5,7,13,0.6)] backdrop-blur-sm">
-        <button aria-label="Acercar" class="flex size-8 items-center justify-center text-[#eaf1ff] transition-colors hover:bg-[rgba(180,210,255,0.06)]">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Acercar"
+          class="size-8 rounded-none text-[#eaf1ff] hover:bg-[rgba(180,210,255,0.06)] hover:text-[#eaf1ff]"
+        >
           <Plus class="size-3" />
-        </button>
+        </Button>
         <span class="h-px w-full bg-[rgba(180,210,255,0.08)]"></span>
-        <button aria-label="Alejar" class="flex size-8 items-center justify-center text-[#eaf1ff] transition-colors hover:bg-[rgba(180,210,255,0.06)]">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Alejar"
+          class="size-8 rounded-none text-[#eaf1ff] hover:bg-[rgba(180,210,255,0.06)] hover:text-[#eaf1ff]"
+        >
           <Minus class="size-3" />
-        </button>
+        </Button>
       </div>
     </div>
   </section>
@@ -138,9 +157,12 @@
     {#each units as u (u.id)}
       {@render unitCard(u)}
     {/each}
-    <button class="flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-[rgba(180,210,255,0.18)] p-3 font-mono text-[11px] tracking-[0.1em] text-[#8a96ad] uppercase transition-colors hover:border-[rgba(159,197,255,0.4)] hover:text-[#c6dcff]">
+    <Button
+      variant="outline"
+      class="h-auto justify-center gap-1.5 rounded-lg border-dashed border-[rgba(180,210,255,0.18)] bg-transparent p-3 font-mono text-[11px] tracking-[0.1em] text-[#8a96ad] uppercase hover:border-[rgba(159,197,255,0.4)] hover:bg-transparent hover:text-[#c6dcff]"
+    >
       <Plus class="size-3" />
       Agregar unidad
-    </button>
+    </Button>
   </aside>
 </div>
