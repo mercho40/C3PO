@@ -5,7 +5,7 @@
   let { children } = $props();
 </script>
 
-<div class="font-display dark relative flex h-screen overflow-hidden bg-[#05070d] text-[#eaf1ff]">
+<div class="font-display relative flex h-screen overflow-hidden bg-[#05070d] text-[#eaf1ff]">
   <!-- Radial glows -->
   <div
     class="pointer-events-none absolute inset-0 z-0"
