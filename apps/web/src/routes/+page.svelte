@@ -1,8 +1,19 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { invalidateAll } from "$app/navigation";
+  import { authClient } from "$lib/auth-client";
 
   let { data } = $props();
   let email = $state("");
+  let loggingOut = $state(false);
+
+  async function logout() {
+    if (loggingOut) return;
+    loggingOut = true;
+    await authClient.signOut();
+    await invalidateAll(); // re-run the layout load so data.user clears and the nav flips back
+    loggingOut = false;
+  }
 
   let heroSection: HTMLElement;
   let comoFuncionaSection: HTMLElement;
@@ -108,15 +119,26 @@
     >
       <a href="#como-funciona" class="transition-colors hover:text-white">¿Cómo funciona?</a>
       <a href="#features" class="transition-colors hover:text-white">Características</a>
-      <a href="/chat" class="transition-colors hover:text-white">Contactanos</a>
+      <a href="#contacto" class="transition-colors hover:text-white">Contactanos</a>
     </div>
     <div class="flex items-center gap-3.5 justify-self-end">
-      <a
-        href={data.user ? "/dashboard" : "/login"}
-        class="rounded-full px-4 py-2 text-sm text-[#c6dcff] transition-colors hover:text-white"
-      >
-        Ingresar
-      </a>
+      {#if data.user}
+        <button
+          type="button"
+          onclick={logout}
+          disabled={loggingOut}
+          class="rounded-full px-4 py-2 text-sm text-[#c6dcff] transition-colors hover:text-white disabled:opacity-50"
+        >
+          Cerrar sesión
+        </button>
+      {:else}
+        <a
+          href="/login"
+          class="rounded-full px-4 py-2 text-sm text-[#c6dcff] transition-colors hover:text-white"
+        >
+          Ingresar
+        </a>
+      {/if}
       <a
         href={data.user ? "/dashboard" : "/signup"}
         class="flex items-center gap-2.5 rounded-full bg-gradient-to-b from-[rgba(227,249,255,0.92)] to-[rgba(172,238,255,0.92)] px-5 py-2.5 text-sm font-medium text-[#06121c] shadow-[0px_8px_28px_-10px_rgba(126,229,255,0.55)] transition-transform hover:scale-[1.02]"
@@ -236,7 +258,7 @@
   </section>
 
   <!-- Footer -->
-  <footer class="border-t border-[rgba(180,210,255,0.08)] px-6 pt-16 pb-10">
+  <footer id="contacto" class="border-t border-[rgba(180,210,255,0.08)] px-6 pt-16 pb-10">
     <div class="mx-auto max-w-[1200px]">
       <div class="grid grid-cols-2 gap-12 md:grid-cols-4">
         <!-- Brand -->
@@ -267,5 +289,7 @@
             <li><a href="/dashboard" class="transition-colors hover:text-[#eaf1ff]">Dashboard</a></li>
           </ul>
         </div>
+      </div>
+    </div>
   </footer>
 </div>
