@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "sveltekit",
+  "buildCommand": "cd ../.. && bun install && cd apps/web && bun run build",
+  "installCommand": "echo 'install hecho en buildCommand'"
+}
