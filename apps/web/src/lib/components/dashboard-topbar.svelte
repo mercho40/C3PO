@@ -3,6 +3,8 @@
   import { Search, Bell } from "@lucide/svelte";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
+  import * as Sidebar from "$lib/components/ui/sidebar/index.js";
+  import { Separator } from "$lib/components/ui/separator/index.js";
 
   let { placeholder = "Buscar…" }: { placeholder?: string } = $props();
   let query = $state("");
@@ -16,11 +18,18 @@
   const title = $derived(titles[page.url.pathname] ?? "");
 </script>
 
-<header class="flex h-[55px] items-center justify-between gap-2.5 px-1">
+<header class="flex h-[55px] items-center gap-2.5 px-1">
+  <Sidebar.Trigger
+    class="-ms-1 size-8 text-[#8a96ad] hover:bg-[rgba(159,197,255,0.07)] hover:text-[#eaf1ff]"
+  />
+  <Separator
+    orientation="vertical"
+    class="me-1 h-5 bg-[rgba(180,210,255,0.12)]"
+  />
   <h1 class="font-display text-[28px] font-medium tracking-[-0.02em] text-[#eaf1ff]">
     {title}
   </h1>
-  <div class="flex items-center gap-2.5">
+  <div class="ms-auto flex items-center gap-2.5">
     <div
       class="flex h-9 w-52 items-center gap-2.5 rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828] px-3.5"
     >
