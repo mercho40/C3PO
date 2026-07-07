@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { replaceState } from "$app/navigation";
   import { Chat } from "@ai-sdk/svelte";
   import {
     DefaultChatTransport,
@@ -59,6 +60,17 @@
     if (busy) return;
     chat.sendMessage({ text: action });
   }
+
+  // Hand-off from the dashboard command box / quick controls: an initial prompt
+  // arrives as `?q=…`. Send it once, then strip the query so a reload doesn't
+  // resend it.
+  onMount(() => {
+    const q = new URLSearchParams(window.location.search).get("q")?.trim();
+    if (q) {
+      chat.sendMessage({ text: q });
+      replaceState("/chat", {});
+    }
+  });
 
   // Follow the conversation as messages arrive / streaming starts and stops.
   $effect(() => {

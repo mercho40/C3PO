@@ -1,60 +1,57 @@
 <script lang="ts">
-  import { Navigation, Clock, Plus, Minus } from "@lucide/svelte";
+  import { onMount, untrack } from "svelte";
+  import { Navigation, Plus, Minus, MapPin } from "@lucide/svelte";
   import * as ToggleGroup from "$lib/components/ui/toggle-group/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
+  import { RobotLive, projectPose } from "$lib/robot/live-state.svelte";
+
+  let { data } = $props();
+
+  // Seed once from the server load, then poll live.
+  const live = untrack(() => new RobotLive(data.state, data.online));
+  onMount(() => {
+    live.start();
+    return () => live.stop();
+  });
 
   const layers = ["Satélite", "Oscuro", "Terreno"];
   let activeLayer = $state("Oscuro");
 
-  const units = [
-    {
-      id: "BIPED-01",
-      tag: "Guía",
-      kind: "Cuadrúpedo · 12 DOF",
-      seen: "activo hace 2 h",
-      battery: 84,
-      active: true,
-    },
-    {
-      id: "BIPED-02",
-      tag: "En espera",
-      kind: "Humanoide · 28 DOF",
-      seen: "activo hace 5 h",
-      battery: 67,
-      active: false,
-    },
-  ];
-</script>
+  // Zoom drives the metres→canvas projection scale, so +/- actually work.
+  let scale = $state(6);
+  const zoomIn = () => (scale = Math.min(24, scale * 1.3));
+  const zoomOut = () => (scale = Math.max(2, scale / 1.3));
 
-{#snippet unitCard(u: (typeof units)[number])}
-  <div
-    class="flex flex-col gap-2.5 rounded-lg border p-3.5 {u.active
-      ? 'border-[rgba(159,197,255,0.3)] bg-[rgba(159,197,255,0.14)]'
-      : 'border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)]'}"
-  >
-    <div class="flex items-center gap-2.5">
-      <span class="flex items-center rounded-full border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.04)] px-1.5 py-1">
-        <span class="size-1.5 rounded-sm bg-[#5ee7a1] shadow-[0px_0px_10px_rgba(94,231,161,0.6)]"></span>
-      </span>
-      <span class="font-mono text-xs tracking-wide text-[#eaf1ff]">{u.id}</span>
-      <span class="ml-auto font-mono text-[9px] tracking-[0.09em] text-[#8a96ad] uppercase">{u.tag}</span>
-    </div>
-    <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">{u.kind}</span>
-    <div class="flex items-center gap-2 text-[#8a96ad]">
-      <Clock class="size-3.5 shrink-0" />
-      <span class="text-[11px]">{u.seen}</span>
-    </div>
-    <div class="flex items-center gap-2">
-      <div class="h-1 flex-1 overflow-hidden rounded-full bg-[rgba(180,210,255,0.08)]">
-        <div
-          class="h-full rounded-full bg-gradient-to-r from-[#4a7dd1] to-[#7ee5ff] shadow-[0px_0px_12px_rgba(126,229,255,0.55)]"
-          style="width:{u.battery}%"
-        ></div>
-      </div>
-      <span class="font-mono text-[11px] text-[#eaf1ff]">{u.battery}%</span>
-    </div>
-  </div>
-{/snippet}
+  const robot = $derived(live.state);
+  const online = $derived(live.online);
+  const pose = $derived(robot?.pose ?? null);
+  const battery = $derived(Math.round(robot?.battery_pct ?? 0));
+  const yawDeg = $derived(
+    pose ? Math.round((pose.yaw_radians_world * 180) / Math.PI) : 0,
+  );
+  const marker = $derived(
+    pose ? projectPose(pose.x_meters_world, pose.y_meters_world, scale) : { left: 50, top: 50 },
+  );
+  const trailPoints = $derived(
+    live.trail
+      .map((p) => {
+        const { left, top } = projectPose(p.x, p.y, scale);
+        return `${left},${top}`;
+      })
+      .join(" "),
+  );
+
+  // Single live unit fed by /state. Multi-robot fleet is future work.
+  const unit = $derived({
+    id: "BIPED-01",
+    tag: online ? "En vivo" : "Sin señal",
+    kind: robot ? `Unitree G1 · ${robot.env}` : "Unitree G1",
+    posture: robot?.posture ?? "—",
+    seen: online ? "activo ahora" : "sin conexión",
+    battery,
+    active: online,
+  });
+</script>
 
 <div class="flex h-full gap-[18px] pb-2">
   <!-- Map -->
@@ -91,42 +88,56 @@
           <line x1="287" y1="0" x2="287" y2="794" />
           <line x1="574" y1="0" x2="574" y2="794" />
         </g>
-        <path
-          d="M40 560 C 200 520, 320 430, 430 415 S 660 350, 760 300"
-          fill="none"
-          stroke="#9fc5ff"
-          stroke-opacity="0.5"
-          stroke-width="2"
-          stroke-dasharray="2 7"
-          stroke-linecap="round"
-        />
       </svg>
 
-      <!-- BIPED-02 marker (small) -->
-      <div class="absolute" style="left:69%;top:30%">
-        <span class="absolute -inset-2.5 rounded-full border border-[#9ae5f8] opacity-50"></span>
-        <span class="relative block size-3 rounded-full bg-[#9ae5f8] shadow-[0px_0px_24px_#7ee5ff,0px_0px_0px_3px_rgba(5,7,13,0.85)]"></span>
-        <span class="absolute -top-6 left-1/2 -translate-x-1/2 rounded-md border border-[rgba(180,210,255,0.18)] bg-[rgba(5,7,13,0.85)] px-2 py-1 font-mono text-[10px] tracking-wide whitespace-nowrap text-[#eaf1ff] backdrop-blur-sm">BIPED-02</span>
-      </div>
+      <!-- travelled path (integrated from the live pose stream) -->
+      {#if live.trail.length > 1}
+        <svg class="absolute inset-0 size-full" preserveAspectRatio="none" viewBox="0 0 100 100">
+          <polyline
+            points={trailPoints}
+            fill="none"
+            stroke="#9fc5ff"
+            stroke-opacity="0.5"
+            stroke-width="0.5"
+            stroke-dasharray="0.6 1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      {/if}
 
-      <!-- BIPED-01 marker (primary) -->
-      <div class="absolute" style="left:43%;top:46%">
+      <!-- Robot marker (BIPED-01), driven by live pose -->
+      <div class="absolute transition-[left,top] duration-500 ease-out" style="left:{marker.left}%;top:{marker.top}%">
         <span class="absolute -inset-7 rounded-full bg-[rgba(159,197,255,0.14)] blur-[7px]"></span>
-        <span class="absolute -inset-3.5 rounded-full border border-[#9ae5f8] opacity-50"></span>
-        <span class="relative block size-4 rounded-full bg-[#9ae5f8] shadow-[0px_0px_24px_#7ee5ff,0px_0px_0px_3px_rgba(5,7,13,0.85)]"></span>
-        <span class="absolute -top-7 left-1/2 -translate-x-1/2 rounded-md border border-[rgba(180,210,255,0.18)] bg-[rgba(5,7,13,0.85)] px-2 py-1 font-mono text-[10px] tracking-wide whitespace-nowrap text-[#eaf1ff] backdrop-blur-sm">BIPED-01</span>
+        <span class="absolute -inset-3.5 rounded-full border {online ? 'border-[#9ae5f8]' : 'border-[#ff4d6a]'} opacity-50"></span>
+        <!-- heading wedge rotates with yaw -->
+        <span
+          class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-full origin-bottom"
+          style="transform:translate(-50%,-100%) rotate({yawDeg}deg)"
+        >
+          <span class="block h-4 w-px bg-[#9ae5f8]"></span>
+        </span>
+        <span class="relative block size-4 rounded-full {online ? 'bg-[#9ae5f8]' : 'bg-[#ff4d6a]'} shadow-[0px_0px_24px_#7ee5ff,0px_0px_0px_3px_rgba(5,7,13,0.85)]"></span>
+        <span class="absolute -top-7 left-1/2 -translate-x-1/2 rounded-md border border-[rgba(180,210,255,0.18)] bg-[rgba(5,7,13,0.85)] px-2 py-1 font-mono text-[10px] tracking-wide whitespace-nowrap text-[#eaf1ff] backdrop-blur-sm">{unit.id}</span>
       </div>
 
       <!-- Compass -->
       <div class="absolute top-5 right-5 flex size-[60px] flex-col items-center justify-center rounded-full border border-[rgba(180,210,255,0.18)] bg-[rgba(5,7,13,0.6)] backdrop-blur-sm">
-        <Navigation class="size-3.5 text-[#7ee5ff]" />
-        <span class="font-mono text-[10px] tracking-wide text-[#9fc5ff]">N</span>
+        <Navigation class="size-3.5 text-[#7ee5ff] transition-transform duration-500" style="transform:rotate({yawDeg}deg)" />
+        <span class="font-mono text-[10px] tracking-wide text-[#9fc5ff]">{yawDeg}°</span>
       </div>
 
-      <!-- Scale -->
+      <!-- Coordinates / scale -->
       <div class="absolute bottom-5 left-5 flex flex-col gap-1">
+        <span class="font-mono text-[10px] text-[#8a96ad]">
+          {#if pose}
+            x {pose.x_meters_world.toFixed(2)} · y {pose.y_meters_world.toFixed(2)} m
+          {:else}
+            sin posición
+          {/if}
+        </span>
         <span class="h-px w-20 bg-[#8a96ad]"></span>
-        <span class="font-mono text-[10px] text-[#8a96ad]">200 m</span>
+        <span class="font-mono text-[10px] text-[#8a96ad]">{(100 / scale / 2).toFixed(1)} m</span>
       </div>
 
       <!-- Zoom -->
@@ -135,6 +146,7 @@
           variant="ghost"
           size="icon"
           aria-label="Acercar"
+          onclick={zoomIn}
           class="size-8 rounded-none text-[#eaf1ff] hover:bg-[rgba(180,210,255,0.06)] hover:text-[#eaf1ff]"
         >
           <Plus class="size-3" />
@@ -144,6 +156,7 @@
           variant="ghost"
           size="icon"
           aria-label="Alejar"
+          onclick={zoomOut}
           class="size-8 rounded-none text-[#eaf1ff] hover:bg-[rgba(180,210,255,0.06)] hover:text-[#eaf1ff]"
         >
           <Minus class="size-3" />
@@ -154,15 +167,36 @@
 
   <!-- Units panel -->
   <aside class="flex w-[340px] shrink-0 flex-col gap-2.5 rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828] p-3.5">
-    {#each units as u (u.id)}
-      {@render unitCard(u)}
-    {/each}
-    <Button
-      variant="outline"
-      class="h-auto justify-center gap-1.5 rounded-lg border-dashed border-[rgba(180,210,255,0.18)] bg-transparent p-3 font-mono text-[11px] tracking-[0.1em] text-[#8a96ad] uppercase hover:border-[rgba(159,197,255,0.4)] hover:bg-transparent hover:text-[#c6dcff]"
+    <div
+      class="flex flex-col gap-2.5 rounded-lg border p-3.5 {unit.active
+        ? 'border-[rgba(159,197,255,0.3)] bg-[rgba(159,197,255,0.14)]'
+        : 'border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)]'}"
     >
-      <Plus class="size-3" />
-      Agregar unidad
-    </Button>
+      <div class="flex items-center gap-2.5">
+        <span class="flex items-center rounded-full border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.04)] px-1.5 py-1">
+          <span class="size-1.5 rounded-sm {unit.active ? 'bg-[#5ee7a1] shadow-[0px_0px_10px_rgba(94,231,161,0.6)]' : 'bg-[#ff4d6a] shadow-[0px_0px_10px_rgba(255,77,106,0.6)]'}"></span>
+        </span>
+        <span class="font-mono text-xs tracking-wide text-[#eaf1ff]">{unit.id}</span>
+        <span class="ml-auto font-mono text-[9px] tracking-[0.09em] text-[#8a96ad] uppercase">{unit.tag}</span>
+      </div>
+      <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">{unit.kind}</span>
+      <div class="flex items-center gap-2 text-[#8a96ad]">
+        <MapPin class="size-3.5 shrink-0" />
+        <span class="text-[11px] capitalize">{unit.posture} · {unit.seen}</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <div class="h-1 flex-1 overflow-hidden rounded-full bg-[rgba(180,210,255,0.08)]">
+          <div
+            class="h-full rounded-full bg-gradient-to-r from-[#4a7dd1] to-[#7ee5ff] shadow-[0px_0px_12px_rgba(126,229,255,0.55)] transition-[width] duration-500"
+            style="width:{unit.battery}%"
+          ></div>
+        </div>
+        <span class="font-mono text-[11px] text-[#eaf1ff]">{robot?.battery_pct != null ? `${unit.battery}%` : "—"}</span>
+      </div>
+    </div>
+    <p class="mt-1 font-mono text-[9px] leading-relaxed tracking-wide text-[#8a96ad]">
+      Posición en tiempo real desde <span class="text-[#9fc5ff]">/state</span>. El origen (0, 0) está
+      en el centro; el rastro integra el recorrido a medida que el robot se mueve.
+    </p>
   </aside>
 </div>

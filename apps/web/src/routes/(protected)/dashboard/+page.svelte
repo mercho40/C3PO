@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount, untrack } from "svelte";
+  import { goto } from "$app/navigation";
   import CircularProgress from "$lib/components/circular-progress.svelte";
   import {
     Play,
@@ -8,30 +10,92 @@
     Maximize2,
     ChevronRight,
     Map,
+    Loader2,
   } from "@lucide/svelte";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Progress } from "$lib/components/ui/progress/index.js";
+  import { createApi } from "$lib/api";
+  import { RobotLive, projectPose } from "$lib/robot/live-state.svelte";
 
   let { data } = $props();
 
-  const robot = $derived(data.state);
-  const online = $derived(data.online);
+  // Seed once from the server load for an instant first paint, then poll live.
+  const live = untrack(() => new RobotLive(data.state, data.online));
+  onMount(() => {
+    live.start();
+    return () => live.stop();
+  });
+
+  const robot = $derived(live.state);
+  const online = $derived(live.online);
   const battery = $derived(Math.round(robot?.battery_pct ?? 0));
   const faults = $derived(robot?.faults ?? []);
+  const latencyMs = $derived(live.latencyMs ?? data.latencyMs);
+  const pose = $derived(robot?.pose ?? null);
+  const yawDeg = $derived(
+    pose ? Math.round((pose.yaw_radians_world * 180) / Math.PI) : null,
+  );
+  const marker = $derived(
+    pose ? projectPose(pose.x_meters_world, pose.y_meters_world) : { left: 50, top: 50 },
+  );
+  const trailPoints = $derived(
+    live.trail
+      .map((p) => {
+        const { left, top } = projectPose(p.x, p.y);
+        return `${left},${top}`;
+      })
+      .join(" "),
+  );
+  const distanceKm = $derived(live.distanceM / 1000);
 
-  // Telemetry metrics (cadence/torque/IMU/CPU) are not in the bridge state model,
-  // so these are representative values until the backend exposes them.
-  const telemetry = [
-    { label: "Cadencia del paso", value: "1.24", unit: "Hz", pct: 62 },
-    { label: "Torque articular (prom.)", value: "48.2", unit: "Nm", pct: 55 },
-    { label: "Inclinación IMU", value: "-2.4", unit: "°", pct: 18 },
-    { label: "Proximidad obstáculo", value: "2.0", unit: "m", pct: 8 },
-    { label: "Carga CPU", value: "38", unit: "%", pct: 38 },
-  ];
+  // Live telemetry — sourced from real /state, no fabricated numbers.
+  const telemetry = $derived([
+    { label: "Batería", value: robot?.battery_pct != null ? String(battery) : "—", unit: "%", pct: battery },
+    {
+      label: "Latencia de red",
+      value: online ? String(latencyMs) : "—",
+      unit: "ms",
+      pct: Math.min(100, Math.round((latencyMs ?? 0) / 3)),
+    },
+    {
+      label: "Rumbo (yaw)",
+      value: yawDeg != null ? String(yawDeg) : "—",
+      unit: "°",
+      pct: yawDeg != null ? Math.round((((yawDeg % 360) + 360) % 360) / 3.6) : 0,
+    },
+  ]);
 
   let command = $state("");
+  let stopping = $state(false);
+  let stopMsg = $state<string | null>(null);
+
+  async function emergencyStop() {
+    if (stopping) return;
+    stopping = true;
+    stopMsg = null;
+    try {
+      const { error } = await createApi(fetch)
+        .skills({ name: "stop_everything" })
+        .invoke.post({});
+      stopMsg = error ? "Error al detener" : "Movimiento detenido";
+    } catch {
+      stopMsg = "Error al detener";
+    } finally {
+      stopping = false;
+      setTimeout(() => (stopMsg = null), 3500);
+    }
+  }
+
+  // The command box hands off to the agent chat, which streams Claude's reply
+  // and tool calls; the query is auto-sent on arrival.
+  function runCommand(e: SubmitEvent) {
+    e.preventDefault();
+    const text = command.trim();
+    if (!text) return;
+    goto(`/chat?q=${encodeURIComponent(text)}`);
+  }
 </script>
 
 {#snippet sectionLabel(text: string)}
@@ -68,7 +132,7 @@
         </Badge>
       </div>
       <div class="mt-5 grid grid-cols-2 gap-2.5">
-        {@render statTile("Red", online ? `${data.latencyMs} ms` : "—")}
+        {@render statTile("Red", online ? `${latencyMs} ms` : "—")}
         {@render statTile("Estado", faults.length ? `${faults.length} fallo(s)` : "OK")}
         {@render statTile("Modo", robot?.posture ?? "—")}
         {@render statTile("Entorno", robot?.env ?? "—")}
@@ -102,12 +166,12 @@
       </div>
       <div class="grid grid-cols-2 gap-2.5 border-t border-[rgba(180,210,255,0.08)] pt-3.5">
         <div class="flex flex-col gap-1">
-          <span class="font-mono text-[9px] tracking-[0.16em] text-[#8a96ad] uppercase">Alcance</span>
-          <span class="text-[15px] text-[#eaf1ff]">6.8 km</span>
+          <span class="font-mono text-[9px] tracking-[0.16em] text-[#8a96ad] uppercase">Postura</span>
+          <span class="text-[15px] text-[#eaf1ff] capitalize">{robot?.posture ?? "—"}</span>
         </div>
         <div class="flex flex-col gap-1">
-          <span class="font-mono text-[9px] tracking-[0.16em] text-[#8a96ad] uppercase">Tiempo</span>
-          <span class="text-[15px] text-[#eaf1ff]">2 h 14 m</span>
+          <span class="font-mono text-[9px] tracking-[0.16em] text-[#8a96ad] uppercase">Latencia</span>
+          <span class="text-[15px] text-[#eaf1ff]">{online ? `${latencyMs} ms` : "—"}</span>
         </div>
       </div>
     </section>
@@ -124,26 +188,38 @@
       <div class="mt-4 grid grid-cols-2 gap-2.5">
         <Button
           variant="outline"
+          onclick={() => goto("/chat")}
           class="flex h-auto flex-col items-start gap-2 rounded-[10px] border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-4 text-left transition-colors hover:border-[rgba(159,197,255,0.25)] hover:bg-[rgba(180,210,255,0.04)]"
         >
           <span class="flex size-7 items-center justify-center rounded-[7px] bg-[rgba(159,197,255,0.14)] text-[#9fc5ff]">
             <Play class="size-3.5" />
           </span>
           <span class="font-heading text-base text-[#eaf1ff]">Iniciar guía</span>
-          <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">Activar modo ruta</span>
+          <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">Abrir el agente</span>
         </Button>
         <Button
           variant="outline"
-          class="flex h-auto flex-col items-start gap-2 rounded-[10px] border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.05)] p-4 text-left transition-colors hover:border-[rgba(255,77,106,0.45)] hover:bg-[rgba(255,77,106,0.1)]"
+          onclick={emergencyStop}
+          disabled={stopping}
+          class="flex h-auto flex-col items-start gap-2 rounded-[10px] border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.05)] p-4 text-left transition-colors hover:border-[rgba(255,77,106,0.45)] hover:bg-[rgba(255,77,106,0.1)] disabled:opacity-70"
         >
           <span class="flex size-7 items-center justify-center rounded-[7px] bg-[rgba(255,77,106,0.12)] text-[#ff8aa0]">
-            <Square class="size-3.5" />
+            {#if stopping}
+              <Loader2 class="size-3.5 animate-spin" />
+            {:else}
+              <Square class="size-3.5" />
+            {/if}
           </span>
           <span class="font-heading text-base text-[#ff8aa0]">PARAR</span>
-          <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">Detener movimiento</span>
+          <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">
+            {stopMsg ?? "Detener movimiento"}
+          </span>
         </Button>
       </div>
-      <form class="mt-auto flex items-center gap-2.5 rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-3" onsubmit={(e) => e.preventDefault()}>
+      <form
+        onsubmit={runCommand}
+        class="mt-auto flex items-center gap-2.5 rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-3"
+      >
         <Send class="size-3.5 shrink-0 text-[#8a96ad]" />
         <Input
           bind:value={command}
@@ -167,29 +243,40 @@
         </Button>
       </div>
       <div class="relative mt-3.5 min-h-[260px] flex-1 overflow-hidden rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[radial-gradient(ellipse_at_center,#0c1220,#04070d)]">
-        <svg class="absolute inset-0 size-full" viewBox="0 0 707 309" preserveAspectRatio="none">
-          <path
-            d="M0 250 C 120 230, 200 170, 300 160 S 520 110, 707 70"
-            fill="none"
-            stroke="#9fc5ff"
-            stroke-opacity="0.5"
-            stroke-width="2"
-            stroke-dasharray="2 7"
-            stroke-linecap="round"
-          />
-        </svg>
-        <!-- glowing marker -->
-        <div class="absolute" style="left:42%;top:50%">
+        {#if live.trail.length > 1}
+          <svg class="absolute inset-0 size-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <polyline
+              points={trailPoints}
+              fill="none"
+              stroke="#9fc5ff"
+              stroke-opacity="0.5"
+              stroke-width="0.5"
+              stroke-dasharray="0.6 1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        {/if}
+        <!-- coords readout -->
+        <span class="absolute top-2.5 left-3 font-mono text-[10px] tracking-wide text-[#8a96ad]">
+          {#if pose}
+            x {pose.x_meters_world.toFixed(2)} · y {pose.y_meters_world.toFixed(2)} m · {yawDeg}°
+          {:else}
+            sin posición
+          {/if}
+        </span>
+        <!-- glowing marker at live pose -->
+        <div class="absolute transition-[left,top] duration-500 ease-out" style="left:{marker.left}%;top:{marker.top}%">
           <span class="absolute -inset-4 rounded-full bg-[rgba(159,197,255,0.14)] blur-[5px]"></span>
-          <span class="absolute -inset-2 rounded-full border border-[#9fc5ff] opacity-50"></span>
-          <span class="relative block size-3.5 rounded-full bg-[#9ae5f8] shadow-[0px_0px_24px_rgba(126,229,255,0.55),0px_0px_0px_3px_rgba(7,9,13,0.85)]"></span>
+          <span class="absolute -inset-2 rounded-full border {online ? 'border-[#9fc5ff]' : 'border-[#ff4d6a]'} opacity-50"></span>
+          <span class="relative block size-3.5 rounded-full {online ? 'bg-[#9ae5f8]' : 'bg-[#ff4d6a]'} shadow-[0px_0px_24px_rgba(126,229,255,0.55),0px_0px_0px_3px_rgba(7,9,13,0.85)]"></span>
         </div>
       </div>
       <div class="mt-3.5 grid grid-cols-2 gap-2.5">
         <div class="flex items-center gap-2.5 rounded-lg border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-3">
           <MapPin class="size-3.5 shrink-0 text-[#8a96ad]" />
           <span class="flex-1 text-[13px] text-[#eaf1ff]">Distancia recorrida</span>
-          <span class="font-mono text-sm text-[#9fc5ff]">0.3 km</span>
+          <span class="font-mono text-sm text-[#9fc5ff]">{distanceKm.toFixed(2)} km</span>
         </div>
         <a href="/live-map" class="flex items-center gap-2.5 rounded-lg border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-3 transition-colors hover:border-[rgba(159,197,255,0.25)]">
           <Map class="size-3.5 shrink-0 text-[#8a96ad]" />
