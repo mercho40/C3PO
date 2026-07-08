@@ -13,5 +13,5 @@ server
 # Logs
 *.log
 
-# Drizzle
-meta/
+# Drizzle: migration journal + snapshots (migrations/meta/) ARE committed so
+# `drizzle-kit migrate` and `generate` work from a clean checkout / CI.
