@@ -40,5 +40,9 @@ export const walkTo = defineSkill({
   classification: "locomotion",
   dangerLevel: "medium",
   status: "real",
-  works: { sim: true, real: true },
+  // real: false until Phase 1b (see apps/bridge/README.md) — this needs
+  // get_state().pose, which is null on real G1 today (no world-frame pose
+  // source wired). Confirmed: fails immediately with no_pose, not a partial
+  // failure mode.
+  works: { sim: true, real: false },
 });
