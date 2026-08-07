@@ -18,6 +18,7 @@ Returns a list of cancelled task IDs and the duration of the stop burst.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -29,6 +30,8 @@ from bridge.skills.task_runtime import get_registry
 log = structlog.get_logger(__name__)
 
 STOP_BURST_DURATION_S = 0.4
+
+SIM_MODE = os.environ.get("SIM_MODE", "stub")
 
 
 def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
@@ -50,8 +53,20 @@ def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     stop_motion_sync(height=height, duration_s=STOP_BURST_DURATION_S)
     duration = time.time() - start
 
+    # `stop_motion_sync` above publishes to `rt/run_command/cmd`, which real
+    # G1 firmware doesn't subscribe to (sim-only convenience channel) — a
+    # no-op on real hardware. Damp (verified live, see g1_rpc) zeroes joint
+    # stiffness and is the real fallback that actually halts motion.
+    real_damp_rpc_code: int | None = None
+    if SIM_MODE == "real":
+        from bridge.sdk import g1_protocol, g1_rpc
+
+        real_damp_rpc_code, _ = g1_rpc.call_sport(g1_protocol.Mode.DAMP)
+        log.warning("stop_everything.real_damp_fallback", rpc_code=real_damp_rpc_code)
+
     return {
         "cancelled_task_ids": cancelled_ids,
         "cancelled_count": len(cancelled_ids),
         "stop_burst_duration_s": round(duration, 3),
+        "real_damp_fallback_rpc_code": real_damp_rpc_code,
     }
