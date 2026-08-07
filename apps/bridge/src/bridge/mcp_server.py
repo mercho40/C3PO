@@ -545,6 +545,78 @@ def say(
 
 
 # ---------------------------------------------------------------------------
+# Tools: remember_landmark / recall_landmark / list_landmarks / forget_landmark
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def remember_landmark(
+    name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=64,
+            description="Name to save the current pose under, e.g. 'kitchen' or 'charging_dock'.",
+        ),
+    ],
+) -> dict:
+    """Save the robot's current world-frame pose under a name, for later `recall_landmark`.
+
+    Needs a live pose: works in stub/sim mode today. On real G1 it fails with
+    `no_pose` until a world-frame pose source is wired (Phase 1b, see
+    apps/bridge/README.md) — call `get_state` first if unsure whether pose is
+    available. In-memory only: landmarks don't survive a bridge restart.
+    """
+    from bridge.skills.landmarks import get_store as get_landmark_store
+
+    state = get_state()
+    pose = state.get("pose")
+    if pose is None:
+        return {"status": "failed", "name": name, "error": "no_pose"}
+
+    landmark = get_landmark_store().remember(name, pose)
+    log.info("remember_landmark.saved", name=name, pose=landmark.to_dict())
+    return {"status": "ok", **landmark.to_dict()}
+
+
+@mcp.tool()
+def recall_landmark(
+    name: Annotated[
+        str, Field(min_length=1, max_length=64, description="Landmark name to recall.")
+    ],
+) -> dict:
+    """Recall a previously saved landmark pose — feed the x/y straight into `walk_to`."""
+    from bridge.skills.landmarks import get_store as get_landmark_store
+
+    landmark = get_landmark_store().recall(name)
+    if landmark is None:
+        return {"status": "not_found", "name": name}
+    return {"status": "ok", **landmark.to_dict()}
+
+
+@mcp.tool()
+def list_landmarks() -> dict:
+    """List all saved landmarks, most recently saved first."""
+    from bridge.skills.landmarks import get_store as get_landmark_store
+
+    landmarks = get_landmark_store().list_all()
+    return {"count": len(landmarks), "landmarks": [lm.to_dict() for lm in landmarks]}
+
+
+@mcp.tool()
+def forget_landmark(
+    name: Annotated[
+        str, Field(min_length=1, max_length=64, description="Landmark name to delete.")
+    ],
+) -> dict:
+    """Delete a saved landmark. Returns `status=not_found` if the name doesn't exist."""
+    from bridge.skills.landmarks import get_store as get_landmark_store
+
+    ok = get_landmark_store().forget(name)
+    return {"status": "ok" if ok else "not_found", "name": name}
+
+
+# ---------------------------------------------------------------------------
 # Tool: cancel_task
 # ---------------------------------------------------------------------------
 

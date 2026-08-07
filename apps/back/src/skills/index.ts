@@ -19,13 +19,17 @@ import { toCatalogueEntry } from "./define";
 import { cancelTask } from "./cancel-task";
 import { clap } from "./clap";
 import { damp } from "./damp";
+import { forgetLandmark } from "./forget-landmark";
 import { getState } from "./get-state";
 import { hug } from "./hug";
 import { lieUp } from "./lie-up";
 import { listActiveTasks } from "./list-active-tasks";
+import { listLandmarks } from "./list-landmarks";
 import { pointAt } from "./point-at";
 import { prepare } from "./prepare";
+import { recallLandmark } from "./recall-landmark";
 import { releaseArm } from "./release-arm";
+import { rememberLandmark } from "./remember-landmark";
 import { say } from "./say";
 import { shakeHand } from "./shake-hand";
 import { sitG1 } from "./sit-g1";
@@ -61,6 +65,11 @@ const ALL: ReadonlyArray<SkillDefinition<any>> = [
   releaseArm,
   // speech
   say,
+  // memory
+  rememberLandmark,
+  recallLandmark,
+  listLandmarks,
+  forgetLandmark,
   // safety
   stopEverything,
   // task
@@ -95,13 +104,17 @@ export {
   cancelTask,
   clap,
   damp,
+  forgetLandmark,
   getState,
   hug,
   lieUp,
   listActiveTasks,
+  listLandmarks,
   pointAt,
   prepare,
+  recallLandmark,
   releaseArm,
+  rememberLandmark,
   say,
   shakeHand,
   sitG1,
