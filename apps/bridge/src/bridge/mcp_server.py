@@ -636,11 +636,14 @@ def cancel_task(
 ) -> dict:
     """Request graceful cancellation of an in-flight task.
 
-    Note: with the current stdio MCP transport, this cannot interrupt a tool
-    that the *same* Claude session is currently waiting on — the bridge is
-    busy handling that call. It's useful for: (a) direct Python clients,
-    (b) tests, (c) a future HTTP MCP transport where multiple connections
-    can interleave.
+    Note: with the stdio MCP transport (Claude Code's default), this cannot
+    interrupt a tool that the *same* session is currently waiting on — the
+    bridge is busy handling that call. Confirmed 2026-08-07: the
+    `BRIDGE_TRANSPORT=http` path apps/back uses does support this — two
+    separate client sessions can talk to the server concurrently (verified
+    against the stub bridge). Not yet confirmed against an actual in-flight
+    `walk_to`/`turn` loop — that needs live pose data (sim or real hardware)
+    to produce a task that runs long enough to interrupt.
     """
     from bridge.skills.task_runtime import get_registry
 
