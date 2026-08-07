@@ -491,7 +491,30 @@ Convenient accident: the Jetson already ships CycloneDDS **0.10.2** at `~/cyclon
 
 ## 6. packages/shared — Zod schemas + types
 
-### Purpose
+### Status: not built, and not worth building yet (revisited 2026-08-07)
+
+This section was written assuming `apps/web` would need a shared package to
+get typed access to `apps/back`. It doesn't: `apps/web/src/lib/api.ts` uses
+**Eden Treaty** (`treaty<App>(...)`, importing `App` straight from
+`apps/back/src/index.ts`'s router type) and gets full end-to-end type
+inference — request bodies, response shapes, the works — with zero
+duplication and zero shared package. That's the actual mechanism in use
+today; this section's premise is already solved a different way.
+
+The rest of the original rationale doesn't hold up either: the codebase
+settled on **TypeBox** (`elysia`'s `t`, see `apps/back/src/skills/define.ts`)
+for parameter schemas, not the Zod sketched below — introducing Zod now
+would add a second, redundant schema library rather than remove
+duplication. And the one place real hand-duplication *does* exist —
+`apps/bridge`'s Python skill/protocol definitions vs. `apps/back/src/skills/
+*.ts` — isn't something a TS-only package fixes anyway; Python can't import
+it.
+
+**Conclusion:** don't build this. If a real shared-type need shows up later
+(e.g. a second TS consumer that isn't already Eden-linked to `apps/back`),
+revisit then with a concrete driver instead of the speculative one below.
+
+### Purpose (original, superseded — kept for context)
 
 Single source of truth for skill parameter shapes, event types, and error taxonomy. Imported by both `apps/back` (for routes, agent, MCP server) and `apps/web` (via Eden's type chain). Python code in `apps/bridge` mirrors these by hand for v1; can be auto-generated from JSON Schema later if drift becomes painful.
 
