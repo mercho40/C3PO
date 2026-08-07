@@ -997,6 +997,32 @@ The robot has more than locomotion — camera, mic, speakers, LiDAR. Plan per pe
 | Supervisor UI       | Three.js voxel mesh, decoded client-side (port `libvoxel.wasm` directly — it's MIT) or server-side.                                                                                                                                                                                                | Same.                                                                                |
 | Phase               | **v2** — out of v1 scope. The decoder + topic name are documented for when we tackle it.                                                                                                                                                                                                           |
 
+#### 17.2.1 World-frame pose (blocks `walk_to`/`turn` on real hardware, 2026-08-07 research)
+
+`get_state().pose` (and therefore `walk_to`/`turn`, which loop on it) is null on real G1 —
+`state.py`'s only pose source is Isaac Sim's JSON `rt/sim_state`, which doesn't exist on real
+firmware. `rt/utlidar/robot_pose` (in `unitree_ui/src/protocol/topics.ts`, type would be
+`geometry_msgs.msg.dds_.PoseStamped_` — present in `unitree_sdk2py`'s IDL) looked like a
+candidate, but:
+
+- `unitree_ui`'s own app **skips enabling the LiDAR switch for the G1 family entirely** — the
+  code comment says the Explorer webview "never toggles it on" for humanoids. It only subscribes
+  to `ROBOT_ODOM`/lidar topics for non-G1 (quadruped) families.
+- Real-world G1 practitioners don't use it either: [`deepglint/FAST_LIO_LOCALIZATION_HUMANOID`](https://github.com/deepglint/FAST_LIO_LOCALIZATION_HUMANOID)
+  (Livox Mid360 + G1 pose estimation) runs its own **FAST-LIO** SLAM stack (ROS1,
+  `livox_ros_driver2` in `CustomMsg` mode for per-point timestamps, hardware IMU/LiDAR
+  extrinsic calibration) — it makes no use of `rt/utlidar/robot_pose` or `rt/utlidar/switch` at
+  all, estimating pose itself from raw LiDAR + IMU via an IEKF.
+
+**Conclusion:** `rt/utlidar/*` is very likely a quadruped-only firmware feature that isn't
+mature (or possibly not implemented at all) on G1 — don't spend time toggling it blind. The
+proven path is a real SLAM stack (FAST-LIO or equivalent) reading the Mid360 directly, which is
+a **ROS1 dependency** foreign to this repo's DDS-native/CycloneDDS stack — it would need either
+a ROS1↔DDS bridge or a small adapter that republishes FAST-LIO's pose output onto a DDS topic
+`state.py` can subscribe to. This is a multi-day SLAM integration project, not a config change;
+scope it separately from the rest of Phase 1. Needs the robot powered on to even start
+(confirming the Mid360 is reachable, whether `rt/utlidar/switch` does anything on this unit).
+
 ### 17.3 Microphone (G1 4-mic array)
 
 | Path            | Real G1                                                                                                                                                                                                            | Isaac Sim                                                                      |

@@ -25,7 +25,8 @@
   },
   "devDependencies": {
     "bun-types": "latest",
-    "typescript": "^5.9.3",
-    "drizzle-kit": "^0.31.10"
+    "drizzle-kit": "^0.31.10",
+    "postgres": "^3.4.9",
+    "typescript": "^5.9.3"
   }
 }
