@@ -86,7 +86,9 @@ All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set 
 
 - [x] **Phase 0a** — stub MCP server (`get_state`, `walk_to`, `say`) — wiring validated end-to-end via Claude Code
 - [x] **Phase 0b** — real DDS handshake to Isaac Sim, live `get_state` (pose + posture + tick at ~100 Hz)
-- [ ] **Phase 1** — rest of the skill catalogue (`stand_up`, `sit_down`, `damp`, `turn`, `look`, `describe_scene`, `wave`, `point_at`, `say` real, `remember_landmark`, `recall_landmark`, `stop_everything`); MCP `progressToken` streaming; cancel
+- [x] **Phase 1a (real hardware, 2026-08-07)** — posture/gesture skills (`damp`, `prepare`, `start_walking`, `wave`, `shake_hand`, `hug`, `clap`, `sit_g1`, `lie_up`, `squat`, `zero_torque`, `release_arm`) dispatch to a real G1 over **plain DDS RPC** — `bridge.sdk.g1_rpc`, built on `unitree_sdk2py.rpc.client.Client` (the same generic base as Go2's `SportClient`). No WebRTC needed — that assumption in the original `_g1_request.py` was wrong. Verified live: `damp` and `prepare` both got `rpc_code=0` acks from real firmware in <1s.
+- [ ] **Phase 1b — real-hardware `pose`** — `walk_to`/`turn` still fail with `no_pose` on real G1: the only pose source wired (`state.py`'s `_sim_sub`) is Isaac Sim's JSON `rt/sim_state`, which doesn't exist on real firmware (confirmed: `unitree_hg` has no `SportModeState_` IDL type, unlike `unitree_go`). A candidate real source exists — `rt/utlidar/robot_pose` (G1 ships a mid360 LiDAR) — but the reference implementation (`legion1581/unitree_ui`) explicitly **skips enabling LiDAR for the G1 family** ("Explorer webview never toggles it on"), so this path is unverified even there. Needs live hardware testing (toggle `rt/utlidar/switch`, confirm `rt/utlidar/robot_pose` actually publishes, check message type) before wiring it in — don't ship an untested pose source for something that drives autonomous locomotion.
+- [ ] **Phase 1c** — rest of the skill catalogue polish: `look`, `describe_scene`, `remember_landmark`, `recall_landmark`; MCP `progressToken` streaming; cancel
 - [ ] **Phase 4** — voice loop (wake word, Deepgram STT, Cartesia TTS)
 - See `docs/SPEC.md` §12 for the full plan
 
@@ -98,12 +100,17 @@ apps/bridge/src/bridge/
   sdk/
     connection.py      Generates CycloneDDS unicast peer XML + initialises ChannelFactory
     state.py           Subscribes to rt/lowstate + rt/sim_state; exposes get_state() shape
+    g1_rpc.py           Real-G1 posture/gesture dispatch — plain DDS RPC (rt/api/sport|arm/request),
+                        no WebRTC. Same base as unitree_sdk2py's Go2 SportClient.
   skills/
-    walk_to.py         Body-frame velocity loop, yaw correction + yaw-gating
+    walk_to.py         Body-frame velocity loop, yaw correction + yaw-gating (sim-only until Phase 1b)
+    _g1_request.py      Posture/gesture dispatcher — stub / sim (logged-only) / real (g1_rpc)
 ```
 
 ## Known issues
 
 - **`unitree_sdk2py` upstream `__init__.py` is broken** — imports a `b2` submodule that isn't shipped. Local patch via `scripts/postsync.sh`. Long-term: fork upstream or wait for a fix.
 - **macOS multicast for DDS is unreliable.** Worked around by generating a unicast peer XML at startup (see `sdk/connection.py`).
-- **Walk policy is conservative** — effective forward speed is ~10–15% of commanded velocity. Build generous timeouts into `walk_to` calls.
+- **Walk policy is conservative** — effective forward speed is ~10–15% of commanded velocity. Build generous timeouts into `walk_to` calls. (Sim-only today — see Phase 1b above for why real-hardware `walk_to`/`turn` don't work yet.)
+- **`get_state().posture` is `"not_available_over_dds"` in real mode** — `LowState_.mode_machine` isn't the locomotion FSM index `g1_protocol.mode_label()` decodes (that's `sportmodestate.mode`, which has no DDS-decodable type for G1 in this SDK). Don't re-wire `mode_label(mode_machine)` for real mode without confirming what `mode_machine` actually encodes on G1 (looks like a hardware/arm-config variant, not FSM state).
+- **`g1_protocol.Mode.SQUAT` (2) is unverified** — the reference implementation never sends it for G1; both its "Squat" and "Squat-Up" buttons send `SQUAT_UP` (706). The `squat` skill now sends 706. `Mode.SQUAT=2` and the `can_transition` FSM rules that reference it are unexercised — treat with suspicion if you rely on them.

@@ -277,7 +277,10 @@ SKILL_REQUESTS: Final[dict[SkillName, SkillRequest]] = {
     "start_walking": SkillRequest("sport_request", API_ID_G1_STATE, Mode.WALK),
     "sit_g1":        SkillRequest("sport_request", API_ID_G1_STATE, Mode.SEATING),
     "lie_up":        SkillRequest("sport_request", API_ID_G1_STATE, Mode.LIE_UP),
-    "squat":         SkillRequest("sport_request", API_ID_G1_STATE, Mode.SQUAT),
+    # Mode.SQUAT (2) is never actually sent by the reference implementation
+    # (legion1581/unitree_ui) for G1 — both its "Squat" and "Squat-Up" buttons
+    # send SQUAT_UP (706). Follow the verified value, not the unverified enum.
+    "squat":         SkillRequest("sport_request", API_ID_G1_STATE, Mode.SQUAT_UP),
     # Arm gestures (api_id=7106) — require a locomotion state
     "wave":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.HIGH_WAVE),
     "point_at":      SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.FORWARD_PUSH),
