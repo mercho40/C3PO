@@ -869,12 +869,14 @@ The long-term default is the third row. `apps/back` calls Anthropic's regular Me
 
 ## 13. Open decisions to confirm before code
 
-1. **Embedding provider.** Claude doesn't ship one; pick `voyage-3-large` (1024-dim) or OpenAI `text-embedding-3-large`. Default in this spec: Voyage.
-2. **MCP client direct connection vs. through Elysia.** v1 plan keeps both. Step A starts with direct.
-3. **Wake-word model.** "hey claude" custom or stock placeholder? Custom needs ~30 min training data; stock ("alexa") works for dev only.
-4. **Audio I/O location.** v1 uses Mac's microphone/speakers; eventually moves to G1's onboard mics + speakers. The audio device selection will be env-driven.
-5. **Postgres host.** Audit showed Neon. pgvector availability on Neon is fine (built-in). Confirm before migration.
-6. **Single-robot vs. multi-robot data model.** v1 is single-robot, but `organizationId` already gates everything; adding `robotId` is a non-breaking addition later.
+Revisited 2026-08-07 — most of these were already answered by their own "default"/"v1 plan" text and nothing since has contradicted them, so marking as resolved rather than leaving them looking blocking. One (#5) is a real infra/billing commitment that needs an actual human decision, not a code default — left open.
+
+1. **Embedding provider — resolved: Voyage (`voyage-3-large`).** No embedding code exists yet (no memory/RAG feature built), so nothing depends on this today; revisit if OpenAI's is meaningfully cheaper/better when that work starts.
+2. **MCP client direct connection vs. through Elysia — resolved: both, as planned.** This is what's actually implemented: the bridge serves stdio (Claude Code direct) and `BRIDGE_TRANSPORT=http` (apps/back's Eden-style MCP client, `apps/back/src/bridge/client.ts`) simultaneously. Not a future plan — current state.
+3. **Wake-word model — default: stock placeholder for all of dev; decide custom vs. stock before any real voice demo.** Phase 4 (voice loop) isn't built yet, so this doesn't block anything now. Custom ("hey claude") is a product/brand call for whoever demos it — flag it then, not now.
+4. **Audio I/O location — resolved: Mac mic/speakers for v1, per the original text.** Same Phase-4-not-built caveat as #3.
+5. **Postgres host — still open, needs an actual decision (not mine to make).** Local Postgres (Homebrew) is what this session's dev environment uses and is fine for continued local dev. Neon (or any hosted Postgres) is a real account/billing commitment — pick it when ready to deploy somewhere, not before.
+6. **Single-robot vs. multi-robot data model — resolved: single-robot for v1, per the original text.** `organizationId` already gates everything in the schema; adding `robotId` later is non-breaking.
 
 ---
 
