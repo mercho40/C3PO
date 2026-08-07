@@ -37,10 +37,11 @@ const app = new Elysia()
     }),
   )
   .get("/health", () => ({ status: "ok", timestamp: Date.now() }))
-  .use(skillsRoutes)
-  .use(tasksRoutes)
-  .use(stateRoutes)
-  .use(agentRoutes)
+  // Everything below can read or move the robot (or spend Anthropic tokens
+  // via /agent) — require a session. /health stays open for monitoring.
+  .guard({ auth: true }, (app) =>
+    app.use(skillsRoutes).use(tasksRoutes).use(stateRoutes).use(agentRoutes),
+  )
   .listen(Number(process.env.PORT) || 3000);
 
 console.log(

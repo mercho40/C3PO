@@ -9,9 +9,9 @@
  * This is the backend taking over as the conversation host (SPEC §12.1) — the
  * same skill registry the external MCP path uses, now driven server-side.
  *
- * NOTE: like /skills and /state today, this is currently unguarded. Before real
- * use it should carry `{ auth: true }` (ideally admin/org-scoped) — it can both
- * move the robot and spend Anthropic tokens.
+ * Guarded by `{ auth: true }` at the composition root (src/index.ts) — any
+ * session can reach it today. It can both move the robot and spend Anthropic
+ * tokens; tighten to admin/org-scoped before multi-tenant use.
  */
 
 import { Elysia, t } from "elysia";
