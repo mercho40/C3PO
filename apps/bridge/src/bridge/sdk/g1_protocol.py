@@ -75,7 +75,10 @@ SIM_TOPICS: Final[Topics] = Topics(
     run_command="rt/run_command/cmd",
 )
 
-# Real G1 over WebRTC (firmware ≥ 1.5.1) — also matches DDS-direct topology.
+# Real G1 over direct DDS — what `SIM_MODE=real` uses, with the bridge running
+# onboard the Jetson. (These names were originally derived from the WebRTC
+# topic profile; they match because that interface was always a shim over these
+# same DDS topics.)
 REAL_TOPICS: Final[Topics] = Topics(
     lowstate="rt/lf/lowstate",
     sportmodestate="rt/lf/sportmodestate",

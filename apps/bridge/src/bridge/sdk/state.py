@@ -8,10 +8,11 @@ works against Isaac Sim (`rt/lowstate`, `rt/sim_state`) and against a real
 G1 (`rt/lf/lowstate`, `rt/lf/sportmodestate`). FSM mode index → human label
 goes through `g1_protocol.mode_label`.
 
-Faults: not exposed inside `LowState_` on G1 — real-G1 firmware publishes them
-as separate WebRTC `errors`/`add_error`/`rm_error` messages. Once the WebRTC
-transport is wired up, plug `bridge.sdk.faults.decode` here. For now, the
-faults field stays `[]` (sim has no fault stream).
+Faults: not exposed inside `LowState_` on G1. The decoder in `bridge.sdk.faults`
+is written and unused — it was built for the WebRTC `errors`/`add_error`/
+`rm_error` stream, which is no longer the plan of record (SPEC §16.3). Finding
+the DDS-side fault source is open work; until then the faults field carries only
+locally-derived entries (staleness), never robot-reported ones.
 """
 
 from __future__ import annotations
@@ -156,10 +157,20 @@ class StateSampler:
             faults.append(f"stale_lowstate_{lowstate_age:.1f}s")
 
         # `mode_machine` (from LowState_) is not the locomotion FSM index that
-        # `mode_label` decodes — that FSM value ships on `sportmodestate`, which
-        # on real G1 firmware has no DDS-decodable type in this SDK (WebRTC only,
-        # not wired up yet). Isaac Sim happens to populate `mode_machine` with the
-        # real FSM value as a convenience, so only trust the label there.
+        # `mode_label` decodes — that FSM value ships on `sportmodestate`.
+        #
+        # On real G1 that topic *is* plain DDS (`/lf/sportmodestate`, live on the
+        # robot), but this SDK ships `SportModeState_` only under `unitree_go`
+        # (quadruped); the G1 publishes `unitree_hg` types, so there's no matching
+        # IDL class to deserialize it with. Hence "not available" here — the
+        # limitation is the SDK's type coverage, not the transport.
+        #
+        # The better route is the RPC path we already have: api_id 7001
+        # (GET_FSM_ID) / 7002 (GET_FSM_MODE) return this without needing an IDL
+        # type. See docs/ROBOT-INVENTORY.md §3.
+        #
+        # Isaac Sim happens to populate `mode_machine` with the real FSM value as
+        # a convenience, so only trust the label there.
         posture = g1_protocol.mode_label(low.mode_machine) if _SIM_MODE != "real" else "not_available_over_dds"
 
         # Pose is sim-only. If sim_state hasn't arrived (real robot, or sim

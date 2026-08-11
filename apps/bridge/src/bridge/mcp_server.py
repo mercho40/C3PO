@@ -316,10 +316,10 @@ def stop_everything() -> dict:
 # ---------------------------------------------------------------------------
 # Each of these wraps a request to either `rt/api/sport/request` (api_id=7101,
 # full-body modes) or `rt/api/arm/request` (api_id=7106, upper-limb gestures).
-# Today, Isaac Sim's `unitree_sim_isaaclab` scene doesn't subscribe to those
-# topics, so the dispatcher returns `phase=logged_only` — the request was
-# constructed but not delivered. When the WebRTC Transport lands (spec §16)
-# and SIM_MODE=real, the same skills produce actual motion.
+# Isaac Sim's `unitree_sim_isaaclab` scene doesn't subscribe to those topics,
+# so under SIM_MODE=isaac the dispatcher returns `phase=logged_only` — the
+# request was constructed but not delivered. Under SIM_MODE=real these
+# dispatch for real over DDS RPC (`bridge.sdk.g1_rpc`); no WebRTC involved.
 #
 # Adding more skills (zero_torque, sit_g1, lie_up, squat, shake_hand, hug,
 # clap, release_arm, …) is a one-liner — see g1_protocol.SKILL_REQUESTS for

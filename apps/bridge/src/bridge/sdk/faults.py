@@ -1,8 +1,15 @@
 """Decode robot fault codes into human-readable labels.
 
+**Currently unwired.** This decoder was written against the WebRTC
+`errors`/`add_error`/`rm_error` stream (per
+`legion1581/unitree_ui/docs/error-handling.md`), and that transport is no
+longer the plan of record — see SPEC §16.3. The code table itself is
+transport-independent and still correct, so it's kept rather than deleted;
+what's missing is a DDS-side fault source to feed it. `state.py` calls
+nothing here today.
+
 Faults arrive as a stream of `(timestamp, source, code)` triples, either
-inside `lowstate.faults` (DDS) or as `errors` / `add_error` / `rm_error`
-messages over WebRTC (per `legion1581/unitree_ui/docs/error-handling.md`).
+inside `lowstate.faults` (DDS) or as the WebRTC messages above.
 Each `code` is a single bit value (1, 2, 4, 8, 16, ...) — multiple
 simultaneous faults arrive as multiple entries, not a packed bitmask.
 
