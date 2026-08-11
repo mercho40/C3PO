@@ -152,37 +152,39 @@ Precise meanings for terms that get used loosely.
 
 | Quantity | Sim | Real | Status |
 | --- | --- | --- | --- |
-| Joint state, IMU, tick | `rt/lowstate` | `rt/lf/lowstate` | ✅ works both |
-| Pose (x, y, yaw) | `rt/sim_state` JSON | — | ❌ **broken on real** |
+| Joint state, IMU, tick | `rt/lowstate` | `rt/lf/lowstate` | ✅ works both, verified live |
+| Pose (x, y, yaw) | `rt/sim_state` JSON | `rt/odommodestate` | ✅ **works both, verified live** |
 | Posture / FSM mode | `mode_machine` | — | ⚠️ returns `not_available_over_dds` |
 | Battery | — | `rt/lf/bmsstate` | ⬜ not wired |
 | Faults | — | unknown source | ⬜ decoder written, unwired |
 
-### The critical gap: no pose on real
+### Pose is not symmetric, and that asymmetry bit us once
 
-`state.py` subscribes the pose source as `String_`:
+The two targets publish pose on **different topics with different types**:
 
-```python
-self._sim_sub = ChannelSubscriber(SIM_STATE_TOPIC, String_)
-```
+| | Topic | Type | Yaw from |
+| --- | --- | --- | --- |
+| sim | `rt/sim_state` | `String_` (JSON) | quaternion |
+| real | `rt/odommodestate` | `unitree_go::SportModeState_` | `imu_state.rpy[2]` |
 
-Under `SIM_MODE=real` that topic is `rt/lf/sportmodestate`, which carries a **binary
-`unitree_hg` type, not a JSON string**. DDS matches publishers to subscribers by type,
-so this subscription will never receive a message. `pose` stays `None` permanently.
+Originally real pose was subscribed as `String_` on `rt/lf/sportmodestate`, inheriting
+the sim shape. That topic carries a binary `unitree_hg` type, and **DDS matches by
+type** — so the subscription never received a message, `pose` stayed `None` forever, and
+`walk_to`/`turn` aborted on `pose is None` before sending anything. Nothing errored;
+it just looked like a quiet robot.
 
-**Consequence:** both `walk_to` and `turn` check `if pose is None` and abort with
-`no_pose` before sending anything. So on real hardware today:
+The lesson generalises: a wrong DDS type is a *silent* failure. `get_state()["raw"]`
+now reports `pose_source`, `pose_messages_received` and `pose_age_s` so a null pose can
+be diagnosed without reading the source.
 
-> The velocity path (7105) is correct and open-loop-ready, but there is **no feedback
-> to close the loop with**. `walk_to` and `turn` will fail immediately, not drive badly.
+Why `rt/odommodestate` and not the `rt/state_estimator/*` topics: those carry
+`nav_msgs::msg::dds_::Odometry_`, which would mean hand-writing the ROS IDL.
+`rt/odommodestate` carries `unitree_go`'s `SportModeState_`, a type `unitree_sdk2py`
+already ships. Same information, no new IDL. (It's published by the vendor's
+`ai_odom_node`.)
 
-This is the single highest-value fix remaining, and it ranks above tuning gains — gains
-don't matter if the controller never starts.
-
-**Candidate real pose sources** (all live on the robot, none wired):
-`/state_estimator/odom_pelvis`, `/state_estimator/fusion_odom`, `/odommodestate`,
-`/unitree_slam/high_rate_odometry`. Note the colleague's `gemm_navigation/odom_tf_bridge`
-already solves this problem against the same robot — read it before reinventing.
+**It is odometry, not global localisation** — it drifts, and its origin is wherever the
+estimator started. Fine for the relative motion `walk_to` does; not a map frame.
 
 ### Posture on real
 
@@ -241,25 +243,27 @@ robot. This is currently solved socially, not technically.
 | Bridge deployed onboard the Jetson | ✅ `~/c3po`, Python 3.12, deps synced, `.env` written |
 | DDS pinned to `eth0` | ✅ `DDS_INTERFACE` |
 | Robot networking | ✅ Wi-Fi + internet + internal LAN, survives reboot |
-| `get_state` against real `/lowstate` | ⬜ **not yet run** |
+| `get_state` against real hardware | ✅ **verified live** — lowstate ~20 Hz, pose ~50 Hz, 35 motors |
+| Pose on real | ✅ verified live via `rt/odommodestate` |
 | Posture/gesture skills on real | ✅ wired; damp verified live |
-| Velocity on real | ⚠️ wired, never executed |
-| `walk_to` / `turn` on real | ❌ blocked on pose |
+| Velocity on real | ⚠️ wired, **never executed** |
+| `walk_to` / `turn` on real | ⚠️ unblocked, but untested and gains are sim-fitted |
+| Posture readback on real | ⬜ needs api_id 7001/7002 |
 | Console, voice, agent runtime | ⬜ later phases |
 
 ---
 
 ## 10. Critical path
 
-1. **Run `get_state` on the robot.** Read-only. Validates DDS, the `eth0` pin and the
-   topic profile in one shot. Nothing moves.
-2. **Wire real pose.** Unblocks `walk_to` and `turn` entirely. Study `odom_tf_bridge`.
-3. **Wire posture via 7001/7002.** Small, and makes `get_state` genuinely useful on real.
+1. ~~Run `get_state` on the robot.~~ ✅ done, verified live.
+2. ~~Wire real pose.~~ ✅ done via `rt/odommodestate`, verified live.
+3. **Wire posture via 7001/7002.** Small, no motion, and the last thing making
+   `get_state` incomplete on real.
 4. **Supervised motion window** — verify `stop_everything` *first*, then the 7105 JSON,
    axis signs, required FSM mode, and real velocity scaling.
 5. Then: battery, faults source, link watchdog, hands, and the console/agent phases.
 
-Steps 1–3 involve no motion at all. Do them before booking robot time.
+Step 3 involves no motion. Step 4 is the first time this robot moves under our control.
 
 ### Standing unknowns
 

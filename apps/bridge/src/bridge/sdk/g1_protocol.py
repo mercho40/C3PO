@@ -57,6 +57,10 @@ class Topics(NamedTuple):
     dex_right_cmd: str | None
     # Sim-only convenience velocity channel; None on real G1.
     run_command: str | None
+    # World-frame pose source. Sim gets pose from `sportmodestate` (which is
+    # `rt/sim_state`, a JSON blob), so this is None there. On real it's the
+    # vendor's odometry estimate — a separate topic with a separate type.
+    odom: str | None
 
 
 # Isaac Sim with unitree_sim_isaaclab — the profile we use today.
@@ -73,6 +77,7 @@ SIM_TOPICS: Final[Topics] = Topics(
     dex_left_cmd="rt/dex1/left/cmd",
     dex_right_cmd="rt/dex1/right/cmd",
     run_command="rt/run_command/cmd",
+    odom=None,  # sim pose comes from rt/sim_state via `sportmodestate`
 )
 
 # Real G1 over direct DDS — what `SIM_MODE=real` uses, with the bridge running
@@ -92,6 +97,12 @@ REAL_TOPICS: Final[Topics] = Topics(
     dex_left_cmd="rt/api/dex3/left/request",
     dex_right_cmd="rt/api/dex3/right/request",
     run_command=None,
+    # Published by the vendor's `ai_odom_node` as unitree_go SportModeState_ —
+    # a type this SDK *does* ship, unlike the humanoid sportmodestate. The
+    # `rt/state_estimator/*` topics carry the same information as
+    # nav_msgs Odometry_, but consuming those would mean hand-writing the ROS
+    # IDL. Verified live 2026-08-11: position + imu_state.rpy populated.
+    odom="rt/odommodestate",
 )
 
 
