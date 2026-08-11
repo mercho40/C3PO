@@ -38,9 +38,9 @@ export const turn = defineSkill({
   classification: "locomotion",
   dangerLevel: "low",
   status: "real",
-  // real: false until Phase 1b (see apps/bridge/README.md) — this needs
-  // get_state().pose, which is null on real G1 today (no world-frame pose
-  // source wired). Confirmed: fails immediately with no_pose, not a partial
-  // failure mode.
+  // Same story as walk_to: the no-pose blocker is fixed (pose from
+  // rt/odommodestate) and SET_VELOCITY is wired, but yaw sign convention and
+  // real angular scaling are unverified on hardware. Stays false until a
+  // supervised motion window measures them.
   works: { sim: true, real: false },
 });

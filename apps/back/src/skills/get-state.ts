@@ -6,9 +6,12 @@ export const getState = defineSkill({
     "Return the robot's current state: pose (world frame), posture (FSM mode label), " +
     "battery percentage, fault list, and raw telemetry. Fast (~ms); use freely to " +
     "ground reasoning about position and capability before issuing locomotion commands. " +
-    "On real G1 today: pose is always null (no world-frame pose source wired yet) and " +
-    "posture is always 'not_available_over_dds' (the FSM-index topic isn't DDS-decodable " +
-    "for G1 in this SDK) — raw.mode_machine is still populated if you need something.",
+    "Also reports `env` ('stub' | 'isaac' | 'real') — call this first in a session to " +
+    "learn which target you are driving. Pose and posture both work on the real robot " +
+    "(pose from vendor odometry, posture from the FSM getter). Pose is odometry, so it " +
+    "drifts and its origin is wherever the estimator started — good for relative motion, " +
+    "not a map frame. Battery is not wired yet and is always null; the fault list carries " +
+    "only locally-derived entries (staleness), never robot-reported faults.",
   parameters: t.Object({}),
   preconditions: [],
   expectedDurationSeconds: 0.05,

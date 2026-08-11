@@ -40,9 +40,16 @@ export const walkTo = defineSkill({
   classification: "locomotion",
   dangerLevel: "medium",
   status: "real",
-  // real: false until Phase 1b (see apps/bridge/README.md) — this needs
-  // get_state().pose, which is null on real G1 today (no world-frame pose
-  // source wired). Confirmed: fails immediately with no_pose, not a partial
-  // failure mode.
+  // The original blocker (no pose on real) is fixed — pose now comes from
+  // rt/odommodestate, and SET_VELOCITY (api_id 7105) is wired and confirmed
+  // accepted by firmware. So this should work on real now.
+  //
+  // It stays `real: false` because "should work" is not "does work": non-zero
+  // velocity has never been executed on this robot, the axis sign conventions
+  // are unverified, and the control gains are fitted to a sim policy that runs
+  // at ~10-15% of commanded velocity, so distances will be wrong on hardware.
+  // Flipping this true would let the agent command untested motion on a machine
+  // with people near it. Flip it after a supervised motion window measures the
+  // signs and scaling — not before.
   works: { sim: true, real: false },
 });

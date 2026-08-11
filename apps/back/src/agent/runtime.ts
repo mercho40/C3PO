@@ -33,7 +33,7 @@ import {
   BridgeUnavailableError,
 } from "@back/bridge/client";
 
-const MODEL = process.env.AGENT_MODEL ?? "claude-opus-4-8";
+const MODEL = process.env.AGENT_MODEL ?? "claude-opus-5";
 const MAX_STEPS = Number(process.env.AGENT_MAX_STEPS ?? "12");
 
 const SYSTEM_PREAMBLE = [
@@ -42,13 +42,25 @@ const SYSTEM_PREAMBLE = [
   "goal, call get_state when you need the current pose / posture / battery /",
   "faults, and sequence skills to accomplish what the operator asks.",
   "",
-  "Environment: the robot is currently the Isaac Sim emulation. Locomotion",
-  "(walk_to, turn) and get_state are real; the high-level posture/gesture skills",
-  "marked 'real-only' are constructed but produce NO motion in sim (logged only).",
-  "Do not claim the robot moved when a real-only skill was called in sim.",
+  // Deliberately not hardcoded. This preamble used to assert "the robot is
+  // currently the Isaac Sim emulation", which silently became false the moment
+  // the bridge was deployed onto real hardware — and an agent that believes
+  // gestures produce no motion will under-report real motion to its operator.
+  // The environment is a runtime fact, so read it at runtime.
+  "Environment: call get_state and read `env` to learn which target you are",
+  "driving — 'stub', 'isaac' (simulator) or 'real' (physical robot). Do this",
+  "before your first motion command in a session, and never assume. Each skill's",
+  "catalogue entry below marks where it works: a skill that does not support the",
+  "current env will be constructed and logged but produce no motion.",
   "",
-  "Safety: stop_everything halts all motion immediately. Respect each skill's",
-  "preconditions, and prefer to confirm intent before high-danger skills.",
+  "Report what actually happened, not what you intended. If a skill did not run",
+  "on this target, say so plainly rather than describing motion that didn't",
+  "occur — and equally, do not claim nothing happened when the robot did move.",
+  "",
+  "Safety: stop_everything halts all motion immediately and works on every",
+  "target. Respect each skill's preconditions, and confirm intent before",
+  "high-danger skills. On the physical robot, treat every motion command as",
+  "having real physical consequence: a person may be standing next to it.",
   "Keep operator-facing replies concise: say what you did and what happened.",
 ].join("\n");
 
@@ -98,8 +110,10 @@ function buildTools(): ToolSet {
   return tools;
 }
 
-// Adaptive thinking is a 4.6+ feature (Opus 4.6/4.7/4.8, Sonnet 4.6) and is
+// Adaptive thinking is a 4.6+ feature (Opus 4.6/4.7/4.8/5, Sonnet 4.6/5) and is
 // rejected by Haiku 4.5, so gate it on the model. Force off with AGENT_THINKING=off.
+// On Opus 5 thinking is on by default, so this is belt-and-braces there rather
+// than load-bearing — but keep it explicit so the setting survives a model swap.
 const ADAPTIVE_THINKING =
   (process.env.AGENT_THINKING ?? "adaptive") === "adaptive" &&
   !MODEL.includes("haiku");
