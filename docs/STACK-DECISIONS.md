@@ -46,6 +46,71 @@ and the Livox driver without infecting our codebase.
 **The boundary rule:** perception publishes DDS topics; the bridge subscribes. If we ever
 find ourselves importing `rclpy` into `apps/bridge`, this decision has been violated.
 
+### D2.1 — Where exactly the line falls
+
+```
+ROS 2 container                    │  apps/bridge  (no ROS)
+───────────────────────────────────┼──────────────────────────────────────
+Livox driver                       │
+FAST-LIO2   → odometry, map        │
+RealSense   → depth, RGB           │
+YOLO11      → detections           │
+Nav2        → /cmd_vel  ───────────┼──►  subscribe, convert to SET_VELOCITY (7105)
+                                   │     stop_everything · task registry · watchdog
+                                   │     MCP server · skills · world-model snapshot
+```
+
+**All actuation goes through the bridge. No exceptions.** Nav2 does not command the robot;
+it emits `/cmd_vel` and the bridge decides whether to forward it.
+
+Three reasons this is worth its cost:
+
+1. **The robot's control API is raw DDS.** `/api/sport/request` (api_id 7101/7105/7106) is
+   Unitree's own RPC, reached via `unitree_sdk2py`. Driving it from ROS would require the
+   vendor's `unitree_ros2` message package as an extra translation layer — which is what
+   `gemm` does and what D1 rules out. Direct is the *shorter* path here, not a detour.
+2. **Safety has to have one chokepoint.** `stop_everything`, the cancel tokens, the 1 s
+   velocity deadman and the link watchdog all live in the bridge. If some commands reached
+   the robot through a ROS node instead, "stop everything" would stop only some things.
+3. **Independence from a container we'll be rebuilding constantly.** Humble ships Python
+   3.10 against our 3.12, and more importantly, going ROS-native would put the stop path
+   inside the same image we're iterating on for perception. Today, a broken or rebuilding
+   perception container cannot stop us halting the robot.
+
+### D2.2 — What this costs
+
+**We must define a few ROS IDL types ourselves** to read ROS topics without ROS:
+`geometry_msgs/Twist`, `nav_msgs/Odometry`, probably `sensor_msgs/PointCloud2`.
+
+Bounded work — these definitions are small and frozen — and they can be *generated* rather
+than hand-written: `idlc` ships with the CycloneDDS install already on the robot
+(`~/cyclonedds_ws/install/cyclonedds/bin/idlc`). Note we've already proven this direction
+works, by decoding `unitree_go::SportModeState_` off `rt/odommodestate`.
+
+**TF is the real open question.** ROS's transform tree is genuinely useful and we will need
+`base_link ↔ camera ↔ lidar ↔ map`. Inside the container that's free; on our side of the
+line it is not. Options, in rough order of preference:
+
+1. Keep all TF-dependent work inside the container and let it publish *already-resolved*
+   quantities (e.g. object positions in the robot's base frame) — the bridge then needs no
+   transforms at all. This fits D7, which already says perception hands over egocentric,
+   pre-digested structure.
+2. Consume `/tf` and do the lookups ourselves — real work, and reimplementing a solved
+   problem.
+3. Move the world-model builder into the container as a ROS node that publishes one
+   summary topic. The bridge stays TF-free and the LLM-facing contract is unchanged.
+
+Option 1 is the current intent. If we find ourselves reaching for option 2, that's a signal
+the line is in the wrong place.
+
+### D2.3 — The alternative we rejected
+
+Going fully ROS-native is a legitimate architecture: TF for free, no dual type system, and
+the whole ecosystem's tooling. We rejected it because it makes the MCP server and the safety
+layer into ROS nodes, coupling the LLM surface to ROS lifecycle and putting the stop path
+inside the perception container. That trade seems worse for this project — but it is not
+obviously wrong, and if maintaining IDL types becomes a running sore, it is the fallback.
+
 ---
 
 ## D3 — Perception pipeline
@@ -75,6 +140,11 @@ mattering for autonomous movement, since Nav2 owns the velocity loop and we hand
 
 `walk_to`/`turn` remain as **low-level primitives** for teleop, testing and any situation
 where Nav2 is not running. They still need their axis signs and scaling measured.
+
+**Nav2 does not drive the robot directly.** It emits `/cmd_vel`; the bridge subscribes and
+converts to `SET_VELOCITY` — see D2.1. This is what keeps `stop_everything` meaningful, and
+it also gives us a natural place to clamp or veto a planner command before it reaches the
+legs.
 
 **Open:** whether the agent also gets reactive primitives ("walk until obstacle", "turn
 toward the doorway"). An LLM may plan better with those than with map goals in unmapped
@@ -185,6 +255,34 @@ we have not evaluated it.
 
 ---
 
+## A note on ROS 2 vs DDS
+
+They are not alternatives — ROS 2 *runs on* DDS. DDS is the transport standard (CycloneDDS,
+FastDDS); ROS 2 is a framework on top of it, adding packages, TF, node lifecycle, launch and
+the client libraries. Roughly: DDS is HTTP, ROS 2 is Django — and you can `curl` a Django
+app without installing Django.
+
+Evidence from this robot, all observed directly:
+
+| Observed | What it means |
+| --- | --- |
+| `rt/lowstate`, `rt/odommodestate` | `rt/` is ROS 2's topic-name convention |
+| `rq/…Request`, `rr/…Reply` | ROS 2's service convention |
+| `nav_msgs::msg::dds_::Odometry_` | A ROS 2 message type, on the wire, as plain DDS |
+| 100+ topics but an almost-empty `ros2 node list` | Unitree publishes raw DDS with ROS-style naming and **no ROS nodes** |
+
+We read the robot's pose today with zero ROS installed. That is the whole basis of D2.
+
+(ROS *1* genuinely was an alternative — it had its own TCPROS transport and a central
+master. ROS 2 replaced that with DDS in 2017, which is where the confusion comes from.)
+
+One consequence worth remembering: because ROS 2 topics *are* DDS topics, any ROS stack
+sharing our domain sees us and we see it. That is a feature for our own container — and
+precisely why the `gemm` interlock (D1) matters. Nothing at the transport layer prevents two
+stacks from both publishing velocity commands.
+
+---
+
 ## Open questions
 
 1. Reactive primitives alongside Nav2 goals? (D4)
@@ -193,3 +291,6 @@ we have not evaluated it.
    velocity deadman, and Nav2 once a goal is set. Everything else is cloud-dependent.
 4. Shell policy specifics (D8)
 5. Interlock with the `gemm` stack — still social, not technical (D1)
+6. TF: keep it entirely inside the container (preferred), or consume `/tf` in the bridge?
+   (D2.2) — decide before the world-model builder is written, since it determines which side
+   of the line that code lives on.
