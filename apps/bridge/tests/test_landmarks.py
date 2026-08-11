@@ -50,3 +50,31 @@ def test_forget_removes_landmark_and_reports_whether_it_existed():
     assert store.forget("temp") is True
     assert store.recall("temp") is None
     assert store.forget("temp") is False
+
+
+def test_ordering_survives_identical_timestamps():
+    """Regression: ordering must not depend on wall-clock resolution.
+
+    `saved_at` comes from `time.time()`, and two landmarks saved microseconds
+    apart can share a value. Because `sorted` is stable, a tie there silently
+    reversed the intended "most recent first" into insertion order — which made
+    this suite flaky rather than failing outright. Ordering now uses a
+    monotonic insertion counter, so a frozen clock changes nothing.
+    """
+    import time as time_mod
+
+    from bridge.skills import landmarks as landmarks_mod
+
+    store = LandmarkStore()
+    pose = {"x_meters_world": 0.0, "y_meters_world": 0.0, "yaw_radians_world": 0.0}
+
+    original = time_mod.time
+    landmarks_mod.time.time = lambda: 1_000_000.0  # every save gets the same stamp
+    try:
+        store.remember("first", pose)
+        store.remember("second", pose)
+        store.remember("third", pose)
+    finally:
+        landmarks_mod.time.time = original
+
+    assert [lm.name for lm in store.list_all()] == ["third", "second", "first"]

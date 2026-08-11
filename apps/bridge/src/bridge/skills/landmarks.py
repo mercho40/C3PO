@@ -28,6 +28,12 @@ class Landmark:
     y_meters_world: float
     yaw_radians_world: float
     saved_at: float
+    # Monotonic insertion counter, used for ordering. `saved_at` is wall-clock
+    # and is kept only for display: two landmarks saved microseconds apart can
+    # share a `time.time()` value, and because `sorted` is stable a tie there
+    # silently collapses "most recent first" back into insertion order. Same
+    # failure mode as ordering chat messages by timestamp.
+    seq: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,16 +52,19 @@ class LandmarkStore:
     def __init__(self) -> None:
         self._landmarks: dict[str, Landmark] = {}
         self._lock = threading.Lock()
+        self._next_seq = 0
 
     def remember(self, name: str, pose: dict[str, float]) -> Landmark:
-        landmark = Landmark(
-            name=name,
-            x_meters_world=float(pose["x_meters_world"]),
-            y_meters_world=float(pose["y_meters_world"]),
-            yaw_radians_world=float(pose["yaw_radians_world"]),
-            saved_at=time.time(),
-        )
         with self._lock:
+            self._next_seq += 1
+            landmark = Landmark(
+                name=name,
+                x_meters_world=float(pose["x_meters_world"]),
+                y_meters_world=float(pose["y_meters_world"]),
+                yaw_radians_world=float(pose["yaw_radians_world"]),
+                saved_at=time.time(),
+                seq=self._next_seq,
+            )
             self._landmarks[name] = landmark
         return landmark
 
@@ -65,7 +74,8 @@ class LandmarkStore:
 
     def list_all(self) -> list[Landmark]:
         with self._lock:
-            return sorted(self._landmarks.values(), key=lambda lm: lm.saved_at, reverse=True)
+            # By insertion counter, not timestamp — see `Landmark.seq`.
+            return sorted(self._landmarks.values(), key=lambda lm: lm.seq, reverse=True)
 
     def forget(self, name: str) -> bool:
         with self._lock:
