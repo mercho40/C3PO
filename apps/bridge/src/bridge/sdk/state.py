@@ -155,7 +155,12 @@ class StateSampler:
         if lowstate_age > 1.0:
             faults.append(f"stale_lowstate_{lowstate_age:.1f}s")
 
-        posture = g1_protocol.mode_label(low.mode_machine)
+        # `mode_machine` (from LowState_) is not the locomotion FSM index that
+        # `mode_label` decodes — that FSM value ships on `sportmodestate`, which
+        # on real G1 firmware has no DDS-decodable type in this SDK (WebRTC only,
+        # not wired up yet). Isaac Sim happens to populate `mode_machine` with the
+        # real FSM value as a convenience, so only trust the label there.
+        posture = g1_protocol.mode_label(low.mode_machine) if _SIM_MODE != "real" else "not_available_over_dds"
 
         # Pose is sim-only. If sim_state hasn't arrived (real robot, or sim
         # without the bridge), leave it null.

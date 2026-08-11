@@ -15,6 +15,6 @@ export const damp = defineSkill({
   typicalFailureModes: ["fsm_transition_rejected", "transport_unsupported"],
   classification: "posture",
   dangerLevel: "low",
-  status: "stub",
+  status: "real",
   works: { sim: false, real: true },
 });

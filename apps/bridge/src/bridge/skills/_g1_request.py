@@ -109,13 +109,34 @@ async def run_g1_request(
             task.ended_at = time.time()
             return task.to_dict()
 
-        # SIM_MODE=real and topic resolved → dispatch through the Transport.
-        # That code lands with the WebRTC transport (spec §16); raise loud
-        # so we don't silently no-op against real hardware.
-        raise NotImplementedError(
-            "Real-G1 high-level request dispatch requires the WebRTC Transport "
-            "(spec §16). Not yet implemented."
-        )
+        # SIM_MODE=real and topic resolved → dispatch via direct DDS RPC
+        # (unitree_sdk2py.rpc.client.Client — same base Go2's SportClient
+        # uses; no WebRTC involved, see bridge.sdk.g1_rpc). _Call blocks
+        # synchronously for up to the client's timeout (1s default) waiting
+        # on the DDS response, so run it off the event loop — otherwise one
+        # in-flight request (e.g. a slow ack) would stall every other tool
+        # call, including stop_everything.
+        import asyncio
+
+        from bridge.sdk import g1_rpc
+
+        call = g1_rpc.call_sport if request.topic_kind == "sport_request" else g1_rpc.call_arm
+        code, data = await asyncio.to_thread(call, request.data)
+
+        task.status = "completed" if code == 0 else "failed"
+        task.phase = "dispatched" if code == 0 else "rpc_error"
+        task.progress = 1.0
+        task.result = {
+            "topic_kind": request.topic_kind,
+            "api_id": request.api_id,
+            "param": request.param_json(),
+            "rpc_code": code,
+            "rpc_data": data,
+        }
+        if code != 0:
+            task.error = f"rpc_error_code_{code}"
+        task.ended_at = time.time()
+        return task.to_dict()
 
     except Exception as exc:
         task.status = "failed"

@@ -13,6 +13,6 @@ export const lieUp = defineSkill({
   typicalFailureModes: ["fsm_transition_rejected", "transport_unsupported"],
   classification: "posture",
   dangerLevel: "medium",
-  status: "stub",
+  status: "real",
   works: { sim: false, real: true },
 });

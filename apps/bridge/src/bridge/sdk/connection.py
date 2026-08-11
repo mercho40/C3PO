@@ -24,7 +24,7 @@ _DDS_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
     <General>
       <AllowMulticast>false</AllowMulticast>
       <Interfaces>
-        <NetworkInterface autodetermine="true" />
+        {interface_element}
       </Interfaces>
     </General>
     <Discovery>
@@ -38,28 +38,46 @@ _DDS_XML_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def _write_peer_xml(robot_host: str) -> Path:
+def _interface_element(interface: str | None) -> str:
+    """Render the <NetworkInterface> entry: a named interface, or autodetermine."""
+    if interface:
+        return f'<NetworkInterface name="{interface}" />'
+    return '<NetworkInterface autodetermine="true" />'
+
+
+def _write_peer_xml(robot_host: str, interface: str | None) -> Path:
     """Write a unicast-peer cyclonedds config and return its path."""
-    xml = _DDS_XML_TEMPLATE.format(robot_host=robot_host)
+    xml = _DDS_XML_TEMPLATE.format(
+        robot_host=robot_host, interface_element=_interface_element(interface)
+    )
     # Write to a stable per-process file so it can be inspected for debugging.
     tmp = Path(tempfile.gettempdir()) / f"c3po-cyclonedds-{os.getpid()}.xml"
     tmp.write_text(xml)
     return tmp
 
 
-def init_dds(*, robot_host: str, domain_id: int = 0) -> None:
+def init_dds(*, robot_host: str, domain_id: int = 0, interface: str | None = None) -> None:
     """Set CYCLONEDDS_URI and initialize the Unitree DDS channel factory.
 
     Must be called once at startup, before any subscriber is created.
     Idempotent: safe to call multiple times (subsequent calls are no-ops if
     the SDK was already initialized).
+
+    `interface` pins CycloneDDS to one NIC by name. Leave it unset on a
+    developer machine, where autodetermine is right. **Set it to `eth0` when
+    running onboard the G1's Jetson**: that host has `eth0`, `wlan0` and
+    `docker0`, and CycloneDDS otherwise picks among them arbitrarily — it says
+    so itself, `selected arbitrarily from: eth0, docker0, wlan0`. Only `eth0`
+    reaches the control board, so landing on either of the others means seeing
+    none of the robot, intermittently and depending on boot order.
     """
-    xml_path = _write_peer_xml(robot_host)
+    xml_path = _write_peer_xml(robot_host, interface)
     os.environ["CYCLONEDDS_URI"] = f"file://{xml_path}"
     log.info(
         "dds.init",
         robot_host=robot_host,
         domain_id=domain_id,
+        interface=interface or "autodetermine",
         cyclonedds_uri=os.environ["CYCLONEDDS_URI"],
         cyclonedds_home=os.environ.get("CYCLONEDDS_HOME"),
     )

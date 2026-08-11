@@ -39,6 +39,9 @@ log = structlog.get_logger(__name__)
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
 ROBOT_HOST = os.environ.get("ROBOT_HOST", "127.0.0.1")
 DDS_DOMAIN_ID = int(os.environ.get("DDS_DOMAIN_ID", "0"))
+# Pin CycloneDDS to one NIC. Empty = autodetermine, correct on a dev machine.
+# Onboard the G1's Jetson this must be `eth0` — see `init_dds`.
+DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
 
 # Back↔bridge link: how this server is reached. Default is stdio (what Claude
 # Code's MCP client expects). Set BRIDGE_TRANSPORT=http to expose FastMCP's
@@ -55,7 +58,7 @@ if SIM_MODE != "stub":
     from bridge.sdk.connection import init_dds
     from bridge.sdk.state import get_sampler
 
-    init_dds(robot_host=ROBOT_HOST, domain_id=DDS_DOMAIN_ID)
+    init_dds(robot_host=ROBOT_HOST, domain_id=DDS_DOMAIN_ID, interface=DDS_INTERFACE)
     # Warm the subscriber singleton so messages start flowing immediately.
     get_sampler()
 
@@ -545,6 +548,78 @@ def say(
 
 
 # ---------------------------------------------------------------------------
+# Tools: remember_landmark / recall_landmark / list_landmarks / forget_landmark
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def remember_landmark(
+    name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=64,
+            description="Name to save the current pose under, e.g. 'kitchen' or 'charging_dock'.",
+        ),
+    ],
+) -> dict:
+    """Save the robot's current world-frame pose under a name, for later `recall_landmark`.
+
+    Needs a live pose: works in stub/sim mode today. On real G1 it fails with
+    `no_pose` until a world-frame pose source is wired (Phase 1b, see
+    apps/bridge/README.md) — call `get_state` first if unsure whether pose is
+    available. In-memory only: landmarks don't survive a bridge restart.
+    """
+    from bridge.skills.landmarks import get_store as get_landmark_store
+
+    state = get_state()
+    pose = state.get("pose")
+    if pose is None:
+        return {"status": "failed", "name": name, "error": "no_pose"}
+
+    landmark = get_landmark_store().remember(name, pose)
+    log.info("remember_landmark.saved", name=name, pose=landmark.to_dict())
+    return {"status": "ok", **landmark.to_dict()}
+
+
+@mcp.tool()
+def recall_landmark(
+    name: Annotated[
+        str, Field(min_length=1, max_length=64, description="Landmark name to recall.")
+    ],
+) -> dict:
+    """Recall a previously saved landmark pose — feed the x/y straight into `walk_to`."""
+    from bridge.skills.landmarks import get_store as get_landmark_store
+
+    landmark = get_landmark_store().recall(name)
+    if landmark is None:
+        return {"status": "not_found", "name": name}
+    return {"status": "ok", **landmark.to_dict()}
+
+
+@mcp.tool()
+def list_landmarks() -> dict:
+    """List all saved landmarks, most recently saved first."""
+    from bridge.skills.landmarks import get_store as get_landmark_store
+
+    landmarks = get_landmark_store().list_all()
+    return {"count": len(landmarks), "landmarks": [lm.to_dict() for lm in landmarks]}
+
+
+@mcp.tool()
+def forget_landmark(
+    name: Annotated[
+        str, Field(min_length=1, max_length=64, description="Landmark name to delete.")
+    ],
+) -> dict:
+    """Delete a saved landmark. Returns `status=not_found` if the name doesn't exist."""
+    from bridge.skills.landmarks import get_store as get_landmark_store
+
+    ok = get_landmark_store().forget(name)
+    return {"status": "ok" if ok else "not_found", "name": name}
+
+
+# ---------------------------------------------------------------------------
 # Tool: cancel_task
 # ---------------------------------------------------------------------------
 
@@ -564,11 +639,14 @@ def cancel_task(
 ) -> dict:
     """Request graceful cancellation of an in-flight task.
 
-    Note: with the current stdio MCP transport, this cannot interrupt a tool
-    that the *same* Claude session is currently waiting on — the bridge is
-    busy handling that call. It's useful for: (a) direct Python clients,
-    (b) tests, (c) a future HTTP MCP transport where multiple connections
-    can interleave.
+    Note: with the stdio MCP transport (Claude Code's default), this cannot
+    interrupt a tool that the *same* session is currently waiting on — the
+    bridge is busy handling that call. Confirmed 2026-08-07: the
+    `BRIDGE_TRANSPORT=http` path apps/back uses does support this — two
+    separate client sessions can talk to the server concurrently (verified
+    against the stub bridge). Not yet confirmed against an actual in-flight
+    `walk_to`/`turn` loop — that needs live pose data (sim or real hardware)
+    to produce a task that runs long enough to interrupt.
     """
     from bridge.skills.task_runtime import get_registry
 

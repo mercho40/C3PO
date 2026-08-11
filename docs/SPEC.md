@@ -2,7 +2,9 @@
 
 **Project:** an embodiment layer that gives Claude (or any MCP-capable LLM) a Unitree G1 humanoid body.
 **Status:** spec, pre-implementation. Plan reference: `~/.claude/plans/glistening-chasing-marshmallow.md`.
-**Sim target:** Isaac Sim + `unitree_sim_isaaclab` running on a separate Ubuntu machine on the local network. The Mac plays the same role it would play with a real G1 — developer host issuing commands over DDS.
+**Sim target:** Isaac Sim + `unitree_sim_isaaclab` running on a separate Ubuntu machine on the local network. For sim, the Mac is the developer host issuing commands over DDS.
+
+**Real target:** a Unitree G1 (G1 Plus / PC4 variant). Unlike sim, the Mac **cannot** be the DDS host — see §10.2. The bridge runs onboard the robot's Jetson; `apps/back`, Postgres and `apps/web` stay off-robot.
 
 ---
 
@@ -14,39 +16,78 @@ Three user types drive the same robot through a shared **skill registry**:
 - **External LLM clients** — Claude Code, Claude Desktop, or any MCP-capable client driving via MCP.
 - **Co-located human** — speaks to the robot; wake-word triggers a voice loop that feeds an internal Claude agent.
 
-A **Python bridge** on the Mac wraps the Unitree SDK and exposes skills + voice + state. An **Elysia control plane** orchestrates sessions, agent runtime, MCP server, web API, and persistence. A **SvelteKit web UI** is the supervisor surface. The robot is emulated on a separate Ubuntu box running Isaac Sim, talking DDS over LAN.
+A **Python bridge** wraps the Unitree SDK and exposes skills + voice + state. An **Elysia control plane** orchestrates sessions, agent runtime, MCP server, web API, and persistence. A **SvelteKit web UI** is the supervisor surface.
 
+Where the bridge *runs* depends on the target. Against Isaac Sim it runs on the Mac and reaches the simulator over LAN DDS. Against real hardware it runs **onboard the robot's Jetson**, because the robot's DDS traffic never leaves its internal wired LAN (§10.2). Everything else — control plane, database, UI — stays off-robot in both cases.
+
+```mermaid
+flowchart TD
+    subgraph MAC["🖥️ Mac — developer host"]
+        WEB["apps/web<br/><small>SvelteKit</small>"]
+        BACK["apps/back<br/><small>Elysia</small>"]
+        BRIDGE_SIM["apps/bridge<br/><small>Python</small>"]
+        PG[("Postgres<br/><small>Neon</small>")]
+        WEB -->|"Eden (HTTP + WS)"| BACK
+        BACK -->|WS| BRIDGE_SIM
+        BACK --> PG
+    end
+
+    subgraph MCP["🤖 External MCP clients"]
+        CC["Claude Code"]
+        CD["Claude Desktop"]
+        OTHER["Any MCP-capable client"]
+    end
+
+    subgraph UBUNTU["🐧 Ubuntu — Isaac Sim host"]
+        SIM["Isaac Lab + Isaac Sim<br/><small>unitree_sim_isaaclab</small>"]
+    end
+
+    CC -.->|"stdio or HTTP"| BRIDGE_SIM
+    CD -.->|"stdio or HTTP"| BRIDGE_SIM
+    OTHER -.->|"stdio or HTTP"| BRIDGE_SIM
+
+    BRIDGE_SIM <==>|"DDS / CycloneDDS<br/>UDP unicast, peer config"| SIM
+
+    classDef mac fill:#4f8cff,stroke:#2b5fcc,color:#fff
+    classDef mcp fill:#8b5cf6,stroke:#6d28d9,color:#fff
+    classDef ubuntu fill:#f59e0b,stroke:#b45309,color:#fff
+    class WEB,BACK,BRIDGE_SIM,PG mac
+    class CC,CD,OTHER mcp
+    class SIM ubuntu
 ```
-   ┌──────────────────────────────────────────────────────────┐
-   │                       MAC (developer host)               │
-   │                                                          │
-   │  apps/web  ──Eden(HTTP+WS)──▶  apps/back  ──WS──▶  apps/bridge
-   │  (Svelte)                      (Elysia)              (Python)
-   │                                   │                    │
-   │                                   │                    │ DDS / Cyclone
-   │                                   ▼                    │  (UDP unicast,
-   │                              Postgres                  │   peer config)
-   │                              (Neon)                    │
-   │                                                        │
-   └────────────────────────────────────────────────────────┼─┘
-                                                            │
-   ┌─────────── External MCP clients ────────────┐          │
-   │  Claude Code (this terminal)                │          │
-   │  Claude Desktop                              │ stdio    │
-   │  Any MCP-capable client                      │  or HTTP │
-   │                                              ├──────────┘
-   │  (initial route hits apps/bridge directly;   │
-   │   later route hits apps/back's MCP adapter)  │
-   └──────────────────────────────────────────────┘
-                                                            │ LAN
-                                                            ▼
-   ┌──────────────────────────────────────────────────────────┐
-   │                  UBUNTU (Isaac Sim host)                 │
-   │                                                          │
-   │  Isaac Lab + Isaac Sim                                   │
-   │  unitree_sim_isaaclab  → emits / consumes DDS topics     │
-   │                                                          │
-   └──────────────────────────────────────────────────────────┘
+
+_Initial route hits `apps/bridge` directly; a later route hits `apps/back`'s MCP adapter instead (§8)._
+
+Against **real hardware** the split moves — the bridge crosses onto the robot, and Wi-Fi
+carries MCP/WS instead of DDS:
+
+```mermaid
+flowchart TD
+    subgraph SERVER["🖥️ Mac / server"]
+        WEB2["apps/web<br/><small>SvelteKit</small>"]
+        BACK2["apps/back<br/><small>Elysia</small>"]
+        PG2[("Postgres<br/><small>pgvector</small>")]
+        WEB2 -->|"Eden (HTTP + WS)"| BACK2
+        BACK2 --> PG2
+    end
+
+    subgraph JETSON["🦾 G1 Jetson — 10.4.64.27 (wlan0)"]
+        BRIDGE_REAL["apps/bridge<br/><small>Python + link watchdog</small>"]
+    end
+
+    subgraph BOARD["⚙️ Control board — 192.168.123.161"]
+        CB["Publishes /lowstate,<br/>/api/sport, /api/arm, …<br/>to multicast 239.255.0.1"]
+    end
+
+    BACK2 ==>|"Wi-Fi — MCP over HTTP,<br/>bridge WS + token"| BRIDGE_REAL
+    BRIDGE_REAL <==>|"eth0 192.168.123.164<br/>DDS / CycloneDDS 0.10.2"| CB
+
+    classDef server fill:#4f8cff,stroke:#2b5fcc,color:#fff
+    classDef jetson fill:#10b981,stroke:#047857,color:#fff
+    classDef board fill:#ef4444,stroke:#b91c1c,color:#fff
+    class WEB2,BACK2,PG2 server
+    class BRIDGE_REAL jetson
+    class CB board
 ```
 
 ---
@@ -60,7 +101,11 @@ A **Python bridge** on the Mac wraps the Unitree SDK and exposes skills + voice 
 | 3   | `apps/bridge`         | Python 3.12 / uv | Robot SDK wrapper, voice loop, MCP entry   | exists   |
 | 4   | `packages/shared`     | TS               | Zod schemas, event types, error taxonomy   | planned  |
 | —   | Isaac Sim host        | Python (Ubuntu)  | Simulator emulating the G1                 | external |
+| —   | G1 Jetson             | Ubuntu 20.04 ARM | Hosts `apps/bridge` when `SIM_MODE=real`   | external |
+| —   | G1 control board      | firmware         | Publishes the robot's DDS topics (§10.2)   | external |
 | —   | Claude Code / Desktop | —                | MCP client driving the robot               | external |
+
+`apps/bridge` is the only workspace whose **host changes with the target**: the Mac for `stub`/`isaac`, the G1 Jetson for `real`.
 
 Workspace naming: existing apps use `@repo/back` and `@repo/web`. New TS workspace will be `@repo/shared`. The Python workspace doesn't carry a JS package name but lives at `apps/bridge` with a thin `package.json` so Turbo sees it as a workspace.
 
@@ -385,14 +430,19 @@ managed = true
 
 ```
 # Robot connection
-SIM_MODE=isaac                  # 'isaac' | 'mujoco_local' | 'real'
-DDS_DOMAIN_ID=0
-ROBOT_HOST=192.168.1.42         # Ubuntu Isaac Sim host (or real G1 Jetson IP)
-CYCLONEDDS_URI=                 # auto-generated by sdk/connection.py from ROBOT_HOST
+SIM_MODE=isaac                  # 'stub' | 'isaac' | 'mujoco_local' | 'real'
+DDS_DOMAIN_ID=0                 # Isaac Sim uses 1; the real G1 uses 0
+ROBOT_HOST=192.168.1.42         # Isaac Sim host; on real, the control board 192.168.123.161
+DDS_INTERFACE=                  # empty = autodetermine (Mac). On the Jetson: eth0
+CYCLONEDDS_URI=                 # auto-generated by sdk/connection.py from the two above
 
 # Bridge transport
-BRIDGE_WS_HOST=127.0.0.1
-BRIDGE_WS_PORT=7077
+BRIDGE_WS_HOST=127.0.0.1        # onboard (SIM_MODE=real) this must bind the LAN iface,
+BRIDGE_WS_PORT=7077             # and BRIDGE_WS_TOKEN stops being optional — see §10.1
+BRIDGE_WS_TOKEN=
+
+# Safety (SIM_MODE=real)
+LINK_TIMEOUT_MS=1500            # operator-link silence before the watchdog ramps to zero
 
 # Voice
 DEEPGRAM_API_KEY=
@@ -427,13 +477,48 @@ macOS multicast is unreliable; we generate a unicast peer XML at startup based o
 </CycloneDDS>
 ```
 
-Written to `apps/bridge/.dds.xml`, exposed via `CYCLONEDDS_URI=file://…`. Same pattern works for the real G1 — just change `ROBOT_HOST`.
+Written to `apps/bridge/.dds.xml`, exposed via `CYCLONEDDS_URI=file://…`.
+
+**On the real G1 this needs one change: pin the interface.** `autodetermine="true"` is correct on the Mac, but the Jetson has `eth0`, `wlan0` *and* `docker0`, and CycloneDDS picks among them arbitrarily — observed directly, as `selected arbitrarily from: eth0, docker0, wlan0`. Landing on `wlan0` or `docker0` means seeing none of the robot. So `real` needs an explicit interface override:
+
+```xml
+<NetworkInterface name="eth0" />
+```
+
+surfaced as an optional `DDS_INTERFACE` env var alongside `ROBOT_HOST`, defaulting to today's autodetermine so the Isaac Sim path is untouched.
+
+The unicast-peer half of the config still works onboard, and doesn't need to become multicast: with `AllowMulticast=false` our reader advertises unicast locators only, and the control board's writers will unicast to it rather than multicast. `ROBOT_HOST=192.168.123.161` is the only other change.
+
+Convenient accident: the Jetson already ships CycloneDDS **0.10.2** at `~/cyclonedds_ws/install/cyclonedds` — the exact version pinned in `pyproject.toml`, so `CYCLONEDDS_HOME` points there and no source build is needed onboard (unlike the Mac). It is a third-party build sitting in a home directory, though, so a Unitree OTA could clobber it; that is the main argument for eventually containerizing the bridge.
 
 ---
 
 ## 6. packages/shared — Zod schemas + types
 
-### Purpose
+### Status: not built, and not worth building yet (revisited 2026-08-07)
+
+This section was written assuming `apps/web` would need a shared package to
+get typed access to `apps/back`. It doesn't: `apps/web/src/lib/api.ts` uses
+**Eden Treaty** (`treaty<App>(...)`, importing `App` straight from
+`apps/back/src/index.ts`'s router type) and gets full end-to-end type
+inference — request bodies, response shapes, the works — with zero
+duplication and zero shared package. That's the actual mechanism in use
+today; this section's premise is already solved a different way.
+
+The rest of the original rationale doesn't hold up either: the codebase
+settled on **TypeBox** (`elysia`'s `t`, see `apps/back/src/skills/define.ts`)
+for parameter schemas, not the Zod sketched below — introducing Zod now
+would add a second, redundant schema library rather than remove
+duplication. And the one place real hand-duplication *does* exist —
+`apps/bridge`'s Python skill/protocol definitions vs. `apps/back/src/skills/
+*.ts` — isn't something a TS-only package fixes anyway; Python can't import
+it.
+
+**Conclusion:** don't build this. If a real shared-type need shows up later
+(e.g. a second TS consumer that isn't already Eden-linked to `apps/back`),
+revisit then with a concrete driver instead of the speculative one below.
+
+### Purpose (original, superseded — kept for context)
 
 Single source of truth for skill parameter shapes, event types, and error taxonomy. Imported by both `apps/back` (for routes, agent, MCP server) and `apps/web` (via Eden's type chain). Python code in `apps/bridge` mirrors these by hand for v1; can be auto-generated from JSON Schema later if drift becomes painful.
 
@@ -577,6 +662,31 @@ At Step B, the `env` block changes to `SIM_MODE=isaac` and adds `ROBOT_HOST` etc
 
 ## 9. Wire formats
 
+### Skill invocation, visually
+
+```mermaid
+sequenceDiagram
+    actor Op as apps/web / MCP client
+    participant Back as apps/back
+    participant Bridge as apps/bridge
+    participant Robot as Robot (DDS)
+
+    Op->>Back: POST /skills/walk_to/invoke<br/>{ params, dry_run: false }
+    Back-->>Op: 202 { task_id, estimated_duration_s }
+    Back->>Bridge: execute_skill<br/>{ task_id, skill_name, params, env }
+    Bridge->>Robot: DDS publish / request
+
+    loop while task runs
+        Robot-->>Bridge: state updates
+        Bridge-->>Back: SkillEvent (progress)
+        Back-->>Op: progress notification
+    end
+
+    Robot-->>Bridge: final state
+    Bridge-->>Back: SkillEvent (result)
+    Back-->>Op: result
+```
+
 ### Skill invocation (Eden REST → bridge WS)
 
 ```
@@ -641,6 +751,44 @@ Long-running tools use `progressToken`; the server emits MCP `notifications/prog
 | Isaac Sim DDS     | Ubuntu | 7400+ | UDP (CycloneDDS)       | none (LAN)              |
 
 `apps/bridge` binds to **127.0.0.1** by default — never public. The bridge↔back link is loopback-only on the dev machine, with a shared header token to prevent another local process from connecting.
+
+### 10.1 Real hardware (`SIM_MODE=real`)
+
+| Service           | Host       | Port  | Transport              | Auth                 |
+| ----------------- | ---------- | ----- | ---------------------- | -------------------- |
+| `apps/back` + web | Mac/server | 3000+ | as above               | as above             |
+| `apps/bridge` MCP | G1 Jetson  | stdio → HTTP | stdio-over-SSH, then streamable HTTP | SSH key, then token |
+| `apps/bridge` WS  | G1 Jetson  | 7077  | WebSocket over Wi-Fi   | **shared token (enforced)** |
+| G1 internal DDS   | control board | 7400+ | UDP multicast, wired LAN | none (isolated)   |
+
+Two deltas from the sim topology, both load-bearing:
+
+- **The bridge WS stops being loopback.** It crosses Wi-Fi, so the shared token in the row above is no longer belt-and-braces — it is the only thing standing between the LAN and a humanoid's motion API. It must be enforced, not assumed.
+- **MCP transport has to grow.** `stdio` is single-client. Pointing `.mcp.json`'s `command` at `ssh c3po '… uv run …'` gets Claude Code talking to an onboard bridge with zero new code, and is the right first step. But the moment both Claude Code *and* `apps/back`'s internal agent need the bridge, stdio can't serve them — that is when the streamable-HTTP transport becomes required rather than optional.
+
+### 10.2 Why the bridge must run onboard
+
+The G1 is two computers. The **Jetson** (`10.4.64.27` on Wi-Fi, `192.168.123.164` on the robot's internal wired LAN) is the general-purpose host we can SSH into. The **control board** at `192.168.123.161` is what actually publishes the robot's DDS topics — `/lowstate`, `/sportmodestate`, `/api/sport`, `/api/arm`, `/state_estimator/*` — as multicast to `239.255.0.1`, at roughly 24 MB/s.
+
+That control board has no wireless interface and no SSH. Its traffic never leaves the internal wired LAN. So a Mac on Wi-Fi cannot join the robot's DDS domain, and no configuration change on the Jetson can expose those topics — you cannot add an interface to a machine that doesn't have one.
+
+This has one consequence worth stating plainly: **`SIM_MODE=real` is not a drop-in swap of `ROBOT_HOST`.** It is a relocation of the bridge. (Cabling a Mac onto `192.168.123.0/24` does make the Mac-hosted path work, and is fine for bench bring-up — but it tethers the robot, which defeats the purpose.)
+
+### 10.3 What belongs onboard
+
+The test is: **must it keep working when the operator link drops?** That set is deliberately small.
+
+| Component            | Onboard? | Why                                                                                  |
+| -------------------- | -------- | ------------------------------------------------------------------------------------ |
+| `apps/bridge`        | yes      | Needs internal-LAN DDS reach; nothing else can                                        |
+| link watchdog        | yes      | **New.** Ramps velocity to zero and damps if the control link goes silent             |
+| `apps/back` + agent  | no       | Calls the Anthropic API — a dropped link kills the agent wherever it runs             |
+| Postgres             | no       | Durable store; the robot gets hard-powered-off, and the schema is tenant-scoped       |
+| `apps/web`           | no       | Operator surface; must be reachable while the robot is off charging                   |
+
+Running `apps/back` onboard is explicitly rejected. It buys no autonomy — the internal agent depends on a remote API regardless — while dragging Postgres either onto a device that loses power abruptly, or across Wi-Fi, where DB chatter is far less latency-tolerant than the handful of MCP calls per second the agent actually makes. It would move the wrong link onto the unreliable medium.
+
+The **link watchdog** is the one genuinely new component this topology demands. §9's cancel path already specifies a graceful ramp to zero (or `damp` for e-stop), but `estop.py` lives bridge-side of the operator connection. Onboard, a Wi-Fi drop must trigger that ramp locally rather than leaving a walking robot unsupervised.
 
 ---
 
@@ -750,25 +898,29 @@ The long-term default is the third row. `apps/back` calls Anthropic's regular Me
 
 ## 13. Open decisions to confirm before code
 
-1. **Embedding provider.** Claude doesn't ship one; pick `voyage-3-large` (1024-dim) or OpenAI `text-embedding-3-large`. Default in this spec: Voyage.
-2. **MCP client direct connection vs. through Elysia.** v1 plan keeps both. Step A starts with direct.
-3. **Wake-word model.** "hey claude" custom or stock placeholder? Custom needs ~30 min training data; stock ("alexa") works for dev only.
-4. **Audio I/O location.** v1 uses Mac's microphone/speakers; eventually moves to G1's onboard mics + speakers. The audio device selection will be env-driven.
-5. **Postgres host.** Audit showed Neon. pgvector availability on Neon is fine (built-in). Confirm before migration.
-6. **Single-robot vs. multi-robot data model.** v1 is single-robot, but `organizationId` already gates everything; adding `robotId` is a non-breaking addition later.
+Revisited 2026-08-07 — most of these were already answered by their own "default"/"v1 plan" text and nothing since has contradicted them, so marking as resolved rather than leaving them looking blocking. One (#5) is a real infra/billing commitment that needs an actual human decision, not a code default — left open.
+
+1. **Embedding provider — resolved: Voyage (`voyage-3-large`).** No embedding code exists yet (no memory/RAG feature built), so nothing depends on this today; revisit if OpenAI's is meaningfully cheaper/better when that work starts.
+2. **MCP client direct connection vs. through Elysia — resolved: both, as planned.** This is what's actually implemented: the bridge serves stdio (Claude Code direct) and `BRIDGE_TRANSPORT=http` (apps/back's Eden-style MCP client, `apps/back/src/bridge/client.ts`) simultaneously. Not a future plan — current state.
+3. **Wake-word model — default: stock placeholder for all of dev; decide custom vs. stock before any real voice demo.** Phase 4 (voice loop) isn't built yet, so this doesn't block anything now. Custom ("hey claude") is a product/brand call for whoever demos it — flag it then, not now.
+4. **Audio I/O location — resolved: Mac mic/speakers for v1, per the original text.** Same Phase-4-not-built caveat as #3.
+5. **Postgres host — still open, needs an actual decision (not mine to make).** Local Postgres (Homebrew) is what this session's dev environment uses and is fine for continued local dev. Neon (or any hosted Postgres) is a real account/billing commitment — pick it when ready to deploy somewhere, not before.
+6. **Single-robot vs. multi-robot data model — resolved: single-robot for v1, per the original text.** `organizationId` already gates everything in the schema; adding `robotId` later is non-breaking.
 
 ---
 
 ## 14. Out of scope (v1)
 
-- Real G1 hardware (design ready; only `ROBOT_HOST` and `SIM_MODE=real` change).
+- ~~Real G1 hardware (design ready; only `ROBOT_HOST` and `SIM_MODE=real` change).~~ **Superseded.** The hardware is here, and that claim was wrong: the robot's DDS is confined to its internal wired LAN, so `real` relocates the bridge onto the Jetson rather than re-pointing it. See §10.2.
 - VLA-based manipulation (UnifoLM, Pi0-FAST). Tool-call seam already present.
 - Semantic perception (ConceptGraphs, HOV-SG). v1 uses hand-seeded landmarks.
 - Ambient/always-on agent thinking. v1 is reactive.
 - Multi-robot fleet (one org = one robot).
 - Eye-contact / face-tracking attention. v1 uses wake word.
-- On-Jetson deployment of the bridge.
+- ~~On-Jetson deployment of the bridge.~~ **Promoted to plan of record** — it is the only way to reach the robot's DDS without tethering. See §10.1–10.3.
 - Session replay with audio playback (text replay only).
+
+Newly in scope as a consequence: the **link watchdog** (§10.3), enforced auth on the bridge WS now that it leaves loopback (§10.1), and a streamable-HTTP MCP transport once more than one client needs the bridge.
 
 ---
 
@@ -795,7 +947,9 @@ The bridge supports two connection paths to the robot, selected at startup by `S
 | `stub`         | none (in-memory) | tools log + return fake data                     |
 | `isaac`        | DDS (CycloneDDS) | Isaac Sim + `unitree_sim_isaaclab` on Ubuntu LAN |
 | `mujoco_local` | DDS (CycloneDDS) | local `unitree_mujoco` (deferred / unused today) |
-| `real`         | WebRTC           | a real G1 (firmware ≥ 1.5.1) on native Wi-Fi     |
+| `real`         | DDS (CycloneDDS) | a real G1, bridge running **onboard the Jetson** |
+
+**The `real` row changed.** It was WebRTC, on the assumption that a real G1 could only be reached the way the phone app reaches it. With SSH access to the Jetson that assumption no longer holds: the bridge sits directly on the robot's internal LAN and speaks the native DDS API, which is the same transport the sim path already uses. That collapses `isaac` and `real` onto one implementation and deletes a translation layer.
 
 ### 16.1 The seam
 
@@ -822,7 +976,13 @@ Wraps the existing `unitree_sdk2py.core.channel.ChannelFactoryInitialize`, `Chan
 
 Dependencies on this path: `cyclonedds==0.10.2` (Python bindings, builds against the local C library at `CYCLONEDDS_HOME`), `unitree_sdk2_python` (with the `b2`-import patch).
 
-### 16.3 WebRTC implementation (`bridge/sdk/transport/webrtc.py` — planned)
+### 16.3 WebRTC implementation (`bridge/sdk/transport/webrtc.py` — deprioritized)
+
+> **Status: no longer on the critical path.** This design existed to reach a G1 we could only talk to the way the phone app does. We can SSH the Jetson, so `real` uses DDS (§16.2) and this transport is unnecessary for the primary path.
+>
+> Corroborating detail from the robot itself: `/webrtcreq` and `/webrtcres` are ordinary DDS topics on the internal LAN. The WebRTC interface was always a shim *over* the native API we now reach directly — so going native skips a translation layer, and with it the `squat=706` quirk, the `wirelesscontroller` velocity workaround, and the `con_notify data2` blocker.
+>
+> Retained because it is still the only route that needs no onboard install, which makes it a plausible fallback for a locked-down or OTA-reset robot. Do not build it speculatively.
 
 For real G1 over native Wi-Fi. Mirrors the protocol reverse-engineered in legion1581/unitree_ui (MIT). One `RTCPeerConnection`:
 
@@ -852,12 +1012,68 @@ Wire-format helpers we already shipped:
 
 ### 16.4 Cutover strategy
 
-When the real robot is days away:
+Revised now that the robot is here and `real` is DDS. The transport no longer changes — the *host* does — so this is a deployment exercise rather than a protocol port:
 
-1. Extract existing DDS code from `connection.py` + `_locomotion.py` + `state.py` into `transport/dds.py` (mechanical, no behaviour change — sim regression-tested).
-2. Add `transport/webrtc.py` against `legion1581/unitree_webrtc_connect`. Goal: `get_state` returns real `rt/lf/lowstate` and `walk_to` issues `rt/api/sport/request, api_id=7101, {"data": 500}` followed by velocity stream.
-3. Pin `unitree_sdk2_python` + `cyclonedds` as **optional** deps (only installed for `SIM_MODE=isaac`). A pure-`real` install becomes much lighter.
-4. Each skill gains a `_transport_mode` check; skills that don't translate (e.g. Isaac Sim's `run_command/cmd` shortcut) raise on the wrong transport.
+1. Add the `DDS_INTERFACE` override (§5) so `real` pins `eth0`. Smallest change that makes onboard DDS deterministic.
+2. Stand the bridge up on the Jetson: `uv` + Python 3.12 (aarch64 standalone build), `CYCLONEDDS_HOME=~/cyclonedds_ws/install/cyclonedds`, the `unitree_sdk2py` `b2`-import patch. Native install, not containerized — see below.
+3. Point `.mcp.json` at `ssh c3po '… uv run -m bridge.mcp_server'`. Verify `get_state` returns real `/lowstate` before anything moves.
+4. Bring skills up one at a time against hardware, lowest-consequence first. `topics_for("real")` and `SKILL_REQUESTS` already exist and are unchanged by this.
+5. Add the link watchdog (§10.3) **before** any untethered locomotion.
+6. Enforce the bridge WS token (§10.1) — it is no longer loopback-protected.
+7. Containerize once the tool surface is stable, pinning the CycloneDDS runtime rather than depending on the third-party build in `~/cyclonedds_ws`.
+
+Ordering note on step 7: native first, container later, deliberately. Containerizing during hardware bring-up stacks two unknowns, and a DDS-in-container failure is hard to distinguish from a real-robot failure while you're debugging both. Get a known-good baseline natively — `--network host` and a source bind-mount keep the eventual move cheap.
+
+The optional-dependency split in the old step 3 is dropped: both `isaac` and `real` need `cyclonedds` + `unitree_sdk2_python` now, so there is no lighter `real`-only install to chase.
+
+### 16.5 The G1 posture FSM (`bridge.sdk.g1_protocol`, implemented)
+
+The firmware rejects illegal full-body mode transitions, so the bridge mirrors the same rules client-side (`can_transition()`) before firing a request — cheaper than a round-trip rejection, and it's what every posture skill (`damp`, `prepare`, `squat`, …) checks against. This is the first time that guard is drawn rather than just enforced in code:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Damp
+
+    Damp --> ZeroTorque
+    Damp --> Preparation
+    Damp --> SquatUp
+    Damp --> LieUp
+
+    ZeroTorque --> Damp
+    Squat --> Damp
+
+    Preparation --> Damp
+    Preparation --> Walk
+    Preparation --> WalkWaist
+    Preparation --> Run
+
+    Walk --> Damp
+    WalkWaist --> Damp
+    Run --> Damp
+
+    note right of Squat
+        Mode index 2 — defined in
+        g1_protocol.py but never
+        actually sent. The squat
+        skill dispatches SquatUp
+        (706) instead, verified
+        against the reference
+        implementation.
+    end note
+
+    note right of LieUp
+        Seating, Dance, Climb, and
+        SquatUp aren't further
+        restricted by this client-
+        side guard beyond "only
+        reachable from Damp" above —
+        legality past that point is
+        the firmware's call, not
+        confirmed here.
+    end note
+```
+
+**Damp is the hub.** Four modes — `ZeroTorque`, `Preparation`, `SquatUp`, `LieUp` — are reachable *only* from `Damp`; trying to reach them from anywhere else is rejected client-side before it ever reaches the robot. `Preparation` is the sole gateway into locomotion (`Walk` / `Walk(waist)` / `Run`). Every locomotion-active mode can drop straight back to `Damp` as the canonical "come to rest" transition — the same one `stop_everything`'s real-hardware fallback dispatches (§10.3, `bridge/skills/stop_everything.py`).
 
 ---
 
@@ -883,6 +1099,32 @@ The robot has more than locomotion — camera, mic, speakers, LiDAR. Plan per pe
 | Bridge              | Decode LZ4 via `lz4.block.decompress`; iterate occupancy bits to point list; emit a downsampled cloud event to subscribers.                                                                                                                                                                        | Same shape but parse `PointCloud2` directly.                                         |
 | Supervisor UI       | Three.js voxel mesh, decoded client-side (port `libvoxel.wasm` directly — it's MIT) or server-side.                                                                                                                                                                                                | Same.                                                                                |
 | Phase               | **v2** — out of v1 scope. The decoder + topic name are documented for when we tackle it.                                                                                                                                                                                                           |
+
+#### 17.2.1 World-frame pose (blocks `walk_to`/`turn` on real hardware, 2026-08-07 research)
+
+`get_state().pose` (and therefore `walk_to`/`turn`, which loop on it) is null on real G1 —
+`state.py`'s only pose source is Isaac Sim's JSON `rt/sim_state`, which doesn't exist on real
+firmware. `rt/utlidar/robot_pose` (in `unitree_ui/src/protocol/topics.ts`, type would be
+`geometry_msgs.msg.dds_.PoseStamped_` — present in `unitree_sdk2py`'s IDL) looked like a
+candidate, but:
+
+- `unitree_ui`'s own app **skips enabling the LiDAR switch for the G1 family entirely** — the
+  code comment says the Explorer webview "never toggles it on" for humanoids. It only subscribes
+  to `ROBOT_ODOM`/lidar topics for non-G1 (quadruped) families.
+- Real-world G1 practitioners don't use it either: [`deepglint/FAST_LIO_LOCALIZATION_HUMANOID`](https://github.com/deepglint/FAST_LIO_LOCALIZATION_HUMANOID)
+  (Livox Mid360 + G1 pose estimation) runs its own **FAST-LIO** SLAM stack (ROS1,
+  `livox_ros_driver2` in `CustomMsg` mode for per-point timestamps, hardware IMU/LiDAR
+  extrinsic calibration) — it makes no use of `rt/utlidar/robot_pose` or `rt/utlidar/switch` at
+  all, estimating pose itself from raw LiDAR + IMU via an IEKF.
+
+**Conclusion:** `rt/utlidar/*` is very likely a quadruped-only firmware feature that isn't
+mature (or possibly not implemented at all) on G1 — don't spend time toggling it blind. The
+proven path is a real SLAM stack (FAST-LIO or equivalent) reading the Mid360 directly, which is
+a **ROS1 dependency** foreign to this repo's DDS-native/CycloneDDS stack — it would need either
+a ROS1↔DDS bridge or a small adapter that republishes FAST-LIO's pose output onto a DDS topic
+`state.py` can subscribe to. This is a multi-day SLAM integration project, not a config change;
+scope it separately from the rest of Phase 1. Needs the robot powered on to even start
+(confirming the Mid360 is reachable, whether `rt/utlidar/switch` does anything on this unit).
 
 ### 17.3 Microphone (G1 4-mic array)
 
@@ -913,25 +1155,30 @@ The robot has more than locomotion — camera, mic, speakers, LiDAR. Plan per pe
 
 In the WebRTC era, the bridge is the **single point of contact for everything the robot emits or accepts**:
 
-```
-                            ┌──────────────────────────────────┐
-                            │       apps/bridge (Python)       │
-                            │                                  │
-                            │  Transport (WebRTC / DDS)        │
-                            │  ├── DataChannel  → topics       │
-                            │  ├── Video        → frame ring   │
-                            │  ├── Audio in     → STT pipe     │
-                            │  └── Audio out    → TTS pipe     │
-                            │                                  │
-                            │  Skill Runtime · Voice loop      │
-                            │  MCP / WS server                 │
-                            └──────────────────────────────────┘
-                                  │             │           │
-                       Topic JSON │      Video  │      Audio│
-                                  ▼             ▼           ▼
-                    apps/back (commands)   supervisor UI   robot speakers / mic
-                                          (browser, relay
-                                           via Elysia)
+```mermaid
+flowchart TD
+    subgraph BRIDGE["apps/bridge (Python)"]
+        T["Transport<br/>(WebRTC / DDS)"]
+        DC["DataChannel → topics"]
+        VID["Video → frame ring"]
+        AIN["Audio in → STT pipe"]
+        AOUT["Audio out → TTS pipe"]
+        SR["Skill Runtime · Voice loop · MCP/WS server"]
+        T --> DC
+        T --> VID
+        T --> AIN
+        T --> AOUT
+        DC -.-> SR
+    end
+
+    DC ==>|"Topic JSON"| BACKC["apps/back<br/>(commands)"]
+    VID ==>|Video| UIC["supervisor UI<br/><small>browser, relay via Elysia</small>"]
+    AOUT ==>|Audio| SPK["robot speakers / mic"]
+
+    classDef bridge fill:#4f8cff,stroke:#2b5fcc,color:#fff
+    classDef sink fill:#10b981,stroke:#047857,color:#fff
+    class T,DC,VID,AIN,AOUT,SR bridge
+    class BACKC,UIC,SPK sink
 ```
 
 The bridge then exposes per-modality APIs to the rest of the system: typed skill calls (existing), `GET /camera/frame.jpg` (planned), `POST /tts` (planned), `WS /audio/in` (planned).

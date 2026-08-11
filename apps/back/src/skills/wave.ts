@@ -13,6 +13,6 @@ export const wave = defineSkill({
   typicalFailureModes: ["fsm_not_locomotion_state", "transport_unsupported"],
   classification: "gesture",
   dangerLevel: "low",
-  status: "stub",
+  status: "real",
   works: { sim: false, real: true },
 });

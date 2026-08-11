@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  typescript:
+    name: TypeScript — type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.12"
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run check-types
+
+      # NOTE: `bunx prettier --check` currently fails on ~122 files (mostly
+      # vendored shadcn-svelte components, not hand-written code) — the repo
+      # predates this CI and was never prettier-clean. Deliberately not gated
+      # here: reformatting that much unrelated code as a side effect of adding
+      # CI isn't this workflow's call to make. Run `bun run format` repo-wide
+      # and re-add this step once that's done intentionally.
+
+  bridge:
+    name: Bridge — pytest
+    runs-on: ubuntu-latest
+    env:
+      CYCLONEDDS_HOME: ${{ github.workspace }}/.cyclonedds-0.10.2
+    steps:
+      - uses: actions/checkout@v4
+
+      # unitree_sdk2py -> cyclonedds (Python bindings) builds against this C
+      # library at `uv sync` time. No apt/prebuilt package for it — build from
+      # source, same steps apps/bridge/README.md documents for macOS. Cached
+      # by version so this only actually compiles on a cache miss.
+      - name: Cache CycloneDDS C library
+        id: cyclonedds-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CYCLONEDDS_HOME }}
+          key: cyclonedds-0.10.2-${{ runner.os }}-v1
+
+      - name: Build CycloneDDS C library
+        if: steps.cyclonedds-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch 0.10.2 https://github.com/eclipse-cyclonedds/cyclonedds.git /tmp/cyclonedds-src
+          cmake -S /tmp/cyclonedds-src -B /tmp/cyclonedds-build \
+            -DCMAKE_INSTALL_PREFIX="$CYCLONEDDS_HOME" \
+            -DBUILD_IDLC=ON -DBUILD_TESTING=OFF -DBUILD_DDSPERF=OFF \
+            -DENABLE_SECURITY=NO -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build /tmp/cyclonedds-build --target install -j "$(nproc)"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Install bridge deps
+        working-directory: apps/bridge
+        run: uv sync --group dev
+
+      - name: Apply unitree_sdk2py patch
+        working-directory: apps/bridge
+        run: ./scripts/postsync.sh
+
+      - name: pytest
+        working-directory: apps/bridge
+        run: uv run pytest -v

@@ -4,7 +4,7 @@
 
   let { data } = $props();
   $effect(() => {
-    if (data.user) goto("/", { invalidateAll: true });
+    if (data.user) goto("/dashboard", { invalidateAll: true });
   });
 </script>
 

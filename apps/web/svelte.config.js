@@ -1,12 +1,12 @@
-import adapter from "svelte-adapter-bun";
+import adapter from "@sveltejs/adapter-vercel";
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
 	kit: {
-		// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
-		// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
-		// See https://svelte.dev/docs/kit/adapters for more information about adapters.
-		adapter: adapter(),
+		// Deployed to Vercel as Serverless Functions. Pinned to the Node runtime
+		// (not edge) because hooks.server.ts runs Better Auth's getCookieCache,
+		// which needs Node crypto. See https://svelte.dev/docs/kit/adapter-vercel
+		adapter: adapter({ runtime: "nodejs22.x" }),
 		alias: {
 			"@back/*": "../back/src/*",
 		},

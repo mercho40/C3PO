@@ -4,6 +4,7 @@ import { cors } from "@elysiajs/cors";
 import { skillsRoutes } from "@back/routes/skills";
 import { tasksRoutes } from "@back/routes/tasks";
 import { stateRoutes } from "@back/routes/state";
+import { agentRoutes } from "@back/routes/agent";
 
 // user middleware (compute user and session and pass to routes)
 const betterAuth = new Elysia({ name: "better-auth" })
@@ -36,10 +37,12 @@ const app = new Elysia()
     }),
   )
   .get("/health", () => ({ status: "ok", timestamp: Date.now() }))
-  .use(skillsRoutes)
-  .use(tasksRoutes)
-  .use(stateRoutes)
-  .listen(3000);
+  // Everything below can read or move the robot (or spend Anthropic tokens
+  // via /agent) — require a session. /health stays open for monitoring.
+  .guard({ auth: true }, (app) =>
+    app.use(skillsRoutes).use(tasksRoutes).use(stateRoutes).use(agentRoutes),
+  )
+  .listen(Number(process.env.PORT) || 3000);
 
 console.log(
   `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`,
