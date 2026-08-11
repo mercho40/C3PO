@@ -53,10 +53,11 @@ def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     stop_motion_sync(height=height, duration_s=STOP_BURST_DURATION_S)
     duration = time.time() - start
 
-    # `stop_motion_sync` above publishes to `rt/run_command/cmd`, which real
-    # G1 firmware doesn't subscribe to (sim-only convenience channel) — a
-    # no-op on real hardware. Damp (verified live, see g1_rpc) zeroes joint
-    # stiffness and is the real fallback that actually halts motion.
+    # `stop_motion_sync` above now dispatches per SIM_MODE, so on real hardware
+    # it issues SET_VELOCITY(0,0,0) rather than the old sim-only no-op. Damp is
+    # still sent after it, and is not redundant: zero velocity stops the gait,
+    # whereas damp (verified live, see g1_rpc) zeroes joint stiffness. Belt and
+    # braces on the one call that exists to make the robot stop.
     real_damp_rpc_code: int | None = None
     if SIM_MODE == "real":
         from bridge.sdk import g1_protocol, g1_rpc

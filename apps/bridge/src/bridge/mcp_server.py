@@ -39,6 +39,9 @@ log = structlog.get_logger(__name__)
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
 ROBOT_HOST = os.environ.get("ROBOT_HOST", "127.0.0.1")
 DDS_DOMAIN_ID = int(os.environ.get("DDS_DOMAIN_ID", "0"))
+# Pin CycloneDDS to one NIC. Empty = autodetermine, correct on a dev machine.
+# Onboard the G1's Jetson this must be `eth0` — see `init_dds`.
+DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
 
 # Back↔bridge link: how this server is reached. Default is stdio (what Claude
 # Code's MCP client expects). Set BRIDGE_TRANSPORT=http to expose FastMCP's
@@ -55,7 +58,7 @@ if SIM_MODE != "stub":
     from bridge.sdk.connection import init_dds
     from bridge.sdk.state import get_sampler
 
-    init_dds(robot_host=ROBOT_HOST, domain_id=DDS_DOMAIN_ID)
+    init_dds(robot_host=ROBOT_HOST, domain_id=DDS_DOMAIN_ID, interface=DDS_INTERFACE)
     # Warm the subscriber singleton so messages start flowing immediately.
     get_sampler()
 

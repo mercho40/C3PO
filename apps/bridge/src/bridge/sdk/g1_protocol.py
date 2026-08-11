@@ -105,6 +105,20 @@ def topics_for(sim_mode: str) -> Topics:
 
 API_ID_G1_STATE: Final[int] = 7101  # Full-body posture / gait mode
 API_ID_G1_UPPER_LIMBS: Final[int] = 7106  # Upper-limb gesture trigger
+API_ID_LOCO_SET_VELOCITY: Final[int] = 7105  # Body-frame velocity setpoint
+
+# api_ids are scoped *per service*, not globally — 7107 means SET_SPEED_MODE on
+# `sport` but something unrelated on `arm`. The full loco surface (from the
+# vendor's `g1_loco_client.hpp`; see docs/ROBOT-INVENTORY.md §3) is:
+#
+#   7001..7006  GET fsm_id / fsm_mode / balance_mode / swing+stand height / phase
+#   7101  SET_FSM_ID        7102  SET_BALANCE_MODE
+#   7103  SET_SWING_HEIGHT  7104  SET_STAND_HEIGHT
+#   7105  SET_VELOCITY      7106  SET_ARM_TASK      7107  SET_SPEED_MODE
+#
+# Only the three named above are wired up so far. The getters would give us real
+# preconditions (is the FSM actually in a gait mode before we send velocity?)
+# and are the obvious next addition.
 
 
 # ---------------------------------------------------------------------------

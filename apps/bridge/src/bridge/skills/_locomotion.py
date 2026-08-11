@@ -1,13 +1,24 @@
-"""Shared helpers for skills that publish to `rt/run_command/cmd`.
+"""Shared velocity helpers for locomotion skills, dispatched by `SIM_MODE`.
 
-Isaac Sim's velocity command channel expects a Python-list-as-string
-`"[x_vel, y_vel, yaw_vel, height]"` (m/s, m/s, rad/s, m). The publisher is
-cached at module scope so multiple skill calls don't restart DDS discovery.
+The two targets take velocity through completely different channels, so this
+module is the single seam that hides the difference — `walk_to` and `turn`
+call `send_velocity` and never learn which one they're driving.
 
-Constants come from `unitree_sim_isaaclab/send_commands_keyboard.py` —
-forward velocity caps at 1.0 m/s, lateral 0.5, yaw 1.57 rad/s. The walk
-policy runs at ~10-15% of commanded velocity, so generous timeouts are
-required for skills that travel measurable distances.
+- **sim** (`isaac`, `mujoco_local`): publishes a Python-list-as-string
+  `"[x_vel, y_vel, yaw_vel, height]"` to `rt/run_command/cmd`. This is an
+  Isaac Sim convenience channel; real G1 firmware does **not** subscribe to
+  it, which is why publishing there on real hardware is a silent no-op.
+- **real**: a `SET_VELOCITY` RPC (api_id 7105) on `rt/api/sport/request`
+  carrying `{"velocity": [vx, vy, omega], "duration": d}`. `height` has no
+  place in that call — stand height is a separate api_id (7104) — so it is
+  accepted and ignored here.
+
+Velocity caps and gains come from `unitree_sim_isaaclab/send_commands_keyboard.py`
+and are fitted to the *sim* walk policy, which runs at ~10-15% of commanded
+velocity. **They will not transfer to real hardware** and need measuring on
+the robot before `walk_to` can close a distance accurately there. The caps
+are still applied on real as a safety clamp, which is the conservative
+direction to be wrong in.
 
 `_` prefix on the module: skills inside `bridge.skills` import freely; this
 isn't part of the bridge's public API.
@@ -16,6 +27,7 @@ isn't part of the bridge's public API.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -25,7 +37,20 @@ from bridge.skills.task_runtime import Task
 
 log = structlog.get_logger(__name__)
 
+SIM_MODE = os.environ.get("SIM_MODE", "stub")
+
 CMD_TOPIC = "rt/run_command/cmd"
+
+# How long the firmware honours one SET_VELOCITY setpoint before stopping by
+# itself. We re-issue every LOOP_PERIOD_S (20 ms), so 1.0 s is ~50x headroom
+# against a slow loop while still braking the robot within a second if this
+# process dies mid-stride.
+#
+# This matters more than it looks: it is a deadman *below* our software. The
+# alternative the vendor client offers is `Move()`'s continuous mode with
+# duration=864000 (ten days), where a crashed bridge leaves the robot walking
+# with its last setpoint. Do not raise this to "reduce chatter".
+VELOCITY_DURATION_S = 1.0
 
 # Loop / progress
 LOOP_HZ = 50
@@ -61,7 +86,23 @@ def _get_publisher() -> Any:
 
 
 def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> None:
-    """Publish one velocity command to the run-command channel."""
+    """Send one body-frame velocity setpoint, by whatever channel this target uses.
+
+    `height` applies to the sim channel only; see the module docstring.
+    """
+    if SIM_MODE == "real":
+        from bridge.sdk import g1_rpc
+
+        code, _ = g1_rpc.call_set_velocity(vx, vy, vyaw, VELOCITY_DURATION_S)
+        if code != 0:
+            # Deliberately not raising: this is called at 50 Hz inside a control
+            # loop, and one dropped setpoint is self-correcting — the next
+            # iteration re-sends, and if they *all* fail the firmware's duration
+            # timeout stops the robot. Raising here would instead abort the
+            # skill mid-stride, skipping its own stop sequence.
+            log.warning("locomotion.set_velocity.rpc_error", rpc_code=code)
+        return
+
     from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
 
     payload = str([float(vx), float(vy), float(vyaw), float(height)])
