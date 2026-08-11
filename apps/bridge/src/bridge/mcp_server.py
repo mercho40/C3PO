@@ -34,6 +34,9 @@ import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 
+from bridge import watchdog
+from bridge.watchdog import get_watchdog
+
 log = structlog.get_logger(__name__)
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
@@ -705,6 +708,19 @@ def main() -> None:
     ``BRIDGE_TRANSPORT=http`` to serve FastMCP's streamable-http transport at
     ``http://{BRIDGE_HOST}:{BRIDGE_PORT}/mcp`` — how ``apps/back`` connects.
     """
+    # Operator-link watchdog (SPEC §10.3). Real hardware only, and OFF unless
+    # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
+    #
+    # Short version: today's tool calls block the transport, so "operator
+    # silent while a task runs" is the normal state during any long skill, not
+    # a dead link. Arming it now would cancel every walk_to mid-stride. It
+    # becomes correct once long skills return a task_id immediately and the
+    # operator's progress polls become a real liveness signal.
+    if SIM_MODE == "real" and watchdog.ENABLED:
+        get_watchdog().start()
+    elif SIM_MODE == "real":
+        log.info("watchdog.disabled", reason="LINK_WATCHDOG not set")
+
     if BRIDGE_TRANSPORT in ("http", "streamable-http"):
         log.info(
             "c3po-bridge.start",
