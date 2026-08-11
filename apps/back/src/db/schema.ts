@@ -4,6 +4,8 @@ import {
   text,
   timestamp,
   boolean,
+  integer,
+  jsonb,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -185,5 +187,114 @@ export const invitationRelations = relations(invitation, ({ one }) => ({
   user: one(user, {
     fields: [invitation.inviterId],
     references: [user.id],
+  }),
+}));
+
+// ---------------------------------------------------------------------------
+// C3PO operational tables
+//
+// `session` (singular, above) is Better Auth's login session. These are the
+// operator-facing records: conversations with the internal agent, and an audit
+// trail of every skill the agent dispatched to the robot.
+// ---------------------------------------------------------------------------
+
+/** One conversation with the internal agent. */
+export const chat = pgTable(
+  "chat",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    // Nullable so single-tenant installs work before an org exists; set null
+    // rather than cascade so deleting an org never destroys its audit trail.
+    organizationId: text("organization_id").references(() => organization.id, {
+      onDelete: "set null",
+    }),
+    title: text("title"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // The chat list is "my chats, most recent first" — this covers it exactly.
+    index("chat_user_updated_idx").on(t.userId, t.updatedAt),
+  ],
+);
+
+/** One turn in a conversation, stored in the AI SDK's UIMessage shape. */
+export const chatMessage = pgTable(
+  "chat_message",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    chatId: text("chat_id")
+      .notNull()
+      .references(() => chat.id, { onDelete: "cascade" }),
+    role: text("role").$type<"user" | "assistant" | "system">().notNull(),
+    // `UIMessage.parts` verbatim: text, reasoning, tool calls and tool results
+    // in generation order. Storing the parts array rather than flattened text
+    // means reloading a chat reproduces tool-call cards exactly as they were
+    // streamed, instead of a lossy transcript.
+    parts: jsonb("parts").$type<unknown[]>().notNull(),
+    // Monotonic per chat. Ordering by `created_at` alone is wrong: a turn's
+    // user and assistant messages are written in one transaction and can share
+    // a timestamp, which would render history out of order.
+    seq: integer("seq").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("chat_message_chat_seq_idx").on(t.chatId, t.seq)],
+);
+
+/** Every skill dispatched to the robot — the audit trail (SPEC §3). */
+export const toolCallLog = pgTable(
+  "tool_call_log",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    // Nullable: skills can also be driven by an external MCP client with no
+    // chat behind them. The audit trail should still capture those.
+    chatId: text("chat_id").references(() => chat.id, { onDelete: "cascade" }),
+    messageId: text("message_id").references(() => chatMessage.id, {
+      onDelete: "set null",
+    }),
+    skillName: text("skill_name").notNull(),
+    params: jsonb("params").$type<Record<string, unknown>>(),
+    result: jsonb("result"),
+    status: text("status").$type<"ok" | "error">().notNull(),
+    error: text("error"),
+    durationMs: integer("duration_ms"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("tool_call_log_chat_idx").on(t.chatId, t.createdAt),
+    // "What did the robot actually do, and when" — the question you ask after
+    // something goes wrong, without knowing which chat caused it.
+    index("tool_call_log_skill_idx").on(t.skillName, t.createdAt),
+  ],
+);
+
+export const chatRelations = relations(chat, ({ one, many }) => ({
+  user: one(user, { fields: [chat.userId], references: [user.id] }),
+  organization: one(organization, {
+    fields: [chat.organizationId],
+    references: [organization.id],
+  }),
+  messages: many(chatMessage),
+  toolCalls: many(toolCallLog),
+}));
+
+export const chatMessageRelations = relations(chatMessage, ({ one }) => ({
+  chat: one(chat, { fields: [chatMessage.chatId], references: [chat.id] }),
+}));
+
+export const toolCallLogRelations = relations(toolCallLog, ({ one }) => ({
+  chat: one(chat, { fields: [toolCallLog.chatId], references: [chat.id] }),
+  message: one(chatMessage, {
+    fields: [toolCallLog.messageId],
+    references: [chatMessage.id],
   }),
 }));

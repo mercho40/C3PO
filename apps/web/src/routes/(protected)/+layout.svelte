@@ -6,7 +6,10 @@
   let { children, data } = $props();
 </script>
 
-<Sidebar.Provider open={data.sidebarOpen} class="font-display h-svh overflow-hidden text-[#eaf1ff]">
+<Sidebar.Provider
+  open={data.sidebarOpen}
+  class="h-svh overflow-hidden font-display text-[#eaf1ff]"
+>
   <AppSidebar />
   <Sidebar.Inset class="relative overflow-hidden bg-[#06090f]">
     <!-- Radial glows -->

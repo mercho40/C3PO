@@ -14,7 +14,7 @@ Status as of **2026-08-11**.
 
 C3PO gives an LLM a body. A **skill registry** defines what the robot can do, in terms
 an LLM can reason about. Three different kinds of driver — a human in a web console, an
-external LLM over MCP, or a co-located person speaking — all issue the *same* skills.
+external LLM over MCP, or a co-located person speaking — all issue the _same_ skills.
 A **control plane** (`apps/back`) owns orchestration, persistence and auth. A **bridge**
 (`apps/bridge`) turns a skill invocation into robot motion over DDS. The robot's own
 firmware does the actual walking; we send high-level setpoints, never joint torques.
@@ -27,14 +27,14 @@ in-house agent later — without touching the skills, the bridge, or the protoco
 
 ## 1. Four layers
 
-| Layer | Workspace | Owns | Does **not** own |
-| --- | --- | --- | --- |
-| Console | `apps/web` | Operator UI, live view, e-stop button | Any robot logic |
-| Control plane | `apps/back` | Skill catalogue, agent runtime, sessions, persistence, auth, MCP adapter | Talking to the robot |
-| Bridge | `apps/bridge` | DDS, skill execution, task lifecycle, robot state | Deciding *what* to do |
-| Robot | firmware | Balance, gait, joint control, safety limits | Anything semantic |
+| Layer         | Workspace     | Owns                                                                     | Does **not** own      |
+| ------------- | ------------- | ------------------------------------------------------------------------ | --------------------- |
+| Console       | `apps/web`    | Operator UI, live view, e-stop button                                    | Any robot logic       |
+| Control plane | `apps/back`   | Skill catalogue, agent runtime, sessions, persistence, auth, MCP adapter | Talking to the robot  |
+| Bridge        | `apps/bridge` | DDS, skill execution, task lifecycle, robot state                        | Deciding _what_ to do |
+| Robot         | firmware      | Balance, gait, joint control, safety limits                              | Anything semantic     |
 
-The boundary that matters most is **bridge ↔ robot**: we send *high-level setpoints*
+The boundary that matters most is **bridge ↔ robot**: we send _high-level setpoints_
 ("walk at 0.4 m/s", "enter damp") and the G1's own controller decides how to move its
 legs. We are not doing low-level control. Everything in `apps/bridge/skills` is a
 policy over the vendor's API, not a controller.
@@ -72,7 +72,7 @@ flowchart LR
   domain. `SIM_MODE=real` relocates the bridge; it is not a `ROBOT_HOST` swap.
 
 `apps/back`, Postgres and `apps/web` stay off-robot in **both** cases. The test for
-"does this belong onboard?" is: *must it keep working when the operator link drops?*
+"does this belong onboard?" is: _must it keep working when the operator link drops?_
 That set is small — the bridge, and stop-related safety. The agent doesn't qualify: it
 calls a remote API, so a dropped link kills it wherever it runs.
 
@@ -123,7 +123,7 @@ Precise meanings for terms that get used loosely.
 
 - **Skill** — a discrete robot capability with typed parameters, defined once and
   executed by the bridge. `walk_to`, `damp`, `wave`.
-- **Task** (`skills/task_runtime.py`) — one *invocation* of a long-running skill. Carries
+- **Task** (`skills/task_runtime.py`) — one _invocation_ of a long-running skill. Carries
   id, status, progress, phase, and a cancel event that the skill checks between loop
   iterations. This is how cancellation works: cooperative, not preemptive.
 - **Topics profile** (`g1_protocol.topics_for(SIM_MODE)`) — maps a logical channel
@@ -132,17 +132,17 @@ Precise meanings for terms that get used loosely.
   `sport_request`; real is the reverse.
 - **`SKILL_REQUESTS`** — table mapping a skill name to `(topic_kind, api_id, data)` for
   posture/gesture skills. Adding most new gestures is a one-line entry here.
-- **`g1_rpc`** — request/response RPC over DDS for the real robot. Each *service*
+- **`g1_rpc`** — request/response RPC over DDS for the real robot. Each _service_
   (`sport`, `arm`) exposes many api_ids; a client registers the ones it uses.
 - **api_id** — an operation selector **scoped to a service**, not globally unique. `7107`
   means one thing on `sport` and another on `arm`.
 - **`SIM_MODE`** — `stub` | `isaac` | `mujoco_local` | `real`. Selects topic profile,
-  dispatch path, *and* where the bridge is deployed.
+  dispatch path, _and_ where the bridge is deployed.
 
 ### Two words that mean different things
 
 - **`session`** (Better Auth login) vs **`sessions`** (an operator run). Never conflate.
-- **"sim_state"** in `state.py` is the *variable* name for the pose source. On real it
+- **"sim_state"** in `state.py` is the _variable_ name for the pose source. On real it
   resolves to `sportmodestate`, which is a different message entirely — a naming wart
   that currently hides a bug (§6).
 
@@ -150,21 +150,21 @@ Precise meanings for terms that get used loosely.
 
 ## 6. State: what we can know about the robot
 
-| Quantity | Sim | Real | Status |
-| --- | --- | --- | --- |
-| Joint state, IMU, tick | `rt/lowstate` | `rt/lf/lowstate` | ✅ works both, verified live |
-| Pose (x, y, yaw) | `rt/sim_state` JSON | `rt/odommodestate` | ✅ **works both, verified live** |
-| Posture / FSM mode | `mode_machine` | — | ⚠️ returns `not_available_over_dds` |
-| Battery | — | `rt/lf/bmsstate` | ⬜ not wired |
-| Faults | — | unknown source | ⬜ decoder written, unwired |
+| Quantity               | Sim                 | Real               | Status                              |
+| ---------------------- | ------------------- | ------------------ | ----------------------------------- |
+| Joint state, IMU, tick | `rt/lowstate`       | `rt/lf/lowstate`   | ✅ works both, verified live        |
+| Pose (x, y, yaw)       | `rt/sim_state` JSON | `rt/odommodestate` | ✅ **works both, verified live**    |
+| Posture / FSM mode     | `mode_machine`      | —                  | ⚠️ returns `not_available_over_dds` |
+| Battery                | —                   | `rt/lf/bmsstate`   | ⬜ not wired                        |
+| Faults                 | —                   | unknown source     | ⬜ decoder written, unwired         |
 
 ### Pose is not symmetric, and that asymmetry bit us once
 
 The two targets publish pose on **different topics with different types**:
 
-| | Topic | Type | Yaw from |
-| --- | --- | --- | --- |
-| sim | `rt/sim_state` | `String_` (JSON) | quaternion |
+|      | Topic              | Type                          | Yaw from           |
+| ---- | ------------------ | ----------------------------- | ------------------ |
+| sim  | `rt/sim_state`     | `String_` (JSON)              | quaternion         |
 | real | `rt/odommodestate` | `unitree_go::SportModeState_` | `imu_state.rpy[2]` |
 
 Originally real pose was subscribed as `String_` on `rt/lf/sportmodestate`, inheriting
@@ -173,7 +173,7 @@ type** — so the subscription never received a message, `pose` stayed `None` fo
 `walk_to`/`turn` aborted on `pose is None` before sending anything. Nothing errored;
 it just looked like a quiet robot.
 
-The lesson generalises: a wrong DDS type is a *silent* failure. `get_state()["raw"]`
+The lesson generalises: a wrong DDS type is a _silent_ failure. `get_state()["raw"]`
 now reports `pose_source`, `pose_messages_received` and `pose_age_s` so a null pose can
 be diagnosed without reading the source.
 
@@ -197,13 +197,13 @@ needs no IDL type.
 
 ## 7. Actuation: what we can command
 
-| Capability | Sim | Real | Status |
-| --- | --- | --- | --- |
-| Velocity | `rt/run_command/cmd` | api_id 7105 | ✅ wired, ⚠️ unverified on hardware |
-| Postures (damp, sit, squat…) | — | api_id 7101 | ✅ wired, damp verified live |
-| Arm gestures | — | api_id 7106 | ✅ wired |
-| Stand/swing height, speed mode | — | 7102–7104, 7107 | ⬜ not wired |
-| Hands (Dex3) | — | `/api/dex3_msg_controller` | ⬜ not wired |
+| Capability                     | Sim                  | Real                       | Status                              |
+| ------------------------------ | -------------------- | -------------------------- | ----------------------------------- |
+| Velocity                       | `rt/run_command/cmd` | api_id 7105                | ✅ wired, ⚠️ unverified on hardware |
+| Postures (damp, sit, squat…)   | —                    | api_id 7101                | ✅ wired, damp verified live        |
+| Arm gestures                   | —                    | api_id 7106                | ✅ wired                            |
+| Stand/swing height, speed mode | —                    | 7102–7104, 7107            | ⬜ not wired                        |
+| Hands (Dex3)                   | —                    | `/api/dex3_msg_controller` | ⬜ not wired                        |
 
 ---
 
@@ -214,14 +214,14 @@ Five layers, outermost first. Each is independent — that's the point.
 1. **The physical remote / e-stop.** Always authoritative. Nothing we write overrides it.
 2. **Firmware velocity timeout.** `SET_VELOCITY` carries `duration`; we send **1.0 s** and
    re-issue at loop rate. If the bridge crashes, the robot stops within a second. This is
-   a deadman *below our software* and the strongest guarantee we have. The vendor's
+   a deadman _below our software_ and the strongest guarantee we have. The vendor's
    continuous mode (`duration=864000`) would instead leave the robot walking with its
    last setpoint — never use it.
 3. **`stop_everything`.** Cancels every running task, sends zero velocity, then damps.
    Damp is not redundant with zero velocity: zero velocity stops the gait, damp zeroes
    joint stiffness.
 4. **Cooperative cancellation.** Long-running skills check `task.cancel_event` between
-   iterations and run their own stop sequence. Note this is *cooperative* — a skill stuck
+   iterations and run their own stop sequence. Note this is _cooperative_ — a skill stuck
    in a blocking call won't observe it.
 5. **Link watchdog** (SPEC §10.3, not built). Scope reduced by layer 2: the firmware
    already handles the velocity case, so the watchdog is for non-velocity state (a
@@ -238,19 +238,19 @@ robot. This is currently solved socially, not technically.
 
 ## 9. What is actually true today
 
-| | Status |
-| --- | --- |
-| Bridge deployed onboard the Jetson | ✅ `~/c3po`, Python 3.12, deps synced, `.env` written |
-| DDS pinned to `eth0` | ✅ `DDS_INTERFACE` |
-| Robot networking | ✅ Wi-Fi + internet + internal LAN, survives reboot |
-| `get_state` against real hardware | ✅ **verified live** — lowstate ~20 Hz, pose ~50 Hz, 35 motors |
-| Pose on real | ✅ verified live via `rt/odommodestate` |
-| Posture/gesture skills on real | ✅ **arm gesture verified live — the robot moved** |
-| Velocity RPC accepted (7105) | ✅ `code=0` with zero-velocity setpoint |
-| Non-zero velocity / stepping | ⬜ **never executed** — axis signs and scaling unknown |
-| `walk_to` / `turn` on real | ⚠️ unblocked, untested, gains are sim-fitted |
-| Posture readback on real | ✅ verified live via api_id 7001 (FSM 802) |
-| Console, voice, agent runtime | ⬜ later phases |
+|                                    | Status                                                         |
+| ---------------------------------- | -------------------------------------------------------------- |
+| Bridge deployed onboard the Jetson | ✅ `~/c3po`, Python 3.12, deps synced, `.env` written          |
+| DDS pinned to `eth0`               | ✅ `DDS_INTERFACE`                                             |
+| Robot networking                   | ✅ Wi-Fi + internet + internal LAN, survives reboot            |
+| `get_state` against real hardware  | ✅ **verified live** — lowstate ~20 Hz, pose ~50 Hz, 35 motors |
+| Pose on real                       | ✅ verified live via `rt/odommodestate`                        |
+| Posture/gesture skills on real     | ✅ **arm gesture verified live — the robot moved**             |
+| Velocity RPC accepted (7105)       | ✅ `code=0` with zero-velocity setpoint                        |
+| Non-zero velocity / stepping       | ⬜ **never executed** — axis signs and scaling unknown         |
+| `walk_to` / `turn` on real         | ⚠️ unblocked, untested, gains are sim-fitted                   |
+| Posture readback on real           | ✅ verified live via api_id 7001 (FSM 802)                     |
+| Console, voice, agent runtime      | ⬜ later phases                                                |
 
 ---
 
@@ -260,7 +260,7 @@ robot. This is currently solved socially, not technically.
 2. ~~Wire real pose.~~ ✅ done via `rt/odommodestate`, verified live.
 3. **Wire posture via 7001/7002.** Small, no motion, and the last thing making
    `get_state` incomplete on real.
-4. **Supervised motion window** — verify `stop_everything` *first*, then the 7105 JSON,
+4. **Supervised motion window** — verify `stop_everything` _first_, then the 7105 JSON,
    axis signs, required FSM mode, and real velocity scaling.
 5. Then: battery, faults source, link watchdog, hands, and the console/agent phases.
 

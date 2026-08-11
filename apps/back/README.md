@@ -51,15 +51,15 @@ directly against `/api/auth/sign-up/email` (Better Auth's REST surface).
 
 ## Scripts
 
-| Command             | Description                                    |
-| -------------------- | ----------------------------------------------- |
-| `bun run dev`        | Dev server, watch mode                          |
-| `bun run build`      | Compile to a standalone binary (`./server`)     |
-| `bun run start`      | Run the compiled binary (`build` first)         |
-| `bun run check-types` | `tsc --noEmit`                                 |
-| `bun run db:generate` | Generate a Drizzle migration from schema.ts    |
-| `bun run db:migrate`  | Apply migrations (see known issue above)       |
-| `bun run db:studio`   | Open Drizzle Studio                            |
+| Command               | Description                                 |
+| --------------------- | ------------------------------------------- |
+| `bun run dev`         | Dev server, watch mode                      |
+| `bun run build`       | Compile to a standalone binary (`./server`) |
+| `bun run start`       | Run the compiled binary (`build` first)     |
+| `bun run check-types` | `tsc --noEmit`                              |
+| `bun run db:generate` | Generate a Drizzle migration from schema.ts |
+| `bun run db:migrate`  | Apply migrations (see known issue above)    |
+| `bun run db:studio`   | Open Drizzle Studio                         |
 
 ## Source layout
 

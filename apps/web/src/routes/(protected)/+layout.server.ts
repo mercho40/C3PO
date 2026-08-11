@@ -8,5 +8,7 @@ export const load: LayoutServerLoad = ({ locals, cookies }) => {
   // Persist the sidebar's expanded/collapsed state across reloads (the
   // SidebarProvider writes this cookie; we read it back here for SSR).
   const sidebarState = cookies.get(SIDEBAR_COOKIE_NAME);
-  return { sidebarOpen: sidebarState === undefined ? true : sidebarState === "true" };
+  return {
+    sidebarOpen: sidebarState === undefined ? true : sidebarState === "true",
+  };
 };

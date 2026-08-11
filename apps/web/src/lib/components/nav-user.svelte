@@ -1,10 +1,5 @@
 <script lang="ts">
-  import {
-    ChevronsUpDown,
-    LogOut,
-    Settings,
-    UserRound,
-  } from "@lucide/svelte";
+  import { ChevronsUpDown, LogOut, Settings, UserRound } from "@lucide/svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { authClient } from "$lib/auth-client";
@@ -50,7 +45,11 @@
           >
             <Avatar.Root class="size-8 shrink-0 rounded-lg">
               {#if user?.image}
-                <Avatar.Image src={user.image} alt={displayName} class="rounded-lg" />
+                <Avatar.Image
+                  src={user.image}
+                  alt={displayName}
+                  class="rounded-lg"
+                />
               {/if}
               <Avatar.Fallback
                 class="rounded-lg bg-gradient-to-br from-[#9fc5ff] to-[#4a7dd1] font-mono text-[11px] font-bold text-[#06121c]"
@@ -59,9 +58,13 @@
               </Avatar.Fallback>
             </Avatar.Root>
             <div class="grid flex-1 text-start leading-tight">
-              <span class="truncate text-[13px] font-medium text-[#eaf1ff]">{displayName}</span>
+              <span class="truncate text-[13px] font-medium text-[#eaf1ff]"
+                >{displayName}</span
+              >
               {#if user?.email && user.email !== displayName}
-                <span class="truncate text-[11px] text-[#8a96ad]">{user.email}</span>
+                <span class="truncate text-[11px] text-[#8a96ad]"
+                  >{user.email}</span
+                >
               {/if}
             </div>
             <ChevronsUpDown class="ms-auto size-3.5 shrink-0 text-[#8a96ad]" />
@@ -78,7 +81,11 @@
           <div class="flex items-center gap-2 px-1 py-1.5 text-start text-sm">
             <Avatar.Root class="size-8 shrink-0 rounded-lg">
               {#if user?.image}
-                <Avatar.Image src={user.image} alt={displayName} class="rounded-lg" />
+                <Avatar.Image
+                  src={user.image}
+                  alt={displayName}
+                  class="rounded-lg"
+                />
               {/if}
               <Avatar.Fallback
                 class="rounded-lg bg-gradient-to-br from-[#9fc5ff] to-[#4a7dd1] font-mono text-[11px] font-bold text-[#06121c]"
@@ -89,7 +96,9 @@
             <div class="grid flex-1 text-start text-sm leading-tight">
               <span class="truncate font-medium">{displayName}</span>
               {#if user?.email && user.email !== displayName}
-                <span class="truncate text-xs text-muted-foreground">{user.email}</span>
+                <span class="truncate text-xs text-muted-foreground"
+                  >{user.email}</span
+                >
               {/if}
             </div>
           </div>
@@ -106,7 +115,10 @@
           </DropdownMenu.Item>
         </DropdownMenu.Group>
         <DropdownMenu.Separator />
-        <DropdownMenu.Item variant="destructive" onSelect={() => (logoutDialogOpen = true)}>
+        <DropdownMenu.Item
+          variant="destructive"
+          onSelect={() => (logoutDialogOpen = true)}
+        >
           <LogOut />
           Cerrar sesión
         </DropdownMenu.Item>
@@ -120,12 +132,17 @@
     <AlertDialog.Header>
       <AlertDialog.Title>¿Cerrar sesión?</AlertDialog.Title>
       <AlertDialog.Description>
-        Se cerrará tu sesión en C3PO y volverás a la pantalla de inicio de sesión.
+        Se cerrará tu sesión en C3PO y volverás a la pantalla de inicio de
+        sesión.
       </AlertDialog.Description>
     </AlertDialog.Header>
     <AlertDialog.Footer>
       <AlertDialog.Cancel disabled={loggingOut}>Cancelar</AlertDialog.Cancel>
-      <AlertDialog.Action variant="destructive" disabled={loggingOut} onclick={logout}>
+      <AlertDialog.Action
+        variant="destructive"
+        disabled={loggingOut}
+        onclick={logout}
+      >
         <LogOut />
         Cerrar sesión
       </AlertDialog.Action>

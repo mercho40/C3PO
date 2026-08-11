@@ -1,30 +1,11 @@
 import { Elysia } from "elysia";
-import { auth } from "@back/lib/auth";
+import { betterAuth } from "@back/lib/auth-plugin";
 import { cors } from "@elysiajs/cors";
 import { skillsRoutes } from "@back/routes/skills";
 import { tasksRoutes } from "@back/routes/tasks";
 import { stateRoutes } from "@back/routes/state";
 import { agentRoutes } from "@back/routes/agent";
-
-// user middleware (compute user and session and pass to routes)
-const betterAuth = new Elysia({ name: "better-auth" })
-  .mount(auth.handler)
-  .macro({
-    auth: {
-      async resolve({ status, request: { headers } }) {
-        const session = await auth.api.getSession({
-          headers,
-        });
-
-        if (!session) return status(401);
-
-        return {
-          user: session.user,
-          session: session.session,
-        };
-      },
-    },
-  });
+import { chatsRoutes } from "@back/routes/chats";
 
 const app = new Elysia()
   .use(betterAuth)
@@ -40,7 +21,12 @@ const app = new Elysia()
   // Everything below can read or move the robot (or spend Anthropic tokens
   // via /agent) — require a session. /health stays open for monitoring.
   .guard({ auth: true }, (app) =>
-    app.use(skillsRoutes).use(tasksRoutes).use(stateRoutes).use(agentRoutes),
+    app
+      .use(skillsRoutes)
+      .use(tasksRoutes)
+      .use(stateRoutes)
+      .use(agentRoutes)
+      .use(chatsRoutes),
   )
   .listen(Number(process.env.PORT) || 3000);
 

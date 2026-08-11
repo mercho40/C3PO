@@ -2,7 +2,8 @@ import { defineSkill, t } from "./define";
 
 export const forgetLandmark = defineSkill({
   name: "forget_landmark",
-  description: "Delete a saved landmark. Returns status=not_found if the name doesn't exist.",
+  description:
+    "Delete a saved landmark. Returns status=not_found if the name doesn't exist.",
   parameters: t.Object({
     name: t.String({
       minLength: 1,

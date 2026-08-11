@@ -27,6 +27,7 @@ import {
 } from "ai";
 
 import { listSkills } from "@back/skills";
+import { logToolCall } from "@back/db/chats";
 import {
   callTool,
   BridgeToolError,
@@ -80,8 +81,16 @@ function buildSystemPrompt(): string {
   return `${SYSTEM_PREAMBLE}\n\nAvailable skills:\n${lines.join("\n")}`;
 }
 
-/** Build AI SDK tools from the TypeBox skill registry, each dispatching to the bridge. */
-function buildTools(): ToolSet {
+/**
+ * Build AI SDK tools from the TypeBox skill registry, each dispatching to the
+ * bridge and writing an audit row.
+ *
+ * Auditing happens here rather than by scraping tool parts off the finished
+ * message for two reasons: this is the only place with a real duration, and it
+ * still records the call if the stream is aborted mid-turn — which is exactly
+ * when you most want to know what the robot was told to do.
+ */
+function buildTools(chatId: string | null): ToolSet {
   const tools: ToolSet = {};
   for (const skill of listSkills()) {
     tools[skill.name] = tool({
@@ -91,8 +100,19 @@ function buildTools(): ToolSet {
         skill.parameters as Parameters<typeof jsonSchema>[0],
       ),
       execute: async (args) => {
+        const params = args as Record<string, unknown>;
+        const startedAt = Date.now();
         try {
-          return await callTool(skill.name, args as Record<string, unknown>);
+          const result = await callTool(skill.name, params);
+          void logToolCall({
+            chatId,
+            skillName: skill.name,
+            params,
+            result,
+            status: "ok",
+            durationMs: Date.now() - startedAt,
+          });
+          return result;
         } catch (err) {
           // Return the failure to the model as a normal tool result so the
           // agent can recover or report it, rather than aborting the stream.
@@ -102,6 +122,14 @@ function buildTools(): ToolSet {
               : err instanceof BridgeUnavailableError
                 ? "bridge_unavailable"
                 : String(err);
+          void logToolCall({
+            chatId,
+            skillName: skill.name,
+            params,
+            status: "error",
+            error: detail,
+            durationMs: Date.now() - startedAt,
+          });
           return { error: detail };
         }
       },
@@ -124,12 +152,15 @@ const ADAPTIVE_THINKING =
  * `result.toUIMessageStreamResponse()` from the Elysia route; Elysia streams it
  * to the client and `@ai-sdk/svelte`'s Chat renders tokens + tool calls live.
  */
-export async function runAgentChat(messages: UIMessage[]) {
+export async function runAgentChat(
+  messages: UIMessage[],
+  opts: { chatId?: string | null } = {},
+) {
   return streamText({
     model: anthropic(MODEL),
     system: buildSystemPrompt(),
     messages: await convertToModelMessages(messages),
-    tools: buildTools(),
+    tools: buildTools(opts.chatId ?? null),
     stopWhen: stepCountIs(MAX_STEPS),
     ...(ADAPTIVE_THINKING
       ? { providerOptions: { anthropic: { thinking: { type: "adaptive" } } } }

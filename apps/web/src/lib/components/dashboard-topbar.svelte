@@ -26,7 +26,9 @@
     orientation="vertical"
     class="me-1 h-5 bg-[rgba(180,210,255,0.12)]"
   />
-  <h1 class="font-display text-[28px] font-medium tracking-[-0.02em] text-[#eaf1ff]">
+  <h1
+    class="font-display text-[28px] font-medium tracking-[-0.02em] text-[#eaf1ff]"
+  >
     {title}
   </h1>
   <div class="ms-auto flex items-center gap-2.5">
@@ -37,7 +39,7 @@
       <Input
         bind:value={query}
         {placeholder}
-        class="font-mono h-full w-full rounded-none border-0 bg-transparent p-0 text-[12px] text-[#eaf1ff] shadow-none placeholder:text-[#8a96ad] focus-visible:ring-0 dark:bg-transparent"
+        class="h-full w-full rounded-none border-0 bg-transparent p-0 font-mono text-[12px] text-[#eaf1ff] shadow-none placeholder:text-[#8a96ad] focus-visible:ring-0 dark:bg-transparent"
       />
     </div>
     <DropdownMenu.Root>

@@ -36,9 +36,10 @@
     />
   </svg>
   <div class="absolute inset-0 flex items-end justify-center pb-[28%]">
-    <span class="font-display text-[38px] leading-none font-bold tracking-tight text-[#eaf1ff]"
+    <span
+      class="font-display text-[38px] leading-none font-bold tracking-tight text-[#eaf1ff]"
       >{percentage}</span
     >
-    <span class="font-heading pb-1 text-lg font-bold text-[#8a96ad]">%</span>
+    <span class="pb-1 font-heading text-lg font-bold text-[#8a96ad]">%</span>
   </div>
 </div>

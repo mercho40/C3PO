@@ -8,20 +8,48 @@
     getToolOrDynamicToolName,
   } from "ai";
   import { PUBLIC_API_URL } from "$env/static/public";
-  import { Send, Wrench, Square } from "@lucide/svelte";
+  import { Send, Wrench, Square, Plus, MessageSquare } from "@lucide/svelte";
   import { ScrollArea } from "$lib/components/ui/scroll-area/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Textarea } from "$lib/components/ui/textarea/index.js";
   import Markdown from "$lib/components/markdown.svelte";
+  import type { PageData } from "./$types";
+
+  let { data }: { data: PageData } = $props();
 
   // Talks to the backend internal agent (POST /agent), which streams Claude's
-  // tokens + tool calls back as a UI message stream.
-  const chat = new Chat({
-    transport: new DefaultChatTransport({
-      api: `${PUBLIC_API_URL}/agent`,
-      credentials: "include",
-    }),
+  // tokens + tool calls back as a UI message stream and persists both sides of
+  // the turn.
+  const transport = new DefaultChatTransport({
+    api: `${PUBLIC_API_URL}/agent`,
+    credentials: "include",
   });
+
+  // Id for a conversation that doesn't exist yet. Generated once per mount so
+  // it stays stable across re-renders; sent with every turn so the stream and
+  // the row it persists to agree without a round-trip.
+  const draftId = crypto.randomUUID();
+
+  const chatId = $derived(data.selected?.id ?? draftId);
+  const history = $derived(data.chats ?? []);
+
+  // Derived, not constructed once: SvelteKit reuses this component when only
+  // the query string changes, so building the Chat from the initial `data`
+  // would leave the previous conversation on screen after switching chats.
+  // Deriving rebuilds it when the selected id changes and leaves it alone
+  // while streaming (nothing invalidates `data` mid-turn).
+  //
+  // `messages` rehydrates history from the database; because we store
+  // `UIMessage.parts` verbatim, this reproduces tool-call cards exactly as they
+  // streamed rather than a flattened transcript.
+  const chat = $derived.by(
+    () =>
+      new Chat({
+        id: data.selected?.id ?? draftId,
+        messages: (data.selected?.messages ?? []) as never,
+        transport,
+      }),
+  );
 
   let input = $state("");
   let bottomEl = $state<HTMLDivElement>();
@@ -32,10 +60,26 @@
   const canSend = $derived(input.trim().length > 0 && !busy);
 
   const suggestions = [
-    { title: "Estado del robot", label: "postura, batería y fallos", action: "¿Cuál es el estado del robot?" },
-    { title: "Caminá", label: "2 metros hacia adelante", action: "Caminá 2 metros hacia adelante" },
-    { title: "Pará todo", label: "detener el movimiento", action: "Pará todo movimiento" },
-    { title: "Saludá", label: "hacé un gesto con la mano", action: "Saludá con la mano" },
+    {
+      title: "Estado del robot",
+      label: "postura, batería y fallos",
+      action: "¿Cuál es el estado del robot?",
+    },
+    {
+      title: "Caminá",
+      label: "2 metros hacia adelante",
+      action: "Caminá 2 metros hacia adelante",
+    },
+    {
+      title: "Pará todo",
+      label: "detener el movimiento",
+      action: "Pará todo movimiento",
+    },
+    {
+      title: "Saludá",
+      label: "hacé un gesto con la mano",
+      action: "Saludá con la mano",
+    },
   ];
 
   function send() {
@@ -61,14 +105,34 @@
     chat.sendMessage({ text: action });
   }
 
+  /** Put `?id=` in the URL without navigating, so a reload resumes this chat. */
+  function pinChatToUrl() {
+    const params = new URLSearchParams(window.location.search);
+    // Drop `q` — it's a one-shot hand-off; resending it on reload would
+    // silently re-issue a robot command.
+    params.delete("q");
+    params.set("id", chatId);
+    replaceState(`/chat?${params}`, {});
+  }
+
   // Hand-off from the dashboard command box / quick controls: an initial prompt
-  // arrives as `?q=…`. Send it once, then strip the query so a reload doesn't
-  // resend it.
+  // arrives as `?q=…`. Send it once, then rewrite the query so a reload doesn't
+  // resend it — while keeping the chat id so the conversation survives.
   onMount(() => {
     const q = new URLSearchParams(window.location.search).get("q")?.trim();
     if (q) {
       chat.sendMessage({ text: q });
-      replaceState("/chat", {});
+      pinChatToUrl();
+    }
+  });
+
+  // A brand-new chat has no `?id=` until it has actually said something. Pin it
+  // on the first message so the row exists before the URL advertises it —
+  // pinning earlier would hand out a link to a chat that was never created.
+  $effect(() => {
+    if (chat.messages.length > 0 && !data.selected) {
+      const current = new URLSearchParams(window.location.search).get("id");
+      if (current !== chatId) pinChatToUrl();
     }
   });
 
@@ -81,7 +145,38 @@
 </script>
 
 <div class="flex h-full w-full flex-col gap-4">
-  <ScrollArea class="min-h-0 flex-1 rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828]">
+  <!-- Conversation history. Plain links rather than client-side state: each is
+       a real URL an operator can bookmark or share, and the server load has the
+       messages ready on first paint. -->
+  <div class="flex items-center gap-2 overflow-x-auto pb-1">
+    <Button
+      href="/chat"
+      variant="outline"
+      size="sm"
+      class="shrink-0 gap-1.5 border-[rgba(180,210,255,0.14)] bg-[#0c1220] text-[13px] text-[#eaf1ff]"
+    >
+      <Plus class="size-3.5" />
+      Nuevo chat
+    </Button>
+
+    {#each history as item (item.id)}
+      {@const active = item.id === chatId}
+      <a
+        href={`/chat?id=${item.id}`}
+        title={item.title ?? "Sin título"}
+        class="flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[13px] transition-colors {active
+          ? 'border-[rgba(126,229,255,0.4)] bg-[rgba(126,229,255,0.08)] text-[#eaf1ff]'
+          : 'border-[rgba(180,210,255,0.1)] bg-[#0c1220] text-[#8a96ad] hover:text-[#eaf1ff]'}"
+      >
+        <MessageSquare class="size-3.5 shrink-0" />
+        <span class="max-w-[180px] truncate">{item.title ?? "Sin título"}</span>
+      </a>
+    {/each}
+  </div>
+
+  <ScrollArea
+    class="min-h-0 flex-1 rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828]"
+  >
     <div class="flex flex-col gap-5 p-5">
       {#if chat.messages.length === 0}
         <div class="flex flex-col items-center gap-6 py-16 text-center">
@@ -93,7 +188,8 @@
           <div class="max-w-md">
             <p class="text-[15px] text-[#eaf1ff]">Hablá con el robot</p>
             <p class="mt-1 text-[13px] text-[#8a96ad]">
-              Pedile estados, movimientos o gestos. El agente decide qué habilidades ejecutar.
+              Pedile estados, movimientos o gestos. El agente decide qué
+              habilidades ejecutar.
             </p>
           </div>
           <div class="grid w-full max-w-lg gap-2 sm:grid-cols-2">
@@ -121,15 +217,23 @@
                 class="mt-0.5 size-7 shrink-0 object-contain drop-shadow-[0_0_10px_rgba(126,229,255,0.45)]"
               />
             {/if}
-            <div class="flex max-w-[80%] flex-col gap-1.5 {isUser ? 'items-end' : 'items-start'}">
+            <div
+              class="flex max-w-[80%] flex-col gap-1.5 {isUser
+                ? 'items-end'
+                : 'items-start'}"
+            >
               {#each message.parts as part, i (i)}
                 {#if part.type === "text"}
                   {#if isUser}
-                    <div class="rounded-2xl border border-[rgba(159,197,255,0.2)] bg-[rgba(159,197,255,0.14)] px-4 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap text-[#eaf1ff]">
+                    <div
+                      class="rounded-2xl border border-[rgba(159,197,255,0.2)] bg-[rgba(159,197,255,0.14)] px-4 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap text-[#eaf1ff]"
+                    >
                       {part.text}
                     </div>
                   {:else}
-                    <div class="rounded-2xl border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.04)] px-4 py-2.5">
+                    <div
+                      class="rounded-2xl border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.04)] px-4 py-2.5"
+                    >
                       <Markdown md={part.text} />
                     </div>
                   {/if}
@@ -144,7 +248,8 @@
                   >
                     <Wrench class="size-3" />
                     {getToolOrDynamicToolName(part)}
-                    {#if part.state === "output-available"}· ✓{:else if part.state === "output-error"}· ✗{:else}· …{/if}
+                    {#if part.state === "output-available"}· ✓{:else if part.state === "output-error"}·
+                      ✗{:else}· …{/if}
                   </div>
                 {/if}
               {/each}
@@ -157,9 +262,16 @@
   </ScrollArea>
 
   {#if chat.error}
-    <div class="flex items-center justify-between gap-3 rounded-[10px] border border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.06)] px-4 py-2.5 text-[12px] text-[#ff8aa0]">
+    <div
+      class="flex items-center justify-between gap-3 rounded-[10px] border border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.06)] px-4 py-2.5 text-[12px] text-[#ff8aa0]"
+    >
       <span class="truncate">{chat.error.message}</span>
-      <Button variant="outline" size="sm" class="h-7 shrink-0" onclick={() => chat.regenerate()}>Reintentar</Button>
+      <Button
+        variant="outline"
+        size="sm"
+        class="h-7 shrink-0"
+        onclick={() => chat.regenerate()}>Reintentar</Button
+      >
     </div>
   {/if}
 

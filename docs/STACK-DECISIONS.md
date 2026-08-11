@@ -15,8 +15,8 @@ Decided **2026-08-11**. Hardware: Jetson Orin NX **16 GB**, Livox Mid-360, RealS
 **Decided:** C3PO shares no code, packages or configuration with the colleague's `gemm`
 workspace on the robot.
 
-**But note the distinction that actually matters:** *don't depend on their packages* is not
-the same as *don't use open source*. Running our own Nav2 with our own config is ours.
+**But note the distinction that actually matters:** _don't depend on their packages_ is not
+the same as _don't use open source_. Running our own Nav2 with our own config is ours.
 Importing `gemm_navigation` is not. Every third-party component below is one we own the
 deployment of.
 
@@ -25,18 +25,18 @@ That is a standing operational risk, not a solved problem — see `MENTAL-MODEL.
 
 ---
 
-## D2 — ROS 2 is a perception *subsystem*, not our architecture
+## D2 — ROS 2 is a perception _subsystem_, not our architecture
 
 **Decided:** run ROS 2 Humble in **our own container** for perception and navigation only.
 C3PO's Python keeps **zero ROS dependencies** and consumes the output as raw DDS topics.
 
-**Why this works:** ROS 2 *is* DDS. Our bridge already speaks CycloneDDS on domain 0, and
+**Why this works:** ROS 2 _is_ DDS. Our bridge already speaks CycloneDDS on domain 0, and
 we already parse a ROS type off the wire (`nav_msgs::msg::dds_::Odometry_` on
 `rt/state_estimator/*`). A ROS 2 node publishing on the same domain is directly readable by
 us — no `rclpy`, no ROS in `apps/bridge`.
 
 **Why a container:** the robot is Ubuntu 20.04. Humble needs 22.04. The native Foxy is EOL
-*and* its CLI segfaults on this machine (`ROBOT-INVENTORY.md` §2). Containerising is the
+_and_ its CLI segfaults on this machine (`ROBOT-INVENTORY.md` §2). Containerising is the
 only sane path, and it also pins the runtime against Unitree OTA churn.
 
 **Why not write our own SLAM:** there is no credible standalone LiDAR-inertial odometry
@@ -68,7 +68,7 @@ Three reasons this is worth its cost:
 1. **The robot's control API is raw DDS.** `/api/sport/request` (api_id 7101/7105/7106) is
    Unitree's own RPC, reached via `unitree_sdk2py`. Driving it from ROS would require the
    vendor's `unitree_ros2` message package as an extra translation layer — which is what
-   `gemm` does and what D1 rules out. Direct is the *shorter* path here, not a detour.
+   `gemm` does and what D1 rules out. Direct is the _shorter_ path here, not a detour.
 2. **Safety has to have one chokepoint.** `stop_everything`, the cancel tokens, the 1 s
    velocity deadman and the link watchdog all live in the bridge. If some commands reached
    the robot through a ROS node instead, "stop everything" would stop only some things.
@@ -82,7 +82,7 @@ Three reasons this is worth its cost:
 **We must define a few ROS IDL types ourselves** to read ROS topics without ROS:
 `geometry_msgs/Twist`, `nav_msgs/Odometry`, probably `sensor_msgs/PointCloud2`.
 
-Bounded work — these definitions are small and frozen — and they can be *generated* rather
+Bounded work — these definitions are small and frozen — and they can be _generated_ rather
 than hand-written: `idlc` ships with the CycloneDDS install already on the robot
 (`~/cyclonedds_ws/install/cyclonedds/bin/idlc`). Note we've already proven this direction
 works, by decoding `unitree_go::SportModeState_` off `rt/odommodestate`.
@@ -91,7 +91,7 @@ works, by decoding `unitree_go::SportModeState_` off `rt/odommodestate`.
 `base_link ↔ camera ↔ lidar ↔ map`. Inside the container that's free; on our side of the
 line it is not. Options, in rough order of preference:
 
-1. Keep all TF-dependent work inside the container and let it publish *already-resolved*
+1. Keep all TF-dependent work inside the container and let it publish _already-resolved_
    quantities (e.g. object positions in the robot's base frame) — the bridge then needs no
    transforms at all. This fits D7, which already says perception hands over egocentric,
    pre-digested structure.
@@ -115,16 +115,16 @@ obviously wrong, and if maintaining IDL types becomes a running sore, it is the 
 
 ## D3 — Perception pipeline
 
-| Stage | Component | Notes |
-| --- | --- | --- |
-| LiDAR driver | `livox_ros_driver2` | Mid-360 at `192.168.123.120`, ports 56100–56500 |
-| LiDAR odometry + map | **FAST-LIO2** | Use the G1 humanoid fork — the Mid-360 is mounted **upside down** on this robot and it handles the extrinsics |
-| Camera | RealSense D435i | Confirmed usable and ours to drive |
-| Object detection | **YOLO11 + TensorRT** | 60+ FPS at <15 W on Orin NX — cheap enough to run continuously |
-| 3D grounding | RealSense depth × YOLO boxes | This is the step that turns detection into *spatial* knowledge |
+| Stage                | Component                    | Notes                                                                                                         |
+| -------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| LiDAR driver         | `livox_ros_driver2`          | Mid-360 at `192.168.123.120`, ports 56100–56500                                                               |
+| LiDAR odometry + map | **FAST-LIO2**                | Use the G1 humanoid fork — the Mid-360 is mounted **upside down** on this robot and it handles the extrinsics |
+| Camera               | RealSense D435i              | Confirmed usable and ours to drive                                                                            |
+| Object detection     | **YOLO11 + TensorRT**        | 60+ FPS at <15 W on Orin NX — cheap enough to run continuously                                                |
+| 3D grounding         | RealSense depth × YOLO boxes | This is the step that turns detection into _spatial_ knowledge                                                |
 
 **Compute budget (16 GB):** YOLO11 in TensorRT is a few hundred MB; FAST-LIO2 is mostly
-CPU. Comfortable headroom. It is the *local LLM* option that would blow this budget, which
+CPU. Comfortable headroom. It is the _local LLM_ option that would blow this budget, which
 is why we don't take it (D5).
 
 ---
@@ -174,12 +174,12 @@ the official Anthropic SDK.
 
 **Decided:**
 
-| Function | Where | Component |
-| --- | --- | --- |
-| Wake word | **local**, CPU | openWakeWord / tflite (`hey_claude.tflite`) |
-| "Stop" phrase | **local**, CPU | same model, second keyword — see below |
-| Speech → text | cloud | Deepgram streaming |
-| Text → speech | cloud | Cartesia |
+| Function      | Where          | Component                                   |
+| ------------- | -------------- | ------------------------------------------- |
+| Wake word     | **local**, CPU | openWakeWord / tflite (`hey_claude.tflite`) |
+| "Stop" phrase | **local**, CPU | same model, second keyword — see below      |
+| Speech → text | cloud          | Deepgram streaming                          |
+| Text → speech | cloud          | Cartesia                                    |
 
 **Why not local STT/TTS:** the brain is already cloud. If the network drops there is no
 reply to speak, so local Whisper/Piper buys **zero** offline capability while competing with
@@ -213,11 +213,18 @@ Shape (to be refined in code):
 
 ```jsonc
 {
-  "pose":      { "x": 1.2, "y": -0.4, "yaw": 0.59 },
-  "objects":   [ { "label": "person", "range_m": 2.1, "bearing_deg": -15, "confidence": 0.91 } ],
+  "pose": { "x": 1.2, "y": -0.4, "yaw": 0.59 },
+  "objects": [
+    {
+      "label": "person",
+      "range_m": 2.1,
+      "bearing_deg": -15,
+      "confidence": 0.91,
+    },
+  ],
   "free_space": { "ahead_m": 3.4, "left_m": 1.1, "right_m": 2.8 },
-  "landmarks": [ { "name": "kitchen", "range_m": 4.2, "bearing_deg": 30 } ],
-  "nav":       { "state": "idle", "goal": null }
+  "landmarks": [{ "name": "kitchen", "range_m": 4.2, "bearing_deg": 30 }],
+  "nav": { "state": "idle", "goal": null },
 }
 ```
 
@@ -229,8 +236,8 @@ naturally and what maps to the commands it can issue. Landmarks tie into the exi
 
 ## D8 — Shell access: designed, not bolted on
 
-**Decided in principle, design pending.** The agent gets shell access, but as a *bounded
-capability*, not a raw `subprocess.run` tool.
+**Decided in principle, design pending.** The agent gets shell access, but as a _bounded
+capability_, not a raw `subprocess.run` tool.
 
 An LLM with a shell on a machine that can walk is a different risk class from one in a
 container. Requirements before it ships:
@@ -257,26 +264,26 @@ we have not evaluated it.
 
 ## A note on ROS 2 vs DDS
 
-They are not alternatives — ROS 2 *runs on* DDS. DDS is the transport standard (CycloneDDS,
+They are not alternatives — ROS 2 _runs on_ DDS. DDS is the transport standard (CycloneDDS,
 FastDDS); ROS 2 is a framework on top of it, adding packages, TF, node lifecycle, launch and
 the client libraries. Roughly: DDS is HTTP, ROS 2 is Django — and you can `curl` a Django
 app without installing Django.
 
 Evidence from this robot, all observed directly:
 
-| Observed | What it means |
-| --- | --- |
-| `rt/lowstate`, `rt/odommodestate` | `rt/` is ROS 2's topic-name convention |
-| `rq/…Request`, `rr/…Reply` | ROS 2's service convention |
-| `nav_msgs::msg::dds_::Odometry_` | A ROS 2 message type, on the wire, as plain DDS |
+| Observed                                         | What it means                                                        |
+| ------------------------------------------------ | -------------------------------------------------------------------- |
+| `rt/lowstate`, `rt/odommodestate`                | `rt/` is ROS 2's topic-name convention                               |
+| `rq/…Request`, `rr/…Reply`                       | ROS 2's service convention                                           |
+| `nav_msgs::msg::dds_::Odometry_`                 | A ROS 2 message type, on the wire, as plain DDS                      |
 | 100+ topics but an almost-empty `ros2 node list` | Unitree publishes raw DDS with ROS-style naming and **no ROS nodes** |
 
 We read the robot's pose today with zero ROS installed. That is the whole basis of D2.
 
-(ROS *1* genuinely was an alternative — it had its own TCPROS transport and a central
+(ROS _1_ genuinely was an alternative — it had its own TCPROS transport and a central
 master. ROS 2 replaced that with DDS in 2017, which is where the confusion comes from.)
 
-One consequence worth remembering: because ROS 2 topics *are* DDS topics, any ROS stack
+One consequence worth remembering: because ROS 2 topics _are_ DDS topics, any ROS stack
 sharing our domain sees us and we see it. That is a feature for our own container — and
 precisely why the `gemm` interlock (D1) matters. Nothing at the transport layer prevents two
 stacks from both publishing velocity commands.

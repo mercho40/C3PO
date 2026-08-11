@@ -13,7 +13,10 @@
   import NavMain from "./nav-main.svelte";
   import NavUser from "./nav-user.svelte";
 
-  let { ref = $bindable(null), ...restProps }: ComponentProps<typeof Sidebar.Root> = $props();
+  let {
+    ref = $bindable(null),
+    ...restProps
+  }: ComponentProps<typeof Sidebar.Root> = $props();
 
   const navMain = [
     { title: "Inicio", href: "/dashboard", icon: Activity },
@@ -25,7 +28,9 @@
     { title: "Salud", icon: HeartPulse, disabled: true, badge: "Pronto" },
   ];
 
-  const navSystem = [{ title: "Configuración", icon: Settings, disabled: true, badge: "Pronto" }];
+  const navSystem = [
+    { title: "Configuración", icon: Settings, disabled: true, badge: "Pronto" },
+  ];
 </script>
 
 <Sidebar.Root bind:ref collapsible="icon" {...restProps}>
@@ -45,8 +50,13 @@
                 />
               </div>
               <div class="grid flex-1 text-start text-sm leading-tight">
-                <span class="truncate font-semibold tracking-tight text-[#eaf1ff]">C3PO</span>
-                <span class="truncate text-xs text-sidebar-foreground/55">Consola de operador</span>
+                <span
+                  class="truncate font-semibold tracking-tight text-[#eaf1ff]"
+                  >C3PO</span
+                >
+                <span class="truncate text-xs text-sidebar-foreground/55"
+                  >Consola de operador</span
+                >
               </div>
             </a>
           {/snippet}

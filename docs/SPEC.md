@@ -18,7 +18,7 @@ Three user types drive the same robot through a shared **skill registry**:
 
 A **Python bridge** wraps the Unitree SDK and exposes skills + voice + state. An **Elysia control plane** orchestrates sessions, agent runtime, MCP server, web API, and persistence. A **SvelteKit web UI** is the supervisor surface.
 
-Where the bridge *runs* depends on the target. Against Isaac Sim it runs on the Mac and reaches the simulator over LAN DDS. Against real hardware it runs **onboard the robot's Jetson**, because the robot's DDS traffic never leaves its internal wired LAN (§10.2). Everything else — control plane, database, UI — stays off-robot in both cases.
+Where the bridge _runs_ depends on the target. Against Isaac Sim it runs on the Mac and reaches the simulator over LAN DDS. Against real hardware it runs **onboard the robot's Jetson**, because the robot's DDS traffic never leaves its internal wired LAN (§10.2). Everything else — control plane, database, UI — stays off-robot in both cases.
 
 ```mermaid
 flowchart TD
@@ -479,7 +479,7 @@ macOS multicast is unreliable; we generate a unicast peer XML at startup based o
 
 Written to `apps/bridge/.dds.xml`, exposed via `CYCLONEDDS_URI=file://…`.
 
-**On the real G1 this needs one change: pin the interface.** `autodetermine="true"` is correct on the Mac, but the Jetson has `eth0`, `wlan0` *and* `docker0`, and CycloneDDS picks among them arbitrarily — observed directly, as `selected arbitrarily from: eth0, docker0, wlan0`. Landing on `wlan0` or `docker0` means seeing none of the robot. So `real` needs an explicit interface override:
+**On the real G1 this needs one change: pin the interface.** `autodetermine="true"` is correct on the Mac, but the Jetson has `eth0`, `wlan0` _and_ `docker0`, and CycloneDDS picks among them arbitrarily — observed directly, as `selected arbitrarily from: eth0, docker0, wlan0`. Landing on `wlan0` or `docker0` means seeing none of the robot. So `real` needs an explicit interface override:
 
 ```xml
 <NetworkInterface name="eth0" />
@@ -509,7 +509,7 @@ The rest of the original rationale doesn't hold up either: the codebase
 settled on **TypeBox** (`elysia`'s `t`, see `apps/back/src/skills/define.ts`)
 for parameter schemas, not the Zod sketched below — introducing Zod now
 would add a second, redundant schema library rather than remove
-duplication. And the one place real hand-duplication *does* exist —
+duplication. And the one place real hand-duplication _does_ exist —
 `apps/bridge`'s Python skill/protocol definitions vs. `apps/back/src/skills/
 *.ts` — isn't something a TS-only package fixes anyway; Python can't import
 it.
@@ -754,17 +754,17 @@ Long-running tools use `progressToken`; the server emits MCP `notifications/prog
 
 ### 10.1 Real hardware (`SIM_MODE=real`)
 
-| Service           | Host       | Port  | Transport              | Auth                 |
-| ----------------- | ---------- | ----- | ---------------------- | -------------------- |
-| `apps/back` + web | Mac/server | 3000+ | as above               | as above             |
-| `apps/bridge` MCP | G1 Jetson  | stdio → HTTP | stdio-over-SSH, then streamable HTTP | SSH key, then token |
-| `apps/bridge` WS  | G1 Jetson  | 7077  | WebSocket over Wi-Fi   | **shared token (enforced)** |
-| G1 internal DDS   | control board | 7400+ | UDP multicast, wired LAN | none (isolated)   |
+| Service           | Host          | Port         | Transport                            | Auth                        |
+| ----------------- | ------------- | ------------ | ------------------------------------ | --------------------------- |
+| `apps/back` + web | Mac/server    | 3000+        | as above                             | as above                    |
+| `apps/bridge` MCP | G1 Jetson     | stdio → HTTP | stdio-over-SSH, then streamable HTTP | SSH key, then token         |
+| `apps/bridge` WS  | G1 Jetson     | 7077         | WebSocket over Wi-Fi                 | **shared token (enforced)** |
+| G1 internal DDS   | control board | 7400+        | UDP multicast, wired LAN             | none (isolated)             |
 
 Two deltas from the sim topology, both load-bearing:
 
 - **The bridge WS stops being loopback.** It crosses Wi-Fi, so the shared token in the row above is no longer belt-and-braces — it is the only thing standing between the LAN and a humanoid's motion API. It must be enforced, not assumed.
-- **MCP transport has to grow.** `stdio` is single-client. Pointing `.mcp.json`'s `command` at `ssh c3po '… uv run …'` gets Claude Code talking to an onboard bridge with zero new code, and is the right first step. But the moment both Claude Code *and* `apps/back`'s internal agent need the bridge, stdio can't serve them — that is when the streamable-HTTP transport becomes required rather than optional.
+- **MCP transport has to grow.** `stdio` is single-client. Pointing `.mcp.json`'s `command` at `ssh c3po '… uv run …'` gets Claude Code talking to an onboard bridge with zero new code, and is the right first step. But the moment both Claude Code _and_ `apps/back`'s internal agent need the bridge, stdio can't serve them — that is when the streamable-HTTP transport becomes required rather than optional.
 
 ### 10.2 Why the bridge must run onboard
 
@@ -778,13 +778,13 @@ This has one consequence worth stating plainly: **`SIM_MODE=real` is not a drop-
 
 The test is: **must it keep working when the operator link drops?** That set is deliberately small.
 
-| Component            | Onboard? | Why                                                                                  |
-| -------------------- | -------- | ------------------------------------------------------------------------------------ |
-| `apps/bridge`        | yes      | Needs internal-LAN DDS reach; nothing else can                                        |
-| link watchdog        | yes      | **New.** Ramps velocity to zero and damps if the control link goes silent             |
-| `apps/back` + agent  | no       | Calls the Anthropic API — a dropped link kills the agent wherever it runs             |
-| Postgres             | no       | Durable store; the robot gets hard-powered-off, and the schema is tenant-scoped       |
-| `apps/web`           | no       | Operator surface; must be reachable while the robot is off charging                   |
+| Component           | Onboard? | Why                                                                             |
+| ------------------- | -------- | ------------------------------------------------------------------------------- |
+| `apps/bridge`       | yes      | Needs internal-LAN DDS reach; nothing else can                                  |
+| link watchdog       | yes      | **New.** Ramps velocity to zero and damps if the control link goes silent       |
+| `apps/back` + agent | no       | Calls the Anthropic API — a dropped link kills the agent wherever it runs       |
+| Postgres            | no       | Durable store; the robot gets hard-powered-off, and the schema is tenant-scoped |
+| `apps/web`          | no       | Operator surface; must be reachable while the robot is off charging             |
 
 Running `apps/back` onboard is explicitly rejected. It buys no autonomy — the internal agent depends on a remote API regardless — while dragging Postgres either onto a device that loses power abruptly, or across Wi-Fi, where DB chatter is far less latency-tolerant than the handful of MCP calls per second the agent actually makes. It would move the wrong link onto the unreliable medium.
 
@@ -980,7 +980,7 @@ Dependencies on this path: `cyclonedds==0.10.2` (Python bindings, builds against
 
 > **Status: no longer on the critical path.** This design existed to reach a G1 we could only talk to the way the phone app does. We can SSH the Jetson, so `real` uses DDS (§16.2) and this transport is unnecessary for the primary path.
 >
-> Corroborating detail from the robot itself: `/webrtcreq` and `/webrtcres` are ordinary DDS topics on the internal LAN. The WebRTC interface was always a shim *over* the native API we now reach directly — so going native skips a translation layer, and with it the `squat=706` quirk, the `wirelesscontroller` velocity workaround, and the `con_notify data2` blocker.
+> Corroborating detail from the robot itself: `/webrtcreq` and `/webrtcres` are ordinary DDS topics on the internal LAN. The WebRTC interface was always a shim _over_ the native API we now reach directly — so going native skips a translation layer, and with it the `squat=706` quirk, the `wirelesscontroller` velocity workaround, and the `con_notify data2` blocker.
 >
 > Retained because it is still the only route that needs no onboard install, which makes it a plausible fallback for a locked-down or OTA-reset robot. Do not build it speculatively.
 
@@ -1012,7 +1012,7 @@ Wire-format helpers we already shipped:
 
 ### 16.4 Cutover strategy
 
-Revised now that the robot is here and `real` is DDS. The transport no longer changes — the *host* does — so this is a deployment exercise rather than a protocol port:
+Revised now that the robot is here and `real` is DDS. The transport no longer changes — the _host_ does — so this is a deployment exercise rather than a protocol port:
 
 1. Add the `DDS_INTERFACE` override (§5) so `real` pins `eth0`. Smallest change that makes onboard DDS deterministic.
 2. Stand the bridge up on the Jetson: `uv` + Python 3.12 (aarch64 standalone build), `CYCLONEDDS_HOME=~/cyclonedds_ws/install/cyclonedds`, the `unitree_sdk2py` `b2`-import patch. Native install, not containerized — see below.
@@ -1073,7 +1073,7 @@ stateDiagram-v2
     end note
 ```
 
-**Damp is the hub.** Four modes — `ZeroTorque`, `Preparation`, `SquatUp`, `LieUp` — are reachable *only* from `Damp`; trying to reach them from anywhere else is rejected client-side before it ever reaches the robot. `Preparation` is the sole gateway into locomotion (`Walk` / `Walk(waist)` / `Run`). Every locomotion-active mode can drop straight back to `Damp` as the canonical "come to rest" transition — the same one `stop_everything`'s real-hardware fallback dispatches (§10.3, `bridge/skills/stop_everything.py`).
+**Damp is the hub.** Four modes — `ZeroTorque`, `Preparation`, `SquatUp`, `LieUp` — are reachable _only_ from `Damp`; trying to reach them from anywhere else is rejected client-side before it ever reaches the robot. `Preparation` is the sole gateway into locomotion (`Walk` / `Walk(waist)` / `Run`). Every locomotion-active mode can drop straight back to `Damp` as the canonical "come to rest" transition — the same one `stop_everything`'s real-hardware fallback dispatches (§10.3, `bridge/skills/stop_everything.py`).
 
 ---
 

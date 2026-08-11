@@ -21,9 +21,21 @@
   type CamId = (typeof cameras)[number]["id"];
   const wrists = cameras.filter((c) => c.id !== "head");
 
-  type Runtime = { stream: MediaStream | null; state: SimCamState; detail: string };
-  const blank = (): Runtime => ({ stream: null, state: "connecting", detail: "" });
-  let rt = $state<Record<CamId, Runtime>>({ head: blank(), lwrist: blank(), rwrist: blank() });
+  type Runtime = {
+    stream: MediaStream | null;
+    state: SimCamState;
+    detail: string;
+  };
+  const blank = (): Runtime => ({
+    stream: null,
+    state: "connecting",
+    detail: "",
+  });
+  let rt = $state<Record<CamId, Runtime>>({
+    head: blank(),
+    lwrist: blank(),
+    rwrist: blank(),
+  });
   const handles: Partial<Record<CamId, SimCamHandle>> = {};
 
   // Default to the host serving the console (browser runs on the sim box), so no
@@ -36,7 +48,8 @@
     rt[id] = blank();
     handles[id] = connectSimCamera(host, port, {
       onStream: (stream) => (rt[id] = { ...rt[id], stream }),
-      onState: (state, detail) => (rt[id] = { ...rt[id], state, detail: detail ?? "" }),
+      onState: (state, detail) =>
+        (rt[id] = { ...rt[id], state, detail: detail ?? "" }),
     });
   }
 
@@ -54,11 +67,15 @@
 
   // <video>.srcObject can only be assigned imperatively; the action also keeps a
   // ref to each <video> (keyed by camera) so the toolbar can fullscreen the head.
-  function video(node: HTMLVideoElement, args: { id: CamId; stream: MediaStream | null }) {
+  function video(
+    node: HTMLVideoElement,
+    args: { id: CamId; stream: MediaStream | null },
+  ) {
     node.srcObject = args.stream;
     videoEls[args.id] = node;
     return {
-      update: (a: { id: CamId; stream: MediaStream | null }) => (node.srcObject = a.stream),
+      update: (a: { id: CamId; stream: MediaStream | null }) =>
+        (node.srcObject = a.stream),
       destroy: () => {
         if (videoEls[args.id] === node) delete videoEls[args.id];
       },
@@ -66,7 +83,9 @@
   }
 
   const headState = $derived(rt.head.state);
-  const liveCount = $derived(cameras.filter((c) => rt[c.id].state === "live").length);
+  const liveCount = $derived(
+    cameras.filter((c) => rt[c.id].state === "live").length,
+  );
 </script>
 
 {#snippet feed(id: CamId, port: number, mainFeed: boolean)}
@@ -92,7 +111,10 @@
         <div
           class="size-5 animate-spin rounded-full border-2 border-[rgba(180,210,255,0.18)] border-t-[#9ae5f8]"
         ></div>
-        {#if mainFeed}<span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">Conectando…</span>{/if}
+        {#if mainFeed}<span
+            class="font-mono text-[10px] tracking-wide text-[#8a96ad]"
+            >Conectando…</span
+          >{/if}
       {:else}
         <span class="font-mono text-[11px] tracking-wide text-[#ff8aa0]">
           {r.detail === "cert" ? "Certificado no aceptado" : "Sin señal"}
@@ -167,7 +189,11 @@
     <!-- Feed canvas -->
     <div class="relative min-h-0 flex-1 overflow-hidden bg-[#02050a]">
       <!-- perspective grid (shown behind / when no signal) -->
-      <svg class="absolute inset-0 size-full" preserveAspectRatio="none" viewBox="0 0 758 712">
+      <svg
+        class="absolute inset-0 size-full"
+        preserveAspectRatio="none"
+        viewBox="0 0 758 712"
+      >
         <defs>
           <linearGradient id="cam-floor" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stop-color="#1a2030" />
@@ -189,7 +215,9 @@
       {@render feed("head", 60001, true)}
 
       <!-- crosshair -->
-      <div class="absolute top-1/2 left-1/2 z-30 size-10 -translate-x-1/2 -translate-y-1/2">
+      <div
+        class="absolute top-1/2 left-1/2 z-30 size-10 -translate-x-1/2 -translate-y-1/2"
+      >
         <span class="absolute top-0 left-1/2 h-3 w-px bg-[#9ae5f8]"></span>
         <span class="absolute bottom-0 left-1/2 h-3 w-px bg-[#9ae5f8]"></span>
         <span class="absolute top-1/2 left-0 h-px w-3 bg-[#9ae5f8]"></span>
@@ -198,7 +226,7 @@
 
       <!-- top-left overlay -->
       <div
-        class="font-mono absolute top-4 left-4 z-30 flex flex-col items-start gap-1 text-[11px] tracking-wide"
+        class="absolute top-4 left-4 z-30 flex flex-col items-start gap-1 font-mono text-[11px] tracking-wide"
       >
         <Badge
           variant="outline"
@@ -216,14 +244,18 @@
                 ? 'bg-[#f5b643]'
                 : 'bg-[#ff4d6a]'}"
           ></span>
-          {headState === "live" ? "EN VIVO" : headState === "connecting" ? "Conectando" : "Sin señal"}
+          {headState === "live"
+            ? "EN VIVO"
+            : headState === "connecting"
+              ? "Conectando"
+              : "Sin señal"}
         </Badge>
         <span class="text-[#eaf1ff]">Cabeza · ojo izq.</span>
         <span class="text-[#8a96ad]">{host || "…"}:60001</span>
       </div>
       <!-- footer -->
       <div
-        class="font-mono absolute inset-x-4 bottom-4 z-30 flex items-center justify-between text-[10px] tracking-wide text-[#8a96ad]"
+        class="absolute inset-x-4 bottom-4 z-30 flex items-center justify-between font-mono text-[10px] tracking-wide text-[#8a96ad]"
       >
         <span>CÁMARAS · {liveCount}/3 en vivo</span>
         <span>WEBRTC · H.264</span>
@@ -236,7 +268,10 @@
     class="flex w-[400px] shrink-0 flex-col gap-4 rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828] p-4"
   >
     <div class="flex items-center justify-between">
-      <span class="text-[10px] font-medium tracking-[0.18em] text-[#8a96ad] uppercase">Otras cámaras</span>
+      <span
+        class="text-[10px] font-medium tracking-[0.18em] text-[#8a96ad] uppercase"
+        >Otras cámaras</span
+      >
       <span class="font-mono text-[10px] text-[#8a96ad]">{wrists.length}</span>
     </div>
     <div class="flex min-h-0 flex-1 flex-col gap-4">
@@ -246,7 +281,7 @@
         >
           {@render feed(cam.id, cam.port, false)}
           <span
-            class="font-mono absolute top-2 left-2.5 z-30 flex items-center gap-1.5 text-[9px] tracking-wide uppercase {rt[
+            class="absolute top-2 left-2.5 z-30 flex items-center gap-1.5 font-mono text-[9px] tracking-wide uppercase {rt[
               cam.id
             ].state === 'live'
               ? 'text-[#9ae5f8]'
@@ -264,9 +299,11 @@
         </div>
       {/each}
     </div>
-    <p class="font-mono text-[9px] leading-relaxed tracking-wide text-[#8a96ad]">
-      Servidores teleimager en {host || "este host"}:60001–60003. El navegador debe estar en la
-      red del sim y aceptar el certificado de cada puerto.
+    <p
+      class="font-mono text-[9px] leading-relaxed tracking-wide text-[#8a96ad]"
+    >
+      Servidores teleimager en {host || "este host"}:60001–60003. El navegador
+      debe estar en la red del sim y aceptar el certificado de cada puerto.
     </p>
   </aside>
 </div>
