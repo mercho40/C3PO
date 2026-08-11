@@ -20,70 +20,74 @@ A **Python bridge** wraps the Unitree SDK and exposes skills + voice + state. An
 
 Where the bridge *runs* depends on the target. Against Isaac Sim it runs on the Mac and reaches the simulator over LAN DDS. Against real hardware it runs **onboard the robot's Jetson**, because the robot's DDS traffic never leaves its internal wired LAN (§10.2). Everything else — control plane, database, UI — stays off-robot in both cases.
 
+```mermaid
+flowchart TD
+    subgraph MAC["🖥️ Mac — developer host"]
+        WEB["apps/web<br/><small>SvelteKit</small>"]
+        BACK["apps/back<br/><small>Elysia</small>"]
+        BRIDGE_SIM["apps/bridge<br/><small>Python</small>"]
+        PG[("Postgres<br/><small>Neon</small>")]
+        WEB -->|"Eden (HTTP + WS)"| BACK
+        BACK -->|WS| BRIDGE_SIM
+        BACK --> PG
+    end
+
+    subgraph MCP["🤖 External MCP clients"]
+        CC["Claude Code"]
+        CD["Claude Desktop"]
+        OTHER["Any MCP-capable client"]
+    end
+
+    subgraph UBUNTU["🐧 Ubuntu — Isaac Sim host"]
+        SIM["Isaac Lab + Isaac Sim<br/><small>unitree_sim_isaaclab</small>"]
+    end
+
+    CC -.->|"stdio or HTTP"| BRIDGE_SIM
+    CD -.->|"stdio or HTTP"| BRIDGE_SIM
+    OTHER -.->|"stdio or HTTP"| BRIDGE_SIM
+
+    BRIDGE_SIM <==>|"DDS / CycloneDDS<br/>UDP unicast, peer config"| SIM
+
+    classDef mac fill:#4f8cff,stroke:#2b5fcc,color:#fff
+    classDef mcp fill:#8b5cf6,stroke:#6d28d9,color:#fff
+    classDef ubuntu fill:#f59e0b,stroke:#b45309,color:#fff
+    class WEB,BACK,BRIDGE_SIM,PG mac
+    class CC,CD,OTHER mcp
+    class SIM ubuntu
 ```
-   ┌──────────────────────────────────────────────────────────┐
-   │                       MAC (developer host)               │
-   │                                                          │
-   │  apps/web  ──Eden(HTTP+WS)──▶  apps/back  ──WS──▶  apps/bridge
-   │  (Svelte)                      (Elysia)              (Python)
-   │                                   │                    │
-   │                                   │                    │ DDS / Cyclone
-   │                                   ▼                    │  (UDP unicast,
-   │                              Postgres                  │   peer config)
-   │                              (Neon)                    │
-   │                                                        │
-   └────────────────────────────────────────────────────────┼─┘
-                                                            │
-   ┌─────────── External MCP clients ────────────┐          │
-   │  Claude Code (this terminal)                │          │
-   │  Claude Desktop                              │ stdio    │
-   │  Any MCP-capable client                      │  or HTTP │
-   │                                              ├──────────┘
-   │  (initial route hits apps/bridge directly;   │
-   │   later route hits apps/back's MCP adapter)  │
-   └──────────────────────────────────────────────┘
-                                                            │ LAN
-                                                            ▼
-   ┌──────────────────────────────────────────────────────────┐
-   │                  UBUNTU (Isaac Sim host)                 │
-   │                                                          │
-   │  Isaac Lab + Isaac Sim                                   │
-   │  unitree_sim_isaaclab  → emits / consumes DDS topics     │
-   │                                                          │
-   └──────────────────────────────────────────────────────────┘
-```
+
+_Initial route hits `apps/bridge` directly; a later route hits `apps/back`'s MCP adapter instead (§8)._
 
 Against **real hardware** the split moves — the bridge crosses onto the robot, and Wi-Fi
 carries MCP/WS instead of DDS:
 
-```
-   ┌──────────────────────────────────────────────────────────┐
-   │                       MAC / SERVER                       │
-   │                                                          │
-   │  apps/web  ──Eden(HTTP+WS)──▶  apps/back ──▶ Postgres     │
-   │  (Svelte)                      (Elysia)      (pgvector)  │
-   │                                   │                      │
-   └───────────────────────────────────┼──────────────────────┘
-                                       │ Wi-Fi  (MCP over HTTP,
-                                       │         bridge WS + token)
-   ┌───────────────────────────────────┼──────────────────────┐
-   │                 G1 JETSON  (10.4.64.27)                  │
-   │                                   ▼                      │
-   │                             apps/bridge                  │
-   │                              (Python)                    │
-   │                          + link watchdog                 │
-   │                                   │ DDS / Cyclone 0.10.2 │
-   │                                   │ pinned to eth0       │
-   │        eth0 192.168.123.164 ──────┼──────────            │
-   └───────────────────────────────────┼──────────────────────┘
-                                       │ internal wired LAN
-                                       ▼
-                        ┌──────────────────────────────┐
-                        │  CONTROL BOARD .161          │
-                        │  publishes /lowstate,        │
-                        │  /api/sport, /api/arm, …     │
-                        │  to multicast 239.255.0.1    │
-                        └──────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph SERVER["🖥️ Mac / server"]
+        WEB2["apps/web<br/><small>SvelteKit</small>"]
+        BACK2["apps/back<br/><small>Elysia</small>"]
+        PG2[("Postgres<br/><small>pgvector</small>")]
+        WEB2 -->|"Eden (HTTP + WS)"| BACK2
+        BACK2 --> PG2
+    end
+
+    subgraph JETSON["🦾 G1 Jetson — 10.4.64.27 (wlan0)"]
+        BRIDGE_REAL["apps/bridge<br/><small>Python + link watchdog</small>"]
+    end
+
+    subgraph BOARD["⚙️ Control board — 192.168.123.161"]
+        CB["Publishes /lowstate,<br/>/api/sport, /api/arm, …<br/>to multicast 239.255.0.1"]
+    end
+
+    BACK2 ==>|"Wi-Fi — MCP over HTTP,<br/>bridge WS + token"| BRIDGE_REAL
+    BRIDGE_REAL <==>|"eth0 192.168.123.164<br/>DDS / CycloneDDS 0.10.2"| CB
+
+    classDef server fill:#4f8cff,stroke:#2b5fcc,color:#fff
+    classDef jetson fill:#10b981,stroke:#047857,color:#fff
+    classDef board fill:#ef4444,stroke:#b91c1c,color:#fff
+    class WEB2,BACK2,PG2 server
+    class BRIDGE_REAL jetson
+    class CB board
 ```
 
 ---
@@ -658,6 +662,31 @@ At Step B, the `env` block changes to `SIM_MODE=isaac` and adds `ROBOT_HOST` etc
 
 ## 9. Wire formats
 
+### Skill invocation, visually
+
+```mermaid
+sequenceDiagram
+    actor Op as apps/web / MCP client
+    participant Back as apps/back
+    participant Bridge as apps/bridge
+    participant Robot as Robot (DDS)
+
+    Op->>Back: POST /skills/walk_to/invoke<br/>{ params, dry_run: false }
+    Back-->>Op: 202 { task_id, estimated_duration_s }
+    Back->>Bridge: execute_skill<br/>{ task_id, skill_name, params, env }
+    Bridge->>Robot: DDS publish / request
+
+    loop while task runs
+        Robot-->>Bridge: state updates
+        Bridge-->>Back: SkillEvent (progress)
+        Back-->>Op: progress notification
+    end
+
+    Robot-->>Bridge: final state
+    Bridge-->>Back: SkillEvent (result)
+    Back-->>Op: result
+```
+
 ### Skill invocation (Eden REST → bridge WS)
 
 ```
@@ -997,6 +1026,55 @@ Ordering note on step 7: native first, container later, deliberately. Containeri
 
 The optional-dependency split in the old step 3 is dropped: both `isaac` and `real` need `cyclonedds` + `unitree_sdk2_python` now, so there is no lighter `real`-only install to chase.
 
+### 16.5 The G1 posture FSM (`bridge.sdk.g1_protocol`, implemented)
+
+The firmware rejects illegal full-body mode transitions, so the bridge mirrors the same rules client-side (`can_transition()`) before firing a request — cheaper than a round-trip rejection, and it's what every posture skill (`damp`, `prepare`, `squat`, …) checks against. This is the first time that guard is drawn rather than just enforced in code:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Damp
+
+    Damp --> ZeroTorque
+    Damp --> Preparation
+    Damp --> SquatUp
+    Damp --> LieUp
+
+    ZeroTorque --> Damp
+    Squat --> Damp
+
+    Preparation --> Damp
+    Preparation --> Walk
+    Preparation --> WalkWaist
+    Preparation --> Run
+
+    Walk --> Damp
+    WalkWaist --> Damp
+    Run --> Damp
+
+    note right of Squat
+        Mode index 2 — defined in
+        g1_protocol.py but never
+        actually sent. The squat
+        skill dispatches SquatUp
+        (706) instead, verified
+        against the reference
+        implementation.
+    end note
+
+    note right of LieUp
+        Seating, Dance, Climb, and
+        SquatUp aren't further
+        restricted by this client-
+        side guard beyond "only
+        reachable from Damp" above —
+        legality past that point is
+        the firmware's call, not
+        confirmed here.
+    end note
+```
+
+**Damp is the hub.** Four modes — `ZeroTorque`, `Preparation`, `SquatUp`, `LieUp` — are reachable *only* from `Damp`; trying to reach them from anywhere else is rejected client-side before it ever reaches the robot. `Preparation` is the sole gateway into locomotion (`Walk` / `Walk(waist)` / `Run`). Every locomotion-active mode can drop straight back to `Damp` as the canonical "come to rest" transition — the same one `stop_everything`'s real-hardware fallback dispatches (§10.3, `bridge/skills/stop_everything.py`).
+
 ---
 
 ## 17. Peripheral connection paths
@@ -1077,25 +1155,30 @@ scope it separately from the rest of Phase 1. Needs the robot powered on to even
 
 In the WebRTC era, the bridge is the **single point of contact for everything the robot emits or accepts**:
 
-```
-                            ┌──────────────────────────────────┐
-                            │       apps/bridge (Python)       │
-                            │                                  │
-                            │  Transport (WebRTC / DDS)        │
-                            │  ├── DataChannel  → topics       │
-                            │  ├── Video        → frame ring   │
-                            │  ├── Audio in     → STT pipe     │
-                            │  └── Audio out    → TTS pipe     │
-                            │                                  │
-                            │  Skill Runtime · Voice loop      │
-                            │  MCP / WS server                 │
-                            └──────────────────────────────────┘
-                                  │             │           │
-                       Topic JSON │      Video  │      Audio│
-                                  ▼             ▼           ▼
-                    apps/back (commands)   supervisor UI   robot speakers / mic
-                                          (browser, relay
-                                           via Elysia)
+```mermaid
+flowchart TD
+    subgraph BRIDGE["apps/bridge (Python)"]
+        T["Transport<br/>(WebRTC / DDS)"]
+        DC["DataChannel → topics"]
+        VID["Video → frame ring"]
+        AIN["Audio in → STT pipe"]
+        AOUT["Audio out → TTS pipe"]
+        SR["Skill Runtime · Voice loop · MCP/WS server"]
+        T --> DC
+        T --> VID
+        T --> AIN
+        T --> AOUT
+        DC -.-> SR
+    end
+
+    DC ==>|"Topic JSON"| BACKC["apps/back<br/>(commands)"]
+    VID ==>|Video| UIC["supervisor UI<br/><small>browser, relay via Elysia</small>"]
+    AOUT ==>|Audio| SPK["robot speakers / mic"]
+
+    classDef bridge fill:#4f8cff,stroke:#2b5fcc,color:#fff
+    classDef sink fill:#10b981,stroke:#047857,color:#fff
+    class T,DC,VID,AIN,AOUT,SR bridge
+    class BACKC,UIC,SPK sink
 ```
 
 The bridge then exposes per-modality APIs to the rest of the system: typed skill calls (existing), `GET /camera/frame.jpg` (planned), `POST /tts` (planned), `WS /audio/in` (planned).
