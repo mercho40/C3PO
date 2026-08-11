@@ -120,6 +120,8 @@ def topics_for(sim_mode: str) -> Topics:
 API_ID_G1_STATE: Final[int] = 7101  # Full-body posture / gait mode
 API_ID_G1_UPPER_LIMBS: Final[int] = 7106  # Upper-limb gesture trigger
 API_ID_LOCO_SET_VELOCITY: Final[int] = 7105  # Body-frame velocity setpoint
+API_ID_LOCO_GET_FSM_ID: Final[int] = 7001  # Current FSM state index
+API_ID_LOCO_GET_FSM_MODE: Final[int] = 7002  # Current FSM sub-mode
 
 # api_ids are scoped *per service*, not globally — 7107 means SET_SPEED_MODE on
 # `sport` but something unrelated on `arm`. The full loco surface (from the
@@ -175,7 +177,13 @@ MODE_LABEL: Final[dict[int, str]] = {
     Mode.LIE_UP: "lie_up",
     Mode.SQUAT_UP: "squat_up",
     Mode.RUN: "run",
-    802: "run",  # alternative Run state observed in firmware
+    # 802: label is SUSPECT. Read live from api_id 7001 on 2026-08-11 while the
+    # robot was standing perfectly still — so "run" is very likely wrong, and
+    # 802 is probably a general "controller active / main operation" state
+    # rather than a gait. Left as-is because guessing a replacement would be no
+    # better; resolve it by watching fsm_id transition during a supervised
+    # motion window. Don't build preconditions on this label meaning "running".
+    802: "run",
     Mode.CLIMB: "climb",
 }
 

@@ -245,10 +245,11 @@ robot. This is currently solved socially, not technically.
 | Robot networking | ✅ Wi-Fi + internet + internal LAN, survives reboot |
 | `get_state` against real hardware | ✅ **verified live** — lowstate ~20 Hz, pose ~50 Hz, 35 motors |
 | Pose on real | ✅ verified live via `rt/odommodestate` |
-| Posture/gesture skills on real | ✅ wired; damp verified live |
-| Velocity on real | ⚠️ wired, **never executed** |
-| `walk_to` / `turn` on real | ⚠️ unblocked, but untested and gains are sim-fitted |
-| Posture readback on real | ⬜ needs api_id 7001/7002 |
+| Posture/gesture skills on real | ✅ **arm gesture verified live — the robot moved** |
+| Velocity RPC accepted (7105) | ✅ `code=0` with zero-velocity setpoint |
+| Non-zero velocity / stepping | ⬜ **never executed** — axis signs and scaling unknown |
+| `walk_to` / `turn` on real | ⚠️ unblocked, untested, gains are sim-fitted |
+| Posture readback on real | ✅ verified live via api_id 7001 (FSM 802) |
 | Console, voice, agent runtime | ⬜ later phases |
 
 ---

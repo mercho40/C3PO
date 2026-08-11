@@ -83,6 +83,34 @@ the robot. Requests go to `/api/sport/request`, responses to `/api/sport/respons
 
 `SetVelocity(vx, vy, omega, duration = 1.0f)` — note the **default duration of 1 second**.
 
+### Verified live 2026-08-11 — first commands ever sent to this robot
+
+| Call | Result |
+| --- | --- |
+| 7001 `GET_FSM_ID` | `code=0`, `{"data":802}` |
+| 7002 `GET_FSM_MODE` | `code=0`, `{"data":0}` |
+| 7003 `GET_BALANCE_MODE` | `code=7301` — declined in this state |
+| 7105 `SET_VELOCITY(0,0,0,1.0)` | **`code=0`** — JSON shape confirmed against firmware |
+| 7106 `SET_ARM_TASK` (wave) | **arm moved**, `code=0` after **4.19 s** |
+
+Two things this settled that no amount of reading would have:
+
+**The services have different ack semantics.** `sport` answers promptly.
+`arm` answers **on completion of the motion** — 4.19 s for a wave. With the SDK's
+default timeout, every gesture returned `RPC_ERR_CLIENT_API_TIMEOUT` (3104) *while the
+robot was visibly performing it*. That's a false failure in the dangerous direction: an
+operator or LLM reads "failed" and retries a command the robot already obeyed. Fixed by
+sizing timeouts to motion duration (`g1_rpc.ARM_TIMEOUT_S`), **not** by going
+fire-and-forget, which would have discarded genuine error reporting.
+
+**`mode_machine` ≠ FSM id.** Read simultaneously: `mode_machine=5` while `fsm_id=802`.
+Never label one with the other.
+
+⚠️ **The label for FSM 802 is suspect.** It was read while the robot stood perfectly
+still, so `"run"` is very likely wrong — 802 is probably a general "controller
+active / main operation" state. Resolve by watching `fsm_id` transition during a
+supervised motion window. Don't build preconditions on that label.
+
 ### Correction to our own code
 
 `apps/bridge/src/bridge/sdk/g1_rpc.py`'s docstring states *"G1 uses a single api_id per

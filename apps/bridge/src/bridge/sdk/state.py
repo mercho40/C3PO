@@ -64,6 +64,21 @@ class _LowStateSnapshot:
 
 
 @dataclass
+class _FsmSnapshot:
+    """Latest FSM state read over RPC. Real-target only."""
+
+    received_at: float = 0.0
+    fsm_id: int | None = None
+    fsm_mode: int | None = None
+
+
+# How often the FSM poller asks the robot. Posture is for humans and the LLM,
+# not for a control loop, so this is deliberately slow — it costs a DDS
+# round-trip each time and nothing downstream needs it fresher.
+FSM_POLL_INTERVAL_S = 0.5
+
+
+@dataclass
 class _PoseSnapshot:
     """Latest world-frame pose, from whichever source this target provides."""
 
@@ -95,9 +110,12 @@ class StateSampler:
         self._lock = threading.Lock()
         self._lowstate = _LowStateSnapshot()
         self._pose = _PoseSnapshot()
+        self._fsm = _FsmSnapshot()
         self._lowstate_sub: Any = None
         self._pose_sub: Any = None
         self._queue_depth = queue_depth
+        self._fsm_thread: threading.Thread | None = None
+        self._stop = threading.Event()
 
     def start(self) -> None:
         """Open the DDS subscribers. Call once after `init_dds`."""
@@ -129,6 +147,37 @@ class StateSampler:
             topics=[LOWSTATE_TOPIC, pose_topic],
             pose_source=_POSE_SOURCE,
         )
+
+        # FSM state is request/response, not a subscription, so it needs
+        # polling. It runs on its own thread rather than inside `get_state()`
+        # because `walk_to` calls `get_state()` every 20 ms and a blocking DDS
+        # round-trip there would wreck the control loop.
+        if _SIM_MODE == "real":
+            self._fsm_thread = threading.Thread(
+                target=self._poll_fsm, name="fsm-poller", daemon=True
+            )
+            self._fsm_thread.start()
+
+    def stop(self) -> None:
+        """Signal the FSM poller to exit. Subscribers live for the process."""
+        self._stop.set()
+
+    def _poll_fsm(self) -> None:
+        from bridge.sdk import g1_rpc
+
+        while not self._stop.wait(FSM_POLL_INTERVAL_S):
+            try:
+                fsm_id = g1_rpc.get_fsm_id()
+                fsm_mode = g1_rpc.get_fsm_mode()
+            except Exception as exc:  # never let the poller die
+                log.warning("fsm.poll_failed", error=str(exc))
+                continue
+            if fsm_id is None and fsm_mode is None:
+                continue
+            with self._lock:
+                self._fsm = _FsmSnapshot(
+                    received_at=time.time(), fsm_id=fsm_id, fsm_mode=fsm_mode
+                )
 
     def _on_odom(self, msg: Any) -> None:
         """Vendor odometry (unitree_go SportModeState_) → world pose.
@@ -192,6 +241,7 @@ class StateSampler:
         with self._lock:
             low = self._lowstate
             pose_snap = self._pose
+            fsm = self._fsm
 
         if low.received_at == 0.0:
             return {
@@ -215,22 +265,21 @@ class StateSampler:
         if lowstate_age > 1.0:
             faults.append(f"stale_lowstate_{lowstate_age:.1f}s")
 
-        # `mode_machine` (from LowState_) is not the locomotion FSM index that
-        # `mode_label` decodes — that FSM value ships on `sportmodestate`.
+        # `mode_machine` (from LowState_) is NOT the locomotion FSM index that
+        # `mode_label` decodes — verified on hardware: mode_machine read 5 while
+        # the FSM id was 802. Never label one with the other.
         #
-        # On real G1 that topic *is* plain DDS (`/lf/sportmodestate`, live on the
-        # robot), but this SDK ships `SportModeState_` only under `unitree_go`
-        # (quadruped); the G1 publishes `unitree_hg` types, so there's no matching
-        # IDL class to deserialize it with. Hence "not available" here — the
+        # Real: the FSM id comes from the RPC poller (api_id 7001). We can't read
+        # it off `sportmodestate` because this SDK ships `SportModeState_` only
+        # under `unitree_go` (quadruped) and the G1 publishes `unitree_hg` — the
         # limitation is the SDK's type coverage, not the transport.
         #
-        # The better route is the RPC path we already have: api_id 7001
-        # (GET_FSM_ID) / 7002 (GET_FSM_MODE) return this without needing an IDL
-        # type. See docs/ROBOT-INVENTORY.md §3.
-        #
-        # Isaac Sim happens to populate `mode_machine` with the real FSM value as
-        # a convenience, so only trust the label there.
-        posture = g1_protocol.mode_label(low.mode_machine) if _SIM_MODE != "real" else "not_available_over_dds"
+        # Sim: Isaac Sim populates `mode_machine` with the real FSM value as a
+        # convenience, so the label is trustworthy there and nothing to poll.
+        if _SIM_MODE == "real":
+            posture = g1_protocol.mode_label(fsm.fsm_id) if fsm.fsm_id is not None else "unknown"
+        else:
+            posture = g1_protocol.mode_label(low.mode_machine)
 
         # Pose comes from whichever source this target publishes (see
         # `_POSE_SOURCE`). Null until the first message arrives.
@@ -261,6 +310,11 @@ class StateSampler:
                 "pose_source": _POSE_SOURCE,
                 "pose_messages_received": pose_snap.raw_message_count,
                 "pose_age_s": pose_age,
+                # Raw FSM values behind `posture`, so a surprising label can be
+                # traced without another round-trip. Null outside real.
+                "fsm_id": fsm.fsm_id,
+                "fsm_mode": fsm.fsm_mode,
+                "fsm_age_s": round(now - fsm.received_at, 3) if fsm.received_at else None,
             },
         }
 
