@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "bun --bun run vite dev --port 3001",
+    "dev": "vite dev --port 3001",
     "build": "vite build",
     "preview": "vite preview",
     "start": "PORT=3001 bun ./build/index.js",
