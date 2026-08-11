@@ -25,6 +25,7 @@ is what Claude Code's MCP client expects.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 import uuid
@@ -667,6 +668,81 @@ def cancel_task(
             "reason": f"task_not_running (status={existing.status})",
         }
     return {"task_id": task_id, "ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Tool: describe_surroundings
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def describe_surroundings() -> dict:
+    """Return a compact, egocentric snapshot of what the robot can perceive.
+
+    Ranges are metres from the robot; bearings are degrees with 0 straight
+    ahead and POSITIVE TO THE LEFT — the same sign as `turn`'s
+    delta_yaw_radians, so a bearing can be turned toward directly.
+
+    Read `sources` and `notes` before acting. A source reported as `offline`
+    means that sense is NOT WORKING, which is different from it reporting
+    nothing: an absent `objects` list with `detector: offline` does not mean
+    the path is clear, it means nothing looked. `objects_omitted` counts
+    obstacles that exist but were not listed.
+
+    Today the perception stack (LiDAR/camera/detector) is not deployed, so this
+    honestly reports everything offline rather than an empty scene. Pose comes
+    through once the bridge is running against a robot.
+    """
+    from bridge import world_model
+    from bridge.skills.landmarks import get_store
+
+    if SIM_MODE == "stub":
+        return world_model.offline().to_dict()
+
+    # Pose is the one source that exists today; perception plugs in beside it
+    # without changing this contract.
+    pose = None
+    pose_age = None
+    try:
+        from bridge.sdk.state import get_sampler
+
+        state = get_sampler().get_state()
+        if state.get("pose"):
+            p = state["pose"]
+            pose = {
+                "x_m": round(float(p["x_meters_world"]), 2),
+                "y_m": round(float(p["y_meters_world"]), 2),
+                "yaw_deg": round(math.degrees(float(p["yaw_radians_world"])), 1),
+            }
+            pose_age = state.get("raw", {}).get("pose_age_s")
+    except Exception as exc:  # never let telemetry break the snapshot
+        log.warning("describe_surroundings.pose_failed", error=str(exc))
+
+    landmarks = []
+    if pose is not None:
+        for lm in get_store().list_all():
+            dx = lm.x_meters_world - float(pose["x_m"])
+            dy = lm.y_meters_world - float(pose["y_m"])
+            rng = math.hypot(dx, dy)
+            bearing = math.degrees(
+                math.atan2(dy, dx) - math.radians(float(pose["yaw_deg"]))
+            )
+            # Normalise into (-180, 180] so "left" and "right" stay meaningful.
+            bearing = (bearing + 180.0) % 360.0 - 180.0
+            landmarks.append(
+                world_model.Observation(
+                    label=lm.name, range_m=rng, bearing_deg=bearing
+                )
+            )
+
+    return world_model.build(
+        pose=pose,
+        pose_age_s=pose_age,
+        landmarks=landmarks,
+        # Perception is not deployed yet — these stay False so the snapshot
+        # says "offline" instead of implying a clear scene.
+        detector_online=False,
+        lidar_online=False,
+    ).to_dict()
 
 
 # ---------------------------------------------------------------------------

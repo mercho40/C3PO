@@ -209,28 +209,54 @@ clouds or 30 fps RGB; the engineering that makes autonomy work is the summarisat
 not the sensors. Get this contract right and detectors, models and even the LiDAR become
 swappable.
 
-Shape (to be refined in code):
+**Implemented** in `apps/bridge/src/bridge/world_model.py`, exposed as the
+`describe_surroundings` MCP tool, and covered by tests that run with no robot and no
+perception stack.
 
 ```jsonc
 {
-  "pose": { "x": 1.2, "y": -0.4, "yaw": 0.59 },
-  "objects": [
-    {
-      "label": "person",
-      "range_m": 2.1,
-      "bearing_deg": -15,
-      "confidence": 0.91,
-    },
-  ],
-  "free_space": { "ahead_m": 3.4, "left_m": 1.1, "right_m": 2.8 },
+  "version": 1,
+  "sources": { "pose": "ok", "detector": "offline", "lidar": "ok" },
+  "pose": { "x_m": 1.2, "y_m": -0.4, "yaw_deg": 33.8 },
+  "objects": [{ "label": "person", "range_m": 2.1, "bearing_deg": -15, "confidence": 0.91, "age_s": 0.3 }],
+  "objects_omitted": 4,
+  "free_space": { "ahead_m": 3.4, "left_m": 1.1, "right_m": 2.8, "behind_m": 5.0 },
   "landmarks": [{ "name": "kitchen", "range_m": 4.2, "bearing_deg": 30 }],
-  "nav": { "state": "idle", "goal": null },
+  "notes": ["Object detection is OFFLINE — this is not an empty scene. Do not assume the path is clear."]
 }
 ```
 
-Egocentric (range/bearing), not world coordinates — it's what the model reasons about
-naturally and what maps to the commands it can issue. Landmarks tie into the existing
-`landmarks`/`episodes` pgvector tables.
+Four rules, each load-bearing:
+
+**Egocentric, not world-frame.** Range and bearing from the robot, because that maps onto
+the commands it can issue. Bearing is degrees, `0` ahead, **positive to the left (CCW)** —
+the same sign as `turn`'s `delta_yaw_radians`. Any other choice bakes a sign-flip bug into
+the interface, and every "turn toward it" goes the wrong way.
+
+**Absent is not empty — the most important rule.** An offline detector must not produce
+`objects: []`, because an empty list means "I looked and there is nothing there", which is
+precisely how a robot walks into something it never saw. Every source carries an explicit
+status and every degradation is restated in plain language in `notes`, since that is what
+the model actually reads. Same false-negative class as reporting a skill failed when the
+robot obeyed.
+
+**Truncation is declared.** `objects_omitted` is never silently zero. A model shown 8 of 40
+obstacles with no indication of the rest will reason confidently about a scene it cannot
+see. Nearest are kept, because proximity is what matters.
+
+**Everything carries an age.** A 4-second-old detection is a different fact from a fresh one
+when you are moving; sources go `stale` before they go missing.
+
+The snapshot is versioned, and a test asserts a busy one stays under ~300 tokens —
+perception must not crowd out the conversation it exists to inform.
+
+`free_space` is four coarse sectors on purpose. It answers "can I go that way", not "plan me
+a path" — Nav2 owns real obstacle avoidance (D4). Needing finer resolution here would mean
+the model is being asked to do a planner's job.
+
+Today the tool reports every source `offline`, which is the honest state until the
+perception container exists — and is exactly why the contract could be built and tested
+before any of it.
 
 ---
 
