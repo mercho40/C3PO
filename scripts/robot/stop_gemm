@@ -7,8 +7,11 @@
 # they will not quietly come back while we hold the sensors.
 
 set -euo pipefail
+# `readlink -f` — see the note in run_c3po; this is invoked through a symlink
+# on PATH, so BASH_SOURCE[0] is the link, not this file.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=_common.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+. "$here/_common.sh"
 
 say "Stopping gemm stack"
 

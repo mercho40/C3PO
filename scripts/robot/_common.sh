@@ -79,6 +79,33 @@ bridge_pid() {
 
 bridge_running() { bridge_pid >/dev/null 2>&1; }
 
+# `uv run` execs nothing — it forks the interpreter as a child and waits. So
+# the pid we record is uv's, and the bridge itself is one level down. SIGTERM
+# propagates, but a SIGKILL aimed at the recorded pid alone would reap uv and
+# leave the bridge orphaned: still holding DDS, still able to command the legs,
+# and now invisible to `bridge_running`. Always signal the whole tree.
+descendant_pids() {
+    local parent="$1" child
+    for child in $(pgrep -P "$parent" 2>/dev/null || true); do
+        descendant_pids "$child"
+        printf '%s\n' "$child"
+    done
+}
+
+bridge_tree_pids() {
+    local pid="$1"
+    descendant_pids "$pid"
+    printf '%s\n' "$pid"
+}
+
+# Any live bridge at all. Only ask this once you believe ours is stopped —
+# both callers do — in which case whatever comes back is an orphan from an
+# unclean stop or a second copy started by hand. Either one means something
+# can command the legs that our pidfile cannot stop.
+stray_bridge_pids() {
+    pgrep -f 'bridge\.mcp_server' 2>/dev/null || true
+}
+
 # --- safety ----------------------------------------------------------------
 
 # The one check worth doing before we command anything: is something else

@@ -8,7 +8,11 @@
 # seconds into startup.
 
 set -euo pipefail
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# `readlink -f` because install_robot_scripts.sh symlinks this into
+# ~/.local/bin: bash sets BASH_SOURCE[0] to the symlink it resolved off PATH,
+# not to this file, so a plain dirname would look for _common.sh in the bin
+# directory and every command would die on the source below.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=_common.sh
 . "$here/_common.sh"
 
@@ -24,6 +28,16 @@ if bridge_running; then
     warn "bridge already running (pid $(bridge_pid)) — nothing to do"
     warn "use stop_c3po first if you want a fresh start"
     exit 0
+fi
+
+# A bridge we lost track of is worse than one we know about: it holds DDS and
+# can drive the legs while every status check here says "not running".
+strays="$(stray_bridge_pids)"
+if [ -n "$strays" ]; then
+    err "a bridge is already running outside our pidfile (pid: $(echo "$strays" | tr '\n' ' '))"
+    err "starting another would put two commanders on the same control API"
+    err "kill it first:  kill $(echo "$strays" | tr '\n' ' ')"
+    exit 1
 fi
 
 # 1. Take the sensors.
@@ -47,11 +61,12 @@ if [ ! -f "$BRIDGE_DIR/.env" ]; then
 fi
 
 info "logging to $BRIDGE_LOG"
-# `nohup` rather than `setsid`: both survive the SSH session that started them
-# (a robot process that dies when your laptop sleeps is not a robot process),
-# but nohup execs, so `$!` is the bridge's own pid. setsid may fork, which
-# would record a pid that exits immediately and leave us with a pidfile that
-# claims the bridge is dead while it is happily driving the robot.
+# `nohup` so this survives the SSH session that started it — a robot process
+# that dies when your laptop sleeps is not a robot process.
+#
+# The recorded pid is `uv run`, not the bridge: uv forks the interpreter and
+# waits on it. That is fine for status and SIGTERM (which propagates), but
+# stop_c3po must signal the whole tree — see bridge_tree_pids in _common.sh.
 (
     cd "$BRIDGE_DIR"
     set -a
@@ -59,14 +74,54 @@ info "logging to $BRIDGE_LOG"
     . ./.env
     set +a
     export PATH="$HOME/.local/bin:$PATH"
+
+    # `uv run` re-syncs whenever the lockfile has moved, and that reinstall
+    # restores upstream's unitree_sdk2py/__init__.py — which imports a `b2`
+    # submodule the package does not ship. Sync explicitly and re-apply the
+    # patch here, or `git pull && run_c3po` leaves the bridge dying on
+    # ModuleNotFoundError with the reason buried in the log.
+    info "syncing bridge dependencies"
+    uv sync --quiet
+    ./scripts/postsync.sh
+
+    # The bridge defaults to stdio, for use as a direct MCP client child
+    # process. As a daemon its stdin is /dev/null, which EOFs immediately and
+    # exits before it ever reaches the robot. apps/back talks to it over
+    # streamable-http, so http is the right transport here. Defaults only —
+    # .env still wins if it sets these.
+    #
+    # Port 8001 because gemm-ai.service holds 8000 on this Jetson, and it is a
+    # systemd unit, so stop_gemm (which stops containers) does not release it.
+    : "${BRIDGE_TRANSPORT:=http}"
+    : "${BRIDGE_HOST:=127.0.0.1}"
+    : "${BRIDGE_PORT:=8001}"
+    export BRIDGE_TRANSPORT BRIDGE_HOST BRIDGE_PORT
+
     nohup uv run python -m bridge.mcp_server \
         >> "$BRIDGE_LOG" 2>&1 < /dev/null &
     echo $! > "$BRIDGE_PID"
 )
 
-sleep 2
-if bridge_running; then
-    ok "bridge started (pid $(bridge_pid))"
+# "The process is alive" is a weaker claim than "the bridge is serving": a
+# DDS or import failure can take several seconds to surface, and on the http
+# transport the port is the thing apps/back actually needs. Poll for both.
+port="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${BRIDGE_PORT:-8001}")"
+ready=0
+for _ in $(seq 1 30); do
+    bridge_running || break
+    if ss -ltn 2>/dev/null | grep -q ":${port}[[:space:]]"; then
+        ready=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$ready" -eq 1 ]; then
+    ok "bridge started (pid $(bridge_pid)), listening on ${port}"
+elif bridge_running; then
+    warn "bridge is up (pid $(bridge_pid)) but nothing is listening on ${port} after 15s"
+    warn "last lines of $BRIDGE_LOG:"
+    tail -15 "$BRIDGE_LOG" >&2 || true
 else
     err "bridge failed to start — last lines of $BRIDGE_LOG:"
     tail -15 "$BRIDGE_LOG" >&2 || true
