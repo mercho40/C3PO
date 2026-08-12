@@ -122,6 +122,19 @@ API_ID_G1_UPPER_LIMBS: Final[int] = 7106  # Upper-limb gesture trigger
 API_ID_LOCO_SET_VELOCITY: Final[int] = 7105  # Body-frame velocity setpoint
 API_ID_LOCO_GET_FSM_ID: Final[int] = 7001  # Current FSM state index
 API_ID_LOCO_GET_FSM_MODE: Final[int] = 7002  # Current FSM sub-mode
+API_ID_LOCO_SET_BALANCE_MODE: Final[int] = 7102  # Balance controller mode
+
+
+class BalanceMode:
+    """`SetBalanceMode` values, from the vendor's `g1_loco_client.hpp`.
+
+    `BalanceStand() = SetBalanceMode(0)` and
+    `ContinuousGait(flag) = SetBalanceMode(flag ? 1 : 0)` — so 0 is the
+    stand-and-balance controller and 1 is continuous gait.
+    """
+
+    BALANCE_STAND: Final[int] = 0
+    CONTINUOUS_GAIT: Final[int] = 1
 
 # api_ids are scoped *per service*, not globally — 7107 means SET_SPEED_MODE on
 # `sport` but something unrelated on `arm`. The full loco surface (from the
@@ -282,6 +295,7 @@ SkillName = Literal[
     "zero_torque",
     "prepare",
     "start_walking",
+    "balance_stand",
     "sit_g1",
     "lie_up",
     "squat",
@@ -317,6 +331,13 @@ SKILL_REQUESTS: Final[dict[SkillName, SkillRequest]] = {
     # (legion1581/unitree_ui) for G1 — both its "Squat" and "Squat-Up" buttons
     # send SQUAT_UP (706). Follow the verified value, not the unverified enum.
     "squat":         SkillRequest("sport_request", API_ID_G1_STATE, Mode.SQUAT_UP),
+    # Balance controller (api_id=7102) — NOT a posture, so not 7101. The
+    # vendor's `BalanceStand()`. Sent while standing, it engages the
+    # stand-and-balance controller; `Start()` (SetFsmId 500) was observed
+    # returning code 0 without transitioning out of StandUp on 2026-08-12,
+    # and this is the one documented call in that client we had never sent.
+    "balance_stand": SkillRequest("sport_request", API_ID_LOCO_SET_BALANCE_MODE,
+                                  BalanceMode.BALANCE_STAND),
     # Arm gestures (api_id=7106) — require a locomotion state
     "wave":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.HIGH_WAVE),
     "point_at":      SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.FORWARD_PUSH),

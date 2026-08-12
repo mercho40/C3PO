@@ -75,6 +75,7 @@ def _get_sport_client() -> _G1Client:
             (
                 g1_protocol.API_ID_G1_STATE,
                 g1_protocol.API_ID_LOCO_SET_VELOCITY,
+                g1_protocol.API_ID_LOCO_SET_BALANCE_MODE,
                 g1_protocol.API_ID_LOCO_GET_FSM_ID,
                 g1_protocol.API_ID_LOCO_GET_FSM_MODE,
             ),
@@ -97,6 +98,21 @@ def _get_arm_client() -> _G1Client:
 def call_sport(mode: int) -> tuple[int, str | None]:
     """Send a full-body posture/mode request (api_id=7101). Returns (code, data)."""
     return _get_sport_client().call(g1_protocol.API_ID_G1_STATE, mode)
+
+
+def call_sport_api(api_id: int, data: int) -> tuple[int, str | None]:
+    """Send any registered sport-service request. Returns (code, data).
+
+    The sport service is not one api_id: 7101 sets the FSM, 7102 the balance
+    mode, 7105 a velocity. Callers that dispatch from the skill catalogue must
+    pass the api_id the catalogue names rather than assuming 7101, or a skill
+    like `balance_stand` silently becomes a posture change.
+
+    The api_id must appear in `_get_sport_client()`'s registration tuple —
+    `_RegistApi` is what binds it on the client, so an unregistered id fails
+    rather than reaching the robot.
+    """
+    return _get_sport_client().call(api_id, data)
 
 
 def call_arm(gesture: int) -> tuple[int, str | None]:

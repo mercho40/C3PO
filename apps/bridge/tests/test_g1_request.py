@@ -50,15 +50,17 @@ async def test_real_mode_dispatches_sport_request_via_g1_rpc(monkeypatch):
     monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
     seen: dict = {}
 
-    def fake_call_sport(mode: int):
-        seen["mode"] = mode
+    def fake_call_sport_api(api_id: int, data: int):
+        seen["api_id"] = api_id
+        seen["mode"] = data
         return 0, ""
 
-    monkeypatch.setattr(g1_rpc, "call_sport", fake_call_sport)
+    monkeypatch.setattr(g1_rpc, "call_sport_api", fake_call_sport_api)
 
     result = await _g1_request.run_g1_request("damp")
 
     assert seen["mode"] == g1_protocol.Mode.DAMP
+    assert seen["api_id"] == g1_protocol.API_ID_G1_STATE
     assert result["status"] == "completed"
     assert result["phase"] == "dispatched"
     assert result["result"]["rpc_code"] == 0
@@ -87,7 +89,7 @@ async def test_real_mode_nonzero_rpc_code_marks_task_failed(monkeypatch):
     monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
     # RPC_ERR_CLIENT_API_TIMEOUT from unitree_sdk2py.rpc.internal — firmware
     # didn't ack in time. Should surface as a failed task, not a crash.
-    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: (3104, None))
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda api_id, data: (3104, None))
 
     result = await _g1_request.run_g1_request("prepare")
 
@@ -104,9 +106,36 @@ async def test_real_mode_squat_sends_verified_mode_index(monkeypatch):
     # value, not the unverified enum member.
     monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
     seen: dict = {}
-    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: seen.setdefault("mode", mode) or (0, ""))
+    monkeypatch.setattr(
+        g1_rpc, "call_sport_api", lambda api_id, data: seen.setdefault("mode", data) or (0, "")
+    )
 
     await _g1_request.run_g1_request("squat")
 
     assert seen["mode"] == 706
     assert seen["mode"] == g1_protocol.Mode.SQUAT_UP
+
+
+@pytest.mark.asyncio
+async def test_balance_stand_goes_to_7102_not_the_posture_api(monkeypatch):
+    # Regression test for a whole bug class, not just this skill. The sport
+    # service carries several api_ids — 7101 posture, 7102 balance mode, 7105
+    # velocity — so a dispatcher that assumes 7101 would send balance_stand's
+    # data (0) as a *mode index*, and 0 is ZERO_TORQUE: a standing robot would
+    # go limp instead of engaging its balance controller.
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    seen: dict = {}
+
+    def fake_call_sport_api(api_id: int, data: int):
+        seen["api_id"] = api_id
+        seen["data"] = data
+        return 0, ""
+
+    monkeypatch.setattr(g1_rpc, "call_sport_api", fake_call_sport_api)
+
+    result = await _g1_request.run_g1_request("balance_stand")
+
+    assert seen["api_id"] == g1_protocol.API_ID_LOCO_SET_BALANCE_MODE
+    assert seen["api_id"] != g1_protocol.API_ID_G1_STATE
+    assert seen["data"] == g1_protocol.BalanceMode.BALANCE_STAND
+    assert result["status"] == "completed"

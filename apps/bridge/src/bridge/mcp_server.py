@@ -403,6 +403,27 @@ async def zero_torque(ctx: Context) -> dict:
 
 
 @mcp.tool()
+async def balance_stand(ctx: Context) -> dict:
+    """Engage the stand-and-balance controller (api_id=7102, balance_mode=0).
+
+    The vendor's `BalanceStand()`. Distinct from the FSM postures above: it
+    sets the *balance controller* mode rather than requesting a state change,
+    so it goes to api_id 7102, not 7101.
+
+    Why it exists as a tool: on 2026-08-12, with the robot standing and
+    bearing its own weight, `start_walking` (the vendor's `Start()`,
+    SetFsmId 500) returned code 0 and did **not** leave StandUp — and arm
+    gestures then failed 7404 FSM_UNAVAILABLE. This is the one call in
+    `g1_loco_client.hpp` between StandUp and Start that we had never sent.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("balance_stand", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
 async def start_walking(ctx: Context) -> dict:
     """Enter Walk mode — locomotion FSM activates; arm gestures become available.
 

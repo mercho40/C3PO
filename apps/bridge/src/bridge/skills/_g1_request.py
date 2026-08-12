@@ -120,8 +120,17 @@ async def run_g1_request(
 
         from bridge.sdk import g1_rpc
 
-        call = g1_rpc.call_sport if request.topic_kind == "sport_request" else g1_rpc.call_arm
-        code, data = await asyncio.to_thread(call, request.data)
+        # Dispatch on the api_id the catalogue names, not on a per-service
+        # constant: the sport service carries 7101 (posture), 7102 (balance
+        # mode) and 7105 (velocity), so assuming 7101 here would turn
+        # `balance_stand` into a posture change with the balance value as its
+        # mode index.
+        if request.topic_kind == "sport_request":
+            code, data = await asyncio.to_thread(
+                g1_rpc.call_sport_api, request.api_id, request.data
+            )
+        else:
+            code, data = await asyncio.to_thread(g1_rpc.call_arm, request.data)
 
         task.status = "completed" if code == 0 else "failed"
         task.phase = "dispatched" if code == 0 else "rpc_error"
