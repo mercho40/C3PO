@@ -5,7 +5,8 @@ Where each piece runs, how it gets there, and the constraints that decided it.
 Companion docs: `STACK-DECISIONS.md` (what we build), `MENTAL-MODEL.md` (how it fits
 together), `ROBOT-INVENTORY.md` (what the hardware presents).
 
-Settled **2026-08-12**. Status markers: ✅ done · 🔧 partial · ⬜ not built.
+Settled **2026-08-12**, revised the same day after the bridge was actually installed onboard.
+Status markers: ✅ done · 🔧 partial · ⬜ not built.
 
 ---
 
@@ -42,7 +43,7 @@ flowchart TB
 | `apps/web`        | Vercel                | git push; adapter pinned `nodejs22.x`            | ✅ configured                   |
 | `apps/back`       | Ubuntu box on the LAN | `bun build --compile` → one binary + systemd     | ⬜                              |
 | Postgres          | Neon                  | managed; `drizzle-kit migrate` on deploy         | ✅ live                         |
-| `apps/bridge`     | **G1 Jetson**         | `~/c3po` checkout, uv, `run_c3po`                | 🔧 manual scripts, no boot unit |
+| `apps/bridge`     | **G1 Jetson**         | `~/c3po` checkout, uv, `run_c3po`                | 🔧 installed & running, no boot unit |
 | `c3po-perception` | **G1 Jetson**         | ROS 2 Humble container (Nav2, FAST-LIO2, YOLO11) | ⬜                              |
 
 ### Why perception cannot move off the robot
@@ -61,6 +62,10 @@ Perception and Nav2 stay on the Jetson. `back` is the only thing that moved.
 This shapes more of the deployment than anything else. Two independent stacks share one
 robot — ours and the colleague's `gemm` workspace — and some resources cannot be shared.
 
+**`gemm` is two processes, not one** (`ROBOT-INVENTORY.md` §5): the `gemm-bringup` container
+*and* a `gemm-ai.service` systemd unit. Everything below about stopping `gemm` refers to the
+container; the systemd unit is not covered, and it holds port 8000.
+
 | Resource                | Shareable?                                                       | Consequence                                  |
 | ----------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
 | RealSense D435i         | **No** — V4L2 device, one owner                                  | Their driver must stop for ours to open it   |
@@ -78,14 +83,15 @@ So the invariant is **one owner of the robot at a time**, enforced by the stack 
 
 ### Stack controls ✅
 
-`scripts/robot/`, installed onto PATH with `./scripts/robot/install_robot_scripts.sh`:
+`scripts/robot/`, installed onto PATH with `./scripts/robot/install_robot_scripts.sh`
+(symlinks, so `git pull` updates the commands with no reinstall step):
 
-| Command     | Does                                                                                                 |
-| ----------- | ---------------------------------------------------------------------------------------------------- |
-| `run_c3po`  | Stops `gemm`, refuses if `cmd_vel_to_loco` is alive, starts the bridge (+ perception when it exists) |
-| `stop_c3po` | SIGTERM→SIGKILL the bridge, stops perception                                                         |
-| `run_gemm`  | Stops our stack, starts their containers                                                             |
-| `stop_gemm` | Stops their containers, warns about a surviving `cmd_vel_to_loco`                                    |
+| Command     | Does                                                                                                                                                    |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run_c3po`  | Stops `gemm`, refuses if `cmd_vel_to_loco` or an untracked bridge is alive, syncs deps + re-applies `postsync.sh`, starts the bridge and waits for its port |
+| `stop_c3po` | SIGTERM→SIGKILL the bridge **and its children**, then verifies no bridge survived; stops perception                                                       |
+| `run_gemm`  | Stops our stack, starts their containers                                                                                                                  |
+| `stop_gemm` | Stops their containers, warns about a surviving `cmd_vel_to_loco`                                                                                         |
 
 Starting either stack stops the other. That's forced by the sensor ownership above, not a
 policy — and doing it inside the scripts turns a confusing `EBUSY` mid-startup into an
@@ -93,6 +99,17 @@ explicit "gemm was stopped for you".
 
 `stop_gemm` uses `docker stop`, not `down`: their `unless-stopped` policy means an explicit
 stop survives a daemon restart, so they cannot quietly reclaim the sensors.
+
+⚠️ **`stop_gemm` does not stop `gemm-ai.service`.** It filters on
+`docker ps --filter name=^gemm`, and a systemd unit is not a container. That service is a
+voice/vision assistant — verified to issue no motion commands, so the one-commander
+invariant holds — but it does bind `0.0.0.0:8000`, which is **why our bridge listens on
+8001**. If you need it gone: `sudo systemctl stop gemm-ai`. Coordinate first; it is theirs.
+
+`run_c3po` also refuses to start when a bridge is already running *outside* its pidfile.
+That case is not hypothetical: `uv run` forks the interpreter rather than exec'ing it, so an
+unclean stop used to be able to orphan a live bridge that still held DDS and could still
+command the legs while every status check read "not running" (fixed in `b58b036`).
 
 **Stopping the bridge removes `stop_everything`.** The physical e-stop and the firmware's
 1 s `SET_VELOCITY` deadman still apply — they always do — but don't `stop_c3po` while the
@@ -133,13 +150,17 @@ mv server.new server && systemctl restart c3po-back
 Env: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `WEB_URL`,
 `ANTHROPIC_API_KEY`, and `BRIDGE_URL`.
 
-⚠️ `BRIDGE_URL` currently defaults to `http://127.0.0.1:8000/mcp`, which only works while
-`back` and the bridge share a host. Point it at the robot.
+⚠️ `BRIDGE_URL` currently defaults to `http://127.0.0.1:8000/mcp`, which is now wrong on
+**both** counts: the bridge is on another host, and it listens on **8001** (`gemm-ai.service`
+holds 8000 — §2). Since the bridge binds loopback and has no auth of its own, the target is
+an SSH tunnel to `g1-orin.local:8001` rather than a direct LAN address.
 
 ### `apps/bridge` → Jetson 🔧
 
-A git checkout at `~/c3po`, Python 3.12 via uv, CycloneDDS 0.10.2 already present on the
-box. Deploy is `git pull && stop_c3po && run_c3po`.
+Installed and running as of 2026-08-12. A git checkout at `~/c3po`, Python 3.12 and
+`uv` 0.12.3 under `~/.local`, CycloneDDS 0.10.2 already present on the box. Deploy is
+`git pull && stop_c3po && run_c3po` — `run_c3po` now runs `uv sync` and re-applies
+`scripts/postsync.sh` itself, so a dependency change no longer needs a manual step.
 
 Config lives in `apps/bridge/.env` and is **not** in git:
 
@@ -151,9 +172,25 @@ DDS_INTERFACE=eth0              # required onboard — see ROBOT-INVENTORY §2
 CYCLONEDDS_HOME=/home/unitree/cyclonedds_ws/install/cyclonedds
 ```
 
+**Transport comes from `run_c3po`, not from `.env`.** It defaults to
+`BRIDGE_TRANSPORT=http`, `BRIDGE_HOST=127.0.0.1`, `BRIDGE_PORT=8001`; put them in `.env`
+only to override. The default matters: the bridge's own default is **stdio**, which is
+correct when an MCP client spawns it as a child over pipes, but as a daemon its stdin is
+`/dev/null` — it reads EOF and exits before ever reaching the robot, reported as a failed
+start with an empty log.
+
+Loopback is deliberate. The bridge can command the legs and has no authentication of its
+own, so it must not be bound to the school LAN. Reach it from `back` over an SSH tunnel.
+
+⚠️ **`~/.local/bin` is not on `PATH` for non-interactive SSH.** Ubuntu adds it from
+`~/.profile`/`~/.bashrc`, which a plain `ssh robot 'run_c3po'` never sources. Use
+`ssh robot 'bash -lc run_c3po'`, or absolute paths. This will bite the boot unit below,
+whose environment is more minimal still.
+
 **Missing: a boot unit.** Today the bridge only runs while someone has run `run_c3po`. A
 systemd unit calling `run_c3po` with `Restart=on-failure` is the next step. It must start
-even when perception is down, and must never initiate motion on boot.
+even when perception is down, must never initiate motion on boot, and must set an explicit
+`PATH` (or call `uv` and the scripts by absolute path) for the reason just above.
 
 ### `c3po-perception` → Jetson ⬜
 
@@ -171,15 +208,15 @@ pins the runtime against Unitree OTA churn. `--network host` for DDS.
 Tailscale. `back` reaches the bridge directly.
 
 What remains is **addressing**. The G1 is on DHCP and has already moved twice
-(`10.4.64.27` → `10.10.32.19`), and once that lease went to a different device entirely.
-Two fixes, either is fine:
+(`10.4.64.27` → `10.10.32.19`), and once that lease went to a different device entirely —
+so a stale IP does not fail closed, it reaches the wrong machine.
 
-- a **static DHCP reservation** for MAC `14:0a:02:f0:63:f6` (already whitelisted on
-  `EDU-Special`), or
-- **mDNS** — `avahi-daemon` is running on the Jetson, so `g1-orin.local` should resolve on
-  the same LAN. Untested; worth five minutes.
+**Resolved: use mDNS.** ✅ `g1-orin.local` resolves from the Mac over `EDU-Special`
+(verified 2026-08-12). `avahi-daemon` runs onboard and needs nothing from the school's
+network team, which a static DHCP reservation for `14:0a:02:f0:63:f6` would. Use the name in
+`~/.ssh/config`, in `BRIDGE_URL`, and anywhere else the robot is addressed.
 
-Do not hardcode an IP in `BRIDGE_URL` without one of those.
+Do not hardcode an IP in `BRIDGE_URL`.
 
 ### DDS domain map
 
@@ -244,12 +281,18 @@ Rollback: `back` keeps the previous binary alongside; the bridge is a git checko
 
 ## 8. Open items
 
-1. **systemd unit for the bridge** so it survives a robot reboot (§3).
+1. **systemd unit for the bridge** so it survives a robot reboot (§3). Note the `PATH`
+   caveat there — `~/.local/bin` is absent from non-login environments.
 2. **Perception container** — the largest unbuilt piece (§3).
-3. **Static lease or mDNS** for the robot before `BRIDGE_URL` is set (§4).
-4. **`BRIDGE_URL` still points at localhost** (§3).
+3. ✅ ~~Static lease or mDNS~~ — `g1-orin.local` works (§4).
+4. **`BRIDGE_URL` still points at `127.0.0.1:8000`** — wrong host *and* wrong port (§3).
 5. **Written agreement that `cmd_vel_to_loco` stays off.** The scripts detect and refuse,
    but that's a backstop, not a substitute for the two teams agreeing who drives.
 6. **Compute budget unmeasured** — nobody has watched an Orin NX run our full perception
    stack. It may not fit alongside anything else.
 7. **No rollback for migrations** (§6).
+8. **No motion has ever been executed on the real robot.** The read path is verified end to
+   end (`ROBOT-INVENTORY.md` §6), but `SET_VELOCITY` with a non-zero velocity has never run,
+   and the sim velocity gains will not transfer. First motion needs a supervised window.
+9. **`bridge.log` is never rotated** (`~/.c3po/logs/bridge.log`, append-only, structlog at
+   `info`). Add a logrotate entry before it matters.
