@@ -20,8 +20,35 @@ the same as _don't use open source_. Running our own Nav2 with our own config is
 Importing `gemm_navigation` is not. Every third-party component below is one we own the
 deployment of.
 
-**Consequence:** two independent stacks run on one robot with **no technical interlock**.
-That is a standing operational risk, not a solved problem — see `MENTAL-MODEL.md` §8.
+**Consequence:** two independent stacks run on one robot. See `DEPLOYMENT.md` §2 for how
+that is managed in practice.
+
+### D1.1 — Reaffirmed 2026-08-12, after considering the opposite
+
+Using `gemm`'s Nav2 directly was seriously weighed and rejected. Recording it because the
+argument for it was good, and will come back.
+
+**What prompted the question:** the sensors turned out to be _exclusive_. The RealSense is
+a V4L2 device with one owner, the Livox driver binds fixed UDP ports, and one Orin NX will
+not comfortably run two Nav2 stacks. "Run our own, in parallel, from the same sensors" is
+not physically available — so either we share their stack, or only one stack runs at a time.
+
+**The case for using theirs:** it exists and is tuned for this robot, including
+`odom_tf_bridge`, which builds the `map → odom → base_link` chain the vendor never
+publishes and flattens pelvis pitch/roll so costmap height filtering keeps meaning "metres
+above the floor" instead of oscillating with each step. That is real work we would redo.
+Crucially it would **not** have cost us the actuation chokepoint: consuming `/cmd_vel` and
+forwarding it through our own bridge preserves D2.1 intact.
+
+**Why we still said no:** availability coupling (their container down = our navigation
+down, and it restarts on every boot), change coupling (their launch args and costmap params
+would land in our autonomy unreviewed), and the fact that the saving is smaller than it
+looks — their stack has **no object detector**, so D7's `objects[]` stays empty and we need
+our own perception container regardless.
+
+**Instead:** one owner of the robot at a time, enforced by the stack controls in
+`DEPLOYMENT.md` §2. It is not a one-way door — the seam is identical either way
+(`navigate_to_pose` in, `/cmd_vel` out), so adopting their Nav2 later is a config change.
 
 ---
 
@@ -65,10 +92,10 @@ it emits `/cmd_vel` and the bridge decides whether to forward it.
 
 Three reasons this is worth its cost:
 
-1. **The robot's control API is raw DDS.** `/api/sport/request` (api_id 7101/7105/7106) is
+1. **The robot's control API is raw DDS.** `/api/sport/request` (api*id 7101/7105/7106) is
    Unitree's own RPC, reached via `unitree_sdk2py`. Driving it from ROS would require the
    vendor's `unitree_ros2` message package as an extra translation layer — which is what
-   `gemm` does and what D1 rules out. Direct is the _shorter_ path here, not a detour.
+   `gemm` does and what D1 rules out. Direct is the \_shorter* path here, not a detour.
 2. **Safety has to have one chokepoint.** `stop_everything`, the cancel tokens, the 1 s
    velocity deadman and the link watchdog all live in the bridge. If some commands reached
    the robot through a ROS node instead, "stop everything" would stop only some things.
@@ -218,11 +245,26 @@ perception stack.
   "version": 1,
   "sources": { "pose": "ok", "detector": "offline", "lidar": "ok" },
   "pose": { "x_m": 1.2, "y_m": -0.4, "yaw_deg": 33.8 },
-  "objects": [{ "label": "person", "range_m": 2.1, "bearing_deg": -15, "confidence": 0.91, "age_s": 0.3 }],
+  "objects": [
+    {
+      "label": "person",
+      "range_m": 2.1,
+      "bearing_deg": -15,
+      "confidence": 0.91,
+      "age_s": 0.3,
+    },
+  ],
   "objects_omitted": 4,
-  "free_space": { "ahead_m": 3.4, "left_m": 1.1, "right_m": 2.8, "behind_m": 5.0 },
+  "free_space": {
+    "ahead_m": 3.4,
+    "left_m": 1.1,
+    "right_m": 2.8,
+    "behind_m": 5.0,
+  },
   "landmarks": [{ "name": "kitchen", "range_m": 4.2, "bearing_deg": 30 }],
-  "notes": ["Object detection is OFFLINE — this is not an empty scene. Do not assume the path is clear."]
+  "notes": [
+    "Object detection is OFFLINE — this is not an empty scene. Do not assume the path is clear.",
+  ],
 }
 ```
 
