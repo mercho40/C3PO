@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Start our stack, taking ownership of the robot from `gemm` first.
+#
+# Stopping the other stack is not a courtesy — the RealSense and the Livox
+# have exactly one owner each at the OS level, so this would fail on device
+# busy otherwise. Doing it here rather than leaving it to the operator means
+# the failure mode is "gemm was stopped for you", not a confusing EBUSY twenty
+# seconds into startup.
+
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+say "Starting c3po stack"
+
+if [ ! -d "$BRIDGE_DIR" ]; then
+    err "bridge not found at $BRIDGE_DIR"
+    err "set C3PO_DIR if the checkout lives elsewhere"
+    exit 1
+fi
+
+if bridge_running; then
+    warn "bridge already running (pid $(bridge_pid)) — nothing to do"
+    warn "use stop_c3po first if you want a fresh start"
+    exit 0
+fi
+
+# 1. Take the sensors.
+if [ -n "$(gemm_running)" ]; then
+    info "gemm is running — stopping it to release the sensors"
+    "$here/stop_gemm"
+fi
+
+# 2. Refuse to start if something else can still drive the legs. This is the
+#    conflict DDS domains cannot isolate, because both stacks must be on
+#    domain 0 to reach the control board.
+warn_if_other_commander || exit 1
+
+# 3. Start the bridge.
+mkdir -p "$RUN_DIR" "$LOG_DIR"
+
+if [ ! -f "$BRIDGE_DIR/.env" ]; then
+    err "no .env at $BRIDGE_DIR/.env — refusing to start"
+    err "without it SIM_MODE defaults to stub and nothing reaches the robot"
+    exit 1
+fi
+
+info "logging to $BRIDGE_LOG"
+# `nohup` rather than `setsid`: both survive the SSH session that started them
+# (a robot process that dies when your laptop sleeps is not a robot process),
+# but nohup execs, so `$!` is the bridge's own pid. setsid may fork, which
+# would record a pid that exits immediately and leave us with a pidfile that
+# claims the bridge is dead while it is happily driving the robot.
+(
+    cd "$BRIDGE_DIR"
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+    export PATH="$HOME/.local/bin:$PATH"
+    nohup uv run python -m bridge.mcp_server \
+        >> "$BRIDGE_LOG" 2>&1 < /dev/null &
+    echo $! > "$BRIDGE_PID"
+)
+
+sleep 2
+if bridge_running; then
+    ok "bridge started (pid $(bridge_pid))"
+else
+    err "bridge failed to start — last lines of $BRIDGE_LOG:"
+    tail -15 "$BRIDGE_LOG" >&2 || true
+    rm -f "$BRIDGE_PID"
+    exit 1
+fi
+
+# Perception container, once it exists (D2/D3). Absent today.
+if _docker ps -a --filter "name=^c3po-perception" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+    _docker start c3po-perception >/dev/null 2>&1 && ok "started c3po-perception"
+else
+    info "no perception container yet — bridge only"
+fi
+
+say "c3po stack up"
+info "stop with: stop_c3po   ·   hand the robot back with: run_gemm"

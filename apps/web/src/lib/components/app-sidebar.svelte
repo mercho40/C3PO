@@ -46,15 +46,14 @@
                 <img
                   src="/logo.svg"
                   alt=""
-                  class="size-5 object-contain drop-shadow-[0_0_8px_rgba(126,229,255,0.55)]"
+                  class="size-5 object-contain glow-cyan"
                 />
               </div>
               <div class="grid flex-1 text-start text-sm leading-tight">
-                <span
-                  class="truncate font-semibold tracking-tight text-[#eaf1ff]"
+                <span class="truncate font-semibold tracking-tight text-ink"
                   >C3PO</span
                 >
-                <span class="truncate text-xs text-sidebar-foreground/55"
+                <span class="truncate text-xs text-sidebar-foreground/60"
                   >Consola de operador</span
                 >
               </div>

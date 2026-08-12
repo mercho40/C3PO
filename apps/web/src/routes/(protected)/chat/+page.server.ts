@@ -28,8 +28,7 @@ export const load: PageServerLoad = async ({ fetch, request, url }) => {
 
   // A stale or foreign id 404s — fall back to a new chat rather than erroring
   // the page, since the id most likely came from a bookmark.
-  const selected =
-    chatResult && !chatResult.error ? chatResult.data : null;
+  const selected = chatResult && !chatResult.error ? chatResult.data : null;
 
   return {
     chats,

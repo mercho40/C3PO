@@ -1,42 +1,42 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
   import { goto } from "$app/navigation";
-  import CircularProgress from "$lib/components/circular-progress.svelte";
   import {
-    Play,
-    Square,
-    Send,
+    ArrowRight,
     MapPin,
-    Maximize2,
     ChevronRight,
     Map,
-    Loader2,
+    ShieldCheck,
+    TriangleAlert,
   } from "@lucide/svelte";
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
-  import { Progress } from "$lib/components/ui/progress/index.js";
-  import { createApi } from "$lib/api";
-  import { RobotLive, projectPose } from "$lib/robot/live-state.svelte";
+  import PostureFigure from "$lib/components/posture-figure.svelte";
+  import { projectPose } from "$lib/robot/live-state.svelte";
+  import { getRobotLive } from "$lib/robot/context";
+  import {
+    readPosture,
+    LOAD_TEXT,
+    LOAD_FILL,
+    LOAD_BORDER,
+  } from "$lib/robot/posture";
 
   let { data } = $props();
 
-  // Seed once from the server load for an instant first paint, then poll live.
-  const live = untrack(() => new RobotLive(data.state, data.online));
-  onMount(() => {
-    live.start();
-    return () => live.stop();
-  });
+  // Shared with the map and the topbar — see `(protected)/+layout.svelte`.
+  const live = getRobotLive();
 
   const robot = $derived(live.state);
   const online = $derived(live.online);
-  const battery = $derived(Math.round(robot?.battery_pct ?? 0));
+  const battery = $derived(
+    robot?.battery_pct != null ? Math.round(robot.battery_pct) : null,
+  );
   const faults = $derived(robot?.faults ?? []);
   const latencyMs = $derived(live.latencyMs ?? data.latencyMs);
   const pose = $derived(robot?.pose ?? null);
   const yawDeg = $derived(
     pose ? Math.round((pose.yaw_radians_world * 180) / Math.PI) : null,
   );
+  const posture = $derived(readPosture(robot?.posture, online));
+
   const marker = $derived(
     pose
       ? projectPose(pose.x_meters_world, pose.y_meters_world)
@@ -50,51 +50,20 @@
       })
       .join(" "),
   );
-  const distanceKm = $derived(live.distanceM / 1000);
 
-  // Live telemetry — sourced from real /state, no fabricated numbers.
-  const telemetry = $derived([
-    {
-      label: "Batería",
-      value: robot?.battery_pct != null ? String(battery) : "—",
-      unit: "%",
-      pct: battery,
-    },
-    {
-      label: "Latencia de red",
-      value: online ? String(latencyMs) : "—",
-      unit: "ms",
-      pct: Math.min(100, Math.round((latencyMs ?? 0) / 3)),
-    },
-    {
-      label: "Rumbo (yaw)",
-      value: yawDeg != null ? String(yawDeg) : "—",
-      unit: "°",
-      pct:
-        yawDeg != null ? Math.round((((yawDeg % 360) + 360) % 360) / 3.6) : 0,
-    },
-  ]);
+  // Battery is the one number besides the posture that has a "running out"
+  // dimension worth colouring.
+  const batteryTone = $derived(
+    battery == null
+      ? "text-ink-mute"
+      : battery <= 20
+        ? "text-danger-soft"
+        : battery <= 40
+          ? "text-warn"
+          : "text-ink",
+  );
 
   let command = $state("");
-  let stopping = $state(false);
-  let stopMsg = $state<string | null>(null);
-
-  async function emergencyStop() {
-    if (stopping) return;
-    stopping = true;
-    stopMsg = null;
-    try {
-      const { error } = await createApi(fetch)
-        .skills({ name: "stop_everything" })
-        .invoke.post({});
-      stopMsg = error ? "Error al detener" : "Movimiento detenido";
-    } catch {
-      stopMsg = "Error al detener";
-    } finally {
-      stopping = false;
-      setTimeout(() => (stopMsg = null), 3500);
-    }
-  }
 
   // The command box hands off to the agent chat, which streams Claude's reply
   // and tool calls; the query is auto-sent on arrival.
@@ -106,280 +75,232 @@
   }
 </script>
 
-{#snippet sectionLabel(text: string)}
-  <span
-    class="text-[10px] font-medium tracking-[0.18em] text-[#8a96ad] uppercase"
-    >{text}</span
-  >
-{/snippet}
-
-{#snippet statTile(label: string, value: string)}
-  <div
-    class="flex flex-col gap-1.5 rounded-lg border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-3.5"
-  >
-    <span
-      class="font-mono text-[9px] tracking-[0.16em] text-[#8a96ad] uppercase"
-      >{label}</span
-    >
-    <span class="text-[15px] text-[#eaf1ff]">{value}</span>
+{#snippet fact(label: string, value: string, tone = "text-ink")}
+  <!-- Values are never truncated. A coordinate clipped to "1.24, -0…" reads as
+       a real reading rather than a hidden one, and the operator has no way to
+       tell which. If a value outgrows its column it wraps, which is visibly a
+       long value rather than invisibly a wrong one. -->
+  <div class="flex min-w-0 flex-col gap-1 border-t border-hairline pt-2.5">
+    <span class="eyebrow">{label}</span>
+    <span class="font-mono text-sm break-words {tone}">{value}</span>
   </div>
 {/snippet}
 
-<div class="flex flex-col gap-[18px] pb-2">
-  <!-- Row 1 -->
-  <div class="flex flex-col gap-[18px] xl:flex-row">
-    <!-- Estado del sistema -->
-    <section
-      class="flex-1 rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828] p-6"
-    >
-      <h2
-        class="text-base font-bold tracking-[0.12em] text-[#8a96ad] uppercase"
-      >
-        Estado del sistema
-      </h2>
-      <div class="mt-5 flex items-center gap-4">
-        <span class="text-xl text-[#eaf1ff]">BIPED-01</span>
-        <Badge
-          variant="outline"
-          class="gap-2 rounded-full px-3 py-1.5 font-mono text-[11px] tracking-[0.1em] uppercase {online
-            ? 'border-[rgba(94,231,161,0.3)] bg-[rgba(94,231,161,0.08)] text-[#5ee7a1]'
-            : 'border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.08)] text-[#ff4d6a]'}"
-        >
-          <span
-            class="size-1.5 rounded-sm {online
-              ? 'bg-[#5ee7a1] shadow-[0px_0px_10px_rgba(94,231,161,0.6)]'
-              : 'bg-[#ff4d6a] shadow-[0px_0px_10px_rgba(255,77,106,0.6)]'}"
-          ></span>
-          {online ? "Conectado" : "Offline"}
-        </Badge>
-      </div>
-      <div class="mt-5 grid grid-cols-2 gap-2.5">
-        {@render statTile("Red", online ? `${latencyMs} ms` : "—")}
-        {@render statTile(
-          "Estado",
-          faults.length ? `${faults.length} fallo(s)` : "OK",
-        )}
-        {@render statTile("Modo", robot?.posture ?? "—")}
-        {@render statTile("Entorno", robot?.env ?? "—")}
-      </div>
-    </section>
+<!-- Two columns from 1400px: state on the left (what it is doing, then what you
+     can say to it), the map on the right taking the full height. The map is the
+     one panel that genuinely wants vertical room; giving the slack to the hero
+     instead just left a tall empty band above the robot.
 
-    <!-- Telemetría -->
-    <section
-      class="rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828] p-6 xl:w-[326px]"
-    >
-      {@render sectionLabel("Telemetría")}
-      <div class="mt-5 flex flex-col gap-4">
-        {#each telemetry as m (m.label)}
-          <div class="flex flex-col gap-2">
-            <div class="flex items-center justify-between">
-              <span
-                class="font-heading text-[10px] tracking-[0.06em] text-[#8a96ad] uppercase"
-                >{m.label}</span
-              >
-              <span class="font-mono text-xs text-[#eaf1ff]"
-                >{m.value}<span class="text-[#8a96ad]"> {m.unit}</span></span
-              >
-            </div>
-            <Progress value={m.pct} class="h-1 bg-[rgba(180,210,255,0.08)]" />
+     The split is at 1400 rather than Tailwind's xl (1280) because at 1280 —
+     minus a 255px sidebar — the hero track was too narrow to hold the figure
+     and the extended headline side by side, and the headline got clipped.
+
+     minmax(0,…) rather than bare fr: a track sized `1.5fr` still refuses to go
+     below its content's min-content width, which let the headline push the
+     layout wider than the viewport. -->
+<div
+  class="grid gap-4 pb-2 min-[1400px]:h-full min-[1400px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] min-[1400px]:pb-0"
+>
+  <div class="flex min-w-0 flex-col gap-4">
+    <!-- Hero: what the robot is doing, right now. Everything else on this page
+         is subordinate to it, which is why it is the only panel with the lift. -->
+    <section class="flex min-w-0 shrink-0 flex-col panel-hero p-5 sm:p-7">
+      <!-- Side by side only from lg up. Between the sidebar appearing (768px)
+           and 1024px there is not enough room for a 245px figure and a 38px
+           extended headline on one line, and the headline was the thing that
+           got clipped. -->
+      <div class="flex flex-1 flex-col gap-6 lg:flex-row lg:gap-7">
+        <div
+          class="mx-auto h-[220px] w-[195px] shrink-0 self-center lg:mx-0 lg:h-auto lg:min-h-[250px] lg:w-[275px] lg:self-stretch"
+        >
+          <PostureFigure pose={posture.pose} load={posture.load} />
+        </div>
+
+        <!-- Bottom-aligned: the figure stands on the floor of the panel, and the
+             readout sits on the same line. The slack collects above as headroom
+             over the robot, which is at least a true thing about the space it
+             occupies — centring the text instead left a diagonal void. -->
+        <div class="flex min-w-0 flex-1 flex-col lg:justify-end">
+          <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span class="stamp text-2xl text-ink sm:text-[30px]">BIPED-01</span>
+            <span class="readout"
+              >Unitree G1{robot?.env ? ` · ${robot.env}` : ""}</span
+            >
           </div>
-        {/each}
-      </div>
-    </section>
 
-    <!-- Núcleo de energía -->
-    <section
-      class="flex flex-col rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828] p-6 xl:w-[326px]"
-    >
-      <div class="flex items-center justify-between">
-        {@render sectionLabel("Núcleo de energía")}
-        <span class="text-[10px] tracking-[0.18em] text-[#9fc5ff] uppercase"
-          >⚡ {battery > 20 ? "En uso" : "Bajo"}</span
-        >
-      </div>
-      <div class="flex flex-1 items-center justify-center py-2">
-        <CircularProgress percentage={battery} />
-      </div>
-      <div
-        class="grid grid-cols-2 gap-2.5 border-t border-[rgba(180,210,255,0.08)] pt-3.5"
-      >
-        <div class="flex flex-col gap-1">
-          <span
-            class="font-mono text-[9px] tracking-[0.16em] text-[#8a96ad] uppercase"
-            >Postura</span
+          <p
+            class="mt-3 stamp text-3xl leading-[1.05] lg:text-[38px] {LOAD_TEXT[
+              posture.load
+            ]}"
           >
-          <span class="text-[15px] text-[#eaf1ff] capitalize"
-            >{robot?.posture ?? "—"}</span
-          >
-        </div>
-        <div class="flex flex-col gap-1">
-          <span
-            class="font-mono text-[9px] tracking-[0.16em] text-[#8a96ad] uppercase"
-            >Latencia</span
-          >
-          <span class="text-[15px] text-[#eaf1ff]"
-            >{online ? `${latencyMs} ms` : "—"}</span
-          >
-        </div>
-      </div>
-    </section>
-  </div>
-
-  <!-- Row 2 -->
-  <div class="flex flex-col gap-[18px] xl:flex-row">
-    <!-- Controles rápidos -->
-    <section
-      class="flex flex-col rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828] p-6 xl:w-[446px]"
-    >
-      <div class="flex items-center justify-between">
-        {@render sectionLabel("Controles rápidos")}
-        <span
-          class="font-mono text-[10px] tracking-[0.16em] text-[#8a96ad] uppercase"
-          >2 acciones</span
-        >
-      </div>
-      <div class="mt-4 grid grid-cols-2 gap-2.5">
-        <Button
-          variant="outline"
-          onclick={() => goto("/chat")}
-          class="flex h-auto flex-col items-start gap-2 rounded-[10px] border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-4 text-left transition-colors hover:border-[rgba(159,197,255,0.25)] hover:bg-[rgba(180,210,255,0.04)]"
-        >
-          <span
-            class="flex size-7 items-center justify-center rounded-[7px] bg-[rgba(159,197,255,0.14)] text-[#9fc5ff]"
-          >
-            <Play class="size-3.5" />
-          </span>
-          <span class="font-heading text-base text-[#eaf1ff]">Iniciar guía</span
-          >
-          <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]"
-            >Abrir el agente</span
-          >
-        </Button>
-        <Button
-          variant="outline"
-          onclick={emergencyStop}
-          disabled={stopping}
-          class="flex h-auto flex-col items-start gap-2 rounded-[10px] border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.05)] p-4 text-left transition-colors hover:border-[rgba(255,77,106,0.45)] hover:bg-[rgba(255,77,106,0.1)] disabled:opacity-70"
-        >
-          <span
-            class="flex size-7 items-center justify-center rounded-[7px] bg-[rgba(255,77,106,0.12)] text-[#ff8aa0]"
-          >
-            {#if stopping}
-              <Loader2 class="size-3.5 animate-spin" />
-            {:else}
-              <Square class="size-3.5" />
-            {/if}
-          </span>
-          <span class="font-heading text-base text-[#ff8aa0]">PARAR</span>
-          <span class="font-mono text-[10px] tracking-wide text-[#8a96ad]">
-            {stopMsg ?? "Detener movimiento"}
-          </span>
-        </Button>
-      </div>
-      <form
-        onsubmit={runCommand}
-        class="mt-auto flex items-center gap-2.5 rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-3"
-      >
-        <Send class="size-3.5 shrink-0 text-[#8a96ad]" />
-        <Input
-          bind:value={command}
-          placeholder="Decile al robot qué hacer…"
-          class="h-auto w-full rounded-none border-0 bg-transparent p-0 font-mono text-xs text-[#eaf1ff] shadow-none placeholder:text-[#8a96ad] focus-visible:ring-0"
-        />
-      </form>
-    </section>
-
-    <!-- Última ubicación conocida -->
-    <section
-      class="flex flex-1 flex-col rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828] p-6"
-    >
-      <div class="flex items-center justify-between">
-        {@render sectionLabel("Última ubicación conocida")}
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Expandir mapa"
-          class="size-6 text-[#8a96ad] hover:bg-[rgba(180,210,255,0.06)] hover:text-[#eaf1ff]"
-        >
-          <Maximize2 class="size-3" />
-        </Button>
-      </div>
-      <div
-        class="relative mt-3.5 min-h-[260px] flex-1 overflow-hidden rounded-[10px] border border-[rgba(180,210,255,0.08)] bg-[radial-gradient(ellipse_at_center,#0c1220,#04070d)]"
-      >
-        {#if live.trail.length > 1}
-          <svg
-            class="absolute inset-0 size-full"
-            viewBox="0 0 100 100"
-            preserveAspectRatio="none"
-          >
-            <polyline
-              points={trailPoints}
-              fill="none"
-              stroke="#9fc5ff"
-              stroke-opacity="0.5"
-              stroke-width="0.5"
-              stroke-dasharray="0.6 1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-        {/if}
-        <!-- coords readout -->
-        <span
-          class="absolute top-2.5 left-3 font-mono text-[10px] tracking-wide text-[#8a96ad]"
-        >
-          {#if pose}
-            x {pose.x_meters_world.toFixed(2)} · y {pose.y_meters_world.toFixed(
-              2,
-            )} m · {yawDeg}°
-          {:else}
-            sin posición
+            {posture.label}
+          </p>
+          <p class="mt-2 text-sm leading-relaxed text-ink-mute">
+            {posture.detail}
+          </p>
+          <!-- The firmware's own token, kept because whoever is debugging DDS
+               needs to know which FSM index produced the label above. -->
+          {#if robot?.posture}
+            <span class="mt-1.5 readout">fsm · {robot.posture}</span>
           {/if}
-        </span>
-        <!-- glowing marker at live pose -->
-        <div
-          class="absolute transition-[left,top] duration-500 ease-out"
-          style="left:{marker.left}%;top:{marker.top}%"
-        >
-          <span
-            class="absolute -inset-4 rounded-full bg-[rgba(159,197,255,0.14)] blur-[5px]"
-          ></span>
-          <span
-            class="absolute -inset-2 rounded-full border {online
-              ? 'border-[#9fc5ff]'
-              : 'border-[#ff4d6a]'} opacity-50"
-          ></span>
-          <span
-            class="relative block size-3.5 rounded-full {online
-              ? 'bg-[#9ae5f8]'
-              : 'bg-[#ff4d6a]'} shadow-[0px_0px_24px_rgba(126,229,255,0.55),0px_0px_0px_3px_rgba(7,9,13,0.85)]"
-          ></span>
+
+          <div class="grid grid-cols-2 gap-x-6 gap-y-3 pt-6">
+            {@render fact(
+              "Batería",
+              battery != null ? `${battery} %` : "—",
+              batteryTone,
+            )}
+            {@render fact("Rumbo", yawDeg != null ? `${yawDeg}°` : "—")}
+            {@render fact(
+              "Posición",
+              pose
+                ? `x ${pose.x_meters_world.toFixed(2)}  y ${pose.y_meters_world.toFixed(2)} m`
+                : "—",
+            )}
+            {@render fact("Red", online ? `${latencyMs} ms` : "sin enlace")}
+          </div>
         </div>
       </div>
-      <div class="mt-3.5 grid grid-cols-2 gap-2.5">
-        <div
-          class="flex items-center gap-2.5 rounded-lg border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-3"
-        >
-          <MapPin class="size-3.5 shrink-0 text-[#8a96ad]" />
-          <span class="flex-1 text-[13px] text-[#eaf1ff]"
-            >Distancia recorrida</span
+    </section>
+
+    <!-- What you can do about it. Sits under the hero and takes the leftover
+         height, so a long fault list has somewhere to go. -->
+    <section class="flex min-h-0 flex-1 flex-col gap-4 panel p-5">
+      <form onsubmit={runCommand} class="flex flex-col gap-2">
+        <label for="cmd" class="eyebrow">Decile qué hacer</label>
+        <div class="flex items-center gap-2 tile py-1 pr-1 pl-3">
+          <Input
+            id="cmd"
+            bind:value={command}
+            placeholder="Caminá 2 metros y saludá"
+            class="h-9 w-full rounded-none border-0 bg-transparent p-0 font-mono text-xs text-ink shadow-none placeholder:text-ink-mute focus-visible:ring-0"
+          />
+          <button
+            type="submit"
+            aria-label="Enviar al agente"
+            disabled={command.trim().length === 0}
+            class="flex size-8 shrink-0 items-center justify-center rounded-md text-ink-mute transition-colors hover:bg-accent hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
           >
-          <span class="font-mono text-sm text-[#9fc5ff]"
-            >{distanceKm.toFixed(2)} km</span
-          >
+            <ArrowRight class="size-4" />
+          </button>
         </div>
-        <a
-          href="/live-map"
-          class="flex items-center gap-2.5 rounded-lg border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.02)] p-3 transition-colors hover:border-[rgba(159,197,255,0.25)]"
-        >
-          <Map class="size-3.5 shrink-0 text-[#8a96ad]" />
-          <span class="flex-1 text-[13px] text-[#eaf1ff]"
-            >Ver mapa completo</span
-          >
-          <ChevronRight class="size-2.5 text-[#8a96ad]" />
-        </a>
+      </form>
+
+      <div class="flex min-h-0 flex-1 flex-col gap-2">
+        <span class="eyebrow">Diagnóstico</span>
+        <div class="min-h-0 flex-1 overflow-y-auto">
+          {#if !online}
+            <p class="text-sm text-ink-mute">Sin conexión con el robot.</p>
+          {:else if faults.length === 0}
+            <p class="flex items-center gap-2 text-sm text-ok">
+              <ShieldCheck class="size-4 shrink-0" />
+              Sin fallos
+            </p>
+          {:else}
+            <ul class="flex flex-col gap-2">
+              {#each faults as fault (fault)}
+                <li class="flex items-start gap-2 text-sm text-danger-soft">
+                  <TriangleAlert class="mt-0.5 size-4 shrink-0" />
+                  <span class="min-w-0 font-mono text-xs break-words"
+                    >{fault}</span
+                  >
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
       </div>
     </section>
   </div>
+
+  <!-- Where it is. The one panel that genuinely benefits from height, so it
+       takes the full column. -->
+  <section class="flex min-w-0 flex-col panel p-5">
+    <div class="flex items-baseline justify-between gap-3">
+      <span class="eyebrow">Última ubicación conocida</span>
+      <a
+        href="/live-map"
+        class="flex items-center gap-1 text-xs text-ink-mute transition-colors hover:text-ink"
+      >
+        Mapa completo
+        <ChevronRight class="size-3.5" />
+      </a>
+    </div>
+
+    <div
+      class="relative mt-3 min-h-[220px] flex-1 overflow-hidden rounded-lg border border-hairline bg-trench"
+    >
+      <!-- A reference grid, so an empty frame reads as ground rather than as a
+             panel that failed to load. Origin lines are brighter: (0,0) is where
+             the robot's odometry started, which is the only fixed landmark. -->
+      <svg
+        class="absolute inset-0 size-full"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <g stroke="var(--c3-hairline)" stroke-width="0.2">
+          {#each [20, 40, 60, 80] as t (t)}
+            <line x1="0" y1={t} x2="100" y2={t} />
+            <line x1={t} y1="0" x2={t} y2="100" />
+          {/each}
+        </g>
+        <g stroke="var(--c3-hairline-strong)" stroke-width="0.3">
+          <line x1="0" y1="50" x2="100" y2="50" />
+          <line x1="50" y1="0" x2="50" y2="100" />
+        </g>
+      </svg>
+
+      {#if live.trail.length > 1}
+        <svg
+          class="absolute inset-0 size-full"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <polyline
+            points={trailPoints}
+            fill="none"
+            stroke="var(--c3-peri)"
+            stroke-opacity="0.5"
+            stroke-width="0.5"
+            stroke-dasharray="0.6 1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      {/if}
+      <span class="absolute top-2.5 left-3 readout">
+        {#if pose}
+          x {pose.x_meters_world.toFixed(2)} · y {pose.y_meters_world.toFixed(
+            2,
+          )} m
+        {:else}
+          sin posición
+        {/if}
+      </span>
+      <div
+        class="absolute transition-[left,top] duration-500 ease-out"
+        style="left:{marker.left}%;top:{marker.top}%"
+      >
+        <!-- Same load encoding as the hero figure and the full map. -->
+        <span
+          class="absolute -inset-2 rounded-full border opacity-50 {LOAD_BORDER[
+            posture.load
+          ]}"
+        ></span>
+        <span
+          class="relative block size-3 rounded-full {LOAD_FILL[posture.load]}"
+        ></span>
+      </div>
+    </div>
+
+    <div class="mt-3 flex items-center gap-2.5 tile p-3">
+      <MapPin class="size-4 shrink-0 text-ink-mute" />
+      <span class="flex-1 text-sm text-ink">Distancia recorrida</span>
+      <span class="font-mono text-sm text-peri">
+        {(live.distanceM / 1000).toFixed(2)} km
+      </span>
+    </div>
+  </section>
 </div>

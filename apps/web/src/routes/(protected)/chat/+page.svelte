@@ -1,18 +1,27 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount } from "svelte";
   import { replaceState } from "$app/navigation";
+  import { createApi } from "$lib/api";
   import { Chat } from "@ai-sdk/svelte";
   import {
-    DefaultChatTransport,
     isToolOrDynamicToolUIPart,
     getToolOrDynamicToolName,
+    DefaultChatTransport,
   } from "ai";
   import { PUBLIC_API_URL } from "$env/static/public";
-  import { Send, Wrench, Square, Plus, MessageSquare } from "@lucide/svelte";
-  import { ScrollArea } from "$lib/components/ui/scroll-area/index.js";
+  import { PanelLeft, RotateCw } from "@lucide/svelte";
+
   import { Button } from "$lib/components/ui/button/index.js";
-  import { Textarea } from "$lib/components/ui/textarea/index.js";
-  import Markdown from "$lib/components/markdown.svelte";
+  import * as Sheet from "$lib/components/ui/sheet/index.js";
+  import * as Conversation from "$lib/components/ai-elements/conversation/index.js";
+  import * as Message from "$lib/components/ai-elements/message/index.js";
+  import * as PromptInput from "$lib/components/ai-elements/prompt-input/index.js";
+  import * as Tool from "$lib/components/ai-elements/tool/index.js";
+  import * as Reasoning from "$lib/components/ai-elements/reasoning/index.js";
+  import { Response } from "$lib/components/ai-elements/response/index.js";
+  import { Suggestion } from "$lib/components/ai-elements/suggestion/index.js";
+  import { Loader } from "$lib/components/ai-elements/loader/index.js";
+  import ChatHistory from "$lib/components/chat-history.svelte";
   import type { PageData } from "./$types";
 
   let { data }: { data: PageData } = $props();
@@ -31,7 +40,6 @@
   const draftId = crypto.randomUUID();
 
   const chatId = $derived(data.selected?.id ?? draftId);
-  const history = $derived(data.chats ?? []);
 
   // Derived, not constructed once: SvelteKit reuses this component when only
   // the query string changes, so building the Chat from the initial `data`
@@ -51,58 +59,23 @@
       }),
   );
 
-  let input = $state("");
-  let bottomEl = $state<HTMLDivElement>();
-
   const busy = $derived(
     chat.status === "submitted" || chat.status === "streaming",
   );
-  const canSend = $derived(input.trim().length > 0 && !busy);
+
+  let historyOpen = $state(false);
 
   const suggestions = [
-    {
-      title: "Estado del robot",
-      label: "postura, batería y fallos",
-      action: "¿Cuál es el estado del robot?",
-    },
-    {
-      title: "Caminá",
-      label: "2 metros hacia adelante",
-      action: "Caminá 2 metros hacia adelante",
-    },
-    {
-      title: "Pará todo",
-      label: "detener el movimiento",
-      action: "Pará todo movimiento",
-    },
-    {
-      title: "Saludá",
-      label: "hacé un gesto con la mano",
-      action: "Saludá con la mano",
-    },
+    "¿Cuál es el estado del robot?",
+    "Caminá 2 metros hacia adelante",
+    "Saludá con la mano",
+    "Pará todo movimiento",
   ];
 
-  function send() {
-    if (!canSend) return;
-    chat.sendMessage({ text: input });
-    input = "";
-  }
-
-  function submit(e: SubmitEvent) {
-    e.preventDefault();
-    send();
-  }
-
-  function onComposerKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      send();
-    }
-  }
-
-  function suggest(action: string) {
-    if (busy) return;
-    chat.sendMessage({ text: action });
+  function send(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed || busy) return;
+    chat.sendMessage({ text: trimmed });
   }
 
   /** Put `?id=` in the URL without navigating, so a reload resumes this chat. */
@@ -136,180 +109,258 @@
     }
   });
 
-  // Follow the conversation as messages arrive / streaming starts and stops.
-  $effect(() => {
-    chat.messages.length;
-    chat.status;
-    tick().then(() => bottomEl?.scrollIntoView({ block: "end" }));
+  /**
+   * The bridge reports a failed skill as a *successful* tool result carrying an
+   * `error` key — `apps/back/src/agent/runtime.ts` does that on purpose, so the
+   * agent can read the failure and recover instead of the stream aborting. Left
+   * alone, the UI would badge a skill that never ran with a green "Completado"
+   * next to a paragraph explaining that it failed. Unwrap it so the card agrees
+   * with the prose.
+   */
+  function toolFailure(output: unknown): string | null {
+    if (output && typeof output === "object" && "error" in output) {
+      const { error } = output as { error: unknown };
+      if (typeof error === "string" && error.length > 0) return error;
+    }
+    return null;
+  }
+
+  // A conversation started from scratch is written to the database by the first
+  // turn, but the rail was rendered from the server load and still says there
+  // are none.
+  //
+  // `invalidateAll()` is the obvious move and the wrong one: re-running the page
+  // load repopulates `data.selected`, which rebuilds the derived `Chat` — and
+  // the transcript the operator is reading blanks out mid-conversation. So fetch
+  // the row for this one chat and prepend it locally.
+  let createdChat = $state<(typeof data.chats)[number] | null>(null);
+
+  const history = $derived.by(() => {
+    const server = data.chats ?? [];
+    // Drop the local row the moment the server knows about it, or as soon as
+    // this conversation is no longer the open one — so it can't outlive a
+    // deletion or linger into another chat.
+    if (
+      !createdChat ||
+      createdChat.id !== chatId ||
+      server.some((c) => c.id === createdChat!.id)
+    ) {
+      return server;
+    }
+    return [createdChat, ...server];
   });
+
+  let listRefreshed = $state(false);
+  $effect(() => {
+    if (
+      !data.selected &&
+      !listRefreshed &&
+      chat.status === "ready" &&
+      chat.messages.length > 0
+    ) {
+      listRefreshed = true;
+      const id = chatId;
+      // Take the server's own title rather than guessing one from the prompt —
+      // the backend derives it in `titleFromParts`, and two different titles for
+      // the same conversation is worse than a moment's delay.
+      void createApi(fetch)
+        .chats.get({ query: {} })
+        .then(({ data: res, error }) => {
+          if (error) return;
+          const row = res?.chats?.find((c) => c.id === id);
+          if (row) createdChat = row;
+        });
+    }
+  });
+
+  // While a turn is in flight the last assistant message may still be empty
+  // (Claude is thinking, or the first tool call hasn't resolved). Show a pulse
+  // so the composer's disabled state isn't the only feedback.
+  const awaitingFirstToken = $derived(
+    chat.status === "submitted" ||
+      (chat.status === "streaming" &&
+        chat.messages.at(-1)?.role !== "assistant"),
+  );
 </script>
 
-<div class="flex h-full w-full flex-col gap-4">
-  <!-- Conversation history. Plain links rather than client-side state: each is
-       a real URL an operator can bookmark or share, and the server load has the
-       messages ready on first paint. -->
-  <div class="flex items-center gap-2 overflow-x-auto pb-1">
+<div class="flex h-full min-h-0 gap-4">
+  <!-- Conversation rail. Hidden below lg, where it becomes a sheet. -->
+  <aside class="hidden w-64 shrink-0 flex-col panel p-3 lg:flex">
+    <ChatHistory chats={history} activeId={chatId} />
+  </aside>
+
+  <Sheet.Root bind:open={historyOpen}>
+    <Sheet.Content side="left" class="w-[280px] p-3">
+      <Sheet.Header class="px-1 pb-2">
+        <Sheet.Title class="text-sm">Conversaciones</Sheet.Title>
+      </Sheet.Header>
+      <ChatHistory
+        chats={history}
+        activeId={chatId}
+        onnavigate={() => (historyOpen = false)}
+      />
+    </Sheet.Content>
+  </Sheet.Root>
+
+  <!-- Conversation column -->
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+    <!-- Opens the sheet by driving its bound state directly; Sheet.Trigger
+         would need to live inside Sheet.Root to pick up its context. -->
     <Button
-      href="/chat"
       variant="outline"
       size="sm"
-      class="shrink-0 gap-1.5 border-[rgba(180,210,255,0.14)] bg-[#0c1220] text-[13px] text-[#eaf1ff]"
+      onclick={() => (historyOpen = true)}
+      class="w-fit gap-2 tile-interactive text-ink lg:hidden"
     >
-      <Plus class="size-3.5" />
-      Nuevo chat
+      <PanelLeft class="size-4" />
+      Conversaciones
     </Button>
 
-    {#each history as item (item.id)}
-      {@const active = item.id === chatId}
-      <a
-        href={`/chat?id=${item.id}`}
-        title={item.title ?? "Sin título"}
-        class="flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[13px] transition-colors {active
-          ? 'border-[rgba(126,229,255,0.4)] bg-[rgba(126,229,255,0.08)] text-[#eaf1ff]'
-          : 'border-[rgba(180,210,255,0.1)] bg-[#0c1220] text-[#8a96ad] hover:text-[#eaf1ff]'}"
-      >
-        <MessageSquare class="size-3.5 shrink-0" />
-        <span class="max-w-[180px] truncate">{item.title ?? "Sin título"}</span>
-      </a>
-    {/each}
-  </div>
-
-  <ScrollArea
-    class="min-h-0 flex-1 rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828]"
-  >
-    <div class="flex flex-col gap-5 p-5">
-      {#if chat.messages.length === 0}
-        <div class="flex flex-col items-center gap-6 py-16 text-center">
-          <img
-            src="/logo.svg"
-            alt="C3PO"
-            class="size-14 object-contain drop-shadow-[0_0_18px_rgba(126,229,255,0.5)]"
-          />
-          <div class="max-w-md">
-            <p class="text-[15px] text-[#eaf1ff]">Hablá con el robot</p>
-            <p class="mt-1 text-[13px] text-[#8a96ad]">
-              Pedile estados, movimientos o gestos. El agente decide qué
-              habilidades ejecutar.
-            </p>
-          </div>
-          <div class="grid w-full max-w-lg gap-2 sm:grid-cols-2">
-            {#each suggestions as s (s.title)}
-              <Button
-                type="button"
-                variant="outline"
-                onclick={() => suggest(s.action)}
-                class="flex h-auto flex-col items-start gap-0.5 rounded-xl border-[rgba(180,210,255,0.12)] bg-[rgba(180,210,255,0.02)] px-4 py-3 text-left whitespace-normal hover:border-[rgba(159,197,255,0.3)] hover:bg-[rgba(159,197,255,0.06)]"
-              >
-                <span class="text-[13px] text-[#eaf1ff]">{s.title}</span>
-                <span class="text-[12px] text-[#8a96ad]">{s.label}</span>
-              </Button>
-            {/each}
-          </div>
-        </div>
-      {:else}
-        {#each chat.messages as message (message.id)}
-          {@const isUser = message.role === "user"}
-          <div class="flex gap-3 {isUser ? 'flex-row-reverse' : ''}">
-            {#if !isUser}
-              <img
-                src="/logo.svg"
-                alt="C3PO"
-                class="mt-0.5 size-7 shrink-0 object-contain drop-shadow-[0_0_10px_rgba(126,229,255,0.45)]"
-              />
-            {/if}
-            <div
-              class="flex max-w-[80%] flex-col gap-1.5 {isUser
-                ? 'items-end'
-                : 'items-start'}"
-            >
-              {#each message.parts as part, i (i)}
-                {#if part.type === "text"}
-                  {#if isUser}
-                    <div
-                      class="rounded-2xl border border-[rgba(159,197,255,0.2)] bg-[rgba(159,197,255,0.14)] px-4 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap text-[#eaf1ff]"
-                    >
-                      {part.text}
-                    </div>
-                  {:else}
-                    <div
-                      class="rounded-2xl border border-[rgba(180,210,255,0.08)] bg-[rgba(180,210,255,0.04)] px-4 py-2.5"
-                    >
-                      <Markdown md={part.text} />
-                    </div>
-                  {/if}
-                {:else if isToolOrDynamicToolUIPart(part)}
-                  <div
-                    class="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] {part.state ===
-                    'output-error'
-                      ? 'border-[rgba(255,77,106,0.3)] text-[#ff8aa0]'
-                      : part.state === 'output-available'
-                        ? 'border-[rgba(94,231,161,0.3)] text-[#5ee7a1]'
-                        : 'border-[rgba(180,210,255,0.12)] text-[#8a96ad]'}"
+    <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden panel">
+      <Conversation.Root class="min-h-0 flex-1">
+        <Conversation.Content class="min-h-0 flex-1 gap-0 overflow-y-auto p-0">
+          <!-- With nothing said yet there's a whole panel of empty space, so the
+               prompt centres in it rather than clinging to the top edge. -->
+          <div
+            class="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6 sm:px-6 {chat
+              .messages.length === 0
+              ? 'min-h-full justify-center'
+              : ''}"
+          >
+            {#if chat.messages.length === 0}
+              <div class="flex flex-col items-center gap-6 text-center">
+                <img
+                  src="/logo.svg"
+                  alt=""
+                  class="size-14 object-contain drop-shadow-[0_0_18px_rgba(126,229,255,0.5)]"
+                />
+                <div class="max-w-md">
+                  <p class="stamp-quiet text-xl text-ink">Hablá con el robot</p>
+                  <p class="mt-1.5 text-sm text-ink-mute">
+                    Pedile estados, movimientos o gestos. El agente decide qué
+                    habilidades ejecutar.
+                  </p>
+                </div>
+                <!-- Wraps rather than scrolls: the registry's <Suggestions>
+                     puts these in a horizontal ScrollArea, which clipped the
+                     last one at the panel edge with no visible affordance. -->
+                <div class="flex flex-wrap justify-center gap-2">
+                  {#each suggestions as s (s)}
+                    <Suggestion
+                      suggestion={s}
+                      onclick={send}
+                      disabled={busy}
+                      class="h-auto tile-interactive py-1.5 whitespace-normal text-ink-dim hover:text-ink"
+                    />
+                  {/each}
+                </div>
+              </div>
+            {:else}
+              {#each chat.messages as message (message.id)}
+                <Message.Root from={message.role}>
+                  <Message.Content
+                    class="group-[.is-user]:border group-[.is-user]:border-accent-edge group-[.is-user]:bg-accent group-[.is-user]:text-ink"
                   >
-                    <Wrench class="size-3" />
-                    {getToolOrDynamicToolName(part)}
-                    {#if part.state === "output-available"}· ✓{:else if part.state === "output-error"}·
-                      ✗{:else}· …{/if}
-                  </div>
-                {/if}
+                    {#each message.parts as part, i (i)}
+                      {#if part.type === "text"}
+                        <Response content={part.text} />
+                      {:else if part.type === "reasoning"}
+                        <Reasoning.Root
+                          class="w-full"
+                          isStreaming={chat.status === "streaming"}
+                        >
+                          <Reasoning.Trigger />
+                          <Reasoning.Content content={part.text} />
+                        </Reasoning.Root>
+                      {:else if isToolOrDynamicToolUIPart(part)}
+                        {@const failure =
+                          part.state === "output-error"
+                            ? (part.errorText ?? "Error desconocido")
+                            : part.state === "output-available"
+                              ? toolFailure(part.output)
+                              : null}
+                        <!-- Expanded while running, or when it failed, so the
+                             operator sees which skill is driving the robot right
+                             now and why one didn't; collapsed on success, to
+                             keep long transcripts scannable. -->
+                        <Tool.Root
+                          class="border-hairline bg-wash"
+                          open={part.state === "input-available" ||
+                            failure !== null}
+                        >
+                          <Tool.Header
+                            type={getToolOrDynamicToolName(part)}
+                            state={failure ? "output-error" : part.state}
+                          />
+                          <Tool.Content>
+                            <Tool.Input input={part.input} />
+                            <Tool.Output
+                              output={failure ||
+                              part.state !== "output-available"
+                                ? undefined
+                                : part.output}
+                              errorText={failure ?? undefined}
+                            />
+                          </Tool.Content>
+                        </Tool.Root>
+                      {/if}
+                    {/each}
+                  </Message.Content>
+                </Message.Root>
               {/each}
-            </div>
+
+              {#if awaitingFirstToken}
+                <div class="flex items-center gap-2.5 text-ink-mute">
+                  <Loader size={14} />
+                  <span class="readout">Pensando…</span>
+                </div>
+              {/if}
+            {/if}
           </div>
-        {/each}
-      {/if}
-      <div bind:this={bottomEl}></div>
+        </Conversation.Content>
+        <Conversation.ScrollButton
+          class="border-hairline-strong bg-panel-lift text-ink hover:bg-panel-lift"
+        />
+      </Conversation.Root>
     </div>
-  </ScrollArea>
 
-  {#if chat.error}
-    <div
-      class="flex items-center justify-between gap-3 rounded-[10px] border border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.06)] px-4 py-2.5 text-[12px] text-[#ff8aa0]"
-    >
-      <span class="truncate">{chat.error.message}</span>
-      <Button
-        variant="outline"
-        size="sm"
-        class="h-7 shrink-0"
-        onclick={() => chat.regenerate()}>Reintentar</Button
+    {#if chat.error}
+      <div
+        class="flex items-center justify-between gap-3 rounded-lg border border-danger/30 bg-danger/[0.06] px-4 py-2.5 text-xs text-danger-soft"
       >
-    </div>
-  {/if}
-
-  <form
-    onsubmit={submit}
-    class="relative rounded-2xl border border-[rgba(180,210,255,0.18)] bg-[#0c1220]"
-  >
-    <Textarea
-      bind:value={input}
-      disabled={busy}
-      rows={1}
-      placeholder="Enviá un mensaje…"
-      onkeydown={onComposerKeydown}
-      class="max-h-[200px] min-h-[52px] resize-none border-0 bg-transparent px-4 py-3.5 pr-14 text-[13px] text-[#eaf1ff] shadow-none placeholder:text-[#8a96ad] focus-visible:ring-0 dark:bg-transparent"
-    />
-    <div class="absolute right-2.5 bottom-2.5">
-      {#if busy}
+        <span class="truncate">{chat.error.message}</span>
         <Button
-          type="button"
-          size="icon"
           variant="outline"
-          aria-label="Detener"
-          onclick={() => chat.stop()}
-          class="size-9 rounded-full"
+          size="sm"
+          class="h-7 shrink-0 gap-1.5"
+          onclick={() => chat.regenerate()}
         >
-          <Square class="size-3.5" />
+          <RotateCw class="size-3" />
+          Reintentar
         </Button>
-      {:else}
-        <Button
-          type="submit"
-          size="icon"
-          aria-label="Enviar"
-          disabled={!canSend}
-          class="size-9 rounded-full bg-gradient-to-b from-[rgba(198,220,255,0.92)] to-[rgba(159,197,255,0.92)] text-[#06121c] hover:scale-105 disabled:opacity-40"
-        >
-          <Send class="size-3.5" />
-        </Button>
-      {/if}
-    </div>
-  </form>
+      </div>
+    {/if}
+
+    <PromptInput.Root
+      onSubmit={(message) => send(message.text)}
+      class="panel shadow-none"
+    >
+      <PromptInput.Body>
+        <PromptInput.Textarea
+          placeholder="Enviá un mensaje…"
+          class="text-sm text-ink placeholder:text-ink-mute"
+        />
+        <PromptInput.Toolbar class="border-t border-hairline px-3 py-2">
+          <span class="hidden readout sm:inline">
+            Enter para enviar · Shift + Enter para salto de línea
+          </span>
+          <PromptInput.Submit
+            status={chat.status}
+            onStop={() => chat.stop()}
+            class="ms-auto size-9 rounded-full"
+          />
+        </PromptInput.Toolbar>
+      </PromptInput.Body>
+    </PromptInput.Root>
+  </div>
 </div>

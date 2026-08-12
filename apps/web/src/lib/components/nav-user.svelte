@@ -52,22 +52,21 @@
                 />
               {/if}
               <Avatar.Fallback
-                class="rounded-lg bg-gradient-to-br from-[#9fc5ff] to-[#4a7dd1] font-mono text-[11px] font-bold text-[#06121c]"
+                class="rounded-lg bg-gradient-to-br from-peri to-deep-blue font-mono text-2xs font-bold text-primary-foreground"
               >
                 {initials}
               </Avatar.Fallback>
             </Avatar.Root>
             <div class="grid flex-1 text-start leading-tight">
-              <span class="truncate text-[13px] font-medium text-[#eaf1ff]"
+              <span class="truncate text-sm font-medium text-ink"
                 >{displayName}</span
               >
               {#if user?.email && user.email !== displayName}
-                <span class="truncate text-[11px] text-[#8a96ad]"
-                  >{user.email}</span
+                <span class="truncate text-2xs text-ink-mute">{user.email}</span
                 >
               {/if}
             </div>
-            <ChevronsUpDown class="ms-auto size-3.5 shrink-0 text-[#8a96ad]" />
+            <ChevronsUpDown class="ms-auto size-3.5 shrink-0 text-ink-mute" />
           </Sidebar.MenuButton>
         {/snippet}
       </DropdownMenu.Trigger>
@@ -88,7 +87,7 @@
                 />
               {/if}
               <Avatar.Fallback
-                class="rounded-lg bg-gradient-to-br from-[#9fc5ff] to-[#4a7dd1] font-mono text-[11px] font-bold text-[#06121c]"
+                class="rounded-lg bg-gradient-to-br from-peri to-deep-blue font-mono text-2xs font-bold text-primary-foreground"
               >
                 {initials}
               </Avatar.Fallback>
