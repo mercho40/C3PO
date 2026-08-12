@@ -70,16 +70,16 @@ Consequences for us:
 Authoritative source: `unitree_ros2/example/src/include/g1/g1_loco_client.hpp`, vendored on
 the robot. Requests go to `/api/sport/request`, responses to `/api/sport/response`. **[src]**
 
-| api_id      | Call                                                                               | Implemented in `apps/bridge`?             |
-| ----------- | ---------------------------------------------------------------------------------- | ----------------------------------------- |
-| 7001–7006   | GET fsm*id, fsm_mode, balance_mode, swing/stand height, phase *(7006 deprecated)\_ | no                                        |
-| 7101        | SET_FSM_ID — postures, `Damp() = SetFsmId(1)`                                      | **yes**                                   |
-| 7102        | SET_BALANCE_MODE                                                                   | no                                        |
-| 7103 / 7104 | SET_SWING_HEIGHT / SET_STAND_HEIGHT                                                | no                                        |
-| **7105**    | **SET_VELOCITY** — `{"velocity":[vx,vy,omega],"duration":d}`                       | **no — this is the `walk_to`/`turn` gap** |
-| 7106        | SET_ARM_TASK — gestures                                                            | **yes**                                   |
-| 7107        | SET_SPEED_MODE                                                                     | no                                        |
-| 7110        | SWITCH_TO_USER_CTRL **[web]**                                                      | no                                        |
+| api_id      | Call                                                                               | Implemented in `apps/bridge`?                                      |
+| ----------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| 7001–7006   | GET fsm*id, fsm_mode, balance_mode, swing/stand height, phase *(7006 deprecated)\_ | **7001/7002 yes** (posture readback); rest no                      |
+| 7101        | SET_FSM_ID — postures, `Damp() = SetFsmId(1)`                                      | **yes**                                                            |
+| 7102        | SET_BALANCE_MODE                                                                   | no                                                                 |
+| 7103 / 7104 | SET_SWING_HEIGHT / SET_STAND_HEIGHT                                                | no                                                                 |
+| **7105**    | **SET_VELOCITY** — `{"velocity":[vx,vy,omega],"duration":d}`                       | **yes** — accepted by firmware; non-zero velocity still unexecuted |
+| 7106        | SET_ARM_TASK — gestures                                                            | **yes**                                                            |
+| 7107        | SET_SPEED_MODE                                                                     | no                                                                 |
+| 7110        | SWITCH_TO_USER_CTRL **[web]**                                                      | no                                                                 |
 
 `SetVelocity(vx, vy, omega, duration = 1.0f)` — note the **default duration of 1 second**.
 
