@@ -61,6 +61,29 @@ SIM_MODE=isaac ROBOT_HOST=<sim-host-ip> DDS_DOMAIN_ID=1 \
 uv run python -m bridge.mcp_server
 ```
 
+### As a long-lived HTTP daemon (what runs on the robot)
+
+`apps/back` connects to the bridge as an MCP client over **streamable-http**, which means the
+bridge has to be told to serve that transport:
+
+```bash
+BRIDGE_TRANSPORT=http BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=8001 \
+uv run python -m bridge.mcp_server
+```
+
+This is not optional polish. The default transport is **stdio**, which is right when an MCP
+client spawns the bridge as a child and talks over pipes — but a daemon's stdin is
+`/dev/null`, so on stdio it reads EOF and exits immediately, before it ever reaches the
+robot. The symptom is a process that "fails to start" with almost nothing in the log.
+
+Onboard the G1 you do not run this by hand: `run_c3po` (see `scripts/robot/`) supplies these
+three defaults, stops the colleague's stack first, and re-applies `postsync.sh`. Note the
+port is **8001**, not the code default of 8000 — `gemm-ai.service` holds 8000 on the Jetson
+(`docs/ROBOT-INVENTORY.md` §5).
+
+Keep it bound to loopback. The bridge can command the robot's legs and has no authentication
+of its own, so it should be reached over an SSH tunnel rather than bound to a shared LAN.
+
 ### Direct skill calls (no MCP)
 
 ```python

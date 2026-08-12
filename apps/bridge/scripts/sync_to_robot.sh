@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-# Syncs apps/bridge/src to the G1's onboard Jetson (default 10.4.67.47) and
-# restarts the bridge server there (SIM_MODE=real, from apps/bridge/.env).
+# Syncs apps/bridge/src to the G1's onboard Jetson and restarts the bridge
+# there (SIM_MODE=real, from apps/bridge/.env).
+#
+# ⚠️ SUPERSEDED by `scripts/robot/run_c3po`, and it bypasses every interlock
+# that script exists to enforce: it does not stop the colleague's `gemm` stack,
+# does not check for a running `cmd_vel_to_loco`, writes no pidfile, and does
+# not run `uv sync` + `postsync.sh`. A bridge started this way is invisible to
+# `stop_c3po` — which is exactly the untracked-commander case `run_c3po` now
+# refuses to start alongside. It also pins BRIDGE_* *after* sourcing `.env`,
+# so those values win over `.env`, the opposite of `run_c3po`'s precedence.
+#
+# Prefer: `git pull && stop_c3po && run_c3po` on the robot. Reach for this only
+# to push uncommitted work for a quick loop, and run `stop_c3po` afterwards.
 #
 # Usage: ROBOT_PASSWORD=... ./scripts/sync_to_robot.sh [robot_host]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ROBOT_HOST="${1:-10.4.67.47}"
+# mDNS name, not an IP: the Jetson is on DHCP and its lease has already moved
+# twice, and one of the old addresses later answered as a different device.
+ROBOT_HOST="${1:-g1-orin.local}"
 ROBOT_USER="unitree"
 
 : "${ROBOT_PASSWORD:?set ROBOT_PASSWORD in the environment — not committed to git}"
