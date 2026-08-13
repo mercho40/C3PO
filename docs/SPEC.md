@@ -1018,7 +1018,7 @@ Wire-format helpers we already shipped:
 
 - `bridge.sdk.g1_protocol.topics_for(SIM_MODE)` — real-G1 topic profile.
 - `bridge.sdk.g1_protocol.SKILL_REQUESTS["damp" | "wave" | ...]` — pre-built `(topic_kind, api_id, param)` triples for each skill.
-- `bridge.sdk.faults.decode(record)` — for the `errors` / `add_error` / `rm_error` stream that arrives over the DataChannel.
+- ~~`bridge.sdk.faults.decode(record)`~~ — a decoder for the `errors` / `add_error` / `rm_error` DataChannel stream. Written, never used, and **removed** once `real` became DDS rather than WebRTC (§16.4). If this path is ever revived, recover it from git history rather than rewriting it; the per-bit code tables were transcribed from the vendor's, and that transcription is the expensive part.
 
 ### 16.4 Cutover strategy
 

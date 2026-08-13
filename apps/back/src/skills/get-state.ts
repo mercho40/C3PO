@@ -10,8 +10,12 @@ export const getState = defineSkill({
     "learn which target you are driving. Pose and posture both work on the real robot " +
     "(pose from vendor odometry, posture from the FSM getter). Pose is odometry, so it " +
     "drifts and its origin is wherever the estimator started — good for relative motion, " +
-    "not a map frame. Battery is not wired yet and is always null; the fault list carries " +
-    "only locally-derived entries (staleness), never robot-reported faults.",
+    "not a map frame. Battery is real on hardware: it comes from the BMS topic and reports " +
+    "state of charge, with a fault raised below 20%. A null battery means no BMS message " +
+    "has arrived (always the case in sim) — read it as 'unknown', never as 'fine'. The " +
+    "fault list carries locally-derived entries (staleness, low battery), never " +
+    "robot-reported faults. A null posture/fsm_id on real means no motion controller is " +
+    "loaded — call check_motion_mode before concluding the robot is broken.",
   parameters: t.Object({}),
   preconditions: [],
   expectedDurationSeconds: 0.05,

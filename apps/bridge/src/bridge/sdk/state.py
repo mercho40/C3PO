@@ -17,11 +17,12 @@ never delivers a message, which is indistinguishable from a quiet robot.
 
 FSM mode index → human label goes through `g1_protocol.mode_label`.
 
-Faults: not exposed inside `LowState_` on G1. The decoder in `bridge.sdk.faults`
-is written and unused — it was built for the WebRTC `errors`/`add_error`/
-`rm_error` stream, which is no longer the plan of record (SPEC §16.3). Finding
-the DDS-side fault source is open work; until then the faults field carries only
-locally-derived entries (staleness), never robot-reported ones.
+Faults: the robot does not report them inside `LowState_` on G1, and we have not
+found the DDS-side source yet, so the `faults` field carries only what we derive
+locally — staleness and low battery. Absence of a fault here is not a statement
+about the robot's health. (A decoder for the WebRTC `errors` stream once lived
+in `bridge.sdk.faults`; that transport is no longer the plan of record and the
+module was removed unused.)
 """
 
 from __future__ import annotations
@@ -107,10 +108,6 @@ class _PoseSnapshot:
     z_meters_world: float = 0.0
     yaw_radians_world: float = 0.0
     raw_message_count: int = 0
-
-
-# Back-compat alias: the sim-specific name this used to carry.
-_SimStateSnapshot = _PoseSnapshot
 
 
 def _yaw_from_quaternion(qw: float, qx: float, qy: float, qz: float) -> float:

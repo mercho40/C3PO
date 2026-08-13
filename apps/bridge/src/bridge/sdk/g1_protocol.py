@@ -11,7 +11,6 @@ This module is the single source of truth for:
   `api_id=7106`. Both carry parameter `{"data": <index>}`.
 - The G1 FSM transition table — the on-robot firmware rejects illegal
   transitions, so skills must check `can_transition` before firing a mode.
-- Fault sources / per-bit code labels (see `faults.py` for the decoder).
 
 Sim vs real topic profile:
     Isaac Sim (today)              Real G1 (≥ 1.5.1)
@@ -268,9 +267,6 @@ _DAMP_TARGETS: Final[frozenset[int]] = frozenset(
 _PREPARATION_TARGETS: Final[frozenset[int]] = frozenset(
     {Mode.DAMP, Mode.WALK, Mode.WALK_WAIST, Mode.RUN}
 )
-_LOCOMOTION_MODES: Final[frozenset[int]] = frozenset({Mode.WALK, Mode.WALK_WAIST, Mode.RUN, 802})
-
-
 def can_transition(current_mode: int, target_mode: int) -> bool:
     """True if the FSM will accept `current → target` directly."""
     if current_mode != Mode.DAMP and target_mode in _DAMP_TARGETS:
@@ -284,11 +280,6 @@ def can_transition(current_mode: int, target_mode: int) -> bool:
     if current_mode == Mode.PREPARATION and target_mode not in _PREPARATION_TARGETS:
         return False
     return True
-
-
-def is_locomotion_state(mode: int) -> bool:
-    """True if the FSM mode permits arm gestures (Walk / Walk Waist / Run)."""
-    return mode in _LOCOMOTION_MODES
 
 
 # ---------------------------------------------------------------------------
