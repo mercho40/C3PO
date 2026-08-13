@@ -42,18 +42,24 @@ const SYSTEM_PREAMBLE = [
   "goal, call get_state when you need the current pose / posture / battery /",
   "faults, and sequence skills to accomplish what the operator asks.",
   "",
-  "Environment: the robot is currently the Isaac Sim emulation. Locomotion",
-  "(walk_to, turn) and get_state are real; the high-level posture/gesture skills",
-  "marked 'real-only' are constructed but produce NO motion in sim (logged only).",
-  "Do not claim the robot moved when a real-only skill was called in sim.",
+  "Environment: which target (sim vs real hardware) is live changes over time —",
+  "don't assume one. Call get_state() and read its `env` field (\"stub\" | \"isaac\"",
+  "| \"real\") to find out. Each skill below is tagged sim-only / real-only /",
+  "sim+real / unavailable — that tag is the ground truth for whether a given",
+  "skill will actually do anything in the CURRENT env, not a general assumption.",
+  "A 'real-only' skill called while env=isaac/stub is constructed but produces NO",
+  "motion (logged only); a 'sim-only' skill called while env=real currently fails",
+  "(no_pose, for walk_to/turn specifically — see their descriptions). Never claim",
+  "the robot moved unless the tool result actually confirms it did.",
   "",
   "Safety: stop_everything halts all motion immediately. Respect each skill's",
   "preconditions, and prefer to confirm intent before high-danger skills.",
   "Keep operator-facing replies concise: say what you did and what happened.",
 ].join("\n");
 
-/** A compact catalogue appended to the system prompt so Claude knows scope. */
-function buildSystemPrompt(): string {
+/** A compact catalogue appended to the system prompt so Claude knows scope.
+ * Exported for testing — pure string generation, no network calls. */
+export function buildSystemPrompt(): string {
   const lines = listSkills().map((s) => {
     const where =
       s.works.sim && s.works.real
