@@ -274,3 +274,62 @@ def test_back_skill_catalogue_has_not_drifted_from_the_bridge(tools):
     assert not dangling, (
         f"apps/back skills with no bridge tool (agent would get an MCP error): {sorted(dangling)}"
     )
+
+
+def test_back_skill_parameters_match_the_bridge(tools):
+    """Names matching is not enough — the PARAMETERS have to match too.
+
+    Comparing names alone let five real drifts through, all of which reach the
+    model directly because `runtime.ts` passes the TypeBox object straight to
+    `jsonSchema()` as the AI SDK tool schema:
+
+    - `say` declared a `voice` parameter the bridge does not accept. Calling it
+      the way back described returned rpc success while the argument silently
+      evaporated, and the `language` option was unreachable.
+    - `walk_to`, `turn` and `list_active_tasks` marked their defaulted
+      parameters REQUIRED, because TypeBox requires every property unless
+      wrapped in t.Optional(). So the model was told it must invent `timeout_s`,
+      `stop_distance_m` and `tolerance_degrees` instead of inheriting the
+      bridge's tuned defaults.
+
+    A required-set mismatch is the more dangerous half: it does not fail, it
+    just makes the agent guess numbers that control how long a humanoid keeps
+    walking.
+    """
+    import re
+    from pathlib import Path
+
+    skills_dir = Path(__file__).resolve().parents[3] / "apps" / "back" / "src" / "skills"
+    if not skills_dir.is_dir():
+        pytest.skip(f"apps/back not present at {skills_dir}")
+
+    problems: list[str] = []
+    for ts in skills_dir.glob("*.ts"):
+        if ts.name in {"define.ts", "index.ts"}:
+            continue
+        text = ts.read_text()
+        m = re.search(r'name:\s*"([a-z0-9_]+)"', text)
+        if not m or m.group(1) not in tools:
+            continue
+        name = m.group(1)
+        schema = tools[name].inputSchema or {}
+
+        bridge_props = set(schema.get("properties", {}))
+        bridge_required = set(schema.get("required", []))
+        # Top-level properties of the TypeBox object, and which of them are not
+        # wrapped in t.Optional(...).
+        back_props = set(re.findall(r"\n    ([a-z_0-9]+): t\.", text))
+        back_required = set(re.findall(r"\n    ([a-z_0-9]+): t\.(?!Optional)", text))
+
+        if bridge_props != back_props:
+            problems.append(
+                f"{name}: properties differ — back={sorted(back_props)} "
+                f"bridge={sorted(bridge_props)}"
+            )
+        if bridge_required != back_required:
+            problems.append(
+                f"{name}: required differ — back={sorted(back_required)} "
+                f"bridge={sorted(bridge_required)}"
+            )
+
+    assert not problems, "back/bridge parameter drift:\n  " + "\n  ".join(problems)

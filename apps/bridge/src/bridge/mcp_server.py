@@ -378,10 +378,17 @@ async def wave(ctx: Context) -> dict:
 
 @mcp.tool()
 async def point_at(ctx: Context) -> dict:
-    """Extend the right arm forward — closest available "point" gesture.
+    """Extend the right arm horizontally — the closest thing to pointing.
 
-    G1 firmware "forward push" (api_id=7106, data=36). Like `wave`, requires
-    a locomotion-active FSM state on real hardware.
+    Vendor action 23, "Right Hand Horizontal" (arm service, api_id=7106). There
+    is no "point" in Unitree's action table; this is the nearest real action.
+
+    Previously sent 36, which appears in NO vendor artifact — official table,
+    C++ header or Python SDK — and could only ever have returned 7402 "Action
+    ID does not exist". So this gesture has never worked on hardware and 23 has
+    never been tried.
+
+    Like `wave`, needs an FSM state that permits arm actions.
 
     Isaac Sim: logged only.
     """

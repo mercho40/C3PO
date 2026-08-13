@@ -6,11 +6,13 @@ export const listActiveTasks = defineSkill({
     "List running tasks. Optionally include recently-completed tasks so you can inspect " +
     "the last skill's result.",
   parameters: t.Object({
-    include_recent: t.Boolean({
+    include_recent: t.Optional(
+      t.Boolean({
       default: false,
       description:
         "If true, also include up to 10 recently-completed tasks (≤5 min old).",
     }),
+    ),
   }),
   preconditions: [],
   expectedDurationSeconds: 0.05,

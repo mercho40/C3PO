@@ -14,7 +14,8 @@ export const walkTo = defineSkill({
     target_y_meters_world_frame: t.Number({
       description: "Target Y coordinate in meters, world frame.",
     }),
-    stop_distance_m: t.Number({
+    stop_distance_m: t.Optional(
+      t.Number({
       minimum: 0.3,
       maximum: 5.0,
       default: 1.0,
@@ -22,7 +23,9 @@ export const walkTo = defineSkill({
         "How close to the target the robot should stop. Smaller values mean closer; " +
         "minimum 0.3 m to avoid collisions.",
     }),
-    timeout_s: t.Number({
+    ),
+    timeout_s: t.Optional(
+      t.Number({
       minimum: 5.0,
       maximum: 300.0,
       default: 60.0,
@@ -30,6 +33,7 @@ export const walkTo = defineSkill({
         "Maximum seconds to spend walking before giving up. The current Isaac Sim " +
         "policy walks at ~10-15% of commanded velocity, so allow generous time per metre.",
     }),
+    ),
   }),
   preconditions: ["robot_upright", "battery_pct_gt_15", "no_active_walk_task"],
   expectedDurationSeconds: 20,
