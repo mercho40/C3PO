@@ -16,9 +16,12 @@
 import type { SkillCatalogueEntry, SkillDefinition } from "./define";
 import { toCatalogueEntry } from "./define";
 
+import { balanceStand } from "./balance-stand";
 import { cancelTask } from "./cancel-task";
+import { checkMotionMode } from "./check-motion-mode";
 import { clap } from "./clap";
 import { damp } from "./damp";
+import { describeSurroundings } from "./describe-surroundings";
 import { forgetLandmark } from "./forget-landmark";
 import { getState } from "./get-state";
 import { hug } from "./hug";
@@ -35,6 +38,7 @@ import { shakeHand } from "./shake-hand";
 import { sitG1 } from "./sit-g1";
 import { squat } from "./squat";
 import { startWalking } from "./start-walking";
+import { startWalkingWaist } from "./start-walking-waist";
 import { stopEverything } from "./stop-everything";
 import { turn } from "./turn";
 import { walkTo } from "./walk-to";
@@ -45,6 +49,8 @@ import { zeroTorque } from "./zero-torque";
 const ALL: ReadonlyArray<SkillDefinition<any>> = [
   // introspection
   getState,
+  checkMotionMode,
+  describeSurroundings,
   // locomotion
   walkTo,
   turn,
@@ -52,7 +58,9 @@ const ALL: ReadonlyArray<SkillDefinition<any>> = [
   damp,
   zeroTorque,
   prepare,
+  balanceStand,
   startWalking,
+  startWalkingWaist,
   sitG1,
   lieUp,
   squat,
@@ -101,9 +109,12 @@ export function getSkill(name: string): SkillDefinition<any> | undefined {
 }
 
 export {
+  balanceStand,
   cancelTask,
+  checkMotionMode,
   clap,
   damp,
+  describeSurroundings,
   forgetLandmark,
   getState,
   hug,
@@ -120,6 +131,7 @@ export {
   sitG1,
   squat,
   startWalking,
+  startWalkingWaist,
   stopEverything,
   turn,
   walkTo,

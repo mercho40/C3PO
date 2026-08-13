@@ -227,3 +227,50 @@ def test_tts_index_increments_unlike_the_vendor_client():
 
     assert sent == sorted(set(sent)), f"index must be strictly increasing, got {sent}"
     assert len(set(sent)) == 3, f"vendor bug reproduced — index stuck: {sent}"
+
+
+def test_back_skill_catalogue_has_not_drifted_from_the_bridge(tools):
+    """apps/back must expose every bridge tool the agent is meant to reach.
+
+    The two catalogues are deliberately separate — back's skill files carry the
+    agent-facing safety contract (preconditions, dangerLevel, works{sim,real})
+    that has no business in the transport layer, so generating one from the
+    other would lose information. But nothing kept them in sync, and they had
+    silently diverged: balance_stand, check_motion_mode and
+    describe_surroundings existed on the robot with no way for the agent to
+    call them.
+
+    This is a repo-level consistency check that happens to live in pytest,
+    because pytest is where a test runner already exists and back's skill names
+    are plain string literals. It reads TypeScript as text on purpose — no TS
+    toolchain required.
+
+    A bridge tool with no back skill is unreachable by the agent. A back skill
+    with no bridge tool is worse: the agent will call it and get an MCP error.
+    """
+    import re
+    from pathlib import Path
+
+    skills_dir = Path(__file__).resolve().parents[3] / "apps" / "back" / "src" / "skills"
+    if not skills_dir.is_dir():
+        pytest.skip(f"apps/back not present at {skills_dir}")
+
+    back_names = set()
+    for ts in skills_dir.glob("*.ts"):
+        if ts.name in {"define.ts", "index.ts"}:
+            continue
+        m = re.search(r'name:\s*"([a-z0-9_]+)"', ts.read_text())
+        if m:
+            back_names.add(m.group(1))
+
+    bridge_names = set(tools)
+
+    unreachable = bridge_names - back_names
+    dangling = back_names - bridge_names
+
+    assert not unreachable, (
+        f"bridge tools with no apps/back skill (agent cannot call them): {sorted(unreachable)}"
+    )
+    assert not dangling, (
+        f"apps/back skills with no bridge tool (agent would get an MCP error): {sorted(dangling)}"
+    )
