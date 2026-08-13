@@ -26,12 +26,23 @@
   let rt = $state<Record<CamId, Runtime>>({ head: blank(), lwrist: blank(), rwrist: blank() });
   const handles: Partial<Record<CamId, SimCamHandle>> = {};
 
+  let { data } = $props();
+
+  // This viewer only applies to the sim's teleimager WebRTC servers -- three
+  // fixed ports, one per camera. Real G1 has one camera, not three, and its
+  // verified-working setup uses a different transport entirely (see
+  // apps/bridge README's Phase 1b notes + the VR teleop research). Don't even
+  // attempt sim ports against real hardware -- show why instead of a
+  // perpetual, unexplained "Sin señal".
+  const realHardware = $derived(data.env === "real");
+
   // Default to the host serving the console (browser runs on the sim box), so no
   // config is needed in the co-located setup; override with PUBLIC_SIM_CAM_HOST.
   let host = $state("");
   let videoEls = $state<Partial<Record<CamId, HTMLVideoElement>>>({});
 
   function start(id: CamId, port: number) {
+    if (realHardware) return;
     handles[id]?.close();
     rt[id] = blank();
     handles[id] = connectSimCamera(host, port, {
@@ -46,7 +57,7 @@
 
   onMount(() => {
     host = env.PUBLIC_SIM_CAM_HOST || location.hostname;
-    reconnectAll();
+    if (!realHardware) reconnectAll();
     return () => {
       for (const c of cameras) handles[c.id]?.close();
     };
@@ -122,6 +133,19 @@
   {/if}
 {/snippet}
 
+{#if realHardware}
+  <div class="flex h-full items-center justify-center rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b from-[#0c1220] to-[#121828]">
+    <div class="flex max-w-md flex-col items-center gap-3 px-6 text-center">
+      <Camera class="size-6 text-[#8a96ad]" />
+      <span class="font-heading text-base text-[#eaf1ff]">No disponible contra hardware real</span>
+      <p class="font-mono text-[11px] leading-relaxed tracking-wide text-[#8a96ad]">
+        Este visor asume el simulador (tres cámaras fijas, WebRTC por puerto). El G1 real tiene una
+        sola cámara y usa un transporte distinto — ver el visor VR teleop dedicado en su lugar, no
+        este panel.
+      </p>
+    </div>
+  </div>
+{:else}
 <div class="flex h-full gap-[18px] pb-2">
   <!-- Main feed -->
   <section
@@ -270,3 +294,4 @@
     </p>
   </aside>
 </div>
+{/if}
