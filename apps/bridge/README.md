@@ -88,7 +88,9 @@ All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set 
 - [x] **Phase 0b** — real DDS handshake to Isaac Sim, live `get_state` (pose + posture + tick at ~100 Hz)
 - [x] **Phase 1a (real hardware, 2026-08-07)** — posture/gesture skills (`damp`, `prepare`, `start_walking`, `wave`, `shake_hand`, `hug`, `clap`, `sit_g1`, `lie_up`, `squat`, `zero_torque`, `release_arm`) dispatch to a real G1 over **plain DDS RPC** — `bridge.sdk.g1_rpc`, built on `unitree_sdk2py.rpc.client.Client` (the same generic base as Go2's `SportClient`). No WebRTC needed — that assumption in the original `_g1_request.py` was wrong. Verified live: `damp` and `prepare` both got `rpc_code=0` acks from real firmware in <1s.
 - [ ] **Phase 1b — real-hardware `pose`** — `walk_to`/`turn` still fail with `no_pose` on real G1: the only pose source wired (`state.py`'s `_sim_sub`) is Isaac Sim's JSON `rt/sim_state`, which doesn't exist on real firmware (confirmed: `unitree_hg` has no `SportModeState_` IDL type, unlike `unitree_go`). A candidate real source exists — `rt/utlidar/robot_pose` (G1 ships a mid360 LiDAR) — but the reference implementation (`legion1581/unitree_ui`) explicitly **skips enabling LiDAR for the G1 family** ("Explorer webview never toggles it on"), so this path is unverified even there. Needs live hardware testing (toggle `rt/utlidar/switch`, confirm `rt/utlidar/robot_pose` actually publishes, check message type) before wiring it in — don't ship an untested pose source for something that drives autonomous locomotion. **Update (2026-08-07, robot offline — desk research only, see `docs/SPEC.md` §17.2.1):** real-world G1 projects (`deepglint/FAST_LIO_LOCALIZATION_HUMANOID`) don't use `rt/utlidar/*` at all — they run their own FAST-LIO SLAM stack (ROS1) over the raw Mid360. `rt/utlidar/*` is likely quadruped-only/immature on G1. Treat this as a SLAM integration project (and a ROS1↔DDS bridging problem), not a quick topic-subscribe — re-scope before starting.
-- [ ] **Phase 1c** — rest of the skill catalogue polish: `look`, `describe_scene`, `remember_landmark`, `recall_landmark`; MCP `progressToken` streaming; cancel
+- [x] **Phase 1b-workaround (2026-08-13)** — `walk_velocity` sidesteps the pose blocker entirely: an open-loop body-frame velocity command (`bridge.sdk.g1_rpc.call_velocity`, api_id `7105`/`SetVelocity`, discovered in `unitree_sdk2py.g1.loco.g1_loco_client.LocoClient` during VR-teleop research) on the **same verified-live DDS RPC channel** as the posture commands — no pose feedback needed because it doesn't try to reach a target, just sustains a velocity for a capped duration (same pattern Unitree's own `xr_teleoperate` uses for its controller-button locomotion). Clamped hard to 0.3 m/s / 0.3 rad/s / 3s per call regardless of what's requested — no closed loop means no way to self-correct, so blind commands stay small. **Not yet live-tested** — `SetVelocity` itself hasn't been dispatched against real hardware (unlike `SetFsmId`/postures, which are verified); first live call should be a short, small `vx` before trusting this further. Doesn't replace Phase 1b — `walk_to`/`turn`'s closed-loop, arrive-at-a-target behavior still needs real pose.
+- [ ] **Phase 1c** — rest of the skill catalogue polish: `look`, `describe_scene`; MCP `progressToken` streaming for more skills
+- [x] `remember_landmark`/`recall_landmark` (+ `list_landmarks`/`forget_landmark`) — done 2026-08-08
 - [ ] **Phase 4** — voice loop (wake word, Deepgram STT, Cartesia TTS)
 - See `docs/SPEC.md` §12 for the full plan
 
@@ -100,10 +102,13 @@ apps/bridge/src/bridge/
   sdk/
     connection.py      Generates CycloneDDS unicast peer XML + initialises ChannelFactory
     state.py           Subscribes to rt/lowstate + rt/sim_state; exposes get_state() shape
-    g1_rpc.py           Real-G1 posture/gesture dispatch — plain DDS RPC (rt/api/sport|arm/request),
-                        no WebRTC. Same base as unitree_sdk2py's Go2 SportClient.
+    g1_rpc.py           Real-G1 posture/gesture/velocity dispatch — plain DDS RPC
+                        (rt/api/sport|arm/request), no WebRTC. Same base as
+                        unitree_sdk2py's Go2 SportClient.
   skills/
     walk_to.py         Body-frame velocity loop, yaw correction + yaw-gating (sim-only until Phase 1b)
+    walk_velocity.py    Open-loop velocity command, real hardware only — sidesteps Phase 1b
+                        (no pose needed), clamped hard, not yet live-tested
     _g1_request.py      Posture/gesture dispatcher — stub / sim (logged-only) / real (g1_rpc)
 ```
 

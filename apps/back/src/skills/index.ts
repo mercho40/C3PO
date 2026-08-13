@@ -38,6 +38,7 @@ import { startWalking } from "./start-walking";
 import { stopEverything } from "./stop-everything";
 import { turn } from "./turn";
 import { walkTo } from "./walk-to";
+import { walkVelocity } from "./walk-velocity";
 import { wave } from "./wave";
 import { zeroTorque } from "./zero-torque";
 
@@ -48,6 +49,7 @@ const ALL: ReadonlyArray<SkillDefinition<any>> = [
   // locomotion
   walkTo,
   turn,
+  walkVelocity,
   // posture (G1 high-level)
   damp,
   zeroTorque,
@@ -123,6 +125,7 @@ export {
   stopEverything,
   turn,
   walkTo,
+  walkVelocity,
   wave,
   zeroTorque,
 };

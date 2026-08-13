@@ -105,6 +105,16 @@ def topics_for(sim_mode: str) -> Topics:
 
 API_ID_G1_STATE: Final[int] = 7101  # Full-body posture / gait mode
 API_ID_G1_UPPER_LIMBS: Final[int] = 7106  # Upper-limb gesture trigger
+# SetVelocity — open-loop body-frame velocity command, same "sport" service
+# as API_ID_G1_STATE (rt/api/sport/request), different api_id within it.
+# From unitree_sdk2py's LocoClient (g1_loco_api.py / g1_loco_client.py):
+# param={"velocity": [vx, vy, omega], "duration": seconds}. Unlike walk_to/
+# turn, this doesn't read back pose — it's the same fire-and-forget pattern
+# xr_teleoperate's own controller-button locomotion uses. Confirmed to exist
+# in the official SDK; NOT yet verified against real G1 hardware over plain
+# DDS (the posture/gesture api_ids on this same service are verified live;
+# this one is reasoned by analogy, not independently confirmed).
+API_ID_G1_SET_VELOCITY: Final[int] = 7105
 
 
 # ---------------------------------------------------------------------------

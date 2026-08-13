@@ -277,6 +277,106 @@ async def turn(
 
 
 # ---------------------------------------------------------------------------
+# Tool: walk_velocity
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def walk_velocity(
+    ctx: Context,
+    vx: Annotated[
+        float,
+        Field(
+            ge=-0.3,
+            le=0.3,
+            description="Forward/backward body-frame velocity, m/s. Positive = forward.",
+        ),
+    ] = 0.0,
+    vy: Annotated[
+        float,
+        Field(
+            ge=-0.3,
+            le=0.3,
+            description="Lateral (strafe) body-frame velocity, m/s. Positive = left.",
+        ),
+    ] = 0.0,
+    vyaw: Annotated[
+        float,
+        Field(
+            ge=-0.3,
+            le=0.3,
+            description="Yaw rate, rad/s. Positive = counterclockwise.",
+        ),
+    ] = 0.0,
+    duration_s: Annotated[
+        float,
+        Field(
+            ge=0.1,
+            le=3.0,
+            description=(
+                "How long to sustain this velocity before automatically stopping. "
+                "Capped at 3s per call — no pose feedback exists to know when to "
+                "stop early, so keep each call's blast radius small. For sustained "
+                "motion, call this repeatedly, checking get_state() between calls."
+            ),
+        ),
+    ] = 1.0,
+) -> dict:
+    """Command a raw body-frame velocity — real G1 hardware only, no pose needed.
+
+    Unlike walk_to/turn (blocked on real hardware — no world-frame pose
+    source wired yet), this is open-loop: same fire-and-forget pattern
+    xr_teleoperate's own controller-button locomotion uses. The G1 firmware
+    sustains the velocity for duration_s and stops on its own.
+
+    Isaac Sim: not applicable — walk_to/turn already give closed-loop
+    pose-based control there, which is strictly better than this open-loop
+    fallback. Use those instead in sim.
+
+    NOT YET LIVE-TESTED against real hardware (api_id 7105/SetVelocity is
+    confirmed to exist in the official SDK and shares the same DDS RPC
+    pattern as the verified-live posture/gesture calls, but hasn't itself
+    been dispatched against a real robot yet — the very first live call
+    should be a short, small vx before trusting this further).
+    """
+    log.info(
+        "walk_velocity.called",
+        vx=vx,
+        vy=vy,
+        vyaw=vyaw,
+        duration_s=duration_s,
+        sim_mode=SIM_MODE,
+    )
+
+    if SIM_MODE == "stub":
+        task_id = f"tsk_{uuid.uuid4().hex[:12]}"
+        time.sleep(0.2)
+        return {
+            "task_id": task_id,
+            "status": "ok",
+            "message": f"[STUB] Would command velocity ({vx}, {vy}, {vyaw}) for {duration_s}s.",
+            "env": SIM_MODE,
+            "stub": True,
+        }
+
+    if SIM_MODE != "real":
+        return {
+            "status": "not_applicable",
+            "message": (
+                f"walk_velocity is real-hardware-only (SIM_MODE={SIM_MODE}). "
+                "Use walk_to/turn in Isaac Sim — closed-loop pose control is "
+                "available there and is strictly better than this open-loop fallback."
+            ),
+            "env": SIM_MODE,
+        }
+
+    from bridge.skills.walk_velocity import run as run_walk_velocity
+
+    result = await run_walk_velocity(vx=vx, vy=vy, vyaw=vyaw, duration_s=duration_s, ctx=ctx)
+    return {**result, "env": SIM_MODE}
+
+
+# ---------------------------------------------------------------------------
 # Tool: stop_everything
 # ---------------------------------------------------------------------------
 
