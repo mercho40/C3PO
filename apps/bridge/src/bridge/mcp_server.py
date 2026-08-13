@@ -36,6 +36,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 
 from bridge import watchdog
+from bridge.skill_meta import meta as skill_meta
 from bridge.watchdog import get_watchdog
 
 log = structlog.get_logger(__name__)
@@ -85,7 +86,18 @@ mcp = FastMCP(
 # Tool: get_state
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="introspection",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected", "no_state_received_yet"],
+    )
+)
 def get_state() -> dict:
     """Return the robot's current state: pose, battery, posture, faults.
 
@@ -126,7 +138,19 @@ def get_state() -> dict:
 # Tool: walk_to
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="medium",
+        status="real",
+        cancellable=True,
+        expected_duration_s=20.0,
+        works_sim=True,
+        works_real=False,
+        preconditions=["robot_upright", "battery_pct_gt_15", "no_active_walk_task"],
+        typical_failure_modes=["path_blocked", "timeout", "no_pose"],
+    )
+)
 async def walk_to(
     ctx: Context,
     target_x_meters_world_frame: Annotated[
@@ -210,7 +234,19 @@ async def walk_to(
 # Tool: turn
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="low",
+        status="real",
+        cancellable=True,
+        expected_duration_s=12.0,
+        works_sim=True,
+        works_real=False,
+        preconditions=["robot_upright", "no_active_turn_task"],
+        typical_failure_modes=["timeout", "no_pose"],
+    )
+)
 async def turn(
     ctx: Context,
     delta_yaw_radians: Annotated[
@@ -290,7 +326,18 @@ async def turn(
 # Tool: stop_everything
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="safety",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.5,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected"],
+    )
+)
 def stop_everything() -> dict:
     """Halt all motion immediately and cancel any in-flight tasks.
 
@@ -333,7 +380,19 @@ def stop_everything() -> dict:
 # the full catalogue.
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{preparation,walk,walk_waist,run,squat,zero_torque}"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def damp(ctx: Context) -> dict:
     """Engage damping mode — set all joints to zero stiffness. Safety transition.
 
@@ -348,7 +407,19 @@ async def damp(ctx: Context) -> dict:
     return {**await run_g1_request("damp", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=2.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_damp"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def prepare(ctx: Context) -> dict:
     """Enter Preparation mode — required gateway to Walk / Walk(waist) / Run.
 
@@ -362,7 +433,19 @@ async def prepare(ctx: Context) -> dict:
     return {**await run_g1_request("prepare", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def wave(ctx: Context) -> dict:
     """Wave the upper arm — friendly greeting gesture.
 
@@ -376,7 +459,19 @@ async def wave(ctx: Context) -> dict:
     return {**await run_g1_request("wave", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def point_at(ctx: Context) -> dict:
     """Extend the right arm horizontally — the closest thing to pointing.
 
@@ -397,7 +492,19 @@ async def point_at(ctx: Context) -> dict:
     return {**await run_g1_request("point_at", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_damp"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def zero_torque(ctx: Context) -> dict:
     """Enter Zero Torque mode — actuators receive no command. Limp robot.
 
@@ -412,7 +519,18 @@ async def zero_torque(ctx: Context) -> dict:
     return {**await run_g1_request("zero_torque", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="introspection",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=False,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected", "motion_switcher_no_answer"],
+    )
+)
 async def check_motion_mode() -> dict:
     """Which motion controller currently owns the robot. Read-only.
 
@@ -467,7 +585,19 @@ async def check_motion_mode() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="high",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=False,
+        preconditions=["fsm_state_is_preparation", "operator_present"],
+        typical_failure_modes=["fsm_transition_rejected", "no_motion_controller_loaded"],
+    )
+)
 async def start_walking_waist(ctx: Context) -> dict:
     """Enter Walk Motion-3Dof-waist (FSM 501) — the 29-DoF walk program.
 
@@ -492,7 +622,19 @@ async def start_walking_waist(ctx: Context) -> dict:
     return {**await run_g1_request("start_walking_waist", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="medium",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=False,
+        preconditions=["robot_upright"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def balance_stand(ctx: Context) -> dict:
     """Engage the stand-and-balance controller (api_id=7102, balance_mode=0).
 
@@ -513,7 +655,19 @@ async def balance_stand(ctx: Context) -> dict:
     return {**await run_g1_request("balance_stand", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="medium",
+        status="real",
+        cancellable=False,
+        expected_duration_s=2.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_preparation"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def start_walking(ctx: Context) -> dict:
     """Enter Walk mode — locomotion FSM activates; arm gestures become available.
 
@@ -528,7 +682,19 @@ async def start_walking(ctx: Context) -> dict:
     return {**await run_g1_request("start_walking", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_damp"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def sit_g1(ctx: Context) -> dict:
     """Enter Seating mode — robot adopts a seated posture.
 
@@ -543,7 +709,19 @@ async def sit_g1(ctx: Context) -> dict:
     return {**await run_g1_request("sit_g1", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="medium",
+        status="real",
+        cancellable=False,
+        expected_duration_s=4.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_damp"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def lie_up(ctx: Context) -> dict:
     """Enter Lie-Up mode — robot transitions to a face-up lying pose.
 
@@ -557,7 +735,18 @@ async def lie_up(ctx: Context) -> dict:
     return {**await run_g1_request("lie_up", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def squat(ctx: Context) -> dict:
     """Enter Squat mode — robot crouches to a lowered stance.
 
@@ -572,7 +761,19 @@ async def squat(ctx: Context) -> dict:
     return {**await run_g1_request("squat", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def shake_hand(ctx: Context) -> dict:
     """Extend the right hand for a handshake.
 
@@ -586,7 +787,19 @@ async def shake_hand(ctx: Context) -> dict:
     return {**await run_g1_request("shake_hand", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def hug(ctx: Context) -> dict:
     """Open arms wide for a hug.
 
@@ -601,7 +814,19 @@ async def hug(ctx: Context) -> dict:
     return {**await run_g1_request("hug", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=2.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def clap(ctx: Context) -> dict:
     """Bring hands together to clap.
 
@@ -615,7 +840,19 @@ async def clap(ctx: Context) -> dict:
     return {**await run_g1_request("clap", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def release_arm(ctx: Context) -> dict:
     """Return arms to a neutral / idle position.
 
@@ -633,7 +870,18 @@ async def release_arm(ctx: Context) -> dict:
 # Tool: say
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="speech",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        typical_failure_modes=["voice_service_no_answer", "bridge_disconnected"],
+    )
+)
 async def say(
     text: Annotated[
         str,
@@ -708,7 +956,19 @@ async def say(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=True,
+        works_real=False,
+        preconditions=["pose_available"],
+        typical_failure_modes=["no_pose"],
+    )
+)
 def remember_landmark(
     name: Annotated[
         str,
@@ -776,7 +1036,18 @@ def _with_frame_status(payload: dict, landmark) -> dict:
     return payload
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["not_found"],
+    )
+)
 def recall_landmark(
     name: Annotated[
         str, Field(min_length=1, max_length=64, description="Landmark name to recall.")
@@ -795,7 +1066,17 @@ def recall_landmark(
     return _with_frame_status({"status": "ok", **landmark.to_dict()}, landmark)
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+    )
+)
 def list_landmarks() -> dict:
     """List saved landmarks, most recently saved first.
 
@@ -812,7 +1093,18 @@ def list_landmarks() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["not_found"],
+    )
+)
 def forget_landmark(
     name: Annotated[
         str, Field(min_length=1, max_length=64, description="Landmark name to delete.")
@@ -829,7 +1121,18 @@ def forget_landmark(
 # Tool: cancel_task
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="task",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.3,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["unknown_task_id", "cancel_already_requested", "task_not_running"],
+    )
+)
 def cancel_task(
     task_id: Annotated[
         str,
@@ -876,7 +1179,18 @@ def cancel_task(
 # Tool: describe_surroundings
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="perception",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected", "no_pose"],
+    )
+)
 def describe_surroundings() -> dict:
     """Return a compact, egocentric snapshot of what the robot can perceive.
 
@@ -951,7 +1265,17 @@ def describe_surroundings() -> dict:
 # Tool: list_active_tasks
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="task",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+    )
+)
 def list_active_tasks(
     include_recent: Annotated[
         bool,

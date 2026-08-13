@@ -333,3 +333,59 @@ def test_back_skill_parameters_match_the_bridge(tools):
             )
 
     assert not problems, "back/bridge parameter drift:\n  " + "\n  ".join(problems)
+
+
+def test_every_tool_carries_complete_safety_metadata(tools):
+    """`_meta` is how safety information reaches clients — including Claude Code.
+
+    `.mcp.json` spawns this server over stdio directly, so Claude Code never
+    traverses apps/back. Before this metadata existed here, every dangerLevel
+    and works:false we had written lived only in TypeScript and was invisible
+    to the client that actually drives the robot.
+
+    A tool with no metadata is not a cosmetic gap — it is a tool an agent will
+    treat as safe by default.
+    """
+    required = {
+        "classification",
+        "danger_level",
+        "status",
+        "cancellable",
+        "expected_duration_s",
+        "works",
+        "preconditions",
+        "typical_failure_modes",
+    }
+    for name, tool in tools.items():
+        assert tool.meta, f"{name} has no _meta"
+        c3po = tool.meta.get("c3po")
+        assert c3po, f"{name}: _meta is not namespaced under 'c3po'"
+        assert required <= set(c3po), f"{name}: missing {sorted(required - set(c3po))}"
+        assert set(c3po["works"]) == {"sim", "real"}, f"{name}: malformed works"
+        assert c3po["danger_level"] in {"low", "medium", "high"}, name
+        assert c3po["status"] in {"real", "stub", "planned"}, name
+
+
+def test_untested_motion_is_not_advertised_as_working(tools):
+    """Skills never executed on hardware must not claim works.real.
+
+    This is the flag that decides whether an agent will command a humanoid it
+    has never successfully commanded before. These four are all accepted by the
+    firmware — rpc code 0 — and none has been observed to do what it says.
+    Flipping one to True because it "should" work is exactly the reasoning the
+    flag exists to interrupt; it should be flipped by someone who watched it
+    happen.
+    """
+    never_run_on_hardware = {
+        "walk_to",           # SET_VELOCITY accepted; non-zero velocity never executed
+        "turn",              # same path
+        "start_walking_waist",  # 501 has never been sent to this robot
+        "balance_stand",     # accepted with code 0, no observed effect
+    }
+    for name in never_run_on_hardware:
+        works = tools[name].meta["c3po"]["works"]
+        assert works["real"] is False, (
+            f"{name} claims works.real — has someone actually watched it work? "
+            "If so, say so in the commit; if not, this is how untested motion "
+            "gets commanded at a robot with people near it."
+        )
