@@ -20,6 +20,7 @@
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@sinclair/typebox": "^0.34.49",
         "ai": "^6.0.209",
+        "ajv": "^8.20.0",
         "better-auth": "^1.5.5",
         "drizzle-orm": "^0.45.1",
         "elysia": "^1.4.28",

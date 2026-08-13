@@ -10,9 +10,9 @@
  */
 
 import { Elysia, t } from "elysia";
-import { Value } from "@sinclair/typebox/value";
 
-import { getSkill, listSkills } from "../skills";
+import { getCatalogue, getSkill } from "../skills";
+import { validateArgs } from "../skills/validate";
 import {
   callTool,
   BridgeUnavailableError,
@@ -22,10 +22,19 @@ import {
 export const skillsRoutes = new Elysia({ prefix: "/skills" })
   .get(
     "/",
-    () => ({
-      count: listSkills().length,
-      skills: listSkills(),
-    }),
+    async () => {
+      // `source` and `age_seconds` ride the envelope so a consumer can tell a
+      // live catalogue from a cached one. The bridge is on Wi-Fi, on DHCP, and
+      // gets power-cycled; pretending otherwise would just move the surprise.
+      const snap = await getCatalogue();
+      return {
+        count: snap.skills.length,
+        source: snap.source,
+        age_seconds: snap.ageSeconds,
+        ...(snap.error ? { bridge_error: snap.error } : {}),
+        skills: snap.skills,
+      };
+    },
     {
       detail: {
         summary: "List the full skill catalogue.",
@@ -35,8 +44,8 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
   )
   .get(
     "/:name",
-    ({ params: { name }, status }) => {
-      const skill = getSkill(name);
+    async ({ params: { name }, status }) => {
+      const skill = await getSkill(name);
       if (!skill) return status(404, { error: "skill_not_found", name });
       return skill;
     },
@@ -51,23 +60,19 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
   .post(
     "/:name/invoke",
     async ({ params: { name }, body, status }) => {
-      const skill = getSkill(name);
+      const skill = await getSkill(name);
       if (!skill) return status(404, { error: "skill_not_found", name });
 
-      // Schema validation (SCRUM-57, layer 1): fill declared defaults, then
-      // check the body against the skill's TypeBox params before dispatch.
-      const args = Value.Default(skill.parameters, {
-        ...(body as Record<string, unknown>),
-      }) as Record<string, unknown>;
-      if (!Value.Check(skill.parameters, args)) {
-        return status(422, {
-          error: "invalid_params",
-          name,
-          issues: [...Value.Errors(skill.parameters, args)].map((e) => ({
-            path: e.path,
-            message: e.message,
-          })),
-        });
+      // Schema validation (SCRUM-57, layer 1): fill the bridge's declared
+      // defaults, then check the body before dispatch. The schema is plain
+      // JSON Schema from the bridge now, so this goes through Ajv — TypeBox
+      // throws on a schema that lacks its own [Kind] symbol.
+      const { ok, value: args, issues } = validateArgs(
+        skill.parameters,
+        body as Record<string, unknown>,
+      );
+      if (!ok) {
+        return status(422, { error: "invalid_params", name, issues });
       }
 
       try {
@@ -91,22 +96,16 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
   )
   .post(
     "/:name/dry-run",
-    ({ params: { name }, body, status }) => {
-      const skill = getSkill(name);
+    async ({ params: { name }, body, status }) => {
+      const skill = await getSkill(name);
       if (!skill) return status(404, { error: "skill_not_found", name });
 
-      const args = Value.Default(skill.parameters, {
-        ...(body as Record<string, unknown>),
-      }) as Record<string, unknown>;
-      if (!Value.Check(skill.parameters, args)) {
-        return status(422, {
-          error: "invalid_params",
-          name,
-          issues: [...Value.Errors(skill.parameters, args)].map((e) => ({
-            path: e.path,
-            message: e.message,
-          })),
-        });
+      const { ok, value: args, issues } = validateArgs(
+        skill.parameters,
+        body as Record<string, unknown>,
+      );
+      if (!ok) {
+        return status(422, { error: "invalid_params", name, issues });
       }
 
       // Simulated preview — never dispatches to the bridge.

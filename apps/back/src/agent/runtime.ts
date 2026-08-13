@@ -66,8 +66,8 @@ const SYSTEM_PREAMBLE = [
 ].join("\n");
 
 /** A compact catalogue appended to the system prompt so Claude knows scope. */
-function buildSystemPrompt(): string {
-  const lines = listSkills().map((s) => {
+async function buildSystemPrompt(): Promise<string> {
+  const lines = (await listSkills()).map((s) => {
     const where =
       s.works.sim && s.works.real
         ? "sim+real"
@@ -90,9 +90,9 @@ function buildSystemPrompt(): string {
  * still records the call if the stream is aborted mid-turn — which is exactly
  * when you most want to know what the robot was told to do.
  */
-function buildTools(chatId: string | null): ToolSet {
+async function buildTools(chatId: string | null): Promise<ToolSet> {
   const tools: ToolSet = {};
-  for (const skill of listSkills()) {
+  for (const skill of await listSkills()) {
     tools[skill.name] = tool({
       description: skill.description,
       // TypeBox `t.Object({...})` is a JSON-Schema object at runtime.
@@ -156,11 +156,18 @@ export async function runAgentChat(
   messages: UIMessage[],
   opts: { chatId?: string | null } = {},
 ) {
+  // Both hit the bridge for the catalogue, so fetch them together rather than
+  // paying two sequential round-trips before the first token.
+  const [system, tools] = await Promise.all([
+    buildSystemPrompt(),
+    buildTools(opts.chatId ?? null),
+  ]);
+
   return streamText({
     model: anthropic(MODEL),
-    system: buildSystemPrompt(),
+    system,
     messages: await convertToModelMessages(messages),
-    tools: buildTools(opts.chatId ?? null),
+    tools,
     stopWhen: stepCountIs(MAX_STEPS),
     ...(ADAPTIVE_THINKING
       ? { providerOptions: { anthropic: { thinking: { type: "adaptive" } } } }
