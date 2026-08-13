@@ -45,6 +45,7 @@ _TOPICS = g1_protocol.topics_for(_SIM_MODE)
 LOWSTATE_TOPIC = _TOPICS.lowstate
 SIM_STATE_TOPIC = _TOPICS.sportmodestate
 ODOM_TOPIC = _TOPICS.odom
+BMS_TOPIC = _TOPICS.bmsstate
 
 # Which channel supplies world-frame pose. These are different topics carrying
 # different types, so the subscriber differs too — see `StateSampler.start`.
@@ -60,6 +61,24 @@ class _LowStateSnapshot:
     mode_machine: int = 0
     motor_count: int = 0
     has_imu: bool = False
+    raw_message_count: int = 0
+
+
+@dataclass
+class _BmsSnapshot:
+    """Latest battery state, from `BmsState_` on its own topic.
+
+    Battery is NOT in `LowState_` on the G1 — the humanoid `unitree_hg`
+    `LowState_` has no BMS field at all, unlike the quadruped `unitree_go` one.
+    That is why `battery_pct` read `None` for so long, and why "faults: none,
+    battery: null" was never evidence of a healthy pack: nothing was ever
+    subscribed to look.
+    """
+
+    received_at: float = 0.0
+    soc_pct: int | None = None
+    soh_pct: int | None = None
+    current_ma: int | None = None
     raw_message_count: int = 0
 
 
@@ -111,8 +130,10 @@ class StateSampler:
         self._lowstate = _LowStateSnapshot()
         self._pose = _PoseSnapshot()
         self._fsm = _FsmSnapshot()
+        self._bms = _BmsSnapshot()
         self._lowstate_sub: Any = None
         self._pose_sub: Any = None
+        self._bms_sub: Any = None
         self._queue_depth = queue_depth
         self._fsm_thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -142,9 +163,21 @@ class StateSampler:
             self._pose_sub = ChannelSubscriber(pose_topic, String_)
             self._pose_sub.Init(self._on_sim_state, self._queue_depth)
 
+        # Battery. Its own topic and its own type — see `_BmsSnapshot`. Isaac
+        # Sim publishes no BMS, so the topic is None there and we simply don't
+        # subscribe rather than waiting forever on a publisher that will never
+        # appear.
+        topics = [LOWSTATE_TOPIC, pose_topic]
+        if BMS_TOPIC:
+            from unitree_sdk2py.idl.unitree_hg.msg.dds_ import BmsState_
+
+            self._bms_sub = ChannelSubscriber(BMS_TOPIC, BmsState_)
+            self._bms_sub.Init(self._on_bms, self._queue_depth)
+            topics.append(BMS_TOPIC)
+
         log.info(
             "state.subscribers.ready",
-            topics=[LOWSTATE_TOPIC, pose_topic],
+            topics=topics,
             pose_source=_POSE_SOURCE,
         )
 
@@ -213,6 +246,19 @@ class StateSampler:
                 raw_message_count=self._lowstate.raw_message_count + 1,
             )
 
+    def _on_bms(self, msg: Any) -> None:
+        # `soc` is a uint8 percentage; the vendor's own low-battery predicate is
+        # `soc < 20`. `current` is signed — negative while discharging — so it
+        # tells you charging state without a separate flag.
+        with self._lock:
+            self._bms = _BmsSnapshot(
+                received_at=time.time(),
+                soc_pct=int(msg.soc),
+                soh_pct=int(msg.soh),
+                current_ma=int(msg.current),
+                raw_message_count=self._bms.raw_message_count + 1,
+            )
+
     def _on_sim_state(self, msg: Any) -> None:
         # Isaac Sim wraps the dict in `init_state` as a nested-JSON string.
         try:
@@ -242,6 +288,7 @@ class StateSampler:
             low = self._lowstate
             pose_snap = self._pose
             fsm = self._fsm
+            bms = self._bms
 
         if low.received_at == 0.0:
             return {
@@ -293,10 +340,16 @@ class StateSampler:
             }
 
         pose_age = round(now - pose_snap.received_at, 3) if pose_snap.received_at else None
+        # Low battery is a real fault, and the one most likely to end a session
+        # mid-task. 20% is the vendor's own threshold.
+        if bms.soc_pct is not None and bms.soc_pct < 20:
+            faults.append(f"low_battery_{bms.soc_pct}pct")
+
         return {
             "pose": pose,
-            # Battery is on its own DDS topic — wire in Phase 1.
-            "battery_pct": None,
+            # None means "no BmsState_ received yet", not "no battery" — on sim
+            # there is no BMS publisher at all. Don't read null as healthy.
+            "battery_pct": bms.soc_pct,
             "posture": posture,
             "faults": faults,
             "raw": {
@@ -315,6 +368,14 @@ class StateSampler:
                 "fsm_id": fsm.fsm_id,
                 "fsm_mode": fsm.fsm_mode,
                 "fsm_age_s": round(now - fsm.received_at, 3) if fsm.received_at else None,
+                # Battery detail. `soh` is pack health and degrades over the
+                # robot's life; `current_ma` is signed, so negative means
+                # discharging — which is how you tell a docked robot from one
+                # running down without a separate charging flag.
+                "battery_soh_pct": bms.soh_pct,
+                "battery_current_ma": bms.current_ma,
+                "battery_messages_received": bms.raw_message_count,
+                "battery_age_s": round(now - bms.received_at, 3) if bms.received_at else None,
             },
         }
 

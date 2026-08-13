@@ -108,21 +108,56 @@ stray_bridge_pids() {
 
 # --- safety ----------------------------------------------------------------
 
-# The one check worth doing before we command anything: is something else
-# already driving the legs? cmd_vel_to_loco is `gemm`'s /cmd_vel -> robot
-# bridge. It ships disabled, but a launch arg is all it takes.
+# Everything on this machine that can command the robot. Checking only for
+# `cmd_vel_to_loco` was not enough: on 2026-08-14 a full `xr_teleoperate` stack
+# was found driving the arms over `rt/arm_sdk` and `rt/lowcmd`, wrapping
+# `LocoClient.Move()`, and holding a hand through `brainco_hand_server` — and
+# every one of our checks passed silently while it ran.
+#
+# The firmware arbitrates nothing here. Every vendor client is constructed
+# `enableLease=false`, so whoever publishes to the request topic is obeyed;
+# there is no lock to lose and no error to observe. The one-commander invariant
+# is entirely ours to enforce, which is why this list has to be maintained by
+# hand as we discover new ways to drive this robot.
+#
+# Override for a stack we haven't met yet:
+#   OTHER_COMMANDER_PATTERNS='cmd_vel_to_loco|my_new_thing' run_c3po
+OTHER_COMMANDER_PATTERNS="${OTHER_COMMANDER_PATTERNS:-cmd_vel_to_loco|xr_teleoperate|brainco_hand_server}"
+
+# `pgrep -f` matches whole command lines, so it will happily match the shell
+# that is asking the question — `ssh robot 'pgrep -f cmd_vel_to_loco'` reports
+# itself. That false positive is not hypothetical; it cost real debugging time.
+# Filter out this process and everything that spawned it.
+_is_self_or_ancestor() {
+    local target="$1" cur=$$
+    while [ -n "$cur" ] && [ "$cur" -gt 1 ] 2>/dev/null; do
+        [ "$cur" = "$target" ] && return 0
+        cur="$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d ' ')"
+    done
+    return 1
+}
+
 other_commander_pids() {
-    pgrep -f "cmd_vel_to_loco" 2>/dev/null || true
+    local pid
+    for pid in $(pgrep -f "$OTHER_COMMANDER_PATTERNS" 2>/dev/null || true); do
+        _is_self_or_ancestor "$pid" && continue
+        printf '%s\n' "$pid"
+    done
 }
 
 warn_if_other_commander() {
-    local pids
+    local pids pid
     pids="$(other_commander_pids)"
-    if [ -n "$pids" ]; then
-        err "cmd_vel_to_loco is RUNNING (pid: $(echo "$pids" | tr '\n' ' '))"
-        err "Two stacks would be commanding the legs through the same API."
-        err "Stop it before driving the robot."
-        return 1
-    fi
-    return 0
+    [ -n "$pids" ] || return 0
+
+    err "something else can already command this robot:"
+    for pid in $pids; do
+        # Name the process, not just the pid — "xr_teleoperate" and
+        # "cmd_vel_to_loco" call for completely different conversations with
+        # completely different people.
+        err "  pid $pid  $(ps -o args= -p "$pid" 2>/dev/null | cut -c1-90)"
+    done
+    err "Two commanders on one robot is the thing these scripts exist to prevent."
+    err "Stop it before driving, or set OTHER_COMMANDER_PATTERNS if this is a false match."
+    return 1
 }

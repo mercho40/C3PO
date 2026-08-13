@@ -94,6 +94,15 @@ REAL_TOPICS: Final[Topics] = Topics(
     lowcmd="rt/lowcmd",
     sport_request="rt/api/sport/request",
     arm_request="rt/api/arm/request",
+    # ⚠️ UNVERIFIED, and probably wrong in shape as well as name. The hands are
+    # not an RPC service: every source found on the robot drives them by
+    # publishing a raw `HandCmd_` to a plain command topic, with no api_id and
+    # no JSON envelope — so an `/api/.../request` name implies a protocol that
+    # does not exist here. Worse, the only hand that actually answered was a
+    # BrainCo Revo2 on `rt/brainco/right/{cmd,state}`, and no Dex3 driver
+    # exists anywhere on the Jetson. Which hands are physically fitted is
+    # unresolved (`docs/ROBOT-PERIPHERALS.md` §4). Do not build on these two
+    # names until someone has looked at the wrists.
     dex_left_cmd="rt/api/dex3/left/request",
     dex_right_cmd="rt/api/dex3/right/request",
     run_command=None,
@@ -123,6 +132,24 @@ API_ID_LOCO_SET_VELOCITY: Final[int] = 7105  # Body-frame velocity setpoint
 API_ID_LOCO_GET_FSM_ID: Final[int] = 7001  # Current FSM state index
 API_ID_LOCO_GET_FSM_MODE: Final[int] = 7002  # Current FSM sub-mode
 API_ID_LOCO_SET_BALANCE_MODE: Final[int] = 7102  # Balance controller mode
+
+# --- motion_switcher service ------------------------------------------------
+#
+# A DIFFERENT service ("motion_switcher"), so these ids live in their own
+# namespace and collide with the sport service's numbers — motion_switcher's
+# error codes 7001-7009 are the same integers as sport's api_ids 7001-7006.
+# Never compare a bare number across services.
+#
+# This service decides which motion controller owns the robot, which makes
+# CHECK_MODE the single most useful diagnostic we have: an empty `name` means
+# no controller is loaded, and in that state the sport service still answers
+# `code 0` to everything while doing nothing. "Wrong FSM id" and "nothing
+# loaded to act on any id" are otherwise indistinguishable.
+MOTION_SWITCHER_SERVICE: Final[str] = "motion_switcher"
+MOTION_SWITCHER_API_VERSION: Final[str] = "1.0.0.1"
+API_ID_MS_CHECK_MODE: Final[int] = 1001  # Getter — safe
+API_ID_MS_SELECT_MODE: Final[int] = 1002  # Loads a controller — NOT registered
+API_ID_MS_RELEASE_MODE: Final[int] = 1003  # Unloads a controller — NOT registered
 
 
 class BalanceMode:
@@ -167,6 +194,18 @@ class Mode(IntEnum):
     DAMP = 1
     SQUAT = 2
     SEATING = 3
+    # Our names for 4 and 500 are the odd ones out, and it cost us. The vendor
+    # header calls them `StandUp()` and `Start()`; the official docs call 4
+    # "Lock Standing" and 500 "Walk Motion". Three sources, three names, for
+    # ids we send constantly — when reading anyone else's code or docs, match
+    # on the NUMBER, never the label.
+    #
+    # 500 in particular is not a generic "begin": it is one of two walk
+    # policies, with 501 the 3-DoF-waist variant. Sent from 4 on this robot it
+    # returns code 0 and does nothing (2026-08-13, repeatable, both
+    # harness-supported and weight-bearing) — unresolved, see
+    # `docs/ROBOT-API.md` §11. 501 is the leading candidate for the right
+    # target on this build and has never been tried.
     PREPARATION = 4
     WALK = 500
     WALK_WAIST = 501  # Walk with waist control
@@ -272,6 +311,11 @@ class Gesture(IntEnum):
     HANDS_UP = 15
     SINGLE_HAND_UP = 23  # Right hand
     REFUSE = 22
+    # ⚠️ UNVERIFIED. 36 has no backing in any vendor artifact on the robot —
+    # not the official action table, not the C++ gesture map, not the Python
+    # one. Its only source is a decompiled Android app. It has never been sent
+    # to this robot successfully, so `point_at` may simply be wrong. Expect
+    # 7402 "Action ID does not exist" if it is (survey 2026-08-14).
     FORWARD_PUSH = 36  # Closest equivalent to point_at
     ULTRAMAN_RAY = 24  # X-Ray pose
     RELEASE_ARM = 99

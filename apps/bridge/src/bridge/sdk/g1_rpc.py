@@ -120,6 +120,55 @@ def call_arm(gesture: int) -> tuple[int, str | None]:
     return _get_arm_client().call(g1_protocol.API_ID_G1_UPPER_LIMBS, gesture)
 
 
+_motion_switcher_client: _G1Client | None = None
+
+
+def _get_motion_switcher_client() -> _G1Client:
+    global _motion_switcher_client
+    if _motion_switcher_client is None:
+        # ONLY CHECK_MODE is registered. SELECT_MODE and RELEASE_MODE transfer
+        # ownership of the robot between controllers, and `_RegistApi` is what
+        # makes an api_id sendable at all — leaving them unregistered means a
+        # future caller cannot reach them by accident. Registering an api_id
+        # you do not intend to send is how it gets sent eventually.
+        _motion_switcher_client = _G1Client(
+            g1_protocol.MOTION_SWITCHER_SERVICE,
+            (g1_protocol.API_ID_MS_CHECK_MODE,),
+            timeout_s=SPORT_TIMEOUT_S,
+        )
+        _motion_switcher_client._SetApiVerson(g1_protocol.MOTION_SWITCHER_API_VERSION)
+        _motion_switcher_client.Init()
+    return _motion_switcher_client
+
+
+def check_motion_mode() -> tuple[int, dict[str, str] | None]:
+    """Ask `motion_switcher` which controller currently owns the robot.
+
+    Returns `(rpc_code, {"name": ..., "form": ...})`, or `(code, None)` if the
+    service declined or answered unparseably.
+
+    An **empty `name` means no motion controller is loaded** — the robot is in
+    what the vendor calls debug mode. Observed live 2026-08-14: `{'form': '0',
+    'name': ''}` while `SetFsmId` returned `code 0` and did nothing, and the
+    FSM getters (7001/7002) returned nothing at all, so `get_state` reported
+    `fsm_id=None` and `posture=unknown`.
+
+    Note this takes `"{}"`, not the empty string the sport getters take.
+    """
+    code, data = _get_motion_switcher_client().call_raw(
+        g1_protocol.API_ID_MS_CHECK_MODE, json.dumps({})
+    )
+    if code != 0 or not data:
+        log.warning("g1_rpc.check_motion_mode_failed", rpc_code=code)
+        return code, None
+    try:
+        parsed = json.loads(data)
+    except (ValueError, TypeError) as exc:
+        log.warning("g1_rpc.check_motion_mode_unparseable", data=data, error=str(exc))
+        return code, None
+    return code, {"name": str(parsed.get("name", "")), "form": str(parsed.get("form", ""))}
+
+
 def _call_int_getter(api_id: int) -> int | None:
     """Run a GET api_id that answers `{"data": N}`. Returns None on any failure.
 
