@@ -49,6 +49,31 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     exit 1
 fi
 
+# The OTHER half of the same packaging bug, still unfixed upstream: setup.py has
+# no package_data and there is no MANIFEST.in, so utils/lib/crc_{amd64,aarch64}.so
+# are omitted from every non-editable install. crc.py loads them with
+# ctypes.CDLL() on Linux and falls back to pure Python everywhere else — so this
+# is invisible on a Mac and raises OSError on the Jetson, the moment anything
+# constructs CRC(). That is the rt/lowcmd and rt/arm_sdk path.
+#
+# Warn rather than fail: the RPC clients we use today never touch CRC, so a
+# missing .so must not block a bridge start. It only has to stop being a
+# surprise later.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64) so="crc_amd64.so" ;;
+        aarch64) so="crc_aarch64.so" ;;
+        *) so="" ;;
+    esac
+    if [[ -n "$so" && ! -f "$SITE/utils/lib/$so" ]]; then
+        echo "postsync: WARNING — $SITE/utils/lib/$so is missing." >&2
+        echo "postsync: upstream ships no package_data, so the CRC library is not" >&2
+        echo "postsync: installed. Harmless for the RPC clients, but CRC() will" >&2
+        echo "postsync: raise OSError — which blocks any rt/lowcmd or rt/arm_sdk work." >&2
+    fi
+fi
+
 # The import itself is the real test — a directory can exist and still fail.
 if ! "$BRIDGE_DIR/.venv/bin/python" -c "import unitree_sdk2py" 2>/dev/null; then
     echo "postsync: unitree_sdk2py present but does not import." >&2
