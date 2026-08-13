@@ -10,7 +10,8 @@ This module is the single source of truth for:
   with `api_id=7101`; upper-limb gestures via `rt/api/arm/request` with
   `api_id=7106`. Both carry parameter `{"data": <index>}`.
 - The G1 FSM transition table — the on-robot firmware rejects illegal
-  transitions, so skills must check `can_transition` before firing a mode.
+  transitions. We keep the rule set here as reference data only — nothing
+  enforces it client-side, deliberately; see the note above the frozensets.
 
 Sim vs real topic profile:
     Isaac Sim (today)              Real G1 (≥ 1.5.1)
@@ -267,19 +268,22 @@ _DAMP_TARGETS: Final[frozenset[int]] = frozenset(
 _PREPARATION_TARGETS: Final[frozenset[int]] = frozenset(
     {Mode.DAMP, Mode.WALK, Mode.WALK_WAIST, Mode.RUN}
 )
-def can_transition(current_mode: int, target_mode: int) -> bool:
-    """True if the FSM will accept `current → target` directly."""
-    if current_mode != Mode.DAMP and target_mode in _DAMP_TARGETS:
-        return False
-    if current_mode == Mode.ZERO_TORQUE and target_mode != Mode.DAMP:
-        return False
-    if current_mode == Mode.SQUAT and target_mode != Mode.DAMP:
-        return False
-    if current_mode == Mode.DAMP and target_mode not in _DAMP_TARGETS:
-        return False
-    if current_mode == Mode.PREPARATION and target_mode not in _PREPARATION_TARGETS:
-        return False
-    return True
+
+# These two sets are REFERENCE DATA, not a guard. A `can_transition()` helper
+# built on them was removed unused: nothing ever called it, while this module's
+# docstring, SPEC and the README all claimed "skills check it before firing a
+# mode". Documenting a safety check that does not run is worse than having
+# neither, particularly on the FSM path we are currently blocked on.
+#
+# It was not wired up instead, deliberately. The rules below are assembled from
+# partly-unverified sources, and a client-side gate encoding a wrong rule would
+# refuse a transition the firmware would have accepted — turning a robot problem
+# into a bridge problem, precisely when we are trying to tell those apart. The
+# firmware rejects illegal transitions itself and says so (7302 Invalid fsm id),
+# which is the answer we actually want.
+#
+# `_PREPARATION_TARGETS` is cited by docs/ROBOT-API.md §11 as evidence in the
+# open Start()/fsm_id=500 investigation, which is why the data stays.
 
 
 # ---------------------------------------------------------------------------
@@ -310,13 +314,6 @@ class Gesture(IntEnum):
     FORWARD_PUSH = 36  # Closest equivalent to point_at
     ULTRAMAN_RAY = 24  # X-Ray pose
     RELEASE_ARM = 99
-
-
-GESTURE_LABEL: Final[dict[int, str]] = {g.value: g.name.lower() for g in Gesture}
-
-
-def gesture_label(gesture: int) -> str:
-    return GESTURE_LABEL.get(gesture, f"unknown({gesture})")
 
 
 # ---------------------------------------------------------------------------

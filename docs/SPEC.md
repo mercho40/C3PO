@@ -1038,7 +1038,7 @@ The optional-dependency split in the old step 3 is dropped: both `isaac` and `re
 
 ### 16.5 The G1 posture FSM (`bridge.sdk.g1_protocol`, implemented)
 
-The firmware rejects illegal full-body mode transitions, so the bridge mirrors the same rules client-side (`can_transition()`) before firing a request — cheaper than a round-trip rejection, and it's what every posture skill (`damp`, `prepare`, `squat`, …) checks against. This is the first time that guard is drawn rather than just enforced in code:
+The firmware rejects illegal full-body mode transitions. The bridge records the same rules as reference data, but **does not enforce them** — this paragraph previously claimed `can_transition()` was "what every posture skill checks against", and that was never true: nothing ever called it, and it has since been removed. `run_g1_request` goes from catalogue lookup straight to dispatch. The rules are drawn below as documentation of the FSM, not of a guard:
 
 ```mermaid
 stateDiagram-v2

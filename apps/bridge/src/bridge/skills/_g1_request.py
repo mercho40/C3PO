@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Literal
+from typing import Any
 
 import structlog
 
@@ -154,19 +154,3 @@ async def run_g1_request(
         task.ended_at = time.time()
         log.exception("g1_request.failed", task_id=task.task_id, skill_name=skill_name)
         return task.to_dict()
-
-
-# Lookup helpers exposed for the catalogue / introspection.
-
-PostureSkillName = Literal["damp", "zero_torque", "prepare", "sit_g1", "lie_up", "squat"]
-GestureSkillName = Literal["wave", "point_at", "shake_hand", "hug", "clap", "release_arm"]
-
-
-def skill_works_in(skill_name: g1_protocol.SkillName, sim_mode: str) -> bool:
-    """True if this skill can actually produce motion in the given mode."""
-    if sim_mode == "stub":
-        return False
-    request = g1_protocol.SKILL_REQUESTS[skill_name]
-    topics = g1_protocol.topics_for(sim_mode)
-    target = topics.sport_request if request.topic_kind == "sport_request" else topics.arm_request
-    return target is not None

@@ -448,8 +448,12 @@ looks perfectly plausible and puts the wrong id on the wire. **[web]**
 graph; the only refusal code that exists is 7302 for an invalid id, and we have never seen
 it. What we have:
 
-Client-side, `g1_protocol.can_transition()` mirrors a rule set taken from
-`legion1581/unitree_ui` (an **E-grade** reverse-engineered source): **[web]**
+Client-side, `g1_protocol.py` records a rule set taken from `legion1581/unitree_ui`
+(an **E-grade** reverse-engineered source) as **reference data only — nothing enforces
+it**. A `can_transition()` helper built on it was never called by any skill and was
+removed rather than wired up: encoding E-grade rules as a client-side gate would refuse
+transitions the firmware would have accepted, which is the wrong failure while we are
+still trying to tell robot problems from bridge problems (§11). **[web]**
 
 ```
 not in Damp    → cannot enter ZeroTorque / Preparation / SquatUp / LieUp

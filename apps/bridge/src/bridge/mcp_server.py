@@ -275,8 +275,6 @@ async def turn(
             "stub": True,
         }
 
-    import math
-
     from bridge.skills.turn import run as run_turn
 
     result = await run_turn(

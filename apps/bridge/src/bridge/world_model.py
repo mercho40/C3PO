@@ -39,7 +39,6 @@ whole contract is testable today, with no robot and no perception stack.
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -123,7 +122,6 @@ class WorldModel:
     # the contract can carry should report, so "offline" is always explicit.
     sources: dict[str, SourceStatus] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
-    captured_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
