@@ -133,6 +133,23 @@ API_ID_LOCO_GET_FSM_ID: Final[int] = 7001  # Current FSM state index
 API_ID_LOCO_GET_FSM_MODE: Final[int] = 7002  # Current FSM sub-mode
 API_ID_LOCO_SET_BALANCE_MODE: Final[int] = 7102  # Balance controller mode
 
+# Present in the C++ SDK (unitree_sdk2) but in NEITHER the Python SDK nor the
+# `unitree_ros2` tree vendored on our robot, which stops at 7107. That is why
+# ROBOT-INVENTORY once recorded 7110 as [web]-only and "not in this client" —
+# we had read the wrong header. Unverified against our firmware: a `3203` reply
+# means this build does not implement it, which is a clean, motion-free answer.
+API_ID_LOCO_SET_PUNCH: Final[int] = 7108
+API_ID_LOCO_SET_ARM_SDK_STATUS: Final[int] = 7109  # Enables the rt/arm_sdk path
+API_ID_LOCO_SWITCH_TO_USER_CTRL: Final[int] = 7110
+API_ID_LOCO_SWITCH_TO_INTERNAL_CTRL: Final[int] = 7111
+
+# Arm service. Note 7107 here is NOT SET_SPEED_MODE — that is 7107 on the sport
+# service. Same number, different service, different call: the scoping trap this
+# module keeps warning about, in its sharpest form.
+API_ID_ARM_GET_ACTION_LIST: Final[int] = 7107
+API_ID_ARM_EXECUTE_CUSTOM_ACTION: Final[int] = 7108
+API_ID_ARM_STOP_CUSTOM_ACTION: Final[int] = 7113
+
 # --- motion_switcher service ------------------------------------------------
 #
 # A DIFFERENT service ("motion_switcher"), so these ids live in their own
@@ -145,6 +162,38 @@ API_ID_LOCO_SET_BALANCE_MODE: Final[int] = 7102  # Balance controller mode
 # no controller is loaded, and in that state the sport service still answers
 # `code 0` to everything while doing nothing. "Wrong FSM id" and "nothing
 # loaded to act on any id" are otherwise indistinguishable.
+# --- voice / audio service ---------------------------------------------------
+#
+# Service name is "voice", not "audio" — the client class is called AudioClient
+# but the DDS service it resolves is `voice`. Getting that wrong yields 3102
+# ("no server on that request topic"), which reads like a broken robot rather
+# than a typo.
+#
+# Speech is worth having for a reason beyond politeness: it appears to be
+# ungated by the locomotion FSM, so it is a channel the robot still has when
+# motion is being refused — which is the situation we keep ending up in.
+VOICE_SERVICE: Final[str] = "voice"
+VOICE_API_VERSION: Final[str] = "1.0.0.0"
+API_ID_VOICE_TTS: Final[int] = 1001
+API_ID_VOICE_ASR: Final[int] = 1002
+API_ID_VOICE_START_PLAY: Final[int] = 1003
+API_ID_VOICE_STOP_PLAY: Final[int] = 1004
+API_ID_VOICE_GET_VOLUME: Final[int] = 1005
+API_ID_VOICE_SET_VOLUME: Final[int] = 1006
+API_ID_VOICE_SET_RGB_LED: Final[int] = 1010
+
+
+class Speaker:
+    """`speaker_id` for TTS. Mixed Chinese/English in one call is unsupported.
+
+    From Unitree's VuiClient page: "speaker_id 0 for Chinese roles and 1 for
+    English roles. Mixed Chinese and English modes are not supported."
+    """
+
+    CHINESE: Final[int] = 0
+    ENGLISH: Final[int] = 1
+
+
 MOTION_SWITCHER_SERVICE: Final[str] = "motion_switcher"
 MOTION_SWITCHER_API_VERSION: Final[str] = "1.0.0.1"
 API_ID_MS_CHECK_MODE: Final[int] = 1001  # Getter — safe
@@ -331,6 +380,7 @@ SkillName = Literal[
     "zero_torque",
     "prepare",
     "start_walking",
+    "start_walking_waist",
     "balance_stand",
     "sit_g1",
     "lie_up",
@@ -361,6 +411,18 @@ SKILL_REQUESTS: Final[dict[SkillName, SkillRequest]] = {
     "zero_torque":   SkillRequest("sport_request", API_ID_G1_STATE, Mode.ZERO_TORQUE),
     "prepare":       SkillRequest("sport_request", API_ID_G1_STATE, Mode.PREPARATION),
     "start_walking": SkillRequest("sport_request", API_ID_G1_STATE, Mode.WALK),
+    # 500 and 501 are two different walk PROGRAMS selected by waist DoF, not a
+    # generic start and a variant of it. Unitree's `basic_services_interface`
+    # documents mode_machine as `4:23-Dof; 5:29-Dof; 6:27-Dof`, and this robot
+    # reports **5** — so it is a 29-Dof/3-Dof-waist machine and 501 is very
+    # likely the program it actually implements. That is the leading
+    # explanation for `start_walking` (500) returning rpc code 0 and never
+    # transitioning out of StandUp (docs/ROBOT-API.md §11).
+    #
+    # The official Python LocoClient has no method for 501 at all, which is
+    # part of why we keep our own catalogue rather than delegating to it.
+    # UNTESTED on hardware — nothing has ever sent 501 to this robot.
+    "start_walking_waist": SkillRequest("sport_request", API_ID_G1_STATE, Mode.WALK_WAIST),
     "sit_g1":        SkillRequest("sport_request", API_ID_G1_STATE, Mode.SEATING),
     "lie_up":        SkillRequest("sport_request", API_ID_G1_STATE, Mode.LIE_UP),
     # Mode.SQUAT (2) is never actually sent by the reference implementation

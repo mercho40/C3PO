@@ -120,6 +120,54 @@ def call_arm(gesture: int) -> tuple[int, str | None]:
     return _get_arm_client().call(g1_protocol.API_ID_G1_UPPER_LIMBS, gesture)
 
 
+_voice_client: _G1Client | None = None
+_tts_index = 0
+
+
+def _get_voice_client() -> _G1Client:
+    global _voice_client
+    if _voice_client is None:
+        _voice_client = _G1Client(
+            g1_protocol.VOICE_SERVICE,
+            (
+                g1_protocol.API_ID_VOICE_TTS,
+                g1_protocol.API_ID_VOICE_GET_VOLUME,
+                g1_protocol.API_ID_VOICE_SET_VOLUME,
+            ),
+            # TTS synthesises before it answers, so size this like the arm
+            # service rather than the sport one: it acks on completion, not on
+            # receipt. See the ARM_TIMEOUT_S note above — we have already been
+            # caught once reading a slow ack as a failure.
+            timeout_s=ARM_TIMEOUT_S,
+        )
+        _voice_client._SetApiVerson(g1_protocol.VOICE_API_VERSION)
+        _voice_client.Init()
+    return _voice_client
+
+
+def speak(text: str, speaker_id: int = g1_protocol.Speaker.ENGLISH) -> tuple[int, str | None]:
+    """Speak `text` aloud on the robot (voice service, api_id 1001).
+
+    Deliberately not `unitree_sdk2py.g1.audio.AudioClient.TtsMaker`, which
+    carries a vendor bug: `self.tts_index += self.tts_index` starting from 0,
+    so `index` is 0 on every call forever. If the firmware dedupes on that
+    index — and an index field with no other purpose suggests it does — the
+    second and later utterances are silently dropped, which would present as
+    "TTS randomly stops working". Verified present in our installed copy.
+
+    We send the same api_id with a monotonically increasing index instead.
+    """
+    global _tts_index
+    _tts_index += 1
+    param = json.dumps({"index": _tts_index, "text": text, "speaker_id": speaker_id})
+    return _get_voice_client().call_raw(g1_protocol.API_ID_VOICE_TTS, param)
+
+
+def get_volume() -> tuple[int, str | None]:
+    """Read the robot's speaker volume. Getter, safe."""
+    return _get_voice_client().call_raw(g1_protocol.API_ID_VOICE_GET_VOLUME, json.dumps({}))
+
+
 _motion_switcher_client: _G1Client | None = None
 
 

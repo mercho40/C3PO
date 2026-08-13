@@ -461,6 +461,31 @@ async def check_motion_mode() -> dict:
 
 
 @mcp.tool()
+async def start_walking_waist(ctx: Context) -> dict:
+    """Enter Walk Motion-3Dof-waist (FSM 501) — the 29-DoF walk program.
+
+    500 and 501 are two different walk programs chosen by how many degrees of
+    freedom the waist has, not a generic start and a variant. Unitree documents
+    `mode_machine` as `4:23-Dof; 5:29-Dof; 6:27-Dof`, and this robot reports
+    **5** — so 501 is likely the program it actually implements, and 500 the
+    other variant's.
+
+    That matters because `start_walking` (500) has been observed returning rpc
+    code 0 while never leaving StandUp. A recognised-but-not-implemented id
+    would look exactly like that: accepted, then declined by the controller.
+
+    **Never executed on this robot.** Try it from a supervised window with the
+    operator ready to damp, not from an autonomous plan. See
+    `docs/ROBOT-API.md` §11.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("start_walking_waist", ctx), "env": SIM_MODE}
+
+
+@mcp.tool()
 async def balance_stand(ctx: Context) -> dict:
     """Engage the stand-and-balance controller (api_id=7102, balance_mode=0).
 
@@ -602,31 +627,72 @@ async def release_arm(ctx: Context) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def say(
+async def say(
     text: Annotated[
         str,
         Field(
             min_length=1,
             max_length=500,
-            description="What the robot should say. Will be spoken aloud via TTS.",
+            description="What the robot should say, spoken aloud through its own speaker.",
         ),
     ],
-    voice: Annotated[
-        Literal["default", "warm", "neutral", "robotic"],
-        Field(description="Voice style. Phase 0a ignores this; logs only."),
-    ] = "default",
+    language: Annotated[
+        Literal["english", "chinese"],
+        Field(
+            description=(
+                "Which voice to use. The robot cannot mix languages in one "
+                "utterance — send separate calls instead."
+            )
+        ),
+    ] = "english",
 ) -> dict:
-    """Make the robot speak aloud.
+    """Speak text aloud through the robot's own speaker (voice service, TTS).
 
-    Phase 0a: no audio output, only logging. Phase 4 wires Cartesia TTS.
+    Real on hardware: on-robot text-to-speech, no cloud round-trip and no API
+    key. Logs only on stub and sim, which have no speaker.
+
+    Worth reaching for more than it sounds. Speech appears not to be gated by
+    the locomotion FSM, so it is a channel the robot still has when motion is
+    being refused — which is a situation this robot gets into. Saying what you
+    are about to do, or that you are stuck, is usually better than silence when
+    a person is standing next to a humanoid.
+
+    One utterance at a time, and one language per utterance: the firmware has
+    no mixed Chinese/English voice.
     """
-    log.info("say.called", text=text, voice=voice, sim_mode=SIM_MODE)
+    log.info("say.called", text=text, language=language, sim_mode=SIM_MODE)
+
+    if SIM_MODE != "real":
+        return {
+            "status": "ok",
+            "spoken": text,
+            "language": language,
+            "note": f"SIM_MODE={SIM_MODE} has no speaker — logged, not spoken.",
+            "env": SIM_MODE,
+            "stub": True,
+        }
+
+    import asyncio
+
+    from bridge.sdk import g1_protocol, g1_rpc
+
+    speaker_id = (
+        g1_protocol.Speaker.CHINESE if language == "chinese" else g1_protocol.Speaker.ENGLISH
+    )
+    # Off the event loop: TTS acks on completion of synthesis, so a long
+    # sentence would otherwise stall every other tool call — including
+    # stop_everything.
+    code, data = await asyncio.to_thread(g1_rpc.speak, text, speaker_id)
+
     return {
-        "status": "ok",
-        "spoken": text,
-        "voice": voice,
+        "status": "ok" if code == 0 else "failed",
+        "spoken": text if code == 0 else None,
+        "language": language,
+        "rpc_code": code,
+        "rpc_data": data,
+        "error": None if code == 0 else f"rpc_error_code_{code}",
         "env": SIM_MODE,
-        "stub": True,
+        "stub": False,
     }
 
 
