@@ -15,8 +15,12 @@ Tags, same convention as `ROBOT-INVENTORY.md`:
 
 - **[live]** — observed directly on the robot
 - **[src]** — read from source, config or binaries on the robot
-- **[web]** — from published documentation (see `G1-WEB-RESEARCH.md`, which is banner-marked
-  unverified; prefer `[src]`/`[live]` over it always)
+- **[web]** — from published documentation. **Two bodies, both unverified against this
+  robot**: `G1-WEB-RESEARCH.md` (third-party, banner-marked unverified) and, folded in
+  **2026-08-13**, **Unitree's own official G1 developer documentation** (45 pages). Prefer
+  `[src]`/`[live]` over both, always — official is not the same as correct, and several G1
+  pages are demonstrably copy-pasted from other robots. Citation rules and the wrong-robot
+  list are in `ROBOT-API.md`'s legend; official pages are cited here by slug + vendor date.
 - **[?]** — believed but _not_ verified; do not build safety-critical logic on these
 
 ---
@@ -25,25 +29,33 @@ Tags, same convention as `ROBOT-INVENTORY.md`:
 
 | Device                     | Attaches via                                         | Address / node                          | Held by, at snapshot                 | Health                                     |
 | -------------------------- | ---------------------------------------------------- | --------------------------------------- | ------------------------------------ | ------------------------------------------ |
-| Livox Mid-360 LiDAR        | Ethernet, robot internal LAN                         | `192.168.123.120`, `0c:9a:e6:87:5c:4a`  | **not the Jetson** — some other host | alive, 2.5 ms RTT; not streaming to us     |
+| Livox Mid-360 LiDAR        | Ethernet, robot internal LAN — **also republished on DDS**, §1.5 | `192.168.123.120`, `0c:9a:e6:87:5c:4a`  | **not the Jetson** — some other host | alive, 2.5 ms RTT; not streaming to us     |
 | Intel RealSense D435i      | USB 3.0 hub `2-2`, port 3 → `2-2.3`, `8086:0b3a`     | `/dev/video0–5`, IIO accel+gyro         | `teleimager.image_server` (video4)   | healthy; **depth and IR unclaimed**        |
 | G1 "head camera"           | **is the D435i colour node** — see §3                | `/dev/video4`                           | nobody (`master_service` stopped)    | stopped, recoverable                       |
 | G1 chest camera            | would be `/dev/video10`                              | —                                       | nobody                               | **absent** — no such device electrically   |
-| Hands                      | RS485 behind FTDI FT4232H `0403:6011`                | `/dev/ttyUSB0–3`                        | `brainco_hand_server` (ttyUSB1)      | one right hand answering; identity **[?]** |
+| Hands                      | RS485 behind FTDI FT4232H `0403:6011`; a Dex3 pair would be served from the **control board**, §4.2 | `/dev/ttyUSB0–3`                        | `brainco_hand_server` (ttyUSB1)      | one right hand answering; identity **[?]** — settle with §4.3a |
 | Mic array (4 mics)         | control board, **not** the Jetson                    | UDP mcast `239.168.123.161:5555`        | `gemm-ai.service` joined the group   | live, continuously transcribed             |
-| Speaker + RGB LED          | control board                                        | `voice` RPC service                     | shared, no arbitration               | live                                       |
+| Speaker + RGB LED          | control board                                        | `voice` RPC service (`vui_service`)     | shared, **no arbitration, 3 writers** | live                                       |
 | Body IMU                   | inside `LowState_`                                   | `rt/lf/lowstate`                        | shared (DDS)                         | live, ~20 Hz                               |
 | Battery / BMS              | own DDS topic                                        | `rt/lf/bmsstate`                        | shared (DDS)                         | live, ~20 Hz — **never actually read**     |
-| Wireless controller (R3)   | control board radio                                  | `rt/wirelesscontroller` + `LowState_`   | shared (DDS)                         | unverified this session                    |
+| Wireless controller (R3)   | control board radio                                  | **`LowState_.wireless_remote[40]`** — `rt/wirelesscontroller` is Go2-only, §6.3 | shared (DDS)                         | unverified this session                    |
 
 Two structural facts govern everything below.
 
-**The Jetson carries almost no vendor payload.** `/unitree/module/` holds exactly two modules,
-`master_service` and `video_hub_pc4`, and the vendor's own install bundle at
-`/home/unitree/g1plus_pc4_unitree_install/` confirms that is the complete "pc4" payload by
-design — its `module/` contains only `master_service`. **[live]** Every motion, audio and state
-service (`sport`, `arm`, `voice`, `motion_switcher`, `robot_state`) runs on the control board at
-`192.168.123.161`, which has no SSH. Those we can only reach over DDS, never by reading files.
+**The Jetson carries almost no vendor payload — by design, and Unitree says so.**
+`/unitree/module/` holds exactly two modules, `master_service` and `video_hub_pc4`, and the
+vendor's own install bundle at `/home/unitree/g1plus_pc4_unitree_install/` confirms that is the
+complete "pc4" payload — its `module/` contains only `master_service`. **[live]** Unitree states
+the rule outright: *"**Unitree does not deploy services on the NVIDIA Jetson Orin module**"* and
+*"PC1 is dedicated to the Unitree motion control program and is **not open to the public**.
+Developers can only use PC2 for secondary development."* **[web]** (`about_G1` 2026-05-06,
+`architecture_description` 2025-04-30. PC1 = `192.168.123.161`, PC2/NX = `192.168.123.164`.)
+
+So every motion, audio, hand and state service (`sport`, `arm`, `voice`, `motion_switcher`,
+`robot_state`, and a Dex3 resident driver if one exists) runs on the control board, which has no
+SSH. **Those we can only reach over DDS, never by reading files** — which means a
+filesystem-wide search on the Jetson is evidence about the Jetson and about nothing else. §4.2
+records where that bit us.
 
 **Firmware is `1.5.3.8`, product string `G1_Edu+`.** **[live]** Read from the staged OTA
 directory `/unitree/ota/update/1.5.3/package_1.5.3.8_G1_Edu+_upk`; `version.json` itself has an
@@ -170,14 +182,55 @@ disabled outright. Unresolved.
 ### 1.5 The sharing-friendly path: the vendor `lidar_driver` service
 
 There is a second route that does **not** steal the unicast: the control board keeps the sensor
-as its peer and republishes over DDS. Measured off two rosbags recorded from this very robot: **[live]**
+as its peer and republishes over DDS. Measured off two rosbags recorded from this very robot,
+and **now confirmed by Unitree's own most recent LiDAR page** (`lidar_services_interface`,
+2026-06-04): **[live]** + **[web]**
 
-| Topic                           | Type                                    | Rate (measured)      | Frame        |
-| ------------------------------- | --------------------------------------- | -------------------- | ------------ |
-| `rt/utlidar/cloud_livox_mid360` | `sensor_msgs::msg::dds_::PointCloud2_`  | 9.94 / 9.82 Hz       | `livox_frame`|
-| `rt/utlidar/imu_livox_mid360`   | `sensor_msgs::msg::dds_::Imu_`          | 199.6 / 198.2 Hz     | `livox_frame`|
+| Topic                           | Type                                    | Rate (measured / documented) | Frame        |
+| ------------------------------- | --------------------------------------- | ---------------------------- | ------------ |
+| `rt/utlidar/cloud_livox_mid360` | `sensor_msgs::msg::dds_::PointCloud2_`  | 9.94 / 9.82 Hz — **10 Hz**   | `livox_frame`|
+| `rt/utlidar/imu_livox_mid360`   | `sensor_msgs::msg::dds_::Imu_`          | 199.6 / 198.2 Hz — **200 Hz**| `livox_frame`|
 
-Gated on the vendor `lidar_driver` service being switched on (version ≥ 1.0.0.5). Toggled with
+**This settles the sharing question outright, and it is the route we should take.** The raw
+Livox UDP path is single-destination *by construction* (§1.3) — one `host_ip` in the sensor's
+own flash-backed config, and writing it steals the feed from whoever holds it. The DDS
+republish is an ordinary pub/sub topic that any number of subscribers can join. **A
+`describe_surroundings` LiDAR source should subscribe `rt/utlidar/cloud_livox_mid360` and MUST
+NOT touch the Livox config.** Two known blockers remain, both already ours: `PointCloud2_` is
+in our venv but `sensor_msgs::msg::dds_::Imu_` is not, so the 200 Hz IMU topic needs
+hand-written IDL; and the topics only exist while `lidar_driver` is switched on — now a
+**documented dependency**, not an inference, and switchable via `robot_state` 1001 as well as
+via the App.
+
+**Extrinsics, newly documented** (nothing in our docs had these): **[web]**
+
+- Mid-360 mounted **in the middle of the head**. IMU-to-lidar offset `(0.011, 0.02329,
+  −0.04412)` m with **no rotation**.
+- Lidar relative to the robot frame: `(−0.0, 0.0, −0.47618)` m, *"placement method is
+  inverted"*, pitch-axis inclination **−2.3°** — which matches the deployed
+  `roll 180.0, pitch −2.3` extrinsic in §1.2 exactly. ⚠️ The z sign is wrong for a
+  head-mounted sensor as literally stated, so **treat the direction of that transform as
+  ambiguous and validate against a real cloud** before using it. It is still the only measured
+  alternative to gemm's `z = 1.0` marked *"APROXIMADA: medir en el robot"* (§1.7).
+- SLAM output frame: **X forward, Z up** (hence Y left if right-handed), origin at the
+  Mid360-IMU.
+
+⚠️ **Hardware change we sit on the wrong side of:** *"The lidar of G1 produced after **April
+2026** has been changed to '**Mid360s**'. For self-developed users, LIVOX official Livox-SDK2
+and livox_ros_driver2 need to be updated."* **[web]** This robot arrived **2026-08-04**, i.e.
+after the cutover, so it may carry a Mid360s and **any pinned Livox-SDK2 / livox_ros_driver2
+version in `DEPLOYMENT.md` §3's ROS 2 container may be too old.** This is an argument for the
+DDS republish rather than a blocker — but check the sensor model before anyone stands up
+`livox_ros_driver2`.
+
+Also newly recorded: Unitree's own pre-use check — *"confirm there are no abnormalities in the
+raw point clouds and IMU data, and the head is fixed vertically upward without looseness. If
+the front and rear point cloud frames are obviously stratified when the lidar illuminates the
+same static vertical plane in a static state, or the IMU values are significantly abnormal,
+contact sales for lidar repair."* **[web]**
+
+Gated on the vendor `lidar_driver` service being switched on (version ≥ 1.0.0.5, confirmed by
+the vendor page). Toggled with
 no vendor SDK: publish `unitree_api::msg::dds_::Request_` on `rt/api/robot_state/request`,
 api_id **1001 `ServiceSwitch`**, parameter `{"name":"lidar_driver","switch":0|1}`; **1003
 `ServiceList`** (parameter `{}`) enumerates every service as `{name, status, protect}`. The
@@ -263,6 +316,27 @@ temperature, which would look exactly like a network fault.
 driver `uvcvideo`, kernel 5.10.104. It is the **only** camera physically attached to this
 Jetson: `v4l2-ctl --list-devices` returns exactly two entries, the RealSense and the Tegra CSI
 capture path (`/dev/media0`, **zero** `/dev/video` nodes bound — no MIPI/CSI camera). **[live]**
+
+**Officially confirmed as the G1's head sensor, and officially confirmed to have no DDS
+path.** *"The G1 robot depth camera is located overhead and is a **realsense D435i** … binocular
+infrared camera (global shutter), laser transmitter, RGB camera (rolling shutter), and 6-axis
+IMU."* **[web]** (`depth_camera_instruction`, 2025-11-17.) The entire page covers only
+`realsense-viewer`, `realsense-ros` and librealsense — **it names no DDS topic and no Unitree
+service.** That settles the asymmetry between the two head sensors: **the LiDAR is republished
+on DDS and is multi-consumer (§1.5); the D435i is not, and stays a single-owner V4L2/USB
+device** exactly as `DEPLOYMENT.md` §2 says. Any C3PO vision source must negotiate with
+whoever holds the node, not expect a topic. It also resolves `G1-WEB-RESEARCH.md` §4.3's
+uncertainty between a UVC binocular head camera and a D435i, in favour of the D435i for this
+generation.
+
+Vendor reference configuration worth matching (**[web]**): depth `640×480 Z16 @60`, both IR
+`640×480 Y8 @60`, **colour `848×480 BGR8 @60`** (note 848, not 640), gyro 400 Hz, accel 200 Hz;
+stereo `VISUAL_PRESET = HIGH_ACCURACY`, auto-exposure on, emitter on, laser power 150;
+temporal filter with `HOLES_FILL 6`, `SMOOTH_ALPHA 0.4`, `SMOOTH_DELTA 20`. And a timestamping
+rule stated as a `// do not use` comment against `frame.get_timestamp()`: **the vendor uses
+`clock_gettime(CLOCK_REALTIME)` instead** — which is precisely why §8's time-sync question
+matters if we ever fuse frames with DDS state. USB 2.0 needs a hub adapter and degrades
+resolution/frame rate.
 
 The six nodes resolve unambiguously by USB interface: **[live]**
 
@@ -527,6 +601,42 @@ Side effect worth knowing: `/unitree/etc/master_service/cmd/am-init` is
 by real evidence. **We are not picking a winner here**, because the wrong choice silently
 mis-specifies every hand skill we build.
 
+**But the question is now a multiple choice, and one zero-cost probe answers it.** See §4.0
+for Unitree's own variant table, §4.2 for the inference we had to withdraw, and §4.3a for the
+probe.
+
+### 4.0 The vendor's G1-EDU variant → hand table
+
+From `get_sdk` (vendor-updated 2026-07-20), verbatim apart from the vendor's own typos
+("Andvanced", "DFQ" for the RH56DFX): **[web]**
+
+| Variant | Configuration |
+| ------- | ------------- |
+| G1-EDU **Standard** | 23 DoF, **no hands** |
+| G1-EDU **Advanced** | 29 DoF, **no hands** |
+| G1-EDU **Ultimate A** | 29 DoF + 2 × **Dex3-1** three-finger hands (**no** tactile) |
+| G1-EDU **Ultimate B** | 29 DoF + 2 × **Dex3-1** (**tactile included**) |
+| G1-EDU **Ultimate C** | 29 DoF + 2 × **Inspire DFX** (RH56DFX) |
+| G1-EDU **Ultimate D** | 29 DoF + 2 × **Inspire FTP** |
+
+**BrainCo appears in no factory variant at all.** That reframes the whole argument: a running
+`brainco_hand_server` is evidence of a **retrofit**, not of the factory build — which fits
+perfectly with it living under `xr_teleoperate/vendor/`, a third-party stack a colleague
+installed. The `brainco_hand` page (2026-03-25) reinforces the asymmetry: BrainCo is a
+build-it-yourself GitHub service you `cmake` and launch with `sudo` and an explicit
+`--serial`, whereas *"G1 internally provides a **resident service program** that communicates
+with Dex3-1 and converts to DDS messages."*
+
+Two more constraints narrow it further:
+
+- **`mode_machine = 5` = 29 DoF** (`ROBOT-API.md` §4.2). **[live]** + **[web]** So this unit
+  is **not** G1-EDU Standard — it is Advanced or one of the four Ultimates.
+- `about_G1`'s maximum-configuration arithmetic is built on a **Dex3-1 pair**: 23 base + 2
+  waist + 2×2 wrist = 29, then 29 + 2×7 = **43 DoF**. No 6-DoF hand (BrainCo Revo2 or either
+  Inspire) reaches 43 — those give 41. **[web]** So if this unit's paperwork ever states 43
+  DoF, that is a Dex3 pair. (Our OTA package name gives only `G1_Edu+`, no DoF count, and that
+  string maps to **none** of Standard / Advanced / Ultimate A–D.)
+
 ### 4.1 The case for BrainCo — live process evidence
 
 `brainco_hand_server` (pid 5923, started 01:43, ~8 % CPU sustained,
@@ -549,6 +659,13 @@ answered this probe** — right, medium, Modbus RTU slave `0x7f` at **460800 bau
 100 Hz. **No left hand answered on any port** — which, per §4.3, is not the same as "nothing
 is attached there".
 
+**Two vendor confirmations, and one thing they change.** `brainco_hand` documents the launch
+as `sudo ./brainco_hand --id 126 --serial /dev/ttyUSB0 # 126: left hand, 127: right hand`
+**[web]** — so our live log's "Starting worker for right (slave 127)" / slave `0x7f` reading
+is exactly right. But note the second half: **the service is started by hand with an explicit
+`--serial` per hand.** "No left hand answered" therefore reflects *how it was launched* as
+much as what is plugged in — whoever started it chose one port.
+
 Its interface is nothing like Dex3's: **[src]**
 
 | Property   | Value                                                                            |
@@ -563,6 +680,16 @@ Its interface is nothing like Dex3's: **[src]**
 Positions and speeds are **normalised to [0,1]**, not radians. Their README recommends setting
 all finger speeds to 1.0.
 
+**Unitree's own page confirms this line for line** — topics, the `[0,1]` normalisation, the
+speed-1.0 recommendation, the 6-DoF count and the exact finger order
+`[Thumb, Thumb_aux, Index, Middle, Ring, Pinky]`. **[web]** What it never states: the **DDS
+message type**, the baud rate, or anything about force or tactile sensing. So the
+`MotorCmds_`/`MotorStates_` typing and the ×1000 wire scaling stay **[src]**-only from the
+server binary's source, and our 460800 baud / slave `0x7f` stay live-only. ⚠️ **And it never
+says which end of [0,1] is *open*** — Inspire DFX explicitly maps 1.0 = open, `hand_sdk` says
+positive tau closes, and BrainCo says nothing. **Do not write a BrainCo "open hand" preset
+until that is read out of the server source or observed.**
+
 ### 4.2 The case for Dex3-1 — configuration and bus evidence
 
 - The FT4232H is present and healthy: `0403:6011`, `bNumInterfaces = 4`, device serial
@@ -575,9 +702,23 @@ all finger speeds to 1.0.
   through dex-retargeting DexPilot), and both SDKs ship `g1_dex3_example` binaries. **[src]**
 
 But: a filesystem-wide search for any `*dex3*` artifact outside vendored SDK source trees
-returns **nothing** — no Dex3 service binary, no systemd unit, no `/unitree/module` entry. So
-**even if a Dex3 were plugged in, nothing on this Jetson would publish `rt/dex3/*/state` or
-consume `rt/dex3/*/cmd`.** **[live]**
+returns **nothing** — no Dex3 service binary, no systemd unit, no `/unitree/module` entry.
+**[live]**
+
+⚠️ **The conclusion we drew from that has to be withdrawn.** This section previously read
+*"even if a Dex3 were plugged in, nothing on this Jetson would publish `rt/dex3/*/state` or
+consume `rt/dex3/*/cmd`"*, and used it as evidence against Dex3. Unitree states plainly:
+*"**Unitree does not deploy services on the NVIDIA Jetson Orin module.**"* **[web]**
+(`about_G1`, 2026-05-06.) And the Dex3 driver is described as *"a **resident service program**"*
+the robot provides itself — i.e. it runs on the control board at `192.168.123.161`, which has
+no SSH. **Our search was aimed at the wrong host.** The observation stands; the inference does
+not, and it was doing real work in the argument.
+
+The same page also weakens the bus argument in the other direction: **no vendor page
+associates the Dex3-1 with a PC2 USB-serial dongle.** The two pages that *do* describe
+USB-serial dongles on PC2 are the **Inspire** ones, and BrainCo documents one USB-serial
+device per hand. So the FT4232H's four ports fit "two retrofit third-party hands" at least as
+well as "a Dex3 pair". **[web]**
 
 ### 4.3 Why the evidence we have cannot settle it
 
@@ -588,11 +729,36 @@ there" and "something there that does not speak BrainCo".
 
 **The single observation that settles it: look at the robot.** A Dex3-1 is a **7-DoF,
 three-finger** hand (thumb ×3, index ×2, middle ×2). A BrainCo Revo2 is a **6-DoF, five-finger**
-hand, per its own finger order. One glance at each wrist resolves the whole section. Second
-best: trace which FT4232H channel each physical wrist cable lands on.
+hand, per its own finger order. An Inspire DFX or FTP is **6 DoF, five-finger** too — so a
+five-fingered hand narrows to {BrainCo, Inspire} rather than settling it. One glance at each
+wrist plus §4.3a's passive subscribe resolves the whole section. Second best: trace which
+FT4232H channel each physical wrist cable lands on.
 
 **Do not settle it by opening the serial ports.** That means driving an RS485 bus attached to an
 unknown device on a powered, standing robot.
+
+### 4.3a The probe that settles it, and costs nothing
+
+**Passively subscribe, for a few seconds, with zero writes:**
+
+| Topic | Type | In our venv? | Proves |
+| ----- | ---- | ------------ | ------ |
+| `rt/dex3/left/state`, `rt/dex3/right/state` | `unitree_hg::msg::dds_::HandState_` | **yes** | Ultimate A/B — a Dex3 pair, resident service running on the control board |
+| `rt/inspire/state` | `unitree_go::msg::dds_::MotorStates_` | **yes** | Ultimate C — Inspire DFX (12 entries, both hands) |
+| `rt/inspire_hand/state/r` | `inspire::inspire_hand_state` | **no** — needs hand-written IDL | Ultimate D — Inspire FTP |
+| `rt/brainco/{left,right}/state` | `unitree_go::msg::dds_::MotorStates_` | **yes** | The retrofit BrainCo, if its server is running |
+
+The first two need no new types and no new dependencies. **This is now the highest-value
+action in §4** — it also decides the newly-raised possibility that a Dex3 resident service is
+running on PC1 where we cannot look (§4.2).
+
+⚠️ **Settle §4 *before* the next locomotion window, not after.** Unitree's own warning:
+*"During development, it is not recommended to perform overly intense actions, such as
+**running or balance tests**, while the dexterous hand is attached"*, plus *"when using the
+dexterous hand, always ensure that the robot's movements do not cause interference between the
+hand and the main body"* and a separate warning against booting in the lying or squatting
+positions with hands fitted. **[web]** "Running or balance tests" is *exactly* the class of
+experiment queued up for `ROBOT-API.md` §11.
 
 ### 4.4 Dex3-1 reference, if that is what is fitted
 
@@ -601,13 +767,17 @@ All **[src]**, correct for the product Unitree ships, unreachable on this machin
 | Direction | Topic                             | Type                                   |
 | --------- | --------------------------------- | -------------------------------------- |
 | Command   | `rt/dex3/{left,right}/cmd`         | `unitree_hg::msg::dds_::HandCmd_`      |
-| State     | `rt/lf/dex3/{left,right}/state`    | `unitree_hg::msg::dds_::HandState_`    |
-| State (alt)| `rt/dex3/{left,right}/state`      | same — see below                       |
+| State     | **`rt/dex3/{left,right}/state`**   | `unitree_hg::msg::dds_::HandState_`    |
+| State (lf)| `rt/lf/dex3/{left,right}/state`    | same — decimated mirror                |
 
-`rt/dex3/*/cmd` is unanimous across all three vendor clients. The **state** topic exists in both
-a full-rate (`rt/dex3/*/state`, used by xr_teleoperate) and a `lf/`-prefixed form (both C++
-examples), exactly like `rt/lowstate` vs `rt/lf/lowstate`. That the `lf` variant is a decimated
-mirror is **[?]** inference from the naming convention — no source states it.
+`rt/dex3/*/cmd` is unanimous across all three vendor clients, and both official prose pages
+agree on both topics and both types. **[web]** The `lf` variant being a decimated mirror was
+previously **[?]** inference from naming; **upgrade it** — Unitree's topic table applies the
+identical "- low-frequency mode" convention to `lowstate`, `secondary_imu` and `odommodestate`
+pairs, and to `rt/lf/dex3/right/state` explicitly. ⚠️ That table's Info column is scrambled for
+the two *left*-hand rows (the lf/non-lf labels are swapped, and `rt/dex3/right/state` is
+described as "left"), so read the convention, not the individual cells. **Subscribe the bare
+name** — it is what both official prose pages use exclusively.
 
 ```
 HandCmd_   : motor_cmd  sequence<MotorCmd_>   # 7 entries
@@ -619,45 +789,176 @@ HandState_ : motor_state        sequence<MotorState_>       # 7
              error   uint32[2]     reserve uint32[2]
 ```
 
-7 DoF per hand. Hardware slot order per `hand_retargeting.py` (which cites the official docs)
-is the same for both hands: `thumb_0, thumb_1, thumb_2, middle_0, middle_1, index_0, index_1` —
-**but** `Dex3_1_Right_JointIndex` and `unitree_dex3.yml` in the *same repo* put index before
-middle for the right hand. The URDF limits are identical for both pairs, so they cannot
-disambiguate. Genuinely contradictory; only settleable by commanding one slot at a time on real
-hardware.
+**Our venv's IDL and the older `dexterous_hand` page (2025-02-10) match field for field.**
+**[web]** The newer `basic_services_interface` (2025-10-21) publishes a *different, shorter*
+`HandState_` with `press_sensor_state` and `imu_state` **swapped** and `system_v`, `device_v`
+and `error[2]` missing entirely, and a `HandCmd_` without the `reserve[4]`. **Ignore it** — a
+swapped struct in DDS does not error, it silently mis-decodes. General lesson for this doc
+set: **recency is not a proxy for correctness on struct layouts.** Field meanings, newly
+documented: `power_v`/`power_a` are the hand's total input supply voltage and current,
+`system_v` its internal supply, `device_v` the output of its step-down module, `error` its
+error code — i.e. **a fitted Dex3 gives us per-hand health telemetry we have no equivalent of
+anywhere else.**
 
-Per-motor `mode` byte is bit-packed: `RisMode { id:4, status:3, timeout:1 }`, i.e.
-`mode = (id & 0x0F) | ((status & 0x07) << 4) | ((timeout & 0x01) << 7)`. `status = 0x01` is
-active FOC control; `timeout = 1` is set by `StopMotors()` alongside all-zero gains — **a
-firmware-side deadman, the same free-safety pattern as `SetVelocity`'s `duration`**.
+**Joint order — the contradiction is settled, and we now know what caused it.** Two official
+pages give the identical IDL order for **both** hands: **[web]**
+
+| IDL index | 0 | 1 | 2 | **3** | 4 | 5 | 6 |
+| --------- | - | - | - | ----- | - | - | - |
+| Joint | `thumb_0` | `thumb_1` | `thumb_2` | **`middle_0`** | `middle_1` | `index_0` | `index_1` |
+
+So **slot 3 is `middle_0` on both hands**, which is what `hand_retargeting.py` said and what
+`Dex3_1_Right_JointIndex` / `unitree_dex3.yml` contradicted. The trap that produced the
+disagreement is visible in `dexterous_hand`'s per-side URDF cross-tables: **the left hand's
+URDF link names run out of numeric order** — `left_hand_five` → IDL 3, `left_hand_six` → IDL
+4, `left_hand_three` → IDL 5, `left_hand_four` → IDL 6 — while the right hand's run straight
+through. **Anyone converting left-hand URDF indices to IDL indices by sorting names swaps
+index and middle.** Adopt the IDL order above; keep one-slot-at-a-time verification as the
+first thing done on real hardware, since the robot still wins.
+
+**Units: radians, and this is the number-one mixing hazard across the four hand types.**
+`MotorState_.q` is documented as *"joint feedback position (**rad**)"*, and the vendor's own
+Dex3 example normalises to [0,1] **only for printing**, using joint limits. **[web]**
+
+> **Dex3 = radians. BrainCo = [0,1]. Inspire DFX = [0,1] with 1.0 = open.** A
+> `set_hand_pose(side, q[7])` written for Dex3 and pointed at a BrainCo topic sends 1.7 where
+> the driver expects ≤ 1.0; the reverse sends 0.5 rad where 90° was meant.
+
+(Note the vendor example's variable names `maxTorqueLimits`/`minTorqueLimits` are misleading —
+they hold joint **position** limits, and they are per-side.)
+
+Per-motor `mode` byte is bit-packed: `RIS_Mode_t { id:4, status:3, timeout:1 }`, i.e.
+`mode = (id & 0x0F) | ((status & 0x07) << 4) | ((timeout & 0x01) << 7)` — **confirmed verbatim
+by Unitree**, including `status` 0 = Lock, 1 = FOC and *"timeout: master→motor 0 = disable
+timeout protection, 1 = enable (**default 1 s timeout**)"*. **[web]** So `timeout = 1` is a
+**firmware-side 1 s deadman on the hand motors** — the same free-safety pattern as
+`SetVelocity`'s `duration` and `rt/hand_sdk`'s auto-fallback. **Any hand skill we write should
+set `timeout = 1` and re-publish, never `timeout = 0`.** Note also that the same
+`unitree_hg::msg::dds_::MotorCmd_` struct carries a completely different `mode` encoding
+depending on whether it rides in a `LowCmd_` (0 = Disable, 1 = Enable) or a `HandCmd_`.
+
+⚠️ **TRAP: the `dexterous_hand` page splices the RS485 wire protocol into a DDS document.**
+Under a heading reading "IDL Data Format" it shows a 20-byte packed struct with `head[2]`,
+`CRC32`, and integer scale factors — *"`tor_des`: 256 represents 1 mNm; `pos_des`: 32768/2π
+represents 1 rad; `k_pos`: 1280 represents 1 mN·m/rad"* — and a `uint16`-based tactile struct.
+**None of that is the DDS type.** The real `MotorCmd_` is `{uint8 mode; float32 q, dq, tau, kp,
+kd; uint32 reserve}`, all plain floats in SI, and the real `PressSensorState_` is
+`{float32 pressure[12]; float32 temperature[12]; uint32 lost; uint32 reserve}` — as shipped in
+our venv. Those scale factors describe what the **resident service** speaks to the hand over
+RS485, downstream of DDS. Anyone implementing from that page will scale `q` by 32768/2π into
+an integer field that does not exist and drive the hand to a wildly wrong position. (Internal
+proof it is the wrong struct: the page's own stated sensor values, "valid when data ≥ 100000",
+do not fit a `uint16`.)
 
 **Use the URDF joint limits, not the example's hard-coded clamps** — the examples exceed the
 URDF on `thumb_1` for both hands (left max 1.05 vs URDF 0.920; right min −1.05 vs −0.920). Left
 joints 3–6 are negative-only and right joints 3–6 positive-only, so a shared "close the hand"
-pose must be sign-flipped per side.
+pose must be sign-flipped per side. **The spec sheet now explains the discrepancy**: `about_G1`
+gives the thumb as `0°…+100°, −35°…+60°, −60°…+60°` and index/middle as `0°…+90°` and
+`0°…+100°`. **[web]** The examples' symmetric ±1.05 is exactly the spec's +60° = 1.0472 rad —
+but the spec range is **asymmetric** (−35°/+60°), so the examples are wrong on the negative
+side regardless. **Keep our rule: use the URDF limits, they are the conservative ones.** In
+radians the spec gives thumb_0 0…+1.745, thumb_1 −0.611…+1.047, thumb_2 −1.047…+1.047, and
+index/middle 0…+1.571 and 0…+1.745 — though the page never says which of the two
+index/middle ranges is the proximal `_0` and which the distal `_1`, so half that table is
+still ambiguous.
+
+Other spec-sheet figures: RS485 control interface, 7 DoF, **24 V rated** (the electrical table
+says "operating voltage 12–58 V"), 9 array sensors, **tactile perception range 10 g – 2500 g**.
+**[web]**
 
 Tactile: `press_sensor_state` carries `pressure[12]` **and** `temperature[12]` float arrays per
 pad plus a `lost` counter, 9 pads per C++ example (108 taxels/hand) vs 7 in the Python default.
-**No units, no calibration and no pad-to-finger map exist in any source on this robot.**
+The "no units, no calibration" gap is now **partly** filled: **[web]**
 
-### 4.5 Corrections our repo needs regardless of which hand is fitted
+- **Value semantics** — *"valid values: data ≥ 100000; invalid / no value: data = 30000. It is
+  recommended to scale down 100000 to 10.0000 for display and calculation."* So treat `30000`
+  as no-reading, `≥ 100000` as valid, and divide by 10000 to display.
+- **Geometry** — *"a 3×4 array sensor at each fingertip position (6 locations in total)"*,
+  which conflicts with `about_G1`'s "number of array sensors: 9". Six fingertips plus three
+  palm pads would reconcile them, but **no source says so**. Pad count remains contested.
+- **The pad→finger map still does not exist in text.** It lives only in two images on the
+  vendor page that the markdown conversion dropped
+  (`doc-cdn.unitree.com/static/2024/12/26/…_5000x2812.png`). If tactile ever matters, fetch
+  those two images.
+
+### 4.5 The other two hand families, and `rt/hand_sdk`
+
+Relevant mainly as **discriminators** for §4.3a, and as a warning about how differently these
+four products behave.
+
+**"Inspire hand" is two incompatible products in Unitree's own docs.** **[web]**
+
+| | **Inspire DFX** (RH56DFX, Ultimate C) | **Inspire FTP** (Ultimate D) |
+| --- | --- | --- |
+| Topics | `rt/inspire/{cmd,state}` | `rt/inspire_hand/{ctrl,state,touch}/{r,l}` (`*` defaults to `r`) |
+| Types | `unitree_go::msg::dds_::MotorCmds_` / `MotorStates_` | custom `inspire::inspire_hand_{ctrl,state,touch}` — **not in `unitree_sdk2py`**, would need hand-written IdlStructs |
+| Entries | **12 — BOTH hands in one message, right occupies 0–5**, left 6–11 | **6 — one hand per topic suffix** |
+| Joint order | `[pinky, ring, middle, index, thumb_bend, thumb_rotation]` | same |
+| Control | **only `q` is meaningful**, everything else reserved | a 4-bit `mode` bitmask: 1 angle, 2 position, 4 force, 8 speed, combinable 0–15 |
+| Polarity | **1.0 = open, 0.0 = closed** (`{"open", Ones()}, {"close", Zero()}`) | — |
+| Transport | serial | Modbus RTU over RS-485 **and** Modbus TCP (left `192.168.123.210`, right `.211`, port 6000); *"only one device per bus at about 20 Hz"* on RS-485 |
+| Tactile | — | **17 sensors**, `fingerone` = **pinky** … `fingerfive` = **thumb**, plus `palm_touch`. On RS-485 the touch topic **publishes nothing**, so silence there is not evidence of a non-tactile hand |
+
+⚠️ **The DFX polarity is the opposite of the intuitive reading** and opposite in spirit to
+`hand_sdk`'s "positive tau closes". If Inspire hands turn out to be what is fitted, a
+wrong-polarity default would **slam the hand shut on power-up**.
+
+⚠️ **The Inspire DFX page is H1-contaminated**: on a page filed under `G1_developer` it says
+*"**H1** provides a USB to serial module, which can be plugged into the **H1** Development
+Computing Unit (PC2) … usually named `/dev/ttyUSB1` (left hand), `/dev/ttyUSB2` (right
+hand)"*, links to `H1_developer` pages, and its changelog reads *"Initial Release (**Reuse the
+H1 routine**)"*. The DDS half is consistent with the `rt/inspire/*` naming used elsewhere and
+is probably fine; **the ttyUSB1/ttyUSB2 assignment is an H1 claim and must not be used to
+reason about our FT4232H port layout.** It also conflicts with the FTP page's own
+`/dev/ttyUSB0` default on the G1. **[web]**
+
+**`rt/hand_sdk` is not a generic hand interface.** *"The Hand SDK is an external control
+interface provided by the `ai_sport` module … By publishing to `rt/hand_sdk`, a user process
+can inject commands for the 4 hand motors into `ai_sport`"* — scoped explicitly to the
+**Dex2-5 five-finger 2-DoF hand and the Dex1-1 parallel gripper**, *neither of which appears
+in the G1-EDU variant table* (§4.0). **[web]** It is an `ai_sport` blending injection,
+categorically different from the per-hand driver topics above, which talk to a serial driver.
+`unitree_go::msg::dds_::MotorCmds_`, 4 motors,
+`Motor_real = weight × Hand_SDK + (1 − weight) × G1_Cmd` with all five of `kp/kd/q/dq/tau`
+participating. Three details worth carrying:
+
+- ⚠️ **Weight encoding trap:** `weight` is an **integer 0–100 stored in `cmds[0].mode`**
+  (`weight = cmds[0].mode / 100.0`); the other three motors' `mode` is unused. That is
+  structurally the same idea as `rt/arm_sdk`'s `motor_cmd[29].q` blend weight but a
+  **different encoding in a different place** — the two are not interchangeable.
+- **Preconditions:** `ai_sport` running, robot **not** in damping, a compatible hand
+  installed. *"While the robot is in the damping state, user commands are not forwarded … after
+  leaving damping the user must re-set `weight` explicitly."* So on 2026-08-14, with no
+  controller loaded, this path would have been **inert** — a poor diagnostic and a bad first
+  hand experiment.
+- **Auto-fallback on timeout**: stop publishing and `ai_sport` resumes its default behaviour,
+  no cancel call needed. Third instance of the firmware-deadman pattern (§4.4, `SetVelocity`).
+  Also: *"ramp `weight` smoothly"* — stepping 0 → 1 can cause abrupt motion.
+
+Our Isaac sim profile's `rt/dex1/{left,right}/{cmd,state}` with `MotorCmds_` is the **Dex1-1
+gripper**, i.e. the same family `hand_sdk` names.
+
+### 4.6 Corrections our repo needs regardless of which hand is fitted
 
 - `apps/bridge/src/bridge/sdk/g1_protocol.py:97-98` has
   `dex_left_cmd="rt/api/dex3/left/request"` / `dex_right_cmd=…`. **The hands are not an RPC
   service.** There is no api_id, no JSON envelope, and no `rt/api/dex3/*` topic in any vendor
-  source on this robot — it is a raw `HandCmd_` publish on `rt/dex3/{side}/cmd`. **[src]**
+  source on this robot — and none in any of the six official hand-related pages either. It is a
+  raw `HandCmd_` publish on `rt/dex3/{side}/cmd`. **[src]** + **[web]**
 - `SPEC.md` §17.5 gives the state type as `MotorStates_`. For Dex3 it is **`HandState_`**.
-  (`MotorStates_` is right for BrainCo, Dex1 grippers and Inspire hands — which is probably where
-  the confusion came from.) **[src]**
+  (`MotorStates_` is right for BrainCo, Dex1 grippers and Inspire **DFX** — which is probably
+  where the confusion came from. Inspire **FTP** is neither; it uses custom `inspire::*`
+  types.) **[src]** + **[web]**
 - **`/api/dex3_msg_controller`**, cited in `ROBOT-INVENTORY.md` §4 and `MENTAL-MODEL.md`, appears
   in **no** vendor source, binary or config anywhere on this robot. Its only occurrences are our
   own doc files. Treat it as unsourced; strike it unless someone can point at the observation it
   came from. **[live]**
-
-Adjacent command paths that do exist, for completeness: `rt/hand_sdk`
-(`unitree_go::msg::dds_::MotorCmds_`, 4 hand motors, documented as
-`Motor_real = weight × Hand_SDK + (1 − weight) × G1_Cmd`) and `rt/inspire/{cmd,state}`. Both are
-in the newer SDK clone only — see the version-skew warning in §7. **[src]**
+- **`ROBOT-API.md` §6.8's "9 pressure pads"** should read `pressure[12]` per pad array; the pad
+  *count* is contested 6 vs 9 (§4.4).
+- **Any hand skill must carry the units per hand type** — Dex3 radians, BrainCo [0,1], Inspire
+  DFX [0,1] with 1.0 = open — and set the Dex3 `timeout` bit so the firmware deadman applies
+  (§4.4).
 
 ---
 
@@ -726,14 +1027,45 @@ firmware-matched `unitree_ros2` header, the newer C++ SDK, and the Python SDK: *
 | 1002   | `ASR`          | registered by every client, **called by none** — purpose unknown |
 | 1003   | `START_PLAY`   | `{"app_name": "…", "stream_id": "…"}` **plus raw PCM in `binary`** |
 | 1004   | `STOP_PLAY`    | `{"app_name": "…"}`                                              |
-| 1005   | `GET_VOLUME`   | empty → `{"volume": uint8}`                                      |
-| 1006   | `SET_VOLUME`   | `{"volume": uint8}`                                              |
-| 1010   | `SET_RGB_LED`  | `{"R": uint8, "G": uint8, "B": uint8}`                           |
+| 1005   | `GET_VOLUME`   | empty → `{"volume": uint8}` — **range 0–100**                    |
+| 1006   | `SET_VOLUME`   | `{"volume": uint8}` — **clamp to 0–100**                         |
+| 1010   | `SET_RGB_LED`  | `{"R": uint8, "G": uint8, "B": uint8}` — 0–255 each, **≥ 200 ms between calls** |
 
-Only one service-specific error code is declared: **100 "Invalid parameter"**.
+Only one service-specific error code is declared: **100 "Invalid parameter"**, and the official
+docs add none.
 
 PCM for `START_PLAY` must be **16 kHz mono 16-bit** — both vendor examples hard-reject anything
-else — chunked at 96000 bytes (3 s) with roughly 1 s spacing.
+else, and Unitree independently warns *"the device only supports mono audio; stereo may cause
+playback issues"*. **[web]** Our "96000 bytes (3 s) with roughly 1 s spacing" is an
+**on-robot-example convention, not a protocol requirement**: the official example passes an
+entire ~5 s WAV in a single `PlayStream` call.
+
+**Four things the official `AudioClient` documentation adds** (full treatment in
+`ROBOT-API.md` §7): **[web]**
+
+- **`stream_id` is the interrupt model** — *"the same ID means continuous playback from cache,
+  different IDs mean interrupting the current playback."* Barge-in is free: send the next
+  utterance with a new id, no `PlayStop` needed.
+- **Volume is 0–100**, and `LedControl` has a hard **200 ms minimum call interval**.
+- **TTS is local/offline with exactly two roles**, and **"mixed Chinese and English modes are
+  not supported"** — split bilingual strings or use `PlayStream`.
+- **`PlayStop` takes `app_name`** — the official example passes `"example"`, the same string it
+  gave `PlayStream` as app name. Three of four sources now agree; the on-robot C++ example
+  passing `stream_id` is simply wrong.
+- **Version floor: `Vui_Service ≥ 2.0.3.8`, `Vui Module ≥ 2.0.0.3`.** We have never obtained
+  either version — they live on the control board — so `GET_VOLUME` returning a value versus a
+  `3203` is the only probe we have for whether this unit serves the calls at all.
+
+⚠️ **The LED strip is safety-relevant, not decorative.** It has **four uncoordinated writers**:
+the motion FSM's own state colours (solid blue = normal, orange = damping, green = seated,
+**yellow = debug mode**, purple = zero torque, dark blue = standby, **red = error state**), the
+voice assistant (breathes blue on hearing, green on receiving an instruction), `SET_RGB_LED`,
+and us. **[web]** Driving it overwrites the operator's only indicator that the robot is in an
+error state or debug mode, and nothing documents how to hand the strip back to the FSM. Either
+do not expose LED control to the LLM, or expose it only as a short flash that restores
+afterwards. **And ask the operator to record the strip colour at the top of every window** — it
+is a free, instant, zero-RPC readout of the robot's mode, and it retroactively disambiguates
+every session we have logged.
 
 `/api/audiohub` does **not** exist on this robot: a grep across `/home`, `/unitree`, `/opt` and
 `/etc` hits exactly two files, both our *own* docs synced onto the robot. **[live]** `/api/vui`
@@ -744,14 +1076,49 @@ Jetson, and `strings` on `master_service` yields no `audiohub`/`vui`/`voice`/`au
 so `G1-WEB-RESEARCH.md` §4.4's arXiv-sourced `vui_service` claim does not hold **for this host**.
 It says nothing about the control board, which we cannot inspect. **[live]**
 
+**Three different things carry the letters "vui", and conflating them will waste an afternoon:**
+**[web]**
+
+| Name | What it is |
+| ---- | ---------- |
+| `vui` | a **Go2-only RPC service** (`rt/api/vui/*`), no G1 counterpart — the finding above stands |
+| `vui_service` | the **`robot_state` process name** for the *"Audio and Lighting Control Service"*, i.e. what actually provides TTS, `PlayStream`, volume and the LED strip |
+| *"VuiClient Service Interface"* | the **title of the official page that documents `AudioClient`** — it defines no VuiClient at all |
+
+None of them is the DDS RPC service `voice`. And `/api/audiohub`'s name is no longer a mystery
+either: **"Audio Hub" is a real firmware component** (≥ 1.0.1.0) named alongside Vui Service and
+Webrtc Bridge in the app-side playback docs — an app/WebRTC-side component, **not** a DDS RPC
+service. Keep the "does not exist on this robot" finding; stop calling the name invented.
+
 ### 5.4 `rt/audio_msg` — ASR text, never audio
 
 Type is **`std_msgs::msg::dds_::String_`** (shipped by `unitree_sdk2py`). The vendor example
 subscribes it and prints `resMsg->data()`; the only consumer on this robot does
 `json.loads(msg.data)` then `payload.get("text")`, and **silently drops anything that is not
-valid JSON**. So the payload is JSON with a `text` key. The unitree-ui reverse engineering adds
-a `play_state` field on the same topic (`0` = playback ended) **[web]**. `unitree_go::msg::dds_::
-AudioData_` exists in our IDL but is a Go2 type and is not on this path. **[src]**
+valid JSON**. So the payload is JSON with a `text` key. `unitree_go::msg::dds_::AudioData_`
+exists in our IDL but is a Go2 type and is not on this path. **[src]**
+
+**The full schema is now published, and it carries two things we should be using.** **[web]**
+Fields: `index`, `timestamp`, `text`, **`angle` (azimuth of the speaker, 0–180)**,
+`speaker_id`, `sense` (emotion), `confidence`, `language`, `is_final`. And a **second payload
+shape on the same topic**: `{"play_state": 0|1}` — `0` = playback stopped, `1` = started. That
+upgrades the unitree-ui `play_state` claim from **[web]**-third-party to vendor-documented.
+
+- **`angle` is free sound direction-of-arrival**, on a topic we already know how to read.
+- **`play_state` is a real playback start/stop event** — the audio equivalent of
+  `rt/arm/action/state`, giving `say()` true completion detection instead of a guessed duration.
+- ⚠️ **Trap: `speaker_id` means two different things on one service.** Here it is the ASR's
+  *speaker recognition (diarization)* result; in `TtsMaker` it is the *voice role* (0 = Chinese,
+  1 = English). Same key, unrelated meanings.
+
+⚠️ **ASR output is gated on a mode we cannot set over DDS.** *"When the robot's microphone is
+turned on (**switch to the wake-up mode in the APP or remote control**), the built-in microphone
++ ASR module will recognize the human voice."* **[web]** Modes switch with **L1+L2** on the
+remote or in the App under 【Device】→【Data】→【Audio】→【Voice assistant】; the wake word is
+*"Hello Robot"*; **L2+Select** wakes, **L1+Select** force-interrupts; the dialogue ends after
+15 s of silence. So a future `listen()` built on `rt/audio_msg` has a **human prerequisite**.
+Whether the raw multicast feed (§5.2) is gated the same way is **unknown and worth testing** —
+if it is always live, our own STT is independent of the vendor assistant entirely.
 
 **The embedded ASR is unusable for us.** A colleague code comment dated 2026-08-06 — after this
 robot arrived — records it live-verified **transliterating non-Japanese speech into unrelated
@@ -774,19 +1141,23 @@ MP3→PCM16 gTTS path that goes out through `PlayStream`. That same file's note 
 frame-padding bug *"heard on-robot as crackle/noise and stuck playback"* is second-hand evidence
 that **`PlayStream` genuinely drives this robot's speaker**. **[src]**
 
-**The blocker is our SDK pin, and it is not the pin you would guess.** Our venv's
-`unitree_sdk2py` ships only `core go2 idl rpc utils` — **there is no `g1` package at all**
-(`grep -c 'g1/' RECORD` → 0). Root cause: `direct_url.json` pins commit `a7dff75`, and in that
-checkout `unitree_sdk2py/g1/`, `g1/arm/`, `g1/audio/`, `g1/loco/` contain **no `__init__.py`**,
-while `setup.py` uses `find_packages()`, which only discovers packages that have one. So
-`from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient` raises `ImportError`. The
-control case is on the same machine: `gemm_ai`'s venv was installed from a newer clone, **does**
-have `g1/__init__.py`, and imports `AudioClient` fine. Same root cause as the missing `b2` import
-that `scripts/postsync.sh` patches. **[live]**
+**This used to be blocked on our SDK pin. It is not any more.** The historical problem:
+`direct_url.json` pinned commit `a7dff75`, whose `unitree_sdk2py/g1/`, `g1/arm/`, `g1/audio/`
+and `g1/loco/` contain **no `__init__.py`**, while `setup.py` uses `find_packages()`, which
+only discovers packages that have one — so the venv shipped only `core go2 idl rpc utils` and
+`from unitree_sdk2py.g1.audio.g1_audio_client import AudioClient` raised `ImportError`. Same
+root cause as the missing `b2` import that `scripts/postsync.sh` patches. **[live]**
 
-Two ways out, and **the second needs no pin bump**:
+⚠️ **Re-checked while folding in the official docs: `apps/bridge/.venv` is now pinned to
+`65691c8` and ships `a2 as2 b2 comm core g1 go2 h1 h2 idl rpc utils`**, including
+`unitree_sdk2py/g1/{arm,audio,loco}` with `__init__.py` present. **[live]** So `AudioClient`
+imports today, and `unitree_sdk2py.b2.robot_state` (api version `1.0.0.2`, with api_ids 1004/
+1005/1006 the go2 client lacks) is available too — see `ROBOT-API.md` §8. The paragraph above
+is kept as the explanation of *why* `a7dff75` behaved that way, not as a current state.
 
-1. Bump past upstream `d801b12` ("add init py").
+Two ways to call it, and **the second still needs no `g1` package**:
+
+1. Use the now-present `AudioClient` directly.
 2. Do what `g1_rpc.py` already does for `sport` and `arm` — register the voice api_ids on our
    existing `_G1Client`:
    - `_G1Client("voice", (1001, 1003, 1004, 1005, 1006, 1010), timeout_s=…)`
@@ -826,8 +1197,24 @@ Whisper, and speaks. It is still not a motion risk. **[live]**
 
 Multicast means our mic reads will never conflict with theirs. **The speaker will.** Two stacks
 calling `TtsMaker`/`PlayStream` interleave, and `PlayStop` is keyed by `app_name`, so ours must
-use its own (`"c3po"`) and **cannot stop theirs**. Whether `PlayStream` mixes with or preempts a
-concurrent `TtsMaker` is unknown.
+use its own (`"c3po"`) and **cannot stop theirs** — now confirmed by the vendor, which
+documents `PlayStop(app_name)` and scopes stopping per application. **[web]** Whether
+`PlayStream` mixes with or preempts a concurrent `TtsMaker` is still unknown; queue behaviour
+is defined **only** for `PlayStream` (via `stream_id`) and nowhere for `TtsMaker`, so prefer
+`PlayStream` for anything that must be interruptible.
+
+**And there is a third competitor: Unitree's own voice assistant.** It wants the same speaker,
+the same mic and the same LED strip, with no arbitration — and **there is no documented way to
+disable it in software.** The only documented off-switches are the remote (L1+L2 to change
+mode, **L1+Select to force-interrupt**) and the App; the vendor's entire "close the
+interaction" section is one sentence with no mechanism. **[web]** It needs the Internet for its
+GPT path (firmware ≥ 1.3.0), so on an air-gapped `192.168.123.x` robot it degrades to an
+offline *"Hello, I am here"* — which is the quietest practical state and probably the one we
+are already in. **Do not plan on disabling it programmatically.**
+
+⚠️ **Never switch `vui_service` off to silence it.** That is the `robot_state` service name for
+*"Audio and Lighting Control Service"* — one service providing TTS, `PlayStream`, volume **and**
+the light strip. **[web]** Turning it off would silence us as well.
 
 And the privacy fact, stated plainly: while `gemm-ai.service` runs, **the mic is always on and
 everything said near this robot goes into a Whisper transcript**. `stop_gemm` does not stop it
@@ -867,10 +1254,15 @@ float32[3] rpy            # ZYX Euler, body frame; rpy[2] is yaw
 int16      temperature    # NOTE: int16 here; unitree_go's IMUState uses int8 — different wire size
 ```
 
+The quaternion's **w,x,y,z** order is now vendor-stated rather than inferred — the official IDL
+comment reads `// Quaternion QwQxQyQz`. **[web]**
+
 A **second IMU** is published on `rt/secondary_imu`, same `IMUState_` type, subscribed by vendor
-G1 low-level examples as the **torso** IMU. Presence on this firmware is unverified. Note the
-vendor uses the bare name `rt/secondary_imu`; the unitree-ui reverse engineering says
-`rt/lf/secondary_imu` **[web]** — both spellings are in circulation and only one can be right. **[src]**
+G1 low-level examples as the **torso** IMU. **Both spellings are real:** Unitree's own topic
+table lists `rt/secondary_imu` **and** `rt/lf/secondary_imu` as a high-rate / low-frequency
+pair, the same convention it applies to `lowstate`, `odommodestate` and `dex3/*/state`.
+**[web]** So this is not an either/or, and the earlier "only one can be right" framing is
+withdrawn. Presence on *this* firmware remains unverified. **[src]**
 
 The three IMUs on this robot:
 
@@ -925,11 +1317,31 @@ Unconfirmed: whether `current` is mA or 10 mA, whether `bmsvoltage[3]` is mV, an
 three. Do **not** confuse `AgvBmsState_.battery_percentage` (a wheeled-base accessory type, C++
 SDK only) with `BmsState_.soc`.
 
+**Both halves of the location finding are vendor-confirmed — and the open half is confirmed
+unanswerable by reading.** The `rt/lf/bmsstate` → `unitree_hg BmsState_` pair appears in
+Unitree's own G1 topic table, and the absence of battery from `LowState_` is visible in their
+own struct listing. **[web]** But **no official page documents the `BmsState_` fields at all**:
+a grep across all 45 returns exactly that one topic-table row, and `BmsState_` is missing from
+the page that enumerates the `unitree_hg` structures. So **stop hoping a doc will answer the
+units question** — it needs one decoded live message, and that should be a first-class goal of
+the next window. Note also there is no high-frequency `rt/bmsstate` twin in the vendor table:
+`rt/lf/bmsstate` is the only battery topic they list.
+
+One indirect corroboration on units, not authoritative: the vendor SLAM service's `rt/slam_info`
+JSON states `batteryAmp` in **mA**, `batteryVol` in **mV**, `batteryPower` in **percent**, and
+`batteryTemp`/`motorTemp[]` in **°C**. **[web]** It is that service's own reporting rather than
+raw `BmsState_` fields, and it only publishes while `unitree_slam` runs — so it makes those
+units plausible, it does not settle the struct's scaling.
+
 ### 6.3 Wireless controller — two representations, one of them free
 
 **(a) `rt/wirelesscontroller`**, `unitree_go::msg::dds_::WirelessController_`, five fields:
 `float32 lx, ly, rx, ry; uint16 keys`. Whether the G1 publishes this independently is
-**unverified** — only a Go2 example uses it. **[src]**
+**unverified** — only a Go2 example uses it. **[src]** ⚠️ **And it appears in ZERO of the 45
+official G1 pages**, nor in Unitree's own G1 topic table, while the `LowState_` path is
+documented **twice**. **[web]** That is positive evidence of absence: treat it as Go2-only
+unless a live `DCPSPublication` scan proves otherwise, which makes **(b) the only
+vendor-documented route to remote state on the G1**, not merely the cheaper one.
 
 **(b) `LowState_.wireless_remote`, `uint8[40]`** — the raw controller packet, present in both
 `unitree_hg` and `unitree_go` LowState. Every vendor example `memcpy`s it and reinterprets it as: **[src]**
@@ -940,7 +1352,12 @@ typedef struct { uint8_t head[2]; BtnUnion btn; float lx, rx, ry, L2, ly; uint8_
 ```
 
 ⚠️ **The axis order inside the packet is `lx, rx, ry, L2, ly` — not the `lx/ly/rx/ry` order of
-the DDS message.** Getting this wrong silently swaps axes.
+the DDS message.** Getting this wrong silently swaps axes. Unitree's `remote_control_data` page
+reproduces the identical struct and identical bit order, so this is now **doubly sourced** and
+should be stated as fact. **[web]** Two additions from it: joystick range is **[−1.0, 1.0]**,
+and the `L2` float is an **analog axis distinct from the L2 button bit**. One flag: that page's
+decode snippet types the message as the **Go2** `LowState_`, whose offsets differ — copy the
+struct definitions from the page and the accessor from our own `unitree_hg` IDL.
 
 Key bits (bit 0 → bit 15), identical in both representations:
 
@@ -956,13 +1373,27 @@ didn't work" from an anecdote into a measurement: expect `head == {0xFE, 0xEF}` 
 changing as buttons are pressed. The SDK also treats an all-zero 40-byte block for **3000 ms** as
 `isJoystickTimeout_` — a ready-made "controller is absent" predicate to copy. **[src]**
 
-**Nothing on this robot documents which button combinations the firmware intercepts.** The only
-combination found anywhere is in an application-level SDK demo deciding its own mapping
-(`L2 + B → Stop`), which proves nothing about what the control board does before we see the
-packet. What *is* established: the controller's bytes reach us both decoded and raw, the control
-board publishes them, so any interception happens upstream of us, invisibly. Our `faults.py`
-carries source **1000 = "Emergency Stop"**, which is indirect evidence that an e-stop path exists
-and reports as a fault. **Do not guess the reserved combos.** **[src]**
+**Which combinations the firmware intercepts is still undocumented — but the combinations
+themselves now are.** Unitree publishes the full key set and maps it to its own ①…⑧ symbols,
+never to FSM ids, so the interception question survives intact. The full table, the LED colour
+map, and the canonical bring-up chains are in `ROBOT-API.md` §4.4–4.5; the four operationally
+critical items: **[web]**
+
+1. **L2 + B is the emergency stop** — *"G1 goes into damped mode, which will losing balance and
+   falling down"* — and it **works even inside debug mode**.
+2. **R1 + X** is Main Operation Control for a **1-DoF waist**; **R1 + Y** is the **3-DoF-waist**
+   equivalent, *"recommended"* for this chassis. This is central to `ROBOT-API.md` §11.
+3. **"When in the standing position, certain button combinations need to be `held for two
+   seconds` to take effect."** A tap does nothing. This alone may explain "the remote also
+   failed".
+4. **L2 + R2 enters debug mode**, only from zero-torque or damping; **L2 + A** confirms it with
+   a diagnostic pose; the LED goes **solid yellow**.
+
+What was already established stands: the controller's bytes reach us both decoded and raw, so
+any interception happens upstream of us, invisibly. Our `faults.py` carries source **1000 =
+"Emergency Stop"** — and Unitree's total-device status word now gives a concrete counterpart,
+bit **`0x1000` "soft emergency stop switch is pressed"** (`ROBOT-API.md` §9.6), alongside a
+**solid red "Error State"** LED. **Do not guess the reserved combos.** **[src]** + **[web]**
 
 ---
 
@@ -977,9 +1408,12 @@ and reports as a fault. **Do not guess the reserved combos.** **[src]**
 | D435i IMU (IIO)                     | IIO, separate from V4L2      | does not contend      | —                                                       |
 | **Livox Mid-360**                   | **the sensor itself**        | **one host, globally**| the previous owner just goes silent                    |
 | Mic multicast `239.168.123.161:5555`| nothing — IP multicast       | unlimited readers     | —                                                       |
-| Speaker (`voice` service)           | nothing                      | unlimited writers     | utterances interleave                                  |
+| Speaker (`voice` service)           | nothing                      | unlimited writers     | utterances interleave — **three writers**: us, `gemm-ai`, the vendor voice assistant |
+| **LED strip**                       | **nothing**                  | unlimited writers     | our colour hides the FSM's own state colour (§5.3)      |
 | DDS topics                          | nothing                      | unlimited             | —                                                       |
+| **LiDAR over DDS** (`rt/utlidar/*`) | nothing — ordinary pub/sub   | **unlimited**         | — (contrast the raw Livox path above) **[web]**          |
 | **Robot control API** (`sport` 7105)| **nothing**                  | must be one, by agreement | two controllers, one set of legs                    |
+| **Vendor navigation** (`slam_operate` 1102) | **nothing**          | must be one, by agreement | it runs its own PID emitting vx/vy/vyaw — a second commander **[web]** |
 
 The asymmetry that matters: **the LiDAR's exclusivity is enforced by the device, not by the OS,
 and it persists.** Killing the process that grabbed it does not hand it back — the destination
@@ -1031,7 +1465,16 @@ that state 7001/7002 return nothing at all, so `get_state` reports `fsm_id=None`
 `cmd_vel_to_loco`. A full teleoperation stack holding the camera and the hand bus and driving the
 robot through `arm_sdk`/`lowcmd` **passes the check silently**. That is a real gap in the
 one-commander invariant (`DEPLOYMENT.md` §2), and it should be widened to cover `xr_teleoperate`,
-`teleimager`, `brainco_hand_server`, and **any publisher on `rt/arm_sdk` or `rt/lowcmd`**.
+`teleimager`, `brainco_hand_server`, **`unitree_slam`** (its 1102 pose navigation closes its own
+velocity loop — see §7.1) and **any publisher on `rt/arm_sdk` or `rt/lowcmd`**.
+
+**And the arm path has a documented precondition we did not have.** Unitree requires the
+built-in Arm Action Service to be switched **off** before anyone drives `rt/arm_sdk` directly —
+*"you must first turn off Unitree's built-in Arm Control Service … the service name is
+`g1_arm_example`"* via `robot_state` 1001. **[web]** That is also the clean explanation of 7400
+contention: two owners of one topic. Note the vendor's own gloss on 7400 is broader than the
+robot header's — *"an action is being executed"* — so **7400 means BUSY as well as
+CONTENDED**, and our diagnosis text should offer both causes.
 
 Three reasons the existing controls cannot catch it:
 
@@ -1049,9 +1492,20 @@ publisher in code uses `rt/arm_sdk`; the code spelling is real and the error tex
 
 A second gesture-path trap in the same family, which we have no handling for: after a *sustained*
 gesture the arm latches, and the only accepted next actions are id 99 (release) or a repeat of the
-same id — anything else returns **7401 "The arm is holding."** until a 20 s auto-release. Our
-bridge has no 7401 handling anywhere, so it will surface as an unexplained
-`rpc_error_code_7401`. **[src]**
+same id — anything else returns **7401 "The arm is holding."** Our bridge has no 7401 handling
+anywhere, so it will surface as an unexplained `rpc_error_code_7401`. **[src]** Unitree confirms
+the recovery exactly and **names which gestures latch** — *"applicable to sustained actions like
+**Arms Horizontal (15)**, **Heart (20/21)**, etc."* **[web]** The **20 s auto-release** is
+`[src]` from the robot header only and is **not** corroborated by the docs — **send 99, do not
+wait it out.**
+
+**A third trap, and it explains the whole 2026-08-14 session:** *"The Arm Action Service
+Interface relies on the built-in motion control. **After entering debug mode, the built-in
+motion control exits completely, and the Arm Action Service becomes invalid.**"* **[web]** Since
+`xr_teleoperate` started without `--motion` puts the robot in exactly that state, **every arm
+call would have failed that day regardless of fsm_id**. Concrete bridge change: run `CheckMode`
+before any gesture and, on an empty `name`, fail fast with *"no motion controller loaded — arm
+actions are unavailable in debug mode"* rather than surfacing a raw 7404/3104.
 
 ### 7.3 Version skew — which vendor tree you are reading matters
 
@@ -1062,6 +1516,17 @@ difference between a real api_id and a hallucinated one: **[live]**
 | ---------------- | ------------------------------------------------ | ---------- | --------- | ------------- |
 | `unitree_ros2`   | `gemm/ros2_ws/src/external/unitree_ros2`         | 2026-07-20 | **no**    | **no**        |
 | `unitree_sdk2`   | `gemm_ai/xr_teleoperate/vendor/unitree_sdk2`     | 2026-08-13 | yes       | yes           |
+
+**A third source of skew, worth naming: Unitree's published documentation is not a fourth tree
+you can trust as a tiebreaker.** It publishes **no api_ids at all** for any service across 45
+pages, its struct layouts contradict the IDL our robot actually deserialises with, and several
+G1 pages carry verbatim Go2, H1 and B2 text. The support asymmetry is also worth recording:
+`get_sdk` (2026-07-20) names and links **only `unitree_sdk2` (C++)**; Python is acknowledged in
+a single architecture bullet (*"DDS, supports C++ and Python"*) and never given a repo or a
+guide. **[web]** Our bridge's whole dependency, `unitree_sdk2py`, sits **outside Unitree's
+documented surface** — which is exactly why the policy of reading the robot's own vendored
+headers rather than the docs is right. **Never resolve a Python-side discrepancy by deferring
+to a doc page.**
 
 **The `unitree_ros2` tree is the one that matches this firmware.** The 2026-08-13 SDK clone is
 newer than the robot and additionally introduces `g1/agv/`, `g1/common/terminations.hpp`,
@@ -1076,21 +1541,60 @@ abort predicates — is **physically on this robot**, so its thresholds can be p
 `motor_winding_overheat` > 120 °C (`temperature[1]`), `motor_casing_overheat` > 85 °C
 (`temperature[0]`), `low_battery` soc < 20 %, `lost_connection` stale > 1000 ms. **[src]**
 
+### 7.4 Clock sync — we do not need it yet, and here is when we will
+
+Recorded so nobody adds it as cargo cult. Unitree's `time_sync_interface` (2026-04-15, applies
+to firmware > 1.5.1 — ours is 1.5.3.8): **PC1 (`192.168.123.161`) is an NTP server**, and the
+documented client config is chrony with `server 192.168.123.161 iburst prefer` / `makestep 1.0
+3` / `rtcsync`, or `systemd-timesyncd` with `NTP=192.168.123.161` (the two are mutually
+exclusive). **[web]**
+
+**We need none of it today.** Our bridge computes `lowstate_age_s` as (local now − local
+receipt time) on a single host, so no cross-clock comparison happens, and DDS itself does not
+require synchronised clocks. It becomes **required** the moment we do any of: correlate the
+colleague's rosbag/foxglove timestamps against our logs; fuse D435i frames (which the vendor
+times with `CLOCK_REALTIME`, §2.1) with DDS state; or timestamp DB episodes against on-robot
+events.
+
+Two cautions worth having now regardless: **[web]**
+
+- ⚠️ *"When PC1 performs network time synchronization, it may cause short-term time
+  fluctuations. Therefore, it is recommended to disable G1's WiFi mode when using programs that
+  rely on system time."* **The Jetson is on Wi-Fi for our SSH/mDNS access**, so a mid-experiment
+  clock step could make a latency or duration measurement nonsense.
+- If we ever do add chrony on the Jetson, expect the documented failure: chronyd 3.5 dies with
+  `code=dumped, signal=SYS` under its seccomp filter. Fix is `DAEMON_OPTS="-F 0"` in
+  `/etc/default/chrony`.
+
 ---
 
 ## 8. Open questions
 
-Each with what would settle it. Nothing here is answerable without robot access.
+Each with what would settle it. **A few are now answerable without robot access at all** — those
+come first.
+
+**Answerable with no robot**
+
+0a. **Fetch the two Dex3 tactile pad-layout images** at
+    `doc-cdn.unitree.com/static/2024/12/26/…_5000x2812.png`, dropped by the docs' markdown
+    conversion. They are the only pad→finger map that exists (§4.4). Only needed if tactile
+    matters.
+0b. **Ask the operator to read the Unitree Explore APP's waist motor lock switch**, and whether
+    a ≥ 1.3.0-era calibration was ever done. Phone only. It is `ROBOT-API.md` §11.3 Rank 2 and
+    it decides which walk FSM id this firmware accepts.
+0c. **Transcribe the mode-switch diagram** — see `ROBOT-API.md` §13, Q1. Not a peripherals
+    question, but it is the single highest-value doc action outstanding.
 
 **LiDAR**
 
 1. **Where is the Mid-360 unicasting right now?** Not to the Jetson (proved passively). Most
    likely the control board, or `point_send_en` (`0x0003`) is off. Settle with
    `sudo tcpdump -i eth0 -n host 192.168.123.120 -c 20`, or a read-only
-   `QueryLivoxLidarInternalInfo` reading registers `0x0006`/`0x0007`.
+   `QueryLivoxLidarInternalInfo` reading registers `0x0006`/`0x0007`. **Lower priority now** —
+   the DDS republish (§1.5) means we should not be taking the unicast at all.
 2. **Is the vendor `lidar_driver` service on, and do `rt/utlidar/*` exist right now?** Settle with
    `robot_state` api_id **1003 `ServiceList`** — a pure getter, and the cheapest high-yield probe
-   on the whole robot.
+   on the whole robot. The vendor's expected service-name list is in `ROBOT-API.md` §8.
 3. **Is the host IP the SDK writes into the sensor persistent across a LiDAR power cycle?** This
    decides whether "reversible" means automatic or "stays stolen". Settle by power-cycling after
    running our driver and re-testing which host receives point data.
@@ -1099,7 +1603,12 @@ Each with what would settle it. Nothing here is answerable without robot access.
 5. **RELIABLE or BEST_EFFORT on the `utlidar` topics?** Bag metadata and gemm's prose contradict
    each other; a default subscriber sees nothing if the prose is right.
 6. **The real `base_link → lidar_link` translation.** gemm's default `z = 1.0` is marked
-   "APROXIMADA". Settle by physical measurement or Unitree's mechanical drawing.
+   "APROXIMADA". Unitree now gives `(−0.0, 0.0, −0.47618)` with an "inverted" placement — but
+   the sign is wrong for a head-mounted sensor as literally stated, so **validate against a real
+   cloud before using it in any transform** (§1.5).
+6a. **Is our unit a Mid-360 or a Mid360s?** Unitree changed the part for units produced after
+    April 2026; this robot arrived 2026-08-04. It does not affect the DDS republish path, but it
+    invalidates any pinned Livox-SDK2 / `livox_ros_driver2` version (§1.5).
 
 **Cameras**
 
@@ -1121,58 +1630,120 @@ Each with what would settle it. Nothing here is answerable without robot access.
 
 **Hands**
 
-12. **Which hands are physically fitted, and how many?** The whole of §4. Settle by **looking at
-    the robot** — three fingers and 7 DoF is Dex3-1; five fingers and 6 DoF is BrainCo Revo2. Do
-    not settle it by probing the serial ports.
-13. **Is anything attached to the left wrist at all?** The BrainCo probe only speaks Modbus RTU at
-    460800, so its silence proves nothing about a non-BrainCo device.
-14. **If a Dex3 is fitted: does right-hand slot 3 hold `middle_0` or `index_0`?** Two artifacts in
-    the same repo disagree and the URDF limits cannot disambiguate. Only settleable by commanding
-    one slot at a time and watching which finger moves.
-15. **Provenance of `/api/dex3_msg_controller`** (§4.5). If nobody can point at the observation, it
+12. **Does the control board publish `rt/dex3/{left,right}/state` or `rt/inspire/state`?**
+    **Now the highest-value probe in this whole document.** Both types are already in our venv,
+    the subscribe is passive with zero writes, and a single message settles §4 outright — it
+    also decides the newly-raised possibility that a Dex3 resident service is running on PC1
+    where we cannot look (§4.2, §4.3a). Do this **before** the next locomotion window, since
+    Unitree advises against running/balance tests with hands attached.
+13. **Which hands are physically fitted, and how many?** Settle by **looking at the robot** —
+    three fingers and 7 DoF is Dex3-1; five fingers is BrainCo Revo2 **or** either Inspire, so a
+    glance narrows but does not close it. Do not settle it by probing the serial ports.
+14. **Which G1-EDU variant letter is this unit?** The OTA name gives `G1_Edu+`, which maps to
+    **none** of Standard / Advanced / Ultimate A–D (§4.0). `mode_machine = 5` tells us only
+    29 DoF. Is the variant recorded anywhere — a model plate, an `mscli` field, a config under
+    `/unitree`, the serial number?
+15. **Is anything attached to the left wrist at all?** The BrainCo probe only speaks Modbus RTU at
+    460800, so its silence proves nothing about a non-BrainCo device — and per §4.1 the service
+    is launched with an explicit `--serial` per hand, so it only ever probed what it was told to.
+16. **If a Dex3 pair is fitted, where does its RS485 land?** No vendor page associates the Dex3
+    with a PC2 USB-serial dongle; the pages that describe such dongles are the Inspire ones
+    (§4.2). Tracing which physical wrist cable lands on which FTDI channel would be decisive.
+17. **For BrainCo, which end of [0,1] is open?** Documented for Inspire DFX (1.0 = open) and
+    implied for `hand_sdk` (positive tau closes), but **not** for BrainCo. Do not write an "open
+    hand" preset until it is read out of the server source or observed (§4.1).
+18. **Dex3 tactile: 6 pads or 9, and what is the pad→finger map?** The hand page says three 3×4
+    fingertip arrays (6 locations); `about_G1` says 9 array sensors. The map exists only in the
+    two dropped images (Q0a). ~~Right-hand slot 3~~ is settled: **`middle_0` on both hands**
+    (§4.4).
+19. **Do `rt/dex3/*/cmd` and `rt/brainco/*/cmd` conflict if both are published?** Nothing
+    describes arbitration between a resident Dex3 service and a user-run BrainCo one, and per
+    `ROBOT-API.md` §1.4 the robot arbitrates nothing. Worth knowing before any hand skill ships,
+    given `brainco_hand_server` was found already running.
+20. **Provenance of `/api/dex3_msg_controller`** (§4.6). If nobody can point at the observation, it
     should be struck from `ROBOT-INVENTORY.md` §4 and `MENTAL-MODEL.md`.
 
 **Audio**
 
-16. **Is `rt/audio_msg` publishing, and what is the exact payload?** A 10–15 s read-only DDS
+21. **Is `rt/audio_msg` publishing, and what is the exact payload?** A 10–15 s read-only DDS
     subscribe as `std_msgs::msg::dds_::String_` while someone speaks Chinese, English and Spanish
-    nearby.
-17. **Does the mic multicast actually carry packets today?** The group is joined; joined ≠ flowing.
+    nearby. The schema is now documented (§5.4) — this is about whether **this** firmware
+    matches it, and specifically whether **`play_state`** appears and whether it fires for *our*
+    `PlayStream` or only the assistant's playback. If ours, `say()` gets true completion
+    detection.
+22. **Is the mic multicast gated on wake-up mode, the way `rt/audio_msg` ASR output explicitly
+    is?** Determines whether a future `listen()` needs an operator to set a mode from the APP or
+    remote — a human prerequisite we cannot satisfy over DDS (§5.4).
+23. **Does the mic multicast actually carry packets today?** The group is joined; joined ≠ flowing.
     Count packets only, for ~5 s — and get the operator's explicit consent first, because it is
     indistinguishable from recording the person standing next to the robot.
-18. **What does `voice` api 1002 (`ASR`) do?** Registered by every client, called by none.
-    Candidates: enable/disable, language select, pull-last-result. The kana-transliteration symptom
-    suggests a language setting exists somewhere.
-19. **Does the firmware care that the vendored `TtsMaker` sends `index: 0` forever?** Send two
-    different texts back to back and listen.
-20. **Does `PlayStream` mix with or preempt a concurrent `TtsMaker`, and does a second `app_name`
-    interrupt the first?** Directly decides whether we can share the speaker with `gemm-ai`.
-21. **`GET_VOLUME` (1005) is the one genuinely read-only call on the whole voice service** — it
-    would settle both the 0–100 range and whether the service is alive at all.
+24. **What does `voice` api 1002 (`ASR`) do?** Registered by every client, called by none, and it
+    has **no documented counterpart at all** — the official AudioClient has six functions and no
+    ASR call (§5.3). Candidates remain: enable/disable, language select, pull-last-result.
+25. **Does the firmware care that the vendored `TtsMaker` sends `index: 0` forever?** The official
+    prototype has **no `index` parameter**, so `index` is client-internal and the bug has no
+    documented consequence — and no documented defence either. Send two different texts back to
+    back and listen.
+26. **Does `TtsMaker` queue or interrupt when speech is already playing?** Defined only for
+    `PlayStream` (via `stream_id`) and nowhere for TTS. Until tested, prefer `PlayStream` for
+    anything interruptible. Related: does a second `app_name` interrupt the first?
+27. **`GET_VOLUME` (1005) is the one genuinely read-only call on the whole voice service** — and
+    it now answers three things: whether the service is alive, whether it is ≥ `Vui_Service
+    2.0.3.8` (a `3203` says no), and **whether audio is FSM-gated**, by calling it once in each
+    reachable state including the empty-name debug state (`ROBOT-API.md` §7.4). If it answers
+    everywhere, `say()` becomes the bridge's fallback acknowledgement for refused motion.
 
 **State and input**
 
-22. **What are the real BMS numbers?** `soc`, `soh`, `temperature[12]`, `bmsstate[5]`, and the
-    units of `current`/`bmsvoltage`. One decoded message from `rt/lf/bmsstate`.
-23. **Is `rt/secondary_imu` (or `rt/lf/secondary_imu`) actually published on this firmware?** Only
-    one spelling can be right, and the presence of a torso IMU at all is unconfirmed.
-24. **Is `rt/wirelesscontroller` independently published on the G1**, or is the remote only
-    available as `LowState_.wireless_remote[40]`?
-25. **Which button combinations does the firmware itself intercept?** Log `rt/wirelesscontroller`
-    and `wireless_remote` while an operator presses each button and combo, and watch whether
-    `fsm_id` changes with no RPC from us — that distinguishes firmware-intercepted from free. Only
-    in a supervised window, with a hand on the physical e-stop. Or find the printed G1 Edu+ manual.
+28. **What are the real BMS numbers?** `soc`, `soh`, `temperature[12]`, `bmsstate[5]`, and the
+    units of `current`/`bmsvoltage`. One decoded message from `rt/lf/bmsstate` — **and confirmed
+    unanswerable by reading**, since Unitree documents `BmsState_`'s fields nowhere (§6.2).
+29. **Is `rt/secondary_imu` / `rt/lf/secondary_imu` actually published on this firmware?** Both
+    spellings are vendor-documented as a high-rate/low-frequency pair, so the "only one can be
+    right" framing is withdrawn — what is unconfirmed is whether a torso IMU exists here at all.
+30. **Is `rt/wirelesscontroller` independently published on the G1**, or is the remote only
+    available as `LowState_.wireless_remote[40]`? Zero hits across 45 official pages makes the
+    latter the strong default; a passive `DCPSPublication` scan settles it (Q35).
+31. **Which button combinations does the firmware itself intercept?** Still undocumented — the
+    official page maps combos to its own ①…⑧ symbols and never to FSM ids. Log `wireless_remote`
+    while an operator presses each combo (**held ≥ 2 s**) and watch whether `fsm_id` changes with
+    no RPC from us. Only in a supervised window, with a hand on the physical e-stop.
+32. **Which DDS field carries the total-device status word** whose `0x1000` is "soft emergency
+    stop switch is pressed"? Candidates: `unitree_go SportModeState_.error_code` on
+    `rt/odommodestate`, or `MainBoardState_` on `rt/lf/mainboardstate` (`ROBOT-API.md` §9.6). It
+    is `ROBOT-API.md` §11.3 Rank 4.
 
 **Sharing**
 
-26. **Who stopped `master_service` at 01:40:34, and should it be restarted?** Nothing in
+33. **Who stopped `master_service` at 01:40:34, and should it be restarted?** Nothing in
     `scripts/robot/` touches it. Until it runs, both video-hub nodes stay down and the boot-time
-    `amixer set Speaker 75%` has not been applied.
-27. **Does the arm action service still work while `brainco_hand_server` or an `xr_teleoperate`
-    session holds `rt/arm_sdk`?** The 7400 error string suggests not. Worth testing deliberately
-    rather than discovering it mid-demo.
-28. **What is the full DDS topic census?** gemm's stack reports the robot exposes ~121 topics and
+    `amixer set Speaker 75%` has not been applied. (Note the vendor's own advice for synthesised
+    audio: *"set the volume to 100% to ensure maximum playback volume"* — the ALSA mixer and the
+    `voice` service's 0–100 volume are two independent gains, and a silent robot can be either.)
+34. **Does the arm action service still work while `brainco_hand_server` or an `xr_teleoperate`
+    session holds `rt/arm_sdk`, and is 7400 "occupied" or "busy"?** The robot header says the
+    former, the official remark says the latter (§7.2). Two back-to-back gestures with nothing
+    else running discriminates. Test deliberately rather than mid-demo.
+35. **What is the full DDS topic census?** gemm's stack reports the robot exposes ~121 topics and
     references a `docs/robot-topics.md` that is **not on the robot** — it lives in their repo
     elsewhere. Getting that file would close most of §6 in one step. Failing that, a passive
     `DCPSPublication` discovery read (topic name → type name) creates no writers and would produce
-    the definitive live census in one shot.
+    the definitive live census in one shot — and would simultaneously answer Q12, Q30 and the
+    `rt/lowstate`-vs-`rt/lf/lowstate` question.
+36. **Is our onboard CycloneDDS config hiding participants?** We set
+    `AllowMulticast=false` plus a single unicast peer at `192.168.123.161`; the vendor's own
+    config is plain multicast on `eth0` (`ROBOT-API.md` §10). Anything publishing from another
+    `192.168.123.x` address — the NX itself, `unitree_slam`, a colleague's node — would be
+    invisible to us with no error. Test by publishing from the Jetson and checking whether our
+    own bridge sees it.
+
+**Answered by the official documentation — kept as a record**
+
+- ~~The `lf` Dex3 state topic being a decimated mirror~~ — vendor convention, confirmed (§4.4).
+- ~~Right-hand Dex3 slot 3: `middle_0` or `index_0`?~~ — **`middle_0` on both hands**, and the
+  left URDF's out-of-order link names explain where the contradiction came from (§4.4).
+- ~~Is the head camera a D435i or a UVC binocular?~~ — **D435i**, and it has no DDS path (§2.1).
+- ~~Can the LiDAR be shared?~~ — not the raw unicast, but **yes over DDS**, vendor-confirmed at
+  10 Hz / 200 Hz (§1.5).
+- ~~Is the voice volume range 0–255?~~ — **0–100** (§5.3).
+- ~~Does `PlayStop` take `app_name` or `stream_id`?~~ — **`app_name`** (§5.5).
