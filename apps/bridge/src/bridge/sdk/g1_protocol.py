@@ -294,26 +294,30 @@ _PREPARATION_TARGETS: Final[frozenset[int]] = frozenset(
 class Gesture(IntEnum):
     """G1 arm-gesture indices for `rt/api/arm/request` with api_id=7106."""
 
-    SHAKE_HANDS = 27
+    # Names and ids are the vendor's own, transcribed from the official action
+    # table at support.unitree.com/home/en/G1_developer/arm_action_interface
+    # (fetched 2026-08-14). That table is the complete set — 15 actions. Several
+    # of our previous labels were guesses and were wrong: 22 is not "refuse",
+    # 24 is not an X-Ray pose, 15 is not "hands up".
+    DOUBLE_HAND_FLYING_KISS = 11
+    SINGLE_HAND_FLYING_KISS = 12
+    ARMS_HORIZONTAL = 15
+    APPLAUSE = 17
     HIGH_FIVE = 18
     HUG = 19
-    HIGH_WAVE = 26
-    LOW_WAVE = 25  # Face-level wave
-    CLAP = 17
-    BLOW_KISS = 12  # Left hand
-    HEART_BOTH_HANDS = 20
-    HEART_SINGLE_HAND = 21
-    HANDS_UP = 15
-    SINGLE_HAND_UP = 23  # Right hand
-    REFUSE = 22
-    # ⚠️ UNVERIFIED. 36 has no backing in any vendor artifact on the robot —
-    # not the official action table, not the C++ gesture map, not the Python
-    # one. Its only source is a decompiled Android app. It has never been sent
-    # to this robot successfully, so `point_at` may simply be wrong. Expect
-    # 7402 "Action ID does not exist" if it is (survey 2026-08-14).
-    FORWARD_PUSH = 36  # Closest equivalent to point_at
-    ULTRAMAN_RAY = 24  # X-Ray pose
-    RELEASE_ARM = 99
+    DOUBLE_HAND_HEART = 20
+    SINGLE_HAND_HEART = 21
+    DOUBLE_HAND_CROSS = 22
+    RIGHT_HAND_HORIZONTAL = 23
+    DYNAMIC_LIGHT_WAVE = 24
+    WAVE_FRONT_CHEST = 25
+    WAVE_HIGH = 26
+    HANDSHAKE = 27
+    # 99 both performs "recover initial arm pose" and is the documented escape
+    # from error 7401 — after a sustained action (Arms Horizontal, the hearts)
+    # the arm latches, and the next action is refused until you send 99 or
+    # repeat the same id.
+    RECOVER_INITIAL_POSE = 99
 
 
 # ---------------------------------------------------------------------------
@@ -371,10 +375,15 @@ SKILL_REQUESTS: Final[dict[SkillName, SkillRequest]] = {
     "balance_stand": SkillRequest("sport_request", API_ID_LOCO_SET_BALANCE_MODE,
                                   BalanceMode.BALANCE_STAND),
     # Arm gestures (api_id=7106) — require a locomotion state
-    "wave":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.HIGH_WAVE),
-    "point_at":      SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.FORWARD_PUSH),
-    "shake_hand":    SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.SHAKE_HANDS),
+    "wave":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.WAVE_HIGH),
+    # There is no "point" in the vendor's action table. We were sending 36,
+    # which does not exist in it at all — that call could only ever have
+    # returned 7402 "Action ID does not exist". 23 (Right Hand Horizontal) is
+    # the nearest real action: one arm extended horizontally. Renaming the
+    # skill would break apps/back, which binds tools by name.
+    "point_at":      SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.RIGHT_HAND_HORIZONTAL),
+    "shake_hand":    SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.HANDSHAKE),
     "hug":           SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.HUG),
-    "clap":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.CLAP),
-    "release_arm":   SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.RELEASE_ARM),
+    "clap":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.APPLAUSE),
+    "release_arm":   SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.RECOVER_INITIAL_POSE),
 }

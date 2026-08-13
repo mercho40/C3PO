@@ -80,7 +80,12 @@ async def test_real_mode_dispatches_arm_request_via_g1_rpc(monkeypatch):
 
     result = await _g1_request.run_g1_request("wave")
 
-    assert seen["gesture"] == g1_protocol.Gesture.HIGH_WAVE
+    # 26 is the vendor's "Wave Hand High" from the official action table. Pin
+    # the NUMBER as well as the symbol: our gesture labels were wrong for years
+    # (22 was called "refuse", 24 an "X-Ray pose") and a renamed enum member
+    # would otherwise let a wrong id through unnoticed.
+    assert seen["gesture"] == g1_protocol.Gesture.WAVE_HIGH
+    assert seen["gesture"] == 26
     assert result["result"]["topic_kind"] == "arm_request"
 
 
@@ -139,3 +144,23 @@ async def test_balance_stand_goes_to_7102_not_the_posture_api(monkeypatch):
     assert seen["api_id"] != g1_protocol.API_ID_G1_STATE
     assert seen["data"] == g1_protocol.BalanceMode.BALANCE_STAND
     assert result["status"] == "completed"
+
+
+def test_every_gesture_id_is_in_the_official_action_table():
+    """Guard against re-inventing action ids.
+
+    The vendor's table (support.unitree.com, G1_developer/arm_action_interface,
+    fetched 2026-08-14) is the complete set — 15 actions. We previously shipped
+    36 for `point_at`, which appears in no vendor artifact at all: that call
+    could only ever have returned 7402 "Action ID does not exist". This pins the
+    table so the next plausible-looking number from a forum post cannot get in.
+    """
+    official = {11, 12, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 99}
+
+    for gesture in g1_protocol.Gesture:
+        assert gesture.value in official, f"{gesture.name}={gesture.value} is not a vendor action"
+
+    # And every arm skill must dispatch one of them.
+    for name, req in g1_protocol.SKILL_REQUESTS.items():
+        if req.topic_kind == "arm_request":
+            assert req.data in official, f"skill {name!r} sends unknown action {req.data}"
