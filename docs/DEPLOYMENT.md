@@ -88,7 +88,7 @@ So the invariant is **one owner of the robot at a time**, enforced by the stack 
 
 | Command     | Does                                                                                                                                                    |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run_c3po`  | Stops `gemm`, refuses if `cmd_vel_to_loco` or an untracked bridge is alive, syncs deps + re-applies `postsync.sh`, starts the bridge and waits for its port |
+| `run_c3po`  | Stops `gemm`, refuses if `cmd_vel_to_loco` or an untracked bridge is alive, syncs deps + re-applies `postsync.sh`, starts the bridge and waits for its port. `C3PO_NO_TAKEOVER=1` starts the bridge without claiming the robot — see §3 |
 | `stop_c3po` | SIGTERM→SIGKILL the bridge **and its children**, then verifies no bridge survived; stops perception                                                       |
 | `run_gemm`  | Stops our stack, starts their containers                                                                                                                  |
 | `stop_gemm` | Stops their containers, warns about a surviving `cmd_vel_to_loco`                                                                                         |
@@ -187,10 +187,25 @@ own, so it must not be bound to the school LAN. Reach it from `back` over an SSH
 `ssh robot 'bash -lc run_c3po'`, or absolute paths. This will bite the boot unit below,
 whose environment is more minimal still.
 
-**Missing: a boot unit.** Today the bridge only runs while someone has run `run_c3po`. A
-systemd unit calling `run_c3po` with `Restart=on-failure` is the next step. It must start
-even when perception is down, must never initiate motion on boot, and must set an explicit
-`PATH` (or call `uv` and the scripts by absolute path) for the reason just above.
+**Boot unit** ✅ — `scripts/robot/c3po-bridge.service`, installed with
+`./scripts/robot/install_boot_unit.sh` (symlinked, so `git pull` updates it; needs sudo,
+unlike the PATH installer). Before it existed, every reboot silently left the robot with no
+MCP server and therefore no `stop_everything` — which happened for real on 2026-08-14.
+
+It starts with **`C3PO_NO_TAKEOVER=1`**, and that distinction is the important part: a
+machine powering on is not a person asking to own the robot. Under that flag `run_c3po`
+brings the bridge up but does **not** stop `gemm` and does **not** start perception — the
+bridge needs only DDS, and holds neither the RealSense nor the Livox. Interactive
+`run_c3po` is unchanged and still means "take the robot".
+
+The flag also downgrades the `cmd_vel_to_loco` refusal to a warning. Refusing at boot would
+mean that a reboot while their commander happens to be up leaves us with no bridge — and so
+no way to call `stop_everything`, which is precisely the situation you would want it in. A
+bridge that is merely *running* commands nothing.
+
+It sets `PATH` explicitly for the reason above, and `TimeoutStartSec=600` because
+`run_c3po` syncs dependencies first and a cold `uv` cache blows straight through
+systemd's 90 s default.
 
 ### `c3po-perception` → Jetson ⬜
 
@@ -281,8 +296,8 @@ Rollback: `back` keeps the previous binary alongside; the bridge is a git checko
 
 ## 8. Open items
 
-1. **systemd unit for the bridge** so it survives a robot reboot (§3). Note the `PATH`
-   caveat there — `~/.local/bin` is absent from non-login environments.
+1. ✅ ~~systemd unit for the bridge~~ — `c3po-bridge.service` (§3). Enabled but **not yet
+   proven across a real reboot**; the next power cycle is the test.
 2. **Perception container** — the largest unbuilt piece (§3).
 3. ✅ ~~Static lease or mDNS~~ — `g1-orin.local` works (§4).
 4. **`BRIDGE_URL` still points at `127.0.0.1:8000`** — wrong host *and* wrong port (§3).

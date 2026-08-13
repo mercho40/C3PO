@@ -40,8 +40,20 @@ if [ -n "$strays" ]; then
     exit 1
 fi
 
+# `C3PO_NO_TAKEOVER=1` starts the bridge WITHOUT claiming the robot. It exists
+# for the boot unit: a machine powering on is not someone asking to own the
+# robot, and auto-stopping the colleague's stack on every reboot would be a
+# quiet way to keep taking it from them. Interactive `run_c3po` is unchanged
+# and still means "take the robot".
+NO_TAKEOVER="${C3PO_NO_TAKEOVER:-0}"
+
 # 1. Take the sensors.
-if [ -n "$(gemm_running)" ]; then
+if [ "$NO_TAKEOVER" = "1" ]; then
+    if [ -n "$(gemm_running)" ]; then
+        info "gemm is running — leaving it alone (C3PO_NO_TAKEOVER=1)"
+        info "the bridge needs only DDS; it does not hold the RealSense or Livox"
+    fi
+elif [ -n "$(gemm_running)" ]; then
     info "gemm is running — stopping it to release the sensors"
     "$here/stop_gemm"
 fi
@@ -49,7 +61,18 @@ fi
 # 2. Refuse to start if something else can still drive the legs. This is the
 #    conflict DDS domains cannot isolate, because both stacks must be on
 #    domain 0 to reach the control board.
-warn_if_other_commander || exit 1
+#
+#    Under NO_TAKEOVER we warn rather than refuse. A bridge that is merely
+#    *running* commands nothing, and refusing here would mean a reboot with
+#    cmd_vel_to_loco up leaves us with no bridge — and therefore no
+#    `stop_everything`, which is exactly when you would want it.
+if ! warn_if_other_commander; then
+    if [ "$NO_TAKEOVER" = "1" ]; then
+        warn "starting anyway (C3PO_NO_TAKEOVER=1) — the bridge will not command unless told to"
+    else
+        exit 1
+    fi
+fi
 
 # 3. Start the bridge.
 mkdir -p "$RUN_DIR" "$LOG_DIR"
@@ -130,7 +153,9 @@ else
 fi
 
 # Perception container, once it exists (D2/D3). Absent today.
-if _docker ps -a --filter "name=^c3po-perception" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+if [ "$NO_TAKEOVER" = "1" ]; then
+    info "not starting perception (C3PO_NO_TAKEOVER=1) — it would claim the sensors"
+elif _docker ps -a --filter "name=^c3po-perception" --format '{{.Names}}' 2>/dev/null | grep -q .; then
     _docker start c3po-perception >/dev/null 2>&1 && ok "started c3po-perception"
 else
     info "no perception container yet — bridge only"
