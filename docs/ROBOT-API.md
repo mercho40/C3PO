@@ -2090,9 +2090,45 @@ HTML→markdown conversion and is not recoverable from the corpus — see open q
 
 ---
 
-## 11. UNRESOLVED: `Start()` / `fsm_id = 500`
+## 11. SOLVED: `Start()` / `fsm_id = 500` — it was the wrong walk program
 
-**This is the blocker. Nothing walks until it is resolved, and it is not resolved.**
+**Resolved 2026-08-15. The robot walked.** **[live]**
+
+The answer is one number. **500 and 501 are two different walk programs, chosen
+by how many degrees of freedom the waist has** — not a generic "start" and a
+variant of it. `mode_machine` reports the body: `4 = 23-DoF, 5 = 29-DoF,
+6 = 27-DoF`. This robot has reported **5** in every `get_state` we have ever
+taken, going back to the first session. 501 is that variant's program. We had
+only ever sent 500, which belongs to the other body.
+
+The working sequence, executed on the gantry with feet loaded: **[live]**
+
+```
+damp  ->  prepare (4)  ->  start_walking_waist (501)  ->  walk_to
+ fsm 1      fsm 4            fsm 501, walk_waist         0.17 m travelled
+```
+
+Everything else we chased was a wrong turn: debug mode, weight-bearing,
+`BalanceStand`, motion authority, and the remote. Each was plausible and each
+was wrong. The evidence that mattered was sitting in every state read we ever
+took.
+
+### 11.0 What this cost, and the reasoning error worth keeping
+
+Two sessions. The error was not any single wrong hypothesis — it was treating
+`rpc code 0` as evidence. We inferred "500 returns 0, therefore 500 is
+recognised, therefore the failure is at the transition", and built a ranked
+candidate list on top of it.
+
+**That inference was false.** Probed 2026-08-15: `SetFsmId(99999)` — an id that
+cannot exist — also returns **code 0**. **[live]** The sport service does not
+validate FSM ids at all. Every conclusion resting on "code 0 means recognised"
+was unsupported, including the one that made 501 the favourite (501 turned out
+to be right, but not for the reason we believed).
+
+The cheap probe that killed it took one call and no motion. It should have been
+the first thing we ran, not the twentieth.
+
 
 ### 11.1 Two different situations, one surface symptom
 
@@ -2378,6 +2414,63 @@ nothing else. (It does also run `amixer set Speaker 75%` at boot, so while it is
 Jetson's speaker volume is unset — relevant to audio, not to motion.)
 
 ---
+
+## 11.9 Zero-write recon, 2026-08-15
+
+Run while the robot stood in 501. Getters and passive subscribes only — no
+setter, velocity, FSM change, arm action or mode switch. **[live]**
+
+| Probe | Result | What it means |
+| --- | --- | --- |
+| `7001` GET_FSM_ID | `0`, `{"data":501}` | works |
+| `7002` GET_FSM_MODE | `0`, `{"data":0}` | works. Read **1** once, at fsm 4 — first time we have seen a non-zero sub-mode |
+| `7003` GET_BALANCE_MODE | **`7301`** | "loco state not available" — *even in 501 with a controller loaded* |
+| `7004` GET_SWING_HEIGHT | **`7301`** | same |
+| `7005` GET_STAND_HEIGHT | **`7301`** | same |
+| `7006` GET_PHASE | **`7301`** | deprecated, and unavailable |
+| `7008` GET_AVAILABLE_FSM_IDS | **`3203`** | **not implemented on this build.** No authoritative FSM table from the robot |
+| voice `1005` GET_VOLUME | `0`, `{"volume":100}` | volume is at maximum — why the TTS was clearly audible |
+
+Two consequences worth carrying:
+
+- **The 7301 cluster is a trap.** Those four getters return a plausible body
+  (`{"data":0}`, `{"data":0.0}`) *alongside* the error code. Read the code, not
+  the payload, or you will record a stand height of 0.0 m as fact.
+- **`fsm_id` 550 remains unexplained.** It was read once, on 2026-08-15, and
+  appears in no table we have. `7008` was the call that would have settled it
+  and this firmware does not implement it. Still open.
+
+### Hands — still unresolved, but the balance has shifted
+
+Subscribed for 6 s to `rt/lf/dex3/{left,right}/state` and
+`rt/dex3/{left,right}/state`. **Nothing delivered on any of them.** **[live]**
+No hand driver was running at the time, and the FTDI FT4232H is present with
+`/dev/ttyUSB0-3` — so the RS485 bus exists, unused.
+
+That is evidence toward BrainCo rather than Dex3, but it is not proof: BrainCo
+publishes `MotorStates_` on `rt/brainco/right/state`, a type this SDK does not
+ship, so we cannot subscribe to it to confirm. **Settled by looking at the
+wrists** — three fingers means Dex3, five means BrainCo Revo2.
+
+### Thermals and load, first readings
+
+`imu_state.temperature` **78 °C**; hottest motor **47 °C**; `mode_pr` 0.
+Battery draw is state-dependent and material: **~2.1 A in damp, ~2.9 A while
+balancing in 501**. At 49% and ~2.9 A, a standing robot is not a free thing to
+leave running.
+
+### The interlock has another gap
+
+`gemm-bringup` was found running again alongside our bridge on domain 0 —
+`gemm_robot_server`, `gemm_lidar_live_relay`, `realsense2_camera_node`,
+`foxglove_bridge`. `run_c3po` had stopped it earlier in the same session.
+
+Checked before leaving the robot standing: `gemm_robot_server` contains **no**
+reference to `SetFsmId`, `SetVelocity`, `LocoClient`, `cmd_vel`, `7101` or
+`7105`, and `cmd_vel_to_loco` is not running. So nothing in the returned stack
+can command the legs. But `warn_if_other_commander` does not watch
+`gemm_robot_server` either, and the container coming back on its own — after an
+explicit `docker stop` — is worth understanding before it happens during motion.
 
 ## 12. Corrections this document makes to our own repo
 
