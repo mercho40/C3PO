@@ -33,6 +33,16 @@ LOOP_PERIOD_S = 1.0 / LOOP_HZ
 PROGRESS_NOTIFY_DELTA = 0.05  # only emit MCP progress when delta >= 5%
 
 # Velocity caps (m/s, m/s, m/s, rad/s) — match the keyboard teleop example.
+#
+# NOTE: these are Isaac-Sim-tuned and 3-5x higher than walk_velocity.py's
+# hardware-vetted caps (MAX_LINEAR_VEL/MAX_YAW_VEL = 0.3). Currently
+# harmless — `send_velocity` publishes to `rt/run_command/cmd`, a sim-only
+# convenience channel real G1 firmware doesn't subscribe to (see
+# g1_protocol.py's Topics: `run_command=None` on REAL_TOPICS) — so walk_to/
+# turn can't yet move real hardware regardless of these numbers. Once
+# real-mode pose is wired for walk_to/turn (README "Phase 1b"), these two
+# cap sets must be reconciled before that happens — don't let walk_to/turn
+# go live on real hardware still carrying sim-tuned limits.
 MAX_FWD_VEL = 1.0
 MAX_BACK_VEL = -0.6
 MAX_LAT_VEL = 0.5

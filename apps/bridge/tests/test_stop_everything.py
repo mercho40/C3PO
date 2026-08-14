@@ -62,6 +62,8 @@ def test_stop_everything_dispatches_damp_in_real_mode(monkeypatch):
 
     assert len(damp_calls) == 1
     assert result["real_damp_fallback_rpc_code"] == 0
+    assert result["real_damp_fallback_attempts"] == 1
+    assert result["real_damp_fallback_succeeded"] is True
 
 
 def test_stop_everything_skips_damp_outside_real_mode(monkeypatch):
@@ -73,3 +75,42 @@ def test_stop_everything_skips_damp_outside_real_mode(monkeypatch):
 
     assert damp_calls == []
     assert result["real_damp_fallback_rpc_code"] is None
+    assert result["real_damp_fallback_attempts"] == 0
+    assert result["real_damp_fallback_succeeded"] is None
+
+
+def test_stop_everything_retries_real_damp_until_success(monkeypatch):
+    # A dropped packet on the first attempt(s) shouldn't be a silent e-stop
+    # failure -- it should retry and the result should reflect what actually
+    # happened (attempts taken, eventual success).
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    monkeypatch.setattr(stop_everything, "REAL_DAMP_RETRY_DELAY_S", 0.0)
+    codes = iter([3104, 3104, 0])  # fails twice, succeeds on the third attempt
+    damp_calls = []
+
+    def fake_call_sport(mode):
+        damp_calls.append(mode)
+        return next(codes), ""
+
+    monkeypatch.setattr(g1_rpc, "call_sport", fake_call_sport)
+
+    result = stop_everything.run()
+
+    assert len(damp_calls) == 3
+    assert result["real_damp_fallback_rpc_code"] == 0
+    assert result["real_damp_fallback_attempts"] == 3
+    assert result["real_damp_fallback_succeeded"] is True
+
+
+def test_stop_everything_reports_failure_after_exhausting_retries(monkeypatch):
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    monkeypatch.setattr(stop_everything, "REAL_DAMP_RETRY_DELAY_S", 0.0)
+    damp_calls = []
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: (damp_calls.append(mode) or (3104, None)))
+
+    result = stop_everything.run()
+
+    assert len(damp_calls) == stop_everything.REAL_DAMP_MAX_ATTEMPTS
+    assert result["real_damp_fallback_rpc_code"] == 3104
+    assert result["real_damp_fallback_attempts"] == stop_everything.REAL_DAMP_MAX_ATTEMPTS
+    assert result["real_damp_fallback_succeeded"] is False

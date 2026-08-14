@@ -30,9 +30,13 @@ bun run db:migrate
 > against a local Postgres in testing here, even though the driver connects
 > fine directly (isolated with a one-off `postgres` package script) — looks
 > like a `drizzle-kit` CLI bug, not a connection problem. If it hangs, Ctrl-C
-> and apply the SQL directly instead:
+> and apply the SQL directly instead, in order:
 > `psql "$DATABASE_URL" -f migrations/0000_magenta_black_tom.sql`
-> (and any later migration files in order).
+> `psql "$DATABASE_URL" -f migrations/0001_organization_member_created_at_defaults.sql`
+> (and any later migration files, same way). Related: `migrations/meta/` is
+> gitignored, so a fresh clone starts with no migration journal — this CLI
+> bug means that's academic today anyway, since `db:migrate` isn't the real
+> apply path here regardless of journal state.
 
 The bridge (`apps/bridge`) needs to be running and reachable at `BRIDGE_URL`
 for `/state`, `/skills/*/invoke`, and `/tasks` to work — start it with
@@ -57,6 +61,7 @@ directly against `/api/auth/sign-up/email` (Better Auth's REST surface).
 | `bun run build`      | Compile to a standalone binary (`./server`)     |
 | `bun run start`      | Run the compiled binary (`build` first)         |
 | `bun run check-types` | `tsc --noEmit`                                 |
+| `bun run test`        | Run the unit tests (`bun:test`, no DB needed — auth/bridge are mocked) |
 | `bun run db:generate` | Generate a Drizzle migration from schema.ts    |
 | `bun run db:migrate`  | Apply migrations (see known issue above)       |
 | `bun run db:studio`   | Open Drizzle Studio                            |

@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth/minimal";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db } from "@back/db/drizzle";
 import { admin, organization } from "better-auth/plugins";
+import { env } from "@back/lib/env";
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
@@ -11,18 +12,18 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
   },
-  baseURL: process.env.BETTER_AUTH_URL,
+  baseURL: env.BETTER_AUTH_URL,
   socialProviders: {
     github: {
-      clientId: process.env.GITHUB_CLIENT_ID as string,
-      clientSecret: process.env.GITHUB_CLIENT_SECRET as string,
+      clientId: env.GITHUB_CLIENT_ID,
+      clientSecret: env.GITHUB_CLIENT_SECRET,
     },
     google: {
-      clientId: process.env.GOOGLE_CLIENT_ID as string,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET as string,
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
     },
   },
-  trustedOrigins: [process.env.WEB_URL!],
+  trustedOrigins: [env.WEB_URL],
   // Joined session reads — one query instead of N on getSession.
   experimental: { joins: true },
   session: {

@@ -18,7 +18,12 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - run: bun run check-types
+      # `bun run check-types` fans out to every workspace via turbo,
+      # including @repo/bridge (Python) -- its mypy check needs `uv` +
+      # CycloneDDS, which this job doesn't set up (that toolchain lives in
+      # the `bridge` job below, where its own lint/type-check step runs
+      # instead). Filter it out here rather than duplicate that setup.
+      - run: bun run check-types -- --filter='!@repo/bridge'
 
       - name: apps/back unit tests
         working-directory: apps/back
@@ -32,7 +37,7 @@ jobs:
       # and re-add this step once that's done intentionally.
 
   bridge:
-    name: Bridge — pytest
+    name: Bridge — lint, type-check, pytest
     runs-on: ubuntu-latest
     env:
       CYCLONEDDS_HOME: ${{ github.workspace }}/.cyclonedds-0.10.2
@@ -69,6 +74,14 @@ jobs:
       - name: Apply unitree_sdk2py patch
         working-directory: apps/bridge
         run: ./scripts/postsync.sh
+
+      - name: ruff
+        working-directory: apps/bridge
+        run: uv run ruff check src tests
+
+      - name: mypy
+        working-directory: apps/bridge
+        run: uv run mypy src
 
       - name: pytest
         working-directory: apps/bridge

@@ -82,6 +82,17 @@ print(result)
 
 All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set in the environment.
 
+## Tests
+
+```bash
+uv run pytest        # all tests, see tests/
+uv run pytest -v     # verbose
+uv run ruff check src tests   # lint
+uv run mypy src               # type-check
+```
+
+No DDS/hardware needed — everything that touches DDS is monkeypatched (`unitree_sdk2py`'s `ChannelPublisher`/`ChannelSubscriber`/RPC client are never actually constructed in test runs).
+
 ## Phase status
 
 - [x] **Phase 0a** — stub MCP server (`get_state`, `walk_to`, `say`) — wiring validated end-to-end via Claude Code
