@@ -1,6 +1,6 @@
 """Tests for the open-loop velocity skill (`bridge.skills.walk_velocity`).
 
-All DDS calls are mocked via `bridge.sdk.g1_rpc.call_velocity` — these test
+All DDS calls are mocked via `bridge.sdk.g1_rpc.call_set_velocity` — these test
 the skill's clamping/task-lifecycle logic, not the RPC dispatch itself
 (covered by test_g1_request.py's coverage of the same underlying pattern).
 """
@@ -23,7 +23,7 @@ async def test_velocity_within_limits_passed_through_unclamped(monkeypatch):
         seen.update(vx=vx, vy=vy, vyaw=vyaw, duration=duration)
         return 0, ""
 
-    monkeypatch.setattr(g1_rpc, "call_velocity", fake_call_velocity)
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", fake_call_velocity)
 
     result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.1)
 
@@ -37,7 +37,7 @@ async def test_velocity_within_limits_passed_through_unclamped(monkeypatch):
 async def test_velocity_over_limit_gets_clamped(monkeypatch):
     seen = {}
     monkeypatch.setattr(
-        g1_rpc, "call_velocity", lambda vx, vy, vyaw, duration: (seen.update(vx=vx, vy=vy, vyaw=vyaw) or (0, ""))
+        g1_rpc, "call_set_velocity", lambda vx, vy, vyaw, duration: (seen.update(vx=vx, vy=vy, vyaw=vyaw) or (0, ""))
     )
 
     result = await walk_velocity.run(vx=5.0, vy=-5.0, vyaw=10.0, duration_s=0.05)
@@ -53,7 +53,7 @@ async def test_velocity_over_limit_gets_clamped(monkeypatch):
 async def test_duration_over_ceiling_gets_clamped(monkeypatch):
     seen = {}
     monkeypatch.setattr(
-        g1_rpc, "call_velocity", lambda vx, vy, vyaw, duration: (seen.update(duration=duration) or (0, ""))
+        g1_rpc, "call_set_velocity", lambda vx, vy, vyaw, duration: (seen.update(duration=duration) or (0, ""))
     )
 
     result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=999.0)
@@ -64,7 +64,7 @@ async def test_duration_over_ceiling_gets_clamped(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_rpc_error_marks_task_failed_and_does_not_wait(monkeypatch):
-    monkeypatch.setattr(g1_rpc, "call_velocity", lambda vx, vy, vyaw, duration: (3104, None))
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda vx, vy, vyaw, duration: (3104, None))
 
     result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=10.0)
 
@@ -79,7 +79,7 @@ async def test_rpc_error_marks_task_failed_and_does_not_wait(monkeypatch):
 async def test_cancel_stops_early_and_sends_zero_velocity(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        g1_rpc, "call_velocity", lambda vx, vy, vyaw, duration: (calls.append((vx, vy, vyaw, duration)) or (0, ""))
+        g1_rpc, "call_set_velocity", lambda vx, vy, vyaw, duration: (calls.append((vx, vy, vyaw, duration)) or (0, ""))
     )
 
     orig_run = walk_velocity.run

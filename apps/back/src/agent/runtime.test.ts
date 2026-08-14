@@ -44,6 +44,15 @@ const FIXTURE_SKILLS: SkillCatalogueEntry[] = [
 
 mock.module("@back/skills", () => ({
   listSkills: mock(async () => FIXTURE_SKILLS),
+  // `bun test` shares one module registry across every test file in the
+  // run, and `@back/skills` resolves to the same file other test files
+  // import via relative (`../skills`) or self (`./index`) paths -- whichever
+  // file's mock.module call "wins" serves every consumer, so a mock missing
+  // an export the real module has throws at import time for whoever loses
+  // the race. Keep this mock's surface complete even though runtime.ts only
+  // uses listSkills.
+  getSkill: mock(async (name: string) => FIXTURE_SKILLS.find((s) => s.name === name)),
+  getCatalogue: mock(async () => ({ skills: FIXTURE_SKILLS, source: "bridge", ageSeconds: 0 })),
 }));
 
 const { buildSystemPrompt } = await import("./runtime");

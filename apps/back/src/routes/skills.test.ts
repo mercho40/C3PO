@@ -42,10 +42,61 @@ mock.module("../bridge/client", () => {
       called: name,
       args,
     })),
+    // Not used directly by these tests (`../skills` is mocked below instead),
+    // but `bun test` shares one module registry across every test file in
+    // the run -- another file's `mock.module("@back/bridge/client", ...)`
+    // (the alias form, same resolved file as this relative one) would
+    // otherwise "win" or lose the race depending on run order, and a mock
+    // missing an export the real module has throws at import time for
+    // whichever file loses. Keep this mock's surface complete.
+    listTools: mock(async () => []),
     BridgeUnavailableError,
     BridgeToolError,
   };
 });
+
+const FIXTURE_PARAMS = { type: "object", properties: {}, additionalProperties: true };
+
+function fixtureSkill(name: string, classification: string) {
+  return {
+    name,
+    description: `Fixture ${name}.`,
+    parameters: FIXTURE_PARAMS,
+    preconditions: [],
+    expectedDurationSeconds: 1,
+    cancellable: false,
+    typicalFailureModes: [],
+    classification,
+    dangerLevel: "low" as const,
+    status: "real" as const,
+    works: { sim: true, real: true },
+  };
+}
+
+const FIXTURE_SKILLS = [
+  fixtureSkill("wave", "gesture"),
+  fixtureSkill("stop_everything", "safety"),
+  {
+    ...fixtureSkill("walk_velocity", "locomotion"),
+    // Real schema (not the permissive fixture default) so the 422 test
+    // below exercises actual Ajv rejection, not just a missing skill.
+    parameters: {
+      type: "object",
+      properties: { vx: { type: "number" } },
+      required: ["vx"],
+    },
+  },
+];
+
+mock.module("../skills", () => ({
+  getCatalogue: mock(async () => ({
+    skills: FIXTURE_SKILLS,
+    source: "bridge",
+    ageSeconds: 0,
+  })),
+  getSkill: mock(async (name: string) => FIXTURE_SKILLS.find((s) => s.name === name)),
+  listSkills: mock(async () => FIXTURE_SKILLS),
+}));
 
 const { skillsRoutes } = await import("./skills");
 
