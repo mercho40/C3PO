@@ -1,0 +1,51 @@
+# Boot unit for the C3PO bridge on the G1 Jetson.
+#
+# Install with `./scripts/robot/install_boot_unit.sh` (it symlinks this file,
+# so `git pull` updates the unit).
+#
+# Why this exists: the bridge previously only ran while someone had typed
+# run_c3po, so every reboot silently left the robot with no MCP server — and
+# therefore no `stop_everything`. That happened for real on 2026-08-14.
+#
+# Two properties this unit must keep:
+#
+#   1. It must NOT take the robot from the colleague's `gemm` stack. A machine
+#      powering on is not a person asking to own the robot. C3PO_NO_TAKEOVER=1
+#      starts the bridge without stopping their containers and without starting
+#      perception. Interactive `run_c3po` still means "take the robot".
+#
+#   2. It must never initiate motion. It doesn't: the bridge only ever moves
+#      the robot in response to a tool call, and starting it commands nothing.
+
+[Unit]
+Description=C3PO bridge — MCP server for the G1 (does not claim the robot at boot)
+Documentation=file:///home/unitree/c3po/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=unitree
+Group=unitree
+WorkingDirectory=/home/unitree/c3po/apps/bridge
+PIDFile=/home/unitree/.c3po/run/bridge.pid
+
+# `uv` lives in ~/.local/bin, which Ubuntu adds from ~/.profile — a file
+# systemd never sources. Without this the unit dies on "uv: command not found".
+# See docs/DEPLOYMENT.md §3.
+Environment=HOME=/home/unitree
+Environment=PATH=/home/unitree/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=C3PO_NO_TAKEOVER=1
+
+ExecStart=/home/unitree/c3po/scripts/robot/run_c3po
+ExecStop=/home/unitree/c3po/scripts/robot/stop_c3po
+
+# run_c3po syncs dependencies before starting, which on a cold uv cache can
+# take minutes. The default 90s would kill it mid-sync.
+TimeoutStartSec=600
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

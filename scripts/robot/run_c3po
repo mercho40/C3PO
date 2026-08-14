@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Start our stack, taking ownership of the robot from `gemm` first.
+#
+# Stopping the other stack is not a courtesy — the RealSense and the Livox
+# have exactly one owner each at the OS level, so this would fail on device
+# busy otherwise. Doing it here rather than leaving it to the operator means
+# the failure mode is "gemm was stopped for you", not a confusing EBUSY twenty
+# seconds into startup.
+
+set -euo pipefail
+# `readlink -f` because install_robot_scripts.sh symlinks this into
+# ~/.local/bin: bash sets BASH_SOURCE[0] to the symlink it resolved off PATH,
+# not to this file, so a plain dirname would look for _common.sh in the bin
+# directory and every command would die on the source below.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+say "Starting c3po stack"
+
+if [ ! -d "$BRIDGE_DIR" ]; then
+    err "bridge not found at $BRIDGE_DIR"
+    err "set C3PO_DIR if the checkout lives elsewhere"
+    exit 1
+fi
+
+if bridge_running; then
+    warn "bridge already running (pid $(bridge_pid)) — nothing to do"
+    warn "use stop_c3po first if you want a fresh start"
+    exit 0
+fi
+
+# A bridge we lost track of is worse than one we know about: it holds DDS and
+# can drive the legs while every status check here says "not running".
+strays="$(stray_bridge_pids)"
+if [ -n "$strays" ]; then
+    err "a bridge is already running outside our pidfile (pid: $(echo "$strays" | tr '\n' ' '))"
+    err "starting another would put two commanders on the same control API"
+    err "kill it first:  kill $(echo "$strays" | tr '\n' ' ')"
+    exit 1
+fi
+
+# `C3PO_NO_TAKEOVER=1` starts the bridge WITHOUT claiming the robot. It exists
+# for the boot unit: a machine powering on is not someone asking to own the
+# robot, and auto-stopping the colleague's stack on every reboot would be a
+# quiet way to keep taking it from them. Interactive `run_c3po` is unchanged
+# and still means "take the robot".
+NO_TAKEOVER="${C3PO_NO_TAKEOVER:-0}"
+
+# 1. Take the sensors.
+if [ "$NO_TAKEOVER" = "1" ]; then
+    if [ -n "$(gemm_running)" ]; then
+        info "gemm is running — leaving it alone (C3PO_NO_TAKEOVER=1)"
+        info "the bridge needs only DDS; it does not hold the RealSense or Livox"
+    fi
+elif [ -n "$(gemm_running)" ]; then
+    info "gemm is running — stopping it to release the sensors"
+    "$here/stop_gemm"
+fi
+
+# 2. Refuse to start if something else can still drive the legs. This is the
+#    conflict DDS domains cannot isolate, because both stacks must be on
+#    domain 0 to reach the control board.
+#
+#    Under NO_TAKEOVER we warn rather than refuse. A bridge that is merely
+#    *running* commands nothing, and refusing here would mean a reboot with
+#    cmd_vel_to_loco up leaves us with no bridge — and therefore no
+#    `stop_everything`, which is exactly when you would want it.
+if ! warn_if_other_commander; then
+    if [ "$NO_TAKEOVER" = "1" ]; then
+        warn "starting anyway (C3PO_NO_TAKEOVER=1) — the bridge will not command unless told to"
+    else
+        exit 1
+    fi
+fi
+
+# 3. Start the bridge.
+mkdir -p "$RUN_DIR" "$LOG_DIR"
+
+if [ ! -f "$BRIDGE_DIR/.env" ]; then
+    err "no .env at $BRIDGE_DIR/.env — refusing to start"
+    err "without it SIM_MODE defaults to stub and nothing reaches the robot"
+    exit 1
+fi
+
+info "logging to $BRIDGE_LOG"
+# `nohup` so this survives the SSH session that started it — a robot process
+# that dies when your laptop sleeps is not a robot process.
+#
+# The recorded pid is `uv run`, not the bridge: uv forks the interpreter and
+# waits on it. That is fine for status and SIGTERM (which propagates), but
+# stop_c3po must signal the whole tree — see bridge_tree_pids in _common.sh.
+(
+    cd "$BRIDGE_DIR"
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+    export PATH="$HOME/.local/bin:$PATH"
+
+    # `uv run` re-syncs whenever the lockfile has moved, and that reinstall
+    # restores upstream's unitree_sdk2py/__init__.py — which imports a `b2`
+    # submodule the package does not ship. Sync explicitly and re-apply the
+    # patch here, or `git pull && run_c3po` leaves the bridge dying on
+    # ModuleNotFoundError with the reason buried in the log.
+    info "syncing bridge dependencies"
+    uv sync --quiet
+    ./scripts/postsync.sh
+
+    # The bridge defaults to stdio, for use as a direct MCP client child
+    # process. As a daemon its stdin is /dev/null, which EOFs immediately and
+    # exits before it ever reaches the robot. apps/back talks to it over
+    # streamable-http, so http is the right transport here. Defaults only —
+    # .env still wins if it sets these.
+    #
+    # Port 8001 because gemm-ai.service holds 8000 on this Jetson, and it is a
+    # systemd unit, so stop_gemm (which stops containers) does not release it.
+    : "${BRIDGE_TRANSPORT:=http}"
+    : "${BRIDGE_HOST:=127.0.0.1}"
+    : "${BRIDGE_PORT:=8001}"
+    export BRIDGE_TRANSPORT BRIDGE_HOST BRIDGE_PORT
+
+    nohup uv run python -m bridge.mcp_server \
+        >> "$BRIDGE_LOG" 2>&1 < /dev/null &
+    echo $! > "$BRIDGE_PID"
+)
+
+# "The process is alive" is a weaker claim than "the bridge is serving": a
+# DDS or import failure can take several seconds to surface, and on the http
+# transport the port is the thing apps/back actually needs. Poll for both.
+port="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${BRIDGE_PORT:-8001}")"
+ready=0
+for _ in $(seq 1 30); do
+    bridge_running || break
+    if ss -ltn 2>/dev/null | grep -q ":${port}[[:space:]]"; then
+        ready=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$ready" -eq 1 ]; then
+    ok "bridge started (pid $(bridge_pid)), listening on ${port}"
+elif bridge_running; then
+    warn "bridge is up (pid $(bridge_pid)) but nothing is listening on ${port} after 15s"
+    warn "last lines of $BRIDGE_LOG:"
+    tail -15 "$BRIDGE_LOG" >&2 || true
+else
+    err "bridge failed to start — last lines of $BRIDGE_LOG:"
+    tail -15 "$BRIDGE_LOG" >&2 || true
+    rm -f "$BRIDGE_PID"
+    exit 1
+fi
+
+# Perception container, once it exists (D2/D3). Absent today.
+if [ "$NO_TAKEOVER" = "1" ]; then
+    info "not starting perception (C3PO_NO_TAKEOVER=1) — it would claim the sensors"
+elif _docker ps -a --filter "name=^c3po-perception" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+    _docker start c3po-perception >/dev/null 2>&1 && ok "started c3po-perception"
+else
+    info "no perception container yet — bridge only"
+fi
+
+say "c3po stack up"
+info "stop with: stop_c3po   ·   hand the robot back with: run_gemm"

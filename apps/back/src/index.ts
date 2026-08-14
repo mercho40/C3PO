@@ -1,14 +1,15 @@
 import { Elysia } from "elysia";
+import { betterAuth } from "@back/lib/auth-plugin";
 import { cors } from "@elysiajs/cors";
 import { skillsRoutes } from "@back/routes/skills";
 import { tasksRoutes } from "@back/routes/tasks";
 import { stateRoutes } from "@back/routes/state";
 import { agentRoutes } from "@back/routes/agent";
+import { chatsRoutes } from "@back/routes/chats";
 import { env } from "@back/lib/env";
-import { betterAuthPlugin } from "@back/lib/auth-plugin";
 
 const app = new Elysia()
-  .use(betterAuthPlugin)
+  .use(betterAuth)
   .use(
     cors({
       origin: env.WEB_URL,
@@ -26,7 +27,7 @@ const app = new Elysia()
   // /health stays open for monitoring.
   .use(skillsRoutes)
   .guard({ auth: true }, (app) =>
-    app.use(tasksRoutes).use(stateRoutes).use(agentRoutes),
+    app.use(tasksRoutes).use(stateRoutes).use(agentRoutes).use(chatsRoutes),
   )
   .listen(env.PORT);
 

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Stop the colleague's `gemm` stack, releasing the RealSense and the Livox.
+#
+# Uses `docker stop`, not `down`/`rm`: the containers keep their state and
+# `run_gemm` brings them straight back. Their restart policy is
+# `unless-stopped`, so an explicit stop also survives a docker daemon restart —
+# they will not quietly come back while we hold the sensors.
+
+set -euo pipefail
+# `readlink -f` — see the note in run_c3po; this is invoked through a symlink
+# on PATH, so BASH_SOURCE[0] is the link, not this file.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+say "Stopping gemm stack"
+
+running="$(gemm_running)"
+if [ -z "$running" ]; then
+    info "nothing running (prefix '${GEMM_PREFIX}')"
+else
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        if _docker stop "$name" >/dev/null 2>&1; then
+            ok "stopped $name"
+        else
+            err "failed to stop $name"
+        fi
+    done <<< "$running"
+fi
+
+# The container being down is not the whole story: cmd_vel_to_loco could have
+# been launched by hand outside docker, and it is the one process that can
+# fight us for the robot's control API.
+leftover="$(other_commander_pids)"
+if [ -n "$leftover" ]; then
+    warn "cmd_vel_to_loco still running outside docker (pid: $(echo "$leftover" | tr '\n' ' '))"
+    warn "kill it before driving the robot — it commands the same API our bridge does"
+fi
+
+still="$(gemm_running)"
+if [ -n "$still" ]; then
+    err "still running: $(echo "$still" | tr '\n' ' ')"
+    exit 1
+fi
+
+ok "sensors released (RealSense, Livox)"

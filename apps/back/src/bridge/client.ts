@@ -105,3 +105,36 @@ export async function callTool(
   }
   return result.content ?? null;
 }
+
+/**
+ * List the bridge's tools, with their JSON Schema and `_meta`.
+ *
+ * This is now how `apps/back` learns what the robot can do. It used to be a
+ * hand-written TypeScript catalogue that duplicated the bridge's — and the two
+ * drifted, repeatedly and silently, in ways that reached the LLM: a `voice`
+ * parameter the bridge did not accept, defaulted parameters marked required so
+ * the model had to invent timeouts, and a description telling the agent speech
+ * was a stub after it had been implemented.
+ */
+export async function listTools(): Promise<
+  Array<{
+    name: string;
+    description?: string;
+    inputSchema: unknown;
+    _meta?: unknown;
+  }>
+> {
+  const client = await getClient();
+  try {
+    const result = await client.listTools();
+    return result.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+      _meta: (t as { _meta?: unknown })._meta,
+    }));
+  } catch (err) {
+    clientPromise = null; // connection likely broke — force reconnect next time
+    throw new BridgeUnavailableError(err);
+  }
+}

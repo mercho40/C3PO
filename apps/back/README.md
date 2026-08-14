@@ -30,13 +30,15 @@ bun run db:migrate
 > against a local Postgres in testing here, even though the driver connects
 > fine directly (isolated with a one-off `postgres` package script) — looks
 > like a `drizzle-kit` CLI bug, not a connection problem. If it hangs, Ctrl-C
-> and apply the SQL directly instead, in order:
+> and apply the SQL files directly instead, **in filename order**:
 > `psql "$DATABASE_URL" -f migrations/0000_magenta_black_tom.sql`
-> `psql "$DATABASE_URL" -f migrations/0001_organization_member_created_at_defaults.sql`
-> (and any later migration files, same way). Related: `migrations/meta/` is
-> gitignored, so a fresh clone starts with no migration journal — this CLI
-> bug means that's academic today anyway, since `db:migrate` isn't the real
-> apply path here regardless of journal state.
+> `psql "$DATABASE_URL" -f migrations/0001_whole_smasher.sql`
+> `psql "$DATABASE_URL" -f migrations/0002_simple_deadpool.sql`
+> (and any later migration files, same way). `migrations/meta/` is
+> committed (not gitignored, since 2026-08-11 — see its own note in
+> `.gitignore`) precisely so `drizzle-kit generate` computes the next
+> migration as an incremental diff against what's already applied, instead
+> of re-emitting a full-schema baseline that collides with it.
 
 The bridge (`apps/bridge`) needs to be running and reachable at `BRIDGE_URL`
 for `/state`, `/skills/*/invoke`, and `/tasks` to work — start it with
@@ -79,8 +81,8 @@ src/
     skills.ts          GET /skills, POST /skills/:name/{invoke,dry-run}
     tasks.ts            GET /tasks, POST /tasks/:task_id/cancel
     agent.ts            POST /agent — streaming internal-agent chat (needs ANTHROPIC_API_KEY)
-  skills/            TS mirror of the bridge's skill catalogue (metadata: danger
-                     level, sim/real availability, preconditions — see define.ts)
+  skills/            Catalogue derived live from the bridge's MCP listTools()
+                     (see catalogue.ts) — not a hand-duplicated mirror anymore
   agent/runtime.ts    Vercel AI SDK agent loop over the skill registry
 ```
 

@@ -1131,7 +1131,7 @@ wheels = [
 [[package]]
 name = "unitree-sdk2py"
 version = "1.0.1"
-source = { git = "https://github.com/unitreerobotics/unitree_sdk2_python.git#a7dff75ba6ab0895710db9e9a065309b989d7e7a" }
+source = { git = "https://github.com/unitreerobotics/unitree_sdk2_python.git#65691c8a8bc53b98d3976dba4dbf9d5d20b2e7f5" }
 dependencies = [
     { name = "cyclonedds" },
     { name = "numpy" },

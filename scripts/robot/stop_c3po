@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Stop our stack (bridge, and the perception container once it exists).
+#
+# Note what this costs: the bridge owns `stop_everything` and the task
+# registry, so with it down nothing on the robot can be halted through our
+# tooling. The physical e-stop and the firmware's 1 s SET_VELOCITY deadman
+# still apply — they always do — but do not stop the bridge while the robot is
+# mid-task expecting to be able to cancel it.
+
+set -euo pipefail
+# `readlink -f` — see the note in run_c3po; this is invoked through a symlink
+# on PATH, so BASH_SOURCE[0] is the link, not this file.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+say "Stopping c3po stack"
+
+if pid="$(bridge_pid)"; then
+    # Capture the tree before signalling: once uv exits, the mapping from the
+    # recorded pid to the interpreter underneath it is gone, and an orphaned
+    # bridge still holds DDS and can still command the legs.
+    tree="$(bridge_tree_pids "$pid")"
+
+    # SIGTERM first: the bridge's skills observe cancellation between loop
+    # iterations and run their own stop sequence, so a graceful shutdown lets a
+    # walking robot ramp to zero instead of being abandoned mid-stride.
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 30); do
+        bridge_running || break
+        sleep 0.2
+    done
+    if bridge_running; then
+        warn "bridge ignored SIGTERM after 6s — sending SIGKILL"
+        # The whole tree, not just $pid: killing uv alone reparents the bridge
+        # to init, where bridge_running can no longer see it.
+        for p in $tree; do kill -KILL "$p" 2>/dev/null || true; done
+        sleep 0.5
+    fi
+    if bridge_running; then
+        err "bridge still alive (pid $pid)"
+        exit 1
+    fi
+    ok "bridge stopped (pid $pid)"
+    rm -f "$BRIDGE_PID"
+else
+    info "bridge not running"
+    rm -f "$BRIDGE_PID" 2>/dev/null || true
+fi
+
+# The pidfile going away is not proof the robot has no commander. Check for a
+# bridge that outlived it before telling the operator the stack is down.
+leftover="$(stray_bridge_pids)"
+if [ -n "$leftover" ]; then
+    err "a bridge process survived (pid: $(echo "$leftover" | tr '\n' ' '))"
+    err "it can still command the robot. kill it:  kill $(echo "$leftover" | tr '\n' ' ')"
+    exit 1
+fi
+
+# Perception container — named now so this script doesn't need editing when it
+# lands; absent today, which is not an error.
+if _docker ps --filter "name=^c3po-perception" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+    _docker stop c3po-perception >/dev/null 2>&1 && ok "stopped c3po-perception"
+fi
+
+ok "c3po stack down"

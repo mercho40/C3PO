@@ -1,6 +1,7 @@
 <script lang="ts">
-  import SignupForm from "$lib/components/signup-form.svelte";
   import { goto } from "$app/navigation";
+  import AuthShell from "$lib/components/auth-shell.svelte";
+  import SignupForm from "$lib/components/signup-form.svelte";
 
   let { data } = $props();
   $effect(() => {
@@ -8,6 +9,17 @@
   });
 </script>
 
-<div class="flex min-h-svh items-center justify-center p-6 md:p-10">
+<svelte:head><title>Crear cuenta · C3PO</title></svelte:head>
+
+<AuthShell
+  title="Crear cuenta"
+  subtitle="Necesitás una cuenta para operar el robot."
+>
   <SignupForm />
-</div>
+  {#snippet footer()}
+    ¿Ya tenés cuenta?
+    <a href="/login" class="text-ink underline-offset-4 hover:underline">
+      Ingresar
+    </a>
+  {/snippet}
+</AuthShell>
