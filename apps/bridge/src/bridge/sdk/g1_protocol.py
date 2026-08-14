@@ -343,30 +343,74 @@ _PREPARATION_TARGETS: Final[frozenset[int]] = frozenset(
 class Gesture(IntEnum):
     """G1 arm-gesture indices for `rt/api/arm/request` with api_id=7106."""
 
-    # Names and ids are the vendor's own, transcribed from the official action
-    # table at support.unitree.com/home/en/G1_developer/arm_action_interface
-    # (fetched 2026-08-14). That table is the complete set — 15 actions. Several
-    # of our previous labels were guesses and were wrong: 22 is not "refuse",
-    # 24 is not an X-Ray pose, 15 is not "hands up".
-    DOUBLE_HAND_FLYING_KISS = 11
-    SINGLE_HAND_FLYING_KISS = 12
-    ARMS_HORIZONTAL = 15
-    APPLAUSE = 17
+    # THE ROBOT'S OWN TABLE. Read live on 2026-08-15 by calling GetActionList
+    # (arm service, api_id 7107), which returns 23 preset actions with their ids,
+    # names and gating. This outranks both of our previous sources.
+    #
+    # It corrects a correction. These names originally came from a decompiled
+    # Android app; on 2026-08-14 I replaced them with Unitree's published table,
+    # which uses different names and omits several ids entirely. The robot says
+    # the APK-derived names were RIGHT — `refuse`, `ultraman_ray`,
+    # `right_hand_up`, `both_hands_up` are the firmware's own strings — and that
+    # the published table is incomplete for this build. Trust the robot.
+    #
+    # Gating is per-action and comes in two kinds, neither of which we had:
+    #   fsm=[500, 501]        — needs a walk program (only `turn_back_wave`)
+    #   mode_machine=[5, 6]   — needs a 29-DoF or 27-DoF body
+    # This robot reports mode_machine 5, so every mode_machine-gated action
+    # below is available to it. Only ONE action in the whole table is
+    # FSM-gated, which reframes error 7404: gesture availability is mostly
+    # about which BODY you have, not which state it is in.
+    TURN_BACK_WAVE = 1  # fsm=[500, 501]
+    BLOW_KISS_BOTH_HANDS = 11
+    BLOW_KISS_LEFT_HAND = 12
+    BLOW_KISS_RIGHT_HAND = 13
+    BOTH_HANDS_UP = 15
+    CLAMP = 17
     HIGH_FIVE = 18
     HUG = 19
-    DOUBLE_HAND_HEART = 20
-    SINGLE_HAND_HEART = 21
-    DOUBLE_HAND_CROSS = 22
-    RIGHT_HAND_HORIZONTAL = 23
-    DYNAMIC_LIGHT_WAVE = 24
-    WAVE_FRONT_CHEST = 25
-    WAVE_HIGH = 26
-    HANDSHAKE = 27
+    HEART_BOTH_HANDS = 20  # mode_machine=[5, 6]
+    HEART_RIGHT_HAND = 21  # mode_machine=[5, 6]
+    REFUSE = 22
+    RIGHT_HAND_UP = 23
+    ULTRAMAN_RAY = 24
+    WAVE_UNDER_HEAD = 25
+    WAVE_ABOVE_HEAD = 26
+    SHAKE_HAND = 27
+    BOX_LEFT_HAND_WIN = 28  # mode_machine=[5, 6]
+    BOX_RIGHT_HAND_WIN = 29  # mode_machine=[5, 6]
+    BOX_BOTH_HAND_WIN = 30  # mode_machine=[5, 6]
+    RIGHT_HAND_ON_HEART = 33
+    BOTH_HANDS_UP_DEVIATE_RIGHT = 34
+    FORWARD_PUSH = 36  # mode_machine=[5, 6]
     # 99 both performs "recover initial arm pose" and is the documented escape
-    # from error 7401 — after a sustained action (Arms Horizontal, the hearts)
-    # the arm latches, and the next action is refused until you send 99 or
-    # repeat the same id.
-    RECOVER_INITIAL_POSE = 99
+    # from error 7401 — after a sustained action the arm latches, and the next
+    # action is refused until you send 99 or repeat the same id.
+    RELEASE_ARM = 99
+
+
+# Actions this robot's firmware gates, from GetActionList (2026-08-15).
+# `mode_machine` is the body variant (5 = 29-DoF, which is us); `fsm` is a
+# required walk program. Everything not listed here is ungated.
+ACTION_REQUIRES_FSM: Final[dict[int, tuple[int, ...]]] = {1: (500, 501)}
+ACTION_REQUIRES_MODE_MACHINE: Final[dict[int, tuple[int, ...]]] = {
+    20: (5, 6),
+    21: (5, 6),
+    28: (5, 6),
+    29: (5, 6),
+    30: (5, 6),
+    36: (5, 6),
+}
+
+# Taught (user-recorded) actions this robot holds, executed BY NAME rather than
+# by id through the arm service's string overload. Durations are the firmware's
+# own, from GetActionList. Not wired to a skill yet.
+TAUGHT_ACTIONS: Final[dict[str, float]] = {
+    "Waist_Drum_Dance": 9.5,
+    "Scratch_head": 8.1,
+    "Spin_discs": 6.9,
+    "Throw_money": 8.1,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -437,15 +481,14 @@ SKILL_REQUESTS: Final[dict[SkillName, SkillRequest]] = {
     "balance_stand": SkillRequest("sport_request", API_ID_LOCO_SET_BALANCE_MODE,
                                   BalanceMode.BALANCE_STAND),
     # Arm gestures (api_id=7106) — require a locomotion state
-    "wave":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.WAVE_HIGH),
-    # There is no "point" in the vendor's action table. We were sending 36,
-    # which does not exist in it at all — that call could only ever have
-    # returned 7402 "Action ID does not exist". 23 (Right Hand Horizontal) is
-    # the nearest real action: one arm extended horizontally. Renaming the
-    # skill would break apps/back, which binds tools by name.
-    "point_at":      SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.RIGHT_HAND_HORIZONTAL),
-    "shake_hand":    SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.HANDSHAKE),
+    "wave":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.WAVE_ABOVE_HEAD),
+    # Back to 36. Yesterday I moved this to 23 because Unitree's published
+    # table has no 36 — but the ROBOT's own GetActionList does: id 36,
+    # `forward_push`, gated on mode_machine [5, 6], and this robot is 5. The
+    # published table is incomplete for this build. Still never executed here.
+    "point_at":      SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.FORWARD_PUSH),
+    "shake_hand":    SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.SHAKE_HAND),
     "hug":           SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.HUG),
-    "clap":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.APPLAUSE),
-    "release_arm":   SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.RECOVER_INITIAL_POSE),
+    "clap":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.CLAMP),
+    "release_arm":   SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.RELEASE_ARM),
 }
