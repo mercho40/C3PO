@@ -4,10 +4,14 @@ Safety-critical, and fast in the common case (<1s). Two parts:
   1. Signal cancellation to every running task in the TaskRegistry. The
      skills observe `cancel_event` between iterations and stop motion
      themselves before returning.
-  2. Independently send a zero-velocity burst to `rt/run_command/cmd` for
-     ~0.4 s, in case no skill is currently looping (e.g. the policy is
-     still moving from the last command) or in case the registry is out
-     of sync with what's actually publishing.
+  2. Independently send a zero-velocity burst for ~0.4 s via
+     `_locomotion.stop_motion_sync`, in case no skill is currently looping
+     (e.g. the policy is still moving from the last command) or in case
+     the registry is out of sync with what's actually publishing. This
+     goes out `rt/run_command/cmd` in sim, or as a real `SET_VELOCITY` RPC
+     burst on real hardware (`_locomotion.send_velocity` dispatches on
+     `SIM_MODE` — see that module) — real mode gets this AND the Damp
+     fallback below, not just one or the other.
 
 Synchronous because it's safety-critical — we don't want to yield the
 event loop while halting the robot. With stdio MCP, no concurrent tools
@@ -65,10 +69,11 @@ def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     stop_motion_sync(height=height, duration_s=STOP_BURST_DURATION_S)
     duration = time.time() - start
 
-    # `stop_motion_sync` above publishes to `rt/run_command/cmd`, which real
-    # G1 firmware doesn't subscribe to (sim-only convenience channel) — a
-    # no-op on real hardware. Damp (verified live, see g1_rpc) zeroes joint
-    # stiffness and is the real fallback that actually halts motion.
+    # `stop_motion_sync` above now dispatches per SIM_MODE, so on real hardware
+    # it issues SET_VELOCITY(0,0,0) rather than the old sim-only no-op. Damp is
+    # still sent after it, and is not redundant: zero velocity stops the gait,
+    # whereas damp (verified live, see g1_rpc) zeroes joint stiffness. Belt and
+    # braces on the one call that exists to make the robot stop.
     real_damp_rpc_code: int | None = None
     real_damp_attempts = 0
     if SIM_MODE == "real":

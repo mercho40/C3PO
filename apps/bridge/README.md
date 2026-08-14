@@ -61,6 +61,29 @@ SIM_MODE=isaac ROBOT_HOST=<sim-host-ip> DDS_DOMAIN_ID=1 \
 uv run python -m bridge.mcp_server
 ```
 
+### As a long-lived HTTP daemon (what runs on the robot)
+
+`apps/back` connects to the bridge as an MCP client over **streamable-http**, which means the
+bridge has to be told to serve that transport:
+
+```bash
+BRIDGE_TRANSPORT=http BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=8001 \
+uv run python -m bridge.mcp_server
+```
+
+This is not optional polish. The default transport is **stdio**, which is right when an MCP
+client spawns the bridge as a child and talks over pipes — but a daemon's stdin is
+`/dev/null`, so on stdio it reads EOF and exits immediately, before it ever reaches the
+robot. The symptom is a process that "fails to start" with almost nothing in the log.
+
+Onboard the G1 you do not run this by hand: `run_c3po` (see `scripts/robot/`) supplies these
+three defaults, stops the colleague's stack first, and re-applies `postsync.sh`. Note the
+port is **8001**, not the code default of 8000 — `gemm-ai.service` holds 8000 on the Jetson
+(`docs/ROBOT-INVENTORY.md` §5).
+
+Keep it bound to loopback. The bridge can command the robot's legs and has no authentication
+of its own, so it should be reached over an SSH tunnel rather than bound to a shared LAN.
+
 ### Direct skill calls (no MCP)
 
 ```python
@@ -130,4 +153,4 @@ apps/bridge/src/bridge/
 - **Walk policy is conservative** — effective forward speed is ~10–15% of commanded velocity. Build generous timeouts into `walk_to` calls. (Sim-only today — see Phase 1b above for why real-hardware `walk_to`/`turn` don't work yet.)
 - **`get_state().posture` is `"not_available_over_dds"` in real mode** — `LowState_.mode_machine` isn't the locomotion FSM index `g1_protocol.mode_label()` decodes (that's `sportmodestate.mode`, which has no DDS-decodable type for G1 in this SDK). Don't re-wire `mode_label(mode_machine)` for real mode without confirming what `mode_machine` actually encodes on G1 (looks like a hardware/arm-config variant, not FSM state).
 - **`stop_everything`'s real-hardware fallback was a no-op — fixed 2026-08-07.** Its safety burst published to `rt/run_command/cmd` (sim-only). It now also dispatches `damp` via `g1_rpc` when `SIM_MODE=real`. Not yet live-tested (robot was offline) — smoke-test this specifically before relying on it.
-- **`g1_protocol.Mode.SQUAT` (2) is unverified** — the reference implementation never sends it for G1; both its "Squat" and "Squat-Up" buttons send `SQUAT_UP` (706). The `squat` skill now sends 706. `Mode.SQUAT=2` and the `can_transition` FSM rules that reference it are unexercised — treat with suspicion if you rely on them.
+- **`g1_protocol.Mode.SQUAT` (2) is unverified** — the reference implementation never sends it for G1; both its "Squat" and "Squat-Up" buttons send `SQUAT_UP` (706). The `squat` skill now sends 706. `Mode.SQUAT=2` and the FSM transition rules that reference it are unexercised — treat with suspicion if you rely on them. Those rules are reference data in `g1_protocol.py`, not an enforced guard: a `can_transition()` helper existed but was never called by anything, and was removed rather than wired up, because encoding partly-unverified rules client-side would refuse transitions the firmware would have accepted.

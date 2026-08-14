@@ -17,30 +17,22 @@ Today:
   return `status=completed phase=logged_only`. Honest stub — no false
   motion claims.
 - For `SIM_MODE=real`, we dispatch a live RPC via `bridge.sdk.g1_rpc`
-  (`call_sport`/`call_arm`) on the resolved topic — this actually moves
-  the robot. Before dispatching a mode-changing (`sport_request`) or
-  gesture (`arm_request`) call, we check the request against `_LAST_MODE`
-  (see below) using `g1_protocol.can_transition`/`is_locomotion_state`,
-  and reject client-side with `phase=invalid_transition` instead of
-  firing an RPC we already know the firmware will refuse.
+  (`call_sport_api`/`call_arm`) on the resolved topic — this actually
+  moves the robot. No client-side FSM precondition check runs here: the
+  transition-rule data in `g1_protocol.py` is reference material, not a
+  gate — a client-side rule built on partly-unverified sources could refuse
+  a transition the firmware would have accepted, turning a bridge bug into
+  a false "the robot can't do that". The firmware already rejects illegal
+  transitions itself and says so (error 7302, "Invalid fsm id"), which is
+  the answer we actually want.
 - For `SIM_MODE=stub`, we return a clean stub result.
-
-`_LAST_MODE` is a best-effort, in-process shadow of the last mode we
-successfully commanded — NOT verified telemetry. Real-G1 FSM state
-currently has no DDS-decodable source (see `state.py`'s
-`not_available_over_dds` posture value); it only ships over WebRTC, which
-isn't wired up yet. So `_LAST_MODE` starts `None` (unknown) and the
-precondition check is skipped whenever it's `None` — dispatch proceeds and
-the firmware remains the final authority, same as before this check
-existed. Once real telemetry lands, replace `_LAST_MODE` with a read from
-that instead of trusting our own dispatch history.
 """
 
 from __future__ import annotations
 
 import os
 import time
-from typing import Any, Literal
+from typing import Any
 
 import structlog
 
@@ -50,10 +42,6 @@ from bridge.skills.task_runtime import get_registry
 log = structlog.get_logger(__name__)
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
-
-# Best-effort shadow of the last mode we successfully commanded on real
-# hardware. See the module docstring for why this exists and its limits.
-_LAST_MODE: int | None = None
 
 
 async def run_g1_request(
@@ -124,47 +112,6 @@ async def run_g1_request(
             task.ended_at = time.time()
             return task.to_dict()
 
-        # Client-side FSM precondition check — best-effort, see `_LAST_MODE`'s
-        # docstring above. Skipped entirely when `_LAST_MODE` is unknown.
-        global _LAST_MODE
-        if _LAST_MODE is not None:
-            invalid = False
-            if request.topic_kind == "sport_request" and not g1_protocol.can_transition(
-                _LAST_MODE, request.data
-            ):
-                invalid = True
-            elif request.topic_kind == "arm_request" and not g1_protocol.is_locomotion_state(_LAST_MODE):
-                invalid = True
-
-            if invalid:
-                task.status = "failed"
-                task.phase = "invalid_transition"
-                task.progress = 1.0
-                task.result = {
-                    "topic_kind": request.topic_kind,
-                    "api_id": request.api_id,
-                    "param": request.param_json(),
-                    "from_mode": _LAST_MODE,
-                    "from_mode_label": g1_protocol.mode_label(_LAST_MODE),
-                    "to_mode": request.data,
-                    "to_mode_label": (
-                        g1_protocol.gesture_label(request.data)
-                        if request.topic_kind == "arm_request"
-                        else g1_protocol.mode_label(request.data)
-                    ),
-                    "note": "Rejected client-side: the FSM does not allow this transition from the last commanded mode.",
-                }
-                task.error = "invalid_transition"
-                task.ended_at = time.time()
-                log.warning(
-                    "g1_request.invalid_transition",
-                    task_id=task.task_id,
-                    skill_name=skill_name,
-                    from_mode=_LAST_MODE,
-                    to_mode=request.data,
-                )
-                return task.to_dict()
-
         # SIM_MODE=real and topic resolved → dispatch via direct DDS RPC
         # (unitree_sdk2py.rpc.client.Client — same base Go2's SportClient
         # uses; no WebRTC involved, see bridge.sdk.g1_rpc). _Call blocks
@@ -176,8 +123,17 @@ async def run_g1_request(
 
         from bridge.sdk import g1_rpc
 
-        call = g1_rpc.call_sport if request.topic_kind == "sport_request" else g1_rpc.call_arm
-        code, data = await asyncio.to_thread(call, request.data)
+        # Dispatch on the api_id the catalogue names, not on a per-service
+        # constant: the sport service carries 7101 (posture), 7102 (balance
+        # mode) and 7105 (velocity), so assuming 7101 here would turn
+        # `balance_stand` into a posture change with the balance value as its
+        # mode index.
+        if request.topic_kind == "sport_request":
+            code, data = await asyncio.to_thread(
+                g1_rpc.call_sport_api, request.api_id, request.data
+            )
+        else:
+            code, data = await asyncio.to_thread(g1_rpc.call_arm, request.data)
 
         task.status = "completed" if code == 0 else "failed"
         task.phase = "dispatched" if code == 0 else "rpc_error"
@@ -191,9 +147,6 @@ async def run_g1_request(
         }
         if code != 0:
             task.error = f"rpc_error_code_{code}"
-        else:
-            if request.topic_kind == "sport_request":
-                _LAST_MODE = request.data
         task.ended_at = time.time()
         return task.to_dict()
 
@@ -204,19 +157,3 @@ async def run_g1_request(
         task.ended_at = time.time()
         log.exception("g1_request.failed", task_id=task.task_id, skill_name=skill_name)
         return task.to_dict()
-
-
-# Lookup helpers exposed for the catalogue / introspection.
-
-PostureSkillName = Literal["damp", "zero_torque", "prepare", "sit_g1", "lie_up", "squat"]
-GestureSkillName = Literal["wave", "point_at", "shake_hand", "hug", "clap", "release_arm"]
-
-
-def skill_works_in(skill_name: g1_protocol.SkillName, sim_mode: str) -> bool:
-    """True if this skill can actually produce motion in the given mode."""
-    if sim_mode == "stub":
-        return False
-    request = g1_protocol.SKILL_REQUESTS[skill_name]
-    topics = g1_protocol.topics_for(sim_mode)
-    target = topics.sport_request if request.topic_kind == "sport_request" else topics.arm_request
-    return target is not None

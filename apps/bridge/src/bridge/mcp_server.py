@@ -25,6 +25,7 @@ is what Claude Code's MCP client expects.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 import uuid
@@ -34,11 +35,18 @@ import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 
+from bridge import watchdog
+from bridge.skill_meta import meta as skill_meta
+from bridge.watchdog import get_watchdog
+
 log = structlog.get_logger(__name__)
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
 ROBOT_HOST = os.environ.get("ROBOT_HOST", "127.0.0.1")
 DDS_DOMAIN_ID = int(os.environ.get("DDS_DOMAIN_ID", "0"))
+# Pin CycloneDDS to one NIC. Empty = autodetermine, correct on a dev machine.
+# Onboard the G1's Jetson this must be `eth0` — see `init_dds`.
+DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
 
 # Back↔bridge link: how this server is reached. Default is stdio (what Claude
 # Code's MCP client expects). Set BRIDGE_TRANSPORT=http to expose FastMCP's
@@ -55,7 +63,7 @@ if SIM_MODE != "stub":
     from bridge.sdk.connection import init_dds
     from bridge.sdk.state import get_sampler
 
-    init_dds(robot_host=ROBOT_HOST, domain_id=DDS_DOMAIN_ID)
+    init_dds(robot_host=ROBOT_HOST, domain_id=DDS_DOMAIN_ID, interface=DDS_INTERFACE)
     # Warm the subscriber singleton so messages start flowing immediately.
     get_sampler()
 
@@ -78,15 +86,31 @@ mcp = FastMCP(
 # Tool: get_state
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="introspection",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected", "no_state_received_yet"],
+    )
+)
 def get_state() -> dict:
     """Return the robot's current state: pose, battery, posture, faults.
 
     Behaviour by mode:
     - `stub`: returns hardcoded fake state for wiring validation.
-    - `isaac` / `real`: reads the latest `rt/lowstate` DDS message. Pose and
-      battery come from separate topics not yet subscribed (Phase 1) — those
-      fields are `null` until then. `posture` is derived from FSM mode.
+    - `isaac` / `real`: composes the latest message from each of three
+      subscriptions — lowstate, pose, and battery — plus the polled FSM id.
+
+    Nulls are "not received yet", never "known to be fine". `battery_pct` is
+    null on sim because Isaac publishes no BMS at all, and `fsm_id`/`posture`
+    go null on real when **no motion controller is loaded** — check
+    `motion_switcher` CheckMode before concluding the robot is broken
+    (`docs/ROBOT-API.md` §3).
     """
     log.info("get_state.called", sim_mode=SIM_MODE)
 
@@ -114,7 +138,19 @@ def get_state() -> dict:
 # Tool: walk_to
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="medium",
+        status="real",
+        cancellable=True,
+        expected_duration_s=20.0,
+        works_sim=True,
+        works_real=False,
+        preconditions=["robot_upright", "battery_pct_gt_15", "no_active_walk_task"],
+        typical_failure_modes=["path_blocked", "timeout", "no_pose"],
+    )
+)
 async def walk_to(
     ctx: Context,
     target_x_meters_world_frame: Annotated[
@@ -198,7 +234,19 @@ async def walk_to(
 # Tool: turn
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="low",
+        status="real",
+        cancellable=True,
+        expected_duration_s=12.0,
+        works_sim=True,
+        works_real=False,
+        preconditions=["robot_upright", "no_active_turn_task"],
+        typical_failure_modes=["timeout", "no_pose"],
+    )
+)
 async def turn(
     ctx: Context,
     delta_yaw_radians: Annotated[
@@ -263,8 +311,6 @@ async def turn(
             "stub": True,
         }
 
-    import math
-
     from bridge.skills.turn import run as run_turn
 
     result = await run_turn(
@@ -281,7 +327,19 @@ async def turn(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="medium",
+        status="real",
+        cancellable=True,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=False,  # NOT YET LIVE-TESTED -- see the tool's own docstring.
+        preconditions=["real_hardware_only"],
+        typical_failure_modes=["rpc_error", "not_applicable_in_sim"],
+    )
+)
 async def walk_velocity(
     ctx: Context,
     vx: Annotated[
@@ -380,7 +438,18 @@ async def walk_velocity(
 # Tool: stop_everything
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="safety",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.5,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected"],
+    )
+)
 def stop_everything() -> dict:
     """Halt all motion immediately and cancel any in-flight tasks.
 
@@ -413,17 +482,29 @@ def stop_everything() -> dict:
 # ---------------------------------------------------------------------------
 # Each of these wraps a request to either `rt/api/sport/request` (api_id=7101,
 # full-body modes) or `rt/api/arm/request` (api_id=7106, upper-limb gestures).
-# Today, Isaac Sim's `unitree_sim_isaaclab` scene doesn't subscribe to those
-# topics, so the dispatcher returns `phase=logged_only` — the request was
-# constructed but not delivered. When the WebRTC Transport lands (spec §16)
-# and SIM_MODE=real, the same skills produce actual motion.
+# Isaac Sim's `unitree_sim_isaaclab` scene doesn't subscribe to those topics,
+# so under SIM_MODE=isaac the dispatcher returns `phase=logged_only` — the
+# request was constructed but not delivered. Under SIM_MODE=real these
+# dispatch for real over DDS RPC (`bridge.sdk.g1_rpc`); no WebRTC involved.
 #
 # Adding more skills (zero_torque, sit_g1, lie_up, squat, shake_hand, hug,
 # clap, release_arm, …) is a one-liner — see g1_protocol.SKILL_REQUESTS for
 # the full catalogue.
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{preparation,walk,walk_waist,run,squat,zero_torque}"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def damp(ctx: Context) -> dict:
     """Engage damping mode — set all joints to zero stiffness. Safety transition.
 
@@ -438,7 +519,19 @@ async def damp(ctx: Context) -> dict:
     return {**await run_g1_request("damp", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=2.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_damp"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def prepare(ctx: Context) -> dict:
     """Enter Preparation mode — required gateway to Walk / Walk(waist) / Run.
 
@@ -452,7 +545,19 @@ async def prepare(ctx: Context) -> dict:
     return {**await run_g1_request("prepare", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def wave(ctx: Context) -> dict:
     """Wave the upper arm — friendly greeting gesture.
 
@@ -466,12 +571,31 @@ async def wave(ctx: Context) -> dict:
     return {**await run_g1_request("wave", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def point_at(ctx: Context) -> dict:
-    """Extend the right arm forward — closest available "point" gesture.
+    """Extend the right arm horizontally — the closest thing to pointing.
 
-    G1 firmware "forward push" (api_id=7106, data=36). Like `wave`, requires
-    a locomotion-active FSM state on real hardware.
+    Vendor action 23, "Right Hand Horizontal" (arm service, api_id=7106). There
+    is no "point" in Unitree's action table; this is the nearest real action.
+
+    Previously sent 36, which appears in NO vendor artifact — official table,
+    C++ header or Python SDK — and could only ever have returned 7402 "Action
+    ID does not exist". So this gesture has never worked on hardware and 23 has
+    never been tried.
+
+    Like `wave`, needs an FSM state that permits arm actions.
 
     Isaac Sim: logged only.
     """
@@ -480,7 +604,19 @@ async def point_at(ctx: Context) -> dict:
     return {**await run_g1_request("point_at", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_damp"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def zero_torque(ctx: Context) -> dict:
     """Enter Zero Torque mode — actuators receive no command. Limp robot.
 
@@ -495,7 +631,155 @@ async def zero_torque(ctx: Context) -> dict:
     return {**await run_g1_request("zero_torque", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="introspection",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=False,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected", "motion_switcher_no_answer"],
+    )
+)
+async def check_motion_mode() -> dict:
+    """Which motion controller currently owns the robot. Read-only.
+
+    **Run this first whenever the robot accepts commands and does nothing.**
+
+    The sport service answers `code 0` both when an FSM transition is refused
+    and when there is no controller loaded to perform it, so those two very
+    different situations are indistinguishable from the reply alone. This tool
+    tells them apart in one call.
+
+    Returns `mode_name`. Empty means **no controller is loaded** — the robot is
+    in debug mode, nothing will move, and `get_state` will report `fsm_id=null`
+    and `posture="unknown"`. That is normal after a teleoperation session:
+    `xr_teleoperate` releases the mode on the way in and does not restore it.
+
+    Recovering from that means `SelectMode('ai')`, which this bridge
+    deliberately cannot send — loading a controller onto a robot someone else
+    may be driving is an operator decision, not a tool call. See
+    `docs/ROBOT-API.md` §3.
+    """
+    log.info("check_motion_mode.called", sim_mode=SIM_MODE)
+
+    if SIM_MODE != "real":
+        return {
+            "mode_name": None,
+            "note": f"SIM_MODE={SIM_MODE} has no motion_switcher service.",
+            "env": SIM_MODE,
+        }
+
+    import asyncio
+
+    from bridge.sdk import g1_rpc
+
+    code, result = await asyncio.to_thread(g1_rpc.check_motion_mode)
+    if result is None:
+        return {"mode_name": None, "rpc_code": code, "error": "no_answer", "env": SIM_MODE}
+
+    name = result["name"]
+    return {
+        "mode_name": name,
+        "form": result["form"],
+        "rpc_code": code,
+        "controller_loaded": bool(name),
+        "note": (
+            "A controller is loaded; FSM commands should be acted on."
+            if name
+            else "NO controller loaded — nothing will move, and the sport "
+            "service will still answer code 0. Needs SelectMode('ai'), which "
+            "an operator must send."
+        ),
+        "env": SIM_MODE,
+    }
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="high",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=False,
+        preconditions=["fsm_state_is_preparation", "operator_present"],
+        typical_failure_modes=["fsm_transition_rejected", "no_motion_controller_loaded"],
+    )
+)
+async def start_walking_waist(ctx: Context) -> dict:
+    """Enter Walk Motion-3Dof-waist (FSM 501) — the 29-DoF walk program.
+
+    500 and 501 are two different walk programs chosen by how many degrees of
+    freedom the waist has, not a generic start and a variant. Unitree documents
+    `mode_machine` as `4:23-Dof; 5:29-Dof; 6:27-Dof`, and this robot reports
+    **5** — so 501 is likely the program it actually implements, and 500 the
+    other variant's.
+
+    That matters because `start_walking` (500) has been observed returning rpc
+    code 0 while never leaving StandUp. A recognised-but-not-implemented id
+    would look exactly like that: accepted, then declined by the controller.
+
+    **Never executed on this robot.** Try it from a supervised window with the
+    operator ready to damp, not from an autonomous plan. See
+    `docs/ROBOT-API.md` §11.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("start_walking_waist", ctx), "env": SIM_MODE}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="medium",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=False,
+        preconditions=["robot_upright"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
+async def balance_stand(ctx: Context) -> dict:
+    """Engage the stand-and-balance controller (api_id=7102, balance_mode=0).
+
+    The vendor's `BalanceStand()`. Distinct from the FSM postures above: it
+    sets the *balance controller* mode rather than requesting a state change,
+    so it goes to api_id 7102, not 7101.
+
+    Why it exists as a tool: on 2026-08-12, with the robot standing and
+    bearing its own weight, `start_walking` (the vendor's `Start()`,
+    SetFsmId 500) returned code 0 and did **not** leave StandUp — and arm
+    gestures then failed 7404 FSM_UNAVAILABLE. This is the one call in
+    `g1_loco_client.hpp` between StandUp and Start that we had never sent.
+
+    Isaac Sim: logged only.
+    """
+    from bridge.skills._g1_request import run_g1_request
+
+    return {**await run_g1_request("balance_stand", ctx), "env": SIM_MODE}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="medium",
+        status="real",
+        cancellable=False,
+        expected_duration_s=2.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_preparation"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def start_walking(ctx: Context) -> dict:
     """Enter Walk mode — locomotion FSM activates; arm gestures become available.
 
@@ -510,7 +794,19 @@ async def start_walking(ctx: Context) -> dict:
     return {**await run_g1_request("start_walking", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_damp"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def sit_g1(ctx: Context) -> dict:
     """Enter Seating mode — robot adopts a seated posture.
 
@@ -525,7 +821,19 @@ async def sit_g1(ctx: Context) -> dict:
     return {**await run_g1_request("sit_g1", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="medium",
+        status="real",
+        cancellable=False,
+        expected_duration_s=4.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_is_damp"],
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def lie_up(ctx: Context) -> dict:
     """Enter Lie-Up mode — robot transitions to a face-up lying pose.
 
@@ -539,7 +847,18 @@ async def lie_up(ctx: Context) -> dict:
     return {**await run_g1_request("lie_up", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="posture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
+    )
+)
 async def squat(ctx: Context) -> dict:
     """Enter Squat mode — robot crouches to a lowered stance.
 
@@ -554,7 +873,19 @@ async def squat(ctx: Context) -> dict:
     return {**await run_g1_request("squat", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def shake_hand(ctx: Context) -> dict:
     """Extend the right hand for a handshake.
 
@@ -568,7 +899,19 @@ async def shake_hand(ctx: Context) -> dict:
     return {**await run_g1_request("shake_hand", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def hug(ctx: Context) -> dict:
     """Open arms wide for a hug.
 
@@ -583,7 +926,19 @@ async def hug(ctx: Context) -> dict:
     return {**await run_g1_request("hug", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=2.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def clap(ctx: Context) -> dict:
     """Bring hands together to clap.
 
@@ -597,7 +952,19 @@ async def clap(ctx: Context) -> dict:
     return {**await run_g1_request("clap", ctx), "env": SIM_MODE}
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=True,
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
+    )
+)
 async def release_arm(ctx: Context) -> dict:
     """Return arms to a neutral / idle position.
 
@@ -615,32 +982,84 @@ async def release_arm(ctx: Context) -> dict:
 # Tool: say
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
-def say(
+@mcp.tool(
+    meta=skill_meta(
+        classification="speech",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=True,
+        typical_failure_modes=["voice_service_no_answer", "bridge_disconnected"],
+    )
+)
+async def say(
     text: Annotated[
         str,
         Field(
             min_length=1,
             max_length=500,
-            description="What the robot should say. Will be spoken aloud via TTS.",
+            description="What the robot should say, spoken aloud through its own speaker.",
         ),
     ],
-    voice: Annotated[
-        Literal["default", "warm", "neutral", "robotic"],
-        Field(description="Voice style. Phase 0a ignores this; logs only."),
-    ] = "default",
+    language: Annotated[
+        Literal["english", "chinese"],
+        Field(
+            description=(
+                "Which voice to use. The robot cannot mix languages in one "
+                "utterance — send separate calls instead."
+            )
+        ),
+    ] = "english",
 ) -> dict:
-    """Make the robot speak aloud.
+    """Speak text aloud through the robot's own speaker (voice service, TTS).
 
-    Phase 0a: no audio output, only logging. Phase 4 wires Cartesia TTS.
+    Real on hardware: on-robot text-to-speech, no cloud round-trip and no API
+    key. Logs only on stub and sim, which have no speaker.
+
+    Worth reaching for more than it sounds. Speech appears not to be gated by
+    the locomotion FSM, so it is a channel the robot still has when motion is
+    being refused — which is a situation this robot gets into. Saying what you
+    are about to do, or that you are stuck, is usually better than silence when
+    a person is standing next to a humanoid.
+
+    One utterance at a time, and one language per utterance: the firmware has
+    no mixed Chinese/English voice.
     """
-    log.info("say.called", text=text, voice=voice, sim_mode=SIM_MODE)
+    log.info("say.called", text=text, language=language, sim_mode=SIM_MODE)
+
+    if SIM_MODE != "real":
+        return {
+            "status": "ok",
+            "spoken": text,
+            "language": language,
+            "note": f"SIM_MODE={SIM_MODE} has no speaker — logged, not spoken.",
+            "env": SIM_MODE,
+            "stub": True,
+        }
+
+    import asyncio
+
+    from bridge.sdk import g1_protocol, g1_rpc
+
+    speaker_id = (
+        g1_protocol.Speaker.CHINESE if language == "chinese" else g1_protocol.Speaker.ENGLISH
+    )
+    # Off the event loop: TTS acks on completion of synthesis, so a long
+    # sentence would otherwise stall every other tool call — including
+    # stop_everything.
+    code, data = await asyncio.to_thread(g1_rpc.speak, text, speaker_id)
+
     return {
-        "status": "ok",
-        "spoken": text,
-        "voice": voice,
+        "status": "ok" if code == 0 else "failed",
+        "spoken": text if code == 0 else None,
+        "language": language,
+        "rpc_code": code,
+        "rpc_data": data,
+        "error": None if code == 0 else f"rpc_error_code_{code}",
         "env": SIM_MODE,
-        "stub": True,
+        "stub": False,
     }
 
 
@@ -649,7 +1068,19 @@ def say(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=True,
+        works_real=False,
+        preconditions=["pose_available"],
+        typical_failure_modes=["no_pose"],
+    )
+)
 def remember_landmark(
     name: Annotated[
         str,
@@ -662,10 +1093,14 @@ def remember_landmark(
 ) -> dict:
     """Save the robot's current world-frame pose under a name, for later `recall_landmark`.
 
-    Needs a live pose: works in stub/sim mode today. On real G1 it fails with
-    `no_pose` until a world-frame pose source is wired (Phase 1b, see
-    apps/bridge/README.md) — call `get_state` first if unsure whether pose is
-    available. In-memory only: landmarks don't survive a bridge restart.
+    Needs a live pose, which now works on real hardware too (vendor odometry).
+    Fails cleanly with `no_pose` if none is available — call `get_state` first
+    if unsure.
+
+    Landmarks persist across bridge restarts. They do NOT survive a robot
+    reboot: odometry re-origins, so the coordinates stop referring to the same
+    physical place. `recall_landmark` and `list_landmarks` report that as
+    `frame_stale` — check it before walking anywhere.
     """
     from bridge.skills.landmarks import get_store as get_landmark_store
 
@@ -674,36 +1109,114 @@ def remember_landmark(
     if pose is None:
         return {"status": "failed", "name": name, "error": "no_pose"}
 
-    landmark = get_landmark_store().remember(name, pose)
+    landmark = get_landmark_store().remember(
+        name, pose, frame_tick=_current_frame_tick()
+    )
     log.info("remember_landmark.saved", name=name, pose=landmark.to_dict())
     return {"status": "ok", **landmark.to_dict()}
 
 
-@mcp.tool()
+def _current_frame_tick() -> int | None:
+    """Control-board `tick`, identifying the odometry frame landmarks live in.
+
+    None when unknown (stub mode, or no lowstate yet) — callers must treat that
+    as "cannot tell", never as "frame is fine".
+    """
+    if SIM_MODE == "stub":
+        return None
+    try:
+        from bridge.sdk.state import get_sampler
+
+        return int(get_sampler().get_state().get("raw", {}).get("tick") or 0) or None
+    except Exception as exc:
+        log.warning("frame_tick.unavailable", error=str(exc))
+        return None
+
+
+def _with_frame_status(payload: dict, landmark) -> dict:
+    """Annotate a landmark result with whether its frame still exists."""
+    from bridge.skills.landmarks import frame_is_stale
+
+    stale = frame_is_stale(landmark.frame_tick, _current_frame_tick())
+    payload["frame_stale"] = stale
+    if stale:
+        payload["warning"] = (
+            "Saved before the robot rebooted: odometry re-origined, so these "
+            "coordinates no longer refer to the same physical place. Do NOT "
+            "walk to them — re-save the landmark from the robot's current pose."
+        )
+    return payload
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["not_found"],
+    )
+)
 def recall_landmark(
     name: Annotated[
         str, Field(min_length=1, max_length=64, description="Landmark name to recall.")
     ],
 ) -> dict:
-    """Recall a previously saved landmark pose — feed the x/y straight into `walk_to`."""
+    """Recall a saved landmark pose — feed the x/y straight into `walk_to`.
+
+    Check `frame_stale` first. When true, the robot rebooted since this was
+    saved and the coordinates now point somewhere else entirely — re-save
+    from the current pose instead of navigating to them."""
     from bridge.skills.landmarks import get_store as get_landmark_store
 
     landmark = get_landmark_store().recall(name)
     if landmark is None:
         return {"status": "not_found", "name": name}
-    return {"status": "ok", **landmark.to_dict()}
+    return _with_frame_status({"status": "ok", **landmark.to_dict()}, landmark)
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+    )
+)
 def list_landmarks() -> dict:
-    """List all saved landmarks, most recently saved first."""
+    """List saved landmarks, most recently saved first.
+
+    Each entry carries `frame_stale`; any that are true were saved before a
+    robot reboot and their coordinates are no longer meaningful."""
     from bridge.skills.landmarks import get_store as get_landmark_store
 
     landmarks = get_landmark_store().list_all()
-    return {"count": len(landmarks), "landmarks": [lm.to_dict() for lm in landmarks]}
+    return {
+        "count": len(landmarks),
+        "landmarks": [
+            _with_frame_status(lm.to_dict(), lm) for lm in landmarks
+        ],
+    }
 
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["not_found"],
+    )
+)
 def forget_landmark(
     name: Annotated[
         str, Field(min_length=1, max_length=64, description="Landmark name to delete.")
@@ -720,7 +1233,18 @@ def forget_landmark(
 # Tool: cancel_task
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="task",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.3,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["unknown_task_id", "cancel_already_requested", "task_not_running"],
+    )
+)
 def cancel_task(
     task_id: Annotated[
         str,
@@ -764,10 +1288,106 @@ def cancel_task(
 
 
 # ---------------------------------------------------------------------------
+# Tool: describe_surroundings
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="perception",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected", "no_pose"],
+    )
+)
+def describe_surroundings() -> dict:
+    """Return a compact, egocentric snapshot of what the robot can perceive.
+
+    Ranges are metres from the robot; bearings are degrees with 0 straight
+    ahead and POSITIVE TO THE LEFT — the same sign as `turn`'s
+    delta_yaw_radians, so a bearing can be turned toward directly.
+
+    Read `sources` and `notes` before acting. A source reported as `offline`
+    means that sense is NOT WORKING, which is different from it reporting
+    nothing: an absent `objects` list with `detector: offline` does not mean
+    the path is clear, it means nothing looked. `objects_omitted` counts
+    obstacles that exist but were not listed.
+
+    Today the perception stack (LiDAR/camera/detector) is not deployed, so this
+    honestly reports everything offline rather than an empty scene. Pose comes
+    through once the bridge is running against a robot.
+    """
+    from bridge import world_model
+    from bridge.skills.landmarks import get_store
+
+    if SIM_MODE == "stub":
+        return world_model.offline().to_dict()
+
+    # Pose is the one source that exists today; perception plugs in beside it
+    # without changing this contract.
+    pose = None
+    pose_age = None
+    try:
+        from bridge.sdk.state import get_sampler
+
+        state = get_sampler().get_state()
+        if state.get("pose"):
+            p = state["pose"]
+            pose = {
+                "x_m": round(float(p["x_meters_world"]), 2),
+                "y_m": round(float(p["y_meters_world"]), 2),
+                "yaw_deg": round(math.degrees(float(p["yaw_radians_world"])), 1),
+            }
+            pose_age = state.get("raw", {}).get("pose_age_s")
+    except Exception as exc:  # never let telemetry break the snapshot
+        log.warning("describe_surroundings.pose_failed", error=str(exc))
+
+    landmarks = []
+    if pose is not None:
+        for lm in get_store().list_all():
+            dx = lm.x_meters_world - float(pose["x_m"])
+            dy = lm.y_meters_world - float(pose["y_m"])
+            rng = math.hypot(dx, dy)
+            bearing = math.degrees(
+                math.atan2(dy, dx) - math.radians(float(pose["yaw_deg"]))
+            )
+            # Normalise into (-180, 180] so "left" and "right" stay meaningful.
+            bearing = (bearing + 180.0) % 360.0 - 180.0
+            landmarks.append(
+                world_model.Observation(
+                    label=lm.name, range_m=rng, bearing_deg=bearing
+                )
+            )
+
+    return world_model.build(
+        pose=pose,
+        pose_age_s=pose_age,
+        landmarks=landmarks,
+        # Perception is not deployed yet — these stay False so the snapshot
+        # says "offline" instead of implying a clear scene.
+        detector_online=False,
+        lidar_online=False,
+    ).to_dict()
+
+
+# ---------------------------------------------------------------------------
 # Tool: list_active_tasks
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(
+    meta=skill_meta(
+        classification="task",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+    )
+)
 def list_active_tasks(
     include_recent: Annotated[
         bool,
@@ -802,6 +1422,19 @@ def main() -> None:
     ``BRIDGE_TRANSPORT=http`` to serve FastMCP's streamable-http transport at
     ``http://{BRIDGE_HOST}:{BRIDGE_PORT}/mcp`` — how ``apps/back`` connects.
     """
+    # Operator-link watchdog (SPEC §10.3). Real hardware only, and OFF unless
+    # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
+    #
+    # Short version: today's tool calls block the transport, so "operator
+    # silent while a task runs" is the normal state during any long skill, not
+    # a dead link. Arming it now would cancel every walk_to mid-stride. It
+    # becomes correct once long skills return a task_id immediately and the
+    # operator's progress polls become a real liveness signal.
+    if SIM_MODE == "real" and watchdog.ENABLED:
+        get_watchdog().start()
+    elif SIM_MODE == "real":
+        log.info("watchdog.disabled", reason="LINK_WATCHDOG not set")
+
     if BRIDGE_TRANSPORT in ("http", "streamable-http"):
         log.info(
             "c3po-bridge.start",

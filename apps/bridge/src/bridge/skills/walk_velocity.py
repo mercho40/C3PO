@@ -83,7 +83,7 @@ async def run(
 
     try:
         code, data = await asyncio.to_thread(
-            g1_rpc.call_velocity, clamped_vx, clamped_vy, clamped_vyaw, clamped_duration
+            g1_rpc.call_set_velocity, clamped_vx, clamped_vy, clamped_vyaw, clamped_duration
         )
         if code != 0:
             task.status = "failed"
@@ -106,7 +106,7 @@ async def run(
         if cancelled:
             # Firmware would stop on its own once clamped_duration elapses, but
             # don't wait it out — command zero velocity immediately.
-            await asyncio.to_thread(g1_rpc.call_velocity, 0.0, 0.0, 0.0, 0.5)
+            await asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5)
             task.status = "cancelled"
             task.phase = "cancelled"
         else:
@@ -131,7 +131,7 @@ async def run(
         task.ended_at = time.time()
         log.exception("walk_velocity.failed", task_id=task.task_id)
         try:
-            await asyncio.to_thread(g1_rpc.call_velocity, 0.0, 0.0, 0.0, 0.5)
+            await asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5)
         except Exception:
             pass
         return task.to_dict()
