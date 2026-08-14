@@ -49,6 +49,44 @@ cp .env.example .env
 
 ## Running
 
+### Driving the REAL robot from Claude Code
+
+`.mcp.json` defines two servers, and the distinction is a safety property rather
+than bookkeeping — the tool names tell you which machine you are about to move:
+
+| Server        | Tools                   | Target                                        |
+| ------------- | ----------------------- | --------------------------------------------- |
+| `c3po-bridge` | `mcp__c3po-bridge__*`   | Isaac Sim. Spawned locally, `SIM_MODE=isaac`   |
+| `c3po-robot`  | `mcp__c3po-robot__*`    | **The real G1**, over HTTP to the onboard bridge |
+
+`c3po-bridge` can never reach the real robot no matter what you set: it runs on
+your Mac, and the control board publishes DDS only on the robot's internal wired
+LAN (`CLAUDE.md`, topology). The bridge has to run onboard. So `c3po-robot`
+points at the onboard daemon through an SSH tunnel:
+
+```bash
+# Keep this running in its own terminal. ControlMaster=no matters — a forward
+# on the shared master evaporates when the master idles out, and the MCP server
+# then fails with no obvious cause.
+ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po
+```
+
+Then start the bridge onboard (`run_c3po`) and reconnect MCP in Claude Code.
+Without the tunnel, `c3po-robot` simply fails to connect.
+
+**Why not spawn it over SSH instead**, which would need no tunnel:
+
+```jsonc
+// Tempting. Do not do this.
+{ "command": "ssh", "args": ["c3po", "bash -lc '… python -m bridge.mcp_server'"] }
+```
+
+That starts a *second* bridge process on the robot alongside the one `run_c3po`
+manages — two processes able to command the legs through the same API, which is
+the exact condition `warn_if_other_commander` and `stray_bridge_pids` exist to
+prevent (`docs/DEPLOYMENT.md` §2). One bridge, reached over a tunnel, keeps the
+actuation chokepoint singular.
+
 ### As an MCP server for Claude Code (recommended)
 
 The repo's `.mcp.json` already has a `c3po-bridge` entry that points here. With the bridge configured, Claude Code auto-launches it on startup; tools like `mcp__c3po-bridge__get_state` and `walk_to` become available in the session.
