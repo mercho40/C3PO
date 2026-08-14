@@ -34,11 +34,11 @@ def test_on_sim_state_parses_nested_json_string_and_updates_pose():
 
     sampler._on_sim_state(_msg(outer))
 
-    assert sampler._sim.x_meters_world == 1.5
-    assert sampler._sim.y_meters_world == 2.5
-    assert sampler._sim.z_meters_world == 0.78
-    assert sampler._sim.yaw_radians_world == pytest.approx(0.0)
-    assert sampler._sim.raw_message_count == 1
+    assert sampler._pose.x_meters_world == 1.5
+    assert sampler._pose.y_meters_world == 2.5
+    assert sampler._pose.z_meters_world == 0.78
+    assert sampler._pose.yaw_radians_world == pytest.approx(0.0)
+    assert sampler._pose.raw_message_count == 1
 
 
 def test_on_sim_state_accepts_inner_dict_not_only_json_string():
@@ -48,8 +48,8 @@ def test_on_sim_state_accepts_inner_dict_not_only_json_string():
 
     sampler._on_sim_state(_msg(outer))
 
-    assert sampler._sim.x_meters_world == 3.0
-    assert sampler._sim.y_meters_world == 4.0
+    assert sampler._pose.x_meters_world == 3.0
+    assert sampler._pose.y_meters_world == 4.0
 
 
 def test_on_sim_state_computes_yaw_from_quaternion():
@@ -59,7 +59,7 @@ def test_on_sim_state_computes_yaw_from_quaternion():
 
     sampler._on_sim_state(_msg(outer))
 
-    assert sampler._sim.yaw_radians_world == pytest.approx(math.pi / 2, abs=1e-6)
+    assert sampler._pose.yaw_radians_world == pytest.approx(math.pi / 2, abs=1e-6)
 
 
 def test_on_sim_state_malformed_json_does_not_crash_or_update():
@@ -67,7 +67,7 @@ def test_on_sim_state_malformed_json_does_not_crash_or_update():
 
     sampler._on_sim_state(SimpleNamespace(data="not json at all"))  # must not raise
 
-    assert sampler._sim.raw_message_count == 0
+    assert sampler._pose.raw_message_count == 0
 
 
 def test_on_sim_state_missing_expected_keys_does_not_crash_or_update():
@@ -76,7 +76,7 @@ def test_on_sim_state_missing_expected_keys_does_not_crash_or_update():
 
     sampler._on_sim_state(_msg(outer))  # KeyError swallowed, not propagated
 
-    assert sampler._sim.raw_message_count == 0
+    assert sampler._pose.raw_message_count == 0
 
 
 def test_on_sim_state_short_pose_array_does_not_crash_or_update():
@@ -85,7 +85,7 @@ def test_on_sim_state_short_pose_array_does_not_crash_or_update():
 
     sampler._on_sim_state(_msg(outer))  # ValueError from unpacking, swallowed
 
-    assert sampler._sim.raw_message_count == 0
+    assert sampler._pose.raw_message_count == 0
 
 
 def test_get_state_reflects_sim_pose_after_on_sim_state(monkeypatch):

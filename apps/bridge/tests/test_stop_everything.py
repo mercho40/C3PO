@@ -29,7 +29,7 @@ async def test_stop_everything_cancels_in_flight_walk_velocity(monkeypatch):
     velocity_calls = []
     monkeypatch.setattr(
         g1_rpc,
-        "call_velocity",
+        "call_set_velocity",
         lambda vx, vy, vyaw, duration: (velocity_calls.append((vx, vy, vyaw, duration)) or (0, "")),
     )
     monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")

@@ -54,6 +54,7 @@ EXPECTED_TOOLS = {
     # locomotion
     "walk_to",
     "turn",
+    "walk_velocity",
     # gestures
     "wave",
     "point_at",
