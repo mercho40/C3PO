@@ -146,7 +146,7 @@ def get_state() -> dict:
         cancellable=True,
         expected_duration_s=20.0,
         works_sim=True,
-        works_real=False,
+        works_real=True,
         preconditions=["robot_upright", "battery_pct_gt_15", "no_active_walk_task"],
         typical_failure_modes=["path_blocked", "timeout", "no_pose"],
     )
@@ -449,8 +449,12 @@ async def prepare(ctx: Context) -> dict:
 async def wave(ctx: Context) -> dict:
     """Wave the upper arm — friendly greeting gesture.
 
-    G1 firmware "high wave" (api_id=7106, data=26). Note: arm gestures require
-    a locomotion-active FSM state (Walk / Walk(waist) / Run) on real hardware.
+    G1 firmware `wave_above_head` (api_id=7106, data=26). The robot's own
+    GetActionList reports this action as UNGATED — no FSM and no mode_machine
+    requirement — and it executed on hardware 2026-08-15 from fsm_id 802,
+    taking 7.3 s because the arm service acks on completion of the motion, not
+    on receipt. Only one action in the whole table (`turn_back_wave`, id 1) is
+    FSM-gated.
 
     Isaac Sim: logged only (sim doesn't subscribe to `rt/api/arm/request`).
     """
@@ -467,7 +471,7 @@ async def wave(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=3.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         preconditions=["fsm_state_in_{walk,walk_waist,run}"],
         typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
     )
@@ -500,7 +504,7 @@ async def point_at(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=1.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         preconditions=["fsm_state_is_damp"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
@@ -527,7 +531,7 @@ async def zero_torque(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=0.1,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         typical_failure_modes=["bridge_disconnected", "motion_switcher_no_answer"],
     )
 )
@@ -593,7 +597,7 @@ async def check_motion_mode() -> dict:
         cancellable=False,
         expected_duration_s=3.0,
         works_sim=False,
-        works_real=False,
+        works_real=True,
         preconditions=["fsm_state_is_preparation", "operator_present"],
         typical_failure_modes=["fsm_transition_rejected", "no_motion_controller_loaded"],
     )
@@ -663,7 +667,7 @@ async def balance_stand(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=2.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         preconditions=["fsm_state_is_preparation"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
@@ -690,7 +694,7 @@ async def start_walking(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=3.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         preconditions=["fsm_state_is_damp"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
@@ -717,7 +721,7 @@ async def sit_g1(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=4.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         preconditions=["fsm_state_is_damp"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
@@ -743,7 +747,7 @@ async def lie_up(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=3.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
 )
@@ -753,6 +757,12 @@ async def squat(ctx: Context) -> dict:
     G1 firmware Squat (mode 2) and SquatUp (706) collapse to the same
     physical pose at different control gains. From Squat you can only go to
     Damp on the FSM, so this is a terminal posture until you reset.
+
+    ⚠️ Observed 2026-08-15: sending this from Damp returns rpc code 0 and does
+    NOT transition — `fsm_id` stays 1. That contradicts Unitree's own G1
+    example, which bring-ups via Damp -> Squat2StandUp(706) -> Move. On this
+    robot the route that works is `prepare` (4), then 501. Do not build a
+    bring-up on 706 here.
 
     Isaac Sim: logged only.
     """
