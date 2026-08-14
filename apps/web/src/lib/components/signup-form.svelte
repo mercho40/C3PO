@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from "$app/state";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import * as Field from "$lib/components/ui/field/index.js";
@@ -6,7 +7,9 @@
   import { authClient } from "$lib/auth-client";
 
   let name = $state("");
-  let email = $state("");
+  // Pre-filled when the landing page's email capture hands off here (it has
+  // no waitlist backend of its own -- signup IS the real flow).
+  let email = $state(page.url.searchParams.get("email") ?? "");
   let password = $state("");
   let confirmPassword = $state("");
   let loading = $state(false);
@@ -67,7 +70,13 @@
         </Field.Field>
         <Field.Field>
           <Field.Label for="password">Password</Field.Label>
-          <Input id="password" type="password" required bind:value={password} />
+          <Input
+            id="password"
+            type="password"
+            required
+            minlength={8}
+            bind:value={password}
+          />
           <Field.Description
             >Must be at least 8 characters long.</Field.Description
           >

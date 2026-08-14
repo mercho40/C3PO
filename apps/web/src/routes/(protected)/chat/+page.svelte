@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { replaceState } from "$app/navigation";
+  import { goto, replaceState } from "$app/navigation";
   import { Chat } from "@ai-sdk/svelte";
   import {
     DefaultChatTransport,
@@ -14,12 +14,27 @@
   import { Textarea } from "$lib/components/ui/textarea/index.js";
   import Markdown from "$lib/components/markdown.svelte";
 
+  let sessionExpired = $state(false);
+
   // Talks to the backend internal agent (POST /agent), which streams Claude's
-  // tokens + tool calls back as a UI message stream.
+  // tokens + tool calls back as a UI message stream. A generic
+  // "Failed to fetch"-style error from the AI SDK doesn't tell an operator
+  // whether their session expired or the robot link is down -- intercept
+  // 401 specifically here (before the SDK's own error handling swallows the
+  // distinction into one opaque error) and redirect to re-auth instead of
+  // showing a "Reintentar" button that would just fail the same way again.
   const chat = new Chat({
     transport: new DefaultChatTransport({
       api: `${PUBLIC_API_URL}/agent`,
       credentials: "include",
+      fetch: async (input, init) => {
+        const res = await fetch(input, init);
+        if (res.status === 401) {
+          sessionExpired = true;
+          await goto("/login");
+        }
+        return res;
+      },
     }),
   });
 
@@ -156,7 +171,11 @@
     </div>
   </ScrollArea>
 
-  {#if chat.error}
+  {#if sessionExpired}
+    <div class="flex items-center justify-between gap-3 rounded-[10px] border border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.06)] px-4 py-2.5 text-[12px] text-[#ff8aa0]">
+      <span class="truncate">Sesión expirada, redirigiendo a inicio de sesión...</span>
+    </div>
+  {:else if chat.error}
     <div class="flex items-center justify-between gap-3 rounded-[10px] border border-[rgba(255,77,106,0.3)] bg-[rgba(255,77,106,0.06)] px-4 py-2.5 text-[12px] text-[#ff8aa0]">
       <span class="truncate">{chat.error.message}</span>
       <Button variant="outline" size="sm" class="h-7 shrink-0" onclick={() => chat.regenerate()}>Reintentar</Button>

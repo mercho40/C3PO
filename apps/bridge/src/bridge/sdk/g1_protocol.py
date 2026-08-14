@@ -194,7 +194,18 @@ _LOCOMOTION_MODES: Final[frozenset[int]] = frozenset({Mode.WALK, Mode.WALK_WAIST
 
 
 def can_transition(current_mode: int, target_mode: int) -> bool:
-    """True if the FSM will accept `current → target` directly."""
+    """True if the FSM will accept `current → target` directly.
+
+    Only constrains transitions *into* `_DAMP_TARGETS` and *out of*
+    ZeroTorque/Squat/Damp/Preparation. `Seating`, `Dance`, and `Climb` (used
+    by `sit_g1`, among others) aren't further restricted here beyond "only
+    reachable from Damp" where applicable — e.g. `can_transition(WALK,
+    SEATING)` is `True` from any current mode, so this guard won't catch
+    `sit_g1` firing mid-walk. Deliberate, documented scope limit (see
+    docs/SPEC.md §16.5's diagram note), not an oversight: firmware legality
+    for those three past that point isn't confirmed, so this only encodes
+    the rules that are.
+    """
     if current_mode != Mode.DAMP and target_mode in _DAMP_TARGETS:
         return False
     if current_mode == Mode.ZERO_TORQUE and target_mode != Mode.DAMP:

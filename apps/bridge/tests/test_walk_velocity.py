@@ -82,7 +82,6 @@ async def test_cancel_stops_early_and_sends_zero_velocity(monkeypatch):
         g1_rpc, "call_velocity", lambda vx, vy, vyaw, duration: (calls.append((vx, vy, vyaw, duration)) or (0, ""))
     )
 
-    task_holder = {}
     orig_run = walk_velocity.run
 
     async def run_and_cancel():

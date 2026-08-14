@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invalidateAll } from "$app/navigation";
+  import { goto, invalidateAll } from "$app/navigation";
   import { authClient } from "$lib/auth-client";
 
   let { data } = $props();
@@ -32,8 +32,13 @@
     return () => window.removeEventListener("scroll", onScroll);
   });
 
+  // There's no waitlist backend -- this product already has a real signup
+  // flow, so the landing form's job is just to hand the typed email off to
+  // it instead of silently swallowing the submit.
   function handleWaitlist(e: SubmitEvent) {
     e.preventDefault();
+    const params = email ? `?email=${encodeURIComponent(email)}` : "";
+    goto(`/signup${params}`);
   }
 </script>
 

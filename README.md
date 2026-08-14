@@ -70,6 +70,7 @@ The bridge runs separately — as an MCP server registered in `.mcp.json` (auto-
 | `bun run dev`         | Start TS apps in development      |
 | `bun run build`       | Build TS apps                     |
 | `bun run check-types` | Type-check across monorepo        |
+| `bun run test`        | Run all test suites (`apps/back`'s `bun test` + `apps/bridge`'s `pytest`, via Turbo) |
 | `bun run format`      | Format with Prettier              |
 | `bun run start`       | Start production (requires build) |
 

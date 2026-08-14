@@ -16,13 +16,24 @@ Today:
   request topic, so for `SIM_MODE=isaac` we log the intended dispatch and
   return `status=completed phase=logged_only`. Honest stub — no false
   motion claims.
-- For `SIM_MODE=real`, we'd publish a `unitree_api::msg::dds_::Request_`
-  on the resolved topic. That path waits for the Transport layer (Phase
-  16 in spec); we raise `NotImplementedError` so we don't silently no-op
-  against real hardware.
+- For `SIM_MODE=real`, we dispatch a live RPC via `bridge.sdk.g1_rpc`
+  (`call_sport`/`call_arm`) on the resolved topic — this actually moves
+  the robot. Before dispatching a mode-changing (`sport_request`) or
+  gesture (`arm_request`) call, we check the request against `_LAST_MODE`
+  (see below) using `g1_protocol.can_transition`/`is_locomotion_state`,
+  and reject client-side with `phase=invalid_transition` instead of
+  firing an RPC we already know the firmware will refuse.
 - For `SIM_MODE=stub`, we return a clean stub result.
 
-When the Transport layer lands, this file is the only place to change.
+`_LAST_MODE` is a best-effort, in-process shadow of the last mode we
+successfully commanded — NOT verified telemetry. Real-G1 FSM state
+currently has no DDS-decodable source (see `state.py`'s
+`not_available_over_dds` posture value); it only ships over WebRTC, which
+isn't wired up yet. So `_LAST_MODE` starts `None` (unknown) and the
+precondition check is skipped whenever it's `None` — dispatch proceeds and
+the firmware remains the final authority, same as before this check
+existed. Once real telemetry lands, replace `_LAST_MODE` with a read from
+that instead of trusting our own dispatch history.
 """
 
 from __future__ import annotations
@@ -39,6 +50,10 @@ from bridge.skills.task_runtime import get_registry
 log = structlog.get_logger(__name__)
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
+
+# Best-effort shadow of the last mode we successfully commanded on real
+# hardware. See the module docstring for why this exists and its limits.
+_LAST_MODE: int | None = None
 
 
 async def run_g1_request(
@@ -109,6 +124,47 @@ async def run_g1_request(
             task.ended_at = time.time()
             return task.to_dict()
 
+        # Client-side FSM precondition check — best-effort, see `_LAST_MODE`'s
+        # docstring above. Skipped entirely when `_LAST_MODE` is unknown.
+        global _LAST_MODE
+        if _LAST_MODE is not None:
+            invalid = False
+            if request.topic_kind == "sport_request" and not g1_protocol.can_transition(
+                _LAST_MODE, request.data
+            ):
+                invalid = True
+            elif request.topic_kind == "arm_request" and not g1_protocol.is_locomotion_state(_LAST_MODE):
+                invalid = True
+
+            if invalid:
+                task.status = "failed"
+                task.phase = "invalid_transition"
+                task.progress = 1.0
+                task.result = {
+                    "topic_kind": request.topic_kind,
+                    "api_id": request.api_id,
+                    "param": request.param_json(),
+                    "from_mode": _LAST_MODE,
+                    "from_mode_label": g1_protocol.mode_label(_LAST_MODE),
+                    "to_mode": request.data,
+                    "to_mode_label": (
+                        g1_protocol.gesture_label(request.data)
+                        if request.topic_kind == "arm_request"
+                        else g1_protocol.mode_label(request.data)
+                    ),
+                    "note": "Rejected client-side: the FSM does not allow this transition from the last commanded mode.",
+                }
+                task.error = "invalid_transition"
+                task.ended_at = time.time()
+                log.warning(
+                    "g1_request.invalid_transition",
+                    task_id=task.task_id,
+                    skill_name=skill_name,
+                    from_mode=_LAST_MODE,
+                    to_mode=request.data,
+                )
+                return task.to_dict()
+
         # SIM_MODE=real and topic resolved → dispatch via direct DDS RPC
         # (unitree_sdk2py.rpc.client.Client — same base Go2's SportClient
         # uses; no WebRTC involved, see bridge.sdk.g1_rpc). _Call blocks
@@ -135,6 +191,9 @@ async def run_g1_request(
         }
         if code != 0:
             task.error = f"rpc_error_code_{code}"
+        else:
+            if request.topic_kind == "sport_request":
+                _LAST_MODE = request.data
         task.ended_at = time.time()
         return task.to_dict()
 

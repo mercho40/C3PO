@@ -662,6 +662,28 @@ At Step B, the `env` block changes to `SIM_MODE=isaac` and adds `ROBOT_HOST` etc
 
 ## 9. Wire formats
 
+### Status: bridge↔back link superseded by MCP-over-HTTP (2026-08-14)
+
+This section (and §10's port table) was written around a planned custom
+WebSocket protocol between `apps/back` and `apps/bridge` — `BRIDGE_WS_URL`,
+port 7077, `execute_skill`/`SkillEvent` JSON envelopes. That was never
+built. What actually ships: `apps/bridge`'s FastMCP server exposes its
+tools over **streamable HTTP** at `BRIDGE_URL` (default
+`http://127.0.0.1:8000/mcp`, `BRIDGE_TRANSPORT=http`), and
+`apps/back/src/bridge/client.ts` connects to it as a standard MCP client
+(`@modelcontextprotocol/sdk`) — one shared `Client` + `StreamableHTTPClientTransport`
+session, reconnected lazily on failure (see `getClient`/`callTool` there).
+`apps/back/src/routes/skills.ts` calls `callTool(name, args)` per skill
+invocation; there is no separate `execute_skill`/`SkillEvent` envelope —
+the MCP tool call/result *is* the envelope, and progress rides MCP's own
+`notifications/progress` (§9's "MCP tool call" subsection below was
+already accurate about this part).
+
+The diagrams and REST/WS wire shapes immediately below (skill invocation,
+`Eden REST → bridge WS`) describe the old, unbuilt design — read them as
+historical context for the intended shape, not as documentation of what
+`callTool`/the bridge's MCP server actually send today.
+
 ### Skill invocation, visually
 
 ```mermaid
@@ -740,17 +762,23 @@ Long-running tools use `progressToken`; the server emits MCP `notifications/prog
 
 ## 10. Network ports & topology
 
+As of 2026-08-14, the `apps/back`→`apps/bridge` MCP row and the
+`apps/bridge` MCP rows below are what's real; the two WS rows were planned
+but never built (see §9's status note) — kept here as the original plan,
+not current behavior.
+
 | Service           | Host   | Port  | Transport              | Auth                    |
 | ----------------- | ------ | ----- | ---------------------- | ----------------------- |
 | `apps/back` HTTP  | Mac    | 3000  | HTTP                   | Better Auth cookie      |
-| `apps/back` WS    | Mac    | 3000  | WebSocket (`/ws/*`)    | cookie at upgrade       |
-| `apps/back` MCP   | Mac    | 3000  | streamable HTTP `/mcp` | API token               |
+| `apps/back` WS *(planned, not built)* | Mac | 3000 | WebSocket (`/ws/*`) | cookie at upgrade |
+| `apps/back`→`apps/bridge` MCP client | Mac | — | connects out to `BRIDGE_URL` | none (loopback) |
 | `apps/web` dev    | Mac    | 3001  | HTTP (Vite)            | —                       |
-| `apps/bridge` WS  | Mac    | 7077  | WebSocket              | shared token (loopback) |
-| `apps/bridge` MCP | Mac    | stdio | stdio                  | implicit (process)      |
+| `apps/bridge` MCP (`BRIDGE_TRANSPORT=http`) | Mac | 8000 | streamable HTTP `/mcp` | none (loopback) |
+| `apps/bridge` WS *(planned, not built — see §9)* | Mac | 7077 | WebSocket | shared token (loopback) |
+| `apps/bridge` MCP (`BRIDGE_TRANSPORT=stdio`, default) | Mac | stdio | stdio | implicit (process) |
 | Isaac Sim DDS     | Ubuntu | 7400+ | UDP (CycloneDDS)       | none (LAN)              |
 
-`apps/bridge` binds to **127.0.0.1** by default — never public. The bridge↔back link is loopback-only on the dev machine, with a shared header token to prevent another local process from connecting.
+`apps/bridge` binds to **127.0.0.1** by default — never public. The bridge↔back link is loopback-only on the dev machine. Unlike the originally-planned shared-token WS auth, the actual MCP-over-HTTP link has no auth of its own today — acceptable only because it never leaves loopback; see §10.1 for why that stops being true on real hardware and what has to change.
 
 ### 10.1 Real hardware (`SIM_MODE=real`)
 
@@ -857,7 +885,7 @@ These map to the plan file but are restated with the Isaac-Sim-on-Ubuntu reality
 | 0a    | `apps/bridge` scaffold + stub MCP server registered in `.mcp.json`   | Claude Code calls `walk_to` stub, sees fake result            | 1 day  |
 | 0b    | DDS peer config + Isaac Sim handshake (`get_state` real)             | `get_state` returns real pose from Isaac Sim                  | 2-3 d  |
 | 1     | `walk_to` real, full ABI: task_id, progress, cancel                  | Robot in Isaac walks, progress streams, cancel works          | 1-2 wk |
-| 2     | Remaining ~11 skills + safety envelopes + landmark seed              | All skills exercised via MCP and tested                       | 2-3 wk |
+| 2     | Remaining skills + safety envelopes + landmark seed (skill count undercounted here as of 2026-08-14 — `apps/bridge/README.md`'s own "Phase status" checklist tracks the live count; don't trust the "~11" below) | All skills exercised via MCP and tested                       | 2-3 wk |
 | 3     | `@repo/shared` + `apps/back` skill registry + agent runtime + memory | Operator types in supervisor UI, Claude decomposes & executes | 2-3 wk |
 | 4     | Voice loop (wake → STT → agent → TTS) + reflex cancel                | Spoken command works end-to-end                               | 2-3 wk |
 | 5     | Elysia-side MCP adapter + API tokens                                 | Claude Desktop drives the robot via the orchestrated path     | 1 wk   |
@@ -1009,6 +1037,7 @@ Wire-format helpers we already shipped:
 - `bridge.sdk.g1_protocol.topics_for(SIM_MODE)` — real-G1 topic profile.
 - `bridge.sdk.g1_protocol.SKILL_REQUESTS["damp" | "wave" | ...]` — pre-built `(topic_kind, api_id, param)` triples for each skill.
 - `bridge.sdk.faults.decode(record)` — for the `errors` / `add_error` / `rm_error` stream that arrives over the DataChannel.
+- `bridge.skills.walk_velocity` (added 2026-08) — the one real-hardware locomotion skill implemented so far (`walk_to`/`turn` are still sim-only, blocked on world-frame pose — §17.2.1). Open-loop body-frame `SetVelocity`, `api_id=7105` on the same `rt/api/sport/request` service as postures (`API_ID_G1_STATE=7101`), param `{"velocity": [vx, vy, vyaw], "duration": seconds}`. Hard-capped independent of caller input: `vx`/`vy`/`vyaw` to ±0.3 (m/s or rad/s, matching xr_teleoperate's own controller-button safety cap), `duration_s` to ≤3s per call. No pose feedback, so it's deliberately blind and short-leash — an agent wanting sustained motion calls it repeatedly, checking `get_state()` between calls. Mirrored on the TS side as `apps/back/src/skills/walk-velocity.ts` (`works: { sim: false, real: true }`).
 
 ### 16.4 Cutover strategy
 
@@ -1080,6 +1109,21 @@ stateDiagram-v2
 ## 17. Peripheral connection paths
 
 The robot has more than locomotion — camera, mic, speakers, LiDAR. Plan per peripheral, with the **bridge as the multiplexer**: it owns every connection to the robot and re-exposes streams to the supervisor UI / agent / VLM consumers.
+
+### Status (2026-08-14): none of this is built yet, and the one thing that IS live works differently
+
+Everything below — the WebRTC transport, aiortc track relay, wake-word/STT/TTS
+pipeline, LiDAR decode, hand poses — is still the **planned** design; none of
+it exists in `apps/bridge` today (the bridge is DDS-only, see §16). The one
+peripheral that's actually usable right now is the **sim-mode camera view**,
+and it does *not* go through the bridge as §17.6 below describes: in
+`apps/web/src/routes/(protected)/live-camera/+page.svelte`, the browser
+connects **directly** to Isaac Sim's `teleimager` WebRTC ports
+(60001–60003) — `apps/back`/`apps/bridge` aren't in that path at all.
+Real-hardware camera streaming (via the robot's actual WebRTC video
+transceiver, as §17.1 describes) has no implementation yet; the live-camera
+page detects `SIM_MODE=real` and shows an honest "not available" message
+instead of attempting the sim-only connection.
 
 ### 17.1 Camera (Intel RealSense D435i)
 

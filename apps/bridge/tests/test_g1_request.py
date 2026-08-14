@@ -21,6 +21,14 @@ from bridge.sdk import g1_protocol, g1_rpc
 from bridge.skills import _g1_request
 
 
+@pytest.fixture(autouse=True)
+def _reset_last_mode(monkeypatch):
+    # _LAST_MODE is a module-level shadow of the last commanded mode, used
+    # by the FSM precondition check below — reset it before every test so
+    # tests can't leak state into each other via shared process memory.
+    monkeypatch.setattr(_g1_request, "_LAST_MODE", None)
+
+
 @pytest.mark.asyncio
 async def test_stub_mode_is_clean_fake_no_dispatch(monkeypatch):
     monkeypatch.setattr(_g1_request, "SIM_MODE", "stub")
@@ -110,3 +118,78 @@ async def test_real_mode_squat_sends_verified_mode_index(monkeypatch):
 
     assert seen["mode"] == 706
     assert seen["mode"] == g1_protocol.Mode.SQUAT_UP
+
+
+@pytest.mark.asyncio
+async def test_real_mode_unknown_last_mode_does_not_block_dispatch(monkeypatch):
+    # _LAST_MODE starts None (reset by the autouse fixture) — the
+    # precondition check must be skipped entirely, same as before it existed.
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: (0, ""))
+
+    result = await _g1_request.run_g1_request("damp")
+
+    assert result["status"] == "completed"
+    assert result["phase"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_real_mode_rejects_invalid_transition_without_dispatching(monkeypatch):
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(_g1_request, "_LAST_MODE", g1_protocol.Mode.WALK)
+    called: list[int] = []
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: called.append(mode) or (0, ""))
+
+    # From Walk, ZeroTorque isn't a legal direct transition (must go via Damp).
+    result = await _g1_request.run_g1_request("zero_torque")
+
+    assert called == []  # RPC never invoked
+    assert result["status"] == "failed"
+    assert result["phase"] == "invalid_transition"
+    assert result["error"] == "invalid_transition"
+    assert result["result"]["from_mode"] == g1_protocol.Mode.WALK
+    assert result["result"]["to_mode"] == g1_protocol.Mode.ZERO_TORQUE
+    assert result["result"]["to_mode_label"] == "zero_torque"
+
+
+@pytest.mark.asyncio
+async def test_real_mode_allows_valid_transition_and_updates_last_mode(monkeypatch):
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(_g1_request, "_LAST_MODE", g1_protocol.Mode.DAMP)
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: (0, ""))
+
+    result = await _g1_request.run_g1_request("prepare")  # Damp -> Preparation is legal
+
+    assert result["status"] == "completed"
+    assert result["phase"] == "dispatched"
+    assert _g1_request._LAST_MODE == g1_protocol.Mode.PREPARATION
+
+
+@pytest.mark.asyncio
+async def test_real_mode_arm_gesture_rejected_outside_locomotion_state(monkeypatch):
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(_g1_request, "_LAST_MODE", g1_protocol.Mode.DAMP)  # not a locomotion state
+    called: list[int] = []
+    monkeypatch.setattr(g1_rpc, "call_arm", lambda gesture: called.append(gesture) or (0, ""))
+
+    result = await _g1_request.run_g1_request("wave")
+
+    assert called == []
+    assert result["phase"] == "invalid_transition"
+    # Regression: to_mode_label must use gesture_label() for arm requests,
+    # not mode_label() -- Gesture.HIGH_WAVE (26) isn't a Mode index, and
+    # mode_label(26) silently produces "unknown(26)" instead of "high_wave".
+    assert result["result"]["to_mode"] == g1_protocol.Gesture.HIGH_WAVE
+    assert result["result"]["to_mode_label"] == "high_wave"
+
+
+@pytest.mark.asyncio
+async def test_real_mode_arm_gesture_allowed_during_locomotion(monkeypatch):
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(_g1_request, "_LAST_MODE", g1_protocol.Mode.WALK)
+    monkeypatch.setattr(g1_rpc, "call_arm", lambda gesture: (0, ""))
+
+    result = await _g1_request.run_g1_request("wave")
+
+    assert result["status"] == "completed"
+    assert result["phase"] == "dispatched"

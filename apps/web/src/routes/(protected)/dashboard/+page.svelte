@@ -79,7 +79,23 @@
       const { error } = await createApi(fetch)
         .skills({ name: "stop_everything" })
         .invoke.post({});
-      stopMsg = error ? "Error al detener" : "Movimiento detenido";
+      if (!error) {
+        stopMsg = "Movimiento detenido";
+      } else if ((error.status as number) === 401) {
+        // Session expired mid-session -- a generic "Error al detener" here
+        // would read as "the robot didn't stop", when the real problem is
+        // "you're not logged in anymore". Send the operator to re-auth
+        // instead of leaving them to retry a request that will keep failing.
+        stopMsg = "Sesión expirada, redirigiendo...";
+        await goto("/login");
+      } else if ((error.status as number) >= 500) {
+        // bridge_unavailable / bridge_error / tool_error -- the robot link
+        // is down, not an auth problem. Distinct message so the operator
+        // knows to check the robot connection, not their login.
+        stopMsg = "Robot no disponible";
+      } else {
+        stopMsg = "Error al detener";
+      }
     } catch {
       stopMsg = "Error al detener";
     } finally {

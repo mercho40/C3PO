@@ -31,6 +31,13 @@ log = structlog.get_logger(__name__)
 # Matches xr_teleoperate's own default safety cap on its controller-button
 # locomotion scheme (0.3, see xr_teleoperate issue #135) — not a sim-tuned
 # number, an actual precedent for "safe on this real hardware."
+#
+# NOTE: walk_to/turn (`_locomotion.py`) use a *different*, 3-5x higher cap
+# set (MAX_FWD_VEL=1.0, MAX_YAW_VEL=1.57) tuned against Isaac Sim. That's
+# harmless today because walk_to/turn publish to a sim-only channel that's
+# unsubscribed on real hardware. Once real-mode pose is wired for walk_to/
+# turn (README "Phase 1b"), reconcile these two cap sets before they can
+# both fire against real hardware — see `_locomotion.py`'s matching note.
 MAX_LINEAR_VEL = 0.3  # m/s, vx/vy
 MAX_YAW_VEL = 0.3  # rad/s
 
