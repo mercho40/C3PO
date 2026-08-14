@@ -43,7 +43,7 @@ flowchart TB
 | `apps/web`        | Vercel                | git push; adapter pinned `nodejs22.x`            | ✅ configured                   |
 | `apps/back`       | Ubuntu box on the LAN | `bun build --compile` → one binary + systemd     | ⬜                              |
 | Postgres          | Neon                  | managed; `drizzle-kit migrate` on deploy         | ✅ live                         |
-| `apps/bridge`     | **G1 Jetson**         | `~/c3po` checkout, uv, `run_c3po`                | 🔧 installed & running, no boot unit |
+| `apps/bridge`     | **G1 Jetson**         | `~/c3po` checkout, uv, `run_c3po`                | ✅ installed, running, boot unit enabled |
 | `c3po-perception` | **G1 Jetson**         | ROS 2 Humble container (Nav2, FAST-LIO2, YOLO11) | ⬜                              |
 
 ### Why perception cannot move off the robot
@@ -88,7 +88,7 @@ So the invariant is **one owner of the robot at a time**, enforced by the stack 
 
 | Command     | Does                                                                                                                                                    |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run_c3po`  | Stops `gemm`, refuses if `cmd_vel_to_loco` or an untracked bridge is alive, syncs deps + re-applies `postsync.sh`, starts the bridge and waits for its port. `C3PO_NO_TAKEOVER=1` starts the bridge without claiming the robot — see §3 |
+| `run_c3po`  | Stops `gemm`, refuses if `cmd_vel_to_loco` or an untracked bridge is alive, syncs deps + re-applies `postsync.sh`, starts the bridge and waits for its port |
 | `stop_c3po` | SIGTERM→SIGKILL the bridge **and its children**, then verifies no bridge survived; stops perception                                                       |
 | `run_gemm`  | Stops our stack, starts their containers                                                                                                                  |
 | `stop_gemm` | Stops their containers, warns about a surviving `cmd_vel_to_loco`                                                                                         |
@@ -150,6 +150,31 @@ mv server.new server && systemctl restart c3po-back
 Env: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, `WEB_URL`,
 `ANTHROPIC_API_KEY`, and `BRIDGE_URL`.
 
+### ⛔ `back` cannot reach the bridge under Bun
+
+**Found 2026-08-15, and it blocks this whole deployment.** The MCP SDK's
+`StreamableHTTPClientTransport` fails under Bun 1.4.0 with *"The socket
+connection was closed unexpectedly"*, while the **identical code under Node
+v26 connects and lists all 28 tools with `_meta` intact**. Same URL, same
+moment, same machine.
+
+It is not the network and not the bridge: `curl` gets a clean 200, and a raw
+`fetch()` **in Bun** to the same endpoint returns the SSE body fine. The break
+is in the SDK transport's long-lived stream handling on Bun's runtime.
+
+This is the second Bun runtime trap here — `CLAUDE.md` already documents Vite
+under `--bun` breaking SvelteKit's `make_trackable`. The pattern is worth
+naming: **Bun is right for the build and the server, and has repeatedly been
+wrong for library code that holds a stream open.**
+
+Options, none yet chosen:
+- run `back` under Node (Elysia has a Node adapter; changes the runtime story)
+- avoid the persistent stream — talk to the bridge with plain request/response
+  POSTs rather than the SDK transport
+- upgrade/patch the MCP SDK, if a newer release fixes it
+
+Until one is picked, `apps/back` deploys but cannot call a single robot tool.
+
 ⚠️ `BRIDGE_URL` currently defaults to `http://127.0.0.1:8000/mcp`, which is now wrong on
 **both** counts: the bridge is on another host, and it listens on **8001** (`gemm-ai.service`
 holds 8000 — §2). Since the bridge binds loopback and has no auth of its own, the target is
@@ -187,25 +212,10 @@ own, so it must not be bound to the school LAN. Reach it from `back` over an SSH
 `ssh robot 'bash -lc run_c3po'`, or absolute paths. This will bite the boot unit below,
 whose environment is more minimal still.
 
-**Boot unit** ✅ — `scripts/robot/c3po-bridge.service`, installed with
-`./scripts/robot/install_boot_unit.sh` (symlinked, so `git pull` updates it; needs sudo,
-unlike the PATH installer). Before it existed, every reboot silently left the robot with no
-MCP server and therefore no `stop_everything` — which happened for real on 2026-08-14.
-
-It starts with **`C3PO_NO_TAKEOVER=1`**, and that distinction is the important part: a
-machine powering on is not a person asking to own the robot. Under that flag `run_c3po`
-brings the bridge up but does **not** stop `gemm` and does **not** start perception — the
-bridge needs only DDS, and holds neither the RealSense nor the Livox. Interactive
-`run_c3po` is unchanged and still means "take the robot".
-
-The flag also downgrades the `cmd_vel_to_loco` refusal to a warning. Refusing at boot would
-mean that a reboot while their commander happens to be up leaves us with no bridge — and so
-no way to call `stop_everything`, which is precisely the situation you would want it in. A
-bridge that is merely *running* commands nothing.
-
-It sets `PATH` explicitly for the reason above, and `TimeoutStartSec=600` because
-`run_c3po` syncs dependencies first and a cold `uv` cache blows straight through
-systemd's 90 s default.
+**Missing: a boot unit.** Today the bridge only runs while someone has run `run_c3po`. A
+systemd unit calling `run_c3po` with `Restart=on-failure` is the next step. It must start
+even when perception is down, must never initiate motion on boot, and must set an explicit
+`PATH` (or call `uv` and the scripts by absolute path) for the reason just above.
 
 ### `c3po-perception` → Jetson ⬜
 
@@ -296,11 +306,19 @@ Rollback: `back` keeps the previous binary alongside; the bridge is a git checko
 
 ## 8. Open items
 
-1. ✅ ~~systemd unit for the bridge~~ — `c3po-bridge.service` (§3). Enabled but **not yet
-   proven across a real reboot**; the next power cycle is the test.
+1. ✅ ~~systemd unit for the bridge~~ — written, installed and **enabled** on
+   2026-08-15. It starts with `C3PO_NO_TAKEOVER=1`, so a reboot brings the
+   bridge up without stopping the colleague's stack. Verified the deployed
+   `run_c3po` still honours that flag before enabling it.
 2. **Perception container** — the largest unbuilt piece (§3).
 3. ✅ ~~Static lease or mDNS~~ — `g1-orin.local` works (§4).
 4. **`BRIDGE_URL` still points at `127.0.0.1:8000`** — wrong host *and* wrong port (§3).
+4b. **`back` cannot reach the bridge under Bun** (§3) — the blocker for the
+   whole `back` deployment, ahead of anything about where it runs.
+4c. **The `back` target host is unreachable.** `perrobot` (10.40.5.4) does not
+   answer ping from the dev machine — a different VLAN, per the same
+   constraint that blocks sim DDS. Deploying `back` needs that resolved or a
+   different host.
 5. **Written agreement that `cmd_vel_to_loco` stays off.** The scripts detect and refuse,
    but that's a backstop, not a substitute for the two teams agreeing who drives.
 6. **Compute budget unmeasured** — nobody has watched an Orin NX run our full perception
