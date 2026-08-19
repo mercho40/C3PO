@@ -122,6 +122,33 @@ port is **8001**, not the code default of 8000 — `gemm-ai.service` holds 8000 
 Keep it bound to loopback. The bridge can command the robot's legs and has no authentication
 of its own, so it should be reached over an SSH tunnel rather than bound to a shared LAN.
 
+### The teleop stream (Quest arm mirroring)
+
+A third process, beside the MCP server and the camera relay:
+
+```bash
+uv run python -m bridge.teleop.server     # WebSocket on 127.0.0.1:8767
+```
+
+It carries head yaw, both wrists and finger closure from the headset at ~30 Hz
+and is the only commander of locomotion while a session is open. Deliberately
+not MCP: a stream of expiring setpoints is a different shape from a task, and
+routing it through JSON-RPC would put a round-trip and a task-registry entry in
+front of every frame. Loopback-bound with no auth of its own — tunnel it, same
+as 8001 and 8766.
+
+**Both hardware paths are off by default**, and stay off until a person has
+verified what the documentation cannot tell us:
+
+| Path | Gate | What has to happen first |
+| --- | --- | --- |
+| Arms (`rt/arm_sdk`) | `TELEOP_ARM_ENABLED=1` + `SIM_MODE=real` | `scripts/arm_sign_check.py` — no source gives the positive direction of any G1 arm joint |
+| Fingers | `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE` | `scripts/hand_probe.py` — which hands are fitted is unresolved, and the two candidates disagree on topic, type, motor count *and units* |
+
+With neither set, the stream still runs: head yaw turns the robot and the walk
+axis drives it, which is the part that rides on already-vetted machinery
+(`_locomotion.send_velocity_async`, the same hardware clamp `walk_to` uses).
+
 ### Direct skill calls (no MCP)
 
 ```python
@@ -139,9 +166,15 @@ print(result)
 | `scripts/dds_scan.py`         | List DDS participants + topics across candidate domains — diagnose which domain Isaac Sim is on, what topics it publishes/subscribes |
 | `scripts/peek_sim_state.py`   | Subscribe to `rt/sim_state` and print decoded pose JSON                                                                              |
 | `scripts/rotate.py <radians>` | Rotate the robot in place by a yaw delta (e.g. `python scripts/rotate.py 1.5708` for 90° CCW)                                        |
+| `scripts/peek_camera_relay.py` | Connect to a running `camera_relay` over WebSocket for 5s, print frame count/size/fps — sanity-check the relay before trusting `/vr-control`'s camera panel |
+| `scripts/vr_smoke_test.py`    | **Supervised first-motion ladder** for the VR teleop path: read-only → speech → `wave` → `dance` → first `walk_velocity` → stop path. Prompts before every escalation, refuses to run against a stub, aborts on the first failure. Run it standing next to the robot with the e-stop in reach; `--skip-legs` omits the only stage that commands the legs |
+| `scripts/hand_probe.py`       | **Settle which hands are fitted.** Subscribes passively to every candidate hand state topic (Dex3, BrainCo, Inspire) for 15s and publishes nothing at all. One received message decides an argument `docs/ROBOT-PERIPHERALS.md` §4 has never been able to close, and until it is closed `teleop/hands.py` refuses to drive any finger. A positive result is conclusive; silence is not |
+| `scripts/arm_sign_check.py`   | **Settle the arm joint sign conventions.** Engages `rt/arm_sdk` from the measured pose, moves ONE joint by 12 degrees, holds, asks which way it went, returns to neutral. Prints a `JOINT_SIGNS` block to paste into `teleop/retarget.py`. Every prompt defaults to abort. Run it standing next to a **standing** robot with the e-stop in reach — `arm_sdk` while walking is a reported balance loss |
 | `scripts/postsync.sh`         | Patch unitree_sdk2py's broken `__init__.py` after `uv sync`                                                                          |
 
-All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set in the environment.
+All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set in the environment,
+except `peek_camera_relay.py`, which only needs `CAMERA_RELAY_HOST`/`CAMERA_RELAY_PORT` (both optional,
+same defaults as the relay itself).
 
 ## Tests
 
@@ -163,6 +196,10 @@ No DDS/hardware needed — everything that touches DDS is monkeypatched (`unitre
 - [x] **Phase 1b-workaround (2026-08-13)** — `walk_velocity` sidesteps the pose blocker entirely: an open-loop body-frame velocity command (`bridge.sdk.g1_rpc.call_velocity`, api_id `7105`/`SetVelocity`, discovered in `unitree_sdk2py.g1.loco.g1_loco_client.LocoClient` during VR-teleop research) on the **same verified-live DDS RPC channel** as the posture commands — no pose feedback needed because it doesn't try to reach a target, just sustains a velocity for a capped duration (same pattern Unitree's own `xr_teleoperate` uses for its controller-button locomotion). Clamped hard to 0.3 m/s / 0.3 rad/s / 3s per call regardless of what's requested — no closed loop means no way to self-correct, so blind commands stay small. **Not yet live-tested** — `SetVelocity` itself hasn't been dispatched against real hardware (unlike `SetFsmId`/postures, which are verified); first live call should be a short, small `vx` before trusting this further. Doesn't replace Phase 1b — `walk_to`/`turn`'s closed-loop, arrive-at-a-target behavior still needs real pose.
 - [ ] **Phase 1c** — rest of the skill catalogue polish: `look`, `describe_scene`; MCP `progressToken` streaming for more skills
 - [x] `remember_landmark`/`recall_landmark` (+ `list_landmarks`/`forget_landmark`) — done 2026-08-08
+- [x] **VR teleop, `apps/web`'s `/vr-control` (2026-08-19)** — Quest 3 control surface built on the existing skill catalogue, no new bridge protocol: hold-to-walk buttons and WebXR head-yaw turning both dispatch `walk_velocity`, presets dispatch `wave`/`shake_hand`/`hug`/`clap`/the new `dance` skill (below). **Not yet live-tested** — built and unit-tested against a Jetson that wasn't reachable from the dev machine at the time (`10.10.32.19` timed out over the school LAN's VPN). Verify each piece — `walk_velocity`, `dance`, the camera relay — individually before trusting the combined page.
+- [x] **`dance` skill (2026-08-19)** — `bridge/skills/dance.py`. Not a single firmware mode (`Mode.DANCE=503` is unverified and unwired); instead sequences three already-verified `Gesture` ids (`BOTH_HANDS_UP`, `HIGH_FIVE`, `WAVE_UNDER_HEAD`) through the same `call_arm()` primitive `wave`/`clap`/`hug` use, interleaved with `RELEASE_ARM` to respect the arm's per-gesture latch (error 7401 otherwise). `works_real=False` — same "not yet live-tested" posture as `walk_velocity`.
+- [x] **Camera relay (2026-08-19)** — `bridge/camera_relay.py`, a separate process (`bun run camera-relay` / `python -m bridge.camera_relay`) from the MCP server. Passively subscribes to `teleimager.image_server`'s existing ZeroMQ JPEG feed (`docs/ROBOT-PERIPHERALS.md` §2.4 — the only live camera feed on the robot, and a different transport than the sim's per-camera WebRTC) and re-publishes frames over WebSocket for `apps/web`'s `/vr-control` to consume. Never opens `/dev/video4` itself, so it can't contend for camera ownership the way a second `videohub_pc4`/`realsense2_camera_node`/teleimager instance would. Loopback-bound by default (`CAMERA_RELAY_PORT=8766`, chosen to avoid every other port already spoken for on the Jetson — see the module's own docstring). **Not yet live-tested** against the real teleimager process.
+- [x] **Arm teleoperation (2026-08-19)** — `bridge/teleop/`, plus `apps/web`'s `/vr-control` arm-mirror panel. The operator's wrists drive the G1's arms through `rt/arm_sdk`, which blends into the running locomotion controller (`executed = motion*(1-w) + ours*w`) rather than bypassing it, so the legs stay under the built-in controller and this works while merely standing. **No IK**: `xr_teleoperate` solves full inverse kinematics against `g1_body29_hand14.urdf`, and that URDF is not in this repo — guessing link lengths would produce a solver that converges confidently on the wrong elbow. `retarget.py` maps the shoulder-to-wrist *direction* and the *fraction of the operator's own reach* instead, both scale-free, with reach measured once at calibration. **Both hardware paths ship disabled** — see the table under "The teleop stream" for what has to be verified first, and by whom. 253 tests pass and none of them have touched a robot.
 - [ ] **Phase 4** — voice loop (wake word, Deepgram STT, Cartesia TTS)
 - See `docs/SPEC.md` §12 for the full plan
 
@@ -171,6 +208,8 @@ No DDS/hardware needed — everything that touches DDS is monkeypatched (`unitre
 ```
 apps/bridge/src/bridge/
   mcp_server.py        FastMCP stdio server — three tools today
+  camera_relay.py      Separate process: teleimager ZeroMQ JPEG feed -> WebSocket,
+                        for apps/web's /vr-control. Not yet live-tested.
   sdk/
     connection.py      Generates CycloneDDS unicast peer XML + initialises ChannelFactory
     state.py           Subscribes to rt/lowstate + rt/sim_state; exposes get_state() shape
@@ -181,7 +220,21 @@ apps/bridge/src/bridge/
     walk_to.py         Body-frame velocity loop, yaw correction + yaw-gating (sim-only until Phase 1b)
     walk_velocity.py    Open-loop velocity command, real hardware only — sidesteps Phase 1b
                         (no pose needed), clamped hard, not yet live-tested
+    dance.py            Choreographed gesture sequence via call_arm(), not yet live-tested
     _g1_request.py      Posture/gesture dispatcher — stub / sim (logged-only) / real (g1_rpc)
+  teleop/               Continuous teleoperation — a 30-60Hz control stream, not
+                        a task. Own WebSocket ingest, own process.
+    protocol.py         Wire frame -> validated dataclass. Strict: rejects NaN,
+                        non-unit quaternions, unknown versions; dead-man fails closed
+    retarget.py         Operator wrist pose -> 7 joint angles per arm. Pure geometry,
+                        no IK — we have no G1 URDF, so it maps direction + fraction
+                        of the operator's own reach, both of which are scale-free
+    arm_sdk.py          50Hz rt/arm_sdk LowCmd_ publisher: blend-weight ramp from the
+                        measured pose, rate-limited slew, FSM/staleness/contention
+                        preconditions. DISABLED unless TELEOP_ARM_ENABLED=1
+    hands.py            Grip scalar -> Dex3 (radians) or BrainCo ([0,1]). No default
+                        hand type, and no default for BrainCo's open-end polarity
+    server.py           The session: WebSocket, three dead-men, dispatch
 ```
 
 ## Known issues
