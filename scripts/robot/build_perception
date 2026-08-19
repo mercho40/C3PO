@@ -200,11 +200,25 @@ build_engine() {
         -v "$MODELS_DIR:/opt/c3po/models:ro" \
         -v "$ENGINE_VOLUME:/opt/c3po/engines" \
         "$PERCEPTION_VISION_IMAGE" true
+    # --entrypoint test: stat the file WITHOUT booting entrypoint.sh. Two
+    # reasons, and the first one bit us the day the guard landed:
+    #
+    #  1. entrypoint.sh asserts `import tensorrt` before doing anything, which
+    #     needs --runtime nvidia. Running this check through the entrypoint
+    #     under the default runc made it exit 1 before `test` ever ran, and the
+    #     script then blamed a missing plan that was sitting right there.
+    #  2. The entrypoint BUILDS a plan when it does not find one. A verification
+    #     step that can create the thing it is verifying proves nothing.
+    #
+    # Bypassing it also means this check needs no GPU, which is what you want
+    # from an assertion.
     if _docker run --rm -v "$ENGINE_VOLUME:/opt/c3po/engines" \
-        "$PERCEPTION_VISION_IMAGE" test -s /opt/c3po/engines/yolo11n.fp16.plan; then
+        --entrypoint test "$PERCEPTION_VISION_IMAGE" -s /opt/c3po/engines/yolo11n.fp16.plan; then
         ok "engine present in volume $ENGINE_VOLUME"
     else
-        err "the entrypoint returned 0 but there is no plan in $ENGINE_VOLUME"
+        err "trtexec reported success but there is no plan in $ENGINE_VOLUME"
+        err "  inspect it with:"
+        err "  docker run --rm -v $ENGINE_VOLUME:/e --entrypoint ls $PERCEPTION_VISION_IMAGE -la /e"
         exit 1
     fi
 }
