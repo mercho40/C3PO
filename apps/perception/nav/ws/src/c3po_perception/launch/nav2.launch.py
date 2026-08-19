@@ -121,6 +121,19 @@ def generate_launch_description() -> LaunchDescription:
         condition=LaunchConfigurationEquals("sources", "fake"),
     )
 
+    # Nav2's global costmap -> a sub-kB PNG on /c3po/costmap, for the operator
+    # console. It lives HERE and not in perception.launch.py because there is no
+    # costmap until Nav2 runs — global_costmap belongs to planner_server. That
+    # also means `nav2-fake` produces a real (if sparse) costmap from the
+    # synthetic scan, so the whole map path can be built and rendered before the
+    # Livox is ever claimed.
+    costmap = Node(
+        package="c3po_perception",
+        executable="costmap_publisher",
+        name="costmap_publisher",
+        output="screen",
+    )
+
     nav2_nodes = [
         Node(
             package="nav2_controller",
@@ -183,4 +196,4 @@ def generate_launch_description() -> LaunchDescription:
         ),
     ]
 
-    return LaunchDescription(args + [perception, fake, fake_tf] + nav2_nodes)
+    return LaunchDescription(args + [perception, fake, fake_tf, costmap] + nav2_nodes)

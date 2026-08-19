@@ -37,6 +37,7 @@ setup(
         "console_scripts": [
             "g1_odom_tf = c3po_perception.g1_odom_tf:main",
             "world_model_publisher = c3po_perception.world_model_publisher:main",
+            "costmap_publisher = c3po_perception.costmap_publisher:main",
         ],
     },
 )

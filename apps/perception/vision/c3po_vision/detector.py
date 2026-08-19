@@ -2,8 +2,11 @@
 
     rt/c3po/objects    std_msgs::msg::dds_::String_  (JSON)   ~10 Hz, written
 
-That is the only thing this container puts on the wire, and this is the only
-file in it that touches a device. `grounding.py` holds the maths, `ros_idl.py`
+That is the only thing this container puts on the DDS wire, and this is the only
+file in it that touches a device. It also, when `C3PO_VISION_STREAM=1`, serves
+the colour frame as MJPEG on loopback for the operator console — `stream.py`
+owns that entirely and explains why the video has to come from this process:
+`/dev/videoN` has one owner, and it is this one. `grounding.py` holds the maths, `ros_idl.py`
 holds the wire type, and both of those import on a laptop; everything that
 needs a camera, a GPU or a DDS stack is here, behind a lazy import.
 
@@ -85,6 +88,9 @@ from c3po_vision.grounding import (
     ground_box,
     to_observation,
 )
+# Stdlib-only at module scope (Pillow and numpy are lazy inside it), so this
+# import keeps the "importable on a Mac" property the docstring above claims.
+from c3po_vision import stream as stream_mod
 
 # --------------------------------------------------------------------------
 # Wire contract
@@ -830,6 +836,13 @@ def run() -> int:
     publisher = StdoutPublisher() if dry_run else ObjectsPublisher()
     publisher.start()
 
+    # Off unless asked for. The video is a convenience for a human watching;
+    # `perception_up` turns it on for the stages that claim the camera, and a
+    # bind failure leaves `video` None rather than taking the detector with it.
+    video = stream_mod.from_env(os.environ.get)
+    if video is not None:
+        video.start()
+
     stopper = _Stopper()
     period = 1.0 / TICK_HZ if TICK_HZ > 0 else 0.1
     failures = 0
@@ -849,6 +862,16 @@ def run() -> int:
                 detections = source.boxes()
             else:
                 detections = detector.infer(color)
+            # AFTER the frame grab and the inference both succeeded, and inside
+            # the try for a reason: a tick that threw did not look at anything,
+            # and feeding the viewer its last good frame would be this module
+            # showing a picture of a room it is no longer watching. The frame
+            # goes stale instead and `/status` says so — same rule as the
+            # publish below, applied to pixels.
+            if video is not None:
+                video.offer(
+                    stream_mod.test_pattern(COLOR_W, COLOR_H, ticks) if fake else color
+                )
             objects, omitted = ground_all(
                 detections, depth, source.intrinsics, extrinsic, labels, source.depth_scale
             )
@@ -865,6 +888,8 @@ def run() -> int:
                 log("giving.up", consecutive=failures,
                     consequence="container exits; world model reports the detector offline")
                 source.close()
+                if video is not None:
+                    video.close()
                 return 1
             continue
 
@@ -877,6 +902,8 @@ def run() -> int:
             log("alive", ticks=ticks, last_objects=len(objects), omitted=omitted)
 
     source.close()
+    if video is not None:
+        video.close()
     log("stopped", ticks=ticks)
     return 0
 
