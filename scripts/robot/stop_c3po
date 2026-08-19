@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop our stack (bridge, and the perception container once it exists).
+# Stop our stack: the bridge, then both perception containers.
 #
 # Note what this costs: the bridge owns `stop_everything` and the task
 # registry, so with it down nothing on the robot can be halted through our
@@ -57,10 +57,41 @@ if [ -n "$leftover" ]; then
     exit 1
 fi
 
-# Perception container — named now so this script doesn't need editing when it
-# lands; absent today, which is not an error.
-if _docker ps --filter "name=^c3po-perception" --format '{{.Names}}' 2>/dev/null | grep -q .; then
-    _docker stop c3po-perception >/dev/null 2>&1 && ok "stopped c3po-perception"
+# Perception. Stopping is always safe and always right here: it releases the
+# sensors and removes the only thing that can emit /cmd_vel. `docker stop`, not
+# `rm`: the exited containers keep their logs and their c3po.image label, which
+# is what you want to read after something went wrong.
+#
+# Loop over the PREFIX. There are two containers, and the old code detected with
+# a prefix filter and stopped an exact name.
+#
+# NOTE ON ORDER: the bridge is already down by this point, so a still-running
+# Nav2 would be publishing /cmd_vel into a domain nobody is forwarding from.
+# That is safe today — the bridge is the only thing that can actuate — but it
+# means "perception is up" must never be read as "the robot is under control".
+running="$(perception_running_containers)"
+if [ -n "$running" ]; then
+    held=0; perception_holds_sensors && held=1
+    stage="$(perception_stage)"
+    for c in $running; do
+        _docker stop -t 20 "$c" >/dev/null 2>&1 || true
+    done
+    still="$(perception_running_containers)"
+    if [ -n "$still" ]; then
+        err "these ignored SIGTERM after 20s — killing: $still"
+        for c in $still; do _docker kill "$c" >/dev/null 2>&1 || true; done
+        sleep 1
+    fi
+    still="$(perception_running_containers)"
+    if [ -n "$still" ]; then
+        err "still up: $still — they can still publish /cmd_vel"
+        err "  docker rm -f $still"
+        exit 1
+    fi
+    ok "stopped perception (stage=$stage)"
+    [ "$held" -eq 1 ] && ok "sensors released (RealSense, Livox)"
+else
+    info "perception not running"
 fi
 
 ok "c3po stack down"

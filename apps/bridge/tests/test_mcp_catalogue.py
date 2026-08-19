@@ -297,17 +297,26 @@ def test_untested_motion_is_not_advertised_as_working(tools):
     """Skills never executed on hardware must not claim works.real.
 
     This is the flag that decides whether an agent will command a humanoid it
-    has never successfully commanded before. These four are all accepted by the
-    firmware — rpc code 0 — and none has been observed to do what it says.
-    Flipping one to True because it "should" work is exactly the reasoning the
-    flag exists to interrupt; it should be flipped by someone who watched it
-    happen.
+    has never successfully commanded before. It is flipped by someone who
+    watched the thing happen, never by someone who reasoned that it should.
+
+    VERIFIED on hardware 2026-08-15, so no longer in this list:
+      prepare (4)              — stood the robot up from damp
+      start_walking_waist (501)— fsm_id 501, posture walk_waist
+      walk_to                  — moved 0.17 m and stopped inside tolerance
+      wave (26)                — 7.3 s, arm service acked on completion
+      say                      — audible speech, confirmed by the operator
+
+    Still unverified, and each for its own reason.
     """
     never_run_on_hardware = {
-        "walk_to",           # SET_VELOCITY accepted; non-zero velocity never executed
-        "turn",              # same path
-        "start_walking_waist",  # 501 has never been sent to this robot
-        "balance_stand",     # accepted with code 0, no observed effect
+        # Accepted with rpc code 0 and no observed effect, twice.
+        "balance_stand",
+        # Yaw sign convention is unverified — it may rotate the wrong way.
+        "turn",
+        # Accepted from damp with code 0 and NO transition (2026-08-15),
+        # contradicting Unitree's own example, which bring-ups through it.
+        "squat",
     }
     for name in never_run_on_hardware:
         works = tools[name].meta["c3po"]["works"]
@@ -316,3 +325,16 @@ def test_untested_motion_is_not_advertised_as_working(tools):
             "If so, say so in the commit; if not, this is how untested motion "
             "gets commanded at a robot with people near it."
         )
+
+
+def test_the_bring_up_path_that_works_is_marked_working(tools):
+    """The converse guard: don't leave verified capability marked unavailable.
+
+    `works.real=False` suppresses a skill in the agent's prompt, so a stale
+    False is not harmless — it hides the only route we have to walking. This
+    path was executed end to end on 2026-08-15: damp -> prepare -> 501 ->
+    walk_to.
+    """
+    for name in ("damp", "prepare", "start_walking_waist", "walk_to", "wave", "say"):
+        works = tools[name].meta["c3po"]["works"]
+        assert works["real"] is True, f"{name} works on hardware but is marked unavailable"

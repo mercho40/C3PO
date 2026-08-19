@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  c3po-perception, DDS domain 42.
+
+  Domain 0 (control board, gemm-bringup, gemm-ai, and the bridge's robot-facing
+  participant) is untouched by this file.
+
+  UNICAST, NOT MULTICAST, AND THAT IS NOT A TUNING CHOICE.
+  `ip -o link show lo` on this Jetson returns:
+      lo: <LOOPBACK,UP,LOWER_UP> mtu 65536
+  There is no MULTICAST flag. AllowMulticast on `lo` produces a participant that
+  starts cleanly and discovers nothing — a silent failure with no error. So:
+  AllowMulticast false plus an explicit 127.0.0.1 peer, on BOTH sides.
+  (`ip link set lo multicast on` would work and must NOT be used: under
+  --network host it mutates the shared host netns, i.e. the other team's stack.)
+
+  Bound to `lo` because everything on domain 42 lives on this one Jetson. That
+  makes the isolation physical rather than conventional: our costmaps, TF and
+  velocity commands cannot appear on 192.168.123.0/24 (which already carries
+  ~24 MB/s of control-board multicast) or on the school Wi-Fi, even if someone
+  later mis-sets ROS_DOMAIN_ID. Both containers run --network host, so this is
+  the same `lo` the bridge binds.
+
+  Domain 42's discovery ports are 7400 + 250*42 = 17900+, no collision with 0.
+
+  NOTE ON PAYLOADS: net.core.rmem_max on this host is 212992 (208 KiB, untouched
+  default). A ~20k-point PointCloud2 is ~520 KB in ~390 fragments and WILL drop,
+  turning reliable QoS into a NACK storm. Nothing large crosses this domain by
+  design (D2.2 option 1) — keep it that way, or raise rmem_max, which is a root
+  change on a shared robot.
+-->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain id="42">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="lo" priority="default" multicast="false"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <MaxMessageSize>65500B</MaxMessageSize>
+    </General>
+    <Discovery>
+      <!-- "auto" is required, not decorative: with multicast off, discovery is
+           unicast probing over the participant-index range. -->
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="127.0.0.1"/>
+      </Peers>
+    </Discovery>
+    <Tracing>
+      <Verbosity>warning</Verbosity>
+      <OutputFile>/logs/cyclonedds-domain42.log</OutputFile>
+    </Tracing>
+  </Domain>
+</CycloneDDS>

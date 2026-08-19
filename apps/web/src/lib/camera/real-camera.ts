@@ -4,7 +4,7 @@
 // message per frame. This is NOT the sim's per-camera aiortc/WebRTC setup
 // (`webrtc/sim-camera.ts`): the real G1 has one monocular camera and a
 // different transport entirely (see that module's docstring and
-// docs/ROBOT-PERIPHERALS.md §2.4).
+// `docs/ROBOT-HARDWARE.md`).
 //
 // Deployment gap, stated plainly rather than glossed over: the relay binds
 // loopback on the Jetson by default (same "no auth of its own, tunnel in"

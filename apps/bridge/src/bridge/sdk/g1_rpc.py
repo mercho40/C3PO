@@ -7,7 +7,7 @@ resolves to `rt/api/sport/request` / `rt/api/sport/response` via
 already names.
 
 Each service exposes *many* api_ids — `sport` spans 7001..7107 (see
-`g1_protocol` and docs/ROBOT-INVENTORY.md §3). Most posture/gesture calls
+`g1_protocol` and docs/ROBOT-API.md §2). Most posture/gesture calls
 happen to share a `{"data": N}` parameter shape, but that is a property of
 those particular calls, not of the service: `SET_VELOCITY` takes
 `{"velocity": [...], "duration": d}`. So a client registers every api_id it

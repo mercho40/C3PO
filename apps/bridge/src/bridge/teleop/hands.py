@@ -1,44 +1,48 @@
-"""Grip scalar -> hand command topic. Four incompatible hands, one unknown.
+"""Grip scalar -> hand command topic. The hands are two BrainCo Revo2.
 
 The operator's finger closure arrives as a single number per hand, 0.0 open to
-1.0 closed (`protocol.HandSample.grip`). Turning that into a wire message is
-the part nobody can do safely yet, because **which hands are physically fitted
-to this robot is unresolved** — `docs/ROBOT-PERIPHERALS.md` §4 lays out the
-full argument and it does not conclude:
+1.0 closed (`protocol.HandSample.grip`). Turning that into a wire message used
+to be blocked on an argument the documentation could not close — Dex3-1 or
+BrainCo? — and that argument is now **settled by inspection (2026-08-19)**:
+somebody looked at the robot. **Two BrainCo hands are fitted**, and one of them
+was physically *unplugged* during the earlier DDS probe. That single fact
+explains the whole ambiguity: the lone right-hand answer and the silent
+`rt/lf/dex3/*` were a missing cable and an absent product, not evidence.
+`docs/ROBOT-HARDWARE.md` carries the full story, including the lesson about
+reading negative results.
 
-* A `brainco_hand_server` was found running, holding `/dev/ttyUSB1`, having
-  identified **one BrainCo Revo2, medium RIGHT** hand (6 DoF, five fingers).
-  No left hand answered — but it was launched with an explicit `--serial` for
-  one port, so that silence says as much about the launch as the hardware.
-* Yet `g1pilot` ships `g1_29dof_dx3.urdf` for *this* robot and
-  `xr_teleoperate` carries `g1_body29_hand14.urdf` (2 x 7 DoF), both of which
-  describe a **Dex3-1** pair (7 DoF, three fingers).
+What that settles, and what it does not:
 
-The two are not interchangeable in any respect that matters:
-
-| | Dex3-1 | BrainCo Revo2 |
+| | BrainCo Revo2 (fitted) | Dex3-1 (not on this robot) |
 | --- | --- | --- |
-| Topic | `rt/dex3/{side}/cmd` | `rt/brainco/{side}/cmd` |
-| Type | `unitree_hg HandCmd_` | `unitree_go MotorCmds_` |
-| Motors | 7 | 6 |
-| **Units** | **radians** | **[0,1], scaled x1000 on the wire** |
+| Topic | `rt/brainco/{side}/cmd` | `rt/dex3/{side}/cmd` |
+| Type | `unitree_go MotorCmds_` | `unitree_hg HandCmd_` |
+| Motors | 6, `[Thumb, Thumb_aux, Index, Middle, Ring, Pinky]` | 7 |
+| **Units** | **[0,1], scaled x1000 on the wire** | radians |
+| Firmware deadman | **none** | a timeout bit per motor |
 
-A command written for one and sent to the other is not merely ignored. Send
-Dex3 radians (1.7) to BrainCo and you exceed its full-scale by 70%; send
-BrainCo's 0.5 to a Dex3 and you get 29 degrees where 90 was meant. That is why
-this module has **no default hand type** and refuses rather than guesses.
+Two consequences carry into this module.
 
-And one thing is unknown even for the hand we have seen: **BrainCo never
-documents which end of [0,1] is open.** Inspire DFX maps 1.0 = open, `hand_sdk`
-says positive torque closes, BrainCo says nothing. So `TELEOP_BRAINCO_OPEN_AT`
-has no default either. Getting it backwards means every "relax your hand"
-becomes "clench".
+**The units are [0,1], not radians.** The Dex3 driver below is kept for the
+product, not for this robot — a Dex3 pose sent to a BrainCo topic would exceed
+full scale by 70%, and the reverse sends 29 degrees where 90 was meant. It
+stays because the seam costs nothing and a hand swap is a cable, but nothing
+here may default to it.
 
-Settle it before enabling anything here
----------------------------------------
-`scripts/hand_probe.py` subscribes passively to all the candidate state topics
-for a few seconds and writes nothing at all. One message decides the whole
-argument. That is the intended first step, and it cannot hurt the robot.
+**There is no firmware deadman on a BrainCo.** A Dex3's per-motor mode byte
+carries a timeout bit that makes the *firmware* release a held grip after one
+second, free, the same free safety `SetVelocity`'s `duration` gives locomotion.
+BrainCo has no equivalent: a closed hand stays closed until something tells it
+otherwise. So the bound has to be ours, and it is — `server.py` calls
+`relax()` on the falling edge of the arm request and again in `_safe_stop`,
+which covers the operator letting go, the frames going stale, the session
+ending and the process being cancelled. **Do not add a code path that closes a
+hand without a matching release; on this hardware nothing else will open it.**
+
+⚠️ **Which end of [0,1] is open is still unknown.** BrainCo never documents it,
+Inspire DFX maps 1.0 = open, and `hand_sdk` says positive torque closes. So
+`TELEOP_BRAINCO_OPEN_AT` has no default. Getting it backwards turns every
+"relax your hand" into "clench".
 
 Enablement: `TELEOP_HAND_ENABLED=1` **and** `TELEOP_HAND_TYPE` in
 {`brainco`, `dex3`}, plus `TELEOP_BRAINCO_OPEN_AT` in {0, 1} for BrainCo.
@@ -57,9 +61,11 @@ log = structlog.get_logger(__name__)
 
 Side = Literal["left", "right"]
 
-# Only a right hand has ever answered on this robot. Defaulting to both would
-# publish to a topic with no subscriber on the left, which is harmless — but it
-# would also make the logs claim two hands are being driven when one is.
+# Two hands are fitted, but only the right one has ever *answered* — the left
+# was found unplugged, and `brainco_hand_server` is launched by hand with an
+# explicit `--serial` per hand, so a hand with no server is silent whether or
+# not it is connected. Defaulting to the right alone keeps the logs honest:
+# widen to "left,right" via TELEOP_HAND_SIDES once a left hand has replied.
 DEFAULT_SIDES: tuple[Side, ...] = ("right",)
 
 # --- BrainCo Revo2 -----------------------------------------------------------
@@ -260,7 +266,8 @@ def build_driver() -> HandDriver:
         return Dex3HandDriver(sides=sides)  # type: ignore[arg-type]
 
     return NullHandDriver(
-        f"TELEOP_HAND_TYPE={hand_type!r} is not one of 'brainco' or 'dex3'. Which hands are "
-        "fitted to this robot is unresolved — run scripts/hand_probe.py, which subscribes "
-        "passively and writes nothing, before choosing."
+        f"TELEOP_HAND_TYPE={hand_type!r} is not one of 'brainco' or 'dex3'. This robot has "
+        "two BrainCo Revo2 hands (settled by inspection 2026-08-19), so 'brainco' is the "
+        "answer here — but it stays explicit, because the two types disagree on units and "
+        "a silent default is how that mistake would ship."
     )

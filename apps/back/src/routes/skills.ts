@@ -106,7 +106,9 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
           }
 
           // Schema validation (SCRUM-57, layer 1): fill the bridge's
-          // declared defaults, then check the body before dispatch.
+          // declared defaults, then check the body before dispatch. The schema
+          // is plain JSON Schema from the bridge now, so this goes through Ajv
+          // — TypeBox throws on a schema that lacks its own [Kind] symbol.
           const { ok, value: args, issues } = validateArgs(
             skill.parameters,
             body as Record<string, unknown>,

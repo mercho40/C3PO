@@ -2,7 +2,7 @@
 
 The G1's only live camera feed today is `teleimager.image_server`, a
 human-launched `xr_teleoperate` process already running onboard the Jetson
-(`docs/ROBOT-PERIPHERALS.md` §2.4). It publishes JPEG frames over a ZeroMQ
+(`docs/ROBOT-HARDWARE.md`). It publishes JPEG frames over a ZeroMQ
 `PUB` socket at `tcp://0.0.0.0:55555` — monocular, 540x960 @ 30fps, one JPEG
 blob per message, no envelope. That's a different transport than the sim's
 per-camera aiortc/WebRTC servers (`apps/web`'s `live-camera` page), which is
@@ -12,7 +12,7 @@ This module does the minimum needed to get those frames to a browser:
 subscribe as a ZMQ `SUB` client (passive — it never opens `/dev/video4`
 itself, so it can't contend for the camera device the way a second
 `videohub_pc4`/`realsense2_camera_node`/teleimager instance would, see
-ROBOT-PERIPHERALS.md §2.3/§3.1's "only one can win" warning) and re-publish
+`docs/ROBOT-HARDWARE.md`/§3.1's "only one can win" warning) and re-publish
 each frame as a binary WebSocket message to every connected client.
 
 Deliberately NOT the teleimager config REQ/REP socket (`:60000`) — this is a
@@ -55,7 +55,7 @@ TELEIMAGER_PORT = int(os.environ.get("TELEIMAGER_PORT", "55555"))
 # avoid every other port already spoken for on the Jetson: 8000
 # (gemm-ai.service), 8001 (this bridge's MCP), 8765 (the colleague's
 # gemm-bringup foxglove_bridge), 55555/60000 (teleimager itself), 7077
-# (planned, unused bridge WS) -- see docs/ROBOT-INVENTORY.md §5.
+# (planned, unused bridge WS) -- see `docs/ROBOT-HARDWARE.md`
 CAMERA_RELAY_HOST = os.environ.get("CAMERA_RELAY_HOST", "127.0.0.1")
 CAMERA_RELAY_PORT = int(os.environ.get("CAMERA_RELAY_PORT", "8766"))
 

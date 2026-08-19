@@ -19,7 +19,7 @@
 
 [Unit]
 Description=C3PO bridge — MCP server for the G1 (does not claim the robot at boot)
-Documentation=file:///home/unitree/c3po/docs/DEPLOYMENT.md
+Documentation=file:///home/unitree/c3po/docs/OPERATIONS.md
 After=network-online.target
 Wants=network-online.target
 
@@ -32,7 +32,7 @@ PIDFile=/home/unitree/.c3po/run/bridge.pid
 
 # `uv` lives in ~/.local/bin, which Ubuntu adds from ~/.profile — a file
 # systemd never sources. Without this the unit dies on "uv: command not found".
-# See docs/DEPLOYMENT.md §3.
+# See docs/OPERATIONS.md §5.
 Environment=HOME=/home/unitree
 Environment=PATH=/home/unitree/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=C3PO_NO_TAKEOVER=1

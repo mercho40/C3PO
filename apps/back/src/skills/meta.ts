@@ -75,7 +75,9 @@ export function parseSkillMeta(toolName: string, raw: unknown): SkillMeta {
     const first = [...Value.Errors(ToolMetaSchema, raw)][0];
     throw new InvalidSkillMetaError(
       toolName,
-      first ? `${first.path || "/"}: ${first.message}` : "does not match schema",
+      first
+        ? `${first.path || "/"}: ${first.message}`
+        : "does not match schema",
     );
   }
   return raw.c3po;

@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# Create and start the perception containers. Recommended over `docker start`
+# because `docker start` replays the config frozen at `docker create` time —
+# image, runtime, network, devices, env, restart policy — none of which is in
+# git and none of which changes when you rebuild. Recreating from these flags
+# every time means the running container always matches this file.
+#
+# Compose was considered and rejected: `docker compose` is not a command on this
+# Jetson, `docker-compose` is absent, and there is no cli-plugins directory
+# (docker.io 24.0.7-0ubuntu2~20.04.1, not Docker CE). Installing it would mean
+# adding an apt repo to a robot that is half somebody else's, to orchestrate
+# exactly two containers.
+#
+#   perception_up <stage>
+#     fake        world model on synthetic input      NO SENSORS — gemm keeps running
+#     odometry    livox + FAST-LIO + TF + scan        claims the Livox
+#     perception  + detector + world model            claims the Livox AND the RealSense
+#     nav2        + Nav2, lifecycle NOT autostarted   claims both
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+. "$here/_common.sh"
+
+stage="${1:-}"
+case "$stage" in fake|nav2-fake|odometry|perception|nav2) ;; *)
+    err "usage: perception_up {fake|nav2-fake|odometry|perception|nav2}"; exit 2 ;; esac
+
+# Say what this stage takes BEFORE taking it. "claims shared sensors" is not
+# specific enough to act on: whether the Livox alone or the Livox and the
+# RealSense go away decides what the other team loses for the length of the
+# window, and that is the sentence they should be able to read back to you.
+say "perception_up: stage '$stage'"
+case "$stage" in
+    fake)
+        info "sensors claimed: NONE — the Livox and the RealSense stay with gemm" ;;
+    nav2-fake)
+        info "sensors claimed: NONE — the Livox and the RealSense stay with gemm"
+        info "Nav2 on SYNTHETIC odom/scan: the lifecycle, the planner, the controller"
+        info "and the /c3po/cmd_vel path, with nothing taken from the other team"
+        warn "Nav2 comes up UNCONFIGURED (autostart:=false); the bridge's cmd_vel gate stays closed" ;;
+    odometry)
+        warn "sensors claimed: Livox Mid-360 — gemm will be stopped to release it" ;;
+    perception)
+        warn "sensors claimed: Livox Mid-360 AND RealSense D435i — gemm will be stopped" ;;
+    nav2)
+        warn "sensors claimed: Livox Mid-360 AND RealSense D435i — gemm will be stopped"
+        warn "Nav2 comes up UNCONFIGURED (autostart:=false); the bridge's cmd_vel gate stays closed" ;;
+esac
+
+# nav2-fake is nav2.launch.py with sources:=fake rather than its own launch
+# file, so the seven Nav2 node definitions and their load-bearing remaps live in
+# exactly one place. A duplicate launch file would drift the day someone fixes a
+# remap in one and not the other.
+case "$stage" in
+    nav2-fake) launch_file="nav2.launch.py"; launch_args="sources:=fake" ;;
+    *)         launch_file="${stage}.launch.py"; launch_args="" ;;
+esac
+
+needs_lidar=0; needs_camera=0
+# `fake` and `nav2-fake` are deliberately absent: they claim nothing. That is
+# the entire point of nav2-fake — Stage 4 was specified as sensor-free, and for
+# a while the only nav2 stage stopped gemm and took both sensors, which would
+# have made a step described as "Nav2 in isolation" the most invasive one yet.
+case "$stage" in
+    odometry) needs_lidar=1 ;;
+    perception|nav2) needs_lidar=1; needs_camera=1 ;;
+esac
+
+if [ "$needs_lidar" = 1 ] || [ "$needs_camera" = 1 ]; then
+    if [ -n "$(gemm_running)" ]; then
+        warn "stage '$stage' claims shared sensors"
+        info "stopping gemm to release them"
+        "$here/stop_gemm"
+    fi
+else
+    info "stage 'fake' uses no sensors — gemm is left alone"
+fi
+
+for c in $(perception_containers); do
+    info "removing existing $c"; _docker rm -f "$c" >/dev/null
+done
+mkdir -p "$PERCEPTION_LOG_DIR" "$HOME/.c3po/models"
+
+nav_digest="$(_docker image inspect "$PERCEPTION_NAV_IMAGE" \
+    --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}')"
+
+# --restart no        : gemm uses `unless-stopped`, which is why their stack
+#                       returns on every boot. A machine powering on is not
+#                       someone asking for the sensors. Never change this, and
+#                       never `docker start` this from a systemd unit.
+# --network host      : the Mid-360 unicasts to 192.168.123.164:56301/56401 on
+#                       eth0, AND it is what makes `lo` here the same `lo` the
+#                       bridge binds for domain 42. It is also a SAFETY
+#                       requirement: a bridge-network container brings docker0
+#                       UP, and the bridge's DDS is currently on autodetermine,
+#                       so it could bind docker0 on its next restart and see
+#                       none of the robot.
+# --cpuset-cpus 0-5   : leave 2 of 8 cores for the bridge and the OS. The bridge
+#                       owns stop_everything; it must not be starved by a
+#                       costmap update.
+# --memory            : when the budget is blown, the OOM killer takes
+#                       perception, not the MCP server. Failure DIRECTION
+#                       matters more than failure. (cgroup v1 + cgroupfs driver
+#                       on this host, so these apply.)
+# no --privileged     : this host also runs the process that can walk the legs.
+_docker create --name c3po-perception-nav \
+    --restart no --network host --ipc host \
+    --cpuset-cpus "0-4" --memory 8g \
+    -e ROS_DOMAIN_ID=42 \
+    -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+    -e CYCLONEDDS_URI=file:///opt/c3po/config/cyclonedds-domain42.xml \
+    -v "$C3PO_DIR/apps/perception/config:/opt/c3po/config:ro" \
+    -v "$PERCEPTION_LOG_DIR:/logs" \
+    --label c3po.stage="$stage" --label c3po.image="$nav_digest" \
+    "$PERCEPTION_NAV_IMAGE" \
+    ros2 launch c3po_perception "$launch_file" $launch_args >/dev/null
+ok "created c3po-perception-nav (no GPU, runc)"
+
+if [ "$needs_camera" = 1 ]; then
+    # --runtime nvidia is REQUIRED and is NOT the default on this daemon
+    # (DefaultRuntime runc). It is what triggers the csv mount of libcuda from
+    # the host; without it the in-image TensorRT loads and then returns NULL
+    # from deserialize_cuda_engine, which reads like a TRT bug and is not one.
+    #
+    # 81 = video4linux, 189 = usb_device. The pyrealsense2 wheel is a V4L2 build
+    # and needs BOTH, plus /run/udev for enumeration and hotplug. Bind the
+    # /dev/bus/usb DIRECTORY, never `--device /dev/bus/usb/003/004`: libusb node
+    # numbers are renumbered on every enumeration and the specific node breaks
+    # on the first replug.
+    _docker create --name c3po-perception-vision \
+        --restart no --runtime nvidia --network host --ipc host \
+        --cpuset-cpus "5" --memory 4g \
+        -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all \
+        -e C3PO_DDS_DOMAIN=42 \
+        -e CYCLONEDDS_URI=file:///opt/c3po/config/cyclonedds-domain42.xml \
+        -e C3PO_VISION_STREAM="${C3PO_VISION_STREAM:-1}" \
+        -e C3PO_VISION_STREAM_HOST="${C3PO_VISION_STREAM_HOST:-127.0.0.1}" \
+        -e C3PO_VISION_STREAM_PORT="${C3PO_VISION_STREAM_PORT:-8081}" \
+        -e C3PO_VISION_STREAM_HZ="${C3PO_VISION_STREAM_HZ:-5}" \
+        --device-cgroup-rule 'c 81:* rmw' \
+        --device-cgroup-rule 'c 189:* rmw' \
+        -v /dev/bus/usb:/dev/bus/usb \
+        -v /dev:/dev \
+        -v /run/udev:/run/udev:ro \
+        -v "$C3PO_DIR/apps/perception/config:/opt/c3po/config:ro" \
+        -v "$HOME/.c3po/models:/opt/c3po/models:ro" \
+        -v c3po-trt-engines:/opt/c3po/engines \
+        -v "$PERCEPTION_LOG_DIR:/logs" \
+        --label c3po.stage="$stage" \
+        "$PERCEPTION_VISION_IMAGE" >/dev/null
+    ok "created c3po-perception-vision (--runtime nvidia)"
+    # The operator's live view. It rides --network host, so this is the Jetson's
+    # own 127.0.0.1:8081 and NOT reachable from the school Wi-Fi unless somebody
+    # sets C3PO_VISION_STREAM_HOST=0.0.0.0 on purpose — an unauthenticated camera
+    # feed on a shared network should be a sentence someone typed, not a default.
+    # The console reaches it the same way it reaches the bridge:
+    #   ssh -f -N -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 c3po
+    if [ "${C3PO_VISION_STREAM:-1}" = "1" ]; then
+        info "video: http://${C3PO_VISION_STREAM_HOST:-127.0.0.1}:${C3PO_VISION_STREAM_PORT:-8081}/stream.mjpg (tunnel it; PUBLIC_ROBOT_CAM_URL in apps/web)"
+    else
+        info "video: disabled (C3PO_VISION_STREAM=$C3PO_VISION_STREAM)"
+    fi
+fi
+
+for c in $(perception_containers); do _docker start "$c" >/dev/null && ok "started $c"; done
+
+# `docker start` succeeding means the container started, not that the stack came
+# up. Gate on the actual topic.
+info "waiting for /c3po/world_summary on domain 42"
+ready=0
+for _ in $(seq 1 90); do
+    perception_running || break
+    if _docker exec c3po-perception-nav bash -lc \
+        'source /opt/ros/humble/setup.bash; source /opt/c3po/ws/install/setup.bash; \
+         timeout 3 ros2 topic echo --once /c3po/world_summary' >/dev/null 2>&1; then
+        ready=1; break
+    fi
+    sleep 1
+done
+
+if [ "$ready" -eq 1 ]; then
+    ok "perception up on DDS domain 42 (stage=$stage)"
+    [ "$stage" = "nav2" ] && warn "Nav2 is UNCONFIGURED (autostart:=false) — nothing plans until the lifecycle manager is transitioned"
+    warn "/cmd_vel forwarding in the bridge stays OFF until arm_navigation is called"
+else
+    err "no world summary after 90s:"
+    for c in $(perception_containers); do _docker logs --tail 30 "$c" >&2 || true; done
+    err "rolling back — stopping containers and leaving the sensors free"
+    for c in $(perception_containers); do _docker rm -f "$c" >/dev/null 2>&1 || true; done
+    exit 1
+fi

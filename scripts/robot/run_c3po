@@ -165,13 +165,33 @@ else
     exit 1
 fi
 
-# Perception container, once it exists (D2/D3). Absent today.
-if [ "$NO_TAKEOVER" = "1" ]; then
-    info "not starting perception (C3PO_NO_TAKEOVER=1) — it would claim the sensors"
-elif _docker ps -a --filter "name=^c3po-perception" --format '{{.Names}}' 2>/dev/null | grep -q .; then
-    _docker start c3po-perception >/dev/null 2>&1 && ok "started c3po-perception"
+# Perception (D2/D3/D4) is deliberately NOT started here, not even
+# interactively. `run_c3po` means "the bridge is mine"; it does not mean "take
+# the cameras and the LiDAR", and those are two different conversations with
+# the other team. Starting it is one explicit command:
+#
+#   perception_up <stage>
+#
+# This also unpicks an overload. C3PO_NO_TAKEOVER used to carry a third meaning
+# here — "don't claim the sensors" — on top of "don't stop gemm". Splitting them
+# means that if the boot unit is re-enabled, or if the in-flight revert lands, a
+# power-on still cannot claim the RealSense and the Livox by accident. Nobody
+# has to remember a flag.
+#
+# There is deliberately NO opt-in variable here either. An env var that starts
+# perception is one `Environment=` line, one drop-in, or one stray export in
+# ~/.profile away from being a boot path that claims the sensors — which is
+# precisely the property this block exists to remove. "No unless a flag is set"
+# is not the same guarantee as "no". This branch below only ever REPORTS.
+if perception_running; then
+    stage="$(perception_stage)"
+    for c in $(perception_running_containers); do ok "already running: $c"; done
+    if perception_holds_sensors; then
+        warn "perception (stage=$stage) is holding the RealSense and the Livox — gemm cannot run"
+    fi
 else
-    info "no perception container yet — bridge only"
+    info "perception not started (bridge only)"
+    info "start it explicitly with:  perception_up perception"
 fi
 
 say "c3po stack up"
