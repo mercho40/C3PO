@@ -165,3 +165,21 @@ def test_every_gesture_id_is_in_the_official_action_table():
     for name, req in g1_protocol.SKILL_REQUESTS.items():
         if req.topic_kind == "arm_request":
             assert req.data in official, f"skill {name!r} sends unknown action {req.data}"
+
+
+def test_topics_for_refuses_unknown_sim_mode():
+    """An unrecognized SIM_MODE must not silently resolve to the real robot.
+
+    Regression test for a fail-open default: `topics_for` used to end in a
+    bare `return REAL_TOPICS`, so "Real", "production", "" or a trailing space
+    all selected real-hardware topics and dispatched live DDS RPCs, while the
+    link watchdog and FSM poller (which match `== "real"` exactly) stayed off.
+    """
+    for bad in ("Real", "REAL", "real ", "production", "", "isaac2"):
+        with pytest.raises(ValueError, match="unknown SIM_MODE"):
+            g1_protocol.topics_for(bad)
+
+    # And the known-good values still resolve, to the right side.
+    assert g1_protocol.topics_for("real") is g1_protocol.REAL_TOPICS
+    for good in ("isaac", "mujoco_local", "stub"):
+        assert g1_protocol.topics_for(good) is g1_protocol.SIM_TOPICS

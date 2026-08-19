@@ -113,6 +113,14 @@ def get_state() -> dict:
     (`docs/ROBOT-API.md` §3).
     """
     log.info("get_state.called", sim_mode=SIM_MODE)
+    # Operator liveness. `get_state` is the poll an operator (or the console's
+    # own 2s loop) runs while watching the robot, which is exactly the signal
+    # watchdog.py's docstring nominates as meaningful. Without a call like
+    # this, `_last_contact` is only ever set in `start()` and the watchdog
+    # measures its own uptime instead of the link -- so with LINK_WATCHDOG=on
+    # it would safe-stop a healthy session as soon as any task outlived
+    # LINK_TIMEOUT_S, then latch inert with nothing left to re-arm it.
+    get_watchdog().touch()
 
     if SIM_MODE == "stub":
         return {
@@ -450,13 +458,17 @@ async def walk_velocity(
         typical_failure_modes=["bridge_disconnected"],
     )
 )
-def stop_everything() -> dict:
+async def stop_everything() -> dict:
     """Halt all motion immediately and cancel any in-flight tasks.
 
     Safety-critical: cancels every running task in the registry (each skill
     observes the cancel signal between iterations and ramps down velocity)
     AND independently sends a zero-velocity burst to the run-command channel
-    for ~0.4 s in case the policy is still in motion. Synchronous and fast.
+    for ~0.4 s in case the policy is still in motion.
+
+    Cancellation is signalled synchronously; only the blocking DDS calls are
+    awaited off-thread, so a slow or degraded link cannot wedge the event loop
+    and leave a second stop press unanswered (see the skill's own docstring).
 
     Stub mode is a no-op aside from logging.
     """
@@ -473,7 +485,7 @@ def stop_everything() -> dict:
 
     from bridge.skills.stop_everything import run as run_stop
 
-    result = run_stop()
+    result = await run_stop()
     return {**result, "env": SIM_MODE}
 
 
@@ -579,21 +591,31 @@ async def wave(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=3.0,
         works_sim=False,
-        works_real=True,
+        # Was True while this tool's own docstring said the gesture had never
+        # worked on hardware — the precise contradiction `skill_meta.py` warns
+        # about, since `works_real` is supposed to mean a human watched it run.
+        # Nobody has. Corrected to False rather than to a hoped-for True.
+        works_real=False,
         preconditions=["fsm_state_in_{walk,walk_waist,run}"],
         typical_failure_modes=["fsm_not_locomotion_state", "transport_unsupported"],
     )
 )
 async def point_at(ctx: Context) -> dict:
-    """Extend the right arm horizontally — the closest thing to pointing.
+    """Extend the arm forward — the closest thing to pointing.
 
-    Vendor action 23, "Right Hand Horizontal" (arm service, api_id=7106). There
-    is no "point" in Unitree's action table; this is the nearest real action.
+    Dispatches vendor action **36** (`forward_push`, arm service api_id=7106),
+    per `g1_protocol.SKILL_REQUESTS["point_at"]`. There is no "point" in
+    Unitree's action table; this is the nearest real action.
 
-    Previously sent 36, which appears in NO vendor artifact — official table,
-    C++ header or Python SDK — and could only ever have returned 7402 "Action
-    ID does not exist". So this gesture has never worked on hardware and 23 has
-    never been tried.
+    History, because this id has moved twice and the reasoning matters: 36 was
+    briefly replaced by 23 on the belief that 36 "appears in no vendor
+    artifact". That was wrong — the ROBOT's own `GetActionList` (read live
+    2026-08-15) does list 36, gated on `mode_machine` [5, 6], and this robot
+    reports 5. The published table is simply incomplete for this build, so 36
+    is correct and is what ships. See `g1_protocol.py`'s Gesture docstring.
+
+    **Never executed on this hardware** — neither id has been dispatched here,
+    which is why `works_real` is False.
 
     Like `wave`, needs an FSM state that permits arm actions.
 
@@ -976,6 +998,44 @@ async def release_arm(ctx: Context) -> dict:
     from bridge.skills._g1_request import run_g1_request
 
     return {**await run_g1_request("release_arm", ctx), "env": SIM_MODE}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=True,
+        expected_duration_s=20.0,
+        works_sim=False,
+        works_real=False,  # NOT YET LIVE-TESTED -- new sequence, see the skill's own docstring.
+        preconditions=["fsm_state_in_{walk,walk_waist,run}"],
+        typical_failure_modes=[
+            "fsm_not_locomotion_state",
+            "arm_latched_7401",
+            "transport_unsupported",
+        ],
+    )
+)
+async def dance(ctx: Context) -> dict:
+    """Run a short choreographed gesture sequence.
+
+    Not a single firmware mode -- `Mode.DANCE` (503) is unverified and
+    unwired. Instead sequences several already-verified `Gesture` ids
+    (BOTH_HANDS_UP, HIGH_FIVE, WAVE_UNDER_HEAD) through the same
+    `call_arm()` primitive `wave`/`clap`/`hug` already use, interleaved with
+    RELEASE_ARM to respect the arm's per-gesture latch (error 7401
+    otherwise). Requires a locomotion-active FSM state, same as every other
+    arm gesture. Cancellable between steps.
+
+    Isaac Sim: logged only (sim doesn't subscribe to `rt/api/arm/request`).
+
+    NOT YET LIVE-TESTED against real hardware -- the first live call should
+    be watched closely, same caution as `walk_velocity`.
+    """
+    from bridge.skills.dance import run as run_dance
+
+    return {**await run_dance(ctx), "env": SIM_MODE}
 
 
 # ---------------------------------------------------------------------------
@@ -1401,6 +1461,11 @@ def list_active_tasks(
 ) -> dict:
     """List running tasks (and optionally recently-completed ones)."""
     from bridge.skills.task_runtime import get_registry
+
+    # The other operator-liveness poll -- see the note in `get_state`. This is
+    # the call a fire-and-forget client makes while waiting on a long skill,
+    # which is precisely the case watchdog.py exists to cover.
+    get_watchdog().touch()
 
     registry = get_registry()
     active = [t.to_dict() for t in registry.list_active()]

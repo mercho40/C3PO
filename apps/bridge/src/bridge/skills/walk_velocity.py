@@ -124,6 +124,31 @@ async def run(
         )
         return task.to_dict()
 
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the `except Exception` below
+        # does NOT catch it. Without this branch an externally-cancelled walk
+        # (HTTP client disconnect, FastMCP timeout) leaves the task pinned at
+        # status="running": TaskRegistry._gc_locked only reaps non-running
+        # tasks, so it is never collected and anything reading "is the robot
+        # busy" off the registry sees motion that ended long ago.
+        task.status = "cancelled"
+        task.phase = "cancelled"
+        task.ended_at = time.time()
+        log.info("walk_velocity.cancelled", task_id=task.task_id)
+        # Best-effort immediate stop. `shield` so the stop still reaches the
+        # robot even though we are being cancelled -- awaiting it re-raises
+        # CancelledError at once, but the shielded thread call survives that
+        # and completes on its own. Safe for this to fail either way: the
+        # firmware's own `duration` deadman already guarantees a halt within
+        # clamped_duration (<=3s); this only makes it stop sooner.
+        try:
+            await asyncio.shield(
+                asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5)
+            )
+        except (Exception, asyncio.CancelledError):
+            pass
+        raise  # never swallow cancellation -- the caller is entitled to it
+
     except Exception as exc:
         task.status = "failed"
         task.phase = "exception"

@@ -122,7 +122,10 @@ stray_bridge_pids() {
 #
 # Override for a stack we haven't met yet:
 #   OTHER_COMMANDER_PATTERNS='cmd_vel_to_loco|my_new_thing' run_c3po
-OTHER_COMMANDER_PATTERNS="${OTHER_COMMANDER_PATTERNS:-cmd_vel_to_loco|xr_teleoperate|brainco_hand_server}"
+# `unitree_slam` earns its place for a non-obvious reason: its 1102 pose
+# navigation closes its own velocity loop, so it is a locomotion commander even
+# though nothing in its name says so (docs/ROBOT-PERIPHERALS.md §7.1).
+OTHER_COMMANDER_PATTERNS="${OTHER_COMMANDER_PATTERNS:-cmd_vel_to_loco|xr_teleoperate|brainco_hand_server|unitree_slam}"
 
 # `pgrep -f` matches whole command lines, so it will happily match the shell
 # that is asking the question — `ssh robot 'pgrep -f cmd_vel_to_loco'` reports

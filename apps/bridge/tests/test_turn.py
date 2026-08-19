@@ -37,7 +37,10 @@ def _pose(yaw: float) -> dict:
 
 @pytest.fixture(autouse=True)
 def _stub_motion(monkeypatch):
-    monkeypatch.setattr(turn, "send_velocity", lambda *a, **kw: None)
+    async def fake_send_velocity_async(*a, **kw):
+        return None
+
+    monkeypatch.setattr(turn, "send_velocity_async", fake_send_velocity_async)
 
     async def fake_stop_motion(height=0.78, duration_s=0.4):
         return None
