@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>c3po_perception</name>
+  <version>0.1.0</version>
+  <description>
+    C3PO's half of the nav container: the FAST-LIO2 -> Nav2 frame adapter
+    (g1_odom_tf), the D7 world-model handover (world_model_publisher), and the
+    launch/config staging that decides which sensors a bring-up claims.
+
+    Everything here runs on DDS domain 42, which is unicast on `lo`. Nothing in
+    this package actuates: Nav2's velocity leaves on /c3po/cmd_vel and only
+    apps/bridge turns it into leg motion (docs/DECISIONS.md D2.1).
+  </description>
+  <maintainer email="ivanmersich@gmail.com">C3PO</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

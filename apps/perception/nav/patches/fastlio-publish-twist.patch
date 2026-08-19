@@ -1,0 +1,63 @@
+Subject: [PATCH] fast_lio: publish the IESKF state velocity in nav_msgs/Odometry.twist
+
+Applied by ../Dockerfile with `patch -p1 --forward` inside src/fast_lio, and
+asserted immediately afterwards with `grep -q 'twist.twist.linear'
+src/laserMapping.cpp` — a patch that silently fails to apply is exactly how you
+ship a build that succeeds and a Nav2 that believes the robot never moves.
+
+WHY THIS EXISTS (apps/perception/README.md, refuted-claims row 3)
+FAST-LIO2's publish_odometry() sets pose and pose.covariance and never touches
+twist.  Nav2's controller_server reads the robot's ACTUAL velocity from exactly
+that field (nav_2d_utils::OdomSubscriber), so left at zero DWB samples a
+velocity space anchored at standstill on every cycle.
+
+WHY NOT DIFFERENTIATE THE POSE
+nav_msgs/Odometry.twist is specified in child_frame_id.  Differencing world
+poses yields a WORLD-frame velocity; written unrotated into a child_frame_id
+field it is correct only when the robot faces +x and is swapped/sign-flipped at
+90/180 degrees of yaw.  That is a silent, heading-dependent sign bug that reads
+as "the controller is unstable".  Differentiating 10 Hz poses on a biped and
+then low-passing away the bandwidth is also the wrong signal to begin with.
+
+WHAT THIS DOES INSTEAD
+Publishes the filter's own IESKF state velocity — state_point.vel, already
+IMU-fused at 200 Hz — rotated out of the world frame into the body frame with
+state_point.rot.conjugate().  Angular velocity comes from the last IMU sample of
+the current measurement group minus the estimated gyro bias; the gyro is already
+in the body frame, so it needs no rotation.  Six lines, no new state, no filter.
+
+MAINTENANCE NOTE: the hunk context below is written against hku-mars/FAST_LIO
+branch ROS2 as of this document.  Upstream is not tagged and laserMapping.cpp
+does move.  If `patch --forward` rejects it, regenerate the hunk against the
+pinned checkout rather than dropping the change — the build assertion is there
+to make that a loud failure, not to be worked around.
+
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -618,8 +618,26 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr & pubOdomAftMapped, std::unique_ptr<tf2_ros::TransformBroadcaster> & tf_br)
+     odomAftMapped.header.frame_id = "camera_init";
+     odomAftMapped.child_frame_id = "body";
+     odomAftMapped.header.stamp = get_ros_time(lidar_end_time);// ros::Time().fromSec(lidar_end_time);
+     set_posestamp(odomAftMapped.pose);
++
++    // C3PO: fill twist, which upstream leaves at zero. Odometry.twist is
++    // specified in child_frame_id ("body"), so the world-frame state velocity
++    // must be rotated INTO the body frame — hence the conjugate. Do not
++    // replace this with a pose derivative; see this patch's header.
++    V3D vel_body(state_point.rot.conjugate() * state_point.vel);
++    odomAftMapped.twist.twist.linear.x = vel_body(0);
++    odomAftMapped.twist.twist.linear.y = vel_body(1);
++    odomAftMapped.twist.twist.linear.z = vel_body(2);
++    // The gyro is already a body-frame rate; only the estimated bias comes off.
++    if (!Measures.imu.empty())
++    {
++        const auto &gyr = Measures.imu.back()->angular_velocity;
++        odomAftMapped.twist.twist.angular.x = gyr.x - state_point.bg(0);
++        odomAftMapped.twist.twist.angular.y = gyr.y - state_point.bg(1);
++        odomAftMapped.twist.twist.angular.z = gyr.z - state_point.bg(2);
++    }
++
+     auto P = kf.get_P();
+     for (int i = 0; i < 6; i ++)
+     {
+         int k = i < 3 ? i + 3 : i - 3;

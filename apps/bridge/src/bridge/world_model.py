@@ -1,4 +1,4 @@
-"""The world-model contract — what perception hands the agent (SPEC/D7).
+"""The world-model contract — what perception hands the agent (docs/DECISIONS.md D7).
 
 A language model cannot consume 50 Hz point clouds or 30 fps RGB. The thing
 that makes autonomy work is not the sensors, it's the layer that turns them
@@ -184,6 +184,17 @@ def build(
     lidar_online: bool = False,
     landmarks: list[Observation] | None = None,
     max_objects: int = MAX_OBJECTS,
+    # Objects PERCEPTION already dropped before publishing. Without this,
+    # objects_omitted counts only what this function truncated, so a container
+    # that capped 40 detections to 32 makes the snapshot claim 24 omitted
+    # instead of 32 — a quiet violation of "truncation is always declared", and
+    # the kind that survives review because the number is non-zero and looks
+    # plausible.
+    extra_omitted: int = 0,
+    # Notes only the container can produce: a rejected detector payload, a scan
+    # in the wrong frame. Facts about perception's health that no amount of
+    # inspecting its output would reveal.
+    source_notes: list[str] | None = None,
 ) -> WorldModel:
     """Compose a snapshot, degrading explicitly for whatever is missing.
 
@@ -216,7 +227,10 @@ def build(
 
     # Nearest first — the model should read the thing most likely to matter.
     found.sort(key=lambda o: o.range_m)
-    omitted = max(0, len(found) - max_objects)
+    # SUMMED, never replaced. `extra_omitted` is what perception dropped before
+    # it ever reached us; the first term is what we dropped here. Reporting
+    # either one alone under-declares the truncation.
+    omitted = max(0, len(found) - max_objects) + (extra_omitted if detector_online else 0)
     kept = found[:max_objects]
 
     # Free space
@@ -227,6 +241,10 @@ def build(
         sources["lidar"] = "ok"
 
     _degrade(sources, notes)
+    # After the degradation lines: a source reported offline is the more
+    # important thing for the model to read first.
+    if source_notes and detector_online:
+        notes.extend(source_notes)
 
     if omitted:
         notes.append(f"{omitted} more object(s) detected but not listed (nearest shown).")
@@ -239,6 +257,117 @@ def build(
         landmarks=list(landmarks or []),
         sources=sources,
         notes=notes,
+    )
+
+
+def _observation_from(raw: Any) -> Observation | None:
+    """One wire dict → one `Observation`, or None if it cannot be trusted.
+
+    The wire shape is `Observation.to_dict()`'s: `label`, `range_m`,
+    `bearing_deg`, and optionally `confidence` and `age_s`. Anything missing a
+    label, a range or a bearing is not an observation — it is a fragment, and a
+    fragment placed in the list would be reported to the model as a thing that
+    is out there.
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        label = str(raw["label"])
+        range_m = float(raw["range_m"])
+        bearing_deg = float(raw["bearing_deg"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    confidence = raw.get("confidence")
+    age_s = raw.get("age_s")
+    try:
+        return Observation(
+            label=label,
+            range_m=range_m,
+            bearing_deg=bearing_deg,
+            confidence=None if confidence is None else float(confidence),
+            age_s=0.0 if age_s is None else float(age_s),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _free_space_from(raw: Any) -> FreeSpace | None:
+    """One wire dict → `FreeSpace`. Unknown sectors stay None, never 0.0."""
+    if not isinstance(raw, dict):
+        return None
+    values: dict[str, float] = {}
+    for key in ("ahead_m", "left_m", "right_m", "behind_m"):
+        v = raw.get(key)
+        if v is None:
+            continue
+        try:
+            values[key] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return FreeSpace(**values) if values else None
+
+
+def from_report(
+    report: dict[str, Any] | None, *, landmarks: list[Observation] | None = None
+) -> WorldModel:
+    """Turn a perception container report into a snapshot.
+
+    The container publishes build()'s KEYWORD ARGUMENTS, not to_dict()'s output
+    — deliberately, so MAX_OBJECTS, the notes wording and the version stamp stay
+    on this side, in the module the tests exercise with no robot. This is the
+    only place that shape is interpreted. A None report falls through to build()
+    with nothing, which is the honest "every source offline" snapshot rather
+    than an empty scene.
+
+    Note what "None report" covers: not just "no container", but also a report
+    the link judged too old (perception_link.REPORT_OFFLINE_AFTER_S) and one
+    whose `report_version` it refused. All three are the same fact to a model —
+    nothing looked — and all three must degrade the same way.
+    """
+    if not report:
+        return build(landmarks=landmarks)
+
+    # Objects perception itself dropped before publishing. Summed with our own
+    # truncation inside build(); never replaced by it.
+    try:
+        extra_omitted = max(0, int(report.get("objects_omitted") or 0))
+    except (TypeError, ValueError):
+        extra_omitted = 0
+
+    notes = [str(n) for n in (report.get("notes") or []) if n]
+
+    raw_objects = report.get("objects") or []
+    objects: list[Observation] = []
+    if isinstance(raw_objects, list):
+        for raw in raw_objects:
+            obs = _observation_from(raw)
+            if obs is None:
+                # A detection we could not read is still a detection. Counting
+                # it as omitted rather than dropping it silently keeps
+                # "truncation is always declared" true for malformed input too.
+                extra_omitted += 1
+            else:
+                objects.append(obs)
+    else:
+        notes.append("Detector payload had a non-list `objects` field; it was ignored.")
+
+    unreadable = len(raw_objects) - len(objects) if isinstance(raw_objects, list) else 0
+    if unreadable:
+        notes.append(
+            f"{unreadable} detection(s) arrived malformed and could not be read; "
+            "they are counted as omitted, not discarded."
+        )
+
+    return build(
+        pose=report.get("pose"),
+        pose_age_s=report.get("pose_age_s"),
+        objects=objects,
+        detector_online=bool(report.get("detector_online")),
+        free_space=_free_space_from(report.get("free_space")),
+        lidar_online=bool(report.get("lidar_online")),
+        landmarks=landmarks,
+        extra_omitted=extra_omitted,
+        source_notes=notes,
     )
 
 

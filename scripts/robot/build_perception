@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+# Build the two perception images ON THE ROBOT, plus the TensorRT engine.
+# apps/perception/README.md Stages 1 and 2, in one command.
+#
+#   build_perception [all|vision|engine|nav|bench]
+#
+# Nothing here touches a sensor and nothing here needs gemm stopped: the vision
+# image builds under the DEFAULT runc runtime (importing `tensorrt` and running
+# `nvcc` execute no CUDA, which is why we never have to set default-runtime in
+# the shared /etc/docker/daemon.json), and the nav image never sees the GPU at
+# all. What it DOES take is 8 shared cores for ~35 minutes — see the load
+# warning below, and apps/perception/README.md (decisions list): ask them first.
+#
+# WHY ON THE ROBOT AND NOT CROSS-BUILT. This Jetson's docker is the Ubuntu
+# archive package (docker.io 24.0.7-0ubuntu2~20.04.1), not Docker CE: there is
+# no `docker buildx`, no `docker compose`, no /usr/libexec/docker/cli-plugins.
+# That means the CLASSIC builder only — no `--platform`, no
+# `RUN --mount=type=cache`, no multi-arch manifest to pull from a laptop. The
+# assertions below fail the build early if a Dockerfile ever grows syntax the
+# classic builder silently mis-parses.
+
+set -euo pipefail
+# `readlink -f` — see the note in run_c3po; this is invoked through a symlink
+# on PATH, so BASH_SOURCE[0] is the link, not this file.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+what="${1:-all}"
+case "$what" in all|vision|engine|nav|bench) ;; *)
+    err "usage: build_perception {all|vision|engine|nav|bench}"
+    err "  vision  the L4T/TensorRT image      (~25 min after the 5.3 GB base pull)"
+    err "  engine  the .plan, from your ONNX   (needs the GPU, no camera)"
+    err "  nav     the Humble/Nav2 image       (~35 min, -j3 on 8 shared cores)"
+    err "  bench   trtexec on the built engine (the number that decides the budget)"
+    exit 2 ;;
+esac
+
+PERCEPTION_DIR="$C3PO_DIR/apps/perception"
+MODELS_DIR="${C3PO_MODELS_DIR:-$HOME/.c3po/models}"
+ENGINE_VOLUME="${C3PO_ENGINE_VOLUME:-c3po-trt-engines}"
+BUILD_LOG_DIR="${C3PO_BUILD_LOG_DIR:-$LOG_DIR/build}"
+
+# BuildKit off, explicitly. `docker build` on 24.0.7 defaults to the classic
+# builder here, but DOCKER_BUILDKIT is read from the environment and a stray
+# export in someone's .bashrc would silently select a builder this daemon has
+# no plugin for.
+export DOCKER_BUILDKIT=0
+
+# --- guards ----------------------------------------------------------------
+
+if [ ! -d "$PERCEPTION_DIR" ]; then
+    err "no perception sources at $PERCEPTION_DIR"
+    err "set C3PO_DIR if the checkout lives elsewhere"
+    exit 1
+fi
+
+arch="$(uname -m)"
+if [ "$arch" != "aarch64" ]; then
+    err "this is $arch, not aarch64 — these images are L4T r35.3.1 / arm64 only"
+    err "there is no buildx on the robot's docker, so there is nothing to cross-build with"
+    err "run this on the Jetson:  ssh c3po 'build_perception $what'"
+    exit 1
+fi
+
+# A Dockerfile that grows BuildKit-only syntax does not fail loudly on the
+# classic builder — `RUN --mount=...` is parsed as a shell command with odd
+# arguments, and `--platform` on FROM is ignored. Assert instead.
+assert_classic_dockerfile() {
+    local df="$1"
+    [ -f "$df" ] || { err "missing $df"; exit 1; }
+    if grep -qE '^[[:space:]]*RUN[[:space:]]+--mount' "$df"; then
+        err "$df uses RUN --mount — BuildKit only, and this daemon has no buildx"
+        exit 1
+    fi
+    if grep -qiE '^[[:space:]]*FROM[[:space:]]+--platform' "$df"; then
+        err "$df uses FROM --platform — BuildKit only, and it is silently ignored here"
+        exit 1
+    fi
+    if grep -qiE '^[[:space:]]*#[[:space:]]*syntax=' "$df"; then
+        err "$df declares a # syntax= frontend — BuildKit only"
+        exit 1
+    fi
+}
+
+info "docker: $(_docker --version 2>/dev/null || echo unknown)"
+if _docker buildx version >/dev/null 2>&1; then
+    warn "this daemon HAS buildx — it did not when this script was written"
+    warn "the Dockerfiles are still classic-builder-only; nothing here uses it"
+else
+    info "classic builder (no buildx, no compose) — as expected on this host"
+fi
+
+avail_g="$(df -BG --output=avail / | tail -1 | tr -dc '0-9')"
+info "free on / : ${avail_g}G"
+if [ "${avail_g:-0}" -lt 40 ]; then
+    err "need >40G free on / for both images and the intermediate layers (have ${avail_g}G)"
+    exit 1
+fi
+
+# Building does not need the sensors, so gemm is deliberately NOT stopped. It
+# does need the cores, and a -j3 colcon visibly degrades their stack. Ask.
+if [ -n "$(gemm_running)" ]; then
+    warn "gemm is running — this build will NOT stop it (no sensors are needed)"
+    warn "but it will take most of 8 shared cores for tens of minutes"
+    info "load right now: $(cut -d' ' -f1-3 /proc/loadavg)"
+    if [ "${C3PO_BUILD_ACK_SHARED:-0}" = "1" ]; then
+        info "C3PO_BUILD_ACK_SHARED=1 — assuming that conversation already happened"
+    elif [ -t 0 ]; then
+        printf '  continue? [y/N] '
+        read -r reply
+        case "$reply" in y|Y|yes|YES) ;; *) err "aborted"; exit 1 ;; esac
+    else
+        err "not a terminal, and the other team's stack is up"
+        err "ask them, then re-run with C3PO_BUILD_ACK_SHARED=1"
+        exit 1
+    fi
+fi
+
+mkdir -p "$BUILD_LOG_DIR"
+
+# Every build is teed to a file, because the interesting output of these two
+# builds is the Dockerfiles' OWN assertions (DISTRO_ROS present, the three
+# FAST-LIO seds matched, `import tensorrt` worked) and they scroll past in a
+# 35-minute log.
+_build() {
+    local name="$1" image="$2" ctx="$3" log
+    log="$BUILD_LOG_DIR/$(date +%Y%m%d_%H%M%S)-${name}.log"
+    assert_classic_dockerfile "$ctx/Dockerfile"
+    say "Building $image"
+    info "context: $ctx"
+    info "log:     $log"
+    if _docker build -t "$image" "$ctx" 2>&1 | tee "$log"; then
+        ok "built $image"
+    else
+        err "build failed — the reason is usually one of the Dockerfile's own"
+        err "assertions, not the last line. grep the log:"
+        err "  grep -nE 'ASSERT|assert|Error|error:' $log"
+        exit 1
+    fi
+}
+
+# --- vision ----------------------------------------------------------------
+
+build_vision() {
+    _build vision "$PERCEPTION_VISION_IMAGE" "$PERCEPTION_DIR/vision"
+    # The image asserts `import tensorrt` at build time; re-assert on the built
+    # image so a cache hit from an older base cannot pass silently.
+    if _docker run --rm "$PERCEPTION_VISION_IMAGE" \
+        python3 -c "import tensorrt,sys; print('TensorRT', tensorrt.__version__, 'py', sys.version.split()[0])"; then
+        ok "TensorRT python bindings import (no GPU needed for this)"
+    else
+        err "the built image cannot import tensorrt — the base tag moved"
+        exit 1
+    fi
+}
+
+# --- engine ----------------------------------------------------------------
+
+build_engine() {
+    # The ONNX is exported OFF-robot (ultralytics is not installed here, and
+    # opset selection is the thing that decides whether TRT 8.5's parser
+    # accepts it at all — see apps/perception/tools/export_yolo11_onnx.py).
+    if [ ! -f "$MODELS_DIR/yolo11n.onnx" ]; then
+        err "no ONNX at $MODELS_DIR/yolo11n.onnx"
+        err "export it off-robot with opset<=17 (ultralytics defaults to 20, which"
+        err "TensorRT 8.5's parser REJECTS), then copy both files across:"
+        err "  uv run --with ultralytics --with onnx python \\"
+        err "      apps/perception/tools/export_yolo11_onnx.py yolo11n.pt out/"
+        err "  scp out/yolo11n.onnx out/labels.txt c3po:$MODELS_DIR/"
+        exit 1
+    fi
+    if [ ! -f "$MODELS_DIR/labels.txt" ]; then
+        err "no $MODELS_DIR/labels.txt — it must come from model.names of the SAME"
+        err "checkpoint, or a fine-tune silently reports 'person' for a traffic cone"
+        exit 1
+    fi
+
+    say "Building the TensorRT engine"
+    info "one-off, 2-5 min; --runtime nvidia is REQUIRED and is not the default here"
+    # `true` as the command: the entrypoint builds the plan and then execs
+    # whatever it was given, so this builds the engine and exits without ever
+    # opening the camera.
+    _docker run --rm --runtime nvidia \
+        -v "$MODELS_DIR:/opt/c3po/models:ro" \
+        -v "$ENGINE_VOLUME:/opt/c3po/engines" \
+        "$PERCEPTION_VISION_IMAGE" true
+    if _docker run --rm -v "$ENGINE_VOLUME:/opt/c3po/engines" \
+        "$PERCEPTION_VISION_IMAGE" test -s /opt/c3po/engines/yolo11n.fp16.plan; then
+        ok "engine present in volume $ENGINE_VOLUME"
+    else
+        err "the entrypoint returned 0 but there is no plan in $ENGINE_VOLUME"
+        exit 1
+    fi
+}
+
+# --- bench -----------------------------------------------------------------
+
+bench_engine() {
+    say "Benchmarking the engine"
+    # Our number, on this part, at this power mode — not a blog post's. A plan
+    # benchmarked at 15 W and run at MAXN (or the reverse) is a different
+    # engine's worth of latency.
+    local pm
+    pm="$(sudo nvpmodel -q 2>/dev/null | tr '\n' ' ' || true)"
+    info "nvpmodel: ${pm:-unavailable}"
+    case "$pm" in
+        *pmode:0000*) ok "MAXN" ;;
+        *) warn "NOT MAXN — every latency below is for this power mode, not for MAXN" ;;
+    esac
+    info "expect a median GPU latency of 5-8 ms at 640; if it is far off, that is"
+    info "the compute-budget conversation, not a tuning detail"
+    _docker run --rm --runtime nvidia \
+        -v "$ENGINE_VOLUME:/opt/c3po/engines" \
+        "$PERCEPTION_VISION_IMAGE" \
+        /usr/src/tensorrt/bin/trtexec \
+            --loadEngine=/opt/c3po/engines/yolo11n.fp16.plan \
+            --iterations=200 --avgRuns=100 --noDataTransfers
+}
+
+# --- nav -------------------------------------------------------------------
+
+build_nav() {
+    _build nav "$PERCEPTION_NAV_IMAGE" "$PERCEPTION_DIR/nav"
+    # colcon happily "succeeds" having found zero packages — livox_ros_driver2
+    # ships no package.xml of its own, and a skipped directory is not an error.
+    # So assert on the built image's package list, not on the build's exit code.
+    say "Checking the workspace actually contains what it should"
+    local pkgs missing=0 p
+    pkgs="$(_docker run --rm "$PERCEPTION_NAV_IMAGE" bash -lc 'ros2 pkg list' 2>/dev/null || true)"
+    for p in fast_lio livox_ros_driver2 c3po_perception nav2_controller nav2_bt_navigator pointcloud_to_laserscan; do
+        if printf '%s\n' "$pkgs" | grep -qx "$p"; then
+            ok "$p"
+        else
+            err "$p is NOT in the image"
+            missing=1
+        fi
+    done
+    [ "$missing" -eq 0 ] || { err "the image built but the workspace is incomplete"; exit 1; }
+}
+
+# --- run -------------------------------------------------------------------
+
+case "$what" in
+    vision) build_vision ;;
+    engine) build_engine ;;
+    bench)  bench_engine ;;
+    nav)    build_nav ;;
+    all)
+        build_vision
+        build_engine
+        build_nav
+        ;;
+esac
+
+say "build_perception done ($what)"
+info "images:"
+_docker images --format '  {{.Repository}}:{{.Tag}}  {{.Size}}  {{.CreatedSince}}' \
+    | grep -E 'c3po/perception-(nav|vision)' || true
+info "nothing is running yet — bring it up explicitly with:  perception_up fake"

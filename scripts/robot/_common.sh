@@ -65,6 +65,37 @@ gemm_running() {
     _docker ps --filter "name=^${GEMM_PREFIX}" --format '{{.Names}}' 2>/dev/null || true
 }
 
+# --- perception ------------------------------------------------------------
+
+PERCEPTION_NAV_IMAGE="${PERCEPTION_NAV_IMAGE:-c3po/perception-nav:humble}"
+PERCEPTION_VISION_IMAGE="${PERCEPTION_VISION_IMAGE:-c3po/perception-vision:r35.3.1}"
+PERCEPTION_LOG_DIR="${PERCEPTION_LOG_DIR:-$HOME/.c3po/logs/perception}"
+
+# Prefix filter, because there are TWO containers. run_c3po and stop_c3po used
+# to DETECT with a prefix and ACT on an exact name — detection passed, the start
+# failed, and run_c3po printed "ok started c3po-perception" either way.
+perception_containers() {
+    _docker ps -a --filter "name=^c3po-perception" --format '{{.Names}}' 2>/dev/null || true
+}
+
+perception_running_containers() {
+    _docker ps --filter "name=^c3po-perception" --format '{{.Names}}' 2>/dev/null || true
+}
+
+perception_running() { [ -n "$(perception_running_containers)" ]; }
+
+# Which bring-up stage is live. `fake` is the only one holding no sensors, which
+# is the distinction run_gemm and the operator actually care about.
+perception_stage() {
+    _docker inspect c3po-perception-nav \
+        --format '{{index .Config.Labels "c3po.stage"}}' 2>/dev/null || true
+}
+
+perception_holds_sensors() {
+    perception_running || return 1
+    [ "$(perception_stage)" != "fake" ]
+}
+
 # --- bridge ----------------------------------------------------------------
 
 bridge_pid() {
