@@ -41,6 +41,7 @@ boot unit at C3PO_NO_TAKEOVER=1. Transition it by hand:
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -72,6 +73,12 @@ def generate_launch_description() -> LaunchDescription:
         # authoritative `autostart: false` is in nav2_params.yaml and the
         # lifecycle manager reads it from there.
         DeclareLaunchArgument("autostart", default_value="false"),
+        # WHERE odom/scan COME FROM. "real" is the D3 pipeline and CLAIMS BOTH
+        # SHARED SENSORS. "fake" is synthetic and claims nothing, which is what
+        # makes it possible to exercise the Nav2 lifecycle, the planner, the
+        # controller and the /c3po/cmd_vel path without a sensor window and
+        # without taking anything from the other team.
+        DeclareLaunchArgument("sources", default_value="real"),
     ]
 
     perception = IncludeLaunchDescription(
@@ -82,6 +89,36 @@ def generate_launch_description() -> LaunchDescription:
             "mount_yaw_deg": LaunchConfiguration("mount_yaw_deg"),
             "twist_source": LaunchConfiguration("twist_source"),
         }.items(),
+        condition=LaunchConfigurationEquals("sources", "real"),
+    )
+
+    fake = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([share, "launch", "fake.launch.py"])),
+        condition=LaunchConfigurationEquals("sources", "fake"),
+    )
+
+    # THE FAKE STACK NEEDS THIS AND IT IS NOT OPTIONAL.
+    #
+    # fake.launch.py publishes /odom as a MESSAGE. Nav2's costmaps do not read
+    # /odom for placement — they ask TF for global_frame -> robot_base_frame,
+    # i.e. odom -> base_footprint. In the real stack g1_odom_tf broadcasts that
+    # edge; nothing in fake.launch.py does, and the failure mode is not an
+    # error. The costmaps simply never update, the controller reports it cannot
+    # transform, and it reads like a Nav2 misconfiguration rather than a
+    # missing transform.
+    #
+    # Identity is correct here: the fake robot sits at the origin and does not
+    # move, and FAKE_ODOM's pose is all zeros with an identity quaternion. If
+    # the fake ever starts moving, this has to become a node that tracks it —
+    # a static publisher would then be quietly lying to the planner.
+    fake_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="fake_odom_to_base_footprint",
+        arguments=["0", "0", "0", "0", "0", "0", "odom", "base_footprint"],
+        output="screen",
+        condition=LaunchConfigurationEquals("sources", "fake"),
     )
 
     nav2_nodes = [
@@ -146,4 +183,4 @@ def generate_launch_description() -> LaunchDescription:
         ),
     ]
 
-    return LaunchDescription(args + [perception] + nav2_nodes)
+    return LaunchDescription(args + [perception, fake, fake_tf] + nav2_nodes)

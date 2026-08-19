@@ -115,16 +115,38 @@ RUN git clone --depth 1 -b ${CYCLONEDDS_TAG} https://github.com/eclipse-cycloned
  && test -f /usr/local/lib/libddsc.so \
       || (echo "FATAL: libddsc.so missing — the cyclonedds python binding will fail to build" && false)
 
+# numpy is PINNED EXACTLY, not bounded. `numpy<2` looks like a pin and is not:
+# l4t-jetpack:r35.3.1 already ships numpy 1.17.4, which satisfies it, so pip
+# resolved the constraint to "already installed" and changed nothing. The image
+# then ran on a 2019 numpy while every comment here claimed otherwise.
+#
+# 1.24.4 is the last release with cp38 wheels, and cp38 is not negotiable —
+# JetPack 5's python3-libnvinfer hard-depends python3 (<< 3.9). pyrealsense2
+# 2.55 and pycuda are both built against a much newer C-API than 1.17's, and an
+# ABI mismatch there surfaces as a segfault inside np.asanyarray() on a camera
+# frame, not as an import error.
 RUN pip3 install --no-cache-dir --upgrade pip \
  && pip3 install --no-cache-dir \
       "pyrealsense2==2.55.1.6486" \
-      "numpy<2" \
+      "numpy==1.24.4" \
       "cyclonedds==0.10.2" \
       "pycuda==2022.2.2"
 # cyclonedds 0.10.2 pinned to match apps/bridge exactly. Do NOT drift to 0.7.x —
 # that is the Foxy copy on this host and its config schema is incompatible
 # (<NetworkInterfaceAddress> vs <Interfaces>).
 # pycuda 2022.2.2 is the known-good pin for CUDA 11.4 / py3.8; newer assumes CUDA 12.
+
+# Assert the pins TOOK. pip is silent when a base-image package already
+# satisfies a constraint, so "it installed without error" does not mean "the
+# version you asked for is what is here" — which is exactly how 1.17.4 survived
+# a `numpy<2`. Checking the C-API version too, because that is the number that
+# actually has to match what pyrealsense2 and pycuda were compiled against.
+#
+# Single-line `python3 -c`, NOT a heredoc: this Jetson's docker is 24.0.7 from
+# the Ubuntu archive with no buildx, so `RUN <<EOF` is unavailable and a
+# heredoc without backslash continuations parses as separate instructions.
+RUN python3 -c "import numpy; assert numpy.__version__ == '1.24.4', 'numpy is ' + numpy.__version__ + ', not the pinned 1.24.4 — a base-image copy satisfied the constraint and pip did nothing'; print('numpy', numpy.__version__, 'C-API', numpy.core._multiarray_umath._get_ndarray_c_version())" \
+ && python3 -c "import pyrealsense2, cyclonedds, sys; print('pyrealsense2 + cyclonedds import under python', sys.version.split()[0])"
 
 COPY c3po_vision /opt/c3po/c3po_vision
 COPY entrypoint.sh /entrypoint.sh

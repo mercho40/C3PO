@@ -22,8 +22,8 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$here/_common.sh"
 
 stage="${1:-}"
-case "$stage" in fake|odometry|perception|nav2) ;; *)
-    err "usage: perception_up {fake|odometry|perception|nav2}"; exit 2 ;; esac
+case "$stage" in fake|nav2-fake|odometry|perception|nav2) ;; *)
+    err "usage: perception_up {fake|nav2-fake|odometry|perception|nav2}"; exit 2 ;; esac
 
 # Say what this stage takes BEFORE taking it. "claims shared sensors" is not
 # specific enough to act on: whether the Livox alone or the Livox and the
@@ -33,6 +33,11 @@ say "perception_up: stage '$stage'"
 case "$stage" in
     fake)
         info "sensors claimed: NONE — the Livox and the RealSense stay with gemm" ;;
+    nav2-fake)
+        info "sensors claimed: NONE — the Livox and the RealSense stay with gemm"
+        info "Nav2 on SYNTHETIC odom/scan: the lifecycle, the planner, the controller"
+        info "and the /c3po/cmd_vel path, with nothing taken from the other team"
+        warn "Nav2 comes up UNCONFIGURED (autostart:=false); the bridge's cmd_vel gate stays closed" ;;
     odometry)
         warn "sensors claimed: Livox Mid-360 — gemm will be stopped to release it" ;;
     perception)
@@ -42,7 +47,20 @@ case "$stage" in
         warn "Nav2 comes up UNCONFIGURED (autostart:=false); the bridge's cmd_vel gate stays closed" ;;
 esac
 
+# nav2-fake is nav2.launch.py with sources:=fake rather than its own launch
+# file, so the seven Nav2 node definitions and their load-bearing remaps live in
+# exactly one place. A duplicate launch file would drift the day someone fixes a
+# remap in one and not the other.
+case "$stage" in
+    nav2-fake) launch_file="nav2.launch.py"; launch_args="sources:=fake" ;;
+    *)         launch_file="${stage}.launch.py"; launch_args="" ;;
+esac
+
 needs_lidar=0; needs_camera=0
+# `fake` and `nav2-fake` are deliberately absent: they claim nothing. That is
+# the entire point of nav2-fake — Stage 4 was specified as sensor-free, and for
+# a while the only nav2 stage stopped gemm and took both sensors, which would
+# have made a step described as "Nav2 in isolation" the most invasive one yet.
 case "$stage" in
     odometry) needs_lidar=1 ;;
     perception|nav2) needs_lidar=1; needs_camera=1 ;;
@@ -95,7 +113,7 @@ _docker create --name c3po-perception-nav \
     -v "$PERCEPTION_LOG_DIR:/logs" \
     --label c3po.stage="$stage" --label c3po.image="$nav_digest" \
     "$PERCEPTION_NAV_IMAGE" \
-    ros2 launch c3po_perception "${stage}.launch.py" >/dev/null
+    ros2 launch c3po_perception "$launch_file" $launch_args >/dev/null
 ok "created c3po-perception-nav (no GPU, runc)"
 
 if [ "$needs_camera" = 1 ]; then

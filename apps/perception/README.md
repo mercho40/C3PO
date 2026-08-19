@@ -176,22 +176,54 @@ that is one command.
   nothing publishing). **Landed.**
 - **Stage 1 — vision image + TRT engine** (no sensors; GPU is free with gemm up).
   `build_perception vision && build_perception engine && build_perception bench`.
-  Pass: trtexec median GPU latency ~5–8 ms at 640, on MAXN.
-- **Stage 2 — nav image** (no sensors). `build_perception nav`. Pass: the
-  Dockerfile's own sed-assertions all held (a silent sed miss ships a
-  single-threaded FAST-LIO), and `ros2 pkg list` shows fast_lio,
-  livox_ros_driver2, c3po_perception, nav2_controller. Ask the other team before
-  hogging 8 shared cores for ~35 min.
+  **Landed 2026-08-20.** `c3po/perception-vision:r35.3.1`, 9.97 GB; engine
+  `yolo11n.fp16.plan`, 7.9 MB, in volume `c3po-trt-engines`. Measured on this
+  part at MAXN (`/var/lib/nvpmodel/status` = `pmode:0000`), not predicted:
+
+  | | |
+  | --- | --- |
+  | Throughput | 203.9 qps |
+  | GPU compute | median **4.75 ms**, mean 4.90, p90 5.25, p99 6.20 |
+
+  Inside the 5–8 ms the research predicted. At the detector's 10 Hz that is
+  ~5 % of the GPU, on a GPU measured at `GR3D_FREQ 0%` with gemm running — so
+  the detector is not what makes this stack fit or not fit.
+- **Stage 2 — nav image** (no sensors). `build_perception nav`.
+  **Landed 2026-08-20.** `c3po/perception-nav:humble`, 3.38 GB; every assertion
+  held — fast_lio, livox_ros_driver2, c3po_perception, nav2_controller,
+  nav2_bt_navigator, pointcloud_to_laserscan. Ask the other team before hogging
+  8 shared cores for ~35 min.
+
+  It took four attempts, and each failure was a real fact rather than a flake:
+  the FAST-LIO twist patch was rejected because upstream had moved
+  (`publish_odometry` at 628 not 618, `SharedPtr` not `SharedPtr &`) — the hunk
+  is now **generated** against the pinned ref, not hand-written; and the Livox
+  pins were wrong on both sides at once. SDK v1.2.5 lacked
+  `kLivoxLidarTypeMid360s`, while driver `master` needs `DoubleEcho` symbols
+  that exist on **no SDK tag**, only SDK master. The pair is now SDK `v1.3.1` +
+  driver `1.2.6`, both tags, mutually consistent, with an assertion on each
+  side so a one-sided bump fails loudly.
 - **Stage 3 — the crossing end-to-end on synthetic data** (no sensors).
   `perception_up fake` + `run_c3po`, then `describe_surroundings` from a Claude
   Code session. This is where "absent is not empty" is proven across a process
   boundary, a container boundary and a DDS domain: kill the synthetic publisher
   and the summary must flip to `detector: offline` with a plain-language note,
   never an empty scene.
-- **Stage 4 — Nav2 in isolation** (no sensors). `perception_up nav2`, transition
-  the lifecycle manager by hand, send one goal **with the bridge's gate closed**:
+- **Stage 4 — Nav2 in isolation** (no sensors). `perception_up nav2-fake`,
+  transition the lifecycle manager by hand, send one goal **with the bridge's
+  gate closed**:
   `dropped_while_disabled` climbs, `last_sent` stays `None`, `/c3po/cmd_vel`
   holds ~20 Hz. A SIGILL here means MPPI got installed by accident.
+
+  `nav2-fake` is `nav2.launch.py sources:=fake` — Nav2 over the synthetic
+  `/odom`, `/scan` and `/c3po/objects` from `fake.launch.py`, plus a static
+  `odom -> base_footprint`. That TF is not decoration: costmaps place
+  themselves from TF, never from the `/odom` message, so without it they simply
+  never update and it reads as a Nav2 misconfiguration. Note `perception_up
+  nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
+  stage was specified as sensor-free and for a while the only nav2 stage
+  stopped gemm, which would have made "Nav2 in isolation" the most invasive
+  step in the plan.
 - **Stage 5 — first shared-sensor window: record a bag** (~30 min, gemm stops).
   `perception_up odometry`, then
   `ros2 bag record /livox/lidar /livox/imu /Odometry /cloud_registered_body /scan /tf /tf_static`,
@@ -279,9 +311,22 @@ that is one command.
 
 ## Not yet exercised
 
-Everything in the file map exists. Nothing in `vision/` has been run against a
-camera or a GPU — the two things below are what "written but unproven" means
-here.
+Everything in the file map exists. The vision image now builds, imports
+TensorRT 8.5.2.2 under `--runtime nvidia`, and its engine benchmarks — but
+**nothing has yet been run against a camera, and nothing has ever published on
+domain 42 and been read by the bridge.** That last one is the keystone: every
+piece exists and no two of them have talked to each other. Stage 3 is what
+closes it, and it needs no sensors.
+
+One pin worth knowing about: the image originally carried **numpy 1.17.4**, not
+the intended one. `pip install "numpy<2"` looks like a pin and is not —
+`l4t-jetpack:r35.3.1` already ships 1.17.4, which satisfies it, so pip resolved
+to "already installed" and changed nothing. Now pinned exactly to 1.24.4 (the
+last release with cp38 wheels; cp38 is forced by JetPack 5's
+`python3-libnvinfer`, which hard-depends `python3 (<< 3.9)`) with a build-time
+assertion, because an ABI mismatch against pyrealsense2/pycuda surfaces as a
+segfault inside `np.asanyarray()` on a camera frame rather than an import
+error. **The rebuild carrying that pin has not run yet.**
 
 - `vision/c3po_vision/detector.py` — the capture→TRT→grounding→DDS loop the
   vision image's CMD points at. Its synthetic path (`C3PO_VISION_FAKE=1`, and
@@ -299,8 +344,11 @@ here.
   (`ModelImporter.cpp:698`; the "max IR version 8" hard error is an ONNX
   _Runtime_ message). The labels file must come from `model.names` of
   the same checkpoint, never a hardcoded COCO list — otherwise a fine-tune
-  silently reports "person" for a traffic cone. The verifier half has been run
-  against a real `yolo11n.onnx`; the ultralytics export half has not.
+  silently reports "person" for a traffic cone. **Both halves have now run**
+  (2026-08-20): `yolo11n.pt` -> 11 MB ONNX + 80-class `labels.txt`, verified
+  `ai.onnx@16`, static `[1,3,640,640]`, output `[1,84,8400]` (the raw head, not
+  the `[1,300,6]` an `nms=True` export produces), and no NMS op in the graph.
+  TensorRT 8.5.2.2 parsed it and built the plan on the first attempt.
 
 ## File map
 
