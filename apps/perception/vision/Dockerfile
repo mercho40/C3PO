@@ -125,12 +125,23 @@ RUN git clone --depth 1 -b ${CYCLONEDDS_TAG} https://github.com/eclipse-cycloned
 # 2.55 and pycuda are both built against a much newer C-API than 1.17's, and an
 # ABI mismatch there surfaces as a segfault inside np.asanyarray() on a camera
 # frame, not as an import error.
+#
+# Pillow is the fifth package, and it buys the operator's live view: it is the
+# JPEG encoder behind c3po_vision/stream.py. The alternative was OpenCV for
+# `imencode` — ~100 MB of image, a second numpy ABI to keep in step, and a
+# python3-opencv from focal built against the base image's 1.17 — to compress
+# one 640x480 frame five times a second. 10.4.0 is the LAST Pillow that supports
+# python 3.8 (11.0 requires >=3.9) and it ships a cp38 manylinux2014_aarch64
+# wheel, so this is a download, not a source build against libjpeg headers.
+# Do not float it: the next minor drops this interpreter and pip would resolve
+# to a version that cannot install here.
 RUN pip3 install --no-cache-dir --upgrade pip \
  && pip3 install --no-cache-dir \
       "pyrealsense2==2.55.1.6486" \
       "numpy==1.24.4" \
       "cyclonedds==0.10.2" \
-      "pycuda==2022.2.2"
+      "pycuda==2022.2.2" \
+      "Pillow==10.4.0"
 # cyclonedds 0.10.2 pinned to match apps/bridge exactly. Do NOT drift to 0.7.x —
 # that is the Foxy copy on this host and its config schema is incompatible
 # (<NetworkInterfaceAddress> vs <Interfaces>).
@@ -146,7 +157,8 @@ RUN pip3 install --no-cache-dir --upgrade pip \
 # the Ubuntu archive with no buildx, so `RUN <<EOF` is unavailable and a
 # heredoc without backslash continuations parses as separate instructions.
 RUN python3 -c "import numpy; assert numpy.__version__ == '1.24.4', 'numpy is ' + numpy.__version__ + ', not the pinned 1.24.4 — a base-image copy satisfied the constraint and pip did nothing'; print('numpy', numpy.__version__, 'C-API', numpy.core._multiarray_umath._get_ndarray_c_version())" \
- && python3 -c "import pyrealsense2, cyclonedds, sys; print('pyrealsense2 + cyclonedds import under python', sys.version.split()[0])"
+ && python3 -c "import pyrealsense2, cyclonedds, sys; print('pyrealsense2 + cyclonedds import under python', sys.version.split()[0])" \
+ && python3 -c "import PIL; assert PIL.__version__ == '10.4.0', 'Pillow is ' + PIL.__version__ + ', not the pinned 10.4.0'; from PIL import features; assert features.check('jpg'), 'Pillow built without JPEG support — the wheel was not used and the operator video would fail at the first encode, at runtime, on the robot'; print('Pillow', PIL.__version__, 'jpeg ok')"
 
 COPY c3po_vision /opt/c3po/c3po_vision
 COPY entrypoint.sh /entrypoint.sh

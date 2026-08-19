@@ -9,6 +9,28 @@
     type SimCamHandle,
     type SimCamState,
   } from "$lib/webrtc/sim-camera";
+  import {
+    connectRobotCamera,
+    type RobotCamHandle,
+    type RobotCamState,
+    type RobotCamStatus,
+  } from "$lib/robot/mjpeg-camera";
+
+  // TWO SOURCES, AND THEY ARE NOT INTERCHANGEABLE.
+  //
+  // The simulator serves three WebRTC cameras (teleimager/aiortc, ports
+  // 60001-3). The real G1 serves none of that: its only camera is the D435i
+  // colour node, and the picture comes from apps/perception's vision container
+  // as MJPEG, because that container already holds /dev/video4 and a V4L2 node
+  // has exactly one owner. This page used to know only the first case, which
+  // made it a permanently dead panel on hardware.
+  //
+  // PUBLIC_ROBOT_CAM_URL is what picks: set it (normally to a port forwarded
+  // over the same SSH tunnel as the bridge) and the console shows the robot.
+  // The robot wins over the sim when both are configured — an operator looking
+  // at a console attached to a physical robot must not be shown a simulation.
+  let robotBase = $state("");
+  const robotMode = $derived(robotBase !== "");
 
   // The sim's teleimager image servers — one aiortc WebRTC server per camera.
   // Head is binocular (480x1280 side-by-side); we bias the main feed to the
@@ -59,14 +81,72 @@
     });
   }
 
+  // --- the real robot: one camera, MJPEG, truth from /status ---------------
+
+  let robot = $state<{
+    state: RobotCamState;
+    detail: string;
+    status: RobotCamStatus | null;
+    url: string;
+    broken: boolean;
+    fps: number | null;
+  }>({
+    state: "connecting",
+    detail: "",
+    status: null,
+    url: "",
+    broken: false,
+    fps: null,
+  });
+  let robotHandle: RobotCamHandle | null = null;
+  // Frame rate is measured across /status polls rather than trusted from a
+  // config value: the container decimates to 5 Hz by default, but a Jetson
+  // under load delivers what it delivers, and that is the number worth showing.
+  let lastFrames = 0;
+  let lastFramesAt = 0;
+
+  function startRobot() {
+    robotHandle?.close();
+    lastFrames = 0;
+    lastFramesAt = 0;
+    robot = { ...robot, status: null, broken: false, fps: null };
+    robotHandle = connectRobotCamera(robotBase, {
+      onState: (state, detail) => {
+        robot = { ...robot, state, detail: detail ?? "" };
+      },
+      onStatus: (status) => {
+        const now = Date.now();
+        let fps = robot.fps;
+        if (status && lastFramesAt > 0 && now > lastFramesAt) {
+          const delta = status.frames - lastFrames;
+          fps = delta <= 0 ? 0 : (delta * 1000) / (now - lastFramesAt);
+        }
+        if (status) {
+          lastFrames = status.frames;
+          lastFramesAt = now;
+        }
+        robot = { ...robot, status, fps: status ? fps : null };
+      },
+      onStreamUrl: (url) => {
+        robot = { ...robot, url, broken: false };
+      },
+    });
+  }
+
   function reconnectAll() {
+    if (robotMode) {
+      startRobot();
+      return;
+    }
     for (const c of cameras) start(c.id, c.port);
   }
 
   onMount(() => {
+    robotBase = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
     host = env.PUBLIC_SIM_CAM_HOST || location.hostname;
     reconnectAll();
     return () => {
+      robotHandle?.close();
       for (const c of cameras) handles[c.id]?.close();
     };
   });
@@ -91,6 +171,30 @@
   const headState = $derived(rt.head.state);
   const liveCount = $derived(
     cameras.filter((c) => rt[c.id].state === "live").length,
+  );
+
+  // One badge vocabulary for both sources, so the operator reads the same three
+  // words whichever robot they are attached to. "stale" has no sim equivalent —
+  // WebRTC tears the track down instead of freezing on the last frame.
+  const mainState = $derived<"live" | "connecting" | "stale" | "down">(
+    robotMode
+      ? robot.state === "live"
+        ? "live"
+        : robot.state === "connecting"
+          ? "connecting"
+          : robot.state === "stale"
+            ? "stale"
+            : "down"
+      : headState === "live"
+        ? "live"
+        : headState === "connecting"
+          ? "connecting"
+          : "down",
+  );
+  const mainLabel = $derived(
+    { live: "EN VIVO", connecting: "Conectando", stale: "Congelado", down: "Sin señal" }[
+      mainState
+    ],
   );
 </script>
 

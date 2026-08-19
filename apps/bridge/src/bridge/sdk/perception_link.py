@@ -60,8 +60,18 @@ log = structlog.get_logger(__name__)
 PERCEPTION_DOMAIN_ID = int(os.environ.get("PERCEPTION_DOMAIN_ID", "42"))
 WORLD_SUMMARY_TOPIC = "rt/c3po/world_summary"
 CMD_VEL_TOPIC = "rt/c3po/cmd_vel"
+# Nav2's global costmap, already encoded to a small indexed PNG by the nav
+# container (c3po_perception.costmap_publisher). Read-only telemetry: it feeds
+# the operator console's map and reaches NOTHING that can actuate.
+COSTMAP_TOPIC = "rt/c3po/costmap"
 
 SUPPORTED_REPORT_VERSIONS = frozenset({1})
+# The costmap publishes at the global costmap's 1 Hz, so this is far slacker
+# than the world summary's. A stale map is a display problem, not a safety one —
+# but it must still be REPORTED stale rather than shown as current, or an
+# operator plans against a picture of somewhere the robot has left.
+COSTMAP_STALE_AFTER_S = 5.0
+
 REPORT_OFFLINE_AFTER_S = 2.0   # perception publishes at 4 Hz; 8 missed ticks
 
 # Our own staleness deadman, and it sits ABOVE the firmware's 1 s SET_VELOCITY
@@ -197,6 +207,10 @@ class PerceptionLink:
         # --- world summary
         self._report: dict[str, Any] | None = None
         self._report_at: float | None = None
+        self._costmap: dict[str, Any] | None = None
+        self._costmap_at: float | None = None
+        self.costmaps_received = 0
+        self.costmaps_rejected = 0
         self.reports_received = 0
         self.reports_rejected = 0
 
@@ -218,6 +232,8 @@ class PerceptionLink:
 
         self._started = False
         self._stop = threading.Event()
+        self._costmap_topic = None
+        self._costmap_reader = None
         self._reader_thread: threading.Thread | None = None
         self._issue_thread: threading.Thread | None = None
 
@@ -255,6 +271,9 @@ class PerceptionLink:
         self._cmd_vel_topic = Topic(self._participant, CMD_VEL_TOPIC, Twist_)
         self._cmd_vel_reader = DataReader(self._participant, self._cmd_vel_topic, qos=None)
 
+        self._costmap_topic = Topic(self._participant, COSTMAP_TOPIC, String_)
+        self._costmap_reader = DataReader(self._participant, self._costmap_topic, qos=None)
+
         self._started = True
         self._reader_thread = threading.Thread(
             target=self._read_loop, name="perception-readers", daemon=True
@@ -268,7 +287,7 @@ class PerceptionLink:
         log.info(
             "perception.link.ready",
             domain_id=self._domain_id,
-            topics=[WORLD_SUMMARY_TOPIC, CMD_VEL_TOPIC],
+            topics=[WORLD_SUMMARY_TOPIC, CMD_VEL_TOPIC, COSTMAP_TOPIC],
             gate="closed",
         )
 
@@ -509,8 +528,69 @@ class PerceptionLink:
                         self._ingest_report(sample.data)
                 if self._cmd_vel_reader is not None:
                     self._on_cmd_vel(self._cmd_vel_reader)
+                if self._costmap_reader is not None:
+                    for sample in self._costmap_reader.take(1):
+                        self._ingest_costmap(sample.data)
             except Exception:
                 log.exception("perception.read_loop.failed")
+
+    # -- costmap -------------------------------------------------------------
+
+    def _ingest_costmap(self, data: str) -> bool:
+        """Parse one costmap payload. Pure telemetry — it can move nothing.
+
+        Held as the parsed dict rather than decoded bytes: the PNG is already
+        the transport format the browser wants, so the bridge never decodes it.
+        This hop stays a pass-through, which is why a malformed costmap costs a
+        counter and a log line rather than anything structural.
+        """
+        try:
+            payload = json.loads(data)
+            if not isinstance(payload, dict):
+                raise ValueError(f"costmap is {type(payload).__name__}, not an object")
+            if int(payload.get("v", 0)) != 1:
+                raise ValueError(f"unsupported costmap schema v={payload.get('v')}")
+            if not payload.get("png_base64"):
+                raise ValueError("costmap carries no png_base64")
+        except Exception as exc:
+            self.costmaps_rejected += 1
+            log.warning("perception.costmap.unparseable", error=str(exc))
+            return False
+
+        with self._lock:
+            self._costmap = payload
+            self._costmap_at = self._clock()
+        self.costmaps_received += 1
+        return True
+
+    def latest_costmap(self) -> tuple[dict[str, Any] | None, float | None]:
+        """The newest costmap and its age in seconds, or (None, None).
+
+        Deliberately does NOT drop a stale costmap the way `latest_report`
+        drops a stale report. A two-minute-old map is still the best picture
+        available and is worth showing — but the age comes back with it so the
+        caller can say so, and `costmap_status()` marks it stale past
+        COSTMAP_STALE_AFTER_S. Showing an old map is fine; showing an old map
+        as though it were current is not.
+        """
+        with self._lock:
+            payload, at = self._costmap, self._costmap_at
+        if payload is None or at is None:
+            return None, None
+        return payload, max(0.0, self._clock() - at)
+
+    def costmap_status(self) -> dict[str, Any]:
+        payload, age = self.latest_costmap()
+        return {
+            "present": payload is not None,
+            "age_s": None if age is None else round(age, 2),
+            "stale": bool(age is not None and age > COSTMAP_STALE_AFTER_S),
+            "received": self.costmaps_received,
+            "rejected": self.costmaps_rejected,
+            "width": None if payload is None else payload.get("width"),
+            "height": None if payload is None else payload.get("height"),
+            "resolution_m": None if payload is None else payload.get("resolution_m"),
+        }
 
     # -- introspection -------------------------------------------------------
 

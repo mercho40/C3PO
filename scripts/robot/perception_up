@@ -133,6 +133,10 @@ if [ "$needs_camera" = 1 ]; then
         -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all \
         -e C3PO_DDS_DOMAIN=42 \
         -e CYCLONEDDS_URI=file:///opt/c3po/config/cyclonedds-domain42.xml \
+        -e C3PO_VISION_STREAM="${C3PO_VISION_STREAM:-1}" \
+        -e C3PO_VISION_STREAM_HOST="${C3PO_VISION_STREAM_HOST:-127.0.0.1}" \
+        -e C3PO_VISION_STREAM_PORT="${C3PO_VISION_STREAM_PORT:-8081}" \
+        -e C3PO_VISION_STREAM_HZ="${C3PO_VISION_STREAM_HZ:-5}" \
         --device-cgroup-rule 'c 81:* rmw' \
         --device-cgroup-rule 'c 189:* rmw' \
         -v /dev/bus/usb:/dev/bus/usb \
@@ -145,6 +149,17 @@ if [ "$needs_camera" = 1 ]; then
         --label c3po.stage="$stage" \
         "$PERCEPTION_VISION_IMAGE" >/dev/null
     ok "created c3po-perception-vision (--runtime nvidia)"
+    # The operator's live view. It rides --network host, so this is the Jetson's
+    # own 127.0.0.1:8081 and NOT reachable from the school Wi-Fi unless somebody
+    # sets C3PO_VISION_STREAM_HOST=0.0.0.0 on purpose — an unauthenticated camera
+    # feed on a shared network should be a sentence someone typed, not a default.
+    # The console reaches it the same way it reaches the bridge:
+    #   ssh -f -N -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 c3po
+    if [ "${C3PO_VISION_STREAM:-1}" = "1" ]; then
+        info "video: http://${C3PO_VISION_STREAM_HOST:-127.0.0.1}:${C3PO_VISION_STREAM_PORT:-8081}/stream.mjpg (tunnel it; PUBLIC_ROBOT_CAM_URL in apps/web)"
+    else
+        info "video: disabled (C3PO_VISION_STREAM=$C3PO_VISION_STREAM)"
+    fi
 fi
 
 for c in $(perception_containers); do _docker start "$c" >/dev/null && ok "started $c"; done

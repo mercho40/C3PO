@@ -1316,6 +1316,92 @@ def list_active_tasks(
 # Entrypoint
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Telemetry over plain HTTP — NOT MCP
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS NOT AN MCP TOOL. Two independent reasons, either sufficient.
+#
+# 1. It is not for the model. A 240x240 PNG is meaningless to an LLM and would
+#    be a catastrophe for the token budget — D7 sizes the model's view of the
+#    world at a few hundred tokens on purpose. This is for the OPERATOR's eyes,
+#    and the operator's console is a browser.
+#
+# 2. It is the one path that works today. `apps/back` cannot reach this server
+#    over MCP at all: the SDK's StreamableHTTPClientTransport dies under Bun
+#    with "socket connection was closed unexpectedly", while the identical code
+#    under Node connects fine (docs/OPERATIONS.md). That break is specific to
+#    the SDK transport holding a long-lived stream — a plain `fetch()` in Bun to
+#    this same server already works. So a plain GET is not a workaround, it is
+#    the correct shape for read-only telemetry AND it happens to be the first
+#    robot data that can reach the web while that blocker stands.
+#
+# READ-ONLY, AND STRUCTURALLY SO. This route reads a cached payload the link
+# already received. It cannot arm the gate, cannot publish, and cannot reach
+# anything that actuates — the whole cmd_vel path is untouched by it. The bridge
+# still binds loopback with no auth of its own, so this is reached the same way
+# everything else is: through the SSH tunnel, not from the school LAN.
+
+
+@mcp.custom_route("/telemetry/costmap.png", methods=["GET"])
+async def costmap_png(request):  # noqa: ANN001, ANN201 - starlette types
+    """Nav2's global costmap as an indexed PNG, or 503 when there is none.
+
+    503 rather than a blank image, deliberately: a blank map and "no map yet"
+    are different facts, and an operator who cannot tell them apart is the map
+    equivalent of `objects: []` from an offline detector. The metadata a
+    renderer needs to place the image — resolution, origin, size, age — rides on
+    headers so the body stays a plain PNG the browser can put in an <img>.
+    """
+    from starlette.responses import JSONResponse, Response
+
+    from bridge.sdk.perception_link import COSTMAP_STALE_AFTER_S, get_link
+
+    payload, age = get_link().latest_costmap()
+    if payload is None:
+        return JSONResponse(
+            {
+                "error": "no costmap received",
+                "hint": (
+                    "the costmap comes from Nav2's global_costmap, so it exists only "
+                    "while a nav2 stage is up: `perception_up nav2-fake` (no sensors) "
+                    "or `perception_up nav2` (claims both sensors)"
+                ),
+            },
+            status_code=503,
+        )
+
+    import base64
+
+    try:
+        png = base64.b64decode(payload["png_base64"])
+    except Exception:
+        return JSONResponse({"error": "costmap payload is not decodable"}, status_code=502)
+
+    stale = age is not None and age > COSTMAP_STALE_AFTER_S
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={
+            # Placement, so the console can put the map under the robot marker.
+            # origin is the pose of the BOTTOM-LEFT cell in `frame`; the PNG is
+            # top-down, so draw from (origin_x, origin_y + height*res) downward.
+            "X-C3PO-Frame": str(payload.get("frame_id", "")),
+            "X-C3PO-Width": str(payload.get("width", "")),
+            "X-C3PO-Height": str(payload.get("height", "")),
+            "X-C3PO-Resolution-M": str(payload.get("resolution_m", "")),
+            "X-C3PO-Origin-X-M": str(payload.get("origin_x_m", "")),
+            "X-C3PO-Origin-Y-M": str(payload.get("origin_y_m", "")),
+            # Age travels with the image so a stale map can be SHOWN AS stale
+            # rather than shown as current. Never cache: at 1 Hz a cached map is
+            # a lie within a second.
+            "X-C3PO-Age-S": "" if age is None else f"{age:.2f}",
+            "X-C3PO-Stale": "true" if stale else "false",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 def main() -> None:
     """Run the MCP server.
 
