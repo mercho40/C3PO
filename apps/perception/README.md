@@ -25,16 +25,22 @@ Mid-360 ──UDP──> [nav container]
                    pointcloud_to_laserscan ──/scan
                    Nav2 (DWB) ──/c3po/cmd_vel ────────────────────┐
                    world_model_publisher ──/c3po/world_summary ───┤
-                   costmap_publisher ──/c3po/costmap (PNG in JSON) ───┤
+                   costmap_publisher ──/c3po/costmap (PNG) ───────┤
 D435i ──USB──> [vision container]                                 │
                    pyrealsense2 (V4L2) + YOLO11 TRT engine        │
                    ──/c3po/objects (String JSON, egocentric) ─────┤
                    ──MJPEG on 127.0.0.1:8081 (operator console)   │
                                                                   │
                                   [apps/bridge, host process] ◄───┘
-                                    Domain(42, explicit xml) — reads summary + cmd_vel
+                                    Domain(42, explicit xml) — summary + cmd_vel + costmap
                                     ChannelFactory(0) ──────────► SET_VELOCITY (7105)
 ```
+
+The costmap and the MJPEG stream are the two things here that exist for a human
+rather than for the agent. Where they surface, why the map is proxied through
+`back` while the camera is reached directly, and what each failure state means
+are in `apps/web/README.md` — not repeated here, because the tunnel and the auth
+boundary are the console's facts and duplicating them is how two docs drift.
 
 ## Two containers, not one
 
