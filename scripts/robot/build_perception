@@ -144,13 +144,28 @@ _build() {
 
 build_vision() {
     _build vision "$PERCEPTION_VISION_IMAGE" "$PERCEPTION_DIR/vision"
-    # The image asserts `import tensorrt` at build time; re-assert on the built
-    # image so a cache hit from an older base cannot pass silently.
-    if _docker run --rm "$PERCEPTION_VISION_IMAGE" \
-        python3 -c "import tensorrt,sys; print('TensorRT', tensorrt.__version__, 'py', sys.version.split()[0])"; then
-        ok "TensorRT python bindings import (no GPU needed for this)"
+
+    # Re-assert on the BUILT image, so a cache hit from an older base cannot
+    # pass silently. Two flags here are not optional:
+    #
+    # --runtime nvidia — `import tensorrt` dlopens libnvdla_compiler.so, which
+    #   is in no deb and not in the image: it lives on the host rootfs and this
+    #   runtime injects it. Under the daemon's default runc the import fails
+    #   with ImportError, which is a property of the RUNTIME, not of the image.
+    #   Checking without the flag reports a perfectly good image as broken —
+    #   and "the base tag moved" is a spectacularly misleading way to say
+    #   "you forgot a flag".
+    #
+    # --entrypoint python3 — entrypoint.sh builds the TensorRT engine when one
+    #   is absent. Without this, a one-line version check silently turns into a
+    #   2-5 minute engine build, or fails outright when no ONNX is staged yet.
+    if _docker run --rm --runtime nvidia --entrypoint python3 "$PERCEPTION_VISION_IMAGE" \
+        -c "import tensorrt,sys; print('TensorRT', tensorrt.__version__, 'py', sys.version.split()[0])"; then
+        ok "TensorRT python bindings import under --runtime nvidia"
     else
-        err "the built image cannot import tensorrt — the base tag moved"
+        err "the built image cannot import tensorrt even under --runtime nvidia"
+        err "  check the base tag still ships python3-libnvinfer for py3.8:"
+        err "  docker run --rm --entrypoint dpkg $PERCEPTION_VISION_IMAGE -s python3-libnvinfer"
         exit 1
     fi
 }
