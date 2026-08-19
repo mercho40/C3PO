@@ -20,7 +20,7 @@ Sim vs real topic profile:
     rt/sim_state                   rt/lf/sportmodestate
     (none)                         rt/lf/bmsstate
     (none)                         rt/lf/secondary_imu
-    rt/dex1/{l,r}/state            rt/lf/dex3/{l,r}/state
+    rt/dex1/{l,r}/state            rt/brainco/{l,r}/state   (BrainCo, not Dex3)
     rt/lowcmd                      rt/lowcmd  (same)
     rt/run_command/cmd             (none — sim convenience only)
     (none)                         rt/api/sport/request
@@ -89,22 +89,34 @@ REAL_TOPICS: Final[Topics] = Topics(
     sportmodestate="rt/lf/sportmodestate",
     bmsstate="rt/lf/bmsstate",
     secondary_imu="rt/lf/secondary_imu",
-    dex_left_state="rt/lf/dex3/left/state",
-    dex_right_state="rt/lf/dex3/right/state",
+    # BrainCo, not Dex3. Settled 2026-08-20 by inspecting the robot: TWO
+    # BrainCo hands are fitted (docs/ROBOT-HARDWARE.md §7). The 2026-08-15 probe
+    # saw only a right hand and idle ttyUSB ports because ONE HAND WAS
+    # UNPLUGGED — not because the left wrist was empty, and not because of
+    # anything about the hand family. `rt/lf/dex3/*` was silent then because
+    # this robot has no Dex3 to publish it.
+    dex_left_state="rt/brainco/left/state",
+    dex_right_state="rt/brainco/right/state",
     lowcmd="rt/lowcmd",
     sport_request="rt/api/sport/request",
     arm_request="rt/api/arm/request",
-    # ⚠️ UNVERIFIED, and probably wrong in shape as well as name. The hands are
-    # not an RPC service: every source found on the robot drives them by
-    # publishing a raw `HandCmd_` to a plain command topic, with no api_id and
-    # no JSON envelope — so an `/api/.../request` name implies a protocol that
-    # does not exist here. Worse, the only hand that actually answered was a
-    # BrainCo Revo2 on `rt/brainco/right/{cmd,state}`, and no Dex3 driver
-    # exists anywhere on the Jetson. Which hands are physically fitted is
-    # unresolved (`docs/ROBOT-HARDWARE.md` §6). Do not build on these two
-    # names until someone has looked at the wrists.
-    dex_left_cmd="rt/api/dex3/left/request",
-    dex_right_cmd="rt/api/dex3/right/request",
+    # The hands are NOT an RPC service. There is no api_id, no JSON envelope
+    # and no `rt/api/dex3/*` topic anywhere on this robot — these two names
+    # used to claim one, which implied a protocol that does not exist here.
+    # BrainCo is a bare-sequence publish: `unitree_go::msg::dds_::MotorCmds_`
+    # to the topic below, with `MotorStates_` coming back on the state topic.
+    #
+    # UNITS ARE [0,1] NORMALISED, NOT RADIANS. Dex3 takes radians and needs its
+    # `timeout` deadman bit set; BrainCo takes neither. Anything written against
+    # the Dex3 reference in ROBOT-HARDWARE.md §7.4 is wrong on this machine in
+    # both units and protocol — that section is retained for a hand we do not
+    # have.
+    #
+    # STILL UNEXERCISED: we have observed BrainCo STATE, never commanded it.
+    # The server also has to be running (`brainco_hand --id 126|127 --serial
+    # /dev/ttyUSBn`, 126 = left, 127 = right) and it was not, at last check.
+    dex_left_cmd="rt/brainco/left/cmd",
+    dex_right_cmd="rt/brainco/right/cmd",
     run_command=None,
     # Published by the vendor's `ai_odom_node` as unitree_go SportModeState_ —
     # a type this SDK *does* ship, unlike the humanoid sportmodestate. The

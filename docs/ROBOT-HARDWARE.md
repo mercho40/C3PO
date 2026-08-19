@@ -768,19 +768,31 @@ Side effect worth knowing: `/unitree/etc/master_service/cmd/am-init` is
 
 ---
 
-## 7. Hands — unresolved, balance toward BrainCo
+## 7. Hands — **two BrainCo**, settled by inspection
 
-Configuration evidence supports **Dex3-1** hands; a running **`brainco_hand_server`**
-implies **BrainCo**. Both are supported by real evidence, and the wrong choice silently
-mis-specifies every hand skill we build — so this section keeps both cases and the probe
-that settles it.
+**RESOLVED 2026-08-20, by the operator looking at the robot** — the observation §7.3 named
+as the only one that could settle it. **Two BrainCo hands are fitted.** One was
+**physically disconnected** at the time of the 2026-08-15 probe, which is what produced
+the single right-hand answer and the idle `/dev/ttyUSB0/2/3` that the Dex3-vs-BrainCo
+argument below was built on. **[live]**
 
-**2026-08-15 update:** the zero-write probe was run (`docs/ROBOT-API.md` §12). A 6 s
-passive subscribe on `rt/dex3/{left,right}/state` **and** `rt/lf/dex3/{left,right}/state`
-delivered **nothing** — no hand driver was running, and the FT4232H was present with
-`/dev/ttyUSB0–3` idle. **[live]** That shifts the balance toward BrainCo (a Dex3 resident
-service on the control board should publish regardless of what runs on the Jetson), but is
-not proof. One correction to that session's record: it concluded the BrainCo state topic
+Not Dex3-1. Not Inspire. The sections that follow are kept because the reasoning in them
+is still worth reading — §7.4 in particular is a Dex3 reference that now applies to no
+hand on this machine, and is retained only so nobody re-derives it if the hands are ever
+swapped. **Where a section says "if that is what is fitted", it is not.**
+
+What this changes immediately: hand units are BrainCo's **[0,1]** normalised range, not
+Dex3 radians, and there is no Dex3 `timeout` deadman bit to set (§7.6). Any hand skill
+written against §7.4 would have been wrong in units and in protocol.
+
+**2026-08-15 probe, now explained:** the zero-write probe (`docs/ROBOT-API.md` §12) ran a
+6 s passive subscribe on `rt/dex3/{left,right}/state` **and**
+`rt/lf/dex3/{left,right}/state` and got **nothing**, with the FT4232H present and
+`/dev/ttyUSB0–3` idle. **[live]** The Dex3 silence was correct — there are no Dex3 hands.
+The idle ports and the missing left hand were **one hand being unplugged**, not evidence
+about which hand family is fitted. Worth keeping as a lesson: the probe's negative result
+was read as weak evidence for BrainCo when it was actually strong evidence of a
+disconnected cable, and no amount of further DDS probing would have distinguished those. One correction to that session's record: it concluded the BrainCo state topic
 could not be checked because `MotorStates_` "is a type this SDK does not ship" — **wrong**:
 `unitree_go::msg::dds_::MotorStates_` _is_ shipped in our bridge venv, so subscribing
 `rt/brainco/{left,right}/state` is possible and remains the missing half of the probe
@@ -912,11 +924,12 @@ not answer that probe. So _"no left hand answered on any port"_ is **not** evide
 nothing is attached to the left wrist, and ttyUSB0/2/3 sitting idle is equally consistent
 with "nothing there" and "something there that does not speak BrainCo".
 
-**The single observation that settles it: look at the robot.** A Dex3-1 is a **7-DoF,
-three-finger** hand (thumb ×3, index ×2, middle ×2). A BrainCo Revo2 is a **6-DoF,
-five-finger** hand. An Inspire DFX or FTP is **6 DoF, five-finger** too — so a
-five-fingered hand narrows to {BrainCo, Inspire} rather than settling it. Second best:
-trace which FT4232H channel each physical wrist cable lands on.
+**The single observation that settles it: look at the robot.** ✅ **Done 2026-08-20 — two
+BrainCo (§7).** Retained because the discriminator is worth keeping: a Dex3-1 is a
+**7-DoF, three-finger** hand (thumb ×3, index ×2, middle ×2); a BrainCo Revo2 is **6-DoF,
+five-finger**; an Inspire DFX or FTP is **6 DoF, five-finger** too — so five fingers
+narrows to {BrainCo, Inspire} and does not settle it alone. Second best, and still the
+right move after any re-cabling: trace which FT4232H channel each physical wrist lands on.
 
 **Do not settle it by opening the serial ports.** That means driving an RS485 bus attached
 to an unknown device on a powered, standing robot.
@@ -1087,18 +1100,22 @@ Our Isaac sim profile's `rt/dex1/{left,right}/{cmd,state}` with `MotorCmds_` is 
 
 ### 7.6 Corrections our repo still needs, whichever hand is fitted
 
-- `apps/bridge/src/bridge/sdk/g1_protocol.py` (REAL*TOPICS) still has
-  `dex_left_cmd="rt/api/dex3/left/request"` / `dex_right_cmd=…`. **The hands are not an
-  RPC service.** There is no api_id, no JSON envelope, and no `rt/api/dex3/*` topic in any
-  vendor source on this robot — nor in any of the six official hand-related pages. It is a
-  raw `HandCmd*`publish on`rt/dex3/{side}/cmd`. **[src]** + **[web]** (Unapplied as of
-  this writing.)
+- ✅ **Applied 2026-08-20.** `apps/bridge/src/bridge/sdk/g1_protocol.py` (`REAL_TOPICS`)
+  carried `dex_left_cmd="rt/api/dex3/left/request"` / `dex_right_cmd=…`. **The hands are
+  not an RPC service** — no api_id, no JSON envelope, and no `rt/api/dex3/*` topic in any
+  vendor source on this robot nor in any of the six official hand-related pages. Now
+  `rt/brainco/{left,right}/{cmd,state}`, carrying bare
+  `unitree_go::msg::dds_::MotorCmds_` / `MotorStates_` sequences. **[src]**
 - **`/api/dex3_msg_controller`**, which earlier inventories cited, appears in **no**
   vendor source, binary or config anywhere on this robot. Its only occurrences were our
   own doc files. Unsourced; struck. **[live]**
-- **Any hand skill must carry the units per hand type** — Dex3 radians, BrainCo [0,1],
-  Inspire DFX [0,1] with 1.0 = open — and set the Dex3 `timeout` bit so the firmware
-  deadman applies (§7.4).
+- **Hand units on THIS robot are BrainCo's [0,1] normalised range.** The per-family table
+  (Dex3 radians, BrainCo [0,1], Inspire DFX [0,1] with 1.0 = open) is kept for reference,
+  but only the BrainCo row applies here. There is no Dex3 `timeout` deadman bit to set —
+  that firmware deadman does not exist on a BrainCo, so **a hand skill gets no free
+  timeout** and any hold must be bounded by the bridge, like every other actuation path.
+- **No hand command has ever been sent.** State has been observed; `MotorCmds_` has never
+  been published, and `brainco_hand_server` has to be running for anything to receive it.
 
 ---
 
