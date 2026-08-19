@@ -10,6 +10,8 @@ dependencies = [
     "python-dotenv>=1",
     "cyclonedds==0.10.2",
     "unitree-sdk2py",
+    "pyzmq>=27.1.0",
+    "websockets>=17.0.1",
 ]
 
 [dependency-groups]
