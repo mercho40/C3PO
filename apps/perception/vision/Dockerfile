@@ -91,16 +91,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # A mismatch there means the XML parses on one side and is ignored on the
 # other, and the reader silently matches nothing.
 #
-# -DBUILD_IDLC=NO: the IDL compiler needs a JDK on this branch, and nothing in
-# this container compiles .idl — ros_idl.py hand-writes the one struct that
-# leaves here, precisely so no code generation is in the runtime path.
+# -DBUILD_IDLC=NO: nothing in this container compiles .idl — ros_idl.py
+# hand-writes the one struct that leaves here, precisely so no code generation
+# sits in the runtime path. (idlc itself is plain C in 0.10.2 and needs no JDK;
+# we skip it because it is unused, not because it is expensive.)
+#
+# -DBUILD_DDSPERF=NO IS REQUIRED WHENEVER BUILD_IDLC=NO. Both default to
+# ${not_crosscompiling}, i.e. ON for a native build, and ddsperf generates its
+# types with idlc — so turning the compiler off without turning ddsperf off
+# fails at 19% with
+#   make[1]: *** [.../ddsperf/CMakeFiles/ddsperf_types_generate.dir/all] Error 2
+# which says nothing about IDLC. ddsperf is a benchmarking tool we never run.
 ARG CYCLONEDDS_TAG=0.10.2
 ENV CYCLONEDDS_HOME=/usr/local
 RUN git clone --depth 1 -b ${CYCLONEDDS_TAG} https://github.com/eclipse-cyclonedds/cyclonedds.git /tmp/cdds \
  && cmake -S /tmp/cdds -B /tmp/cdds/build \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/usr/local \
-      -DBUILD_IDLC=NO -DBUILD_TESTING=NO -DBUILD_EXAMPLES=NO \
+      -DBUILD_IDLC=NO -DBUILD_DDSPERF=NO -DBUILD_TESTING=NO -DBUILD_EXAMPLES=NO \
  && cmake --build /tmp/cdds/build -j3 \
  && cmake --install /tmp/cdds/build \
  && ldconfig && rm -rf /tmp/cdds \
