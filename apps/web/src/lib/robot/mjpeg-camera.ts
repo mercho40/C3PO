@@ -29,7 +29,12 @@
 // is already an encrypted tunnel, and a self-signed cert per port is the thing
 // that makes the sim's cameras annoying to bring up.
 
-export type RobotCamState = "connecting" | "live" | "stale" | "error" | "closed";
+export type RobotCamState =
+  | "connecting"
+  | "live"
+  | "stale"
+  | "error"
+  | "closed";
 
 export interface RobotCamStatus {
   live: boolean;
@@ -116,7 +121,10 @@ export function connectRobotCamera(
       callbacks.onStatus(null);
       // Unreachable is the common case here and it has one likely cause worth
       // naming: the SSH tunnel is not up, or perception is not running.
-      setState("error", err instanceof TypeError ? "tunnel" : (err as Error).message);
+      setState(
+        "error",
+        err instanceof TypeError ? "tunnel" : (err as Error).message,
+      );
     }
   }
 

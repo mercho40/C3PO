@@ -25,9 +25,11 @@ Mid-360 ──UDP──> [nav container]
                    pointcloud_to_laserscan ──/scan
                    Nav2 (DWB) ──/c3po/cmd_vel ────────────────────┐
                    world_model_publisher ──/c3po/world_summary ───┤
+                   costmap_publisher ──/c3po/costmap (PNG in JSON) ───┤
 D435i ──USB──> [vision container]                                 │
                    pyrealsense2 (V4L2) + YOLO11 TRT engine        │
                    ──/c3po/objects (String JSON, egocentric) ─────┤
+                   ──MJPEG on 127.0.0.1:8081 (operator console)   │
                                                                   │
                                   [apps/bridge, host process] ◄───┘
                                     Domain(42, explicit xml) — reads summary + cmd_vel
@@ -58,6 +60,31 @@ those comments are the authority; read them before "simplifying" back to one ima
 The vision container has no ROS by design: it publishes already-resolved
 egocentric detections as plain CycloneDDS JSON, holding the camera extrinsic as
 a constant, so there is nothing for TF to do on that side (D2.2 option 1).
+
+## The operator's picture comes from here, and it has to
+
+`/dev/videoN` is a single-owner kernel resource, so the process holding the
+D435i is the only one that can show a human what the robot sees. That is this
+container. `vision/c3po_vision/stream.py` therefore serves the colour frame as
+MJPEG — `/stream.mjpg`, `/frame.jpg`, `/status` — on **127.0.0.1:8081**, fed by
+the same frames the detector grounds, decimated to 5 Hz and JPEG-encoded off the
+tick (the encode runs on the HTTP thread; the tick pays only a memcpy).
+
+Three things about it are load-bearing and are argued in the module header:
+
+- **Loopback by default.** An unauthenticated view of a shared lab does not go
+  on the school Wi-Fi because it was convenient. The console reaches it through
+  the same SSH tunnel as the bridge (`-L 8081:127.0.0.1:8081`), and
+  `C3PO_VISION_STREAM_HOST=0.0.0.0` stays a thing somebody types.
+- **A frozen frame is not a live one.** A tick that failed offers nothing, so
+  the frame ages; `/status` publishes that age and the server closes the stream
+  once it crosses 1 s. This is the same rule as "no publish on a failed tick",
+  applied to pixels — an `<img>` will otherwise display a dead camera forever.
+- **It cannot take the detector down.** A bind failure logs and leaves the video
+  off; obstacle reporting is the container's job and video is not.
+
+`C3PO_VISION_STREAM=0` turns it off. `perception_up` sets the defaults and
+prints the URL.
 
 ## DDS domain isolation
 
@@ -335,6 +362,11 @@ error. **The rebuild carrying that pin has not run yet.**
   grounding maths; the TensorRT and pyrealsense2 paths have never executed.
   Unproven specifically: the engine binding shapes, the `(1, 4 + nc, anchors)`
   head layout, and the aligned-depth frame indexing.
+- `vision/c3po_vision/stream.py` — the operator's MJPEG feed off the same
+  frames. Its staleness contract, the decimation and the loopback default are
+  covered by `tests/test_stream.py` on a laptop; what has **not** run is the
+  numpy branch of `encode_jpeg` against a real pyrealsense2 frame, and Pillow on
+  aarch64/py38 (the pin is asserted at build time, not at runtime).
 - `tools/export_yolo11_onnx.py` — the off-robot ONNX exporter. Its contract:
   `opset=16, dynamic=False, simplify=False, nms=False, imgsz=640, batch=1`;
   hard-refuse any opset domain > 17, any symbolic input dim, any non-`ai.onnx`
@@ -358,10 +390,11 @@ nav/            Dockerfile + entrypoint, fastlio-publish-twist.patch,
                 configs (MID360, FAST-LIO, Nav2, pointcloud_to_laserscan),
                 launch/{fake,odometry,perception,nav2}.launch.py
 vision/         Dockerfile + entrypoint (builds the TRT engine on first start),
-                c3po_vision: detector.py, grounding.py, ros_idl.py
+                c3po_vision: detector.py, grounding.py, ros_idl.py, stream.py
 config/         cyclonedds-domain42.xml — shared by both containers and the bridge
 tools/          export_yolo11_onnx.py — runs OFF-robot, never in an image
-tests/          Stage 0 harness: test_grounding.py, test_report_shape.py
+tests/          Stage 0 harness: test_grounding.py, test_report_shape.py,
+                test_stream.py
 ```
 
 The bridge-side counterparts live in `apps/bridge/src/bridge/`: `sdk/ros_idl.py`

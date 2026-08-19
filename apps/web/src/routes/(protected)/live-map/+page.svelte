@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import {
     Navigation,
     Plus,
@@ -8,7 +9,8 @@
   } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import PostureFigure from "$lib/components/posture-figure.svelte";
-  import { projectPose } from "$lib/robot/live-state.svelte";
+  import { projectPose, projectMeters } from "$lib/robot/live-state.svelte";
+  import { Costmap } from "$lib/robot/costmap.svelte";
   import { getRobotLive } from "$lib/robot/context";
   import {
     readPosture,
@@ -21,10 +23,39 @@
   // Reusing it is what lets the travelled path survive the trip from /dashboard.
   const live = getRobotLive();
 
+  // Nav2's global costmap, polled as a PNG. Owned by this page rather than the
+  // shared live-state: the dashboard's mini-map has no room to render it, and
+  // polling it there would fetch a grid nothing draws.
+  const costmap = new Costmap();
+  // onMount, not $effect — matching (protected)/+layout.svelte's RobotLive.
+  // This is mount lifecycle (a timer, a fetch loop, object URLs to revoke), not
+  // a derivation; an $effect here would also re-run on unrelated dependency
+  // changes and restart the poll.
+  onMount(() => {
+    costmap.start();
+    return () => costmap.stop();
+  });
+
   // Zoom drives the metres→canvas projection scale, so +/- actually work.
   let scale = $state(6);
   const zoomIn = () => (scale = Math.min(24, scale * 1.3));
   const zoomOut = () => (scale = Math.max(2, scale / 1.3));
+
+  // The costmap's rect in canvas %, using the UNCLAMPED projection — clamping
+  // corners would squash the image and break its alignment with the marker.
+  // `origin` is the grid's bottom-left, so the top edge is origin + extent.
+  const mapRect = $derived.by(() => {
+    const p = costmap.placement;
+    if (!p) return null;
+    const topLeft = projectMeters(p.originXM, p.originYM + p.heightM, scale);
+    const bottomRight = projectMeters(p.originXM + p.widthM, p.originYM, scale);
+    return {
+      left: topLeft.left,
+      top: topLeft.top,
+      width: bottomRight.left - topLeft.left,
+      height: bottomRight.top - topLeft.top,
+    };
+  });
 
   const robot = $derived(live.state);
   const faults = $derived(robot?.faults ?? []);
@@ -65,6 +96,22 @@
     <div
       class="absolute inset-0 bg-[radial-gradient(ellipse_at_center,var(--c3-panel),var(--c3-trench)_80%)]"
     >
+      <!-- Nav2's costmap. UNDER the reference grid on purpose: the grid is how
+           you read distance, and a map that hides it makes the view prettier
+           and less useful. `image-rendering: pixelated` because a costmap cell
+           IS the unit of knowledge — smoothing invents confidence between
+           cells that Nav2 never had. -->
+      {#if costmap.url && mapRect}
+        <img
+          src={costmap.url}
+          alt="Nav2 global costmap"
+          class="pointer-events-none absolute transition-opacity duration-300"
+          class:opacity-40={costmap.stale}
+          class:opacity-80={!costmap.stale}
+          style="left:{mapRect.left}%;top:{mapRect.top}%;width:{mapRect.width}%;height:{mapRect.height}%;image-rendering:pixelated"
+        />
+      {/if}
+
       <!-- Reference grid, matching the dashboard's mini-map so the two read as
            the same surface at different sizes. The origin cross is brighter:
            (0,0) is where odometry started, the only fixed landmark there is. -->
@@ -169,6 +216,23 @@
         </span>
         <span class="h-px w-20 bg-ink-mute"></span>
         <span class="readout">{(100 / scale / 2).toFixed(1)} m</span>
+        <!-- Costmap state, in three distinguishable forms. "no map is being
+             published" and "the console cannot reach the API" are different
+             problems with different fixes, and a single "sin mapa" for both
+             would send the operator to the wrong one. The bridge's own hint —
+             which names the command that would produce a costmap — rides in
+             the tooltip rather than the label, because it is English and long. -->
+        <span class="readout" title={costmap.reason ?? undefined}>
+          {#if costmap.url && costmap.placement}
+            mapa {costmap.placement.resolutionM.toFixed(2)} m/celda{#if costmap.stale}
+              · desactualizado{:else if costmap.ageS !== null}
+              · {costmap.ageS.toFixed(1)} s{/if}
+          {:else if costmap.unreachable}
+            mapa no disponible
+          {:else}
+            sin mapa
+          {/if}
+        </span>
       </div>
 
       <!-- Zoom -->

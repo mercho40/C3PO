@@ -27,7 +27,8 @@ Node runtime production actually uses.
 `cp .env.example .env` — that file is the authority on the variables.
 `BETTER_AUTH_SECRET` must match `apps/back`'s (see `apps/back/.env.example`);
 `PUBLIC_SIM_CAM_HOST` points the live-camera page at the sim's teleimager
-camera servers.
+camera servers, and `PUBLIC_ROBOT_CAM_URL` points it at the real G1's — those
+are two different transports, not two addresses for one (below).
 
 ## Auth flow
 
@@ -43,6 +44,27 @@ camera servers.
 - Server `load` functions fetching protected backend routes must forward the
   auth cookie:
   `api.route.get({ headers: { cookie: request.headers.get("cookie") ?? "" } })`.
+
+## The live camera
+
+`/live-camera` has two clients because the sim and the robot serve video two
+different ways, and the page picks by env — `PUBLIC_ROBOT_CAM_URL` first, then
+`PUBLIC_SIM_CAM_HOST`:
+
+|           | Simulator                              | Real G1                                          |
+| --------- | -------------------------------------- | ------------------------------------------------ |
+| Server    | teleimager/aiortc, one per camera      | `apps/perception`'s vision container             |
+| Transport | WebRTC (H.264, VP8 retry) over HTTPS   | MJPEG over plain HTTP, through the SSH tunnel    |
+| Client    | `src/lib/webrtc/sim-camera.ts`         | `src/lib/robot/mjpeg-camera.ts`                  |
+| Cameras   | 3 (head stereo + two wrists)           | 1 — the D435i colour node is the only one fitted |
+| Bring-up  | ports 60001-3, accept the cert on each | `perception_up perception`, forward :8081        |
+
+Both modules carry the reasoning in their headers. The one thing worth
+repeating here: an `<img>` on an MJPEG stream keeps showing the last frame it
+received forever, so the robot client polls `/status` and the page renders
+"congelado" over a picture that is real but old. Never remove that poll and
+leave the picture — a frozen frame that reads as live is the failure this page
+already tore out a fake HUD to avoid.
 
 ## Deploy
 

@@ -65,15 +65,16 @@ locally spawned sim server live in `.mcp.json` (`c3po-sim`).
 
 The port map, in one place:
 
-| Service                    | Host                    | Port  | Notes                                                             |
-| -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------- |
-| `apps/back` HTTP           | LAN box (dev: anywhere) | 3000  | Better Auth cookie                                                |
-| `apps/web` dev             | dev machine             | 3001  | Vite                                                              |
-| `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp`; 8000 is held by `gemm-ai.service`         |
-| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                   |
-| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback |
-| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                  |
-| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                |
+| Service                    | Host                    | Port  | Notes                                                                            |
+| -------------------------- | ----------------------- | ----- | -------------------------------------------------------------------------------- |
+| `apps/back` HTTP           | LAN box (dev: anywhere) | 3000  | Better Auth cookie                                                               |
+| `apps/web` dev             | dev machine             | 3001  | Vite                                                                             |
+| `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp`; 8000 is held by `gemm-ai.service`                        |
+| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                                  |
+| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback                |
+| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera`'s real-robot feed; only up with `perception_up perception`/`nav2` |
+| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                                 |
+| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                               |
 
 `DDS_DOMAIN_ID`: Isaac Sim is `1`, the real G1 is `0` (set per host in `apps/bridge/.env`;
 see `apps/bridge/.env.example`).

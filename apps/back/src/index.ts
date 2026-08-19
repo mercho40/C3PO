@@ -4,6 +4,7 @@ import { cors } from "@elysiajs/cors";
 import { skillsRoutes } from "@back/routes/skills";
 import { tasksRoutes } from "@back/routes/tasks";
 import { stateRoutes } from "@back/routes/state";
+import { mapRoutes } from "@back/routes/map";
 import { agentRoutes } from "@back/routes/agent";
 import { chatsRoutes } from "@back/routes/chats";
 
@@ -25,6 +26,7 @@ const app = new Elysia()
       .use(skillsRoutes)
       .use(tasksRoutes)
       .use(stateRoutes)
+      .use(mapRoutes)
       .use(agentRoutes)
       .use(chatsRoutes),
   )

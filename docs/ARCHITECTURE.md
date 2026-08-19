@@ -41,6 +41,14 @@ A fifth component sits beside the bridge rather than above or below it:
 the LiDAR/camera and hand the bridge a world summary (§8). It observes and
 proposes; the bridge alone actuates.
 
+**Video is the one thing the console fetches directly**, from the camera server
+(the sim's teleimager, or perception's vision container on the real robot)
+rather than through `apps/back`. Proxying ~1.5 Mbit/s of frames through the
+control plane to re-authenticate a picture the operator is already authorised to
+see would buy nothing; the feed is reached over the same SSH tunnel as the
+bridge, or not at all. Everything that _commands_ the robot still goes console →
+control plane → bridge, and that is the invariant the layer table is about.
+
 The boundary that matters most is **bridge ↔ robot**: we send _high-level
 setpoints_ ("walk at 0.4 m/s", "enter damp") and the G1's own controller
 decides how to move its legs. Everything in `apps/bridge/src/bridge/skills/`
