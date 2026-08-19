@@ -36,6 +36,12 @@ export interface CatalogueSnapshot {
   ageSeconds: number;
   /** Present when the bridge could not be reached on this attempt. */
   error?: string;
+  /**
+   * Tools the bridge offered but whose `_meta` could not be read, so they
+   * were excluded rather than served with a guessed danger level. Distinct
+   * from `error`, which means the bridge itself was unreachable.
+   */
+  rejected?: string[];
 }
 
 let cached: { skills: SkillCatalogueEntry[]; at: number } | null = null;
@@ -73,9 +79,39 @@ function toEntry(tool: {
 export async function getCatalogue(): Promise<CatalogueSnapshot> {
   try {
     const tools = await listTools();
-    const skills = tools.map(toEntry).sort((a, b) => a.name.localeCompare(b.name));
+
+    // Per-tool, deliberately. `parseSkillMeta` throws on unreadable metadata
+    // and that is right — guessing "low" for a tool that can walk into
+    // someone is the wrong direction to guess. But a single `tools.map()`
+    // made that rejection batch-fatal: one new or version-skewed tool with a
+    // malformed `_meta` threw, the catch below discarded EVERY skill, and
+    // with nothing cached `getSkill("stop_everything")` returned undefined —
+    // so the dashboard's PARAR button answered 404 while the bridge and the
+    // e-stop were both perfectly healthy. Skip the unreadable tool; keep the
+    // rest. Excluding it still never guesses its danger level.
+    const skills: SkillCatalogueEntry[] = [];
+    const rejected: string[] = [];
+    for (const tool of tools) {
+      try {
+        skills.push(toEntry(tool));
+      } catch (err) {
+        rejected.push(tool.name);
+        console.error(
+          `[catalogue] dropping tool ${tool.name}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    skills.sort((a, b) => a.name.localeCompare(b.name));
+
     cached = { skills, at: Date.now() };
-    return { skills, source: "bridge", ageSeconds: 0 };
+    return {
+      skills,
+      source: "bridge",
+      ageSeconds: 0,
+      ...(rejected.length ? { rejected } : {}),
+    };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     if (cached) {

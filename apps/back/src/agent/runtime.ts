@@ -35,7 +35,31 @@ import {
 } from "@back/bridge/client";
 
 const MODEL = process.env.AGENT_MODEL ?? "claude-opus-5";
-const MAX_STEPS = Number(process.env.AGENT_MAX_STEPS ?? "12");
+
+/**
+ * Parse a positive-integer env var, falling back on anything unusable.
+ *
+ * `Number(process.env.X ?? "12")` is not enough: `??` only catches
+ * `undefined`, so a key that is present but blank — which `.env.example`
+ * ships, making it the likely state — yields `Number("") === 0`, and a typo
+ * yields `NaN`. Both matter here because `stepCountIs(n)` compares
+ * `steps.length === n` against a length that starts at 1 and only grows, so
+ * neither 0 nor NaN can ever match and the stop condition simply never
+ * fires. That budget is the only bound on how many walk/turn/dance calls a
+ * single operator turn can dispatch at a physical humanoid, so it fails
+ * closed to the default rather than silently becoming unlimited.
+ */
+function positiveIntEnv(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n > 0) return n;
+  console.warn(
+    `[agent] AGENT_MAX_STEPS=${JSON.stringify(raw)} is not a positive integer; using ${fallback}`,
+  );
+  return fallback;
+}
+
+const MAX_STEPS = positiveIntEnv(process.env.AGENT_MAX_STEPS, 12);
 
 const SYSTEM_PREAMBLE = [
   "You are C3PO, the control intelligence of a Unitree G1 humanoid robot.",
