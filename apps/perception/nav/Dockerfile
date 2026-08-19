@@ -40,8 +40,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # livox_ros_driver2's CMake hard-codes
 #   find_library(LIVOX_LIDAR_SDK_LIBRARY liblivox_lidar_sdk_shared.so /usr/local/lib REQUIRED)
 # It is a plain cmake project, so rosdep/colcon will never fetch it.
-ARG LIVOX_SDK2_TAG=v1.2.5
+#
+# THE SDK AND THE DRIVER ARE A MATCHED PAIR. Pin both, and pin them to these
+# two. Measured across the actual refs:
+#
+#                          kLivoxLidarTypeMid360s   DoubleEcho symbols
+#   SDK  v1.2.5                     absent               absent
+#   SDK  v1.3.1                     present              absent
+#   SDK  master                     present              present
+#   driver 1.2.6                    uses it              does NOT use
+#   driver master                   uses it              USES (4 sites)
+#
+# So driver master needs DoubleEcho, which NO SDK TAG carries — it exists only
+# on SDK master. Building the head of both is how you end up pinned to nothing.
+# driver 1.2.6 + SDK v1.3.1 is the newest pair that are both tags and both
+# consistent, and 1.2.6 is precisely the release that introduced -DDISTRO_ROS.
+#
+# The old pinning (SDK v1.2.5 + driver master) was wrong on both sides at once
+# and failed as a wall of `is not a member of LivoxLidarDeviceType` inside
+# pub_handler.cpp — an error that names neither the SDK nor the version skew.
+ARG LIVOX_SDK2_TAG=v1.3.1
 RUN git clone --depth 1 -b ${LIVOX_SDK2_TAG} https://github.com/Livox-SDK/Livox-SDK2.git /tmp/sdk2 \
+ && grep -q 'kLivoxLidarTypeMid360s' /tmp/sdk2/include/livox_lidar_def.h \
+      || (echo "FATAL: this Livox-SDK2 predates kLivoxLidarTypeMid360s; the Mid-360 driver will not compile" && false) \
  && cmake -S /tmp/sdk2 -B /tmp/sdk2/build -DCMAKE_BUILD_TYPE=Release \
  && cmake --build /tmp/sdk2/build -j3 \
  && cmake --install /tmp/sdk2/build \
@@ -50,15 +71,22 @@ RUN git clone --depth 1 -b ${LIVOX_SDK2_TAG} https://github.com/Livox-SDK/Livox-
 WORKDIR /opt/c3po/ws
 
 # --- livox_ros_driver2 ------------------------------------------------------
-# PIN MASTER. -DDISTRO_ROS was only added in commit 13eb05e (2026-04-14, tag
-# 1.2.6). Every earlier tag uses -DHUMBLE_ROS instead, and passing the wrong
-# one is SILENTLY IGNORED: you land in the pre-Humble typesupport branch and
-# CMake dies inside rosidl generation with no mention of the distro.
-ARG LIVOX_DRIVER_REF=master
+# PIN 1.2.6, NOT master. -DDISTRO_ROS was only added in commit 13eb05e
+# (2026-04-14), which tag 1.2.6 is the first to carry. Every earlier tag uses
+# -DHUMBLE_ROS instead, and passing the wrong one is SILENTLY IGNORED: you land
+# in the pre-Humble typesupport branch and CMake dies inside rosidl generation
+# with no mention of the distro. So 1.2.6 is the FLOOR.
+#
+# It is also the ceiling, because master has moved on to SDK symbols that exist
+# on no SDK tag — see the matrix above the Livox-SDK2 clone. "Newest of both"
+# is not a pinning strategy; this pair is.
+ARG LIVOX_DRIVER_REF=1.2.6
 RUN git clone --depth 1 -b ${LIVOX_DRIVER_REF} \
       https://github.com/Livox-SDK/livox_ros_driver2.git src/livox_ros_driver2 \
  && grep -q 'DISTRO_ROS' src/livox_ros_driver2/CMakeLists.txt \
-      || (echo "FATAL: pinned livox_ros_driver2 predates -DDISTRO_ROS; use -DHUMBLE_ROS or repin" && false)
+      || (echo "FATAL: pinned livox_ros_driver2 predates -DDISTRO_ROS; use -DHUMBLE_ROS or repin" && false) \
+ && ! grep -rq 'DoubleEcho' src/livox_ros_driver2/src/ \
+      || (echo "FATAL: this driver needs SDK DoubleEcho symbols, which exist on no Livox-SDK2 TAG (master only). Repin the pair together." && false)
 
 # The repo ships NO package.xml — colcon skips any directory without one, so a
 # bare `colcon build` finds zero packages. Upstream's build.sh copies these two

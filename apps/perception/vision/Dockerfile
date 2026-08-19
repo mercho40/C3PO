@@ -74,6 +74,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Its dynamic deps are libcuda.so.1, libudev.so.1, libusb-1.0.so.0 (cudart is
 # statically linked), which is why this container MUST run --runtime nvidia even
 # though the default runtime on this daemon is runc.
+# --- CycloneDDS, the C library, BEFORE the Python binding -------------------
+# The `cyclonedds` PyPI package publishes no aarch64/cp38 wheel, so pip builds
+# it from source, and its build backend needs the C library at BUILD time:
+#
+#   Could not locate cyclonedds. Try to set CYCLONEDDS_HOME or CMAKE_PREFIX_PATH
+#
+# That message names the fix but not the cause, and it arrives ~4 minutes into
+# the image build. There is no apt package for it on focal either — the host's
+# copy is a from-source tree at ~/cyclonedds_ws, which is exactly what the
+# bridge's own .env points CYCLONEDDS_HOME at. So we build the same thing here.
+#
+# 0.10.2 to match apps/bridge EXACTLY. This is not tidiness: the two ends of
+# domain 42 must agree on the config schema, and 0.7.x (the Foxy copy also on
+# this host) uses <NetworkInterfaceAddress> where 0.10.x uses <Interfaces>.
+# A mismatch there means the XML parses on one side and is ignored on the
+# other, and the reader silently matches nothing.
+#
+# -DBUILD_IDLC=NO: the IDL compiler needs a JDK on this branch, and nothing in
+# this container compiles .idl — ros_idl.py hand-writes the one struct that
+# leaves here, precisely so no code generation is in the runtime path.
+ARG CYCLONEDDS_TAG=0.10.2
+ENV CYCLONEDDS_HOME=/usr/local
+RUN git clone --depth 1 -b ${CYCLONEDDS_TAG} https://github.com/eclipse-cyclonedds/cyclonedds.git /tmp/cdds \
+ && cmake -S /tmp/cdds -B /tmp/cdds/build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DBUILD_IDLC=NO -DBUILD_TESTING=NO -DBUILD_EXAMPLES=NO \
+ && cmake --build /tmp/cdds/build -j3 \
+ && cmake --install /tmp/cdds/build \
+ && ldconfig && rm -rf /tmp/cdds \
+ && test -f /usr/local/lib/libddsc.so \
+      || (echo "FATAL: libddsc.so missing — the cyclonedds python binding will fail to build" && false)
+
 RUN pip3 install --no-cache-dir --upgrade pip \
  && pip3 install --no-cache-dir \
       "pyrealsense2==2.55.1.6486" \
