@@ -24,12 +24,32 @@ FROM nvcr.io/nvidia/l4t-jetpack:r35.3.1
 SHELL ["/bin/bash", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Fail LOUDLY at build time, not at 3am on the robot, if this base ever stops
-# shipping the Python bindings. Importing tensorrt does not execute CUDA, which
-# is why this whole image builds under the default runc runtime and we never
-# have to set default-runtime=nvidia on a daemon shared with the gemm team.
-RUN python3 -c "import tensorrt, sys; print('TensorRT', tensorrt.__version__, 'py', sys.version.split()[0])" \
- && test -x /usr/src/tensorrt/bin/trtexec
+# Fail LOUDLY if this base ever stops shipping the TensorRT Python bindings.
+#
+# WHAT THIS CANNOT CHECK HERE, AND WHY. `import tensorrt` does NOT work at build
+# time, and the reason is not a missing package: it dlopens
+# libnvdla_compiler.so, which is not in the image and is not in any deb. It
+# lives on the HOST rootfs at /usr/lib/aarch64-linux-gnu/tegra/ and is put into
+# the container by the nvidia container runtime. Verified on this robot:
+#
+#   docker run --rm                  ... python3 -c "import tensorrt"
+#       -> ImportError: libnvdla_compiler.so: cannot open shared object file
+#   docker run --rm --runtime nvidia ... python3 -c "import tensorrt"
+#       -> TensorRT 8.5.2.2 py 3.8.10
+#
+# `docker build` has no --runtime flag, so the only way to import it here would
+# be "default-runtime": "nvidia" in /etc/docker/daemon.json — on a daemon shared
+# with the gemm team, where any recreate of their containers would silently pick
+# the new runtime up. Not worth it for an assertion.
+#
+# So the build checks what a build CAN check — the bindings and trtexec are
+# installed, and the interpreter is the 3.8 the bindings hard-depend on — and
+# entrypoint.sh runs the real `import tensorrt` at container start, under
+# --runtime nvidia, where it is meaningful.
+RUN test -x /usr/src/tensorrt/bin/trtexec \
+ && test -f /usr/lib/python3.8/dist-packages/tensorrt/__init__.py \
+ && dpkg -s python3-libnvinfer >/dev/null \
+ && python3 -c "import sys; assert sys.version_info[:2] == (3, 8), sys.version"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git cmake build-essential pkg-config ca-certificates \

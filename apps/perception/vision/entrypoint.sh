@@ -9,6 +9,29 @@
 # Building here keeps the build runtime-agnostic and the daemon untouched.
 set -euo pipefail
 
+# The TensorRT assertion the Dockerfile cannot make.
+#
+# `import tensorrt` dlopens libnvdla_compiler.so, which is not in the image and
+# not in any deb — it is on the host rootfs and the nvidia container runtime
+# puts it here. So it fails under runc and succeeds under --runtime nvidia, and
+# `docker build` has no --runtime flag. The build checks that the bindings are
+# INSTALLED; this checks that they LOAD, which is the thing that actually has to
+# be true before anything else in this container matters.
+#
+# It is also the earliest, clearest signal that the container was started
+# without --runtime nvidia — a mistake whose next symptom would otherwise be
+# trtexec or the detector failing several minutes later with something about
+# CUDA. perception_up passes the flag; a hand-rolled `docker run` might not.
+if ! python3 -c "import tensorrt" 2>/dev/null; then
+    echo "FATAL: cannot import tensorrt." >&2
+    echo "  Almost always: this container was started WITHOUT --runtime nvidia." >&2
+    echo "  libnvdla_compiler.so is injected from the host by that runtime; under" >&2
+    echo "  runc it is absent and the import fails. Start via perception_up, or" >&2
+    echo "  add --runtime nvidia. The real error follows:" >&2
+    python3 -c "import tensorrt" || true
+    exit 1
+fi
+
 ENGINE="${C3PO_ENGINE:-/opt/c3po/engines/yolo11n.fp16.plan}"
 ONNX="${C3PO_ONNX:-/opt/c3po/models/yolo11n.onnx}"
 
