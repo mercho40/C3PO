@@ -5,6 +5,8 @@
   "scripts": {
     "mcp": "uv run --project . python -m bridge.mcp_server",
     "serve:http": "BRIDGE_TRANSPORT=http SIM_MODE=stub uv run --project . python -m bridge.mcp_server",
+    "camera-relay": "uv run --project . python -m bridge.camera_relay",
+    "teleop": "uv run --project . python -m bridge.teleop.server",
     "build": "uv sync && bash scripts/postsync.sh",
     "check-types": "uv run --project . mypy src",
     "lint": "uv run --project . ruff check src tests",
