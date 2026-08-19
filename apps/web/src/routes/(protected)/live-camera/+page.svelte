@@ -197,8 +197,7 @@
       <span class="stamp-quiet text-lg text-ink">No disponible contra hardware real</span>
       <p class="text-sm leading-relaxed text-ink-mute">
         Este visor asume el simulador (tres cámaras fijas, WebRTC por puerto). El G1 real tiene una
-        sola cámara y usa un transporte distinto — ver el visor VR teleop dedicado en su lugar, no
-        este panel.
+        sola cámara y usa un transporte distinto — ver <a href="/vr-control" class="underline hover:text-ink">Control VR</a> en su lugar, no este panel.
       </p>
     </div>
   </div>

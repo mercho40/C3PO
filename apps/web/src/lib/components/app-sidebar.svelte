@@ -2,6 +2,7 @@
   import type { ComponentProps } from "svelte";
   import {
     Activity,
+    Gamepad2,
     HeartPulse,
     Map,
     MessageSquare,
@@ -23,6 +24,7 @@
     { title: "Mapa en vivo", href: "/live-map", icon: Map },
     { title: "Cámaras", href: "/live-camera", icon: Video },
     { title: "Chat", href: "/chat", icon: MessageSquare },
+    { title: "Control VR", href: "/vr-control", icon: Gamepad2 },
     // Not built yet — shown but disabled so they don't 404.
     { title: "Control por voz", icon: Mic, disabled: true, badge: "Pronto" },
     { title: "Salud", icon: HeartPulse, disabled: true, badge: "Pronto" },

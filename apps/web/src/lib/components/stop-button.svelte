@@ -18,6 +18,7 @@
   import { readPosture } from "$lib/robot/posture";
 
   const live = getRobotLive();
+  const online = $derived(live.online);
   const moving = $derived(
     readPosture(live.state?.posture, live.online).load === "moving",
   );
@@ -41,12 +42,19 @@
   const label = $derived.by(() => {
     if (outcome === "rejected") return "Reintentar";
     if (busy || (outcome === "requested" && moving)) return "Parando…";
+    // Offline is NOT confirmation. `readPosture` collapses an unreachable
+    // bridge to load "unknown", which is not "moving" — so without this the
+    // button turned green and claimed "Detenido" the moment telemetry
+    // dropped, which is exactly when it is least entitled to make that
+    // claim: the robot may well still be walking, and we can no longer see.
+    if (outcome === "requested" && !online) return "Sin confirmar";
     if (outcome === "requested") return "Detenido";
     return "Parar";
   });
 
   const tone = $derived.by(() => {
     if (outcome === "rejected") return "failed";
+    if (outcome === "requested" && !online) return "unconfirmed";
     if (outcome === "requested" && !moving && !busy) return "stopped";
     return "idle";
   });
@@ -95,7 +103,7 @@
       <Loader2 class="size-4 animate-spin" />
     {:else if tone === "stopped"}
       <Check class="size-4" />
-    {:else if tone === "failed"}
+    {:else if tone === "failed" || tone === "unconfirmed"}
       <TriangleAlert class="size-4" />
     {:else}
       <Square class="size-4" />
@@ -109,6 +117,11 @@
        the robot did not get the order and may still be moving. -->
   <p role="alert" class="sr-only">
     No se pudo enviar la orden de parada. El robot puede seguir en movimiento.
+  </p>
+{:else if tone === "unconfirmed"}
+  <p role="alert" class="sr-only">
+    Se envió la orden de parada, pero se perdió la conexión con el robot antes
+    de confirmarla. No se puede verificar si se detuvo.
   </p>
 {/if}
 
@@ -163,6 +176,14 @@
     background-color: var(--c3-danger);
     border-color: var(--c3-danger);
     color: #fff;
+  }
+
+  /* The order was sent but we can no longer see the robot. Amber, not green:
+     this is an open question, not a confirmation. */
+  .stop[data-tone="unconfirmed"] {
+    border-color: color-mix(in srgb, var(--c3-warn) 55%, transparent);
+    background-color: color-mix(in srgb, var(--c3-warn) 12%, transparent);
+    color: var(--c3-warn);
   }
 
   .stop[data-tone="stopped"] {
