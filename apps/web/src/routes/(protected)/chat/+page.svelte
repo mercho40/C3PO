@@ -4,7 +4,7 @@
   import { createApi } from "$lib/api";
   import { Chat } from "@ai-sdk/svelte";
   import {
-    isToolOrDynamicToolUIPart,
+    isToolUIPart,
     getToolOrDynamicToolName,
     DefaultChatTransport,
   } from "ai";
@@ -26,9 +26,9 @@
 
   let { data }: { data: PageData } = $props();
 
-  // Talks to the backend internal agent (POST /agent), which streams Claude's
-  // tokens + tool calls back as a UI message stream and persists both sides of
-  // the turn.
+  // Talks to the backend internal agent (POST /agent), which streams the
+  // model's tokens + tool calls back as a UI message stream and persists both
+  // sides of the turn.
   const transport = new DefaultChatTransport({
     api: `${PUBLIC_API_URL}/agent`,
     credentials: "include",
@@ -174,8 +174,8 @@
   });
 
   // While a turn is in flight the last assistant message may still be empty
-  // (Claude is thinking, or the first tool call hasn't resolved). Show a pulse
-  // so the composer's disabled state isn't the only feedback.
+  // (the model is thinking, or the first tool call hasn't resolved). Show a
+  // pulse so the composer's disabled state isn't the only feedback.
   const awaitingFirstToken = $derived(
     chat.status === "submitted" ||
       (chat.status === "streaming" &&
@@ -272,7 +272,7 @@
                           <Reasoning.Trigger />
                           <Reasoning.Content content={part.text} />
                         </Reasoning.Root>
-                      {:else if isToolOrDynamicToolUIPart(part)}
+                      {:else if isToolUIPart(part)}
                         {@const failure =
                           part.state === "output-error"
                             ? (part.errorText ?? "Error desconocido")

@@ -65,8 +65,8 @@
 
   let command = $state("");
 
-  // The command box hands off to the agent chat, which streams Claude's reply
-  // and tool calls; the query is auto-sent on arrival.
+  // The command box hands off to the agent chat, which streams the model's
+  // reply and tool calls; the query is auto-sent on arrival.
   function runCommand(e: SubmitEvent) {
     e.preventDefault();
     const text = command.trim();

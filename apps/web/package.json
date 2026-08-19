@@ -38,11 +38,11 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
-    "@ai-sdk/svelte": "^4.0.209",
+    "@ai-sdk/svelte": "^5.0.67",
     "@elysiajs/eden": "^1.4.8",
     "@shikijs/langs": "^4.0.2",
     "@shikijs/themes": "^4.0.2",
-    "ai": "^6.0.209",
+    "ai": "^7.0.67",
     "better-auth": "^1.5.5",
     "dompurify": "^3.3.1",
     "elysia": "^1.4.28",

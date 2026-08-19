@@ -13,11 +13,11 @@
     "check-types": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.85",
+    "@ai-sdk/openai-compatible": "^3.0.31",
     "@elysiajs/cors": "^1.4.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@sinclair/typebox": "^0.34.49",
-    "ai": "^6.0.209",
+    "ai": "^7.0.67",
     "ajv": "^8.20.0",
     "better-auth": "^1.5.5",
     "drizzle-orm": "^0.45.1",

@@ -18,7 +18,7 @@ const app = new Elysia()
     }),
   )
   .get("/health", () => ({ status: "ok", timestamp: Date.now() }))
-  // Everything below can read or move the robot (or spend Anthropic tokens
+  // Everything below can read or move the robot (or use the shared TIC AI key
   // via /agent) — require a session. /health stays open for monitoring.
   .guard({ auth: true }, (app) =>
     app

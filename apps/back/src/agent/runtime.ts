@@ -1,21 +1,48 @@
 /**
- * Internal agent runtime — the backend drives the robot via Claude.
+ * Internal agent runtime — the backend drives the robot through an LLM.
  *
- * SPEC §12.1 "internal agent" path: instead of an external MCP client (Claude
+ * The "internal agent" driver (docs/ARCHITECTURE.md §3): instead of an external MCP client (Claude
  * Code over stdio) deciding which skills to call, `apps/back` hosts the
- * conversation. We expose the skill registry as tools to Claude; each tool call
- * is dispatched to the Python bridge over MCP/HTTP via `callTool`, the result is
- * fed back, and the loop continues until Claude stops calling tools.
+ * conversation. We expose the skill registry as tools to the model; each tool
+ * call is dispatched to the Python bridge over MCP/HTTP via `callTool`, the
+ * result is fed back, and the loop continues until the model stops calling
+ * tools.
  *
- * SDK: the Vercel AI SDK (`ai` + `@ai-sdk/anthropic`). Chosen over the bare
- * Anthropic SDK because Elysia streams an AI SDK result straight from a route
- * (`toUIMessageStreamResponse()`) and `@ai-sdk/svelte`'s `useChat` consumes that
- * same wire format on the SvelteKit console — one stack for agent-loop + token
- * streaming + UI. Our skills are TypeBox (JSON Schema at runtime), so they map
- * onto AI SDK tools via `jsonSchema()` with no conversion.
+ * SDK: the Vercel AI SDK (`ai` + `@ai-sdk/openai-compatible`). The SDK survived
+ * the move off Anthropic unchanged, which is why it was chosen over a bare
+ * vendor SDK: Elysia streams an AI SDK result straight from a route
+ * (`toUIMessageStreamResponse()`) and `@ai-sdk/svelte`'s Chat consumes that same
+ * wire format on the SvelteKit console — one stack for agent-loop + token
+ * streaming + UI, and swapping the provider touches only this file. The skill
+ * catalogue arrives from the bridge over MCP as plain JSON Schema (pydantic's
+ * output), so it maps onto AI SDK tools via `jsonSchema()` with no conversion.
+ *
+ * Provider: TIC AI (`http://ia.ort.edu.ar/api/v1`), ORT's OpenAI-compatible
+ * gateway in front of models running locally on campus. Nothing here is
+ * TIC-specific beyond the defaults — point AGENT_BASE_URL / AGENT_MODEL /
+ * AGENT_API_KEY somewhere else and any OpenAI-compatible server works.
+ *
+ * Two traps this file exists to keep closed:
+ *
+ * 1. The AI SDK majors move together. `ai`, `@ai-sdk/openai-compatible` and
+ *    `@ai-sdk/svelte` (apps/web) each carry a provider-specification version:
+ *    `ai@7` speaks "v4" and refuses a "v3" model. Bump one without the others
+ *    and the first request throws UnsupportedModelVersionError — a runtime
+ *    failure that typechecks and compiles clean. npm publishes matching
+ *    dist-tags (`ai-v6`, `ai-v5`) if a line ever has to be walked back.
+ * 2. Plain HTTP. The TIC AI site documents an https:// base URL, but the host
+ *    does not answer on 443 — only port 80. Keep the scheme in env so this can
+ *    flip without a redeploy of the code.
+ *
+ * And one thing to expect rather than fix: the gateway is not always up. Its
+ * nginx front end answers 502 with an HTML body when the upstream drops; the
+ * SDK retries twice and then fails the turn with "Failed after 3 attempts.
+ * Last error: Bad Gateway" after ~6s (measured). The HTML stays in
+ * `APICallError.responseBody` and never reaches the operator. Retries cover a
+ * blip, not an outage.
  */
 
-import { anthropic } from "@ai-sdk/anthropic";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   convertToModelMessages,
   jsonSchema,
@@ -34,8 +61,36 @@ import {
   BridgeUnavailableError,
 } from "@back/bridge/client";
 
-const MODEL = process.env.AGENT_MODEL ?? "claude-opus-5";
-const MAX_STEPS = Number(process.env.AGENT_MAX_STEPS ?? "12");
+const BASE_URL = process.env.AGENT_BASE_URL ?? "http://ia.ort.edu.ar/api/v1";
+/** `tic-chat` is the gateway's tool-calling chat model. Its site advertises
+ *  `tic-code` and `tic-embed` too, but on 2026-08-18 `GET /models` returned only
+ *  `tic-chat` and `tic-test` — trust the endpoint, not the brochure. */
+const MODEL = process.env.AGENT_MODEL ?? "tic-chat";
+// `stepCountIs` compares with `===`, so a cap of 0 or NaN is never reached and
+// silently means "no cap at all" — an unbounded tool loop on a machine that can
+// walk into people. `?? "12"` does not catch it: an empty AGENT_MAX_STEPS= in a
+// systemd EnvironmentFile parses to 0, and a trailing comment to NaN.
+const parsedMaxSteps = Number(process.env.AGENT_MAX_STEPS);
+const MAX_STEPS =
+  Number.isInteger(parsedMaxSteps) && parsedMaxSteps > 0 ? parsedMaxSteps : 12;
+
+// Read once, so the provider and the guard in `runAgentChat` can never
+// disagree about whether there is a key.
+const API_KEY = process.env.AGENT_API_KEY;
+
+/**
+ * Built once at module load — cheap and stateless. Deliberately NOT validated
+ * here: a missing key should fail the /agent turn that needs it, not take the
+ * whole backend down at boot alongside /health, auth and /state. The check
+ * lives in `runAgentChat` instead, and it has to: `createOpenAICompatible`
+ * accepts `apiKey: undefined` silently, so without it the operator would get a
+ * bare gateway 401 rather than the name of the variable to set.
+ */
+const provider = createOpenAICompatible({
+  name: "tic-ai",
+  baseURL: BASE_URL,
+  apiKey: API_KEY, // sent as `Authorization: Bearer <key>`
+});
 
 const SYSTEM_PREAMBLE = [
   "You are C3PO, the control intelligence of a Unitree G1 humanoid robot.",
@@ -65,7 +120,7 @@ const SYSTEM_PREAMBLE = [
   "Keep operator-facing replies concise: say what you did and what happened.",
 ].join("\n");
 
-/** A compact catalogue appended to the system prompt so Claude knows scope. */
+/** A compact catalogue appended to the system prompt so the model knows scope. */
 async function buildSystemPrompt(): Promise<string> {
   const lines = (await listSkills()).map((s) => {
     const where =
@@ -82,8 +137,8 @@ async function buildSystemPrompt(): Promise<string> {
 }
 
 /**
- * Build AI SDK tools from the TypeBox skill registry, each dispatching to the
- * bridge and writing an audit row.
+ * Build AI SDK tools from the bridge's skill catalogue, each dispatching back
+ * to the bridge and writing an audit row.
  *
  * Auditing happens here rather than by scraping tool parts off the finished
  * message for two reasons: this is the only place with a real duration, and it
@@ -95,7 +150,7 @@ async function buildTools(chatId: string | null): Promise<ToolSet> {
   for (const skill of await listSkills()) {
     tools[skill.name] = tool({
       description: skill.description,
-      // TypeBox `t.Object({...})` is a JSON-Schema object at runtime.
+      // Already plain JSON Schema off the bridge — nothing to convert.
       inputSchema: jsonSchema(
         skill.parameters as Parameters<typeof jsonSchema>[0],
       ),
@@ -138,24 +193,28 @@ async function buildTools(chatId: string | null): Promise<ToolSet> {
   return tools;
 }
 
-// Adaptive thinking is a 4.6+ feature (Opus 4.6/4.7/4.8/5, Sonnet 4.6/5) and is
-// rejected by Haiku 4.5, so gate it on the model. Force off with AGENT_THINKING=off.
-// On Opus 5 thinking is on by default, so this is belt-and-braces there rather
-// than load-bearing — but keep it explicit so the setting survives a model swap.
-const ADAPTIVE_THINKING =
-  (process.env.AGENT_THINKING ?? "adaptive") === "adaptive" &&
-  !MODEL.includes("haiku");
-
 /**
  * Run an operator chat turn as a streaming result. `messages` is the UIMessage
  * history from the chat client. The caller returns
  * `result.toUIMessageStreamResponse()` from the Elysia route; Elysia streams it
  * to the client and `@ai-sdk/svelte`'s Chat renders tokens + tool calls live.
+ *
+ * Note there is no thinking/reasoning knob here any more. It used to pass
+ * `providerOptions.anthropic.thinking = "adaptive"`, which is an Anthropic API
+ * feature with no equivalent on a generic OpenAI-compatible gateway; a server
+ * that emits `reasoning_content` still reaches the console as reasoning parts
+ * without being asked.
  */
 export async function runAgentChat(
   messages: UIMessage[],
   opts: { chatId?: string | null } = {},
 ) {
+  if (!API_KEY) {
+    throw new Error(
+      `AGENT_API_KEY is not set — ${BASE_URL} rejects unauthenticated requests.`,
+    );
+  }
+
   // Both hit the bridge for the catalogue, so fetch them together rather than
   // paying two sequential round-trips before the first token.
   const [system, tools] = await Promise.all([
@@ -164,13 +223,10 @@ export async function runAgentChat(
   ]);
 
   return streamText({
-    model: anthropic(MODEL),
+    model: provider.chatModel(MODEL),
     system,
     messages: await convertToModelMessages(messages),
     tools,
     stopWhen: stepCountIs(MAX_STEPS),
-    ...(ADAPTIVE_THINKING
-      ? { providerOptions: { anthropic: { thinking: { type: "adaptive" } } } }
-      : {}),
   });
 }
