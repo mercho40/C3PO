@@ -225,7 +225,14 @@ export async function runAgentChat(
   return streamText({
     model: provider.chatModel(MODEL),
     system,
-    messages: await convertToModelMessages(messages),
+    // `ignoreIncompleteToolCalls` matters now that assistant turns really do
+    // persist: an aborted turn leaves a tool part stuck in `input-available`,
+    // and replaying that history would send the gateway an assistant tool call
+    // with no matching tool result — which OpenAI-compatible servers reject
+    // outright, permanently bricking the recovered conversation.
+    messages: await convertToModelMessages(messages, {
+      ignoreIncompleteToolCalls: true,
+    }),
     tools,
     stopWhen: stepCountIs(MAX_STEPS),
   });

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { replaceState } from "$app/navigation";
+  import { afterNavigate, replaceState } from "$app/navigation";
   import { createApi } from "$lib/api";
   import { Chat } from "@ai-sdk/svelte";
   import {
@@ -34,10 +34,13 @@
     credentials: "include",
   });
 
-  // Id for a conversation that doesn't exist yet. Generated once per mount so
-  // it stays stable across re-renders; sent with every turn so the stream and
-  // the row it persists to agree without a round-trip.
-  const draftId = crypto.randomUUID();
+  // Id for a conversation that doesn't exist yet. Stable across re-renders, so
+  // the stream and the row it persists to agree without a round-trip.
+  let draftId = $state(crypto.randomUUID());
+
+  // Whether `draftId` has already been spent on a conversation the backend
+  // knows about. Not `$state` — nothing renders it.
+  let draftUsed = false;
 
   const chatId = $derived(data.selected?.id ?? draftId);
 
@@ -80,6 +83,9 @@
 
   /** Put `?id=` in the URL without navigating, so a reload resumes this chat. */
   function pinChatToUrl() {
+    // Past this point the id names a row on the server, so it can't be handed
+    // to a second conversation.
+    draftUsed = true;
     const params = new URLSearchParams(window.location.search);
     // Drop `q` — it's a one-shot hand-off; resending it on reload would
     // silently re-issue a robot command.
@@ -96,6 +102,22 @@
     if (q) {
       chat.sendMessage({ text: q });
       pinChatToUrl();
+    }
+  });
+
+  // "Nuevo chat" is a link to /chat, and the router answers it by re-running the
+  // load against this same component instance — `data.selected` goes null but
+  // the instance, and its draft id, survive. Reusing a spent id would make the
+  // backend append the new conversation onto the old one's row: two unrelated
+  // transcripts in a single chat, visible the moment either is reloaded. Mint a
+  // fresh one instead.
+  afterNavigate(() => {
+    if (!data.selected && draftUsed) {
+      draftId = crypto.randomUUID();
+      draftUsed = false;
+      // The rail's local row is keyed to the chat that was just left behind;
+      // let the new one fetch its own.
+      listRefreshed = false;
     }
   });
 
