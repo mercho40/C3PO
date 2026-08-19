@@ -207,6 +207,59 @@ It sets `PATH` explicitly for the reason above, and `TimeoutStartSec=600` becaus
 `run_c3po` syncs dependencies first and a cold `uv` cache blows straight through
 systemd's 90 s default.
 
+### Sidecar processes on the Jetson: camera relay and teleop 🔧
+
+Two more processes now run beside the bridge, both for `/vr-control`. Neither is under
+`run_c3po` or the boot unit — they are started by hand, per session, because both exist to
+serve a person who is currently wearing a headset.
+
+| Process | Start | Port | What it is |
+| --- | --- | --- | --- |
+| `bridge.camera_relay` | `bun run camera-relay` | 8766 | Passive ZeroMQ SUB on teleimager's JPEG feed, re-published over WebSocket |
+| `bridge.teleop.server` | `bun run teleop` | 8767 | Head yaw + both wrists + finger closure from the headset, 30 Hz |
+
+The port numbering is not arbitrary and the constraint is tight — everything else on this
+Jetson is already spoken for: **8000** `gemm-ai.service`, **8001** our bridge, **8765** the
+colleague's `foxglove_bridge`, **55555/60000** teleimager itself (`ROBOT-INVENTORY.md` §5).
+
+Both bind loopback and **neither has any authentication at all** — less even than the MCP
+transport, which at least sits behind `apps/back`'s session guard. The teleop socket
+carries live setpoints for the arms; the relay is a raw frame firehose. Tunnel both:
+
+```bash
+ssh -N -o ControlMaster=no \
+    -L 8001:127.0.0.1:8001 \
+    -L 8766:127.0.0.1:8766 \
+    -L 8767:127.0.0.1:8767 c3po
+```
+
+`ControlMaster=no` matters: a forward on the shared master evaporates when the master idles
+out, and the failure then presents as an unreachable bridge with no obvious cause.
+
+**One commander at a time, and the teleop server is one.** While a session is open it is
+the only writer of `SetVelocity` — `/vr-control` suspends its own `walk_velocity` loop and
+routes the walk buttons through the stream instead. Do not drive the robot from Claude Code
+or the console while someone is wearing the headset; nothing at the DDS layer will stop you
+(every vendor client is `enableLease=false`, so whoever publishes is obeyed) and the two
+sets of setpoints will simply interleave.
+
+**Both hardware paths in the teleop server ship disabled** and stay that way until a person
+has run the corresponding check on the robot:
+
+| Env | Unblocked by | Why it is gated |
+| --- | --- | --- |
+| `TELEOP_ARM_ENABLED=1` | `scripts/arm_sign_check.py` | No source gives the positive direction of any G1 arm joint |
+| `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE` | `scripts/hand_probe.py` | Which hands are fitted is unresolved, and the candidates disagree on units |
+
+Put them in `apps/bridge/.env` once settled, not on the command line, so the answer
+survives the next session. Head-yaw turning and the walk axis are not gated — they ride on
+`_locomotion.send_velocity_async`, which already carries the hardware clamp and sits above
+the firmware's own `duration` deadman.
+
+⚠️ **Neither sidecar has ever run against the robot.** The camera relay additionally has
+nothing to relay right now: `teleimager.image_server` is not running, and `/dev/video4` no
+longer exists — colour moved to `/dev/video5` (`ROBOT-PERIPHERALS.md` §2).
+
 ### `c3po-perception` → Jetson ⬜
 
 ROS 2 Humble in our own container: `livox_ros_driver2`, FAST-LIO2 (G1 humanoid fork),

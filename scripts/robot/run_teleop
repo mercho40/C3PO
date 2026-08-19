@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Start the two VR sidecars: the teleop stream and the camera relay.
+#
+# Separate from `run_c3po` on purpose. The bridge is infrastructure — it boots
+# with the machine and stays up. These two exist to serve a person who is
+# currently wearing a headset, so they are started when that person puts it on
+# and stopped when they take it off. Leaving a teleop socket listening on an
+# unattended robot is a standing invitation for something to drive it.
+#
+# Refuses to start without the bridge, and that is the important check: the
+# teleop stream can command the legs, and `stop_everything` lives on the
+# bridge's MCP surface. A commander with no reachable e-stop is not a
+# configuration this should let you into.
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+say "Starting VR sidecars"
+
+if ! bridge_running; then
+    err "the bridge is not running — refusing to start the teleop stream"
+    err "it can command the legs, and stop_everything is served by the bridge."
+    err "start it first:  run_c3po"
+    exit 1
+fi
+
+# Someone else's teleop is the same hazard as someone else's bridge: it holds
+# DDS, it writes SetVelocity, and every status check here would say "not
+# running".
+for name in teleop relay; do
+    case "$name" in
+        teleop) strays="$(stray_teleop_pids)" ;;
+        relay)  strays="$(stray_relay_pids)" ;;
+    esac
+    if [ -n "$strays" ]; then
+        err "a $name process is already running outside our pidfile (pid: $(echo "$strays" | tr '\n' ' '))"
+        err "kill it first:  kill $(echo "$strays" | tr '\n' ' ')"
+        exit 1
+    fi
+done
+
+if sidecar_pid "$TELEOP_PID" >/dev/null 2>&1; then
+    warn "teleop already running (pid $(sidecar_pid "$TELEOP_PID")) — use stop_teleop first"
+    exit 0
+fi
+
+mkdir -p "$RUN_DIR" "$LOG_DIR"
+
+start_sidecar() {
+    local label="$1" module="$2" pidfile="$3" logfile="$4"
+    info "starting $label -> $logfile"
+    (
+        cd "$BRIDGE_DIR"
+        set -a
+        # shellcheck disable=SC1091
+        . ./.env
+        set +a
+        export PATH="$HOME/.local/bin:$PATH"
+        nohup uv run python -m "$module" >>"$logfile" 2>&1 &
+        echo $! >"$pidfile"
+    )
+}
+
+start_sidecar "teleop stream" bridge.teleop.server "$TELEOP_PID" "$TELEOP_LOG"
+start_sidecar "camera relay" bridge.camera_relay "$RELAY_PID" "$RELAY_LOG"
+
+sleep 2
+
+for pair in "teleop stream:$TELEOP_PID" "camera relay:$RELAY_PID"; do
+    label="${pair%%:*}"; pidfile="${pair##*:}"
+    if sidecar_pid "$pidfile" >/dev/null 2>&1; then
+        ok "$label up (pid $(sidecar_pid "$pidfile"))"
+    else
+        err "$label failed to start — see its log"
+        # Not fatal for the relay: the camera being down does not stop someone
+        # driving the robot, and teleimager is currently not running anyway.
+        # A dead teleop stream IS fatal, since it is the thing being started.
+        case "$label" in
+            "teleop stream") exit 1 ;;
+        esac
+    fi
+done
+
+# Show the operator what the robot will and will not do, rather than making
+# them read four env vars across two files to find out why the arms are inert.
+say "Hardware gates"
+arm_enabled="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_ARM_ENABLED:-}")"
+hand_enabled="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_HAND_ENABLED:-}")"
+hand_type="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_HAND_TYPE:-unset}")"
+
+case "$arm_enabled" in
+    1|true|yes|on) warn "arms ENABLED (rt/arm_sdk). Joint signs must already be verified — scripts/arm_sign_check.py" ;;
+    *)             info "arms disabled. Head yaw and walking still work. Enable with TELEOP_ARM_ENABLED=1 in apps/bridge/.env, after arm_sign_check.py" ;;
+esac
+case "$hand_enabled" in
+    1|true|yes|on) warn "fingers ENABLED, type=$hand_type. Wrong hand type is a different command, not a no-op." ;;
+    *)             info "fingers disabled. Which hands are fitted is unresolved — run scripts/hand_probe.py (it only subscribes)" ;;
+esac
+
+say "Reach it from your laptop"
+cat <<'TUNNEL'
+  ssh -N -o ControlMaster=no \
+      -L 8001:127.0.0.1:8001 \
+      -L 8766:127.0.0.1:8766 \
+      -L 8767:127.0.0.1:8767 c3po
+
+  then open /vr-control in the Quest's browser.
+TUNNEL
+
+warn "while a headset session is open, do NOT drive the robot from anywhere else."
+warn "nothing at the DDS layer will stop you; the setpoints just interleave."

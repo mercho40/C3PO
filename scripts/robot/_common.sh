@@ -25,6 +25,14 @@ LOG_DIR="${C3PO_LOG_DIR:-$HOME/.c3po/logs}"
 BRIDGE_PID="$RUN_DIR/bridge.pid"
 BRIDGE_LOG="$LOG_DIR/bridge.log"
 
+# The two VR sidecars. Not managed by run_c3po or the boot unit: both exist to
+# serve a person who is currently wearing a headset, so they are per-session,
+# started by hand, and stopped when that person takes it off.
+TELEOP_PID="$RUN_DIR/teleop.pid"
+TELEOP_LOG="$LOG_DIR/teleop.log"
+RELAY_PID="$RUN_DIR/camera_relay.pid"
+RELAY_LOG="$LOG_DIR/camera_relay.log"
+
 # Containers belonging to the colleague's stack. Matched by prefix so a new
 # `gemm-*` container is picked up without editing this script.
 GEMM_PREFIX="${GEMM_PREFIX:-gemm}"
@@ -104,6 +112,24 @@ bridge_tree_pids() {
 # can command the legs that our pidfile cannot stop.
 stray_bridge_pids() {
     pgrep -f 'bridge\.mcp_server' 2>/dev/null || true
+}
+
+# Same shape as bridge_pid, for a sidecar named by its pidfile.
+sidecar_pid() {
+    local pidfile="$1" pid
+    [ -f "$pidfile" ] || return 1
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    printf '%s' "$pid"
+}
+
+stray_teleop_pids() {
+    pgrep -f 'bridge\.teleop\.server' 2>/dev/null || true
+}
+
+stray_relay_pids() {
+    pgrep -f 'bridge\.camera_relay' 2>/dev/null || true
 }
 
 # --- safety ----------------------------------------------------------------
