@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Put the stack controls on PATH as run_c3po / stop_c3po / run_gemm / stop_gemm.
+# Put the stack controls on PATH as run_c3po / stop_c3po / run_gemm / stop_gemm,
+# plus the per-session VR sidecars run_teleop / stop_teleop.
 #
 # Symlinks rather than copies, so `git pull` in the checkout updates the
 # commands with no reinstall step. Run this on the robot.
@@ -11,7 +12,7 @@ target="${BIN_DIR:-$HOME/.local/bin}"
 
 mkdir -p "$target"
 
-for cmd in run_c3po stop_c3po run_gemm stop_gemm; do
+for cmd in run_c3po stop_c3po run_gemm stop_gemm run_teleop stop_teleop; do
     chmod +x "$here/$cmd"
     ln -sf "$here/$cmd" "$target/$cmd"
     echo "  linked $target/$cmd -> $here/$cmd"
