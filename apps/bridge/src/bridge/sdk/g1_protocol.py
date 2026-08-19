@@ -115,11 +115,34 @@ REAL_TOPICS: Final[Topics] = Topics(
 )
 
 
+# Every value SIM_MODE is allowed to take. Anything else is a typo, and a typo
+# must not be resolvable to a topic profile — see `topics_for`.
+SIM_TOPIC_MODES: Final[frozenset[str]] = frozenset({"isaac", "mujoco_local", "stub"})
+REAL_TOPIC_MODES: Final[frozenset[str]] = frozenset({"real"})
+VALID_SIM_MODES: Final[frozenset[str]] = SIM_TOPIC_MODES | REAL_TOPIC_MODES
+
+
 def topics_for(sim_mode: str) -> Topics:
-    """Pick the topic profile for the given SIM_MODE env value."""
-    if sim_mode == "isaac" or sim_mode == "mujoco_local" or sim_mode == "stub":
+    """Pick the topic profile for the given SIM_MODE env value.
+
+    Raises on anything unrecognized, deliberately. This used to end in a bare
+    `return REAL_TOPICS`, so it failed *open* toward the one target that can
+    hurt someone: `SIM_MODE="Real"`, `"production"`, or a stray trailing space
+    all resolved to the real robot's topics and dispatched live DDS RPCs
+    (`_g1_request` gates only on `== "stub"`), while the link watchdog and the
+    FSM poller — which both test `== "real"` exactly — stayed switched off. A
+    one-character typo therefore drove real hardware with its safety systems
+    silently disabled, which is the worst available failure direction.
+    """
+    if sim_mode in SIM_TOPIC_MODES:
         return SIM_TOPICS
-    return REAL_TOPICS
+    if sim_mode in REAL_TOPIC_MODES:
+        return REAL_TOPICS
+    raise ValueError(
+        f"unknown SIM_MODE {sim_mode!r}; expected one of {sorted(VALID_SIM_MODES)}. "
+        "Refusing to guess a topic profile: guessing wrong here means commanding "
+        "a real robot with the watchdog and FSM poller disabled."
+    )
 
 
 # ---------------------------------------------------------------------------

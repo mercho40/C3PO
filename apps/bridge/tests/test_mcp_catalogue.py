@@ -62,6 +62,7 @@ EXPECTED_TOOLS = {
     "hug",
     "clap",
     "release_arm",
+    "dance",
     # world model
     "remember_landmark",
     "recall_landmark",
