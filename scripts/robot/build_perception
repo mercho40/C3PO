@@ -230,12 +230,22 @@ bench_engine() {
     # Our number, on this part, at this power mode — not a blog post's. A plan
     # benchmarked at 15 W and run at MAXN (or the reverse) is a different
     # engine's worth of latency.
+    # Read /var/lib/nvpmodel/status, NOT `nvpmodel -q`. Two reasons, both of
+    # which produced a false "NOT MAXN" against a machine that was on MAXN:
+    #   * `pmode:0000` is the format of the STATUS FILE. `nvpmodel -q` prints
+    #     "NV Power Mode: MAXN" and never the pmode string, so the pattern
+    #     could not match however the machine was configured.
+    #   * `sudo` here is non-interactive over ssh and just fails, so the whole
+    #     command collapsed to the empty string and fell through to the warning.
+    # The status file is world-readable and needs no sudo.
     local pm
-    pm="$(sudo nvpmodel -q 2>/dev/null | tr '\n' ' ' || true)"
-    info "nvpmodel: ${pm:-unavailable}"
+    pm="$(cat /var/lib/nvpmodel/status 2>/dev/null || true)"
+    [ -n "$pm" ] || pm="$(nvpmodel -q 2>/dev/null | tr '\n' ' ' || true)"
+    info "power mode: ${pm:-unavailable}"
     case "$pm" in
-        *pmode:0000*) ok "MAXN" ;;
-        *) warn "NOT MAXN — every latency below is for this power mode, not for MAXN" ;;
+        *pmode:0000*|*MAXN*) ok "MAXN" ;;
+        "")   warn "could not read the power mode — treat the latencies below as unattributed" ;;
+        *)    warn "NOT MAXN — every latency below is for this power mode, not for MAXN" ;;
     esac
     info "expect a median GPU latency of 5-8 ms at 640; if it is far off, that is"
     info "the compute-budget conversation, not a tuning detail"
