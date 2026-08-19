@@ -1,8 +1,6 @@
 # C3PO Bridge
 
-Python 3.12 sidecar that wraps the Unitree G1 SDK and exposes it to LLMs over MCP. Talks DDS (CycloneDDS) to Isaac Sim on a separate Ubuntu host or to a real G1 on the LAN. Same code path for both.
-
-See [`../../docs/SPEC.md`](../../docs/SPEC.md) for the full architecture.
+Python 3.12 sidecar (uv-managed) that wraps `unitree_sdk2_python`, talks DDS (CycloneDDS) to Isaac Sim or a real Unitree G1, and exposes the robot's skill catalogue — locomotion, posture/gesture skills, landmark memory, task management, `stop_everything`, `get_state` — as MCP tools. The same skill code drives both targets; `SIM_MODE` selects the transport and dispatch path. How the bridge fits the rest of the system: [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
 
 ## Setup
 
@@ -27,7 +25,7 @@ Then export the install prefix when running anything in this workspace:
 export CYCLONEDDS_HOME=$HOME/.local/cyclonedds-0.10.2
 ```
 
-(Or set it in `.env` and in `.mcp.json`'s env block.)
+(Or set it in `.env` and in `.mcp.json`'s env block. The robot's Jetson already ships a matching install — see `.env.example`.)
 
 ### 2. Python deps
 
@@ -37,142 +35,132 @@ uv sync                  # installs Python 3.12 + cyclonedds + unitree_sdk2py + 
 ./scripts/postsync.sh    # patches unitree_sdk2py/__init__.py (upstream imports a non-shipped `b2`)
 ```
 
-The `postsync.sh` patch needs to be re-applied after every `uv sync`. It's idempotent and safe to run anytime.
+The `postsync.sh` patch must be re-applied after every `uv sync`. It's idempotent and safe to run anytime.
 
 ### 3. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env: set ROBOT_HOST to your Isaac Sim host IP, DDS_DOMAIN_ID (1 by default),
-# CYCLONEDDS_HOME, and SIM_MODE=isaac (or stub for dry-run, or real later).
 ```
+
+`.env.example` is the authority on every variable — `SIM_MODE`, `ROBOT_HOST`, `DDS_DOMAIN_ID`, `DDS_INTERFACE`, `CYCLONEDDS_HOME`, `BRIDGE_*` — including the per-host values (Mac vs Jetson) in its comments. Don't duplicate those values elsewhere.
 
 ## Running
 
-### Driving the REAL robot from Claude Code
+### The two MCP servers — know which machine you are about to move
 
-`.mcp.json` defines two servers, and the distinction is a safety property rather
-than bookkeeping — the tool names tell you which machine you are about to move:
+The repo's `.mcp.json` defines two bridge entries, and the distinction is a safety property, not bookkeeping — the tool-name prefix tells you which machine is about to move:
 
-| Server        | Tools                   | Target                                        |
-| ------------- | ----------------------- | --------------------------------------------- |
-| `c3po-bridge` | `mcp__c3po-bridge__*`   | Isaac Sim. Spawned locally, `SIM_MODE=isaac`   |
-| `c3po-robot`  | `mcp__c3po-robot__*`    | **The real G1**, over HTTP to the onboard bridge |
+| Server        | Tools                 | Target                                                                                                          |
+| ------------- | --------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `c3po-sim`    | `mcp__c3po-sim__*`    | **Isaac Sim.** Spawned locally by Claude Code (`uv run … bridge.mcp_server`, `SIM_MODE=isaac`)                  |
+| `c3po-bridge` | `mcp__c3po-bridge__*` | **The real G1.** `type: http` → `http://127.0.0.1:8001/mcp` — the onboard daemon, reached through an SSH tunnel |
 
-`c3po-bridge` can never reach the real robot no matter what you set: it runs on
-your Mac, and the control board publishes DDS only on the robot's internal wired
-LAN (`CLAUDE.md`, topology). The bridge has to run onboard. So `c3po-robot`
-points at the onboard daemon through an SSH tunnel:
+`c3po-sim` can never reach the real robot no matter what you set: it runs on the Mac, and the control board publishes DDS only on the robot's internal wired LAN (see `docs/ROBOT-HARDWARE.md`). Conversely, `mcp__c3po-bridge__*` tools command real hardware whenever the tunnel is up.
 
-```bash
-# Keep this running in its own terminal. ControlMaster=no matters — a forward
-# on the shared master evaporates when the master idles out, and the MCP server
-# then fails with no obvious cause.
-ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po
-```
+### As an MCP child over stdio (sim / local dev)
 
-Then start the bridge onboard (`run_c3po`) and reconnect MCP in Claude Code.
-Without the tunnel, `c3po-robot` simply fails to connect.
-
-**Why not spawn it over SSH instead**, which would need no tunnel:
-
-```jsonc
-// Tempting. Do not do this.
-{ "command": "ssh", "args": ["c3po", "bash -lc '… python -m bridge.mcp_server'"] }
-```
-
-That starts a *second* bridge process on the robot alongside the one `run_c3po`
-manages — two processes able to command the legs through the same API, which is
-the exact condition `warn_if_other_commander` and `stray_bridge_pids` exist to
-prevent (`docs/DEPLOYMENT.md` §2). One bridge, reached over a tunnel, keeps the
-actuation chokepoint singular.
-
-### As an MCP server for Claude Code (recommended)
-
-The repo's `.mcp.json` already has a `c3po-bridge` entry that points here. With the bridge configured, Claude Code auto-launches it on startup; tools like `mcp__c3po-bridge__get_state` and `walk_to` become available in the session.
-
-Manual run (for debugging / non-Claude-Code clients):
+Claude Code auto-spawns `c3po-sim` per `.mcp.json` (its env block there carries the sim settings). Manual run for debugging or other MCP clients — with `.env` configured:
 
 ```bash
-CYCLONEDDS_HOME=$HOME/.local/cyclonedds-0.10.2 \
-SIM_MODE=isaac ROBOT_HOST=<sim-host-ip> DDS_DOMAIN_ID=1 \
 uv run python -m bridge.mcp_server
 ```
 
 ### As a long-lived HTTP daemon (what runs on the robot)
 
-`apps/back` connects to the bridge as an MCP client over **streamable-http**, which means the
-bridge has to be told to serve that transport:
+`apps/back` and the `c3po-bridge` MCP entry connect over **streamable-http**, so a daemon has to be told to serve that transport:
 
 ```bash
 BRIDGE_TRANSPORT=http BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=8001 \
 uv run python -m bridge.mcp_server
 ```
 
-This is not optional polish. The default transport is **stdio**, which is right when an MCP
-client spawns the bridge as a child and talks over pipes — but a daemon's stdin is
-`/dev/null`, so on stdio it reads EOF and exits immediately, before it ever reaches the
-robot. The symptom is a process that "fails to start" with almost nothing in the log.
+This is not optional polish. The default transport is **stdio**, which is right when an MCP client spawns the bridge as a child and talks over pipes — but a daemon's stdin is `/dev/null`, so on stdio it reads EOF and exits immediately, before it ever reaches the robot. The symptom is a process that "fails to start" with almost nothing in the log.
 
-Onboard the G1 you do not run this by hand: `run_c3po` (see `scripts/robot/`) supplies these
-three defaults, stops the colleague's stack first, and re-applies `postsync.sh`. Note the
-port is **8001**, not the code default of 8000 — `gemm-ai.service` holds 8000 on the Jetson
-(`docs/ROBOT-INVENTORY.md` §5).
+Onboard the G1 you do not run this by hand: `run_c3po` supplies these defaults and manages the rest of the stack — see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md). Keep the daemon bound to loopback: it can command the robot's legs and has no auth of its own (rationale in `.env.example`).
 
-Keep it bound to loopback. The bridge can command the robot's legs and has no authentication
-of its own, so it should be reached over an SSH tunnel rather than bound to a shared LAN.
+### Driving the real robot from Claude Code
+
+The onboard daemon binds loopback, so `c3po-bridge` reaches it through an SSH tunnel:
+
+```bash
+# Keep this running in its own terminal. ControlMaster=no matters — a forward
+# opened on the shared ControlMaster connection evaporates when the master
+# idles out, and the MCP client then fails with no obvious cause.
+ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po
+```
+
+(`c3po` is a Host alias in `~/.ssh/config` — hosts and addressing live in `docs/ROBOT-HARDWARE.md`.) Start the bridge onboard (`run_c3po`), then reconnect MCP in Claude Code. Without the tunnel, `c3po-bridge` simply fails to connect.
+
+**Why not spawn it over SSH instead**, which would need no tunnel:
+
+```jsonc
+// Tempting. Do not do this.
+{
+  "command": "ssh",
+  "args": ["c3po", "bash -lc '… python -m bridge.mcp_server'"],
+}
+```
+
+That starts a _second_ bridge process on the robot alongside the one `run_c3po` manages — two processes able to command the legs through the same API, the exact condition the stack scripts' stray-commander checks exist to prevent (one-commander invariant: `docs/OPERATIONS.md`). One bridge, reached over a tunnel, keeps the actuation chokepoint singular.
 
 ### Direct skill calls (no MCP)
 
+Skills are async — call them with `asyncio.run`:
+
 ```python
 # from apps/bridge/, with env set
-import bridge.mcp_server   # initialises DDS + state subscribers
+import asyncio
+import bridge.mcp_server   # initialises DDS + state subscribers at import
 from bridge.skills.walk_to import run
-result = run(target_x=1.0, target_y=0.0, stop_distance_m=0.4, timeout_s=60)
-print(result)
+print(asyncio.run(run(target_x=1.0, target_y=0.0, stop_distance_m=0.4, timeout_s=60)))
+```
+
+## Tests
+
+```bash
+uv run pytest    # hardware-free; CI runs these
 ```
 
 ## Diagnostic scripts
 
-| Script                        | Purpose                                                                                                                              |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `scripts/dds_scan.py`         | List DDS participants + topics across candidate domains — diagnose which domain Isaac Sim is on, what topics it publishes/subscribes |
-| `scripts/peek_sim_state.py`   | Subscribe to `rt/sim_state` and print decoded pose JSON                                                                              |
-| `scripts/rotate.py <radians>` | Rotate the robot in place by a yaw delta (e.g. `python scripts/rotate.py 1.5708` for 90° CCW)                                        |
-| `scripts/postsync.sh`         | Patch unitree_sdk2py's broken `__init__.py` after `uv sync`                                                                          |
+| Script                        | Purpose                                                                                                                    |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/dds_scan.py`         | List DDS participants + topics across candidate domains — diagnose which domain a peer is on, what it publishes/subscribes |
+| `scripts/peek_sim_state.py`   | Subscribe to `rt/sim_state` and print decoded pose JSON                                                                    |
+| `scripts/rotate.py <radians>` | Rotate the robot in place by a yaw delta (see its docstring for the `--` trick with negative radians)                      |
+| `scripts/postsync.sh`         | Patch unitree_sdk2py's broken `__init__.py` after `uv sync`                                                                |
 
 All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set in the environment.
 
-## Phase status
-
-- [x] **Phase 0a** — stub MCP server (`get_state`, `walk_to`, `say`) — wiring validated end-to-end via Claude Code
-- [x] **Phase 0b** — real DDS handshake to Isaac Sim, live `get_state` (pose + posture + tick at ~100 Hz)
-- [x] **Phase 1a (real hardware, 2026-08-07)** — posture/gesture skills (`damp`, `prepare`, `start_walking`, `wave`, `shake_hand`, `hug`, `clap`, `sit_g1`, `lie_up`, `squat`, `zero_torque`, `release_arm`) dispatch to a real G1 over **plain DDS RPC** — `bridge.sdk.g1_rpc`, built on `unitree_sdk2py.rpc.client.Client` (the same generic base as Go2's `SportClient`). No WebRTC needed — that assumption in the original `_g1_request.py` was wrong. Verified live: `damp` and `prepare` both got `rpc_code=0` acks from real firmware in <1s.
-- [ ] **Phase 1b — real-hardware `pose`** — `walk_to`/`turn` still fail with `no_pose` on real G1: the only pose source wired (`state.py`'s `_sim_sub`) is Isaac Sim's JSON `rt/sim_state`, which doesn't exist on real firmware (confirmed: `unitree_hg` has no `SportModeState_` IDL type, unlike `unitree_go`). A candidate real source exists — `rt/utlidar/robot_pose` (G1 ships a mid360 LiDAR) — but the reference implementation (`legion1581/unitree_ui`) explicitly **skips enabling LiDAR for the G1 family** ("Explorer webview never toggles it on"), so this path is unverified even there. Needs live hardware testing (toggle `rt/utlidar/switch`, confirm `rt/utlidar/robot_pose` actually publishes, check message type) before wiring it in — don't ship an untested pose source for something that drives autonomous locomotion. **Update (2026-08-07, robot offline — desk research only, see `docs/SPEC.md` §17.2.1):** real-world G1 projects (`deepglint/FAST_LIO_LOCALIZATION_HUMANOID`) don't use `rt/utlidar/*` at all — they run their own FAST-LIO SLAM stack (ROS1) over the raw Mid360. `rt/utlidar/*` is likely quadruped-only/immature on G1. Treat this as a SLAM integration project (and a ROS1↔DDS bridging problem), not a quick topic-subscribe — re-scope before starting.
-- [ ] **Phase 1c** — rest of the skill catalogue polish: `look`, `describe_scene`, `remember_landmark`, `recall_landmark`; MCP `progressToken` streaming; cancel
-- [ ] **Phase 4** — voice loop (wake word, Deepgram STT, Cartesia TTS)
-- See `docs/SPEC.md` §12 for the full plan
-
-## Architecture
+## Layout
 
 ```
-apps/bridge/src/bridge/
-  mcp_server.py        FastMCP stdio server — three tools today
+src/bridge/
+  mcp_server.py         FastMCP server — the skill catalogue as MCP tools; stdio or http transport
+  skill_meta.py         safety/capability metadata attached to every tool (MCP _meta)
+  watchdog.py           operator-link watchdog — safe the robot when the link drops
+  world_model.py        world-model contract: what perception hands the agent
   sdk/
-    connection.py      Generates CycloneDDS unicast peer XML + initialises ChannelFactory
-    state.py           Subscribes to rt/lowstate + rt/sim_state; exposes get_state() shape
-    g1_rpc.py           Real-G1 posture/gesture dispatch — plain DDS RPC (rt/api/sport|arm/request),
-                        no WebRTC. Same base as unitree_sdk2py's Go2 SportClient.
+    connection.py       CycloneDDS init; generates unicast peer XML (macOS multicast workaround)
+    state.py            state sampler — rt/lowstate + per-target pose source; real-mode FSM poller
+    g1_protocol.py      api_ids, FSM mode table, services (reference: docs/ROBOT-API.md)
+    g1_rpc.py           real-G1 RPC over plain DDS (sport/arm services) — no WebRTC
+    perception_link.py  domain-42 link: world summaries in, Nav2 cmd_vel out
+    ros_idl.py          hand-written ROS 2 IDL types (fixed, frozen shapes only)
   skills/
-    walk_to.py         Body-frame velocity loop, yaw correction + yaw-gating (sim-only until Phase 1b)
-    _g1_request.py      Posture/gesture dispatcher — stub / sim (logged-only) / real (g1_rpc)
+    _locomotion.py      the sim/real velocity seam (run_command JSON vs SET_VELOCITY RPC)
+    _g1_request.py      posture/gesture dispatcher — stub / sim / real
+    walk_to.py, turn.py cancellable locomotion tasks
+    landmarks.py        remember/recall/list named poses
+    task_runtime.py     Task records + registry, cooperative cancellation
+    stop_everything.py  cancel-all + zero-velocity burst (+ damp on real hardware)
 ```
 
 ## Known issues
 
 - **`unitree_sdk2py` upstream `__init__.py` is broken** — imports a `b2` submodule that isn't shipped. Local patch via `scripts/postsync.sh`. Long-term: fork upstream or wait for a fix.
-- **macOS multicast for DDS is unreliable.** Worked around by generating a unicast peer XML at startup (see `sdk/connection.py`).
-- **Walk policy is conservative** — effective forward speed is ~10–15% of commanded velocity. Build generous timeouts into `walk_to` calls. (Sim-only today — see Phase 1b above for why real-hardware `walk_to`/`turn` don't work yet.)
-- **`get_state().posture` is `"not_available_over_dds"` in real mode** — `LowState_.mode_machine` isn't the locomotion FSM index `g1_protocol.mode_label()` decodes (that's `sportmodestate.mode`, which has no DDS-decodable type for G1 in this SDK). Don't re-wire `mode_label(mode_machine)` for real mode without confirming what `mode_machine` actually encodes on G1 (looks like a hardware/arm-config variant, not FSM state).
-- **`stop_everything`'s real-hardware fallback was a no-op — fixed 2026-08-07.** Its safety burst published to `rt/run_command/cmd` (sim-only). It now also dispatches `damp` via `g1_rpc` when `SIM_MODE=real`. Not yet live-tested (robot was offline) — smoke-test this specifically before relying on it.
-- **`g1_protocol.Mode.SQUAT` (2) is unverified** — the reference implementation never sends it for G1; both its "Squat" and "Squat-Up" buttons send `SQUAT_UP` (706). The `squat` skill now sends 706. `Mode.SQUAT=2` and the FSM transition rules that reference it are unexercised — treat with suspicion if you rely on them. Those rules are reference data in `g1_protocol.py`, not an enforced guard: a `can_transition()` helper existed but was never called by anything, and was removed rather than wired up, because encoding partly-unverified rules client-side would refuse transitions the firmware would have accepted.
+- **The unicast peer XML is currently a no-op.** `sdk/connection.py` writes a unicast-peer/interface config and sets `CYCLONEDDS_URI` (intended as the macOS multicast workaround), but the vendor SDK's `ChannelFactoryInitialize` creates the domain with its own inline config, which overrides `CYCLONEDDS_URI` — so the bridge actually runs autodetermine + default multicast, and `DDS_INTERFACE` pinning does not reach CycloneDDS either. Verified empirically 2026-08-19; the pending fix and its constraints are tracked in `docs/ROBOT-API.md` (known divergences) and `apps/perception/README.md` (decisions list).
+- **The sim walk policy is conservative** — effective forward speed is ~10–15% of commanded velocity, so build generous timeouts into `walk_to` calls. Those gains are fitted to the sim and will not transfer; real-hardware velocity semantics live in `docs/ROBOT-API.md`.
+- **`LowState_.mode_machine` is not the locomotion FSM index** — verified on hardware (`mode_machine=5` while the FSM id was 802). Real-mode posture comes from the RPC FSM poller instead; the authoritative note is in `sdk/state.py`, the FSM story in `docs/ROBOT-API.md`.
+- **`g1_protocol.Mode.SQUAT` (2) is unexercised** — the `squat` skill dispatches `SQUAT_UP` (706), matching the reference implementation. The FSM transition sets in `g1_protocol.py` are reference data, not an enforced guard (a `can_transition()` helper was removed unused). Details: `docs/ROBOT-API.md`.

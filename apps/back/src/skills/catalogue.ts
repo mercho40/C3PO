@@ -73,7 +73,9 @@ function toEntry(tool: {
 export async function getCatalogue(): Promise<CatalogueSnapshot> {
   try {
     const tools = await listTools();
-    const skills = tools.map(toEntry).sort((a, b) => a.name.localeCompare(b.name));
+    const skills = tools
+      .map(toEntry)
+      .sort((a, b) => a.name.localeCompare(b.name));
     cached = { skills, at: Date.now() };
     return { skills, source: "bridge", ageSeconds: 0 };
   } catch (err) {

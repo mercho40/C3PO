@@ -27,7 +27,7 @@ Sim vs real topic profile:
     (none)                         rt/api/arm/request
 
 The bridge picks a topic profile via `SIM_MODE` (see `Transport` in
-`docs/SPEC.md` §16, planned).
+`docs/ARCHITECTURE.md` §5, planned).
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ REAL_TOPICS: Final[Topics] = Topics(
     # does not exist here. Worse, the only hand that actually answered was a
     # BrainCo Revo2 on `rt/brainco/right/{cmd,state}`, and no Dex3 driver
     # exists anywhere on the Jetson. Which hands are physically fitted is
-    # unresolved (`docs/ROBOT-PERIPHERALS.md` §4). Do not build on these two
+    # unresolved (`docs/ROBOT-HARDWARE.md` §6). Do not build on these two
     # names until someone has looked at the wrists.
     dex_left_cmd="rt/api/dex3/left/request",
     dex_right_cmd="rt/api/dex3/right/request",
@@ -135,7 +135,7 @@ API_ID_LOCO_SET_BALANCE_MODE: Final[int] = 7102  # Balance controller mode
 
 # Present in the C++ SDK (unitree_sdk2) but in NEITHER the Python SDK nor the
 # `unitree_ros2` tree vendored on our robot, which stops at 7107. That is why
-# ROBOT-INVENTORY once recorded 7110 as [web]-only and "not in this client" —
+# an earlier doc recorded 7110 as [web]-only and "not in this client" —
 # we had read the wrong header. Unverified against our firmware: a `3203` reply
 # means this build does not implement it, which is a clean, motion-free answer.
 API_ID_LOCO_SET_PUNCH: Final[int] = 7108
@@ -214,7 +214,7 @@ class BalanceMode:
 
 # api_ids are scoped *per service*, not globally — 7107 means SET_SPEED_MODE on
 # `sport` but something unrelated on `arm`. The full loco surface (from the
-# vendor's `g1_loco_client.hpp`; see docs/ROBOT-INVENTORY.md §3) is:
+# vendor's `g1_loco_client.hpp`; see docs/ROBOT-API.md §2) is:
 #
 #   7001..7006  GET fsm_id / fsm_mode / balance_mode / swing+stand height / phase
 #   7101  SET_FSM_ID        7102  SET_BALANCE_MODE
@@ -252,9 +252,9 @@ class Mode(IntEnum):
     # 500 in particular is not a generic "begin": it is one of two walk
     # policies, with 501 the 3-DoF-waist variant. Sent from 4 on this robot it
     # returns code 0 and does nothing (2026-08-13, repeatable, both
-    # harness-supported and weight-bearing) — unresolved, see
-    # `docs/ROBOT-API.md` §11. 501 is the leading candidate for the right
-    # target on this build and has never been tried.
+    # harness-supported and weight-bearing) — solved: 501 IS this build's walk
+    # program, and the robot walked under it on 2026-08-15. See
+    # `docs/ROBOT-API.md` §12.
     PREPARATION = 4
     WALK = 500
     WALK_WAIST = 501  # Walk with waist control
@@ -320,9 +320,9 @@ _PREPARATION_TARGETS: Final[frozenset[int]] = frozenset(
 
 # These two sets are REFERENCE DATA, not a guard. A `can_transition()` helper
 # built on them was removed unused: nothing ever called it, while this module's
-# docstring, SPEC and the README all claimed "skills check it before firing a
+# docstring and earlier docs claimed "skills check it before firing a
 # mode". Documenting a safety check that does not run is worse than having
-# neither, particularly on the FSM path we are currently blocked on.
+# neither, particularly on the FSM path that had us blocked until 2026-08-15.
 #
 # It was not wired up instead, deliberately. The rules below are assembled from
 # partly-unverified sources, and a client-side gate encoding a wrong rule would
@@ -331,8 +331,8 @@ _PREPARATION_TARGETS: Final[frozenset[int]] = frozenset(
 # firmware rejects illegal transitions itself and says so (7302 Invalid fsm id),
 # which is the answer we actually want.
 #
-# `_PREPARATION_TARGETS` is cited by docs/ROBOT-API.md §11 as evidence in the
-# open Start()/fsm_id=500 investigation, which is why the data stays.
+# `_PREPARATION_TARGETS` is cited by docs/ROBOT-API.md §12 as evidence in the
+# (solved) Start()/fsm_id=500 case, which is why the data stays.
 
 
 # ---------------------------------------------------------------------------
@@ -458,14 +458,13 @@ SKILL_REQUESTS: Final[dict[SkillName, SkillRequest]] = {
     # 500 and 501 are two different walk PROGRAMS selected by waist DoF, not a
     # generic start and a variant of it. Unitree's `basic_services_interface`
     # documents mode_machine as `4:23-Dof; 5:29-Dof; 6:27-Dof`, and this robot
-    # reports **5** — so it is a 29-Dof/3-Dof-waist machine and 501 is very
-    # likely the program it actually implements. That is the leading
-    # explanation for `start_walking` (500) returning rpc code 0 and never
-    # transitioning out of StandUp (docs/ROBOT-API.md §11).
+    # reports **5** — so it is a 29-Dof/3-Dof-waist machine and 501 is the
+    # program it actually implements. That is why `start_walking` (500)
+    # returns rpc code 0 and never transitions out of StandUp — solved: the
+    # robot walked under 501 on 2026-08-15 (docs/ROBOT-API.md §12).
     #
     # The official Python LocoClient has no method for 501 at all, which is
     # part of why we keep our own catalogue rather than delegating to it.
-    # UNTESTED on hardware — nothing has ever sent 501 to this robot.
     "start_walking_waist": SkillRequest("sport_request", API_ID_G1_STATE, Mode.WALK_WAIST),
     "sit_g1":        SkillRequest("sport_request", API_ID_G1_STATE, Mode.SEATING),
     "lie_up":        SkillRequest("sport_request", API_ID_G1_STATE, Mode.LIE_UP),

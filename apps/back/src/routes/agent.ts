@@ -1,9 +1,9 @@
 /**
- * /agent — chat with the internal Claude agent that drives the robot.
+ * /agent — chat with the internal LLM agent that drives the robot.
  *
  * POST /agent { id, messages: UIMessage[] } (the `@ai-sdk/svelte` Chat shape)
  * runs an operator turn and STREAMS the result back as a UI message stream
- * (`toUIMessageStreamResponse()`): Claude's tokens, its tool calls (skills
+ * (`toUIMessageStreamResponse()`): the model's tokens, its tool calls (skills
  * dispatched to the bridge), and tool results arrive incrementally.
  *
  * The turn is also persisted. `id` is the chat id — generated client-side so
@@ -12,7 +12,7 @@
  * failed turn still leaves a record of what was asked), and the assistant
  * message is saved from `onFinish` once the stream completes.
  *
- * This is the backend taking over as the conversation host (SPEC §12.1) — the
+ * This is the backend taking over as the conversation host (docs/ARCHITECTURE.md §3) — the
  * same skill registry the external MCP path uses, now driven server-side.
  *
  * Guarded by `{ auth: true }` at the composition root (src/index.ts). Chats are
@@ -76,8 +76,8 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
           });
           if (isAborted) console.warn("agent turn aborted", { chatId });
         },
-        // Surface the real cause (e.g. missing ANTHROPIC_API_KEY, rate limit)
-        // instead of the default masked "An error occurred."
+        // Surface the real cause (e.g. missing AGENT_API_KEY, an unreachable
+        // gateway) instead of the default masked "An error occurred."
         onError: (error) =>
           error instanceof Error ? error.message : String(error),
       });
@@ -92,7 +92,7 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
       }),
       detail: {
         summary:
-          "Stream an internal-agent chat turn (Claude drives the skill registry).",
+          "Stream an internal-agent chat turn (the model drives the skill registry).",
         tags: ["agent"],
       },
     },

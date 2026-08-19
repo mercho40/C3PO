@@ -1,113 +1,60 @@
 # C3PO
 
-An embodiment layer for LLMs — give Claude (or any MCP-capable model) a body in the form of a Unitree G1 humanoid.
+An embodiment layer for LLMs — gives Claude (or any MCP-capable model) a Unitree G1 humanoid body.
 
-It runs today against Isaac Sim on a separate Ubuntu host over DDS; the same code path drives a real G1 on the LAN. Architecture, components, libraries, and wire formats live in [`docs/SPEC.md`](docs/SPEC.md).
+The same skill code path drives a simulated G1 (Isaac Sim on a separate Ubuntu host) and the real robot. The bridge process runs in a different place for each — on the dev machine for sim, onboard the robot's Jetson for real hardware — because the G1's control board publishes DDS only on its internal wired LAN. How and why: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-## Stack
+## Layout
 
-- **Runtime:** Bun + Turborepo
-- **Backend (`apps/back`):** Elysia, Better Auth (admin + organization plugins), Drizzle ORM, PostgreSQL
-- **Frontend (`apps/web`):** SvelteKit 5 (runes), Tailwind CSS 4, bits-ui / shadcn-svelte, Eden Treaty
-- **Bridge (`apps/bridge`):** Python 3.12 (uv), FastMCP, `unitree_sdk2_python`, CycloneDDS, py_trees
-- **Simulator:** Isaac Sim + `unitree_sim_isaaclab` on a separate Ubuntu host (LAN)
-- **LLM driver:** today, Claude Code (via MCP stdio); long-term, an internal Anthropic Messages API agent inside `apps/back`
-
-## Setup
-
-### 1. JS / TS workspaces
-
-```bash
-bun install
-```
-
-Copy env files (`BETTER_AUTH_SECRET` must match between back and web):
-
-```bash
-cp apps/back/.env.example apps/back/.env
-cp apps/web/.env.example apps/web/.env
-openssl rand -base64 32   # use for BETTER_AUTH_SECRET
-```
-
-Run database migrations:
-
-```bash
-cd apps/back && bunx drizzle-kit migrate
-```
-
-### 2. Python bridge
-
-```bash
-cd apps/bridge
-uv sync                                # installs Python 3.12 + deps into .venv
-./scripts/postsync.sh                  # patches unitree_sdk2py's broken __init__.py
-cp .env.example .env                   # set SIM_MODE, ROBOT_HOST, DDS_DOMAIN_ID
-```
-
-You will also need the CycloneDDS C library locally — see [`apps/bridge/README.md`](apps/bridge/README.md) for the source-build steps (no Homebrew formula on macOS).
-
-### 3. Isaac Sim host
-
-The Mac talks DDS to a separate Ubuntu machine running Isaac Sim + [`unitree_sim_isaaclab`](https://github.com/unitreerobotics/unitree_sim_isaaclab). Default DDS domain is `1`.
-
-## Development
-
-```bash
-bun run dev
-```
-
-Boots both TS apps via Turbo:
-
-- **Frontend:** http://localhost:3001
-- **Backend:** http://localhost:3000
-
-The bridge runs separately — as an MCP server registered in `.mcp.json` (auto-launched by Claude Code) or manually via `uv run python -m bridge.mcp_server` from `apps/bridge`.
-
-## Scripts
-
-| Command               | Description                       |
-| --------------------- | --------------------------------- |
-| `bun run dev`         | Start TS apps in development      |
-| `bun run build`       | Build TS apps                     |
-| `bun run check-types` | Type-check across monorepo        |
-| `bun run format`      | Format with Prettier              |
-| `bun run start`       | Start production (requires build) |
-
-### Backend (apps/back)
-
-| Command                     | Description         |
-| --------------------------- | ------------------- |
-| `bunx drizzle-kit generate` | Generate migrations |
-| `bunx drizzle-kit migrate`  | Apply migrations    |
-| `bunx drizzle-kit studio`   | Open Drizzle Studio |
-
-### Bridge (apps/bridge)
-
-| Command                                  | Description                              |
-| ---------------------------------------- | ---------------------------------------- |
-| `uv sync`                                | Install / update Python deps             |
-| `./scripts/postsync.sh`                  | Re-apply unitree_sdk2py patch after sync |
-| `uv run python -m bridge.mcp_server`     | Run the stdio MCP server                 |
-| `uv run python scripts/rotate.py 1.5708` | Rotate robot 90° CCW (utility)           |
-| `uv run python scripts/dds_scan.py`      | Enumerate DDS participants/topics        |
-
-## Project structure
+Bun + Turborepo monorepo.
 
 ```
 apps/
-  back/                 Elysia API + Better Auth + Drizzle (port 3000)
-  web/                  SvelteKit supervisor UI (port 3001)
-  bridge/               Python sidecar — MCP, Unitree SDK, DDS, voice (planned)
-    src/bridge/
-      mcp_server.py       FastMCP stdio server
-      sdk/                DDS connection + LowState/sim_state subscribers
-      skills/             Skill implementations (walk_to so far)
-    scripts/              Diagnostics + utilities
-docs/
-  SPEC.md               Full architecture spec
-packages/               Reserved for shared TS packages (Phase 1+)
+  back/         Elysia API + Better Auth + Drizzle/PostgreSQL — control plane (port 3000)
+  web/          SvelteKit 5 operator console (port 3001)
+  bridge/       Python 3.12 sidecar (uv) — MCP server, Unitree SDK, DDS
+  perception/   ROS 2 perception + navigation containers for the robot's Jetson
+docs/           Architecture, decisions, operations, robot reference
+scripts/robot/  Onboard stack controls (run_c3po, stop_c3po, perception_up, …)
+packages/       Reserved for shared TS packages
 ```
 
-## Status
+## Documentation
 
-Phase 0b complete: Claude Code → MCP → bridge → DDS → Isaac Sim works end-to-end. Robot walks 1–2 m per command, rotates 90/180° on demand, returns live pose/state at ~100 Hz. Phase 1 (rest of the skill catalogue + supervisor UI + voice + internal agent) is the next arc — see `docs/SPEC.md` §12.
+| Doc                                                | What it answers                                                       |
+| -------------------------------------------------- | --------------------------------------------------------------------- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)     | How the system fits together — layers, topology, safety model         |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md)           | Why it is built this way — decision records with rationale            |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md)         | Deploying and operating — topology, stack controls, addressing        |
+| [`docs/ROBOT-API.md`](docs/ROBOT-API.md)           | The G1's reverse-engineered control API — services, api_ids, FSM      |
+| [`docs/ROBOT-HARDWARE.md`](docs/ROBOT-HARDWARE.md) | What the physical robot presents — network, peripherals, cohabitation |
+| `apps/*/README.md`                                 | Developing each app                                                   |
+
+## Quickstart
+
+```bash
+bun install
+
+# Env — each app's .env.example documents its own variables
+cp apps/back/.env.example apps/back/.env
+cp apps/web/.env.example apps/web/.env
+
+# Database (needs local PostgreSQL — see apps/back/README.md)
+cd apps/back && bun run db:migrate && cd ../..
+
+# Dev servers: web on :3001, back on :3000
+bun run dev
+```
+
+The Python bridge is set up separately — CycloneDDS build, `uv sync`, and the SDK patch are covered in [`apps/bridge/README.md`](apps/bridge/README.md). Claude Code sessions get it automatically via `.mcp.json`.
+
+## Commands
+
+| Command               | Description                  |
+| --------------------- | ---------------------------- |
+| `bun run dev`         | Start TS apps in development |
+| `bun run build`       | Build TS apps                |
+| `bun run check-types` | Type-check across monorepo   |
+| `bun run format`      | Format with Prettier         |
+
+Per-app commands (database, bridge scripts, perception stages) live in each app's README.

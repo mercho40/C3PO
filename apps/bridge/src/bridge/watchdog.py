@@ -1,10 +1,10 @@
 """Operator-link watchdog — make the robot safe when the operator goes silent.
 
-SPEC §10.3. Once the bridge runs onboard the Jetson (`SIM_MODE=real`), the
+docs/ARCHITECTURE.md §7 (safety model). Once the bridge runs onboard the Jetson (`SIM_MODE=real`), the
 operator link is Wi-Fi. If it drops mid-task nothing upstream can stop the
 robot, so something local has to.
 
-**Scope is deliberately narrow, and smaller than SPEC originally assumed.**
+**Scope is deliberately narrow, and smaller than the original design assumed.**
 Every `SET_VELOCITY` we send carries `duration=1.0s`, so the *firmware* already
 stops a walking robot within a second of the bridge going quiet — that deadman
 sits below our software and needs no help. What it does not cover is everything
@@ -16,7 +16,7 @@ good measure.
 **It stops; it does not damp.** `stop_everything` damps because an operator
 pressing it has decided the robot should go limp. A dropped Wi-Fi packet has
 decided nothing — and damping a standing robot drops it on the floor. Link loss
-is SPEC §9's *graceful* case: cancel the work, ramp velocity to zero, leave it
+is the *graceful* case: cancel the work, ramp velocity to zero, leave it
 standing. Anything more aggressive turns a network blip into a fall.
 
 **It only acts when something is actually moving.** An idle robot with a flaky

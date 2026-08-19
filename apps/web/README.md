@@ -1,42 +1,59 @@
-# sv
+# C3PO Web (`apps/web`)
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+SvelteKit 5 operator console (Svelte runes, Tailwind CSS 4): login/signup and
+a `(protected)` group with the dashboard, live map, live camera, and agent
+chat with history. Talks to `apps/back` via Eden Treaty — the backend's `App`
+type is imported through the `@back/*` alias (defined in `svelte.config.js`;
+the generated `.svelte-kit/tsconfig.json` picks it up), so API calls like
+`api.health.get()` are typed end to end.
 
-## Creating a project
+## Develop
 
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
+```bash
+bun run dev          # vite dev on port 3001
+bun run build        # production build
+bun run preview      # preview the build
+bun run check-types  # svelte-check
 ```
 
-To recreate this project with the same configuration:
+**Never add `--bun` to the dev script.** It forces Vite onto Bun's runtime,
+where SvelteKit's `make_trackable` fails assigning an inspect symbol to
+`URLSearchParams` — every page with a server `load` then 500s with
+"Attempted to assign to readonly property". It also diverges dev from the
+Node runtime production actually uses.
 
-```sh
-# recreate this project
-bun x sv@0.12.8 create --template minimal --types ts --add tailwindcss="plugins:none" --install bun @repo/web
-```
+## Environment
 
-## Developing
+`cp .env.example .env` — that file is the authority on the variables.
+`BETTER_AUTH_SECRET` must match `apps/back`'s (see `apps/back/.env.example`);
+`PUBLIC_SIM_CAM_HOST` points the live-camera page at the sim's teleimager
+camera servers.
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+## Auth flow
 
-```sh
-npm run dev
+- `hooks.server.ts` reads the session from Better Auth's signed cookie cache
+  (`getCookieCache`, no backend call on the fast path; the code comments
+  cover the cache-lapse revalidation) and populates `event.locals.user` /
+  `event.locals.session`.
+- `src/routes/(protected)/+layout.server.ts` redirects to `/login` without a
+  session; anything inside `(protected)/` is guarded automatically.
+- Login/signup pages are server-rendered (not prerendered) and send
+  already-authenticated visitors to `/dashboard` client-side — the root
+  layout's `data.user` plus an `$effect` calling `goto`.
+- Server `load` functions fetching protected backend routes must forward the
+  auth cookie:
+  `api.route.get({ headers: { cookie: request.headers.get("cookie") ?? "" } })`.
 
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
+## Deploy
 
-## Building
+`@sveltejs/adapter-vercel`, pinned to the `nodejs22.x` runtime (not edge)
+because `getCookieCache` needs Node crypto — see the comment in
+`svelte.config.js`.
 
-To create a production version of your app:
+## UI conventions
 
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+- `src/lib/components/ui/` — shadcn-svelte-style components (bits-ui +
+  Tailwind); `src/lib/components/` — app-level components.
+- Merge classes with `cn()` from `src/lib/utils.ts`.
+- Use the Svelte MCP server when writing `.svelte` files (`list-sections` →
+  `get-documentation`, then `svelte-autofixer`).

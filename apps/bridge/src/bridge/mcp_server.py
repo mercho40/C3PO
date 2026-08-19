@@ -19,8 +19,10 @@ visibility / control across the registry.
 Run:
     uv run python -m bridge.mcp_server
 
-Registered in `.mcp.json` as `c3po-bridge`. Default transport is stdio, which
-is what Claude Code's MCP client expects.
+Registered in `.mcp.json` as `c3po-sim` — a spawned child process speaking
+stdio, the default transport. The `c3po-bridge` entry in `.mcp.json` is a
+different thing: the daemon running onboard the Jetson, reached over HTTP
+(port 8001 via the SSH tunnel) — i.e. the REAL robot.
 """
 
 from __future__ import annotations
@@ -608,16 +610,17 @@ async def start_walking_waist(ctx: Context) -> dict:
     500 and 501 are two different walk programs chosen by how many degrees of
     freedom the waist has, not a generic start and a variant. Unitree documents
     `mode_machine` as `4:23-Dof; 5:29-Dof; 6:27-Dof`, and this robot reports
-    **5** — so 501 is likely the program it actually implements, and 500 the
+    **5** — so 501 is the program it actually implements, and 500 the
     other variant's.
 
     That matters because `start_walking` (500) has been observed returning rpc
     code 0 while never leaving StandUp. A recognised-but-not-implemented id
-    would look exactly like that: accepted, then declined by the controller.
+    looks exactly like that: accepted, then declined by the controller.
 
-    **Never executed on this robot.** Try it from a supervised window with the
-    operator ready to damp, not from an autonomous plan. See
-    `docs/ROBOT-API.md` §11.
+    **Solved: 501 IS this robot's walk program — it walked under it on
+    2026-08-15.** Still enter it from a supervised window with the operator
+    ready to damp, not from an autonomous plan. See
+    `docs/ROBOT-API.md` §12.
 
     Isaac Sim: logged only.
     """
@@ -1320,7 +1323,7 @@ def main() -> None:
     ``BRIDGE_TRANSPORT=http`` to serve FastMCP's streamable-http transport at
     ``http://{BRIDGE_HOST}:{BRIDGE_PORT}/mcp`` — how ``apps/back`` connects.
     """
-    # Operator-link watchdog (SPEC §10.3). Real hardware only, and OFF unless
+    # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #
     # Short version: today's tool calls block the transport, so "operator
