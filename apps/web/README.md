@@ -66,6 +66,49 @@ received forever, so the robot client polls `/status` and the page renders
 leave the picture — a frozen frame that reads as live is the failure this page
 already tore out a fake HUD to avoid.
 
+## The live map
+
+`/live-map` draws the robot's pose and travelled trail on a grid, with **Nav2's
+global costmap** underneath it when one is available.
+
+The costmap is the map, not FAST-LIO's point cloud. `/Laser_map` grows with
+mapped area and is the one unbounded allocation in the stack; the costmap is
+bounded by construction (a rolling 24 x 24 m window at 0.10 m), and it is what
+Nav2 actually plans against — which is what you need when a path is refused or
+loops. A 240 x 240 grid encodes to ~540 bytes of indexed PNG, so polling it at
+1 Hz costs less than the `/state` JSON already being polled beside it.
+
+**It takes a different route from the camera, and that asymmetry is deliberate.**
+
+|          | Live camera                        | Live map                             |
+| -------- | ---------------------------------- | ------------------------------------ |
+| Path     | browser → robot `:8081` **direct** | browser → `back` → bridge `:8001`    |
+| Auth     | none (the tunnel is the boundary)  | Better Auth, via `back`              |
+| Tunnel   | needs `-L 8081`                    | needs nothing extra                  |
+| Env      | `PUBLIC_ROBOT_CAM_URL`             | none — it uses `PUBLIC_API_URL`      |
+
+The reason is what each port serves. `:8081` serves nothing but frames, so
+handing a browser a route to it costs only the frames. `:8001` is the **bridge**,
+which also serves `/mcp` — the tool surface that can walk the robot — and binds
+loopback with no auth of its own. So the map is proxied instead, which keeps the
+browser off that port entirely and puts the image behind the only authentication
+anywhere in this path.
+
+Two consequences worth knowing before you debug either:
+
+- **The map can work while the camera does not.** The camera needs `-L 8081` in
+  your tunnel and the map does not, so a tunnel opened for `back` alone gives
+  you a map and a dead video panel. That is the expected state, not a fault.
+- **"No map" has three distinct forms**, and they need different fixes: `sin
+  mapa` means nothing is publishing a costmap — almost always that no nav2 stage
+  is running, and the bridge's hint naming the command sits in the tooltip;
+  `mapa no disponible` means the console cannot reach `back`; and a map shown at
+  reduced opacity with `desactualizado` is real but stale. Showing an old map is
+  fine, showing it as current is not.
+
+The costmap exists wherever Nav2 does, so `perception_up nav2-fake` brings it up
+on synthetic odom and scan — **no sensors, nothing taken from the other team.**
+
 ## Deploy
 
 `@sveltejs/adapter-vercel`, pinned to the `nodejs22.x` runtime (not edge)
