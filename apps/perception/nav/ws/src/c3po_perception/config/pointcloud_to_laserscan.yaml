@@ -1,0 +1,35 @@
+# Ground-plane removal and 2D projection for the Livox Mid-360.
+#
+# Why this node and not a costmap voxel_layer: nav2_costmap_2d's
+# ObservationBuffer::bufferCloud transforms the cloud into global_frame and THEN
+# filters by z. Filtering the floor out of a PointCloud2 source therefore also
+# removes every ray that would have CLEARED free floor — the source can mark
+# obstacles but never un-mark them, and the local costmap accumulates ghosts
+# until the robot boxes itself in. A LaserScan restores per-bearing raytracing
+# and costs far less CPU on an Orin NX than a real 3D voxel grid.
+#
+# The Mid-360's FOV is 360 deg x (-7 .. +52) deg, and on this robot it is mounted
+# UPSIDE DOWN, so its dense cone points at the FLOOR. Ground return is not an
+# edge case in this cloud, it is most of it.
+mid360_to_scan:
+  ros__parameters:
+    use_sim_time: false
+    # Gravity-aligned and floor-referenced, published by g1_odom_tf. min/max
+    # height mean "metres above the floor" ONLY because of this frame choice.
+    target_frame: base_footprint
+    transform_tolerance: 0.05
+    min_height: 0.08
+    max_height: 1.45
+    angle_min: -3.14159
+    angle_max: 3.14159
+    # 1 degree -> 360 bins. Finer bins look better and are worse: the Mid-360 is
+    # non-repetitive, so a 100 ms frame leaves many fine bins empty, empty bins
+    # become inf, and the costmap treats inf as "free out to range_max". That is
+    # how you erase a real thin obstacle. Needs a measured per-bin fill rate.
+    angle_increment: 0.01745
+    scan_time: 0.1
+    range_min: 0.45      # inside this the LiDAR is seeing the robot's own arms
+    range_max: 12.0
+    use_inf: true
+    inf_epsilon: 1.0
+    queue_size: 5

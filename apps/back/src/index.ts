@@ -4,6 +4,7 @@ import { cors } from "@elysiajs/cors";
 import { skillsRoutes } from "@back/routes/skills";
 import { tasksRoutes } from "@back/routes/tasks";
 import { stateRoutes } from "@back/routes/state";
+import { mapRoutes } from "@back/routes/map";
 import { agentRoutes } from "@back/routes/agent";
 import { chatsRoutes } from "@back/routes/chats";
 import { env } from "@back/lib/env";
@@ -23,11 +24,16 @@ const app = new Elysia()
   // typed on /invoke, which means its `auth` resolver has to run inside its
   // own scope; nesting it in the outer guard below too would resolve the
   // session twice per request). Everything else here can read or move the
-  // robot (or spend Anthropic tokens via /agent) — require a session.
+  // robot (or use the shared TIC AI key via /agent) — require a session.
   // /health stays open for monitoring.
   .use(skillsRoutes)
   .guard({ auth: true }, (app) =>
-    app.use(tasksRoutes).use(stateRoutes).use(agentRoutes).use(chatsRoutes),
+    app
+      .use(tasksRoutes)
+      .use(stateRoutes)
+      .use(mapRoutes)
+      .use(agentRoutes)
+      .use(chatsRoutes),
   )
   .listen(env.PORT);
 

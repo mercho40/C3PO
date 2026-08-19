@@ -248,7 +248,7 @@ export const chatMessage = pgTable(
   (t) => [uniqueIndex("chat_message_chat_seq_idx").on(t.chatId, t.seq)],
 );
 
-/** Every skill dispatched to the robot — the audit trail (SPEC §3). */
+/** Every skill dispatched to the robot — the audit trail (docs/ARCHITECTURE.md, operational schema). */
 export const toolCallLog = pgTable(
   "tool_call_log",
   {

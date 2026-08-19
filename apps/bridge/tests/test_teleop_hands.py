@@ -38,18 +38,16 @@ def test_default_is_a_null_driver():
     assert "TELEOP_HAND_ENABLED" in driver.reason
 
 
-def test_enabled_without_a_type_still_refuses():
-    # Which hands are fitted is unresolved (ROBOT-PERIPHERALS §4). "Enabled"
-    # is not an answer to "which one".
-    import os
+def test_enabled_without_a_type_still_refuses(monkeypatch):
+    # The hands are settled (two BrainCo), but "enabled" is still not an answer
+    # to "which one" — BrainCo and Dex3 disagree on units, so a silent default
+    # is exactly how that mistake would ship.
+    monkeypatch.setenv("TELEOP_HAND_ENABLED", "1")
 
-    os.environ["TELEOP_HAND_ENABLED"] = "1"
-    try:
-        driver = build_driver()
-        assert isinstance(driver, NullHandDriver)
-        assert "hand_probe" in driver.reason
-    finally:
-        del os.environ["TELEOP_HAND_ENABLED"]
+    driver = build_driver()
+
+    assert isinstance(driver, NullHandDriver)
+    assert "brainco" in driver.reason
 
 
 def test_brainco_refuses_without_a_stated_open_end(monkeypatch):
@@ -146,8 +144,8 @@ def test_dex3_open_hand_is_all_zeros():
 
 def test_dex3_closing_is_sign_flipped_between_hands():
     # Left joints 3-6 are negative-only and right joints 3-6 positive-only, so
-    # a shared "close the hand" pose has to be mirrored (ROBOT-PERIPHERALS
-    # §4.4). A driver that sent the same numbers to both would drive one hand
+    # a shared "close the hand" pose has to be mirrored (docs/ROBOT-HARDWARE.md).
+    # A driver that sent the same numbers to both would drive one hand
     # straight into its limit.
     driver = Dex3HandDriver()
     right = driver.target_pose("right", 1.0)

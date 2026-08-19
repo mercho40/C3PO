@@ -32,6 +32,24 @@ export function projectPose(
   };
 }
 
+/**
+ * The same world→canvas projection as `projectPose`, WITHOUT the clamp.
+ *
+ * `projectPose` clamps to [4, 96] % so the robot marker stays visible when it
+ * walks off the edge of the view — right for a point, wrong for a rectangle.
+ * Clamping a costmap's corners would squash the image against the edge and
+ * silently rescale it, so the map would no longer line up with the very marker
+ * the clamp exists to protect. Anything with EXTENT must use this; anything
+ * that is a single point should keep using `projectPose`.
+ */
+export function projectMeters(
+  x: number,
+  y: number,
+  scale = 6,
+): { left: number; top: number } {
+  return { left: 50 + x * scale, top: 50 - y * scale };
+}
+
 export class RobotLive {
   state = $state<RobotState | null>(null);
   online = $state(false);

@@ -3,7 +3,7 @@
 Why this exists rather than an IK solver
 ----------------------------------------
 `xr_teleoperate` — the stack our colleague already has driving this robot's
-arms from a Quest (`docs/ROBOT-PERIPHERALS.md` §7.2) — solves full inverse
+arms from a Quest (`docs/ROBOT-HARDWARE.md`) — solves full inverse
 kinematics: casadi + pinocchio over `g1_body29_hand14.urdf`, retargeting the
 wrist *pose* to 14 joint angles. That is the better answer when you have the
 URDF. **We do not have it**: it lives on the Jetson inside their tree, and

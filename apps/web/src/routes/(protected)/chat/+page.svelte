@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto, replaceState } from "$app/navigation";
+  import { afterNavigate, goto, replaceState } from "$app/navigation";
   import { createApi } from "$lib/api";
   import { Chat } from "@ai-sdk/svelte";
   import {
-    isToolOrDynamicToolUIPart,
+    isToolUIPart,
     getToolOrDynamicToolName,
     DefaultChatTransport,
   } from "ai";
@@ -28,14 +28,14 @@
 
   let sessionExpired = $state(false);
 
-  // Talks to the backend internal agent (POST /agent), which streams Claude's
-  // tokens + tool calls back as a UI message stream and persists both sides of
-  // the turn. A generic "Failed to fetch"-style error from the AI SDK doesn't
-  // tell an operator whether their session expired or the robot link is down
-  // -- intercept 401 specifically here (before the SDK's own error handling
-  // swallows the distinction into one opaque error) and redirect to re-auth
-  // instead of showing a "Reintentar" button that would just fail the same
-  // way again.
+  // Talks to the backend internal agent (POST /agent), which streams the
+  // model's tokens + tool calls back as a UI message stream and persists both
+  // sides of the turn. A generic "Failed to fetch"-style error from the AI SDK
+  // doesn't tell an operator whether their session expired or the robot link is
+  // down -- intercept 401 specifically here (before the SDK's own error
+  // handling swallows the distinction into one opaque error) and redirect to
+  // re-auth instead of showing a "Reintentar" button that would just fail the
+  // same way again.
   const transport = new DefaultChatTransport({
     api: `${PUBLIC_API_URL}/agent`,
     credentials: "include",
@@ -49,10 +49,13 @@
     },
   });
 
-  // Id for a conversation that doesn't exist yet. Generated once per mount so
-  // it stays stable across re-renders; sent with every turn so the stream and
-  // the row it persists to agree without a round-trip.
-  const draftId = crypto.randomUUID();
+  // Id for a conversation that doesn't exist yet. Stable across re-renders, so
+  // the stream and the row it persists to agree without a round-trip.
+  let draftId = $state(crypto.randomUUID());
+
+  // Whether `draftId` has already been spent on a conversation the backend
+  // knows about. Not `$state` — nothing renders it.
+  let draftUsed = false;
 
   const chatId = $derived(data.selected?.id ?? draftId);
 
@@ -95,6 +98,9 @@
 
   /** Put `?id=` in the URL without navigating, so a reload resumes this chat. */
   function pinChatToUrl() {
+    // Past this point the id names a row on the server, so it can't be handed
+    // to a second conversation.
+    draftUsed = true;
     const params = new URLSearchParams(window.location.search);
     // Drop `q` — it's a one-shot hand-off; resending it on reload would
     // silently re-issue a robot command.
@@ -111,6 +117,22 @@
     if (q) {
       chat.sendMessage({ text: q });
       pinChatToUrl();
+    }
+  });
+
+  // "Nuevo chat" is a link to /chat, and the router answers it by re-running the
+  // load against this same component instance — `data.selected` goes null but
+  // the instance, and its draft id, survive. Reusing a spent id would make the
+  // backend append the new conversation onto the old one's row: two unrelated
+  // transcripts in a single chat, visible the moment either is reloaded. Mint a
+  // fresh one instead.
+  afterNavigate(() => {
+    if (!data.selected && draftUsed) {
+      draftId = crypto.randomUUID();
+      draftUsed = false;
+      // The rail's local row is keyed to the chat that was just left behind;
+      // let the new one fetch its own.
+      listRefreshed = false;
     }
   });
 
@@ -189,8 +211,8 @@
   });
 
   // While a turn is in flight the last assistant message may still be empty
-  // (Claude is thinking, or the first tool call hasn't resolved). Show a pulse
-  // so the composer's disabled state isn't the only feedback.
+  // (the model is thinking, or the first tool call hasn't resolved). Show a
+  // pulse so the composer's disabled state isn't the only feedback.
   const awaitingFirstToken = $derived(
     chat.status === "submitted" ||
       (chat.status === "streaming" &&
@@ -287,7 +309,7 @@
                           <Reasoning.Trigger />
                           <Reasoning.Content content={part.text} />
                         </Reasoning.Root>
-                      {:else if isToolOrDynamicToolUIPart(part)}
+                      {:else if isToolUIPart(part)}
                         {@const failure =
                           part.state === "output-error"
                             ? (part.errorText ?? "Error desconocido")

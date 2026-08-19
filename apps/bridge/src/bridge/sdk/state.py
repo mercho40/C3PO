@@ -76,7 +76,7 @@ class _LowStateSnapshot:
     # different pose than the measured one drags the arm across that gap at a
     # speed set by the ramp, not by any velocity limit. Unitree's own warning
     # is explicit that a position gap plus a moving weight "may cause the
-    # robotic arm to move at high speed" (docs/G1-WEB-RESEARCH.md §4.2).
+    # robotic arm to move at high speed" (`docs/ROBOT-API.md`).
     arm_q: tuple[float, ...] = ()
 
 

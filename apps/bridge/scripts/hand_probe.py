@@ -1,6 +1,6 @@
 """Settle which hands are fitted to this robot. Subscribes only; writes nothing.
 
-`docs/ROBOT-PERIPHERALS.md` §4 has been unable to conclude whether this G1
+`docs/ROBOT-HARDWARE.md` has been unable to conclude whether this G1
 carries **Dex3-1** (7 DoF, three fingers, radians) or **BrainCo Revo2** (6 DoF,
 five fingers, [0,1]) — there is real evidence on both sides, and the two have
 incompatible topics, types, motor counts *and units*. Until it is settled,

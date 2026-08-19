@@ -8,7 +8,7 @@ with `w` carried in `motor_cmd[29].q`, range 0..1 (index 29 is `kNotUsedJoint`,
 not a real motor). The legs stay under the high-level controller throughout.
 Official docs restrict the path to FSM 4 / 500 / 501 — Locked Stance and the
 two Movement Control modes — which is the useful part: **arm control works
-while merely standing**, no gait required. `docs/G1-WEB-RESEARCH.md` §4.2 has
+while merely standing**, no gait required. `docs/ROBOT-API.md` has
 the sourcing for all of the above.
 
 Four things will hurt someone here, and each has a countermeasure below:

@@ -83,6 +83,13 @@ export async function ensureChat(opts: {
  * assistant rows can land on the same timestamp, which would render history
  * out of order. Upserts on the message id so a retried stream doesn't
  * duplicate a turn.
+ *
+ * The upsert only ever rewrites a row belonging to *this* chat. It used to
+ * rewrite any row with a matching id, which is how a caller passing a blank or
+ * borrowed id could silently redirect a reply into someone else's
+ * conversation — the message vanished from the chat that produced it and
+ * corrupted the one that didn't. A conflict outside this chat falls through to
+ * a fresh id instead, so the worst case is a duplicate rather than a loss.
  */
 export async function appendMessage(opts: {
   id?: string;
@@ -90,30 +97,44 @@ export async function appendMessage(opts: {
   role: "user" | "assistant" | "system";
   parts: unknown[];
 }): Promise<string> {
-  const id = opts.id ?? crypto.randomUUID();
+  // `||`, not `??`: an empty string is a missing id, not an id. The AI SDK
+  // hands one out for the response message unless the stream is given a
+  // `generateMessageId` (see routes/agent.ts).
+  const id = opts.id || crypto.randomUUID();
 
-  await db
-    .insert(chatMessage)
-    .values({
-      id,
-      chatId: opts.chatId,
-      role: opts.role,
-      parts: opts.parts,
-      // Computed in the INSERT so concurrent appends can't both read the same
-      // max and collide; the unique (chat_id, seq) index is the backstop.
-      seq: sql`(select coalesce(max(${chatMessage.seq}), 0) + 1 from ${chatMessage} where ${chatMessage.chatId} = ${opts.chatId})`,
-    })
-    .onConflictDoUpdate({
-      target: chatMessage.id,
-      set: { parts: opts.parts },
-    });
+  const write = (messageId: string) =>
+    db
+      .insert(chatMessage)
+      .values({
+        id: messageId,
+        chatId: opts.chatId,
+        role: opts.role,
+        parts: opts.parts,
+        // Computed in the INSERT so concurrent appends can't both read the same
+        // max and collide; the unique (chat_id, seq) index is the backstop.
+        seq: sql`(select coalesce(max(${chatMessage.seq}), 0) + 1 from ${chatMessage} where ${chatMessage.chatId} = ${opts.chatId})`,
+      })
+      .onConflictDoUpdate({
+        target: chatMessage.id,
+        set: { parts: opts.parts },
+        setWhere: eq(chatMessage.chatId, opts.chatId),
+      })
+      .returning({ id: chatMessage.id });
+
+  // No row back means the id exists but belongs to another chat, so `setWhere`
+  // held the update back. Keep the message; give it an id of our own.
+  let finalId = id;
+  if ((await write(id)).length === 0) {
+    finalId = crypto.randomUUID();
+    await write(finalId);
+  }
 
   await db
     .update(chat)
     .set({ updatedAt: new Date() })
     .where(eq(chat.id, opts.chatId));
 
-  return id;
+  return finalId;
 }
 
 /** Record one dispatched skill. Never throws — auditing must not break a turn. */

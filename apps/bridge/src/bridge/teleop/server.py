@@ -8,7 +8,7 @@ Binds loopback by default and has no authentication of its own — same posture
 as the MCP HTTP transport and `camera_relay`: reach it over an SSH tunnel.
 Port 8767, chosen the same way 8766 was: 8000 is `gemm-ai.service`, 8001 this
 bridge's MCP, 8765 the colleague's foxglove bridge, 8766 the camera relay,
-55555/60000 teleimager (`docs/ROBOT-INVENTORY.md` §5).
+55555/60000 teleimager (`docs/ROBOT-HARDWARE.md`).
 
 What a session does, per frame
 ------------------------------

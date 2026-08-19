@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.turbo/
+.env
+
+# TensorRT engines are built on the robot at first container start: a plan is
+# tied to the exact GPU, TRT version and build flags, so it is never portable
+# and never committed. See nav/../vision/entrypoint.sh.
+*.plan
+*.engine
+
+# YOLO weights and the exported ONNX are fetched/exported by tools/, not stored.
+*.pt
+*.onnx

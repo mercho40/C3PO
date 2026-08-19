@@ -19,8 +19,10 @@ visibility / control across the registry.
 Run:
     uv run python -m bridge.mcp_server
 
-Registered in `.mcp.json` as `c3po-bridge`. Default transport is stdio, which
-is what Claude Code's MCP client expects.
+Registered in `.mcp.json` as `c3po-sim` — a spawned child process speaking
+stdio, the default transport. The `c3po-bridge` entry in `.mcp.json` is a
+different thing: the daemon running onboard the Jetson, reached over HTTP
+(port 8001 via the SSH tunnel) — i.e. the REAL robot.
 """
 
 from __future__ import annotations
@@ -154,7 +156,7 @@ def get_state() -> dict:
         cancellable=True,
         expected_duration_s=20.0,
         works_sim=True,
-        works_real=False,
+        works_real=True,
         preconditions=["robot_upright", "battery_pct_gt_15", "no_active_walk_task"],
         typical_failure_modes=["path_blocked", "timeout", "no_pose"],
     )
@@ -573,8 +575,12 @@ async def prepare(ctx: Context) -> dict:
 async def wave(ctx: Context) -> dict:
     """Wave the upper arm — friendly greeting gesture.
 
-    G1 firmware "high wave" (api_id=7106, data=26). Note: arm gestures require
-    a locomotion-active FSM state (Walk / Walk(waist) / Run) on real hardware.
+    G1 firmware `wave_above_head` (api_id=7106, data=26). The robot's own
+    GetActionList reports this action as UNGATED — no FSM and no mode_machine
+    requirement — and it executed on hardware 2026-08-15 from fsm_id 802,
+    taking 7.3 s because the arm service acks on completion of the motion, not
+    on receipt. Only one action in the whole table (`turn_back_wave`, id 1) is
+    FSM-gated.
 
     Isaac Sim: logged only (sim doesn't subscribe to `rt/api/arm/request`).
     """
@@ -634,7 +640,7 @@ async def point_at(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=1.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         preconditions=["fsm_state_is_damp"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
@@ -661,7 +667,7 @@ async def zero_torque(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=0.1,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         typical_failure_modes=["bridge_disconnected", "motion_switcher_no_answer"],
     )
 )
@@ -727,7 +733,7 @@ async def check_motion_mode() -> dict:
         cancellable=False,
         expected_duration_s=3.0,
         works_sim=False,
-        works_real=False,
+        works_real=True,
         preconditions=["fsm_state_is_preparation", "operator_present"],
         typical_failure_modes=["fsm_transition_rejected", "no_motion_controller_loaded"],
     )
@@ -738,16 +744,17 @@ async def start_walking_waist(ctx: Context) -> dict:
     500 and 501 are two different walk programs chosen by how many degrees of
     freedom the waist has, not a generic start and a variant. Unitree documents
     `mode_machine` as `4:23-Dof; 5:29-Dof; 6:27-Dof`, and this robot reports
-    **5** — so 501 is likely the program it actually implements, and 500 the
+    **5** — so 501 is the program it actually implements, and 500 the
     other variant's.
 
     That matters because `start_walking` (500) has been observed returning rpc
     code 0 while never leaving StandUp. A recognised-but-not-implemented id
-    would look exactly like that: accepted, then declined by the controller.
+    looks exactly like that: accepted, then declined by the controller.
 
-    **Never executed on this robot.** Try it from a supervised window with the
-    operator ready to damp, not from an autonomous plan. See
-    `docs/ROBOT-API.md` §11.
+    **Solved: 501 IS this robot's walk program — it walked under it on
+    2026-08-15.** Still enter it from a supervised window with the operator
+    ready to damp, not from an autonomous plan. See
+    `docs/ROBOT-API.md` §12.
 
     Isaac Sim: logged only.
     """
@@ -797,7 +804,7 @@ async def balance_stand(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=2.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         preconditions=["fsm_state_is_preparation"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
@@ -824,7 +831,7 @@ async def start_walking(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=3.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         preconditions=["fsm_state_is_damp"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
@@ -851,7 +858,7 @@ async def sit_g1(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=4.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         preconditions=["fsm_state_is_damp"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
@@ -877,7 +884,7 @@ async def lie_up(ctx: Context) -> dict:
         cancellable=False,
         expected_duration_s=3.0,
         works_sim=False,
-        works_real=True,
+        works_real=False,
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
 )
@@ -887,6 +894,12 @@ async def squat(ctx: Context) -> dict:
     G1 firmware Squat (mode 2) and SquatUp (706) collapse to the same
     physical pose at different control gains. From Squat you can only go to
     Damp on the FSM, so this is a terminal posture until you reset.
+
+    ⚠️ Observed 2026-08-15: sending this from Damp returns rpc code 0 and does
+    NOT transition — `fsm_id` stays 1. That contradicts Unitree's own G1
+    example, which bring-ups via Damp -> Squat2StandUp(706) -> Move. On this
+    robot the route that works is `prepare` (4), then 501. Do not build a
+    bring-up on 706 here.
 
     Isaac Sim: logged only.
     """
@@ -1480,6 +1493,92 @@ def list_active_tasks(
 # Entrypoint
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Telemetry over plain HTTP — NOT MCP
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS NOT AN MCP TOOL. Two independent reasons, either sufficient.
+#
+# 1. It is not for the model. A 240x240 PNG is meaningless to an LLM and would
+#    be a catastrophe for the token budget — D7 sizes the model's view of the
+#    world at a few hundred tokens on purpose. This is for the OPERATOR's eyes,
+#    and the operator's console is a browser.
+#
+# 2. It is the one path that works today. `apps/back` cannot reach this server
+#    over MCP at all: the SDK's StreamableHTTPClientTransport dies under Bun
+#    with "socket connection was closed unexpectedly", while the identical code
+#    under Node connects fine (docs/OPERATIONS.md). That break is specific to
+#    the SDK transport holding a long-lived stream — a plain `fetch()` in Bun to
+#    this same server already works. So a plain GET is not a workaround, it is
+#    the correct shape for read-only telemetry AND it happens to be the first
+#    robot data that can reach the web while that blocker stands.
+#
+# READ-ONLY, AND STRUCTURALLY SO. This route reads a cached payload the link
+# already received. It cannot arm the gate, cannot publish, and cannot reach
+# anything that actuates — the whole cmd_vel path is untouched by it. The bridge
+# still binds loopback with no auth of its own, so this is reached the same way
+# everything else is: through the SSH tunnel, not from the school LAN.
+
+
+@mcp.custom_route("/telemetry/costmap.png", methods=["GET"])
+async def costmap_png(request):  # noqa: ANN001, ANN201 - starlette types
+    """Nav2's global costmap as an indexed PNG, or 503 when there is none.
+
+    503 rather than a blank image, deliberately: a blank map and "no map yet"
+    are different facts, and an operator who cannot tell them apart is the map
+    equivalent of `objects: []` from an offline detector. The metadata a
+    renderer needs to place the image — resolution, origin, size, age — rides on
+    headers so the body stays a plain PNG the browser can put in an <img>.
+    """
+    from starlette.responses import JSONResponse, Response
+
+    from bridge.sdk.perception_link import COSTMAP_STALE_AFTER_S, get_link
+
+    payload, age = get_link().latest_costmap()
+    if payload is None:
+        return JSONResponse(
+            {
+                "error": "no costmap received",
+                "hint": (
+                    "the costmap comes from Nav2's global_costmap, so it exists only "
+                    "while a nav2 stage is up: `perception_up nav2-fake` (no sensors) "
+                    "or `perception_up nav2` (claims both sensors)"
+                ),
+            },
+            status_code=503,
+        )
+
+    import base64
+
+    try:
+        png = base64.b64decode(payload["png_base64"])
+    except Exception:
+        return JSONResponse({"error": "costmap payload is not decodable"}, status_code=502)
+
+    stale = age is not None and age > COSTMAP_STALE_AFTER_S
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={
+            # Placement, so the console can put the map under the robot marker.
+            # origin is the pose of the BOTTOM-LEFT cell in `frame`; the PNG is
+            # top-down, so draw from (origin_x, origin_y + height*res) downward.
+            "X-C3PO-Frame": str(payload.get("frame_id", "")),
+            "X-C3PO-Width": str(payload.get("width", "")),
+            "X-C3PO-Height": str(payload.get("height", "")),
+            "X-C3PO-Resolution-M": str(payload.get("resolution_m", "")),
+            "X-C3PO-Origin-X-M": str(payload.get("origin_x_m", "")),
+            "X-C3PO-Origin-Y-M": str(payload.get("origin_y_m", "")),
+            # Age travels with the image so a stale map can be SHOWN AS stale
+            # rather than shown as current. Never cache: at 1 Hz a cached map is
+            # a lie within a second.
+            "X-C3PO-Age-S": "" if age is None else f"{age:.2f}",
+            "X-C3PO-Stale": "true" if stale else "false",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 def main() -> None:
     """Run the MCP server.
 
@@ -1487,7 +1586,7 @@ def main() -> None:
     ``BRIDGE_TRANSPORT=http`` to serve FastMCP's streamable-http transport at
     ``http://{BRIDGE_HOST}:{BRIDGE_PORT}/mcp`` — how ``apps/back`` connects.
     """
-    # Operator-link watchdog (SPEC §10.3). Real hardware only, and OFF unless
+    # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #
     # Short version: today's tool calls block the transport, so "operator
