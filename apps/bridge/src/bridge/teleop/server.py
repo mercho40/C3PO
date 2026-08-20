@@ -23,6 +23,24 @@ What a session does, per frame
 4. **Grip -> fingers.** Handed to whichever hand driver is configured, which
    is `NullHandDriver` until someone settles which hands are fitted.
 
+The e-stop reaches this, and that took doing
+--------------------------------------------
+`stop_everything` cancels every task in the `TaskRegistry`, sends a
+zero-velocity burst and (on real) Damps. A teleop session is not a skill
+invocation, so at first it appeared in none of that — and the burst was useless
+against it, because this dispatch loop re-issues velocity 50 ms later. Pressing
+PARAR while someone wore the headset produced a brief stutter and nothing else.
+
+So a session now registers itself as a `teleop_session` task for its whole
+lifetime. That buys three things at once: `stop_everything` cancels it like
+anything else, `list_active_tasks` answers "a headset is driving the robot"
+instead of "nothing is running", and the link watchdog can see it.
+
+Recovery is deliberate. A cancelled session latches stopped and stays stopped
+while the operator keeps holding the control — releasing the dead-man is what
+clears it. Anything softer would let an e-stop be undone by not letting go,
+which is exactly what a startled person does.
+
 Three dead-men, and why there are three
 ---------------------------------------
 * **Client-held** (`frame.enabled`): the operator is actively holding a
@@ -57,6 +75,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from bridge.teleop import hands as hands_mod
 from bridge.teleop.arm_sdk import ArmSdkUnavailable, get_driver
 from bridge.teleop.protocol import FrameError, TeleopFrame, parse_frame
+from bridge.skills.task_runtime import get_registry
 from bridge.teleop.retarget import (
     DEFAULT_ARM_LENGTH_M,
     calibrate_arm_length,
@@ -114,6 +133,12 @@ class TeleopSession:
     """State for one connected operator. Owns the dispatch loop while alive."""
 
     def __init__(self) -> None:
+        # Registered for the session's whole lifetime, not per command. This is
+        # what puts the session inside `stop_everything`'s reach; see the
+        # module docstring.
+        self.task = get_registry().create("teleop_session")
+        self.task.phase = "streaming"
+        self.stopped = False
         self.frame: TeleopFrame | None = None
         self.last_frame_at = 0.0
         self.frames_received = 0
@@ -170,12 +195,41 @@ class TeleopSession:
 
     # -- dead-man -------------------------------------------------------
 
+    def close(self) -> None:
+        """Mark the session finished so it leaves the registry.
+
+        A session that never ends would make every later `stop_everything`
+        report a cancelled task nobody is running, and would keep the link
+        watchdog believing motion is in flight.
+        """
+        if self.task.status == "running":
+            self.task.status = "completed"
+            self.task.phase = "ended"
+            self.task.ended_at = time.time()
+
+    def check_estop(self) -> bool:
+        """Latch `stopped` if the session has been cancelled. Returns the latch.
+
+        Clearing is deliberate and one-directional: only the operator releasing
+        the dead-man clears it, and clearing also re-arms the underlying event
+        so a second PARAR works exactly like the first.
+        """
+        if self.task.cancel_event.is_set():
+            if not self.stopped:
+                log.warning("teleop.estop", task_id=self.task.task_id)
+            self.stopped = True
+        if self.stopped and self.frame is not None and not self.frame.enabled:
+            self.stopped = False
+            self.task.cancel_event.clear()
+            log.info("teleop.estop.cleared", task_id=self.task.task_id)
+        return self.stopped
+
     def stale(self, now: float) -> bool:
         return self.last_frame_at == 0.0 or (now - self.last_frame_at) > STALE_FRAME_S
 
     def wants_motion(self, now: float) -> bool:
         """Whether this frame should be allowed to command any motion at all."""
-        if self.deadman_tripped or self.stale(now):
+        if self.stopped or self.deadman_tripped or self.stale(now):
             return False
         return self.frame is not None and self.frame.enabled
 
@@ -206,6 +260,8 @@ class TeleopSession:
             "calibrated": self.calibrated,
             "arm_length_m": round(self.arm_length_m, 3),
             "deadman_tripped": self.deadman_tripped,
+            "stopped_by_estop": self.stopped,
+            "task_id": self.task.task_id,
             "moving": self.moving,
             "hands": self.hands.name,
             "arm": get_driver().status(),
@@ -218,6 +274,10 @@ async def _dispatch_once(session: TeleopSession, now: float) -> None:
     from bridge.skills._locomotion import send_velocity_async
 
     frame = session.frame
+    # Before anything else: has the e-stop been pressed? `wants_motion` also
+    # consults the latch, but this is what sets it, and it must run even on a
+    # tick where no frame has arrived.
+    session.check_estop()
     allowed = session.wants_motion(now)
 
     vx = 0.0
@@ -389,6 +449,7 @@ async def handle_client(ws: ServerConnection) -> None:
         # idempotent by construction: a second zero-velocity command and a
         # release on a disengaged driver are both no-ops.
         await _safe_stop(session)
+        session.close()
         _active = None
         log.info("teleop.session_ended", **session.status())
 

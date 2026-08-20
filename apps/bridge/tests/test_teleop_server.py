@@ -54,7 +54,12 @@ def session(monkeypatch):
     from bridge.teleop.hands import NullHandDriver
 
     s.hands = NullHandDriver("test")
-    return s
+    yield s
+    # A session registers a `teleop_session` task for its lifetime, and the
+    # registry is a process-wide singleton. Without this, every test here
+    # leaves one "running" and the suites that assert `len(list_active()) == 1`
+    # start failing somewhere else entirely.
+    s.close()
 
 
 # -- yaw mapping ------------------------------------------------------------

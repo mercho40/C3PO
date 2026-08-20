@@ -32,6 +32,9 @@ export type TeleopStatus = {
   calibrated: boolean;
   arm_length_m: number;
   deadman_tripped: boolean;
+  /** Latched by `stop_everything`. Clears only when the operator lets go. */
+  stopped_by_estop: boolean;
+  task_id: string;
   moving: boolean;
   hands: string;
   arm: {

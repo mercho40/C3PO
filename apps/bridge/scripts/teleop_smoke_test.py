@@ -28,6 +28,12 @@ Stage 4 settles it for a few degrees of yaw, by commanding a small rotation
 through the teleop socket and reading the pose back over MCP. No headset, no
 arms, no walking.
 
+Stage 6 is the other one worth naming: it presses PARAR while the operator
+keeps holding the control, because that is what a startled person does. The
+stream has to stop and stay stopped. A teleop session is not a skill
+invocation, so it had to be registered as a task before `stop_everything`
+could reach it at all — and this stage is what proves that it does.
+
 What this does NOT cover: the arm path (`scripts/arm_sign_check.py`) and the
 fingers. Both are disabled by default and should stay that way until this
 passes.
@@ -325,9 +331,50 @@ async def stage_walk(session: ClientSession, url: str) -> None:
     print(f"    travelled    : {math.hypot(x1 - x0, y1 - y0):.3f} m")
 
 
+async def stage_estop(session: ClientSession, url: str) -> None:
+    """Press PARAR mid-stream. The single most important behaviour here."""
+    print("\n=== 6. E-STOP ===")
+    print("    Commanding a turn, then calling stop_everything WHILE the operator")
+    print("    keeps holding the control — which is exactly the real situation.")
+    print("    The stream must stop and STAY stopped until the control is released.")
+    confirm("Ready?")
+
+    async with connect(url) as ws:
+        seq = 0
+        for _ in range(15):
+            await ws.send(frame(seq, enabled=True, head={"yaw": math.radians(PROBE_YAW_DEG), "pos": [0, 1.62, 0]}))
+            seq += 1
+            await asyncio.sleep(0.03)
+
+        print("    pressing PARAR ...")
+        await session.call_tool("stop_everything", {})
+        before = await yaw_now(session)
+
+        # Keep holding, as a startled operator would.
+        for _ in range(30):
+            await ws.send(frame(seq, enabled=True, head={"yaw": math.radians(PROBE_YAW_DEG), "pos": [0, 1.62, 0]}))
+            seq += 1
+            await asyncio.sleep(0.03)
+        status = await read_status(ws)
+
+    after = await yaw_now(session)
+    drift = abs(math.degrees((after or 0.0) - (before or 0.0)))
+    print(f"    stopped_by_estop : {status.get('stopped_by_estop')}")
+    print(f"    yaw drift after  : {drift:.2f} deg")
+
+    if not status.get("stopped_by_estop"):
+        raise Aborted(
+            "the session did not latch stopped. The e-stop reached the registry but "
+            "not the stream — this is the exact defect the latch exists to prevent."
+        )
+    if drift > MIN_MEANINGFUL_DEG:
+        raise Aborted(f"the robot kept turning {drift:.1f} deg after PARAR. Stop here.")
+    print("    OK: PARAR stopped the stream, and holding the control did not undo it.")
+
+
 async def stage_disconnect_stops(session: ClientSession, url: str) -> None:
     """Drop the socket mid-command. The robot must stop without being told."""
-    print("\n=== 6. DISCONNECT STOPS ===")
+    print("\n=== 7. DISCONNECT STOPS ===")
     print("    Commanding a turn, then killing the socket without releasing.")
     print("    This is what a dropped Wi-Fi link looks like from the robot's side.")
     confirm("Ready?")
@@ -382,6 +429,7 @@ async def main() -> int:
                     return 0
 
                 await stage_walk(session, args.teleop)
+                await stage_estop(session, args.teleop)
                 await stage_disconnect_stops(session, args.teleop)
 
                 print("\n=== DONE ===")
