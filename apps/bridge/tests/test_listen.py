@@ -167,3 +167,69 @@ def test_transcribe_pcm_is_the_offline_entry_point():
 
     assert any("puerta" in t for t in
                listen.transcribe_pcm(tts.synthesize("abrí la puerta")))
+
+
+# --- whisper transcription (robot only) -------------------------------------
+
+def _whisper_ready() -> tuple[bool, str]:
+    try:
+        import faster_whisper  # noqa: F401
+    except ImportError as exc:
+        return False, str(exc)
+    return vosk_ok and tts_ok, ""
+
+
+whisper_ok, whisper_why = _whisper_ready()
+needs_whisper = pytest.mark.skipif(
+    not whisper_ok, reason=f"needs faster-whisper + piper on the robot: {whisper_why}")
+
+
+@needs_whisper
+def test_whisper_transcribes_spanish_accurately():
+    """The reason for the swap: Vosk small-es renders 'buenos días' as
+    'guapa días'. Whisper is expected to get the actual words."""
+    from bridge.skills import tts
+
+    text = listen.transcribe_pcm_whisper(
+        tts.synthesize("Buenos días. Caminá hasta la puerta y buscá la caja azul.")).lower()
+    for word in ("puerta", "caja", "azul"):
+        assert word in text, f"{word!r} missing from {text!r}"
+
+
+@needs_whisper
+def test_whisper_beats_vosk_on_the_same_audio():
+    """Pins the improvement rather than assuming it. Scored on content words so
+    the assertion does not depend on punctuation or capitalisation."""
+    from bridge.skills import tts
+
+    sentence = "Buenos días, quiero que busques la caja azul en la puerta."
+    clip = tts.synthesize(sentence)
+    wanted = {"buenos", "días", "caja", "azul", "puerta"}
+
+    vosk_text = " ".join(listen.transcribe_pcm(clip)).lower()
+    whisper_text = listen.transcribe_pcm_whisper(clip).lower()
+
+    vosk_hits = sum(w in vosk_text for w in wanted)
+    whisper_hits = sum(w in whisper_text for w in wanted)
+    assert whisper_hits >= vosk_hits, (
+        f"whisper {whisper_hits}/{len(wanted)} did not beat vosk {vosk_hits}/{len(wanted)}\n"
+        f"  vosk   : {vosk_text!r}\n  whisper: {whisper_text!r}")
+
+
+@needs_whisper
+def test_empty_audio_transcribes_to_nothing_not_a_hallucination():
+    """Whisper is known to invent text on silence — a confident sentence from an
+    empty room would be acted on by the agent as if somebody had spoken."""
+    assert listen.transcribe_pcm_whisper(b"") == ""
+    assert listen.transcribe_pcm_whisper(b"\x00\x00" * 16000) == ""
+
+
+@needs_whisper
+def test_the_loop_uses_whisper_text_and_still_fires_the_stop():
+    from bridge.skills import tts
+
+    heard, stops = [], []
+    clip = tts.synthesize("emergencia, pará todo")
+    listen.listen_loop(_frames(clip), on_text=heard.append, on_stop=stops.append,
+                       whisper=True)
+    assert stops, "the stop must fire regardless of which transcriber is used"
