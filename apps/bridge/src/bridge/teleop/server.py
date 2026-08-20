@@ -321,6 +321,9 @@ async def _dispatch_arms(
             # to a hand that is already open.
             session.arms_active = False
             session.hands.relax()
+            # Letting go is also what clears a failed publish loop, so asking
+            # again is a retry rather than a permanent refusal.
+            driver.clear_failure()
         return
 
     session.arms_active = True
@@ -377,6 +380,25 @@ async def _dispatch_loop(session: TeleopSession, ws: ServerConnection) -> None:
     except asyncio.CancelledError:
         await _safe_stop(session)
         raise
+    except Exception:
+        # A control loop that cannot control has to hand back, loudly. Only
+        # CancelledError used to be caught, so anything else — a DDS publisher
+        # that goes away, a hand driver that raises, an unexpected failure out
+        # of engage() — killed this task while the WebSocket kept ingesting
+        # frames. The session looked alive from the page, status stopped
+        # updating, and nothing dispatched or stopped until the operator
+        # happened to disconnect.
+        #
+        # Ending beats retrying. Retrying at 20 Hz against a persistent fault
+        # spins the log and leaves the operator holding a control that quietly
+        # does nothing; closing the socket surfaces it as a lost connection,
+        # which the page already knows how to say.
+        log.exception("teleop.dispatch_failed")
+        await _safe_stop(session)
+        try:
+            await ws.close(code=1011, reason="teleop dispatch failed")
+        except Exception:
+            pass
 
 
 async def _safe_stop(session: TeleopSession) -> None:

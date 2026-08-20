@@ -129,6 +129,12 @@ class ArmSdkDriver:
         self._mode_machine = 0
         self._last_frame_at = 0.0
         self._published = 0
+        # Set when the publish loop dies. Latched, because its error path
+        # clears `_engaged`, and the dispatch loop reads that as "not engaged
+        # yet" and calls engage() again — 20 times a second, each attempt
+        # building a publisher and ramping a weight, against a fault that is
+        # not going away. Cleared only by letting go of the arms.
+        self._failed: str | None = None
 
     @property
     def engaged(self) -> bool:
@@ -138,9 +144,21 @@ class ArmSdkDriver:
     def weight(self) -> float:
         return self._weight
 
+    def clear_failure(self) -> None:
+        """Allow engaging again after a publish-loop failure.
+
+        Deliberate, same shape as every other latch here: the operator stops
+        asking for the arms, then asks again. `server._dispatch_arms` calls
+        this on the falling edge.
+        """
+        if self._failed is not None:
+            log.info("arm_sdk.failure_cleared", was=self._failed)
+            self._failed = None
+
     def status(self) -> dict[str, Any]:
         return {
             "engaged": self._engaged,
+            "failed": self._failed,
             "releasing": self._releasing,
             "weight": round(self._weight, 3),
             "published": self._published,
@@ -157,6 +175,11 @@ class ArmSdkDriver:
         caller cannot engage using values read at a different instant than the
         ones that were checked.
         """
+        if self._failed is not None:
+            raise ArmSdkUnavailable(
+                f"the rt/arm_sdk publish loop failed ({self._failed}) and has not been "
+                "reset. Let go of the arms and ask again to retry."
+            )
         if not _env_flag("TELEOP_ARM_ENABLED"):
             raise ArmSdkUnavailable(
                 "arm teleop is disabled: set TELEOP_ARM_ENABLED=1 to allow rt/arm_sdk. "
@@ -389,7 +412,7 @@ class ArmSdkDriver:
                 log.exception("arm_sdk.zero_weight_on_cancel_failed")
             log.info("arm_sdk.cancelled", published=self._published)
             raise
-        except Exception:
+        except Exception as exc:
             # A publish that keeps failing must not leave the weight up with
             # nobody driving. Collapse the blend, then let the task die.
             log.exception("arm_sdk.loop_failed")
@@ -399,7 +422,14 @@ class ArmSdkDriver:
             except Exception:
                 pass
             self._engaged = False
-            raise
+            self._releasing = False
+            self._failed = repr(exc)
+            # Deliberately NOT re-raised. Nothing awaits this task on the
+            # failure path, so raising only produces a "Task exception was
+            # never retrieved" warning at garbage-collection time — which is
+            # both easy to miss and detached from the moment it happened. The
+            # log line above and the `_failed` latch carry it instead.
+            return
 
 
 # Skills that drive the arms through the arm action service, which is itself

@@ -45,7 +45,9 @@
     type HandSample,
   } from "$lib/webxr/xr-teleop";
   import {
+    buildFrame,
     connectTeleop,
+    type TeleopFramePayload,
     type TeleopHandle,
     type TeleopState,
     type TeleopStatus,
@@ -271,10 +273,7 @@
     // re-arms the dead-man, and starts a full new motion window.
     deadManTripped = false;
     motionStartedAt = null;
-    if (streaming) {
-      pushTeleopFrame();
-      return;
-    }
+    if (streaming) return;
     ensureLoopRunning();
     tick(); // immediate feedback, don't wait for the next interval tick
   }
@@ -282,10 +281,7 @@
   function stopWalking() {
     if (!walking) return;
     walking = null;
-    if (streaming) {
-      pushTeleopFrame();
-      return;
-    }
+    if (streaming) return;
     if (!loopShouldRun()) {
       stopLoop();
       void sendVelocity(0, 0, 0.5);
@@ -306,7 +302,7 @@
         handLeft = s.left;
         handRight = s.right;
         lastYawSampleAt = Date.now();
-        pushTeleopFrame();
+        noteHandsVisible();
       },
       onEnd: () => {
         vrActive = false;
@@ -314,8 +310,11 @@
         // Leaving VR must not leave the arms up: the stream's own frames stop
         // carrying `arms: true`, which is the bridge's cue to ramp the
         // arm_sdk weight back down.
+        // The next pulled frame reports `fresh: false` on its own, so there is
+        // nothing to push here — that is the point of pulling.
         armsRequested = false;
-        pushTeleopFrame();
+        handLeft = null;
+        handRight = null;
         if (!loopShouldRun()) {
           stopLoop();
           void sendVelocity(0, 0, 0.5);
@@ -349,43 +348,34 @@
 
   // --- Teleop stream ---------------------------------------------------
 
-  function handPayload(hand: HandSample | null) {
-    if (!hand) return { tracked: false };
-    return {
-      tracked: true,
-      pos: hand.position,
-      quat: hand.orientation,
-      grip: hand.grip,
-    };
+  /**
+   * Build the frame the sender is about to transmit. Pulled ~30 times a
+   * second by `$lib/teleop/stream.ts`, never cached — see `buildFrame`, which
+   * holds the freshness policy and its tests.
+   */
+  function buildTeleopFrame(): TeleopFramePayload {
+    return buildFrame({
+      now: Date.now(),
+      vrActive,
+      lastSampleAt: lastYawSampleAt,
+      staleAfterMs: VR_STALE_MS,
+      yawErrorRadians,
+      yawDeadzoneRadians: YAW_DEADZONE_RAD,
+      headPosition,
+      left: handLeft,
+      right: handRight,
+      walking,
+      armsRequested,
+    });
   }
 
-  /**
-   * Hand the current sample to the stream. Called from the XR frame callback,
-   * so it must stay cheap — it only swaps the payload the sender will use on
-   * its next 30Hz tick, it does not send.
-   *
-   * `enabled` is the dead-man, and it is deliberately the same gesture as the
-   * non-streaming path: a walk button held, or the head turned past the
-   * deadzone. Mirroring the arms alone does not count as holding a dead-man,
-   * because the operator's hands are busy being tracked and cannot also be
-   * pressing something.
-   */
-  function pushTeleopFrame() {
+  /** Mirror hand visibility into the UI, cheaply. Called from the XR loop. */
+  function noteHandsVisible() {
     // Guarded assignment: this runs at XR frame rate, and writing a $state
     // field unconditionally would queue a Svelte re-render 72-120 times a
     // second for a boolean that changes twice a session.
     const seen = handLeft !== null || handRight !== null;
     if (seen !== handsVisible) handsVisible = seen;
-
-    if (!teleop) return;
-    const turning = Math.abs(yawErrorRadians) > YAW_DEADZONE_RAD;
-    teleop.update({
-      enabled: walking !== null || turning || armsRequested,
-      walk: walking === "forward" ? 1 : walking === "back" ? -1 : 0,
-      arms: armsRequested && vrActive,
-      head: { yaw: yawErrorRadians, pos: headPosition },
-      hands: { left: handPayload(handLeft), right: handPayload(handRight) },
-    });
   }
 
   function connectStream() {
@@ -395,6 +385,7 @@
     const port = env.PUBLIC_TELEOP_PORT || "8767";
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     teleop = connectTeleop(`${protocol}://${host}:${port}`, {
+      getFrame: buildTeleopFrame,
       onState: (state, detail) => {
         teleopState = state;
         teleopDetail = detail ?? "";
@@ -414,7 +405,6 @@
 
   function disconnectStream() {
     armsRequested = false;
-    pushTeleopFrame();
     teleop?.close();
     teleop = null;
     teleopState = "closed";
@@ -423,7 +413,6 @@
 
   function toggleArms() {
     armsRequested = !armsRequested;
-    pushTeleopFrame();
   }
 
   // --- Camera mirror ---------------------------------------------------
