@@ -91,9 +91,30 @@ TELEOP_PORT = int(os.environ.get("TELEOP_PORT", "8767"))
 # --- Locomotion policy -------------------------------------------------------
 # Deliberately the same numbers the /vr-control page shows the operator, so the
 # on-screen deadzone arc and what the robot does cannot drift apart.
-YAW_DEADZONE_RAD = math.radians(8)
-YAW_FULL_SCALE_RAD = math.radians(45)
-YAW_MAX_RAD_S = 0.25
+# Re-tuned 2026-08-20 against measurements from the first real session, where
+# the operator's verdict was that turning worked but felt sluggish. It did, and
+# the numbers say why: the robot under-travels its commanded yaw by about 2.2x
+# (25 deg of head yaw for 2 s produced 5.3-5.8 deg of rotation), matching the
+# ~2.35x under-travel `walk_to` measures in translation. The gains are fitted
+# to a sim policy and have never been re-fitted to this body.
+#
+# Rather than invent a correction factor, the three numbers that shape the feel
+# were each moved to the edge of what is already vetted:
+#
+#   deadzone   8 -> 6 deg   still well clear of neck wobble at rest
+#   full scale 45 -> 30 deg full rate at a natural glance, not a shoulder-check
+#   max rate   0.25 -> 0.30 rad/s, the hardware-vetted cap in walk_velocity
+#
+# At a 20 deg head turn that is 0.081 -> 0.175 rad/s, ~2.2x more command —
+# which is exactly the measured shortfall, arrived at from the measurement
+# rather than fitted to it.
+#
+# 0.30 is a ceiling, not a target: `_locomotion.send_velocity` re-clamps to
+# walk_velocity's MAX_YAW_VEL on real hardware, so this cannot exceed what that
+# path already allows however it is edited.
+YAW_DEADZONE_RAD = math.radians(6)
+YAW_FULL_SCALE_RAD = math.radians(30)
+YAW_MAX_RAD_S = 0.30
 WALK_MAX_VEL = 0.2
 STAND_HEIGHT = 0.78
 
