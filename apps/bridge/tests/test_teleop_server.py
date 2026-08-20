@@ -225,9 +225,56 @@ def test_calibration_needs_an_extended_arm(session):
     assert session.calibrated is False
 
     extended = {"tracked": True, "pos": [0.18, 1.38 - 0.70, 0.0], "quat": [0, 0, 0, 1]}
-    session.ingest(parse_frame(frame(seq=2, hands={"right": extended})))
+    for i in range(srv.CALIBRATION_SAMPLES):
+        session.ingest(parse_frame(frame(seq=2 + i, hands={"right": extended})))
     assert session.calibrated is True
     assert session.arm_length_m == pytest.approx(0.70, abs=0.02)
+
+
+def test_one_wild_frame_cannot_set_the_operators_reach(session):
+    """The failure this guard exists for.
+
+    Quest hand tracking emits wild positions for a frame or two as a hand
+    enters or leaves the tracking volume. The protocol rejects those beyond
+    1.5 m — which means anything up to 1.5 m gets through and used to be
+    measured as if it were an arm, latched, and held for the whole session.
+
+    `_elbow_angle` is `2 acos(reach / arm_length)`, so an inflated denominator
+    makes every real hand position read as barely extended and the elbow stays
+    almost straight. No error, no log line, just an arm that will not bend.
+    """
+    # Inside the protocol's 1.5 m sanity limit — which is the point. Anything
+    # it does NOT reject used to be trusted outright.
+    artefact = {"tracked": True, "pos": [0.18, 0.35, 0.0], "quat": [0, 0, 0, 1]}
+    session.ingest(parse_frame(frame(hands={"right": artefact})))
+    assert session.calibrated is False
+
+    real = {"tracked": True, "pos": [0.18, 0.75, 0.0], "quat": [0, 0, 0, 1]}
+    for i in range(srv.CALIBRATION_SAMPLES + 2):
+        session.ingest(parse_frame(frame(seq=10 + i, hands={"right": real})))
+
+    assert session.calibrated is True
+    assert session.arm_length_m == pytest.approx(0.63, abs=0.02), (
+        "one artefact among real samples must not survive into the reach"
+    )
+
+
+def test_samples_that_never_agree_never_calibrate(session):
+    """A hand jittering wildly is not a measurement, however long it goes on.
+
+    Falling back to the default reach is right here: it is somebody's arm
+    length, which a number derived from noise is not.
+    """
+    for i in range(40):
+        # Alternating between two reaches that BOTH clear the minimum
+        # (~0.53 and ~0.78 from the estimated shoulder, against a 0.53
+        # threshold) but disagree by far more than an arm changes length.
+        y = 0.85 if i % 2 else 0.60
+        hand = {"tracked": True, "pos": [0.18, y, 0.0], "quat": [0, 0, 0, 1]}
+        session.ingest(parse_frame(frame(seq=100 + i, hands={"right": hand})))
+
+    assert session.calibrated is False
+    assert session.arm_length_m == pytest.approx(srv.DEFAULT_ARM_LENGTH_M)
 
 
 # -- shutdown ---------------------------------------------------------------
