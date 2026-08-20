@@ -16,6 +16,23 @@ Every claim is tagged:
   claim is a hypothesis, never a fact — official or not.
 - **[?]** — believed, not verified. Do not build safety-critical logic on these.
 
+
+> **Yaw sign, settled 2026-08-20.** A commanded **positive** yaw rotates the G1
+> **counterclockwise** (left, seen from above) — the same direction WebXR calls
+> positive head yaw. Measured three times off `rt/odommodestate` during the
+> first VR teleop session: +5.26°, +5.77°, and again in a full smoke-test run,
+> each from a +25° head yaw held for 2 s through `send_velocity`.
+>
+> This closes the question `turn` was blocked on (*"may rotate the wrong way"*,
+> 2026-08-15). Note what it does **not** close: `turn` itself still has
+> `works_real=False`, because nobody has watched its closed loop converge. The
+> shared sign is verified; the skill is not.
+>
+> Also measured, and worth re-fitting before anyone trusts a distance: yaw
+> **under-travels command by ~2.2x** (25° commanded → ~5.5° achieved), matching
+> the ~2.35x `walk_to` measures in translation. The gains are fitted to the sim
+> policy and have never been re-fitted to this body.
+
 ## Contents
 
 | §   | Section                                                                                                         |
