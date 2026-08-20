@@ -265,3 +265,44 @@ async def test_a_genuine_second_operator_is_still_refused(sent, monkeypatch):
 
             assert "1013" in str(excinfo.value) or "already active" in str(excinfo.value)
             assert waited < 2.0, "refusal should be prompt, not a long block"
+
+
+async def test_teardown_does_not_wait_out_an_unanswered_stop(sent, monkeypatch):
+    """A stop the robot never acks must not hold the session slot.
+
+    `send_velocity_async` is a DDS RPC with 10 s of headroom. On the robot with
+    no motion controller loaded it simply never answers — so teardown took the
+    full timeout, the single-session slot was held throughout, and a client
+    reconnecting was refused by its own previous session, past even the grace
+    period.
+
+    Teardown is best-effort: underneath it the firmware's own `duration`
+    deadman stops the robot within a second of the last setpoint regardless.
+    Waiting for the ack makes nothing safer.
+    """
+    started = asyncio.Event()
+
+    async def never_acks(vx, vy, vyaw, height):
+        started.set()
+        await asyncio.sleep(30)  # the ack that never comes
+
+    monkeypatch.setattr("bridge.skills._locomotion.send_velocity_async", never_acks)
+
+    server, url = await _serve()
+    async with server:
+        async with connect(url) as ws:
+            await ws.send(_frame(1, walk=1.0))
+            await asyncio.wait_for(started.wait(), timeout=3.0)
+
+        # Reconnect immediately. Without the budget this blocks for the full
+        # RPC timeout and then refuses.
+        began = asyncio.get_running_loop().time()
+        async with connect(url, open_timeout=8) as second:
+            await second.send(_frame(1))
+            raw = await asyncio.wait_for(second.recv(), timeout=8.0)
+            assert json.loads(raw)["type"] == "status"
+        waited = asyncio.get_running_loop().time() - began
+
+    assert waited < srv.RECONNECT_GRACE_S + 2.0, (
+        f"reconnect took {waited:.1f}s — teardown is still waiting on the ack"
+    )
