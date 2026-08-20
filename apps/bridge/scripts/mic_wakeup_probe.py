@@ -46,7 +46,29 @@ BYTES_PER_SEC = 16000 * 2
 # NOT this bit — holding the trigger part-way moves the axis without setting it.
 BTN_L1 = 0x0002
 BTN_L2 = 0x0020
-HEAD = (0xFE, 0xEF)
+# THE DOCUMENTED HEADER IS WRONG ON THIS FIRMWARE. ROBOT-API.md §9.5 and
+# Unitree's own remote_control_data page both give head = {0xFE, 0xEF}; the G1
+# in front of us sends {0x55, 0x51}. Measured 2026-08-21 by dumping the raw blob
+# from rt/lf/lowstate: idle reads 5551 0000..., and holding L2+R2 reads
+# 5551 3000... — 0x0030 = 0x0010|0x0020 = exactly R2|L2 from the documented bit
+# table. So the bit masks are right and only the magic bytes are not.
+#
+# Both are accepted: the vendor value may well be correct on other units, and
+# rejecting frames on a magic number is how the first run of this probe reported
+# "no controller present" while somebody was holding buttons down.
+HEADS = ((0x55, 0x51), (0xFE, 0xEF))
+
+BUTTON_NAMES = {
+    0x0001: "R1", 0x0002: "L1", 0x0004: "start", 0x0008: "select",
+    0x0010: "R2", 0x0020: "L2", 0x0040: "F1", 0x0080: "F2",
+    0x0100: "A", 0x0200: "B", 0x0400: "X", 0x0800: "Y",
+    0x1000: "up", 0x2000: "right", 0x4000: "down", 0x8000: "left",
+}
+
+
+def button_names(mask: int) -> str:
+    names = [n for bit, n in BUTTON_NAMES.items() if mask & bit]
+    return "+".join(names) if names else "-"
 
 SECONDS = int(sys.argv[1]) if len(sys.argv) > 1 else 60
 
@@ -58,7 +80,7 @@ def decode_buttons(blob: bytes) -> int | None:
     """head[2] then the 16-bit key field, little-endian. None if not a remote frame."""
     if len(blob) < 4:
         return None
-    if (blob[0], blob[1]) != HEAD:
+    if (blob[0], blob[1]) not in HEADS:
         return None
     return struct.unpack_from("<H", blob, 2)[0]
 
@@ -157,8 +179,8 @@ def main() -> None:
         total_pkts += sec_pkts
         total_bytes += sec_bytes
         flag = "  <== L1+L2 HELD" if held else ""
-        print(f"  t+{int(time.time()-start):3d}s  btn=0x{mask:04X}  "
-              f"{sec_pkts:5d} pkts {sec_bytes:8d} B{flag}")
+        print(f"  t+{int(time.time()-start):3d}s  btn=0x{mask:04X} "
+              f"[{button_names(mask)}]  {sec_pkts:5d} pkts {sec_bytes:8d} B{flag}")
 
     with _lock:
         frames, head_ok = _buttons["frames"], _buttons["head_ok"]
