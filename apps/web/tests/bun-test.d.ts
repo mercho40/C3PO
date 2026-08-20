@@ -21,8 +21,14 @@ declare module "bun:test" {
   interface Matchers {
     toBe(expected: unknown): void;
     toEqual(expected: unknown): void;
+    toContainEqual(expected: unknown): void;
     toBeCloseTo(expected: number, precision?: number): void;
+    toBeGreaterThan(expected: number): void;
+    toBeGreaterThanOrEqual(expected: number): void;
+    toBeLessThan(expected: number): void;
+    toBeLessThanOrEqual(expected: number): void;
     toBeUndefined(): void;
+    toThrow(expected?: unknown): void;
   }
 
   export function expect(actual: unknown): Matchers;
