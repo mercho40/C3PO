@@ -21,10 +21,24 @@
  * reimplementing multipart framing and JPEG decode to arrive at the same
  * pixels, slower.
  *
- * The cost is that an <img> gives no "new frame" event — so `draw()` uploads
- * on every XR frame regardless. At 72-120 Hz against a 5 Hz stream that is
- * mostly redundant work, which is why the upload is skipped whenever the image
- * has not changed size and the source reports no new decode (see `#dirty`).
+ * The cost is that an <img> gives no "new frame" event — so `draw()` uploads on
+ * every XR frame regardless. At 72-120 Hz against a 5 Hz stream that is mostly
+ * redundant work, and cheap enough not to matter.
+ *
+ * THIS CLASS DOES NOT OWN LIVENESS, DELIBERATELY
+ * ----------------------------------------------
+ * The vision server CLOSES the stream after ~1 s without a frame — that is its
+ * only in-band way to say "no longer live". An <img> answers by freezing on its
+ * last frame forever, with no event. So a layer that merely attaches once shows
+ * the operator a stale picture indefinitely and calls it a view, which in a
+ * headset is worse than showing nothing.
+ *
+ * Rather than reimplement the recovery, this takes its URL and its liveness
+ * from `$lib/robot/mjpeg-camera.ts`, which already polls `/status`, tracks
+ * live/stale, and reconnects with a cache-busted URL (the browser will happily
+ * reuse a dead MJPEG response, so a retry that does not change the src is a
+ * retry that does nothing). One implementation of that logic, used by both the
+ * on-page panel and the headset.
  *
  * TRANSPARENCY MATTERS UNDER PASSTHROUGH
  * -------------------------------------
@@ -80,6 +94,8 @@ export class CameraLayer {
   #img: HTMLImageElement | null = null;
   #ready = false;
   #uploaded = 0;
+  #url = "";
+  #live = true;
 
   constructor(gl: WebGLRenderingContext) {
     this.#gl = gl;
@@ -95,13 +111,33 @@ export class CameraLayer {
   }
 
   /**
-   * Point at an MJPEG endpoint, e.g. `http://localhost:8081/stream.mjpg`.
+   * Point at an MJPEG endpoint, e.g. `http://localhost:8081/stream.mjpg?c=3`.
+   *
+   * Safe to call every time the source reconnects: an unchanged URL is
+   * ignored, and a changed one swaps the element. Cutting the old `src` first
+   * matters — that is what closes the previous HTTP request, and without it a
+   * session that reconnects a few times ends up holding several open MJPEG
+   * streams at once, each still costing bandwidth through the SSH tunnel.
    *
    * `crossOrigin = "anonymous"` is required: WebGL refuses to sample a texture
    * from an image the page cannot read back, and without it every upload
-   * throws a security error rather than showing a picture.
+   * throws a security error rather than showing a picture. The vision server
+   * sets `Access-Control-Allow-Origin: *` on every response including the
+   * stream, so this works — verified against its source, not assumed.
    */
-  attach(streamUrl: string): void {
+  setStreamUrl(streamUrl: string): void {
+    if (streamUrl === this.#url) return;
+    this.#url = streamUrl;
+    if (this.#img) {
+      // Detach BEFORE cutting src. The old element's handlers close over
+      // `this`, so an error event dispatched after the swap would set
+      // `#ready = false` on a layer now owned by the NEW image — and if that
+      // one had already decoded, the picture goes away and the "no signal"
+      // banner fires with a perfectly good stream running.
+      this.#img.onload = null;
+      this.#img.onerror = null;
+      this.#img.src = "";
+    }
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => (this.#ready = true);
@@ -110,13 +146,31 @@ export class CameraLayer {
     this.#img = img;
   }
 
+  /**
+   * Whether the source still considers the feed live.
+   *
+   * A stale feed is still DRAWN — an operator mid-motion should not have the
+   * world vanish — but dimmed, so "this picture is old" is visible from inside
+   * the headset without reading any text.
+   */
+  setLive(live: boolean): void {
+    this.#live = live;
+  }
+
   #init(): void {
     const gl = this.#gl;
     const program = gl.createProgram();
     if (!program) throw new Error("no program");
-    gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, VERT));
-    gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, FRAG));
+    // Deleted after linking: the program keeps its own reference, so these
+    // would otherwise stay resident for the life of the context — and each
+    // VR entry creates a fresh context.
+    const vs = compile(gl, gl.VERTEX_SHADER, VERT);
+    const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG);
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
     gl.linkProgram(program);
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
       throw new Error(`link failed: ${gl.getProgramInfoLog(program)}`);
     }
@@ -166,7 +220,10 @@ export class CameraLayer {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.#buffer);
     gl.enableVertexAttribArray(this.#posLoc);
     gl.vertexAttribPointer(this.#posLoc, 2, gl.FLOAT, false, 0, 0);
-    gl.uniform1f(this.#alphaLoc, opaque ? 1.0 : 0.85);
+    // Dim a stale feed rather than hide it: losing the picture entirely
+    // mid-motion is worse than seeing an obviously-old one.
+    const alpha = (opaque ? 1.0 : 0.85) * (this.#live ? 1.0 : 0.45);
+    gl.uniform1f(this.#alphaLoc, alpha);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -178,13 +235,21 @@ export class CameraLayer {
     if (this.#img) {
       // Cutting the src is what actually stops an MJPEG stream: the request
       // stays open for as long as the element points at it, and a headset
-      // session that ended should not still be pulling frames.
+      // session that ended should not still be pulling frames. Detach first,
+      // for the same reason as in setStreamUrl.
+      this.#img.onload = null;
+      this.#img.onerror = null;
       this.#img.src = "";
       this.#img = null;
     }
+    this.#url = "";
     if (this.#texture) gl.deleteTexture(this.#texture);
     if (this.#buffer) gl.deleteBuffer(this.#buffer);
     if (this.#program) gl.deleteProgram(this.#program);
+    // Null the handles too — leaving them pointing at deleted objects means a
+    // later draw() would bind garbage instead of re-initialising.
+    this.#texture = null;
+    this.#buffer = null;
     this.#program = null;
     this.#ready = false;
   }

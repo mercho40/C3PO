@@ -26,8 +26,17 @@ export const load: PageServerLoad = async ({ fetch, request }) => {
     worksReal[skill.name] = skill.works.real;
   }
 
+  // If the catalogue could not be read, `worksReal` is empty — and an empty
+  // map makes `worksReal[name] === false` false for EVERY skill, so all the
+  // "Sin probar en real" badges quietly disappear. That is the exact inversion
+  // of this file's purpose: the page would look MORE confident about the
+  // robot's capabilities at the moment it knows least about them.
+  //
+  // Report the failure instead, so the page can say the badges are missing
+  // rather than imply everything is verified.
   return {
     env: stateRes.error ? null : (stateRes.data?.env ?? null),
     worksReal,
+    catalogueFailed: Boolean(skillsRes.error),
   };
 };

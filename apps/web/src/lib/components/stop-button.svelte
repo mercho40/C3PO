@@ -24,7 +24,7 @@
   );
 
   /** What the last press did, as far as we can actually tell. */
-  type Outcome = "requested" | "rejected" | null;
+  type Outcome = "requested" | "rejected" | "unreachable" | null;
   let busy = $state(false);
   let outcome = $state<Outcome>(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -40,6 +40,7 @@
    * would only discover was wrong by watching it keep walking.
    */
   const label = $derived.by(() => {
+    if (outcome === "unreachable") return "Sin puente";
     if (outcome === "rejected") return "Reintentar";
     if (busy || (outcome === "requested" && moving)) return "Parando…";
     // Offline is NOT confirmation. `readPosture` collapses an unreachable
@@ -53,6 +54,7 @@
   });
 
   const tone = $derived.by(() => {
+    if (outcome === "unreachable") return "failed";
     if (outcome === "rejected") return "failed";
     if (outcome === "requested" && !online) return "unconfirmed";
     if (outcome === "requested" && !moving && !busy) return "stopped";
@@ -76,7 +78,16 @@
         await goto("/login");
         return;
       }
-      outcome = error ? "rejected" : "requested";
+      // A 404 here is NOT "the robot refused". It means the catalogue could not
+      // be resolved — the bridge is unreachable AND nothing is cached — so
+      // `getSkill("stop_everything")` returned undefined and /invoke answered
+      // before ever reaching the safety exemption. Collapsing that into
+      // "rejected" tells the operator to retry a button that cannot work.
+      outcome = !error
+        ? "requested"
+        : (error.status as number) === 404
+          ? "unreachable"
+          : "rejected";
     } catch {
       outcome = "rejected";
     } finally {
@@ -112,7 +123,12 @@
   <span class="label">{label}</span>
 </button>
 
-{#if outcome === "rejected"}
+{#if outcome === "unreachable"}
+  <p role="alert" class="sr-only">
+    No se pudo alcanzar el puente, así que la orden de parada no salió. El robot
+    puede seguir en movimiento. Usá la parada física.
+  </p>
+{:else if outcome === "rejected"}
   <!-- The one failure on this console that an operator must not scroll past:
        the robot did not get the order and may still be moving. -->
   <p role="alert" class="sr-only">

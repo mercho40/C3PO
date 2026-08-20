@@ -62,6 +62,31 @@
 
   let { data } = $props();
 
+  /**
+   * Release every held control, from anywhere.
+   *
+   * The walk buttons are released only by their own pointer events. That is
+   * fine until something removes the button without delivering one: the system
+   * "leave immersive" gesture, the headset coming off, the dom-overlay being
+   * torn down. `walking` then stays latched — and `buildFrame` derives `walk`
+   * and half of `enabled` from it with no freshness gate (deliberately: the
+   * buttons must keep working with no headset at all), so the page transmits
+   * "walk forward" 30 times a second, indefinitely, with nothing to stop it.
+   *
+   * The page's own MAX_HOLD_S dead-man cannot catch it either, because that
+   * loop is suspended while streaming. So: a window-level release, wired to
+   * every event that means "the operator is no longer holding this".
+   */
+  function releaseAllControls() {
+    if (walking !== null) {
+      walking = null;
+      if (!streaming && !loopShouldRun()) {
+        stopLoop();
+        void sendVelocity(0, 0, 0.5);
+      }
+    }
+  }
+
   const live = getRobotLive();
   const posture = $derived(readPosture(live.state?.posture, live.online));
   const isAdmin = $derived(page.data.user?.role === "admin");
@@ -189,6 +214,26 @@
   let handsVisible = $state(false);
 
   onMount(() => {
+    // `pointerup` alone is not enough: a pointer can be cancelled, the window
+    // can lose focus, or the page can be hidden by the system UI, none of
+    // which fire it on the button.
+    const release = () => releaseAllControls();
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") releaseAllControls();
+    };
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    window.addEventListener("blur", release);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      window.removeEventListener("blur", release);
+      document.removeEventListener("visibilitychange", onHidden);
+    };
+  });
+
+  onMount(() => {
     startLinkWatch();
     return () => {
       if (linkTimer) clearInterval(linkTimer);
@@ -247,6 +292,36 @@
     controlTimer = null;
   }
 
+  // --- UI readouts -----------------------------------------------------
+  //
+  // These used to be written only by `tick()`, which is the LOCOMOTION loop —
+  // and that loop is deliberately suspended while the teleop stream is
+  // connected, because the bridge is the commander then. So during the normal
+  // operating mode the "N deg de giro" readout froze at a stale number and
+  // "seguimiento perdido" could never appear: the operator's only in-headset
+  // indication that the pose driving the robot had gone stale was dead
+  // precisely when it mattered.
+  //
+  // Readouts are not dispatch. They run whenever there is a session to read.
+  let uiTimer: ReturnType<typeof setInterval> | null = null;
+
+  function refreshReadouts() {
+    yawDisplayDeg = Math.round((yawErrorRadians * 180) / Math.PI);
+    trackingStale = vrActive && Date.now() - lastYawSampleAt > VR_STALE_MS;
+    if (vr) xrCameraLive = camLive && vr.cameraHasFrame;
+  }
+
+  function ensureReadouts() {
+    if (uiTimer) return;
+    uiTimer = setInterval(refreshReadouts, 200);
+  }
+
+  function stopReadouts() {
+    if (uiTimer) clearInterval(uiTimer);
+    uiTimer = null;
+    trackingStale = false;
+  }
+
   function ensureLoopRunning() {
     if (controlTimer || !loopShouldRun()) return;
     controlTimer = setInterval(tick, REPEAT_MS);
@@ -266,7 +341,7 @@
    */
   function tick() {
     yawDisplayDeg = Math.round((yawErrorRadians * 180) / Math.PI);
-    if (vr) xrCameraLive = vr.cameraLive;
+    if (vr) xrCameraLive = camLive && vr.cameraHasFrame;
     trackingStale = vrActive && Date.now() - lastYawSampleAt > VR_STALE_MS;
 
     if (!loopShouldRun()) {
@@ -346,10 +421,11 @@
   async function enterVr() {
     vrError = null;
     if (!overlayRoot) return;
-    // Hand the XR session the same MJPEG endpoint the on-page panel uses, so
-    // entering VR shows the robot's view rather than a void. Empty is fine —
-    // the session runs without a picture, and head-yaw steering never needed
-    // one.
+    // The headset shares the page's ONE camera connection rather than opening
+    // its own: that connection already polls /status, tracks live/stale and
+    // reconnects with a fresh URL, which the vision server requires because it
+    // CLOSES the stream whenever it goes stale. Two independent connections
+    // would also mean two MJPEG streams over the same SSH tunnel.
     const camBase = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
     const session = new XrTeleopSession(
       {
@@ -380,17 +456,19 @@
           }
         },
       },
-      {
-        cameraStreamUrl: camBase
-          ? `${camBase.replace(/\/+$/, "")}/stream.mjpg`
-          : undefined,
-      },
+      { camera: camBase !== "" },
     );
     try {
       await session.start(overlayRoot);
       vr = session;
+      // The camera connection may already be running — hand over its current
+      // URL and liveness so entering VR after the feed is up shows a picture
+      // immediately rather than waiting for the next reconnect.
+      if (camFrameUrl) session.setCameraStream(camFrameUrl);
+      session.setCameraLive(camLive);
       xrMode = session.mode;
       vrActive = true;
+      ensureReadouts();
       deadManTripped = false;
       motionStartedAt = null;
       ensureLoopRunning();
@@ -475,6 +553,14 @@
     teleop = null;
     teleopState = "closed";
     teleopStatus = null;
+    // `close()` sets its own `closed` flag BEFORE the socket's close event
+    // fires, so `onState("closed")` never reaches us — which means the branch
+    // that normally restarts the local loop does not run. Without this,
+    // pressing "Desconectar" in the headset silently ends head-yaw steering:
+    // the stream is gone and the loop that would take over was stopped when
+    // the stream opened. It only came back if the operator happened to press
+    // a walk button.
+    ensureLoopRunning();
   }
 
   function toggleArms() {
@@ -517,8 +603,18 @@
       },
       onStatus: (status) => {
         camLive = status?.live ?? false;
+        // Stale is dimmed in the headset rather than hidden: losing the view
+        // mid-motion is worse than an obviously old one.
+        vr?.setCameraLive(camLive);
       },
-      onStreamUrl: (url) => (camFrameUrl = url),
+      onStreamUrl: (url) => {
+        camFrameUrl = url;
+        // Same URL to the headset. It changes on every reconnect (the source
+        // cache-busts it), and the XR layer must follow — reusing a dead MJPEG
+        // URL is a retry that does nothing, so a stall would otherwise freeze
+        // the headset view on its last frame for the rest of the session.
+        vr?.setCameraStream(url);
+      },
     });
   }
 
@@ -602,7 +698,16 @@
   // robot is fine, this account simply is not admin — and telling somebody in
   // a headset that a gesture "Falló" sends them to debug the robot instead of
   // the account.
-  type PresetOutcome = "ok" | "error" | "denied" | null;
+  // Gestures need the robot in a locomotion FSM — every one of them declares
+  // `fsm_state_in_{walk,walk_waist,run}`. Nothing in apps/back enforces it and
+  // the bridge deliberately does not pre-check, so the FIRMWARE refuses with
+  // error 7302, which arrives as a 502 and renders as a bare "Falló". That is
+  // the "go debug the robot" signal this page exists to avoid: the robot is
+  // fine, it is simply standing still.
+  const GESTURE_FSM = ["walk", "walk_waist", "run"];
+  const canGesture = $derived(GESTURE_FSM.includes(live.state?.posture ?? ""));
+
+  type PresetOutcome = "ok" | "error" | "denied" | "needs_walk" | null;
   let presetBusy = $state<string | null>(null);
   let presetOutcome = $state<Record<string, PresetOutcome>>({});
 
@@ -617,10 +722,16 @@
         if (browser) await goto("/login");
         return;
       }
-      presetOutcome = {
-        ...presetOutcome,
-        [name]: !error ? "ok" : status === 403 ? "denied" : "error",
-      };
+      // A 502 while the robot is not in a locomotion FSM is the precondition,
+      // not a fault. Say which, so nobody goes looking at the robot.
+      const outcome: PresetOutcome = !error
+        ? "ok"
+        : status === 403
+          ? "denied"
+          : status === 502 && !canGesture
+            ? "needs_walk"
+            : "error";
+      presetOutcome = { ...presetOutcome, [name]: outcome };
     } catch {
       presetOutcome = { ...presetOutcome, [name]: "error" };
     } finally {
@@ -1009,6 +1120,27 @@
 
   <section class="flex flex-col gap-4 panel p-5">
     <span class="eyebrow">Gestos preprogramados</span>
+    {#if data.catalogueFailed}
+      <p
+        class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-ink"
+      >
+        <strong>No se pudo leer el catálogo de skills.</strong> Los badges de
+        "Sin probar en real" no se muestran — <em>no</em> quiere decir que todo esté
+        verificado, quiere decir que no sabemos. Revisá que el puente esté corriendo
+        y el túnel abierto.
+      </p>
+    {/if}
+
+    {#if !canGesture}
+      <p
+        class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-ink"
+      >
+        <strong>Los gestos necesitan al robot en marcha.</strong> El firmware
+        los rechaza (error 7302) desde cualquier otro estado — ahora está en
+        <strong>{posture.label}</strong>. Hacé <em>Puesta en marcha</em> arriba (pasos
+        1 → 2 → 3) y después probá de nuevo. No es una falla del robot.
+      </p>
+    {/if}
     <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
       {#each presets as preset (preset.name)}
         {@const Icon = preset.icon}
@@ -1026,6 +1158,8 @@
           {/if}
           {#if presetOutcome[preset.name] === "denied"}
             <span class="text-xs text-warn">Requiere admin</span>
+          {:else if presetOutcome[preset.name] === "needs_walk"}
+            <span class="text-xs text-warn">Necesita marcha</span>
           {:else if presetOutcome[preset.name] === "error"}
             <span class="text-xs text-danger-soft">Falló</span>
           {/if}

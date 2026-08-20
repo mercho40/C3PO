@@ -84,6 +84,10 @@ export function connectRobotCamera(
   // response for the same URL, so a retry that does not change the src is a
   // retry that does nothing.
   let attempt = 0;
+  // Whether the server has likely closed the stream. Set whenever it reports
+  // not-live, because that is exactly the condition under which it ends the
+  // response; cleared by a successful reopen.
+  let streamDead = false;
 
   function setState(state: RobotCamState, detail?: string) {
     if (closed || state === lastState) return;
@@ -102,11 +106,26 @@ export function connectRobotCamera(
       if (closed) return;
       callbacks.onStatus(status);
       if (status.live) {
+        // Reopen if the stream is believed dead. The server ENDS the response
+        // after `stale_after_s` without a frame — that is its only in-band way
+        // to say "no longer live" — so recovery is not automatic: the <img>
+        // holds its last frame forever against a connection the server already
+        // closed. `/status` going live again is the signal, and the URL must
+        // change or the browser reuses the dead response.
+        //
+        // Without this, one momentary stall left the picture frozen for the
+        // rest of the session while this endpoint cheerfully reported "live".
+        if (streamDead) {
+          streamDead = false;
+          open();
+          return;
+        }
         setState("live");
       } else if (status.frames > 0) {
         // Frames arrived once and stopped: the detector is up but its ticks are
         // failing, which is a different fact from "nothing is running" and the
         // operator should be told which one they have.
+        streamDead = true;
         setState(
           "stale",
           status.frame_age_s === null
@@ -114,10 +133,14 @@ export function connectRobotCamera(
             : `sin cuadros hace ${status.frame_age_s.toFixed(1)} s`,
         );
       } else {
+        streamDead = true;
         setState("stale", "la cámara todavía no entregó ningún cuadro");
       }
     } catch (err) {
       if (closed) return;
+      // Unreachable means the stream is gone too — whatever comes back later
+      // needs a fresh connection, not the one that died with the tunnel.
+      streamDead = true;
       callbacks.onStatus(null);
       // Unreachable is the common case here and it has one likely cause worth
       // naming: the SSH tunnel is not up, or perception is not running.
@@ -130,6 +153,7 @@ export function connectRobotCamera(
 
   function open() {
     attempt += 1;
+    streamDead = false;
     setState("connecting");
     callbacks.onStreamUrl(`${endpoint(baseUrl, "stream.mjpg")}?c=${attempt}`);
     void poll();

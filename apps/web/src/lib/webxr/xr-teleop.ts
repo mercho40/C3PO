@@ -49,12 +49,13 @@ export type XrSample = {
 
 export type XrTeleopOptions = {
   /**
-   * MJPEG endpoint to show as the view, e.g.
-   * `http://localhost:8081/stream.mjpg`. Omitted or unreachable simply means
-   * no picture — the session still runs, which matters because head-yaw
-   * steering does not depend on seeing anything.
+   * Whether to draw a camera layer at all. The URL and its liveness arrive
+   * later through `setCameraStream` / `setCameraLive`, because both change
+   * during a session: the vision server closes the stream whenever it goes
+   * stale, and recovery means a NEW cache-busted URL. Passing a single URL up
+   * front would freeze the headset on the last frame at the first stall.
    */
-  cameraStreamUrl?: string;
+  camera?: boolean;
 };
 
 export type XrTeleopCallbacks = {
@@ -268,15 +269,44 @@ export class XrTeleopSession {
   #mode: XRSessionMode | null = null;
   #options: XrTeleopOptions;
   #camera: CameraLayer | null = null;
+  #pendingStreamUrl = "";
+  #pendingLive = true;
+  #cameraBroken = false;
+  #starting = false;
+  //: Set if stop() is called while start() is still in flight. The session
+  //: does not exist yet, so there is nothing to end — this makes the newborn
+  //: session end itself the moment it exists.
+  #abandonOnStart = false;
 
   constructor(callbacks: XrTeleopCallbacks, options: XrTeleopOptions = {}) {
     this.#callbacks = callbacks;
     this.#options = options;
   }
 
-  /** Whether the camera layer has decoded at least one frame. */
-  get cameraLive(): boolean {
+  /** Whether the camera layer has decoded at least one frame, ever. */
+  get cameraHasFrame(): boolean {
     return this.#camera?.hasFrame ?? false;
+  }
+
+  /** True if the camera layer failed and was dropped to protect head tracking. */
+  get cameraBroken(): boolean {
+    return this.#cameraBroken;
+  }
+
+  /**
+   * Point the headset view at an MJPEG URL. Call again on every reconnect —
+   * the source hands out a new cache-busted URL each time, and reusing the old
+   * one is a retry that does nothing.
+   */
+  setCameraStream(url: string): void {
+    this.#pendingStreamUrl = url;
+    this.#camera?.setStreamUrl(url);
+  }
+
+  /** Tell the view whether the feed is still live. Stale is dimmed, not hidden. */
+  setCameraLive(live: boolean): void {
+    this.#pendingLive = live;
+    this.#camera?.setLive(live);
   }
 
   get active(): boolean {
@@ -310,7 +340,27 @@ export class XrTeleopSession {
    * lets the rest of `/vr-control`'s buttons stay usable while worn.
    */
   async start(overlayRoot: HTMLElement): Promise<void> {
-    if (this.#session) return;
+    // `#session` is not assigned until several awaits later — after a support
+    // probe, `requestSession` (which blocks on user consent, for seconds), a
+    // GL compatibility call and a reference-space request. Guarding on it
+    // alone lets two taps of "Entrar en VR" both pass: if the second session
+    // also succeeds the page keeps only one handle, and the orphan's `end`
+    // event later clears `vrActive` for a session that is still live.
+    //
+    // Worse, `stop()` during that window is a no-op, because there is nothing
+    // to stop yet — so a component destroyed mid-start leaves the wearer in an
+    // immersive session that nothing on the page owns. That is exactly the
+    // "stranded in a blank view" case the teardown below defends against.
+    if (this.#session || this.#starting) return;
+    this.#starting = true;
+    try {
+      await this.#start(overlayRoot);
+    } finally {
+      this.#starting = false;
+    }
+  }
+
+  async #start(overlayRoot: HTMLElement): Promise<void> {
     if (typeof navigator === "undefined" || !navigator.xr) {
       throw new Error("WebXR no está disponible en este navegador.");
     }
@@ -377,9 +427,14 @@ export class XrTeleopSession {
       const layer = new XRWebGLLayer(session, gl);
       await session.updateRenderState({ baseLayer: layer });
 
-      if (this.#options.cameraStreamUrl) {
+      if (this.#options.camera) {
         this.#camera = new CameraLayer(gl);
-        this.#camera.attach(this.#options.cameraStreamUrl);
+        // The URL arrives via setCameraStream(), possibly before this point —
+        // apply whatever the page last told us so a reconnect that happened
+        // during startup is not lost.
+        if (this.#pendingStreamUrl)
+          this.#camera.setStreamUrl(this.#pendingStreamUrl);
+        this.#camera.setLive(this.#pendingLive);
       }
 
       let referenceSpace: XRReferenceSpace;
@@ -389,6 +444,17 @@ export class XrTeleopSession {
         referenceSpace = await session.requestReferenceSpace("local");
       }
 
+      if (this.#abandonOnStart) {
+        // stop() arrived while we were still setting up. End it now rather
+        // than hand back a session nobody is holding.
+        this.#abandonOnStart = false;
+        try {
+          await session.end();
+        } catch {
+          // already ending
+        }
+        return;
+      }
       this.#session = session;
       this.#referenceSpace = referenceSpace;
       this.#needsRecenter = true;
@@ -414,14 +480,51 @@ export class XrTeleopSession {
         gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        // The camera IS the view in VR; in passthrough it is a heads-up layer
-        // over the room, so it does not paint over what the operator can see.
-        this.#camera?.draw(this.#mode !== "immersive-ar");
 
         const pose = frame.getViewerPose(space);
         if (!pose) return; // tracking lost this frame — the caller's own
         // staleness timeout (not this module) decides when that should stop
         // the robot; a single missed frame at 72-120Hz isn't it.
+
+        // ONE VIEWPORT PER EYE, AND THIS IS WHY THE CAMERA WAS INVISIBLE.
+        //
+        // The canvas backing this context is created detached and never sized,
+        // so its drawing buffer is the HTML default 300x150 — and GL seeds the
+        // viewport from the drawing buffer at context creation. The XR layer's
+        // framebuffer is nothing like that shape: on a Quest 3 it is roughly
+        // 2064x2208 PER EYE, both eyes side by side in one buffer.
+        //
+        // `gl.clear` is scissor-bounded so the transparent clear covered
+        // everything, but `drawArrays` is VIEWPORT-bounded — so a full
+        // clip-space quad landed in a 300x150 patch in the corner of one eye.
+        // In passthrough that reads as "the room, with a smear"; in VR as
+        // "black, with a postage stamp". Both were reported as "no camera".
+        //
+        // The fix is the loop WebXR requires and this renderer never had: ask
+        // the layer for each view's viewport and draw once per eye. It also has
+        // to happen after getViewerPose, because that is what produces the
+        // views — drawing before it, as this did, could not have been correct
+        // even with the viewport set.
+        const opaque = this.#mode !== "immersive-ar";
+        for (const view of pose.views) {
+          const vp = layer.getViewport(view);
+          if (!vp) continue;
+          gl.viewport(vp.x, vp.y, vp.width, vp.height);
+          try {
+            // The camera IS the view in VR; in passthrough it is a heads-up
+            // layer over the room, so it does not paint over what the operator
+            // can see.
+            this.#camera?.draw(opaque);
+          } catch (err) {
+            // Shader compile or link failure throws out of draw(), and this
+            // callback is what samples head pose. Letting it escape kills
+            // steering silently for the rest of the session while the robot
+            // stays safe but unresponsive. Drop the picture, keep the pose.
+            this.#cameraBroken = true;
+            this.#camera = null;
+            console.error("[xr] camera layer disabled after draw failure", err);
+          }
+        }
 
         const yaw = quaternionYaw(pose.transform.orientation);
         if (this.#needsRecenter) {
@@ -490,6 +593,12 @@ export class XrTeleopSession {
 
   /** End the session. `onEnd` fires once the browser confirms teardown. */
   stop(): void {
+    if (!this.#session && this.#starting) {
+      // Mid-start: there is no session to end yet, so record the intent and
+      // let `#start` honour it as soon as one exists.
+      this.#abandonOnStart = true;
+      return;
+    }
     void this.#session?.end();
   }
 }

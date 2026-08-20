@@ -118,7 +118,7 @@ describe("attach", () => {
   test("sets crossOrigin before src — without it WebGL renders black", () => {
     withFakeImage((made) => {
       const { gl } = stubGl();
-      new CameraLayer(gl).attach("http://127.0.0.1:8081/stream.mjpg");
+      new CameraLayer(gl).setStreamUrl("http://127.0.0.1:8081/stream.mjpg");
       // A texture sourced from an image the page cannot read back throws on
       // upload. The symptom is a black view, not an error anyone sees.
       expect(made[0].crossOrigin).toBe("anonymous");
@@ -130,7 +130,7 @@ describe("attach", () => {
     withFakeImage((made) => {
       const { gl } = stubGl();
       const layer = new CameraLayer(gl);
-      layer.attach("http://x/stream.mjpg");
+      layer.setStreamUrl("http://x/stream.mjpg");
       expect(layer.hasFrame).toBe(false);
       made[0].arrive();
       expect(layer.hasFrame).toBe(true);
@@ -141,7 +141,7 @@ describe("attach", () => {
     withFakeImage((made) => {
       const { gl } = stubGl();
       const layer = new CameraLayer(gl);
-      layer.attach("http://x/stream.mjpg");
+      layer.setStreamUrl("http://x/stream.mjpg");
       made[0].onerror?.();
       expect(layer.hasFrame).toBe(false);
     });
@@ -153,7 +153,7 @@ describe("draw", () => {
     withFakeImage(() => {
       const { gl, calls } = stubGl();
       const layer = new CameraLayer(gl);
-      layer.attach("http://x/stream.mjpg");
+      layer.setStreamUrl("http://x/stream.mjpg");
       layer.draw(true);
       expect(calls.some((c) => c.fn === "drawArrays")).toBe(false);
       expect(layer.framesUploaded).toBe(0);
@@ -164,7 +164,7 @@ describe("draw", () => {
     withFakeImage((made) => {
       const { gl, calls } = stubGl();
       const layer = new CameraLayer(gl);
-      layer.attach("http://x/stream.mjpg");
+      layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive(960); // 960x540 is not a power of two
       layer.draw(true);
 
@@ -182,7 +182,7 @@ describe("draw", () => {
     withFakeImage((made) => {
       const { gl, calls } = stubGl();
       const layer = new CameraLayer(gl);
-      layer.attach("http://x/stream.mjpg");
+      layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
 
       layer.draw(true);
@@ -203,7 +203,7 @@ describe("draw", () => {
         throw new Error("tainted canvas");
       };
       const layer = new CameraLayer(gl);
-      layer.attach("http://x/stream.mjpg");
+      layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
       layer.draw(true); // must not throw
       expect(calls.some((c) => c.fn === "drawArrays")).toBe(false);
@@ -214,7 +214,7 @@ describe("draw", () => {
     withFakeImage((made) => {
       const { gl } = stubGl();
       const layer = new CameraLayer(gl);
-      layer.attach("http://x/stream.mjpg");
+      layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
       layer.draw(true);
       layer.draw(true);
@@ -228,7 +228,7 @@ describe("dispose", () => {
     withFakeImage((made) => {
       const { gl, calls } = stubGl();
       const layer = new CameraLayer(gl);
-      layer.attach("http://x/stream.mjpg");
+      layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
       layer.draw(true);
       layer.dispose();
@@ -247,9 +247,72 @@ describe("dispose", () => {
     withFakeImage(() => {
       const { gl } = stubGl();
       const layer = new CameraLayer(gl);
-      layer.attach("http://x/stream.mjpg");
+      layer.setStreamUrl("http://x/stream.mjpg");
       layer.dispose(); // must not throw
       expect(layer.hasFrame).toBe(false);
+    });
+  });
+});
+
+
+describe("reconnection — the failure the source recovers from", () => {
+  test("a new URL swaps the image and cuts the old request", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg?c=1");
+      made[0].arrive();
+
+      layer.setStreamUrl("http://x/stream.mjpg?c=2");
+
+      // Two elements, and the first one's request is closed. Without cutting
+      // it, a session that reconnects a few times holds several open MJPEG
+      // streams at once, all crossing the SSH tunnel.
+      expect(made.length).toBe(2);
+      expect(made[0].src).toBe("");
+      expect(made[1].src).toBe("http://x/stream.mjpg?c=2");
+      expect(made[1].crossOrigin).toBe("anonymous");
+    });
+  });
+
+  test("the same URL is ignored — no needless reconnect", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg?c=1");
+      layer.setStreamUrl("http://x/stream.mjpg?c=1");
+      expect(made.length).toBe(1);
+    });
+  });
+
+  test("a stale feed is dimmed, not hidden", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+
+      layer.draw(true);
+      layer.setLive(false);
+      layer.draw(true);
+
+      const alphas = calls.filter((c) => c.fn === "uniform1f").map((c) => c.args[1]);
+      // Still drawn: losing the picture mid-motion is worse than an obviously
+      // old one. But visibly different without reading any text.
+      expect(alphas[0]).toBe(1.0);
+      expect(alphas[1] as number).toBeLessThan(0.6);
+      expect(alphas[1] as number).toBeGreaterThan(0);
+    });
+  });
+
+  test("dispose clears the url so a later attach reconnects", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      layer.dispose();
+      layer.setStreamUrl("http://x/stream.mjpg"); // same URL, but after dispose
+      expect(made.length).toBe(2);
     });
   });
 });
