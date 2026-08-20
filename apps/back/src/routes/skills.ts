@@ -109,10 +109,11 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
           // declared defaults, then check the body before dispatch. The schema
           // is plain JSON Schema from the bridge now, so this goes through Ajv
           // — TypeBox throws on a schema that lacks its own [Kind] symbol.
-          const { ok, value: args, issues } = validateArgs(
-            skill.parameters,
-            body as Record<string, unknown>,
-          );
+          const {
+            ok,
+            value: args,
+            issues,
+          } = validateArgs(skill.parameters, body as Record<string, unknown>);
           if (!ok) {
             return status(422, { error: "invalid_params", name, issues });
           }
@@ -147,10 +148,11 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
           const skill = await getSkill(name);
           if (!skill) return status(404, { error: "skill_not_found", name });
 
-          const { ok, value: args, issues } = validateArgs(
-            skill.parameters,
-            body as Record<string, unknown>,
-          );
+          const {
+            ok,
+            value: args,
+            issues,
+          } = validateArgs(skill.parameters, body as Record<string, unknown>);
           if (!ok) {
             return status(422, { error: "invalid_params", name, issues });
           }

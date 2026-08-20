@@ -192,7 +192,7 @@ Ports, read from the deployed driver config rather than from memory — **five**
 **Trap: the host side is `+1`.** A `tcpdump` filter on `udp port 56300` will see nothing
 while `56301` sees everything. The same numbers appear in the upstream vendor default, so
 this is the stock Mid-360 scheme, not a Unitree customisation. (One community report,
-livox_ros_driver2 issue #176, claims having to set host ports _equal_ to the LiDAR ports to
+livox*ros_driver2 issue #176, claims having to set host ports \_equal* to the LiDAR ports to
 get data — contrary to both the shipped config and the upstream default; treat as noise
 unless reproduced. **[web]**)
 
@@ -357,8 +357,8 @@ and the `ServiceList` probe live in `docs/ROBOT-API.md` §8). The gemm client fo
 **QoS trap, and it already burned the gemm team once:** their 2026-08-07 conclusion that
 "these topics do not exist in any DDS domain" was wrong — it came from probing with a
 default-QoS subscriber while the service was switched **off**. Their note claims the
-publishers are BEST_EFFORT (_"`ros2 topic hz`/`echo` con el default no ve nada aunque estén
-fluyendo"_) **[src]** — except the bag metadata _they_ produced records those publishers as
+publishers are BEST*EFFORT (*"`ros2 topic hz`/`echo` con el default no ve nada aunque estén
+fluyendo"_) **[src]** — except the bag metadata \_they_ produced records those publishers as
 **RELIABLE**, KEEP_LAST depth 1, VOLATILE. **[live]** The prose and the metadata contradict
 each other; trust the metadata, but verify before relying on either. Depth-1 KEEP_LAST also
 means a slow subscriber silently drops rather than queues.
@@ -1102,10 +1102,10 @@ Our Isaac sim profile's `rt/dex1/{left,right}/{cmd,state}` with `MotorCmds_` is 
 
 - ✅ **Applied 2026-08-20.** `apps/bridge/src/bridge/sdk/g1_protocol.py` (`REAL_TOPICS`)
   carried `dex_left_cmd="rt/api/dex3/left/request"` / `dex_right_cmd=…`. **The hands are
-  not an RPC service** — no api_id, no JSON envelope, and no `rt/api/dex3/*` topic in any
+  not an RPC service** — no api*id, no JSON envelope, and no `rt/api/dex3/*` topic in any
   vendor source on this robot nor in any of the six official hand-related pages. Now
   `rt/brainco/{left,right}/{cmd,state}`, carrying bare
-  `unitree_go::msg::dds_::MotorCmds_` / `MotorStates_` sequences. **[src]**
+  `unitree_go::msg::dds*::MotorCmds*`/`MotorStates*` sequences. **[src]**
 - **`/api/dex3_msg_controller`**, which earlier inventories cited, appears in **no**
   vendor source, binary or config anywhere on this robot. Its only occurrences were our
   own doc files. Unsourced; struck. **[live]**
@@ -1121,10 +1121,10 @@ Our Isaac sim profile's `rt/dex1/{left,right}/{cmd,state}` with `MotorCmds_` is 
 
 ## 8. Audio — mic array, speaker, LED
 
-The `voice` RPC service itself — service name, api_id table (TTS 1001 … SET_RGB_LED 1010),
+The `voice` RPC service itself — service name, api*id table (TTS 1001 … SET_RGB_LED 1010),
 payload shapes, the `TtsMaker` index bug, `PlayStream`/`PlayStop` semantics and the
 vendored-client defects — is fully treated in `docs/ROBOT-API.md` §7. This section covers
-the _hardware_: where the devices live, how the raw paths work, and who shares them.
+the \_hardware*: where the devices live, how the raw paths work, and who shares them.
 
 ### 8.1 None of it is on the Jetson
 
@@ -1206,14 +1206,14 @@ Everything below was the investigation that got here, and is kept because each s
 eliminated a cheaper explanation.
 
 **A stopped service is NOT the explanation** — the obvious third reading, checked and
-killed. `robot_state` 1003 `ServiceList` reports `vui_service` *and*
+killed. `robot_state` 1003 `ServiceList` reports `vui_service` _and_
 `audio_player_service` both running on 2026-08-21 (`status: 0`; polarity confirmed against
 `robot_state` reporting itself running while answering — `ROBOT-API.md` §8). So the mic is
 silent with its owning services up.
 
 Distinguishing the two remaining readings needs a person: hold **L1+L2** on the remote and
 re-run the count. `apps/bridge/scripts/mic_wakeup_probe.py` does both halves at once — it
-counts multicast bytes *and* decodes `LowState_.wireless_remote`, because a run where
+counts multicast bytes _and_ decodes `LowState_.wireless_remote`, because a run where
 nobody pressed anything and a run where the press changed nothing are the same column of
 zeros, and only the button field tells them apart. It prints a verdict rather than raw
 counts.

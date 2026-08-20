@@ -58,7 +58,9 @@ describe("VoiceLoop", () => {
     // Vosk segments on pauses, so one question can arrive as two utterances.
     // Running the agent per utterance answers half a question, then answers the
     // rest without the first half's context.
-    const { loop, agentRuns } = harness([said("caminá hasta la puerta", "y buscá la caja")]);
+    const { loop, agentRuns } = harness([
+      said("caminá hasta la puerta", "y buscá la caja"),
+    ]);
     await loop.tick();
     expect(agentRuns).toEqual(["caminá hasta la puerta y buscá la caja"]);
   });
@@ -67,7 +69,12 @@ describe("VoiceLoop", () => {
     // The property that matters: no LLM round-trip between a person saying
     // "stop" and the robot stopping.
     const { loop, calls, agentRuns } = harness([
-      { status: "ok", mic_ever_open: true, stop_heard: "emergencia", heard: [] },
+      {
+        status: "ok",
+        mic_ever_open: true,
+        stop_heard: "emergencia",
+        heard: [],
+      },
     ]);
     await loop.tick();
     expect(calls.map((c) => c.name)).toContain("stop_everything");
