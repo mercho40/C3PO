@@ -1,0 +1,48 @@
+<!--
+  navigate_through_poses, with only the recoveries a BIPED can safely take.
+
+  The multi-goal twin of navigate_to_pose_biped.xml — read that file's header
+  for why these exist at all. Identical to nav2_bt_navigator's
+  navigate_through_poses_w_replanning_and_recovery.xml except that the
+  RecoveryActions round-robin drops <Spin> and <BackUp>, leaving Clear -> Wait.
+
+  bt_navigator loads BOTH default trees at activation and resolves every action
+  server they name at LOAD time, so leaving this one on the upstream default
+  would fail the whole bringup exactly as the to_pose tree did — even if nothing
+  ever sends a through-poses goal.
+
+  Note the 0.333 Hz replan rate here against 1.0 Hz in the to_pose tree: that is
+  upstream's own choice, kept, because replanning a multi-goal route is more
+  expensive and the Orin NX is shared with the detector and FAST-LIO.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="0.333">
+          <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
+            <ReactiveSequence>
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+            </ReactiveSequence>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <Wait wait_duration="5"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>
