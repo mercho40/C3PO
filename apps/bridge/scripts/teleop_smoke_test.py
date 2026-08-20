@@ -337,6 +337,8 @@ async def stage_walk(session: ClientSession, url: str) -> None:
     print(f"    Commanding walk=+1 (={0.2} m/s) for {PROBE_WALK_SECONDS:.1f}s.")
     print("    Expect well under 0.2 m of travel: `walk_to` asked for 0.40 m and got")
     print("    0.17 m on this hardware, so the sim-fitted gains under-travel by half.")
+    if not await ensure_walk_program(session):
+        raise Aborted("cannot test the walk axis without a walk program loaded")
     confirm("Clear space ahead of the robot?")
 
     state = await mcp_state(session)
@@ -367,6 +369,8 @@ async def stage_estop(session: ClientSession, url: str) -> None:
     print("    Commanding a turn, then calling stop_everything WHILE the operator")
     print("    keeps holding the control — which is exactly the real situation.")
     print("    The stream must stop and STAY stopped until the control is released.")
+    if not await ensure_walk_program(session):
+        raise Aborted("cannot test the e-stop without a walk program loaded")
     confirm("Ready?")
 
     async with connect(url) as ws:
@@ -428,19 +432,70 @@ async def stage_estop(session: ClientSession, url: str) -> None:
     print(f"        and the {settle:.1f} deg it carried was deceleration, not command.")
 
 
+async def ensure_walk_program(session: ClientSession) -> bool:
+    """Put the robot back in a walk program if it is not in one.
+
+    Stage 6's e-stop Damps the robot, by design — that is the point of an
+    e-stop. Which means every stage after it starts against a robot that
+    ignores velocity, and a stage that commands motion at a damped robot and
+    then checks it did not move PASSES for entirely the wrong reason.
+
+    Stage 7 did exactly that on the first hardware run: it reported the robot
+    stopped on its own after a dropped socket, having never moved at all.
+    A vacuous pass on a safety check is worse than a failure, because it is
+    indistinguishable from a real one in the output.
+    """
+    state = await mcp_state(session)
+    if state.get("raw", {}).get("fsm_id") == FSM_WALK_WAIST:
+        return True
+
+    print(f"    robot is {state.get('posture')!r}, not in the walk program — restoring ...")
+    for skill in ("prepare", "start_walking_waist"):
+        result = await session.call_tool(skill, {})
+        del result
+        await asyncio.sleep(6)
+
+    state = await mcp_state(session)
+    if state.get("raw", {}).get("fsm_id") == FSM_WALK_WAIST:
+        print(f"    restored: {state.get('posture')}")
+        return True
+    print(f"    could NOT restore the walk program (posture={state.get('posture')!r})")
+    return False
+
+
 async def stage_disconnect_stops(session: ClientSession, url: str) -> None:
     """Drop the socket mid-command. The robot must stop without being told."""
     print("\n=== 7. DISCONNECT STOPS ===")
     print("    Commanding a turn, then killing the socket without releasing.")
     print("    This is what a dropped Wi-Fi link looks like from the robot's side.")
+
+    # Stage 6 left the robot damped. Without this, everything below commands a
+    # robot that cannot move and then congratulates itself for the stillness.
+    if not await ensure_walk_program(session):
+        raise Aborted("cannot run the disconnect test without a walk program loaded")
+
     confirm("Ready?")
 
+    started = await yaw_now(session)
     ws = await connect(url)
     seq = 0
     for _ in range(20):
         await ws.send(frame(seq, enabled=True, head={"yaw": math.radians(PROBE_YAW_DEG), "pos": [0, 1.62, 0]}))
         seq += 1
         await asyncio.sleep(0.03)
+
+    # Prove the robot was ACTUALLY moving before the socket dies. Otherwise a
+    # pass below means nothing: "it did not move after" is only interesting if
+    # it was moving before.
+    moving = await yaw_now(session)
+    turned = abs(math.degrees((moving or 0.0) - (started or 0.0)))
+    print(f"    turned before disconnect : {turned:.2f} deg")
+    if turned < MIN_MEANINGFUL_DEG:
+        raise Aborted(
+            f"the robot only turned {turned:.1f} deg before the socket was cut, so a "
+            "clean stop afterwards would prove nothing. Check the FSM and retry."
+        )
+
     await ws.close()
     print("    socket closed. Watching for 3s...")
 
@@ -454,7 +509,7 @@ async def stage_disconnect_stops(session: ClientSession, url: str) -> None:
             f"the robot kept turning {drift:.1f} deg after the socket died. "
             "The server's shutdown stop did not reach the robot."
         )
-    print("    OK: the robot stopped on its own.")
+    print("    OK: it was turning, the socket died, and it stopped on its own.")
 
 
 async def main() -> int:
