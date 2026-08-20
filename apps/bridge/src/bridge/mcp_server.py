@@ -1290,6 +1290,153 @@ async def say(
 
 
 # ---------------------------------------------------------------------------
+# Tools: arm_navigation / disarm_navigation
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="high",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["perception_link_down", "no_planner_traffic"],
+    )
+)
+def arm_navigation(
+    reason: Annotated[
+        str,
+        Field(
+            min_length=3,
+            max_length=200,
+            description=(
+                "Why you are arming, in one line. This is written to the log "
+                "that gets read after something goes wrong, so say what the "
+                "robot is about to do and who asked for it."
+            ),
+        ),
+    ],
+    seconds: Annotated[
+        float,
+        Field(
+            ge=1.0,
+            le=120.0,
+            description=(
+                "How long the gate stays open. It closes itself after this "
+                "whatever happens — keep it to the length of the manoeuvre you "
+                "are actually supervising, not the length of your plan."
+            ),
+        ),
+    ] = 30.0,
+) -> dict:
+    """Let Nav2 drive the robot. THE MOST DANGEROUS TOOL HERE — read this.
+
+    Nav2 plans continuously and publishes velocities at 20 Hz whether or not
+    anything is listening. Everything it produces is refused by a default-closed
+    gate in this process; this tool opens that gate. Nothing else in the system
+    does, and until it is called the robot cannot be driven by the planner at
+    all, no matter what the planner decides.
+
+    So this is the single point where a planning stack becomes a moving 1.3 m
+    humanoid. Treat it as such:
+
+    - **A person must be watching.** Not "nearby" — watching, with the remote in
+      hand and a thumb on the e-stop. Nav2 obeys a costmap, and a costmap can be
+      wrong in ways that look fine on a screen.
+    - **Arm for the manoeuvre, not the plan.** The gate closes itself after
+      `seconds`. That timeout is the safety property; renewing it is cheap and
+      forgetting to close it is exactly the failure the timeout exists for.
+    - **`stop_everything` closes it**, synchronously and before anything else it
+      does. Without that, stopping would only pause: the burst halts the gait
+      and Nav2's next tick would walk the robot on 50 ms later.
+
+    Arming does not command motion by itself. If no planner is publishing, the
+    gate opens onto silence and closes again — which is exactly what the returned
+    `cmd_vel_age_s` tells you: `null` means nothing is planning, so arming was
+    pointless rather than dangerous.
+    """
+    log.warning("arm_navigation.called", seconds=seconds, reason=reason, sim_mode=SIM_MODE)
+
+    from bridge.sdk.perception_link import get_link
+
+    link = get_link()
+    status_before = link.status()
+    if not status_before.get("cmd_vel_received"):
+        # Not refused — armed anyway, and told. A planner that has not published
+        # yet is normal during bring-up, and refusing here would make arming
+        # depend on timing the operator cannot see.
+        log.warning("arm_navigation.no_planner_traffic")
+
+    link.enable(reason=reason, ttl_s=seconds)
+    status = link.status()
+    return {
+        "status": "armed",
+        "seconds": seconds,
+        "reason": reason,
+        "expires_in_s": status.get("arm_expires_in_s"),
+        # None here means no planner is publishing: the gate is open onto
+        # nothing, so nothing will move until Nav2 starts.
+        "cmd_vel_age_s": status.get("cmd_vel_age_s"),
+        "clamps": status.get("clamps"),
+        "warning": (
+            "The robot can now be driven by Nav2. A person must be watching "
+            "with the e-stop in reach. The gate closes itself in "
+            f"{seconds:g}s, or immediately on stop_everything."
+        ),
+        "env": SIM_MODE,
+    }
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=True,
+        works_real=True,
+    )
+)
+def disarm_navigation(
+    reason: Annotated[
+        str, Field(max_length=200, description="Why, for the log.")
+    ] = "operator disarmed",
+) -> dict:
+    """Close the gate. Nav2 keeps planning; nothing it plans reaches the legs.
+
+    Always safe to call, including when already closed. Prefer this over waiting
+    for the arm timeout once a manoeuvre is finished — the timeout is a backstop
+    for the case where somebody forgot, not the normal way to end.
+
+    This is NOT a stop: it prevents further motion rather than arresting motion
+    already underway. `stop_everything` is what halts the robot, and it closes
+    this gate as its first act.
+    """
+    log.warning("disarm_navigation.called", reason=reason, sim_mode=SIM_MODE)
+
+    from bridge.sdk.perception_link import get_link
+
+    link = get_link()
+    was_open = link.is_enabled()
+    link.disable(reason=reason)
+    return {
+        "status": "disarmed",
+        "was_armed": was_open,
+        "reason": reason,
+        "note": (
+            "Nav2 is still planning and still publishing; the gate now refuses "
+            "all of it. This prevents motion — it does not arrest motion already "
+            "in progress. Use stop_everything for that."
+        ),
+        "env": SIM_MODE,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Tool: listen
 # ---------------------------------------------------------------------------
 
@@ -1655,38 +1802,16 @@ def cancel_task(
 
 # ---------------------------------------------------------------------------
 # Tool: describe_surroundings
-# ---------------------------------------------------------------------------
+def surroundings_snapshot() -> dict:
+    """The D7 world-model snapshot, as a plain dict.
 
-
-@mcp.tool(
-    meta=skill_meta(
-        classification="perception",
-        danger_level="low",
-        status="real",
-        cancellable=False,
-        expected_duration_s=0.1,
-        works_sim=True,
-        works_real=True,
-        typical_failure_modes=["bridge_disconnected", "no_pose"],
-    )
-)
-def describe_surroundings() -> dict:
-    """Return a compact, egocentric snapshot of what the robot can perceive.
-
-    Ranges are metres from the robot; bearings are degrees with 0 straight
-    ahead and POSITIVE TO THE LEFT — the same sign as `turn`'s
-    delta_yaw_radians, so a bearing can be turned toward directly.
-
-    Read `sources` and `notes` before acting. A source reported as `offline`
-    means that sense is NOT WORKING, which is different from it reporting
-    nothing: an absent `objects` list with `detector: offline` does not mean
-    the path is clear, it means nothing looked. `objects_omitted` counts
-    obstacles that exist but were not listed.
-
-    Today the perception stack (LiDAR/camera/detector) is not deployed, so this
-    honestly reports everything offline rather than an empty scene. Pose comes
-    through once the bridge is running against a robot.
+    Extracted so the `describe_surroundings` TOOL and the read-only
+    `/telemetry/surroundings` ROUTE cannot drift apart. Two callers building
+    the same snapshot independently is how an operator console ends up
+    showing something subtly different from what the agent was told — and
+    the whole point of D7 is that there is one contract, interpreted once.
     """
+
     from bridge import world_model
     from bridge.skills.landmarks import get_store
 
@@ -1725,15 +1850,90 @@ def describe_surroundings() -> dict:
                 world_model.Observation(label=lm.name, range_m=rng, bearing_deg=bearing)
             )
 
+    # THE PERCEPTION REPORT, if the container is up and publishing on domain 42.
+    #
+    # This was hardcoded to detector_online=False with a comment saying
+    # perception was not deployed. It has been deployed for a while: the link
+    # runs, reports arrive, and `world_model.from_report` — written for exactly
+    # this, fully tested — was called from nowhere. The robot's eyes were built
+    # and not plugged in, the same way the link itself was.
+    #
+    # `latest_report()` returns None for a container that is absent, one whose
+    # report is older than REPORT_OFFLINE_AFTER_S, and one whose version was
+    # refused. All three are the same fact to a model — nothing looked — and
+    # from_report degrades all three identically. That is why the fallback below
+    # is not a special case but the honest snapshot.
+    report = None
+    report_age = None
+    try:
+        from bridge.sdk.perception_link import get_link
+
+        report, report_age = get_link().latest_report()
+    except Exception:
+        # Never let a perception fault take down the one tool an operator uses
+        # to ask what is going on. Degrading to "offline" is always available.
+        log.exception("describe_surroundings.perception_read_failed")
+
+    if report is not None:
+        merged = dict(report)
+        # The container reports the pose FAST-LIO believes; the bridge reports
+        # the one the control board believes. Prefer perception's — it is the
+        # frame the objects were measured in, so mixing the two would place
+        # detections against a pose they were never relative to. Fall back to
+        # ours only when the container has none.
+        if not merged.get("pose") and pose is not None:
+            merged["pose"] = pose
+            merged["pose_age_s"] = pose_age
+        snapshot = world_model.from_report(merged, landmarks=landmarks).to_dict()
+        if report_age is not None:
+            snapshot["report_age_s"] = report_age
+        return snapshot
+
     return world_model.build(
         pose=pose,
         pose_age_s=pose_age,
         landmarks=landmarks,
-        # Perception is not deployed yet — these stay False so the snapshot
-        # says "offline" instead of implying a clear scene.
+        # No usable report: absent, stale, or version-refused. Explicitly
+        # offline rather than an empty scene — "nothing detected" and "nothing
+        # looked" must never be the same answer (D7).
         detector_online=False,
         lidar_online=False,
     ).to_dict()
+
+
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="perception",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected", "no_pose"],
+    )
+)
+def describe_surroundings() -> dict:
+    """Return a compact, egocentric snapshot of what the robot can perceive.
+
+    Ranges are metres from the robot; bearings are degrees with 0 straight
+    ahead and POSITIVE TO THE LEFT — the same sign as `turn`'s
+    delta_yaw_radians, so a bearing can be turned toward directly.
+
+    Read `sources` and `notes` before acting. A source reported as `offline`
+    means that sense is NOT WORKING, which is different from it reporting
+    nothing: an absent `objects` list with `detector: offline` does not mean
+    the path is clear, it means nothing looked. `objects_omitted` counts
+    obstacles that exist but were not listed.
+
+    Today the perception stack (LiDAR/camera/detector) is not deployed, so this
+    honestly reports everything offline rather than an empty scene. Pose comes
+    through once the bridge is running against a robot.
+    """
+    return surroundings_snapshot()
 
 
 # ---------------------------------------------------------------------------
@@ -1913,6 +2113,71 @@ async def gate_status(request):  # noqa: ANN001, ANN201 - starlette types
         "reports_received": diag.get("reports_received"),
     }
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/telemetry/surroundings", methods=["GET"])
+async def surroundings_json(request):  # noqa: ANN001, ANN201 - starlette types
+    """The D7 snapshot the agent sees, for the operator console.
+
+    Deliberately the SAME `surroundings_snapshot()` the `describe_surroundings`
+    tool returns, not a parallel implementation. If the console built its own
+    view of the scene, an operator and the agent could be looking at subtly
+    different worlds while debugging the same incident — which is the exact
+    failure D7's "one contract, interpreted once" exists to prevent.
+
+    Read-only and structurally so, like the costmap and gate routes: it composes
+    a snapshot from data already received and can actuate nothing.
+    """
+    from starlette.responses import JSONResponse
+
+    try:
+        return JSONResponse(surroundings_snapshot(), headers={"Cache-Control": "no-store"})
+    except Exception:
+        log.exception("telemetry.surroundings_failed")
+        # 503 rather than a partial scene: an operator must never be shown an
+        # empty world that is actually a broken endpoint.
+        return JSONResponse({"error": "could not build a snapshot"}, status_code=503)
+
+
+@mcp.custom_route("/telemetry/voice", methods=["GET"])
+async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
+    """What the robot has heard recently, and whether it can hear at all.
+
+    Uses `recent()` rather than `poll()` — READING THIS MUST NOT CONSUME. The
+    agent's `listen` tool drains the buffer; if the console drained it too, an
+    operator leaving the page open would silently eat the utterances the agent
+    was supposed to act on. The two readers must not compete.
+    """
+    from starlette.responses import JSONResponse
+
+    try:
+        from bridge.skills import listen as listen_skill
+
+        listener = listen_skill.get_mic_listener()
+        diag = listener.diagnostics()
+        source = listen_skill.describe_audio_source()
+        items = listener.recent(120.0) if diag["running"] else []
+        return JSONResponse(
+            {
+                "running": diag["running"],
+                "error": diag["error"],
+                # The distinction an operator needs to read silence correctly:
+                # with a push-to-talk mic, nothing heard usually means nobody
+                # held the button — not a quiet room.
+                "always_listening": source["always_on"],
+                "audio_source": source["source"],
+                "mic_ever_open": diag["mic_ever_open"],
+                "seconds_since_audio": diag["seconds_since_audio"],
+                "utterances": diag["utterances"],
+                "recent": [
+                    {"text": i["text"], "kind": i["kind"], "age_s": i["age_s"]} for i in items
+                ],
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    except Exception:
+        log.exception("telemetry.voice_failed")
+        return JSONResponse({"error": "voice telemetry unavailable"}, status_code=503)
 
 
 def main() -> None:

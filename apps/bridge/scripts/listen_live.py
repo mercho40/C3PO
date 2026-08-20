@@ -32,8 +32,6 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=float, default=0.0,
                     help="stop after N seconds (default: run until Ctrl-C)")
-    ap.add_argument("--quiet-hint-after", type=float, default=6.0,
-                    help="say something if no audio has arrived by then")
     args = ap.parse_args()
 
     from bridge.skills import listen
@@ -52,7 +50,6 @@ def main() -> int:
     frames = listen.iter_mic_frames(timeout_s=0.5)
     started = time.time()
     packets = audio_bytes = 0
-    hinted = False
 
     print("\nlistening — say something in Spanish. Ctrl-C to stop.\n", flush=True)
     try:

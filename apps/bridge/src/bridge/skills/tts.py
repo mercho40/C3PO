@@ -165,6 +165,12 @@ def synthesize(text: str) -> bytes:
         raise TtsUnavailable(why)
 
     binary = PIPER_BIN if os.path.isfile(PIPER_BIN) else shutil.which("piper")
+    if binary is None:
+        # available() checked a moment ago, so reaching here means the binary
+        # was removed mid-call. Rare, but it must raise the same actionable
+        # error rather than a TypeError from deep inside subprocess.
+        raise TtsUnavailable(f"piper vanished between the check and the call ({PIPER_BIN})")
+
     proc = subprocess.run(
         [binary, "--model", PIPER_VOICE, "--output-raw"],
         input=text.encode("utf-8"),

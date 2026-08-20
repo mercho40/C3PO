@@ -168,7 +168,9 @@ describe("draw", () => {
       made[0].arrive(960); // 960x540 is not a power of two
       layer.draw(true);
 
-      const params = calls.filter((c) => c.fn === "texParameteri").map((c) => c.args);
+      const params = calls
+        .filter((c) => c.fn === "texParameteri")
+        .map((c) => c.args);
       // WebGL1 silently refuses to sample a non-POT texture with REPEAT or
       // mipmaps. It renders black rather than complaining.
       expect(params).toContainEqual(["TEXTURE_2D", "WRAP_S", "CLAMP_TO_EDGE"]);
@@ -187,7 +189,9 @@ describe("draw", () => {
 
       layer.draw(true);
       layer.draw(false);
-      const alphas = calls.filter((c) => c.fn === "uniform1f").map((c) => c.args[1]);
+      const alphas = calls
+        .filter((c) => c.fn === "uniform1f")
+        .map((c) => c.args[1]);
       // Opaque in VR: the camera IS the world. Translucent in AR: covering
       // passthrough would hide the robot the operator is standing next to.
       expect(alphas[0]).toBe(1.0);
@@ -254,7 +258,6 @@ describe("dispose", () => {
   });
 });
 
-
 describe("reconnection — the failure the source recovers from", () => {
   test("a new URL swaps the image and cuts the old request", () => {
     withFakeImage((made) => {
@@ -296,7 +299,9 @@ describe("reconnection — the failure the source recovers from", () => {
       layer.setLive(false);
       layer.draw(true);
 
-      const alphas = calls.filter((c) => c.fn === "uniform1f").map((c) => c.args[1]);
+      const alphas = calls
+        .filter((c) => c.fn === "uniform1f")
+        .map((c) => c.args[1]);
       // Still drawn: losing the picture mid-motion is worse than an obviously
       // old one. But visibly different without reading any text.
       expect(alphas[0]).toBe(1.0);

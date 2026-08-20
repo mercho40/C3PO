@@ -213,14 +213,15 @@ that is one command.
   `yolo11n.fp16.plan`, 7.9 MB, in volume `c3po-trt-engines`. Measured on this
   part at MAXN (`/var/lib/nvpmodel/status` = `pmode:0000`), not predicted:
 
-  | | |
-  | --- | --- |
-  | Throughput | 203.9 qps |
+  |             |                                                   |
+  | ----------- | ------------------------------------------------- |
+  | Throughput  | 203.9 qps                                         |
   | GPU compute | median **4.75 ms**, mean 4.90, p90 5.25, p99 6.20 |
 
   Inside the 5–8 ms the research predicted. At the detector's 10 Hz that is
   ~5 % of the GPU, on a GPU measured at `GR3D_FREQ 0%` with gemm running — so
   the detector is not what makes this stack fit or not fit.
+
 - **Stage 2 — nav image** (no sensors). `build_perception nav`.
   **Landed 2026-08-20.** `c3po/perception-nav:humble`, 3.38 GB; every assertion
   held — fast_lio, livox_ros_driver2, c3po_perception, nav2_controller,
@@ -236,6 +237,7 @@ that is one command.
   that exist on **no SDK tag**, only SDK master. The pair is now SDK `v1.3.1` +
   driver `1.2.6`, both tags, mutually consistent, with an assertion on each
   side so a one-sided bump fails loudly.
+
 - **Stage 3 — the crossing end-to-end on synthetic data** (no sensors).
   `perception_up fake` + `run_c3po`, then `describe_surroundings` from a Claude
   Code session. This is where "absent is not empty" is proven across a process
@@ -253,10 +255,11 @@ that is one command.
   `odom -> base_footprint`. That TF is not decoration: costmaps place
   themselves from TF, never from the `/odom` message, so without it they simply
   never update and it reads as a Nav2 misconfiguration. Note `perception_up
-  nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
+nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
   stage was specified as sensor-free and for a while the only nav2 stage
   stopped gemm, which would have made "Nav2 in isolation" the most invasive
   step in the plan.
+
 - **Stage 5 — first shared-sensor window: record a bag** (~30 min, gemm stops).
   `perception_up odometry`, then
   `ros2 bag record /livox/lidar /livox/imu /Odometry /cloud_registered_body /scan /tf /tf_static`,

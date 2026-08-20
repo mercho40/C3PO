@@ -365,7 +365,9 @@
       <div
         class="flex items-center justify-between gap-3 rounded-lg border border-danger/30 bg-danger/[0.06] px-4 py-2.5 text-xs text-danger-soft"
       >
-        <span class="truncate">Sesión expirada, redirigiendo a inicio de sesión...</span>
+        <span class="truncate"
+          >Sesión expirada, redirigiendo a inicio de sesión...</span
+        >
       </div>
     {:else if chat.error}
       <div
