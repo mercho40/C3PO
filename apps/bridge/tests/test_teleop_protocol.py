@@ -184,3 +184,46 @@ def test_walk_axis_is_clamped_not_rejected():
     # Clamping keeps the head yaw and both arms in the same frame usable.
     assert parse_frame(_frame(walk=5.0)).walk == 1.0
     assert parse_frame(_frame(walk=-5.0)).walk == -1.0
+
+
+class TestFailClosed:
+    """The dead-man must never be held by an accident of typing."""
+
+    def test_the_string_false_does_not_hold_the_dead_man(self):
+        # `bool("false")` is True. A stringly-typed client bug, or a
+        # hand-written frame, would have pressed and held the dead-man while
+        # the frame said the opposite.
+        assert parse_frame(_frame(enabled="false")).enabled is False
+        assert parse_frame(_frame(arms="false")).arms is False
+
+    def test_only_a_real_true_holds_it(self):
+        assert parse_frame(_frame(enabled=True)).enabled is True
+        for value in (1, "true", "yes", [1], {"a": 1}):
+            assert parse_frame(_frame(enabled=value)).enabled is False, (
+                f"{value!r} must not read as a held dead-man"
+            )
+
+    def test_a_missing_field_reads_as_released(self):
+        payload = json.loads(_frame())
+        del payload["enabled"]
+        assert parse_frame(json.dumps(payload)).enabled is False
+
+
+class TestSizeAndSequence:
+    def test_the_cap_is_bytes_not_characters(self):
+        # 4096 multi-byte characters is up to four times the byte cap while
+        # passing a character-counted one.
+        payload = json.loads(_frame())
+        payload["pad"] = "é" * MAX_FRAME_BYTES
+        with pytest.raises(FrameError, match="too large"):
+            parse_frame(json.dumps(payload))
+
+    def test_a_float_sequence_is_refused_not_truncated(self):
+        # `int(3.7)` is 3. A client sending floats produces colliding sequence
+        # numbers, and this is the only place that can notice.
+        with pytest.raises(FrameError, match="seq"):
+            parse_frame(_frame(seq=3.7))
+
+    def test_a_bool_is_not_a_sequence_number(self):
+        with pytest.raises(FrameError, match="seq"):
+            parse_frame(_frame(seq=True))

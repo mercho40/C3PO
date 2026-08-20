@@ -30,6 +30,9 @@ def enabled(monkeypatch):
         "mode_machine": 5,
         "lowstate_age_s": 0.01,
         "fsm_id": 500,
+        # Carried separately from lowstate_age_s on purpose — they come from
+        # different snapshots, and the gate checks both.
+        "fsm_age_s": 0.5,
     }
 
     class _Sampler:
@@ -407,3 +410,26 @@ async def test_ordinary_motion_is_never_delayed(driver, enabled):
             assert driver._target[0] == pytest.approx(step)
     finally:
         await driver.release()
+
+
+async def test_a_stale_fsm_reading_refuses_the_arms(driver, enabled):
+    """A healthy lowstate says nothing about the FSM.
+
+    They arrive by different routes — lowstate is a streamed DDS topic, the FSM
+    is polled over RPC — and only the lowstate's age was being checked. So the
+    gate could pass on an FSM reading taken before the robot started walking,
+    and blend arm setpoints into a walking humanoid.
+    """
+    enabled["fsm_age_s"] = arm_sdk.MAX_FSM_AGE_S + 1.0
+
+    with pytest.raises(ArmSdkUnavailable, match="FSM reading"):
+        await driver.engage()
+
+    assert driver.engaged is False
+
+
+async def test_a_never_read_fsm_refuses_the_arms(driver, enabled):
+    enabled["fsm_age_s"] = None
+
+    with pytest.raises(ArmSdkUnavailable, match="never been read"):
+        await driver.engage()

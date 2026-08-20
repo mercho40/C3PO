@@ -180,8 +180,12 @@ def _parse_hand(
 
 def parse_frame(raw: str | bytes) -> TeleopFrame:
     """Parse and validate one wire frame. Raises `FrameError` on anything off."""
-    if len(raw) > MAX_FRAME_BYTES:
-        raise FrameError(f"frame too large ({len(raw)} > {MAX_FRAME_BYTES} bytes)")
+    # Measured in bytes, as the name says. `len()` on a `str` counts
+    # characters, so a frame of 4096 multi-byte characters passed a 4096-BYTE
+    # cap while being up to four times that on the wire.
+    size = len(raw) if isinstance(raw, bytes) else len(raw.encode("utf-8", "surrogatepass"))
+    if size > MAX_FRAME_BYTES:
+        raise FrameError(f"frame too large ({size} > {MAX_FRAME_BYTES} bytes)")
     try:
         payload = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -198,10 +202,13 @@ def parse_frame(raw: str | bytes) -> TeleopFrame:
             f"unsupported protocol version {version!r} (this bridge speaks {PROTOCOL_VERSION})"
         )
 
-    try:
-        seq = int(payload["seq"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise FrameError(f"seq: missing or not an integer ({payload.get('seq')!r})") from exc
+    raw_seq = payload.get("seq")
+    # `int()` would accept 3.7 and quietly return 3. A client sending floats
+    # for a sequence number is a client whose frames will start colliding, and
+    # this is the one place that can say so.
+    if isinstance(raw_seq, bool) or not isinstance(raw_seq, int):
+        raise FrameError(f"seq: missing or not an integer ({raw_seq!r})")
+    seq = raw_seq
     if seq < 0:
         raise FrameError(f"seq: negative ({seq})")
 
@@ -220,14 +227,15 @@ def parse_frame(raw: str | bytes) -> TeleopFrame:
     return TeleopFrame(
         seq=seq,
         client_time_ms=_finite(payload.get("t", 0.0), "t"),
-        # Absent `enabled` means "not held". The dead-man must fail closed:
-        # a client that forgets the field, or a hand-crafted frame that omits
-        # it, has to read as released, never as held.
-        enabled=bool(payload.get("enabled", False)),
+        # The dead-man fails closed: anything that is not literally `true`
+        # reads as released. `bool()` would not do — `bool("false")` is True,
+        # so a client with a stringly-typed bug, or a hand-written frame
+        # carrying "false", would have held the dead-man down while saying the
+        # opposite. There is no value in this field worth guessing at.
+        enabled=payload.get("enabled") is True,
         walk=clamp_unit(_finite(payload.get("walk", 0.0), "walk")),
-        # Same fail-closed rule as `enabled`: an absent field means the
-        # operator has not asked for the arms.
-        arms=bool(payload.get("arms", False)),
+        # Same fail-closed rule as `enabled`, for the same reason.
+        arms=payload.get("arms") is True,
         head_yaw=head_yaw,
         head_position=head_position,
         left=_parse_hand(hands.get("left"), "left", head_position),
