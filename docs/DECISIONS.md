@@ -504,6 +504,19 @@ worth stating plainly, because they change what the voice loop can be:
   being addressed; a held button already answers that, and answers it more reliably than
   any acoustic model. Push-to-talk is not a downgrade here, it is the interaction the
   hardware actually supports.
+- **Continuous listening needs a USB microphone, and that is the whole fix.** Nothing in
+  software opens the built-in array, so if the robot is to hear without a button it needs
+  a second ear. `skills/listen.py` selects an ALSA capture device over the multicast group
+  automatically, so plugging one into the Jetson switches the robot to always-on with no
+  code change and no config. The Jetson currently exposes no real capture device — the
+  `tegra-dlink`/`ADMAIF` entries `arecord -l` lists are the SoC's internal routing fabric,
+  they appear whether or not a mic exists, and opening one yields **silence rather than an
+  error**, which is indistinguishable from an empty room. The selector filters them out
+  for exactly that reason.
+
+  The trade is real and worth stating: the body-mounted array is better placed for someone
+  standing in front of the robot and travels with it, while a USB mic is wherever its cable
+  reaches. `C3PO_AUDIO_SOURCE=multicast` forces the array back.
 - **The spoken stop cannot be relied on as a safety device.** D6.2 put the stop phrase in
   the bridge so it would survive a dead voice process — but no software placement helps
   when the microphone is closed unless somebody is already holding the remote. And a person

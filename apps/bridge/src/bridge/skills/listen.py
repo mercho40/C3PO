@@ -393,6 +393,123 @@ def listen_loop(
         on_text(tail)
 
 
+# --- audio sources ----------------------------------------------------------
+#
+# ALWAYS-ON LISTENING IS A SOURCE PROBLEM, NOT A SOFTWARE ONE. The G1's built-in
+# mic array lives on the control board and is published as a multicast group
+# that only streams while somebody holds L1+L2 (§8.2). There is no RPC to open
+# it: `vui_service` exposes playback, volume and LEDs and no capture function at
+# all. Nothing in this process can press that button.
+#
+# So the listener takes its frames from whichever of these is available, and
+# every one of them feeds the identical recogniser:
+#
+#   alsa       a USB microphone plugged into the Jetson. ALWAYS ON, no gating,
+#              no button. This is the answer if you want the robot listening
+#              continuously — the Jetson has USB ports and currently exposes no
+#              real capture device, so it needs hardware, not code.
+#   multicast  the robot's own mic array. Best audio, on the robot's body, but
+#              PUSH-TO-TALK and that is not negotiable from here.
+#   stdin      audio piped in from anywhere (see scripts/listen_stdin.py).
+#
+# `C3PO_AUDIO_SOURCE` forces one; otherwise a real capture device wins and the
+# multicast group is the fallback.
+
+AUDIO_SOURCE = os.environ.get("C3PO_AUDIO_SOURCE", "auto")
+ALSA_DEVICE = os.environ.get("C3PO_ALSA_DEVICE", "")
+
+
+def alsa_capture_devices() -> list[str]:
+    """Real capture devices, i.e. plausible microphones.
+
+    Filters out the Tegra XBAR/ADMAIF `dlink` entries. Those are the SoC's
+    internal audio routing fabric, they appear on every Jetson whether or not a
+    microphone exists, and opening one yields silence rather than an error —
+    which would look exactly like a room where nobody is talking.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["arecord", "-l"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    devices = []
+    for line in out.splitlines():
+        if not line.startswith("card "):
+            continue
+        if "dlink" in line or "ADMAIF" in line:
+            continue
+        try:
+            card = line.split("card ", 1)[1].split(":", 1)[0].strip()
+            dev = line.split("device ", 1)[1].split(":", 1)[0].strip()
+        except IndexError:
+            continue
+        devices.append(f"plughw:{card},{dev}")
+    return devices
+
+
+def iter_alsa_frames(device: str = "", frame_bytes: int = FRAME_BYTES) -> Iterator[bytes]:
+    """Frames from a USB microphone. Always on — no button, no gating.
+
+    Shells out to `arecord` rather than adding pyaudio/sounddevice: both need
+    portaudio headers to build, neither has a wheel that installs cleanly on
+    JetPack, and alsa-utils is already present. `plughw:` rather than `hw:` so
+    ALSA resamples and reformats for us — a USB mic that only does 44.1 kHz
+    stereo then still arrives here as the 16 kHz mono the recogniser needs.
+    """
+    import subprocess
+
+    if not device:
+        found = alsa_capture_devices()
+        if not found:
+            raise ListenUnavailable(
+                "no ALSA capture device — the Jetson has no built-in microphone, "
+                "so continuous listening needs a USB mic plugged in. Without one, "
+                "use the robot's own mic (push-to-talk, hold L1+L2).")
+        device = found[0]
+
+    proc = subprocess.Popen(
+        ["arecord", "-D", device, "-f", "S16_LE", "-r", str(MIC_SAMPLE_RATE),
+         "-c", "1", "-t", "raw", "-q"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    log.info("listen.alsa_opened", device=device)
+    try:
+        while True:
+            # Exact reads: a short read at a frame boundary desynchronises the
+            # 16-bit samples and everything after it decodes as noise.
+            chunk = proc.stdout.read(frame_bytes)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def describe_audio_source() -> dict[str, Any]:
+    """Which source will be used, and whether it can listen continuously."""
+    devices = alsa_capture_devices()
+    if AUDIO_SOURCE == "alsa" or (AUDIO_SOURCE == "auto" and devices):
+        return {"source": "alsa", "device": ALSA_DEVICE or (devices[0] if devices else None),
+                "always_on": True, "devices": devices}
+    return {
+        "source": "multicast", "device": f"{MIC_GROUP}:{MIC_PORT}",
+        "always_on": False, "devices": devices,
+        "note": ("the robot's own mic is push-to-talk: it streams only while "
+                 "somebody holds L1+L2. Plug a USB mic into the Jetson for "
+                 "continuous listening."),
+    }
+
+
+def default_source(frame_bytes: int = FRAME_BYTES) -> Iterator[bytes]:
+    """The configured source, resolved at call time."""
+    chosen = describe_audio_source()
+    if chosen["source"] == "alsa":
+        return iter_alsa_frames(chosen["device"] or "", frame_bytes)
+    return iter_mic_frames(timeout_s=0.5)
+
+
 class MicListener:
     """Always-on background listener. The agent reads; it never waits.
 
@@ -437,7 +554,7 @@ class MicListener:
         self._whisper = whisper
         self._phrases = phrases
         self._max_keep = max_keep
-        self._source = source or (lambda: iter_mic_frames(timeout_s=0.5))
+        self._source = source or (lambda: default_source())
         self._build = build
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
