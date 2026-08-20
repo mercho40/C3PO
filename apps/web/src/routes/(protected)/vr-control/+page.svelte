@@ -1075,9 +1075,12 @@
         role="alert"
         class="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5 text-sm text-ink"
       >
-        <strong>Detenido por PARAR.</strong> El puente cortó el movimiento. Soltá
-        los controles (y bajá la cabeza al centro) para volver a habilitarlo — se
-        mantiene detenido mientras sigas apretando.
+        <strong>Detenido por PARAR.</strong> El puente cortó el movimiento.
+        Soltá los controles y la cabeza al centro, y mantenelos así
+        <strong>un segundo completo</strong> para volver a habilitarlo. Soltar y volver
+        a apretar en el acto no alcanza: es justo lo que uno hace por reflejo al frenar
+        de golpe, y no puede ser lo que reanuda al robot. Reconectar tampoco lo borra
+        — la parada sigue en pie hasta que alguien la libera acá.
       </p>
     {/if}
 
