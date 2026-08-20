@@ -75,6 +75,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from bridge.teleop import hands as hands_mod
 from bridge.teleop.arm_sdk import ArmSdkUnavailable, get_driver
 from bridge.teleop.protocol import FrameError, TeleopFrame, parse_frame
+from bridge.estop import last_stop_at
 from bridge.skills.task_runtime import get_registry
 from bridge.teleop.retarget import (
     DEFAULT_ARM_LENGTH_M,
@@ -139,6 +140,10 @@ class TeleopSession:
         self.task = get_registry().create("teleop_session")
         self.task.phase = "streaming"
         self.stopped = False
+        #: Newest stop already reacted to. Seeded from disk so a session
+        #: starting after an OLD stop does not immediately latch on it — what
+        #: matters is a stop during *this* session.
+        self._seen_stop_at = last_stop_at()
         self.frame: TeleopFrame | None = None
         self.last_frame_at = 0.0
         self.frames_received = 0
@@ -214,9 +219,19 @@ class TeleopSession:
         the dead-man clears it, and clearing also re-arms the underlying event
         so a second PARAR works exactly like the first.
         """
+        # Two independent sources, covering different failures. The cancel
+        # event catches a stop raised inside THIS process. The sentinel catches
+        # one raised in the bridge's — which is where the console's PARAR
+        # button actually lands, and which the registry cannot reach.
+        stop_at = last_stop_at()
+        if stop_at > self._seen_stop_at:
+            self._seen_stop_at = stop_at
+            if not self.stopped:
+                log.warning("teleop.estop", source="sentinel", task_id=self.task.task_id)
+            self.stopped = True
         if self.task.cancel_event.is_set():
             if not self.stopped:
-                log.warning("teleop.estop", task_id=self.task.task_id)
+                log.warning("teleop.estop", source="registry", task_id=self.task.task_id)
             self.stopped = True
         if self.stopped and self.frame is not None and not self.frame.enabled:
             self.stopped = False
