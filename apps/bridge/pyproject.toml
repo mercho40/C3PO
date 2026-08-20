@@ -23,7 +23,18 @@ dependencies = [
 # `skills/listen.py::available()` reports its absence with the fix attached, and
 # the tests that need it skip rather than fail, so a Mac checkout stays green.
 [project.optional-dependencies]
+# The spoken stop. Small, CPU-only, and it lives in the bridge because D6.2 puts
+# the stop phrase in the same process as stop_everything.
 voice = ["vosk>=0.3.45"]
+
+# Transcription. SEPARATE FROM `voice` ON PURPOSE: faster-whisper drags in
+# ctranslate2 and a few hundred MB of runtime, and D6.2 is explicit that ML deps
+# stay out of the process that owns the stop. Splitting the extras means the
+# bridge can install `voice` alone and a future voice process installs `stt`,
+# without that separation having to be built before it is needed.
+#
+#     uv sync --extra voice --extra stt      # both, on the Jetson today
+stt = ["faster-whisper>=1.1.0"]
 
 [dependency-groups]
 dev = [
