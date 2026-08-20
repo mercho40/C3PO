@@ -226,7 +226,7 @@ don't pin it** — holding the provider package on an old maintenance major to d
 change would have frozen three packages, where moving the whole line cost a single renamed
 import.
 
-## D6 — Voice: local wake word, cloud STT/TTS
+## D6 — Voice: local wake word, cloud STT, local TTS
 
 **Decided:**
 
@@ -237,9 +237,11 @@ import.
 | Speech → text | cloud          | Deepgram streaming — handles Spanish             |
 | Text → speech | cloud          | external synth → `PlayStream` — **required, D6.1** |
 
-**Why not local STT/TTS:** the brain is already cloud. If the network drops there is no
-reply to speak, so local Whisper/Piper buys **zero** offline capability while competing
-with YOLO for the GPU. **Why the wake word must be local:** continuously streaming a
+**Why not local STT:** the brain is already cloud, so if the network drops there is no
+reply to speak and local Whisper buys **zero** offline capability while competing with
+YOLO for the GPU. **This reasoning does NOT extend to TTS, and D6.2 reverses that half:**
+the sentences most worth saying — "estoy atascado", a refusal, a warning — are exactly the
+ones that must survive a network drop, and Piper needs no key and no network. **Why the wake word must be local:** continuously streaming a
 microphone to the cloud is untenable on cost, bandwidth and privacy grounds.
 
 **The safety exception:** the local wake-word model also detects **"stop"**, wired directly
@@ -301,6 +303,95 @@ people will rely on it.
 
 **Not built.** No STT, no wake word, no `PlayStream` path. `say` works, in two languages
 this deployment does not use.
+
+### D6.2 — The voice stack, and where each piece runs
+
+**Decided:** the loop is **local at both ends and cloud only in the middle**, and it is
+split across two processes by *criticality*, not by convenience.
+
+| Stage            | Runs in            | Component                                   | Why there                                                       |
+| ---------------- | ------------------ | ------------------------------------------- | --------------------------------------------------------------- |
+| Mic capture      | onboard            | UDP multicast join, `239.168.123.161:5555`  | the group is on `192.168.123.0/24`; unreachable off-robot        |
+| **Stop phrase**  | **`apps/bridge`**  | openWakeWord ONNX, Spanish                  | shortest possible path to `stop_everything` — see below          |
+| VAD + wake word  | voice process      | Silero VAD v5 + openWakeWord                | ML deps stay out of the process that owns the stop               |
+| Speech → text    | `apps/back`        | Deepgram Nova-3, `es-419`                   | the key lives where every other key lives, never on the robot    |
+| Text → speech    | onboard            | **Piper**, `es_AR` — local, offline         | no key, no network, Argentine accent                             |
+| Playback         | `apps/bridge`      | `PlayStream` 1003/1004 + PCM in `.binary`   | actuation chokepoint; `_CallRequestWithParamAndBin` already ships |
+
+**Multicast is what makes the safety split free.** The mic is a multicast group, not a
+device, so **two processes can join it independently**. The bridge joins it and runs
+*nothing but* the stop detector — a ~1 MB ONNX on CPU, no STT, no synthesis, no network.
+The voice process joins the same group for everything else. So **if the voice process
+dies, hangs, or is being rebuilt, the spoken stop still works**, and it never crosses a
+process boundary to reach `stop_everything`. That is the D6 safety exception implemented
+rather than merely restated. It is also why the stop detector must not be "just another
+subscriber" to a voice service: a shared process is a shared failure.
+
+**Cloud STT does not put a key on the robot.** Audio goes robot → `back` → Deepgram; text
+comes back. `back` already holds every credential, and the rule that **the robot holds no
+cloud credentials** is a real security property — it is physically accessible, shared with
+another team, and runs third-party containers. Nova-3 covers `es-419` at <300 ms streaming.
+Local `faster-whisper` is the documented fallback and is *proven on this exact machine*:
+`Systran/faster-whisper-base` is cached on-robot from the co-tenant's own mic→Whisper work.
+It costs accuracy and Orin compute, and buys back only the network — which the agent needs
+anyway, so it buys nothing the stop phrase does not already provide.
+
+**TTS is local, and that is a change from D6.** D6 assumed cloud TTS; D6.1 established that
+*external* synthesis is mandatory because the firmware has no Spanish voice. External does
+not have to mean cloud. Piper runs on aarch64 from a prebuilt binary, streams raw 16-bit
+mono PCM on `--output-raw`, needs no key, and works with the network down — which matters
+precisely for the sentences worth saying when things are going wrong ("estoy atascado").
+
+**The `es_AR` voice costs a resampler, and that is the trade to make consciously:**
+
+| voice            | accent        | quality | rate      | vs `PlayStream`'s 16 kHz    |
+| ---------------- | ------------- | ------- | --------- | ---------------------------- |
+| `es_AR/daniela`  | **Argentine** | high    | 22 050 Hz | needs 22050→16000 (320/441)  |
+| `es_ES/carlfm`   | Spain         | x_low   | 16 000 Hz | native, no resampling        |
+
+`PlayStream` hard-rejects anything but 16 kHz mono 16-bit — both vendor examples enforce
+it. Neither `ffmpeg` nor `sox` is installed on the robot, so a resampler is a Python
+dependency we would be adding. Recommendation: **`es_AR/daniela` plus a polyphase
+resample**, because the robot talking to Argentine students in a Spain accent is a daily
+papercut and the resampler is one dependency, written once.
+
+**Three constraints that are not ours to fix, and must be designed around:**
+
+1. **The vendor assistant competes for the one speaker and cannot be disabled in
+   software.** `vui_service` provides TTS, `PlayStream`, volume *and* the light strip — one
+   service, so silencing the assistant silences us. `PlayStop` is scoped by `app_name`, so
+   we cannot stop their stream and they cannot stop ours. Use our own `app_name`, expect
+   contention, do not plan around removing it.
+2. **The onboard ASR is unreachable by design.** `voice` api 1002 is registered by every
+   vendor client and called by none, and the built-in recognition is gated on *wake-up
+   mode*, switched by **L1+L2 on the remote or in the App** — a human prerequisite we
+   cannot satisfy over DDS. This is why STT is ours and not the robot's.
+3. **Audio is almost certainly not FSM-gated**, which makes speech the channel that still
+   works when motion is being refused. Structural evidence only; the cheap confirmation is
+   one `GET_VOLUME` in each reachable state.
+
+**THE ONE TEST THAT GATES ALL OF THIS.** It is unknown whether the raw multicast mic feed
+is gated on the same remote-controlled wake-up mode as the onboard ASR. If it is, there is
+no microphone available to us over DDS at all and the entire listening half collapses —
+every other decision here is downstream of that answer. The test is a **zero-risk, sub-minute,
+no-motion** check: join `239.168.123.161:5555` bound to the `192.168.123.*` interface and
+count packets for ten seconds, once with the assistant idle and once after L1+L2. Do it
+**before** any of this is built. Note `INADDR_ANY` yields zero packets with no error, so a
+silent result proves nothing unless the interface was bound correctly.
+
+**The wake-word model is the real work, and it is safety-critical.** openWakeWord ships
+English models only; other languages go through the documented synthetic-TTS training path
+(Piper/Kokoro voices, ~13 k positive samples, GPU, Linux) — which is exactly what the
+LAN H100 is for: **train off-robot, infer on-robot**, the same shape as the detector
+fine-tune. Two models are needed and they are not equally forgiving: a conversational wake
+phrase can afford false negatives, while the **stop phrase cannot**, and it has to fire for
+a stressed speaker whose pronunciation degrades under exactly those conditions. Decide the
+phrase for separability, not charm — short, distinct, and unlikely in ordinary speech.
+D6.1's warning stands: a spoken stop that works in demos and not in panic is worse than
+none, because people rely on it.
+
+**Not built.** Nothing above exists. `apps/bridge` has `speak()` (firmware TTS) and no
+`play_pcm()`; the SDK's `_CallRequestWithParamAndBin` is present and unused.
 
 ## D7 — The world-model contract
 
