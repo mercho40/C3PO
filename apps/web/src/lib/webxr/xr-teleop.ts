@@ -53,6 +53,8 @@ export type XrTeleopCallbacks = {
 };
 
 export type XrTeleopSupport = {
+  /** Passthrough. Preferred — see `start()`. */
+  immersiveAr: boolean;
   immersiveVr: boolean;
   /**
    * Whether the browser exposes the hand-tracking API at all. This is a
@@ -80,15 +82,24 @@ function normalizeAngle(a: number): number {
 
 export async function checkXrSupport(): Promise<XrTeleopSupport> {
   if (typeof navigator === "undefined" || !navigator.xr) {
-    return { immersiveVr: false, handTracking: false };
+    return { immersiveAr: false, immersiveVr: false, handTracking: false };
   }
-  let immersiveVr = false;
-  try {
-    immersiveVr = await navigator.xr.isSessionSupported("immersive-vr");
-  } catch {
-    immersiveVr = false;
-  }
-  return { immersiveVr, handTracking: typeof XRHand !== "undefined" };
+  const supported = async (mode: XRSessionMode) => {
+    try {
+      return await navigator.xr!.isSessionSupported(mode);
+    } catch {
+      return false;
+    }
+  };
+  const [immersiveAr, immersiveVr] = await Promise.all([
+    supported("immersive-ar"),
+    supported("immersive-vr"),
+  ]);
+  return {
+    immersiveAr,
+    immersiveVr,
+    handTracking: typeof XRHand !== "undefined",
+  };
 }
 
 // --- finger closure ---------------------------------------------------------
@@ -181,6 +192,7 @@ export class XrTeleopSession {
   #needsRecenter = true;
   #callbacks: XrTeleopCallbacks;
   #handsSeen = false;
+  #mode: XRSessionMode | null = null;
 
   constructor(callbacks: XrTeleopCallbacks) {
     this.#callbacks = callbacks;
@@ -193,6 +205,16 @@ export class XrTeleopSession {
   /** Whether any hand has been tracked since the session began. */
   get handsSeen(): boolean {
     return this.#handsSeen;
+  }
+
+  /**
+   * Which mode the session actually got. `immersive-ar` means passthrough and
+   * a composited DOM overlay; `immersive-vr` means the overlay may not be
+   * visible at all, which the page should say out loud rather than leave the
+   * wearer staring at black.
+   */
+  get mode(): XRSessionMode | null {
+    return this.#mode;
   }
 
   /** Re-capture "forward" as the headset's current yaw, on the next frame. */
@@ -212,13 +234,46 @@ export class XrTeleopSession {
       throw new Error("WebXR no está disponible en este navegador.");
     }
 
-    const session = await navigator.xr.requestSession("immersive-vr", {
-      // All optional: a headset without hand tracking still gives a usable
-      // head-yaw session, and requiring the feature would turn "no hands"
-      // into "no session".
-      optionalFeatures: ["dom-overlay", "local-floor", "hand-tracking"],
-      domOverlay: { root: overlayRoot },
-    });
+    // PASSTHROUGH FIRST, and this is a correction rather than a preference.
+    //
+    // The first headset session drew a black void. The cause: `dom-overlay` is
+    // an AR feature. Under `immersive-vr` the Quest browser does not composite
+    // the DOM at all, so the operator got our cleared (transparent, therefore
+    // black) WebGL layer and nothing else — no controls, no PARAR, no way to
+    // tell whether anything was working.
+    //
+    // `immersive-ar` fixes it twice over. The DOM overlay is composited, so the
+    // controls are actually there; and passthrough means the operator sees the
+    // room — including the robot they are driving. For teleoperation from the
+    // same room that is not a consolation prize, it is the better view: you
+    // watch the machine, not a rendering of it.
+    //
+    // VR stays as a fallback for a headset without passthrough. There the
+    // overlay may still not composite, which is why `start()` reports the mode
+    // it got and the page warns.
+    const requested: XRSessionMode[] = (await checkXrSupport()).immersiveAr
+      ? ["immersive-ar", "immersive-vr"]
+      : ["immersive-vr"];
+
+    let session: XRSession | null = null;
+    let lastError: unknown = null;
+    for (const mode of requested) {
+      try {
+        session = await navigator.xr.requestSession(mode, {
+          // All optional: a headset without hand tracking still gives a usable
+          // head-yaw session, and requiring the feature would turn "no hands"
+          // into "no session".
+          optionalFeatures: ["dom-overlay", "local-floor", "hand-tracking"],
+          domOverlay: { root: overlayRoot },
+        });
+        this.#mode = mode;
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (!session)
+      throw lastError ?? new Error("No se pudo iniciar una sesión XR.");
 
     // Everything past this point must either fully succeed or end the
     // session again. A partially-initialised session is worse than none:
@@ -256,6 +311,7 @@ export class XrTeleopSession {
       session.addEventListener("end", () => {
         this.#session = null;
         this.#referenceSpace = null;
+        this.#mode = null;
         this.#callbacks.onEnd?.();
       });
 

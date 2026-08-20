@@ -91,9 +91,9 @@
   // firmware's own deadman (walk_velocity's duration) already zeroed it.
   const MAX_HOLD_S = 8; // dead-man ceiling for continuous combined motion.
 
-  const YAW_DEADZONE_RAD = (8 * Math.PI) / 180; // ignore natural head wobble
-  const YAW_FULL_SCALE_RAD = (45 * Math.PI) / 180; // head turn that saturates vyaw
-  const YAW_MAX_RAD_S = 0.25; // below the bridge's 0.3 hard cap
+  const YAW_DEADZONE_RAD = (6 * Math.PI) / 180; // ignore natural head wobble
+  const YAW_FULL_SCALE_RAD = (30 * Math.PI) / 180; // head turn that saturates vyaw
+  const YAW_MAX_RAD_S = 0.3; // below the bridge's 0.3 hard cap
   const VR_STALE_MS = 800; // no fresh pose sample in this long -> treat as 0
 
   type WalkDir = "forward" | "back";
@@ -108,6 +108,11 @@
   let deadManTripped = false;
 
   let vrSupported = $state(false);
+  let arSupported = $state(false);
+  //: Which mode the live session actually got. Passthrough composites the DOM
+  //: overlay; plain VR may not, which is what produced a black view with no
+  //: controls in the first headset session.
+  let xrMode = $state<string | null>(null);
   let handTrackingSupported = $state(false);
   let vrActive = $state(false);
   let vrError = $state<string | null>(null);
@@ -151,7 +156,8 @@
 
   onMount(() => {
     void checkXrSupport().then((s) => {
-      vrSupported = s.immersiveVr;
+      vrSupported = s.immersiveVr || s.immersiveAr;
+      arSupported = s.immersiveAr;
       handTrackingSupported = s.handTracking;
     });
   });
@@ -308,6 +314,7 @@
       },
       onEnd: () => {
         vrActive = false;
+        xrMode = null;
         vr = null;
         // Leaving VR must not leave the arms up: the stream's own frames stop
         // carrying `arms: true`, which is the bridge's cue to ramp the
@@ -326,6 +333,7 @@
     try {
       await session.start(overlayRoot);
       vr = session;
+      xrMode = session.mode;
       vrActive = true;
       deadManTripped = false;
       motionStartedAt = null;
@@ -533,7 +541,12 @@
     },
   ] as const;
 
-  type PresetOutcome = "ok" | "error" | null;
+  // "denied" is separated from "error" because they need different actions
+  // from the operator. A 403 is not a robot problem — the skill exists, the
+  // robot is fine, this account simply is not admin — and telling somebody in
+  // a headset that a gesture "Falló" sends them to debug the robot instead of
+  // the account.
+  type PresetOutcome = "ok" | "error" | "denied" | null;
   let presetBusy = $state<string | null>(null);
   let presetOutcome = $state<Record<string, PresetOutcome>>({});
 
@@ -543,11 +556,15 @@
     presetOutcome = { ...presetOutcome, [name]: null };
     try {
       const { error } = await createApi(fetch).skills({ name }).invoke.post({});
-      if (error && (error.status as number) === 401) {
+      const status = error ? (error.status as number) : 0;
+      if (status === 401) {
         if (browser) await goto("/login");
         return;
       }
-      presetOutcome = { ...presetOutcome, [name]: error ? "error" : "ok" };
+      presetOutcome = {
+        ...presetOutcome,
+        [name]: !error ? "ok" : status === 403 ? "denied" : "error",
+      };
     } catch {
       presetOutcome = { ...presetOutcome, [name]: "error" };
     } finally {
@@ -618,8 +635,12 @@
     >
       <TriangleAlert class="mt-0.5 size-4 shrink-0 text-danger-soft" />
       <p>
-        Esta cuenta no es admin — los botones de esta página van a rechazarse
-        con 403. Invocación directa de skills requiere rol admin.
+        Esta cuenta no es admin. <strong
+          >Los gestos y la puesta en marcha van a fallar con 403</strong
+        > — invocar skills directamente requiere rol admin. Caminar y girar con la
+        cabeza SÍ funcionan: van por el stream de teleoperación, que no pasa por esa
+        puerta. PARAR también funciona siempre, porque está clasificado como skill
+        de seguridad.
       </p>
     </div>
   {/if}
@@ -683,7 +704,9 @@
         >
           <span class="font-display font-semibold">{step.label}</span>
           <span class="text-xs text-ink-mute">{step.hint}</span>
-          {#if presetOutcome[step.name] === "error"}
+          {#if presetOutcome[step.name] === "denied"}
+            <span class="text-xs text-warn">Requiere admin</span>
+          {:else if presetOutcome[step.name] === "error"}
             <span class="text-xs text-danger-soft">Falló</span>
           {:else if presetOutcome[step.name] === "ok"}
             <span class="text-xs text-cyan">Enviado</span>
@@ -756,17 +779,35 @@
         <Button variant="outline" onclick={recenterVr}>Recentrar</Button>
         <Button variant="outline" onclick={exitVr}>Salir de VR</Button>
         <span class="readout">
-          {yawDisplayDeg}° de giro{trackingStale
-            ? " · seguimiento perdido"
-            : ""}
+          {xrMode === "immersive-ar" ? "Passthrough · " : ""}{yawDisplayDeg}° de
+          giro{trackingStale ? " · seguimiento perdido" : ""}
         </span>
       </div>
     {/if}
     <p class="readout">
-      Girá la cabeza más de 8° respecto del frente calibrado para que el robot
-      empiece a girar; a más ángulo, más rápido, hasta 45°. Se puede combinar
+      Girá la cabeza más de 6° respecto del frente calibrado para que el robot
+      empiece a girar; a más ángulo, más rápido, hasta 30°. Se puede combinar
       con los botones de caminar.
     </p>
+    {#if vrActive && xrMode !== "immersive-ar"}
+      <p
+        role="alert"
+        class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-ink"
+      >
+        <strong>Sesión sin passthrough.</strong> El visor no dio
+        <code>immersive-ar</code>, así que puede que no veas nada más que negro:
+        el overlay del navegador no se compone en modo VR puro. Los controles
+        siguen funcionando a ciegas, pero salí de VR si necesitás verlos.
+      </p>
+    {/if}
+
+    {#if !arSupported && vrSupported}
+      <p class="text-sm text-ink-mute">
+        Este visor no reporta passthrough (<code>immersive-ar</code>). Vas a
+        entrar en VR puro, donde el overlay puede no verse.
+      </p>
+    {/if}
+
     {#if vrError}
       <p role="alert" class="text-sm text-danger-soft">{vrError}</p>
     {/if}
@@ -901,7 +942,9 @@
           {#if untested}
             <Badge variant="outline" class="text-2xs">Sin probar en real</Badge>
           {/if}
-          {#if presetOutcome[preset.name] === "error"}
+          {#if presetOutcome[preset.name] === "denied"}
+            <span class="text-xs text-warn">Requiere admin</span>
+          {:else if presetOutcome[preset.name] === "error"}
             <span class="text-xs text-danger-soft">Falló</span>
           {/if}
         </button>
