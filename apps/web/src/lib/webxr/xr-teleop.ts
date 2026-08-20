@@ -25,6 +25,8 @@
  * Never live-tested against an actual headset.
  */
 
+import { CameraLayer } from "./camera-layer";
+
 export type HandSample = {
   /** Wrist position in the reference space, metres. */
   position: [number, number, number];
@@ -43,6 +45,16 @@ export type XrSample = {
   headPosition: [number, number, number];
   left: HandSample | null;
   right: HandSample | null;
+};
+
+export type XrTeleopOptions = {
+  /**
+   * MJPEG endpoint to show as the view, e.g.
+   * `http://localhost:8081/stream.mjpg`. Omitted or unreachable simply means
+   * no picture — the session still runs, which matters because head-yaw
+   * steering does not depend on seeing anything.
+   */
+  cameraStreamUrl?: string;
 };
 
 export type XrTeleopCallbacks = {
@@ -193,9 +205,17 @@ export class XrTeleopSession {
   #callbacks: XrTeleopCallbacks;
   #handsSeen = false;
   #mode: XRSessionMode | null = null;
+  #options: XrTeleopOptions;
+  #camera: CameraLayer | null = null;
 
-  constructor(callbacks: XrTeleopCallbacks) {
+  constructor(callbacks: XrTeleopCallbacks, options: XrTeleopOptions = {}) {
     this.#callbacks = callbacks;
+    this.#options = options;
+  }
+
+  /** Whether the camera layer has decoded at least one frame. */
+  get cameraLive(): boolean {
+    return this.#camera?.hasFrame ?? false;
   }
 
   get active(): boolean {
@@ -296,6 +316,11 @@ export class XrTeleopSession {
       const layer = new XRWebGLLayer(session, gl);
       await session.updateRenderState({ baseLayer: layer });
 
+      if (this.#options.cameraStreamUrl) {
+        this.#camera = new CameraLayer(gl);
+        this.#camera.attach(this.#options.cameraStreamUrl);
+      }
+
       let referenceSpace: XRReferenceSpace;
       try {
         referenceSpace = await session.requestReferenceSpace("local-floor");
@@ -312,6 +337,10 @@ export class XrTeleopSession {
         this.#session = null;
         this.#referenceSpace = null;
         this.#mode = null;
+        // Disposing cuts the <img> src, which is what actually closes the
+        // MJPEG request — an ended session must not keep pulling frames.
+        this.#camera?.dispose();
+        this.#camera = null;
         this.#callbacks.onEnd?.();
       });
 
@@ -324,6 +353,9 @@ export class XrTeleopSession {
         gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        // The camera IS the view in VR; in passthrough it is a heads-up layer
+        // over the room, so it does not paint over what the operator can see.
+        this.#camera?.draw(this.#mode !== "immersive-ar");
 
         const pose = frame.getViewerPose(space);
         if (!pose) return; // tracking lost this frame — the caller's own

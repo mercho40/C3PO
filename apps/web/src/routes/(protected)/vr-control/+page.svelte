@@ -113,6 +113,10 @@
   //: overlay; plain VR may not, which is what produced a black view with no
   //: controls in the first headset session.
   let xrMode = $state<string | null>(null);
+  //: Whether the in-headset camera layer has decoded a frame. Distinct from
+  //: the on-page panel: they share a source but not a decoder, so one can be
+  //: live while the other is not.
+  let xrCameraLive = $state(false);
   let handTrackingSupported = $state(false);
   let vrActive = $state(false);
   let vrError = $state<string | null>(null);
@@ -224,6 +228,7 @@
    */
   function tick() {
     yawDisplayDeg = Math.round((yawErrorRadians * 180) / Math.PI);
+    if (vr) xrCameraLive = vr.cameraLive;
     trackingStale = vrActive && Date.now() - lastYawSampleAt > VR_STALE_MS;
 
     if (!loopShouldRun()) {
@@ -303,33 +308,46 @@
   async function enterVr() {
     vrError = null;
     if (!overlayRoot) return;
-    const session = new XrTeleopSession({
-      onSample: (s) => {
-        yawErrorRadians = s.yawErrorRadians;
-        headPosition = s.headPosition;
-        handLeft = s.left;
-        handRight = s.right;
-        lastYawSampleAt = Date.now();
-        noteHandsVisible();
+    // Hand the XR session the same MJPEG endpoint the on-page panel uses, so
+    // entering VR shows the robot's view rather than a void. Empty is fine —
+    // the session runs without a picture, and head-yaw steering never needed
+    // one.
+    const camBase = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
+    const session = new XrTeleopSession(
+      {
+        onSample: (s) => {
+          yawErrorRadians = s.yawErrorRadians;
+          headPosition = s.headPosition;
+          handLeft = s.left;
+          handRight = s.right;
+          lastYawSampleAt = Date.now();
+          noteHandsVisible();
+        },
+        onEnd: () => {
+          vrActive = false;
+          xrMode = null;
+          xrCameraLive = false;
+          vr = null;
+          // Leaving VR must not leave the arms up: the stream's own frames stop
+          // carrying `arms: true`, which is the bridge's cue to ramp the
+          // arm_sdk weight back down.
+          // The next pulled frame reports `fresh: false` on its own, so there is
+          // nothing to push here — that is the point of pulling.
+          armsRequested = false;
+          handLeft = null;
+          handRight = null;
+          if (!loopShouldRun()) {
+            stopLoop();
+            void sendVelocity(0, 0, 0.5);
+          }
+        },
       },
-      onEnd: () => {
-        vrActive = false;
-        xrMode = null;
-        vr = null;
-        // Leaving VR must not leave the arms up: the stream's own frames stop
-        // carrying `arms: true`, which is the bridge's cue to ramp the
-        // arm_sdk weight back down.
-        // The next pulled frame reports `fresh: false` on its own, so there is
-        // nothing to push here — that is the point of pulling.
-        armsRequested = false;
-        handLeft = null;
-        handRight = null;
-        if (!loopShouldRun()) {
-          stopLoop();
-          void sendVelocity(0, 0, 0.5);
-        }
+      {
+        cameraStreamUrl: camBase
+          ? `${camBase.replace(/\/+$/, "")}/stream.mjpg`
+          : undefined,
       },
-    });
+    );
     try {
       await session.start(overlayRoot);
       vr = session;
@@ -789,6 +807,18 @@
       empiece a girar; a más ángulo, más rápido, hasta 30°. Se puede combinar
       con los botones de caminar.
     </p>
+    {#if vrActive && !xrCameraLive}
+      <p
+        role="alert"
+        class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-ink"
+      >
+        <strong>Sin imagen en el visor.</strong> No llegó ningún cuadro de la
+        cámara. Casi siempre es que <code>perception_up perception</code> no está
+        corriendo en el robot — es el proceso que tiene la D435i y sirve el stream
+        en 8081.
+      </p>
+    {/if}
+
     {#if vrActive && xrMode !== "immersive-ar"}
       <p
         role="alert"
