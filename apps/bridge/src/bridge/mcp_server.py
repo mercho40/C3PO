@@ -27,9 +27,9 @@ different thing: the daemon running onboard the Jetson, reached over HTTP
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
-import time
 import uuid
 from typing import Annotated, Literal
 
@@ -217,7 +217,11 @@ async def walk_to(
 
     if SIM_MODE == "stub":
         task_id = f"tsk_{uuid.uuid4().hex[:12]}"
-        time.sleep(0.2)
+        # `await`, not `time.sleep`: these handlers are async, and a blocking
+        # sleep here freezes the whole MCP event loop — including the
+        # `cancel_task` and `stop_everything` calls that are supposed to be
+        # able to interrupt a movement while it is happening.
+        await asyncio.sleep(0.2)
         return {
             "task_id": task_id,
             "status": "ok",
@@ -332,7 +336,11 @@ async def turn(
 
     if SIM_MODE == "stub":
         task_id = f"tsk_{uuid.uuid4().hex[:12]}"
-        time.sleep(0.2)
+        # `await`, not `time.sleep`: these handlers are async, and a blocking
+        # sleep here freezes the whole MCP event loop — including the
+        # `cancel_task` and `stop_everything` calls that are supposed to be
+        # able to interrupt a movement while it is happening.
+        await asyncio.sleep(0.2)
         return {
             "task_id": task_id,
             "status": "ok",
@@ -441,7 +449,11 @@ async def walk_velocity(
 
     if SIM_MODE == "stub":
         task_id = f"tsk_{uuid.uuid4().hex[:12]}"
-        time.sleep(0.2)
+        # `await`, not `time.sleep`: these handlers are async, and a blocking
+        # sleep here freezes the whole MCP event loop — including the
+        # `cancel_task` and `stop_everything` calls that are supposed to be
+        # able to interrupt a movement while it is happening.
+        await asyncio.sleep(0.2)
         return {
             "task_id": task_id,
             "status": "ok",
