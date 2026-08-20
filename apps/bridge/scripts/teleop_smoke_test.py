@@ -168,11 +168,19 @@ async def stage_preflight(session: ClientSession, url: str) -> None:
     """No actuation at all. Confirms both halves are up and talking."""
     print("\n=== 1. PREFLIGHT ===")
     state = await mcp_state(session)
+    env = state.get("env")
+    print(f"    env          : {env}")
     print(f"    posture      : {state.get('posture')}")
     print(f"    battery      : {state.get('battery_pct')}%")
     print(f"    faults       : {state.get('faults')}")
     print(f"    pose         : {state.get('pose')}")
 
+    if env != "real":
+        raise Aborted(
+            f"the bridge reports env={env!r}, not 'real'. In any other mode velocity goes to "
+            "rt/run_command/cmd, an Isaac Sim channel real firmware ignores — so every stage "
+            "below would pass while the robot stood still. Fix SIM_MODE in apps/bridge/.env."
+        )
     if state.get("pose") is None:
         raise Aborted(
             "no pose. Stage 4 reads the yaw back from odometry to decide which way the "

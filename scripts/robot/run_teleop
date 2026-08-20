@@ -76,6 +76,19 @@ info "camera: run \`perception_up perception\` if you want a picture (port 8081)
 # Show the operator what the robot will and will not do, rather than making
 # them read four env vars across two files to find out why the arms are inert.
 say "Hardware gates"
+sim_mode="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${SIM_MODE:-stub}")"
+if [ "$sim_mode" != "real" ]; then
+    # Worth shouting about. In any non-real mode `send_velocity` publishes to
+    # `rt/run_command/cmd`, an Isaac Sim convenience channel that real G1
+    # firmware does not subscribe to — so everything below reports success and
+    # the robot does not move. That reads exactly like a broken headset, a bad
+    # tunnel, or a wrong FSM, and it is none of them.
+    err "SIM_MODE=$sim_mode — NOT 'real'. Nothing you do will move this robot."
+    err "Velocity goes to rt/run_command/cmd, which real firmware ignores."
+    err "Fix apps/bridge/.env, then stop_c3po && run_c3po && run_teleop."
+else
+    ok "SIM_MODE=real"
+fi
 arm_enabled="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_ARM_ENABLED:-}")"
 hand_enabled="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_HAND_ENABLED:-}")"
 hand_type="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_HAND_TYPE:-unset}")"
@@ -86,14 +99,14 @@ case "$arm_enabled" in
 esac
 case "$hand_enabled" in
     1|true|yes|on) warn "fingers ENABLED, type=$hand_type. Wrong hand type is a different command, not a no-op." ;;
-    *)             info "fingers disabled. Which hands are fitted is unresolved — run scripts/hand_probe.py (it only subscribes)" ;;
+    *)             info "fingers disabled. The hands are two BrainCo ([0,1], and NO firmware deadman — a closed hand stays closed until something opens it)" ;;
 esac
 
 say "Reach it from your laptop"
 cat <<'TUNNEL'
   ssh -N -o ControlMaster=no \
       -L 8001:127.0.0.1:8001 \
-      -L 8766:127.0.0.1:8766 \
+      -L 8081:127.0.0.1:8081 \
       -L 8767:127.0.0.1:8767 c3po
 
   then open /vr-control in the Quest's browser.
