@@ -38,8 +38,12 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
+import time
 import struct
+from collections import deque
 from collections.abc import Callable, Iterator
+from typing import Any
 
 import structlog
 
@@ -387,6 +391,194 @@ def listen_loop(
         tail = whisperer.transcribe(bytes(utterance)) or tail
     if tail and on_text is not None:
         on_text(tail)
+
+
+class MicListener:
+    """Always-on background listener. The agent reads; it never waits.
+
+    WHY BACKGROUND AND NOT A BLOCKING CALL. The microphone is push-to-talk: it
+    streams only while somebody holds L1+L2. That button press IS the "I am
+    talking to you" signal, and it happens on the human's schedule, not the
+    agent's. A blocking `listen(seconds)` forces the agent to GUESS when to
+    listen, and anyone who starts speaking outside that window is simply not
+    heard. Consuming continuously inverts it: by the time the agent thinks to
+    ask, the speech is already transcribed and waiting.
+
+    It also lets the robot do two things at once. A blocking listen means no
+    walking while hearing, and — because tool calls hold the transport — it
+    stalls every other call for the duration, `stop_everything` included.
+
+    COSTS ALMOST NOTHING WHILE IDLE. A closed mic delivers no packets, so the
+    thread sits in a socket timeout loop. There is no audio to decode and no
+    model work to do until somebody presses the button.
+
+    The stop phrase is detected here and REPORTED, not acted on. D6.2 had it
+    bypass the agent straight into stop_everything; that made sense when the
+    microphone was assumed always-on, and does not now — whoever is holding the
+    remote to make the robot hear at all already has a physical e-stop under
+    their thumb, which is faster and cannot mis-hear. Auto-triggering on a
+    mis-decode would halt the robot mid-task on a word nobody said. Pass
+    `on_stop=` to opt into acting on it.
+    """
+
+    def __init__(self, whisper: bool = True, phrases: list[str] | None = None,
+                 max_keep: int = 32,
+                 source: Callable[[], Iterator[bytes]] | None = None,
+                 build: Callable[[], tuple[Any, Any, Any]] | None = None) -> None:
+        """`source` and `build` exist so this is testable off the robot.
+
+        vosk ships no macOS wheel and the mic is a multicast group on hardware
+        we do not always have, so the default path cannot run on a laptop. The
+        thread's LOGIC — buffering, utterance boundaries, the pending/history
+        split, bounded queues — is where the bugs live, and none of it needs a
+        real recogniser. Injecting both means that logic is covered by tests
+        that run everywhere, and only the models themselves need the robot.
+        """
+        self._whisper = whisper
+        self._phrases = phrases
+        self._max_keep = max_keep
+        self._source = source or (lambda: iter_mic_frames(timeout_s=0.5))
+        self._build = build
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop_evt = threading.Event()
+
+        self._pending: list[dict[str, Any]] = []
+        self._history: deque[dict[str, Any]] = deque(maxlen=max_keep)
+        self._on_stop: Callable[[str], None] | None = None
+
+        self._frames = 0
+        self._utterances = 0
+        self._last_audio_at: float | None = None
+        self._error: str | None = None
+
+    # -- lifecycle -----------------------------------------------------------
+
+    def start(self, on_stop: Callable[[str], None] | None = None) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._on_stop = on_stop
+        self._stop_evt.clear()
+        self._thread = threading.Thread(target=self._run, name="mic-listener",
+                                        daemon=True)
+        self._thread.start()
+        log.info("mic_listener.started", whisper=self._whisper)
+
+    def stop(self) -> None:
+        self._stop_evt.set()
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    # -- the thread ----------------------------------------------------------
+
+    def _run(self) -> None:
+        try:
+            if self._build is not None:
+                detector, transcriber, whisperer = self._build()
+            else:
+                detector = StopPhraseDetector(phrases=self._phrases)
+                transcriber = Transcriber()
+                whisperer = WhisperTranscriber() if self._whisper else None
+        except ListenUnavailable as exc:
+            # Recorded rather than raised: this is a daemon thread, and an
+            # exception here would vanish into stderr while `poll()` kept
+            # returning an innocent empty list forever.
+            with self._lock:
+                self._error = str(exc)
+            log.error("mic_listener.unavailable", reason=str(exc))
+            return
+
+        utterance = bytearray()
+        for frame in self._source():
+            if self._stop_evt.is_set():
+                break
+
+            with self._lock:
+                self._frames += 1
+                self._last_audio_at = time.monotonic()
+
+            if hit := detector.feed(frame):
+                detector.reset()
+                log.warning("mic_listener.stop_phrase", phrase=hit)
+                self._record(hit, kind="stop")
+                if self._on_stop is not None:
+                    try:
+                        self._on_stop(hit)
+                    except Exception:
+                        log.exception("mic_listener.on_stop_failed")
+
+            if whisperer is not None:
+                utterance.extend(frame)
+
+            text = transcriber.feed(frame)
+            if text:
+                if whisperer is not None:
+                    text = whisperer.transcribe(bytes(utterance)) or text
+                    utterance.clear()
+                self._record(text, kind="speech")
+            elif whisperer is not None and len(utterance) > MAX_UTTERANCE_BYTES:
+                if better := whisperer.transcribe(bytes(utterance)):
+                    self._record(better, kind="speech")
+                utterance.clear()
+
+    def _record(self, text: str, kind: str) -> None:
+        item = {"text": text, "kind": kind, "at": time.monotonic()}
+        with self._lock:
+            if kind == "speech":
+                self._utterances += 1
+            self._pending.append(item)
+            self._history.append(item)
+            # Bound the pending queue too: an agent that never polls must not be
+            # able to grow this without limit while somebody talks at the robot.
+            if len(self._pending) > self._max_keep:
+                del self._pending[: -self._max_keep]
+
+    # -- reading -------------------------------------------------------------
+
+    def poll(self) -> list[dict[str, Any]]:
+        """Everything heard since the last poll. Returns immediately, always."""
+        now = time.monotonic()
+        with self._lock:
+            items, self._pending = self._pending, []
+        return [{**i, "age_s": round(now - i["at"], 2)} for i in items]
+
+    def recent(self, seconds: float = 30.0) -> list[dict[str, Any]]:
+        """Recent history WITHOUT consuming it — for a second look at context."""
+        now = time.monotonic()
+        with self._lock:
+            items = [i for i in self._history if now - i["at"] <= seconds]
+        return [{**i, "age_s": round(now - i["at"], 2)} for i in items]
+
+    def diagnostics(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            return {
+                "running": self.is_running(),
+                "error": self._error,
+                "frames": self._frames,
+                "utterances": self._utterances,
+                # The one number that separates "nobody is talking" from "the
+                # microphone is shut". None means no audio has EVER arrived,
+                # which on this robot means nobody has held L1+L2.
+                "seconds_since_audio": (
+                    None if self._last_audio_at is None
+                    else round(now - self._last_audio_at, 1)),
+                "mic_ever_open": self._last_audio_at is not None,
+                "pending": len(self._pending),
+            }
+
+
+_mic_listener: MicListener | None = None
+_mic_lock = threading.Lock()
+
+
+def get_mic_listener() -> MicListener:
+    global _mic_listener
+    with _mic_lock:
+        if _mic_listener is None:
+            _mic_listener = MicListener()
+        return _mic_listener
 
 
 def _iface_addr() -> str:
