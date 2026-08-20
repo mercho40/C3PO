@@ -29,9 +29,18 @@ in metres. What you keep: it points where they point, extends when they
 extend, and rotates as they rotate — which is what "the robot copies my arms"
 means to the person wearing the headset, and it is achievable today.
 
-⚠️ SIGN AND AXIS CONVENTIONS ARE UNVERIFIED
--------------------------------------------
-`docs/ROBOT-API.md` §9.3 gives the joint *order* (15-21 left, 22-28 right:
+SIGN AND AXIS CONVENTIONS — SHOULDERS AND ELBOW NOW MEASURED
+------------------------------------------------------------
+Settled on the robot 2026-08-20 for the **right** arm's shoulder and elbow:
+`shoulder_pitch` is **-1** (the original assumption was backwards),
+`shoulder_roll`, `shoulder_yaw` and `elbow` are **+1**. See `JOINT_SIGNS`.
+
+Still unverified: the three **wrist** joints, and the whole **left** arm.
+Wrist mapping is off by default (`include_wrist=False`), so those cost nothing
+today; the left column is inferred from bilateral symmetry, which is sound for
+the mirroring but says nothing about absolute polarity.
+
+`docs/ROBOT-API.md` gives the joint *order* (15-21 left, 22-28 right:
 shoulder pitch/roll/yaw, elbow, wrist roll/pitch/yaw) and that is solid. It
 does **not** give the positive direction of any of them, and no source we have
 does. Every sign below is therefore a stated assumption, collected in
@@ -156,9 +165,27 @@ LIMITS: dict[str, tuple[float, float]] = {
 #     signs on the two sides. That mirroring follows from bilateral symmetry
 #     rather than from any vendor claim; the absolute polarity of every row,
 #     including which side gets the minus, does not, and is unverified.
+#
+# MEASURED ON THE ROBOT, 2026-08-20, by scripts/arm_sign_check.py at FSM 4:
+#
+#     shoulder_pitch  -1.0   <- the assumption was WRONG
+#     shoulder_roll   +1.0
+#     shoulder_yaw    +1.0
+#     elbow           +1.0
+#     wrist_*                 still unverified — see below
+#
+# `shoulder_pitch` is the one that matters most: it is the joint the arm mirror
+# uses hardest, and at +1 every "reach forward" would have swung the arm
+# BACKWARD. From inside a headset that reads as the whole feature being broken,
+# with nothing to point at.
+#
+# The left column is still inferred, not measured. Roll and yaw are mirrored
+# because their axes are shared body-frame axes, which follows from bilateral
+# symmetry; pitch and elbow are copied across because they do not depend on it.
+# Run `arm_sign_check.py --side left` to replace inference with measurement.
 JOINT_SIGNS: dict[Side, dict[str, float]] = {
     "right": {
-        "shoulder_pitch": 1.0,
+        "shoulder_pitch": -1.0,
         "shoulder_roll": 1.0,
         "shoulder_yaw": 1.0,
         "elbow": 1.0,
@@ -167,7 +194,7 @@ JOINT_SIGNS: dict[Side, dict[str, float]] = {
         "wrist_yaw": 1.0,
     },
     "left": {
-        "shoulder_pitch": 1.0,
+        "shoulder_pitch": -1.0,
         "shoulder_roll": -1.0,
         "shoulder_yaw": -1.0,
         "elbow": 1.0,

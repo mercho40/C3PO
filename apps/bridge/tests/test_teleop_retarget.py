@@ -80,7 +80,12 @@ def test_arm_straight_out_in_front_pitches_ninety_degrees():
 
     angles = retarget_arm("right", HEAD, 0.0, hand)
 
-    assert angles.shoulder_pitch == pytest.approx(math.pi / 2, abs=1e-6)
+    # Sign-applied, like the roll test below. `shoulder_pitch` was MEASURED as
+    # -1 on the robot (2026-08-20), so "reach forward" is a negative joint
+    # angle on this body — asserting the raw +pi/2 here would pin the
+    # assumption rather than the measurement.
+    expected = (math.pi / 2) * retarget.JOINT_SIGNS["right"]["shoulder_pitch"]
+    assert angles.shoulder_pitch == pytest.approx(expected, abs=1e-6)
     assert angles.elbow == pytest.approx(0.0, abs=1e-6)
 
 
@@ -234,3 +239,33 @@ def test_quat_to_matrix_is_a_rotation():
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
     )
     assert det == pytest.approx(1.0)
+
+
+
+def test_the_measured_signs_are_the_ones_in_the_table():
+    """Pin what `arm_sign_check.py` actually measured on the robot.
+
+    Not a tautology: these four were read off the physical arm at FSM 4 on
+    2026-08-20, and `shoulder_pitch` came back OPPOSITE to the assumption the
+    file shipped with. If someone later "tidies" the table back to all-ones,
+    this fails and says why — the arm mirror would otherwise swing backward on
+    every reach forward, which from inside a headset reads as the whole feature
+    being broken.
+    """
+    right = retarget.JOINT_SIGNS["right"]
+    assert right["shoulder_pitch"] == -1.0, "measured on hardware: reaching forward is NEGATIVE"
+    assert right["shoulder_roll"] == 1.0
+    assert right["shoulder_yaw"] == 1.0
+    assert right["elbow"] == 1.0
+
+
+def test_left_mirrors_right_where_bilateral_symmetry_says_it_must():
+    # Roll and yaw share body-frame axes, so one physical motion has opposite
+    # signs on the two arms. Pitch and elbow do not, so they match. The left
+    # arm has NOT been measured — this pins the inference, and is exactly what
+    # `arm_sign_check.py --side left` would replace with evidence.
+    left, right = retarget.JOINT_SIGNS["left"], retarget.JOINT_SIGNS["right"]
+    assert left["shoulder_pitch"] == right["shoulder_pitch"]
+    assert left["elbow"] == right["elbow"]
+    assert left["shoulder_roll"] == -right["shoulder_roll"]
+    assert left["shoulder_yaw"] == -right["shoulder_yaw"]
