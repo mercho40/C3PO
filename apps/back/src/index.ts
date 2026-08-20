@@ -7,6 +7,15 @@ import { stateRoutes } from "@back/routes/state";
 import { mapRoutes } from "@back/routes/map";
 import { agentRoutes } from "@back/routes/agent";
 import { chatsRoutes } from "@back/routes/chats";
+import { reconcileAdmins } from "@back/lib/admin-bootstrap";
+
+// Before listening: make sure the accounts that are supposed to be able to
+// drive the robot actually can. Awaited so the first request after boot sees
+// the reconciled roles, and never fatal — a database that is not up yet must
+// not stop the server from starting.
+await reconcileAdmins().catch((error: unknown) => {
+  console.warn("[admin] could not reconcile admin roles:", error);
+});
 
 const app = new Elysia()
   .use(betterAuth)

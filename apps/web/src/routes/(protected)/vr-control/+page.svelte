@@ -15,7 +15,7 @@
    */
   import { onDestroy, onMount } from "svelte";
   import { browser } from "$app/environment";
-  import { goto } from "$app/navigation";
+  import { goto, invalidateAll } from "$app/navigation";
   import { page } from "$app/state";
   import { env } from "$env/dynamic/public";
   import {
@@ -39,6 +39,7 @@
   import StopButton from "$lib/components/stop-button.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { createApi } from "$lib/api";
+  import { authClient } from "$lib/auth-client";
   import { getRobotLive } from "$lib/robot/context";
   import { readPosture, LOAD_TEXT } from "$lib/robot/posture";
   import {
@@ -90,6 +91,43 @@
   const live = getRobotLive();
   const posture = $derived(readPosture(live.state?.posture, live.online));
   const isAdmin = $derived(page.data.user?.role === "admin");
+
+  // Better Auth caches the session — role included — in a `better-auth.session_data`
+  // cookie for five minutes. So an account promoted to admin keeps reading as
+  // "not admin" until that expires, and the page has no way to know the
+  // difference between "you are not an admin" and "you were made one four
+  // minutes ago". The operator sees a hard permission error for something that
+  // is already fixed, in a headset, with no terminal.
+  //
+  // `disableCookieCache` asks the server directly, skipping the cookie; the
+  // reply refreshes it. `invalidateAll` then re-runs the load functions so
+  // `page.data.user` — which is what `isAdmin` reads — picks the new role up.
+  let refreshingRole = $state(false);
+  let roleRefreshOutcome = $state<string | null>(null);
+
+  async function refreshRole() {
+    if (refreshingRole) return;
+    refreshingRole = true;
+    roleRefreshOutcome = null;
+    try {
+      const { data, error } = await authClient.getSession({
+        query: { disableCookieCache: true },
+      });
+      if (error) {
+        roleRefreshOutcome = `No se pudo verificar: ${error.message ?? "error de sesión"}`;
+        return;
+      }
+      await invalidateAll();
+      roleRefreshOutcome =
+        data?.user?.role === "admin"
+          ? "Listo — la cuenta es admin."
+          : "El servidor sigue diciendo que esta cuenta no es admin. Hay que agregarla a ADMIN_EMAILS y reiniciar el backend.";
+    } catch (err) {
+      roleRefreshOutcome = `No se pudo verificar: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      refreshingRole = false;
+    }
+  }
   const realHardware = $derived(data.env === "real");
 
   let overlayRoot = $state<HTMLDivElement>();
@@ -798,17 +836,36 @@
 
   {#if !isAdmin}
     <div
-      class="flex items-start gap-2 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5 text-sm text-ink"
+      class="flex flex-col items-start gap-2 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5 text-sm text-ink"
     >
-      <TriangleAlert class="mt-0.5 size-4 shrink-0 text-danger-soft" />
-      <p>
-        Esta cuenta no es admin. <strong
-          >Los gestos y la puesta en marcha van a fallar con 403</strong
-        > — invocar skills directamente requiere rol admin. Caminar y girar con la
-        cabeza SÍ funcionan: van por el stream de teleoperación, que no pasa por esa
-        puerta. PARAR también funciona siempre, porque está clasificado como skill
-        de seguridad.
-      </p>
+      <div class="flex items-start gap-2">
+        <TriangleAlert class="mt-0.5 size-4 shrink-0 text-danger-soft" />
+        <p>
+          Esta cuenta no figura como admin. <strong
+            >Los gestos y la puesta en marcha van a fallar con 403</strong
+          >
+          — invocar skills directamente requiere rol admin. Caminar y girar con
+          la cabeza SÍ funcionan: van por el stream de teleoperación, que no
+          pasa por esa puerta. PARAR también funciona siempre, porque está
+          clasificado como skill de seguridad.
+          <br />
+          <span class="text-ink-soft"
+            >Si el rol se cambió recién, puede ser sólo la sesión guardada: se
+            cachea hasta 5 minutos. Refrescala acá antes de tocar nada más.</span
+          >
+        </p>
+      </div>
+      <button
+        type="button"
+        class="rounded-md border border-danger/40 px-2.5 py-1.5 text-xs font-medium text-ink hover:bg-danger/10 disabled:opacity-50"
+        disabled={refreshingRole}
+        onclick={refreshRole}
+      >
+        {refreshingRole ? "Verificando…" : "Volver a verificar el rol"}
+      </button>
+      {#if roleRefreshOutcome}
+        <p class="text-ink-soft text-xs">{roleRefreshOutcome}</p>
+      {/if}
     </div>
   {/if}
 
