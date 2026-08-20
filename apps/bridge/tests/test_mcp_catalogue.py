@@ -71,7 +71,10 @@ EXPECTED_TOOLS = {
     # control
     "cancel_task",
     "stop_everything",
+    # voice — both halves. `listen` is push-to-talk by necessity, not by design:
+    # the mic is gated on a remote button nobody in software can press.
     "say",
+    "listen",
 }
 
 
