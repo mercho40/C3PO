@@ -135,14 +135,50 @@ RUN cd src/fast_lio \
  && patch -p1 --forward < /tmp/fastlio-publish-twist.patch \
  && grep -q 'twist.twist.linear' src/laserMapping.cpp
 
-COPY ws/src/c3po_perception src/c3po_perception
-
+# THE THIRD-PARTY C++ IS BUILT BEFORE OUR PACKAGE IS COPIED IN, AND THAT ORDER
+# IS THE WHOLE POINT.
+#
+# These two are the expensive half — PCL and Sophus translation units, ~8 min on
+# a loaded Orin NX. c3po_perception is ament_python and builds in 1.4 seconds.
+# With a single `colcon build` after a single COPY, editing one launch file
+# invalidated the layer and rebuilt all three, so every config iteration cost
+# the full 8 minutes. It happened five times in one afternoon, and on a robot
+# shared with the gemm stack that is not just our own wall-clock — a colcon
+# build at -j3 competes with their live SLAM for the same 8 cores.
+#
+# Split this way, the pins above are the only thing that can invalidate this
+# layer, which is correct: it is exactly what those pins describe.
+#
 # -j3 / 2 workers deliberately: 8 cores but 15 GB RAM, and PCL translation
 # units are the classic Orin NX OOM. Do not raise these.
 RUN source /opt/ros/humble/setup.bash \
  && MAKEFLAGS="-j3" colcon build --parallel-workers 2 \
+      --packages-select livox_ros_driver2 fast_lio \
       --cmake-args -DCMAKE_BUILD_TYPE=Release \
                    -DROS_EDITION=ROS2 -DDISTRO_ROS=humble \
+ && test -d install/livox_ros_driver2 && test -d install/fast_lio \
+ && rm -rf build log
+
+COPY ws/src/c3po_perception src/c3po_perception
+
+# Our package alone, so this is the only layer a launch/config/python edit
+# rebuilds. It depends on neither package above (ament_python, and its
+# exec_depends are stock ROS), so --packages-select cannot silently skip a
+# dependency — but the overlay is sourced anyway so a future dependency would
+# resolve rather than fail confusingly.
+#
+# The assertion is not decoration. `colcon build` EXITS 0 WHEN IT SELECTS NO
+# PACKAGES, so a typo in the name here, or a package.xml that stops being
+# discoverable, produces a green build and an image whose entrypoint dies on
+# "package not found" much later. Verify the install tree, not the exit code.
+RUN source /opt/ros/humble/setup.bash \
+ && source install/setup.bash \
+ && colcon build --packages-select c3po_perception \
+      --cmake-args -DCMAKE_BUILD_TYPE=Release \
+ && test -f install/c3po_perception/share/c3po_perception/launch/nav2.launch.py \
+      || (echo "FATAL: c3po_perception did not install — colcon exits 0 when it selects nothing" && false) \
+ && test -d install/livox_ros_driver2 \
+      || (echo "FATAL: the second colcon build dropped the first one's install tree" && false) \
  && rm -rf build log
 
 # NOT a multi-stage build, and it must not become one: the runtime needs the ROS
