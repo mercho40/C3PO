@@ -413,8 +413,21 @@ phrase for separability, not charm — short, distinct, and unlikely in ordinary
 D6.1's warning stands: a spoken stop that works in demos and not in panic is worse than
 none, because people rely on it.
 
-**Not built.** Nothing above exists. `apps/bridge` has `speak()` (firmware TTS) and no
-`play_pcm()`; the SDK's `_CallRequestWithParamAndBin` is present and unused.
+**The TTS half is BUILT** (2026-08-21). `apps/bridge/src/bridge/skills/tts.py` synthesises
+with Piper `es_AR/daniela` and resamples 22050 -> 16000 in numpy (polyphase 320/441 — scipy
+is not in the venv and would be a ~40 MB wheel for one function); `g1_rpc.play_pcm()` ships
+it over `PlayStream`; `say(language="spanish")` is the default path and **refuses rather
+than falling back** to the English voice when Piper is missing, because that fallback is
+precisely D6.1's rpc_code-0-and-noise failure.
+
+Measured on the robot: synthesis runs at **0.7x realtime** (4.0 s for a 2.8 s utterance)
+on a Jetson also carrying the co-tenant's SLAM — fine for short sentences, and the number
+to watch if utterances get long. `START_PLAY` accepts our envelope (`rpc_code 0`) and
+rejects malformed ones with 100, so the wire format is confirmed (`ROBOT-API.md` §7).
+
+**Audibility is still unverified, and deliberately so:** confirming it means making noise
+in a shared room on a speaker with no arbitration. Everything above was probed with digital
+silence. The listening half remains blocked on the mic (D6.3, `ROBOT-HARDWARE.md` §8.2).
 
 ### D6.3 — No cloud. The whole loop runs on the robot, and needs no GPU
 
