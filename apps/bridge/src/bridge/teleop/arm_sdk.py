@@ -348,21 +348,32 @@ class ArmSdkDriver:
             return
         self.request_release()
         task = self._task
-        if task is not None:
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=RAMP_S + 2.0)
-            except asyncio.TimeoutError:
-                # The loop should exit on its own once the weight hits 0. If it
-                # has not, cancelling is still better than holding the arms:
-                # with no publisher the firmware's own arm_sdk timeout applies.
-                log.warning("arm_sdk.release_timeout")
-                task.cancel()
-            except asyncio.CancelledError:
-                task.cancel()
-                raise
-        self._engaged = False
-        self._releasing = False
-        self._task = None
+        try:
+            if task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=RAMP_S + 2.0)
+                except asyncio.TimeoutError:
+                    # The loop should exit on its own once the weight hits 0.
+                    # If it has not, cancelling is still better than holding
+                    # the arms: with no publisher the firmware's own arm_sdk
+                    # timeout applies.
+                    log.warning("arm_sdk.release_timeout")
+                    task.cancel()
+                except asyncio.CancelledError:
+                    task.cancel()
+                    raise
+        finally:
+            # In a `finally` because cancellation used to re-raise straight
+            # past these three lines. The publish task was cancelled but the
+            # driver still said `engaged`, so the next `_safe_stop` called
+            # `release()` again, found a task that was already cancelled, and
+            # raised out of the teardown path — while the caller went on
+            # believing the arms had been handed back. Whatever else happens
+            # here, this driver is no longer publishing, and must not claim to
+            # be holding arms it has let go of.
+            self._engaged = False
+            self._releasing = False
+            self._task = None
 
     # -- commanding -----------------------------------------------------
 

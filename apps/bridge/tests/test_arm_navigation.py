@@ -21,12 +21,12 @@ from bridge.sdk import perception_link as pl
 def fresh():
     sent: list[tuple[float, float, float]] = []
     now = {"t": 1000.0}
-    link = pl.PerceptionLink(forward=lambda *v: sent.append(v),
-                             clock=lambda: now["t"])
+    link = pl.PerceptionLink(forward=lambda *v: sent.append(v), clock=lambda: now["t"])
     return link, sent, now
 
 
 # --- the gate itself --------------------------------------------------------
+
 
 def test_closed_until_armed():
     link, *_ = fresh()
@@ -64,6 +64,7 @@ def test_disarming_is_idempotent():
 
 # --- the invariant ----------------------------------------------------------
 
+
 def test_stop_everything_closes_the_gate_synchronously_and_first():
     """THE ONE THAT MATTERS.
 
@@ -72,33 +73,46 @@ def test_stop_everything_closes_the_gate_synchronously_and_first():
     gate close must be present, and must come BEFORE the awaits, or a planner
     tick can slip through the gap between the burst and the close.
     """
-    src = (pathlib.Path(__file__).resolve().parents[1]
-           / "src" / "bridge" / "skills" / "stop_everything.py")
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src"
+        / "bridge"
+        / "skills"
+        / "stop_everything.py"
+    )
     body = src.read_text()
     run = body.split("async def run(", 1)[-1]
 
     assert "disable(" in run, (
         "stop_everything must close the nav gate — without it, stopping only "
-        "pauses: Nav2's next tick walks the robot on 50 ms later")
+        "pauses: Nav2's next tick walks the robot on 50 ms later"
+    )
 
     close_at = run.index("disable(")
     first_await = run.index("await ")
     assert close_at < first_await, (
         "the gate must close BEFORE the first await, or a planner tick can pass "
-        "through while the stop is still being dispatched")
+        "through while the stop is still being dispatched"
+    )
 
 
 def test_a_broken_perception_link_cannot_prevent_a_stop():
     """Refusing to stop the robot because the gate could not be read would be
     the worst possible trade, so the close is wrapped."""
-    src = (pathlib.Path(__file__).resolve().parents[1]
-           / "src" / "bridge" / "skills" / "stop_everything.py")
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src"
+        / "bridge"
+        / "skills"
+        / "stop_everything.py"
+    )
     run = src.read_text().split("async def run(", 1)[-1]
     gate = run[: run.index("registry = get_registry()")]
     assert "try:" in gate and "except" in gate
 
 
 # --- what the gate actually does to traffic ---------------------------------
+
 
 def test_nothing_reaches_the_legs_while_closed():
     link, sent, _ = fresh()
@@ -121,15 +135,16 @@ def test_disarming_mid_motion_stops_forwarding():
     link._apply_cmd_vel(0.3, 0.0, 0.0)
     link._tick()
     assert len(sent) == before or all(v == (0.0, 0.0, 0.0) for v in sent[before:]), (
-        "after disarming, only braking zeros may be forwarded")
+        "after disarming, only braking zeros may be forwarded"
+    )
 
 
 def test_the_arm_tool_requires_a_reason():
     """The log after an incident is only useful if it says who armed it and why,
     so `reason` is required rather than defaulted."""
-    src = (pathlib.Path(__file__).resolve().parents[1]
-           / "src" / "bridge" / "mcp_server.py")
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "mcp_server.py"
     tool = src.read_text().split("def arm_navigation(", 1)[-1].split(") -> dict:", 1)[0]
     assert "reason:" in tool
     assert "] = " not in tool.split("reason:", 1)[1].split("seconds:", 1)[0], (
-        "reason must not have a default")
+        "reason must not have a default"
+    )

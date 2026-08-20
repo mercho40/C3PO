@@ -433,3 +433,37 @@ async def test_a_never_read_fsm_refuses_the_arms(driver, enabled):
 
     with pytest.raises(ArmSdkUnavailable, match="never been read"):
         await driver.engage()
+
+
+async def test_cancelling_a_release_still_lets_go(driver, enabled):
+    """Cancellation must not leave the driver claiming arms it dropped.
+
+    `release()` used to re-raise CancelledError straight past the three lines
+    that clear its state. The publish task was cancelled but `engaged` stayed
+    True — so the next `_safe_stop` called `release()` again, found an
+    already-cancelled task, and raised out of the teardown path, while the
+    caller went on believing the arms had been handed back.
+    """
+    await driver.engage()
+    assert driver.engaged is True
+
+    task = asyncio.ensure_future(driver.release())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert driver.engaged is False, "a cancelled release must still let go"
+    assert driver._task is None
+
+
+async def test_release_is_idempotent_after_cancellation(driver, enabled):
+    """The second teardown attempt must be a no-op, not an exception."""
+    await driver.engage()
+    task = asyncio.ensure_future(driver.release())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await driver.release()  # must not raise

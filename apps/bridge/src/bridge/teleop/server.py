@@ -592,6 +592,11 @@ async def _safe_stop(session: TeleopSession) -> None:
     # STOP_ACK_BUDGET_S — the send continues in the background either way, we
     # simply stop *waiting* on an ack that cannot make anything safer.
     stop = asyncio.ensure_future(send_velocity_async(0.0, 0.0, 0.0, STAND_HEIGHT))
+    # Consume whatever it ends with. On the unawaited path below nothing ever
+    # retrieves the result, and asyncio reports that at garbage-collection time
+    # as "Future exception was never retrieved" — a traceback with no context,
+    # printed long after the fact, on a teardown that worked.
+    stop.add_done_callback(lambda fut: fut.cancelled() or fut.exception())
     if session.stop_issued:
         # A stop already went out moments ago. Send another — cheap, and covers
         # the case where the first never left — but do not wait on it again.
@@ -612,7 +617,20 @@ async def _safe_stop(session: TeleopSession) -> None:
     driver = get_driver()
     if driver.engaged:
         try:
-            await asyncio.shield(asyncio.ensure_future(driver.release()))
+            # Bounded, and shorter than RECONNECT_GRACE_S on purpose. A full
+            # `release()` waits RAMP_S + 2 s, which is longer than the grace
+            # period the next operator gets — so tearing down a session with
+            # the arms engaged held the single-session slot past the window and
+            # the reconnecting client was refused by its own previous session.
+            # The ramp continues in the background either way; the weight is
+            # already falling, and the firmware's own arm_sdk timeout is behind
+            # it. Waiting out the rest here makes nothing safer.
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.ensure_future(driver.release())),
+                timeout=ARM_RELEASE_BUDGET_S,
+            )
+        except asyncio.TimeoutError:
+            log.warning("teleop.arm_release_slow", budget_s=ARM_RELEASE_BUDGET_S)
         except (Exception, asyncio.CancelledError):
             log.warning("teleop.arm_release_failed", exc_info=True)
 
@@ -631,6 +649,12 @@ async def _safe_stop(session: TeleopSession) -> None:
 # Deliberately short. It is a grace period for a reconnect, not a queue: two
 # people really trying to drive at once should still be refused, promptly.
 RECONNECT_GRACE_S = 3.0
+
+# How long teardown waits for the arm weight ramp before moving on. Must stay
+# below RECONNECT_GRACE_S: a session torn down with the arms engaged otherwise
+# holds the single-session slot for longer than the next operator is willing to
+# wait, and the reconnecting client is refused by its own previous self.
+ARM_RELEASE_BUDGET_S = 2.5
 
 # How long teardown will wait for the robot to acknowledge its stop command.
 #
