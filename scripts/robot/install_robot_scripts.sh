@@ -24,7 +24,13 @@ mkdir -p "$target"
 # keeps its extension so the command matches the filename the plan names.
 # run_teleop / stop_teleop are per-session VR sidecar controls, reached the same
 # way.
-for cmd in run_c3po stop_c3po run_gemm stop_gemm perception_up build_perception measure.sh run_teleop stop_teleop; do
+# c3po_health / c3po_preflight / stop_perception are on the list for the same
+# reason: they are invoked by bare name, over ssh, by a person standing next to
+# the robot who should not have to remember a path. preflight in particular is
+# meant to be typed from muscle memory before arming.
+for cmd in run_c3po stop_c3po run_gemm stop_gemm perception_up stop_perception \
+          build_perception measure.sh run_teleop stop_teleop \
+          c3po_health c3po_preflight; do
     chmod +x "$here/$cmd"
     ln -sf "$here/$cmd" "$target/$cmd"
     echo "  linked $target/$cmd -> $here/$cmd"

@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Is the stack actually up? Exit 0 if healthy, 1 if not, and say which part.
+#
+# Two callers, one truth:
+#   * `c3po-health.timer` runs it periodically and restarts what died;
+#   * a person runs it before arming anything, and reads the output.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO IS "FIX" THINGS. It restarts a dead unit
+# and nothing else. A perception container that keeps dying is a bug to read the
+# logs for, not something to paper over with a restart loop — and a watchdog
+# that silently papers over a crash is how a robot ends up half-running with
+# nobody aware.
+#
+#     c3po_health           report, exit non-zero if unhealthy
+#     c3po_health --repair  additionally restart dead units (the timer's mode)
+
+set -uo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+. "$here/_common.sh"
+
+REPAIR=0
+[ "${1:-}" = "--repair" ] && REPAIR=1
+
+problems=0
+note() { printf '  %-28s %s\n' "$1" "$2"; }
+
+say "c3po health"
+
+# --- the bridge -------------------------------------------------------------
+# First because it is the only thing that can stop the robot. Everything else
+# being healthy while this is down is the worst-looking green board there is.
+if bridge_running; then
+    note "bridge" "running (pid $(bridge_pid))"
+else
+    note "bridge" "DOWN"
+    problems=$((problems + 1))
+    if [ "$REPAIR" = "1" ]; then
+        warn "restarting c3po-bridge"
+        systemctl restart c3po-bridge 2>/dev/null \
+            || err "could not restart c3po-bridge (needs root?)"
+    fi
+fi
+
+# --- the bridge answers, not merely exists ----------------------------------
+# A process that is alive but wedged is the failure a pid check cannot see.
+port="${BRIDGE_PORT:-8001}"
+if curl -fsS --max-time 5 "http://127.0.0.1:${port}/telemetry/gate" >/dev/null 2>&1; then
+    gate="$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/telemetry/gate" 2>/dev/null)"
+    case "$gate" in
+        *'"enabled":true'*)
+            # Not a fault — but it is the one state worth shouting about, since
+            # it means Nav2 can drive the robot right now.
+            note "cmd_vel gate" "ARMED — the robot can be driven by Nav2" ;;
+        *) note "cmd_vel gate" "closed (default)" ;;
+    esac
+    case "$gate" in
+        *'"started":true'*) note "domain 42 link" "joined" ;;
+        *) note "domain 42 link" "NOT started — perception cannot reach the bridge"
+           problems=$((problems + 1)) ;;
+    esac
+else
+    note "bridge http" "NOT ANSWERING on :$port"
+    problems=$((problems + 1))
+fi
+
+# --- perception -------------------------------------------------------------
+# Only checked when a stage is supposed to be running. Perception being down is
+# normal and correct whenever the sensors are with the other team, so an
+# unconditional failure here would train people to ignore this script.
+enabled_stage=""
+for u in $(systemctl list-units --no-legend 'c3po-perception@*.service' 2>/dev/null | awk '{print $1}'); do
+    enabled_stage="${u#c3po-perception@}"; enabled_stage="${enabled_stage%.service}"
+done
+
+if [ -n "$enabled_stage" ]; then
+    running="$(perception_running_containers)"
+    if [ -n "$running" ]; then
+        note "perception ($enabled_stage)" "running: $running"
+    else
+        note "perception ($enabled_stage)" "unit active but NO CONTAINERS"
+        problems=$((problems + 1))
+        if [ "$REPAIR" = "1" ]; then
+            warn "restarting c3po-perception@$enabled_stage"
+            systemctl restart "c3po-perception@${enabled_stage}" 2>/dev/null \
+                || err "could not restart perception (needs root?)"
+        fi
+    fi
+else
+    note "perception" "no stage enabled (sensors are the other team's)"
+fi
+
+# --- the co-tenant ----------------------------------------------------------
+# Reported, never acted on. Their stack is not ours to restart or stop, and a
+# health check that quietly stopped it would be the rudest possible bug.
+gemm="$(gemm_running)"
+[ -n "$gemm" ] && note "gemm (co-tenant)" "running: $gemm" || note "gemm (co-tenant)" "not running"
+
+echo
+if [ "$problems" -eq 0 ]; then
+    ok "healthy"
+    exit 0
+fi
+err "$problems problem(s) above"
+exit 1

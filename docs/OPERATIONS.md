@@ -116,19 +116,56 @@ enforce. The full rationale, the sensor-ownership facts, and the list of known
 other-commander processes live in the `scripts/robot/_common.sh` header; the `gemm`
 stack itself is described in `docs/ROBOT-HARDWARE.md`.
 
+### The durable install
+
+`./scripts/robot/install_stack.sh` (needs sudo, run on the robot) installs the whole stack
+as systemd units, symlinked from the checkout so `git pull` updates them and only a
+`daemon-reload` is needed:
+
+| Unit                              | What it is                                                                                                                              |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `c3po-bridge.service`             | The bridge. **Enabled** — it owns `stop_everything`, so it should always be up                                                          |
+| `c3po-perception@<stage>.service` | Templated: the STAGE is the instance name (`c3po-perception@nav2-fake`). Calls `perception_up` rather than duplicating the docker flags |
+| `c3po-health.timer`               | Every 2 min: restarts a dead bridge, or a perception unit whose containers vanished                                                     |
+
+**What it deliberately does NOT do**, and each of these is a decision rather than an
+omission:
+
+- **No sensor-claiming stage is enabled at boot.** `nav2` and `perception` take the Livox
+  _and_ the RealSense from the other team; enabling either would take them again on every
+  power cycle, including reboots nobody intended. Only `nav2-fake` — which claims nothing —
+  is safe to enable. Start the sensor stages by hand inside an agreed window.
+- **Nav2's lifecycle is not autostarted.** `autostart: false` is a safety decision: container
+  start must never be the same event as "the robot is ready to be driven".
+- **Nothing installed can arm the gate.** A watchdog that can start motion is not a watchdog.
+
+**Boot does not require the network.** `run_c3po` syncs dependencies only when `uv.lock`'s
+_hash_ has changed (not its mtime — `git pull` rewrites those), and a failed sync with a
+usable venv left over is a loud warning rather than a refusal to start. A robot that cannot
+be stopped is a far worse failure than one running yesterday's dependencies.
+
+**Before letting a planner drive:** `c3po_preflight`. It checks the things `c3po_health`
+does not — whether anything else can command the legs, whether the LiDAR is real or
+synthetic, whether the gate is already armed — and refuses to print a reassuring summary
+when any of them is unknown. It reports that the velocity clamps are **unmeasured** every
+single time, because they are.
+
 ### Stack controls
 
-`scripts/robot/`. `./scripts/robot/install_robot_scripts.sh` symlinks the four stack
-controls (`run_c3po`, `stop_c3po`, `run_gemm`, `stop_gemm`) onto PATH, so `git pull`
-updates them with no reinstall; `perception_up`, `build_perception` and `measure.sh` are
-**not** linked — invoke them by path from the checkout (`~/c3po/scripts/robot/…`). What
-each command _guarantees_ — the mechanics are in the scripts' own headers:
+`scripts/robot/`. `./scripts/robot/install_robot_scripts.sh` symlinks the stack controls
+onto PATH — including `c3po_health`, `c3po_preflight` and `stop_perception`, which are
+meant to be typed by bare name by somebody standing next to the robot. `build_perception`
+and `measure.sh` are linked too; what each command _guarantees_ — the mechanics are in the
+scripts' own headers:
 
 | Command                 | Guarantees                                                                                                                                                                                                                  |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `run_c3po`              | Stops `gemm` first (unless `C3PO_NO_TAKEOVER=1`); refuses if another commander or an untracked bridge is alive; syncs deps + re-applies the `postsync.sh` patch; starts the bridge and waits for its port, not just its pid |
 | `stop_c3po`             | SIGTERM→SIGKILL the bridge _and its whole process tree_, then verifies no bridge survived; stops both perception containers                                                                                                 |
 | `run_gemm`              | Stops our stack first, then starts their containers                                                                                                                                                                         |
+| `stop_perception`       | Stops **only** the perception containers, leaving the bridge and its closed gate up — "perception is down" must never be the reason the robot is safe                                                                       |
+| `c3po_health`           | Is the stack up? Reports the bridge, whether it _answers_, the domain-42 link, the perception stage and the co-tenant. `--repair` restarts dead units and nothing else                                                      |
+| `c3po_preflight`        | Is it safe to let Nav2 drive? Blocks on a down bridge, another commander, an offline LiDAR or a **synthetic** perception stage. Changes nothing, arms nothing                                                               |
 | `stop_gemm`             | `docker stop` (not `down`) so a docker-daemon restart does not resurrect them — though the container has been observed returning anyway (§9); warns about a `cmd_vel_to_loco` surviving outside docker                      |
 | `perception_up <stage>` | States which shared sensors the stage claims _before_ claiming them; `fake` claims none                                                                                                                                     |
 
