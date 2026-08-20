@@ -35,6 +35,7 @@
     VideoOff,
   } from "@lucide/svelte";
   import { Badge } from "$lib/components/ui/badge/index.js";
+  import StopButton from "$lib/components/stop-button.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { createApi } from "$lib/api";
   import { getRobotLive } from "$lib/robot/context";
@@ -551,6 +552,27 @@
   bind:this={overlayRoot}
   class="flex h-full min-h-0 flex-col gap-4 overflow-y-auto bg-background pb-2"
 >
+  <!--
+    The e-stop, mounted INSIDE the overlay root on purpose.
+
+    WebXR's dom-overlay renders exactly one element and its descendants, and
+    the console's own PARAR lives in DashboardTopbar — a sibling in the
+    (protected) layout, outside this div. So while the headset is on, the
+    topbar simply is not there: the person actually driving the robot had no
+    way to stop it, and the only reachable e-stop was the one on a screen they
+    could not see.
+
+    Same component as the topbar's rather than a second implementation: it
+    reports what it observes instead of what it hopes, and one e-stop with one
+    set of semantics is worth more than two that might drift.
+  -->
+  <div
+    class="sticky top-0 z-20 -mx-1 flex items-center justify-between gap-3 border-b border-hairline bg-background/95 px-1 py-2 backdrop-blur"
+  >
+    <span class="eyebrow">Parada de emergencia</span>
+    <StopButton />
+  </div>
+
   <header class="flex flex-wrap items-center justify-between gap-3">
     <div>
       <h1 class="stamp-quiet text-xl text-ink">Control VR</h1>
