@@ -34,7 +34,13 @@
  *    client is gone", so it cannot also mean "the client is fine and idle".
  */
 
-export type TeleopState = "connecting" | "open" | "closed" | "error";
+export type TeleopState =
+  | "connecting"
+  | "open"
+  //: OPEN, but nothing is coming back. See STATUS_TIMEOUT_MS.
+  | "stalled"
+  | "closed"
+  | "error";
 
 export type TeleopStatus = {
   frames_received: number;
@@ -167,6 +173,20 @@ export function buildFrame(input: TeleopInput): TeleopFramePayload {
   };
 }
 
+//: How long the bridge may go without saying anything before the link is
+//: reported as stalled.
+//:
+//: A WebSocket in readyState OPEN is not a working link. TCP will hold a
+//: connection open through a process that has stopped reading, a laptop that
+//: went to sleep, a Wi-Fi handover — and the page went on saying "Conectado"
+//: through all of it, while `bufferedAmount` climbed past the cap and every
+//: send was skipped. The operator sees a green label and a robot that does not
+//: move, which is the worst combination available: it points at the robot.
+//:
+//: The bridge already sends status about twice a second, so silence is a
+//: signal we get for free. Six missed in a row is not a hiccup.
+const STATUS_TIMEOUT_MS = 3000;
+
 export function connectTeleop(
   url: string,
   callbacks: TeleopCallbacks,
@@ -175,6 +195,8 @@ export function connectTeleop(
   let timer: ReturnType<typeof setInterval> | null = null;
   let seq = 0;
   let closed = false;
+  let lastStatusAt = 0;
+  let stalled = false;
 
   callbacks.onState("connecting");
   try {
@@ -189,8 +211,26 @@ export function connectTeleop(
 
   socket.addEventListener("open", () => {
     callbacks.onState("open");
+    lastStatusAt = Date.now();
     timer = setInterval(() => {
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+      // Liveness, before anything else: a link that is not carrying our frames
+      // must not keep reporting itself as connected.
+      const silentFor = Date.now() - lastStatusAt;
+      if (silentFor > STATUS_TIMEOUT_MS) {
+        if (!stalled) {
+          stalled = true;
+          callbacks.onState(
+            "stalled",
+            `El puente no responde hace ${Math.round(silentFor / 1000)} s.`,
+          );
+        }
+      } else if (stalled) {
+        stalled = false;
+        callbacks.onState("open");
+      }
+
       // `bufferedAmount` guards the one failure mode a fixed-rate sender has:
       // if the link stalls, queued frames pile up and every one of them is
       // already stale by the time it arrives. Skipping a tick lets the socket
@@ -220,8 +260,12 @@ export function connectTeleop(
     if (typeof event.data !== "string") return;
     try {
       const parsed = JSON.parse(event.data);
-      if (parsed?.type === "status")
+      if (parsed?.type === "status") {
+        // Any status at all is proof the bridge is reading and writing this
+        // socket, which is the whole point of the stall check above.
+        lastStatusAt = Date.now();
         callbacks.onStatus?.(parsed as TeleopStatus);
+      }
     } catch {
       // Status is decorative. A malformed one must not disturb the sender.
     }

@@ -20,7 +20,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { buildFrame, type TeleopInput } from "../src/lib/teleop/stream";
+import {
+  buildFrame,
+  connectTeleop,
+  type TeleopInput,
+} from "../src/lib/teleop/stream";
 
 const STALE_AFTER = 800;
 const DEADZONE = (8 * Math.PI) / 180;
@@ -119,7 +123,9 @@ describe("staleness — the bug this file exists for", () => {
     expect(live.hands.left?.tracked).toBe(true);
     expect(live.hands.right?.grip).toBe(0.5);
 
-    const stale = buildFrame(input({ left: hand, right: hand, vrActive: false }));
+    const stale = buildFrame(
+      input({ left: hand, right: hand, vrActive: false }),
+    );
     expect(stale.hands.left?.tracked).toBe(false);
     expect(stale.hands.right?.tracked).toBe(false);
     expect(stale.hands.left?.pos).toBeUndefined();
@@ -146,5 +152,129 @@ describe("staleness — the bug this file exists for", () => {
     expect(f.enabled).toBe(true);
     expect(f.walk).toBe(1);
     expect(f.head.yaw).toBe(0);
+  });
+});
+
+/**
+ * A socket in readyState OPEN is not a working link.
+ *
+ * TCP holds a connection open through a process that has stopped reading, a
+ * laptop that slept, a Wi-Fi handover. The page went on saying "Conectado"
+ * through all of it while every send was skipped for backpressure — a green
+ * label and a robot that will not move, which is the worst pairing available
+ * because it points the operator at the robot.
+ */
+describe("stall detection — 'Conectado' on a dead link", () => {
+  class FakeSocket {
+    static OPEN = 1;
+    readyState = 1;
+    bufferedAmount = 0;
+    sent: string[] = [];
+    #listeners: Record<string, ((e: unknown) => void)[]> = {};
+    constructor(public url: string) {}
+    addEventListener(type: string, fn: (e: unknown) => void) {
+      (this.#listeners[type] ??= []).push(fn);
+    }
+    send(data: string) {
+      this.sent.push(data);
+    }
+    close() {
+      this.readyState = 3;
+    }
+    emit(type: string, event: unknown = {}) {
+      for (const fn of this.#listeners[type] ?? []) fn(event);
+    }
+  }
+
+  function harness() {
+    const states: { state: string; detail?: string }[] = [];
+    const realWs = globalThis.WebSocket;
+    const realNow = Date.now;
+    let clock = 1_000_000;
+    let made: FakeSocket | null = null;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).WebSocket = class extends FakeSocket {
+      constructor(url: string) {
+        super(url);
+        made = this as unknown as FakeSocket;
+      }
+    };
+    (globalThis as any).WebSocket.OPEN = 1;
+    Date.now = () => clock;
+
+    const handle = connectTeleop("ws://x/teleop", {
+      getFrame: () => idleFrame(),
+      onState: (state, detail) => states.push({ state, detail }),
+    });
+
+    return {
+      states,
+      socket: () => made!,
+      advance: (ms: number) => {
+        clock += ms;
+      },
+      restore: () => {
+        handle.close();
+        globalThis.WebSocket = realWs;
+        Date.now = realNow;
+      },
+    };
+  }
+
+  function idleFrame() {
+    return buildFrame(input({ lastSampleAt: 0, now: 10_000 }));
+  }
+
+  test("silence past the timeout reports stalled, not open", async () => {
+    const h = harness();
+    try {
+      h.socket().emit("open");
+      expect(h.states.map((s) => s.state)).toEqual(["connecting", "open"]);
+
+      // Six missed statuses. The bridge sends about two a second.
+      h.advance(3100);
+      await new Promise((r) => setTimeout(r, 60));
+
+      expect(h.states.map((s) => s.state)).toContain("stalled");
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("a status arriving clears the stall", async () => {
+    const h = harness();
+    try {
+      h.socket().emit("open");
+      h.advance(3100);
+      await new Promise((r) => setTimeout(r, 60));
+      expect(h.states.map((s) => s.state)).toContain("stalled");
+
+      h.socket().emit("message", {
+        data: JSON.stringify({ type: "status", frames_received: 1 }),
+      });
+      await new Promise((r) => setTimeout(r, 60));
+
+      expect(h.states[h.states.length - 1]?.state).toBe("open");
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("a talking bridge never reports stalled", async () => {
+    const h = harness();
+    try {
+      h.socket().emit("open");
+      for (let i = 0; i < 6; i++) {
+        h.advance(500);
+        h.socket().emit("message", {
+          data: JSON.stringify({ type: "status", frames_received: i }),
+        });
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      expect(h.states.map((s) => s.state)).not.toContain("stalled");
+    } finally {
+      h.restore();
+    }
   });
 });
