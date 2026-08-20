@@ -13,6 +13,18 @@ dependencies = [
     "websockets>=17.0.1",
 ]
 
+# NOT a hard dependency, and the reason is the Mac. vosk publishes wheels for
+# linux aarch64/x86_64/armv7l and win_amd64 — and NONE for macOS — so listing it
+# above would make `uv sync` on the dev machine try to build libvosk from source
+# and fail. It is needed only where the microphone is, which is the robot.
+#
+#     uv sync --extra voice        # on the Jetson
+#
+# `skills/listen.py::available()` reports its absence with the fix attached, and
+# the tests that need it skip rather than fail, so a Mac checkout stays green.
+[project.optional-dependencies]
+voice = ["vosk>=0.3.45"]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
