@@ -1281,8 +1281,11 @@ Spanish text returns 0 and emits gibberish (§7, D6.1). The two live on the same
 "0 means nothing on `voice`" is the wrong lesson to generalise: 1001 does not check the
 text against the voice, while 1003 rejects a malformed envelope. What 0 still does **not**
 prove is that audio reached the speaker — the PCM bytes themselves are not validated (an
-all-zero buffer is accepted, as it must be), so **audibility is only ever confirmed by a
-person in the room.**
+all-zero buffer is accepted, as it must be) — so audibility had to be confirmed by ear.
+**It was, 2026-08-21: Spanish synthesised by Piper and pushed through `PlayStream` played
+audibly on the robot's speaker. [live]** The full path — external synthesis, 22050->16000
+resample, chunked `START_PLAY` — is therefore proven end to end, and D6.1's wall (no
+Spanish voice in firmware) is worked around rather than merely designed around.
 
 PCM must be **16 kHz mono 16-bit**; both vendor examples hard-reject anything else, and
 the mobile-app path warns that stereo may cause playback issues. **[web]** The "96000

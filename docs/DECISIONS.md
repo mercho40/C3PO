@@ -425,9 +425,12 @@ on a Jetson also carrying the co-tenant's SLAM — fine for short sentences, and
 to watch if utterances get long. `START_PLAY` accepts our envelope (`rpc_code 0`) and
 rejects malformed ones with 100, so the wire format is confirmed (`ROBOT-API.md` §7).
 
-**Audibility is still unverified, and deliberately so:** confirming it means making noise
-in a shared room on a speaker with no arbitration. Everything above was probed with digital
-silence. The listening half remains blocked on the mic (D6.3, `ROBOT-HARDWARE.md` §8.2).
+**Confirmed audible 2026-08-21** — a person heard the robot speak Spanish through its own
+speaker. Development up to that point used digital silence, because the speaker is shared
+with the co-tenant and has no arbitration; the one test that needed a human got a human.
+
+**The speaking half of D6 is done.** The listening half remains blocked on the mic, which
+does not stream at rest and has no software trigger (D6.3, `ROBOT-HARDWARE.md` §8.2).
 
 ### D6.3 — No cloud. The whole loop runs on the robot, and needs no GPU
 
