@@ -1707,6 +1707,14 @@ typedef struct { uint8_t head[2]; BtnUnion btn;
                  uint8_t idle[16]; } xRockerBtnDataStruct;
 ```
 
+⚠️ **THE HEADER ON THIS ROBOT IS `{0x55, 0x51}`, NOT `{0xFE, 0xEF}`.** Both the vendor
+header and Unitree's `remote_control_data` page give `0xFE 0xEF`; this G1 does not. Dumped
+raw from `rt/lf/lowstate` 2026-08-21: idle is `5551 0000...`, holding L2+R2 is
+`5551 3000...` — and `0x0030` is exactly `0x0010|0x0020` = R2|L2 from the table below. So
+**the bit masks are correct and only the magic bytes are wrong.** Accept both: rejecting
+frames on the documented value made a probe report "no controller present" while somebody
+was holding buttons down, which is a failure that looks like dead hardware. **[live]**
+
 **Axis-order trap:** inside the packet the floats are **lx, rx, ry, L2, ly** — _not_ the
 lx/ly/rx/ry order of the `rt/wirelesscontroller` DDS message. Reading it in message order
 silently swaps axes. Joystick range is **[−1.0, 1.0]**, and the `L2` float is an **analog
@@ -2169,12 +2177,12 @@ Ordered by how much each unblocks.
     timeouts and 7401 handling (§6.5).
 23. **Does `rt/audio_msg` carry `play_state` on this firmware, and does it fire for our
     `PlayStream` or only the assistant's playback?** (§7.1)
-24. **Is the raw mic multicast at 239.168.123.161:5555 gated on wake-up mode**, the way
-    ASR output explicitly is? Decides whether a future `listen()` has a human
-    prerequisite (§7.2). **Half answered 2026-08-20:** it does not stream at rest — a
-    verified join read 0 packets in 12 s with `gemm-ai` also subscribed
-    (`ROBOT-HARDWARE.md` §8.2). Whether L1+L2 opens it is the remaining half, and it needs
-    a person at the robot; `vui_service` has no capture RPC to open it with.
+24. ~~**Is the raw mic multicast at 239.168.123.161:5555 gated on wake-up mode**~~ —
+    **ANSWERED 2026-08-21: YES.** Silent at rest; holding **L1+L2** on the remote opens the
+    feed and releasing closes it (212 packets / 33.9 s, then 262 packets / 41.9 s of live
+    speech, transcribed). `listen()` therefore has a **human prerequisite** and cannot run
+    unattended. `vui_service` has no capture RPC, so the remote — or the App equivalent,
+    untested — is the only opener. See `ROBOT-HARDWARE.md` §8.2. **[live]**
 
 ### Known divergences between this reference and the bridge code
 
