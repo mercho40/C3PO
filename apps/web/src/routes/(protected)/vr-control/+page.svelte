@@ -576,10 +576,19 @@
           // mid-flight with a walk_velocity call.
           stopLoop();
           void sendVelocity(0, 0, 0.5);
-        } else {
-          armsRequested = false;
-          ensureLoopRunning();
+          return;
         }
+        armsRequested = false;
+        if (state === "stalled") {
+          // Deliberately NOT starting the local loop here. The socket is still
+          // open, so the bridge may start reading again at any moment — and
+          // two writers on SetVelocity is a worse failure than one that has
+          // stopped. The bridge's own 0.4 s staleness watchdog has already
+          // brought the robot to rest, so nothing is running away while the
+          // operator decides. The status line says to reconnect.
+          return;
+        }
+        ensureLoopRunning();
       },
       onStatus: (status) => (teleopStatus = status),
     });
@@ -844,10 +853,10 @@
           Esta cuenta no figura como admin. <strong
             >Los gestos y la puesta en marcha van a fallar con 403</strong
           >
-          — invocar skills directamente requiere rol admin. Caminar y girar con
-          la cabeza SÍ funcionan: van por el stream de teleoperación, que no
-          pasa por esa puerta. PARAR también funciona siempre, porque está
-          clasificado como skill de seguridad.
+          — invocar skills directamente requiere rol admin. Caminar y girar con la
+          cabeza SÍ funcionan: van por el stream de teleoperación, que no pasa por
+          esa puerta. PARAR también funciona siempre, porque está clasificado como
+          skill de seguridad.
           <br />
           <span class="text-ink-soft"
             >Si el rol se cambió recién, puede ser sólo la sesión guardada: se
@@ -1088,6 +1097,11 @@
       <span class="readout">
         {#if teleopState === "connecting"}
           Conectando…
+        {:else if teleopState === "stalled"}
+          <span class="text-warn"
+            >Sin respuesta del puente — {teleopDetail || "el enlace se colgó"}.
+            El robot ya se detuvo solo. Reconectá.</span
+          >
         {:else if streaming}
           Conectado{handsVisible ? " · manos detectadas" : ""}
         {:else if teleopState === "error" || teleopDetail}
