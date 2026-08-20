@@ -491,9 +491,24 @@ credentials — now trivially, because nothing in this path has one. The spoken 
 bypasses the agent entirely, so it is unaffected by where reasoning happens or whether the
 network is up at all.
 
-**Still gated on the same test.** Every row above that reads *"mic"* assumes the raw
-multicast feed is reachable without the remote's wake-up mode (D6.2). That is unverified,
-zero-risk to check, and everything in the listening half is downstream of it.
+**THE TEST IS DONE, AND THE ANSWER CONSTRAINS THE DESIGN.** 2026-08-21: the raw multicast
+feed **is** gated on the remote's wake-up mode. Holding L1+L2 opens it, releasing closes
+it, and live Spanish was transcribed through the full chain (`ROBOT-HARDWARE.md` §8.2).
+
+Every row above that reads *"mic"* therefore carries a **human prerequisite**. This is not
+a tuning problem to engineer around: an always-on wake word is unavailable on this hardware
+while a person must hold a button for the microphone to exist at all. Two consequences
+worth stating plainly, because they change what the voice loop can be:
+
+- **The wake word loses most of its purpose.** Its job was to decide when the robot is
+  being addressed; a held button already answers that, and answers it more reliably than
+  any acoustic model. Push-to-talk is not a downgrade here, it is the interaction the
+  hardware actually supports.
+- **The spoken stop cannot be relied on as a safety device.** D6.2 put the stop phrase in
+  the bridge so it would survive a dead voice process — but no software placement helps
+  when the microphone is closed unless somebody is already holding the remote. And a person
+  holding the remote has a physical e-stop under their thumb, which is faster and cannot
+  mis-hear. **Treat the spoken stop as a convenience, and never as the safety story.**
 
 ## D7 — The world-model contract
 
