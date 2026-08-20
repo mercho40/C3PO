@@ -1269,6 +1269,130 @@ async def say(
 
 
 # ---------------------------------------------------------------------------
+# Tool: listen
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="perception",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=10.0,
+        works_sim=False,
+        works_real=True,
+        typical_failure_modes=["mic_not_open", "stt_not_installed"],
+    )
+)
+async def listen(
+    seconds: Annotated[
+        float,
+        Field(
+            ge=1.0,
+            le=30.0,
+            description=(
+                "How long to listen. The microphone only streams while a person "
+                "HOLDS L1+L2 on the remote, so this is the window they have to "
+                "hold it and speak — pick something a human can actually sit "
+                "through, not 30 s by default."
+            ),
+        ),
+    ] = 10.0,
+) -> dict:
+    """Listen to the microphone and return what was said, in Spanish.
+
+    ⚠️ THIS REQUIRES A PERSON TO HOLD L1+L2 ON THE REMOTE. The G1's microphone is
+    a multicast feed published by the control board, and it is gated on the
+    remote's wake-up mode: silent at rest, streaming only while the combination
+    is held (measured 2026-08-21, `docs/ROBOT-HARDWARE.md` §8.2). There is no RPC
+    to open it — `vui_service` has no capture function — so this is
+    **push-to-talk, and the button is not ours to press.**
+
+    That is a property of the robot, not a limitation of this tool, and it has a
+    consequence worth stating: **the robot cannot be left listening.** An
+    always-on assistant is not available on this hardware. If you call this and
+    nobody is holding the remote, you will get silence — which is reported as
+    `heard_nothing` with `mic_open: false`, never as an empty transcript, because
+    "nobody spoke" and "the microphone was closed" are different facts and an
+    agent that confuses them will draw confident conclusions from an empty room.
+
+    Transcription is faster-whisper (Spanish, pinned — not auto-detected). A stop
+    phrase heard during the window is reported separately in `stop_heard`: it is
+    a convenience signal, and **not a safety device**. Anyone holding the remote
+    already has a physical e-stop under their thumb, which is faster and cannot
+    mis-hear.
+    """
+    log.info("listen.called", seconds=seconds, sim_mode=SIM_MODE)
+
+    if SIM_MODE != "real":
+        return {
+            "status": "ok", "transcript": "", "heard": [], "stop_heard": None,
+            "note": f"SIM_MODE={SIM_MODE} has no microphone — nothing was recorded.",
+            "env": SIM_MODE, "stub": True,
+        }
+
+    import asyncio
+    import time
+
+    from bridge.skills import listen as listen_skill
+
+    ok, why = listen_skill.available()
+    if not ok:
+        return {
+            "status": "failed", "transcript": "", "heard": [],
+            "error": "stt_not_installed", "detail": why,
+            "env": SIM_MODE, "stub": False,
+        }
+
+    def _listen() -> tuple[list[str], list[str], int]:
+        heard: list[str] = []
+        stops: list[str] = []
+        frames_seen = 0
+        deadline = time.monotonic() + seconds
+
+        def bounded():
+            nonlocal frames_seen
+            for frame in listen_skill.iter_mic_frames(timeout_s=0.5):
+                frames_seen += 1
+                yield frame
+                if time.monotonic() > deadline:
+                    return
+
+        listen_skill.listen_loop(bounded(), on_text=heard.append,
+                                 on_stop=stops.append)
+        return heard, stops, frames_seen
+
+    # Off the event loop: this blocks for `seconds` and Whisper adds ~1 s per
+    # utterance on top. On the loop it would stall every other tool call for the
+    # whole window — including stop_everything.
+    heard, stops, frames = await asyncio.to_thread(_listen)
+
+    if frames == 0:
+        return {
+            "status": "heard_nothing",
+            "transcript": "", "heard": [], "stop_heard": None,
+            "mic_open": False,
+            "note": (
+                "No audio arrived: the microphone is gated and nobody was holding "
+                "L1+L2 on the remote during the window. This is NOT silence in the "
+                "room — nothing was recorded at all. Ask the person to hold L1+L2 "
+                "and speak, then call again."
+            ),
+            "env": SIM_MODE, "stub": False,
+        }
+
+    return {
+        "status": "ok",
+        "transcript": " ".join(heard).strip(),
+        "heard": heard,
+        "stop_heard": stops[0] if stops else None,
+        "mic_open": True,
+        "audio_seconds": round(frames * 0.128, 1),
+        "env": SIM_MODE, "stub": False,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Tools: remember_landmark / recall_landmark / list_landmarks / forget_landmark
 # ---------------------------------------------------------------------------
 
