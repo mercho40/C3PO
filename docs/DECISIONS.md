@@ -232,10 +232,10 @@ import.
 
 | Function      | Where          | Component                                   |
 | ------------- | -------------- | ------------------------------------------- |
-| Wake word     | **local**, CPU | openWakeWord / tflite (`hey_claude.tflite`) |
-| "Stop" phrase | **local**, CPU | same model, second keyword — see below      |
-| Speech → text | cloud          | Deepgram streaming                          |
-| Text → speech | cloud          | Cartesia — **under review, see below**      |
+| Wake word     | **local**, CPU | openWakeWord / tflite — **Spanish phrase, D6.1**  |
+| "Stop" phrase | **local**, CPU | same model, second keyword — see below           |
+| Speech → text | cloud          | Deepgram streaming — handles Spanish             |
+| Text → speech | cloud          | external synth → `PlayStream` — **required, D6.1** |
 
 **Why not local STT/TTS:** the brain is already cloud. If the network drops there is no
 reply to speak, so local Whisper/Piper buys **zero** offline capability while competing
@@ -246,13 +246,61 @@ microphone to the cloud is untenable on cost, bandwidth and privacy grounds.
 to `stop_everything` without going through the agent. A spoken stop is the one voice
 command that must work with the network down, and it must not wait on an LLM round-trip.
 
-**Update — the audio-I/O question is answered, and the TTS row is under pressure.**
-Investigated on hardware: `/api/audiohub` does not exist on this robot, the DDS RPC service
-is literally named `voice`, and the robot has **onboard TTS** (Chinese and English only)
-plus a `PlayStream` PCM path for anything else — cloud Cartesia is no longer _necessary_,
-only optional for languages the firmware lacks. openWakeWord is not installed onboard.
-Robot-side facts: `ROBOT-API.md` (voice service), `ROBOT-HARDWARE.md` (audio). A D6.1
-revisiting the TTS row is owed when the voice loop is actually built.
+**Update — the audio-I/O question is answered.** Investigated on hardware:
+`/api/audiohub` does not exist on this robot, the DDS RPC service is literally named
+`voice`, and the robot has **onboard TTS** (Chinese and English only) plus a `PlayStream`
+PCM path for anything else. openWakeWord is not installed onboard. Robot-side facts:
+`ROBOT-API.md` (voice service), `ROBOT-HARDWARE.md` (audio).
+
+### D6.1 — Spanish is the operating language, which makes external TTS mandatory
+
+**Decided:** this deployment speaks and listens in **Spanish**. The operator console is
+already in Spanish; the robot is not, and cannot be made so through the firmware.
+
+That single fact reverses the previous update's conclusion. It read "cloud Cartesia is no
+longer _necessary_, only optional for languages the firmware lacks" — Spanish **is** a
+language the firmware lacks, so external synthesis is **necessary**, and it is on the
+critical path rather than a nice-to-have.
+
+| Function      | D6 said                          | With Spanish                                            |
+| ------------- | -------------------------------- | ------------------------------------------------------- |
+| Text → speech | onboard TTS, cloud optional      | **external synth → `PlayStream`, mandatory**            |
+| Speech → text | Deepgram streaming               | unchanged — Deepgram handles Spanish                    |
+| Wake word     | `hey_claude.tflite`              | **a Spanish phrase — a custom openWakeWord model**      |
+| "Stop" phrase | English "stop"                   | **Spanish, and still the safety path**                  |
+
+**Why the firmware cannot be made to do it.** `speaker_id` is 0 = Chinese, 1 = English,
+there is no third voice, and it is verified on this robot that neither reads Spanish
+intelligibly (`ROBOT-API.md` §7). This is a wall, not a missing argument. The dangerous
+part is the failure mode: passing Spanish text to `say` returns **rpc_code 0** and produces
+an English voice attempting Spanish phonemes. It reports success and is unusable — the same
+false-success class this codebase keeps finding, and the reason `say`'s tool description now
+refuses the case in words the model will read.
+
+**The path out is already reverse-engineered.** `PlayStream` (`api_id` 1003/1004) takes
+PCM, and its `stream_id` **is** the interrupt model: the same id concatenates chunks
+gaplessly, a different id barges in with no `PlayStop` first. That is a better fit for a
+robot that should stop talking when interrupted than `TtsMaker`, which has no documented
+behaviour for being called mid-utterance. The co-tenant `gemm` stack already synthesises
+externally and pushes PCM this way, so the path is proven on this hardware by someone else.
+
+**There is no onboard ASR to fall back on.** `api_id` 1002 is registered by every vendor
+client and **called by none**, purpose unknown, and a cross-checked vendor client has no ASR
+function at all. Spanish STT is cloud, fed from the multicast mic path
+(`239.168.123.161:5555`, 16 kHz mono s16le — `ROBOT-HARDWARE.md` §8.2).
+
+**The part that needs a human decision, and it is not the TTS.** D6 wires a spoken stop
+**directly to `stop_everything`, bypassing the agent**, so that it works with the network
+down and waits on no LLM round-trip. In Spanish that means a custom-trained wake-word model
+is **safety-critical code, on a dataset that does not exist yet**, which has to fire
+reliably for a stressed non-native-English speaker — exactly the moment a spoken stop
+matters. Decide before building it whether that model can be trained to a standard worth
+trusting, or whether the physical e-stop remains the only stop that counts. Shipping a
+spoken stop that works in demos and not in panic is worse than shipping none, because
+people will rely on it.
+
+**Not built.** No STT, no wake word, no `PlayStream` path. `say` works, in two languages
+this deployment does not use.
 
 ## D7 — The world-model contract
 
