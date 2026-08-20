@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the two VR sidecars: the teleop stream and the camera relay.
+# Start the VR teleop stream.
 #
 # Separate from `run_c3po` on purpose. The bridge is infrastructure — it boots
 # with the machine and stays up. These two exist to serve a person who is
@@ -17,7 +17,7 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=_common.sh
 . "$here/_common.sh"
 
-say "Starting VR sidecars"
+say "Starting VR teleop"
 
 if ! bridge_running; then
     err "the bridge is not running — refusing to start the teleop stream"
@@ -29,17 +29,12 @@ fi
 # Someone else's teleop is the same hazard as someone else's bridge: it holds
 # DDS, it writes SetVelocity, and every status check here would say "not
 # running".
-for name in teleop relay; do
-    case "$name" in
-        teleop) strays="$(stray_teleop_pids)" ;;
-        relay)  strays="$(stray_relay_pids)" ;;
-    esac
-    if [ -n "$strays" ]; then
-        err "a $name process is already running outside our pidfile (pid: $(echo "$strays" | tr '\n' ' '))"
-        err "kill it first:  kill $(echo "$strays" | tr '\n' ' ')"
-        exit 1
-    fi
-done
+strays="$(stray_teleop_pids)"
+if [ -n "$strays" ]; then
+    err "a teleop process is already running outside our pidfile (pid: $(echo "$strays" | tr '\n' ' '))"
+    err "kill it first:  kill $(echo "$strays" | tr '\n' ' ')"
+    exit 1
+fi
 
 if sidecar_pid "$TELEOP_PID" >/dev/null 2>&1; then
     warn "teleop already running (pid $(sidecar_pid "$TELEOP_PID")) — use stop_teleop first"
@@ -64,24 +59,19 @@ start_sidecar() {
 }
 
 start_sidecar "teleop stream" bridge.teleop.server "$TELEOP_PID" "$TELEOP_LOG"
-start_sidecar "camera relay" bridge.camera_relay "$RELAY_PID" "$RELAY_LOG"
 
 sleep 2
 
-for pair in "teleop stream:$TELEOP_PID" "camera relay:$RELAY_PID"; do
-    label="${pair%%:*}"; pidfile="${pair##*:}"
-    if sidecar_pid "$pidfile" >/dev/null 2>&1; then
-        ok "$label up (pid $(sidecar_pid "$pidfile"))"
-    else
-        err "$label failed to start — see its log"
-        # Not fatal for the relay: the camera being down does not stop someone
-        # driving the robot, and teleimager is currently not running anyway.
-        # A dead teleop stream IS fatal, since it is the thing being started.
-        case "$label" in
-            "teleop stream") exit 1 ;;
-        esac
-    fi
-done
+if sidecar_pid "$TELEOP_PID" >/dev/null 2>&1; then
+    ok "teleop stream up (pid $(sidecar_pid "$TELEOP_PID"))"
+else
+    err "teleop stream failed to start — see $TELEOP_LOG"
+    exit 1
+fi
+
+# The camera is NOT started here. `apps/perception`'s vision container owns the
+# D435i and serves it on 8081; bring it up with `perception_up perception`.
+info "camera: run \`perception_up perception\` if you want a picture (port 8081)"
 
 # Show the operator what the robot will and will not do, rather than making
 # them read four env vars across two files to find out why the arms are inert.

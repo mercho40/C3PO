@@ -5,10 +5,10 @@ Run beside the MCP server, as its own process:
     uv run python -m bridge.teleop.server
 
 Binds loopback by default and has no authentication of its own — same posture
-as the MCP HTTP transport and `camera_relay`: reach it over an SSH tunnel.
-Port 8767, chosen the same way 8766 was: 8000 is `gemm-ai.service`, 8001 this
-bridge's MCP, 8765 the colleague's foxglove bridge, 8766 the camera relay,
-55555/60000 teleimager (`docs/ROBOT-HARDWARE.md`).
+as the MCP HTTP transport: reach it over an SSH tunnel. Port 8767, chosen
+around everything already spoken for on that Jetson — 8000 `gemm-ai.service`,
+8001 this bridge's MCP, 8081 perception's vision MJPEG, 8765 the colleague's
+foxglove bridge, 55555/60000 teleimager (`docs/ROBOT-HARDWARE.md`).
 
 What a session does, per frame
 ------------------------------
