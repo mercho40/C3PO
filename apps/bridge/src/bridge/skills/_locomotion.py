@@ -115,7 +115,8 @@ def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> None:
         # Imported from walk_velocity so there is exactly one definition of
         # "safe on this hardware" (local import mirrors g1_rpc above and
         # keeps this module free of an import-order dependency).
-        from bridge.skills.walk_velocity import MAX_LINEAR_VEL, MAX_YAW_VEL as REAL_MAX_YAW_VEL
+        from bridge.skills.walk_velocity import MAX_LINEAR_VEL
+        from bridge.skills.walk_velocity import MAX_YAW_VEL as REAL_MAX_YAW_VEL
 
         vx = max(-MAX_LINEAR_VEL, min(MAX_LINEAR_VEL, vx))
         vy = max(-MAX_LINEAR_VEL, min(MAX_LINEAR_VEL, vy))

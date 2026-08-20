@@ -56,7 +56,7 @@ from typing import Any
 
 import structlog
 
-from bridge.teleop.retarget import ArmAngles, NEUTRAL, clamp
+from bridge.teleop.retarget import NEUTRAL, ArmAngles, clamp
 
 log = structlog.get_logger(__name__)
 

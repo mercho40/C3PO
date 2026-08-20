@@ -35,7 +35,6 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import Final, Literal, NamedTuple
 
-
 # ---------------------------------------------------------------------------
 # Topic names
 # ---------------------------------------------------------------------------
