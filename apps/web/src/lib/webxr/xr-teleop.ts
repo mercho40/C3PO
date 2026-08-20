@@ -77,15 +77,56 @@ export type XrTeleopSupport = {
   handTracking: boolean;
 };
 
-function quaternionYaw(o: DOMPointReadOnly): number {
-  return Math.atan2(
-    2 * (o.w * o.y + o.x * o.z),
-    1 - 2 * (o.y * o.y + o.z * o.z),
-  );
+/**
+ * The operator's heading: which way they are facing, ignoring pitch and roll.
+ *
+ * Not an Euler extraction. The obvious
+ * `atan2(2(wy + xz), 1 - 2(y² + z²))` is a Y-X-Z decomposition, and its "yaw"
+ * shrinks as pitch grows — measured, for a 40 degree turn:
+ *
+ *     look down  0 deg -> reads 40.0     30 deg -> reads 36.0
+ *               15 deg -> reads 39.0     60 deg -> reads 22.8
+ *
+ * So an operator glancing down at the robot — which is the natural thing to do
+ * while driving it — quietly loses up to half their steering authority. The
+ * sign stays right, so it never turns the wrong way; it just stops turning
+ * properly at exactly the moment someone is watching their feet.
+ *
+ * Projecting the gaze direction onto the horizontal plane answers the question
+ * we actually mean, and is pitch-independent by construction. For a pure yaw
+ * rotation it agrees with the Euler form exactly, which matters: that is the
+ * convention verified on hardware (positive = left, three measured turns).
+ *
+ * Straight up or straight down leaves no horizontal component to project, so
+ * that case falls back to the head's own up-vector — the standard trick, and
+ * the difference between a defined heading and NaN in a motor command.
+ */
+export function quaternionYaw(o: {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}): number {
+  const { x, y, z, w } = o;
+  // Forward is -Z in WebXR: the third column of the rotation matrix, negated.
+  const fx = -2 * (x * z + w * y);
+  const fz = -(1 - 2 * (x * x + y * y));
+
+  if (Math.hypot(fx, fz) < 1e-4) {
+    // Looking straight up or down. Gaze says nothing about heading, so use
+    // where the top of the head points instead.
+    const ux = 2 * (x * y - w * z);
+    const uz = 2 * (y * z + w * x);
+    const fy = -2 * (y * z - w * x);
+    // Looking down flips the up-vector's horizontal sense relative to gaze.
+    const sign = fy > 0 ? -1 : 1;
+    return Math.atan2(-sign * ux, -sign * uz);
+  }
+  return Math.atan2(-fx, -fz);
 }
 
-/** Wrap an angle to (-pi, pi]. */
-function normalizeAngle(a: number): number {
+/** Wrap an angle to (-pi, pi]. Exported for tests. */
+export function normalizeAngle(a: number): number {
   let x = a % (2 * Math.PI);
   if (x > Math.PI) x -= 2 * Math.PI;
   if (x <= -Math.PI) x += 2 * Math.PI;
@@ -151,13 +192,14 @@ const CURL_FINGERS = [
 /** Curl angle at which a finger reads as fully closed. ~2 rad is a firm fist. */
 const FULL_CURL_RAD = 2.0;
 
-type Vec3 = [number, number, number];
+export type Vec3 = [number, number, number];
 
-function subtract(a: Vec3, b: Vec3): Vec3 {
+export function subtract(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
-function angleBetween(a: Vec3, b: Vec3): number {
+/** Angle between two vectors, radians. Exported for tests. */
+export function angleBetween(a: Vec3, b: Vec3): number {
   const na = Math.hypot(a[0], a[1], a[2]);
   const nb = Math.hypot(b[0], b[1], b[2]);
   if (na < 1e-6 || nb < 1e-6) return 0;
@@ -177,6 +219,25 @@ function jointPosition(
   if (!pose) return null;
   const p = pose.transform.position;
   return [p.x, p.y, p.z];
+}
+
+/**
+ * Reduce three joint positions to a curl fraction, 0 open to 1 closed.
+ *
+ * Exported so the scale-free claim can actually be tested: the same physical
+ * gesture on a small hand and a large one must give the same number, which is
+ * the whole reason curl was chosen over fingertip-to-palm distance.
+ */
+export function fingerCurl(
+  proximal: Vec3,
+  intermediate: Vec3,
+  tip: Vec3,
+): number {
+  const angle = angleBetween(
+    subtract(intermediate, proximal),
+    subtract(tip, intermediate),
+  );
+  return Math.min(1, Math.max(0, angle / FULL_CURL_RAD));
 }
 
 function measureGrip(frame: XRFrame, hand: XRHand, space: XRSpace): number {
