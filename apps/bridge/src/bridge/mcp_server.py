@@ -1155,7 +1155,9 @@ async def say(
     with motion categorically unavailable and another stack owning it. What that
     establishes is that the SERVICE is reachable in that state; it is not proof
     that audio reached the speaker, which cannot be checked without making noise
-    in a shared room. Treat playback as verified only when someone has heard it.
+    in a shared room. That confirmation has since happened: Spanish played audibly
+    through the speaker on 2026-08-21, so the whole path is proven, not merely
+    accepted by the RPC.
 
     One utterance at a time, and one language per utterance: the firmware has
     no mixed Chinese/English voice. There is also no documented behaviour for

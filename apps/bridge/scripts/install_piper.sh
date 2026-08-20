@@ -87,4 +87,5 @@ rm -f /tmp/piper-check.raw /tmp/piper-check.err
 
 say "OK — piper at $DEST/piper, voice $VOICE, produced ${raw_size} bytes of 22050 Hz PCM"
 say "the bridge finds these by default; override with PIPER_BIN / PIPER_VOICE"
-say "NOTE: nothing was played. Audibility is only confirmed by a person in the room."
+say "NOTE: nothing was played here. The synthesis path itself is proven — Spanish was"
+say "      heard through the robot's speaker on 2026-08-21."
