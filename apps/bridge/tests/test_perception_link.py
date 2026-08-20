@@ -539,3 +539,30 @@ def test_starting_the_link_is_not_arming_it():
     gate = link.diagnostics()["gate"]
     assert gate["enabled"] is False
     assert gate["arm_expires_in_s"] is None, "nothing may hold an arming window at rest"
+
+
+def test_describe_surroundings_actually_consumes_the_perception_report():
+    """THE THIRD TIME THIS SHAPE OF BUG HAS APPEARED, hence a test for it.
+
+    PerceptionLink was written and never started. `from_report` was written and
+    never called. describe_surroundings hardcoded detector_online=False behind a
+    comment saying perception was not deployed, long after it was — so the robot
+    had eyes, a wire, and a parser, and the tool that an operator and an agent
+    both use to ask "what is around you" reported an offline scene.
+
+    None of that fails a unit test, because every piece works in isolation. What
+    catches it is asserting the CONNECTION exists.
+    """
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "mcp_server.py"
+    body = src.read_text()
+    tool = body.split("def describe_surroundings", 1)[-1].split("@mcp.tool", 1)[0]
+
+    assert "latest_report()" in tool, (
+        "describe_surroundings must read the perception link — without it the "
+        "snapshot reports offline while reports are arriving")
+    assert "from_report" in tool, (
+        "the container's wire shape has exactly one interpreter (world_model."
+        "from_report); re-parsing it here would fork the D7 contract")
+    assert "detector_online=False" in tool, (
+        "the no-report fallback must still degrade explicitly — 'nothing "
+        "detected' and 'nothing looked' are different answers (D7)")
