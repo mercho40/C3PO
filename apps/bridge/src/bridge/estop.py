@@ -144,3 +144,69 @@ def stop_is_standing() -> bool:
     """
     stop_at = last_stop_at()
     return stop_at > 0.0 and stop_at > last_ack_at()
+
+
+# -- the teleop lease -------------------------------------------------------
+#
+# Same mechanism, different question: *is somebody driving right now?*
+#
+# `rt/run_command/cmd` has no arbitration. Two processes writing velocity at
+# 20-50 Hz produce a robot that obeys whichever message landed last, alternating
+# tens of times a second, and neither writer can tell. Both exist and both are
+# reachable at once: the MCP server runs walk_to / turn / walk_velocity, and the
+# teleop stream runs the headset — separate processes, no shared registry, no
+# shared lock.
+#
+# The realistic collision is not exotic. The operator is in the headset walking
+# the robot across a room while the agent, asked in the chat panel to "go to the
+# door", starts a walk_to. Both are legitimate requests. Only one can be obeyed.
+#
+# The person wearing the headset wins, and it is not close. They are in the room
+# with the robot, they can see what it is about to hit, and they did not ask a
+# language model for permission to move their own hands. An agent's plan can
+# wait; the human's reflexes cannot.
+#
+# A lease rather than a lock, because a lock's failure mode here is a robot
+# nobody can drive: hold one, crash, and locomotion is refused until somebody
+# finds the stale file. A lease that has to be renewed expires on its own.
+
+LEASE_NAME = "teleop_driving"
+
+#: How long a lease stays valid without renewal. The dispatch loop renews at
+#: 20-50 Hz, so this is generous by two orders of magnitude — it is sized so
+#: that a teleop server which dies mid-session frees locomotion in about a
+#: second, not so that a busy one keeps it by a hair.
+LEASE_TTL_S = 2.0
+
+
+def renew_teleop_lease() -> None:
+    """Say that a teleop session is actively driving. Cheap enough for 50 Hz."""
+    try:
+        DEFAULT_RUN_DIR.mkdir(parents=True, exist_ok=True)
+        path = DEFAULT_RUN_DIR / LEASE_NAME
+        now = time.time()
+        path.touch(exist_ok=True)
+        os.utime(path, (now, now))
+    except OSError:
+        # Never fatal, and deliberately not logged: this runs every control
+        # tick, and a warning here would be a log line 50 times a second. The
+        # consequence of failing is that skills are not held off, which is the
+        # behaviour we had before the lease existed.
+        pass
+
+
+def release_teleop_lease() -> None:
+    """Drop the lease immediately, rather than waiting out the TTL."""
+    try:
+        (DEFAULT_RUN_DIR / LEASE_NAME).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def teleop_is_driving() -> bool:
+    """True if a teleop session renewed its lease within LEASE_TTL_S."""
+    try:
+        age = time.time() - (DEFAULT_RUN_DIR / LEASE_NAME).stat().st_mtime
+    except OSError:
+        return False
+    return age <= LEASE_TTL_S

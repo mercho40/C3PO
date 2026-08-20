@@ -73,7 +73,13 @@ from typing import Any
 import structlog
 from websockets.asyncio.server import ServerConnection, serve
 
-from bridge.estop import last_stop_at, record_ack, stop_is_standing
+from bridge.estop import (
+    last_stop_at,
+    record_ack,
+    release_teleop_lease,
+    renew_teleop_lease,
+    stop_is_standing,
+)
 from bridge.skills.task_runtime import get_registry
 from bridge.teleop import hands as hands_mod
 from bridge.teleop.arm_sdk import ArmSdkUnavailable, get_driver
@@ -443,6 +449,12 @@ async def _dispatch_once(session: TeleopSession, now: float) -> None:
     from bridge.skills._locomotion import send_velocity_async
 
     frame = session.frame
+    # Announce that a headset is driving, so the MCP process's locomotion
+    # skills hold off rather than interleaving velocity commands with ours.
+    # Renewed every tick: it is a lease, not a lock, so a teleop server that
+    # dies mid-session frees locomotion in about a second instead of leaving
+    # a robot nobody can drive.
+    renew_teleop_lease()
     # Before anything else: has the e-stop been pressed? `wants_motion` also
     # consults the latch, but this is what sets it, and it must run even on a
     # tick where no frame has arrived.
@@ -693,6 +705,9 @@ async def handle_client(ws: ServerConnection) -> None:
         # release on a disengaged driver are both no-ops.
         await _safe_stop(session)
         session.close()
+        # Drop it now rather than waiting out the TTL: the operator who just
+        # disconnected should not have to wait two seconds to use the console.
+        release_teleop_lease()
         _active = None
         log.info("teleop.session_ended", **session.status())
 
