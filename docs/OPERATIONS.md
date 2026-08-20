@@ -298,8 +298,8 @@ serve a person who is currently wearing a headset. The camera comes from
 `apps/perception`'s vision container (`perception_up perception`, port 8081), which is the
 process that owns the D435i.
 
-| Process | Start | Port | What it is |
-| --- | --- | --- | --- |
+| Process                | Start        | Port | What it is                                                      |
+| ---------------------- | ------------ | ---- | --------------------------------------------------------------- |
 | `bridge.teleop.server` | `run_teleop` | 8767 | Head yaw + both wrists + finger closure from the headset, 30 Hz |
 
 The port numbering is not arbitrary and the constraint is tight — everything else on this
@@ -331,10 +331,10 @@ sets of setpoints will simply interleave.
 **Both hardware paths in the teleop server ship disabled** and stay that way until a person
 has run the corresponding check on the robot:
 
-| Env | Unblocked by | Why it is gated |
-| --- | --- | --- |
-| `TELEOP_ARM_ENABLED=1` | `scripts/arm_sign_check.py` | No source gives the positive direction of any G1 arm joint |
-| `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE=brainco` + `TELEOP_BRAINCO_OPEN_AT` | inspection | The hands are **two BrainCo** (settled 2026-08-19). Units are [0,1], not Dex3 radians — and BrainCo has **no firmware deadman**, so any hold must be bounded by the bridge |
+| Env                                                                             | Unblocked by                | Why it is gated                                                                                                                                                            |
+| ------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TELEOP_ARM_ENABLED=1`                                                          | `scripts/arm_sign_check.py` | No source gives the positive direction of any G1 arm joint                                                                                                                 |
+| `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE=brainco` + `TELEOP_BRAINCO_OPEN_AT` | inspection                  | The hands are **two BrainCo** (settled 2026-08-19). Units are [0,1], not Dex3 radians — and BrainCo has **no firmware deadman**, so any hold must be bounded by the bridge |
 
 Put them in `apps/bridge/.env` once settled, not on the command line, so the answer
 survives the next session. Head-yaw turning and the walk axis are not gated — they ride on
@@ -412,6 +412,7 @@ Plain facts, not a roadmap. Each stays here until fixed.
   same check against `g1-orin.local:8001` through `ssh -L` before treating the robot path
   as proven. If it fails only there, the fault is the tunnel's stream handling, not Bun's,
   and the fallback is plain request/response POSTs rather than the SDK transport.
+
 - **`BRIDGE_URL` default is wrong on both host and port** (`apps/back/.env.example`):
   the real target is an SSH tunnel to `g1-orin.local:8001`, not `127.0.0.1:8000`. The
   8000 default is also baked into code — `apps/back/src/bridge/client.ts` (`BRIDGE_URL`

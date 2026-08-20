@@ -51,8 +51,14 @@ mock.module("@back/skills", () => ({
   // an export the real module has throws at import time for whoever loses
   // the race. Keep this mock's surface complete even though runtime.ts only
   // uses listSkills.
-  getSkill: mock(async (name: string) => FIXTURE_SKILLS.find((s) => s.name === name)),
-  getCatalogue: mock(async () => ({ skills: FIXTURE_SKILLS, source: "bridge", ageSeconds: 0 })),
+  getSkill: mock(async (name: string) =>
+    FIXTURE_SKILLS.find((s) => s.name === name),
+  ),
+  getCatalogue: mock(async () => ({
+    skills: FIXTURE_SKILLS,
+    source: "bridge",
+    ageSeconds: 0,
+  })),
 }));
 
 const { buildSystemPrompt } = await import("./runtime");
@@ -61,7 +67,9 @@ describe("buildSystemPrompt", () => {
   test("does not hardcode a specific sim/real environment", async () => {
     const prompt = await buildSystemPrompt();
     expect(prompt).not.toContain("currently the Isaac Sim emulation");
-    expect(prompt).not.toContain("Locomotion\n(walk_to, turn) and get_state are real");
+    expect(prompt).not.toContain(
+      "Locomotion\n(walk_to, turn) and get_state are real",
+    );
   });
 
   test("tells the agent to check env at runtime via get_state", async () => {
@@ -74,12 +82,16 @@ describe("buildSystemPrompt", () => {
     const prompt = await buildSystemPrompt();
     // walk_to is sim-only (works.real: false) -- catalogue tag must say so,
     // not just leave it to the (removed) hardcoded claim above.
-    const walkToLine = prompt.split("\n").find((l) => l.startsWith("- walk_to "));
+    const walkToLine = prompt
+      .split("\n")
+      .find((l) => l.startsWith("- walk_to "));
     expect(walkToLine).toBeDefined();
     expect(walkToLine).toContain("sim-only");
 
     // walk_velocity is real-only (works.real: true, works.sim: false).
-    const walkVelocityLine = prompt.split("\n").find((l) => l.startsWith("- walk_velocity "));
+    const walkVelocityLine = prompt
+      .split("\n")
+      .find((l) => l.startsWith("- walk_velocity "));
     expect(walkVelocityLine).toBeDefined();
     expect(walkVelocityLine).toContain("real-only");
   });
