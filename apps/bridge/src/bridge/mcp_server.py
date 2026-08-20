@@ -1097,37 +1097,52 @@ async def say(
         ),
     ],
     language: Annotated[
-        Literal["english", "chinese"],
+        Literal["spanish", "english", "chinese"],
         Field(
             description=(
-                "Which of the firmware's two voices to use. These are the ONLY "
-                "two that exist — there is no Spanish voice, and the English one "
-                "does not read Spanish intelligibly. Do NOT pass Spanish text to "
-                "this tool: it returns success and produces unusable audio. The "
-                "robot cannot mix languages in one utterance either — send "
-                "separate calls instead."
+                "Language of `text`. **spanish** is this deployment's operating "
+                "language and the default; it is synthesised on the robot and "
+                "played as audio, so it does not use the firmware's voices at "
+                "all. english/chinese use the firmware's own two voices. Match "
+                "this to the text you actually wrote — labelling Spanish as "
+                "english does not fail, it produces an English voice attempting "
+                "Spanish phonemes. One language per utterance; send separate "
+                "calls to switch."
             )
         ),
-    ] = "english",
+    ] = "spanish",
 ) -> dict:
     """Speak text aloud through the robot's own speaker (voice service, TTS).
 
-    ⚠️ THIS TOOL CANNOT SPEAK SPANISH, AND SPANISH IS THIS DEPLOYMENT'S
-    OPERATING LANGUAGE. The firmware has exactly two voices — `speaker_id` 0 is
-    Chinese, 1 is English, there is no third, and it has been verified on this
-    robot that NEITHER READS SPANISH INTELLIGIBLY. That is a hard wall in the
-    firmware, not a preference or a missing argument: passing Spanish text here
-    produces an English voice attempting Spanish phonemes, which "succeeds"
-    with rpc_code 0 and is unusable.
+    TWO DIFFERENT MECHANISMS LIVE BEHIND ONE TOOL, and the split is forced by
+    the firmware rather than chosen:
 
-    Spanish must go out through `PlayStream` (`api_id` 1003/1004) instead —
-    synthesise externally, push PCM. That path is NOT implemented here yet; see
-    `docs/DECISIONS.md` D6.1 for the decision and `docs/ROBOT-API.md` §7 for the
-    wire format. The co-tenant `gemm` stack already does this, so it is proven
-    on this hardware.
+      spanish  -> synthesised locally by Piper (`es_AR/daniela`), resampled to
+                  16 kHz, and pushed as PCM through `PlayStream` (1003).
+      en / zh  -> the firmware's own TTS (1001), `speaker_id` 1 / 0.
 
-    Real on hardware: on-robot text-to-speech, no cloud round-trip and no API
-    key. Logs only on stub and sim, which have no speaker.
+    The firmware has exactly two voices and no third. It was verified on this
+    robot that neither reads Spanish intelligibly, and — the part that matters —
+    passing Spanish to firmware TTS returns **rpc_code 0** while emitting
+    unusable audio. A false success, which is why Spanish never touches that
+    path here and why this tool refuses loudly instead of falling back to it
+    when local synthesis is unavailable. Silence with an explanation beats
+    confident noise. See `docs/DECISIONS.md` D6.1/D6.3.
+
+    Everything is local and offline: no cloud, no API key, and Spanish still
+    works with the network down — which is exactly when "estoy atascado" is
+    worth saying. Logs only on stub and sim, which have no speaker.
+
+    INTERRUPTION IS FREE AND IMPLICIT for Spanish. `PlayStream`'s `stream_id` is
+    the interrupt model — a new id interrupts whatever is playing — and each
+    call here mints a new one. So a second `say` barges in over the first rather
+    than queueing behind it, with no stop call needed. Firmware TTS has no such
+    model and no documented behaviour for overlapping calls.
+
+    The robot's speaker is SHARED with the co-tenant `gemm` stack and there is
+    no arbitration. We publish under our own `app_name` ("c3po"), so their
+    assistant cannot stop our speech and we cannot stop theirs — expect
+    occasional talking over each other; it is not a bug to fix here.
 
     Worth reaching for more than it sounds. Speech is not gated by the
     locomotion FSM, so it is a channel the robot still has when motion is being
@@ -1161,8 +1176,74 @@ async def say(
         }
 
     import asyncio
+    import time
 
     from bridge.sdk import g1_protocol, g1_rpc
+
+    if language == "spanish":
+        from bridge.skills import tts
+
+        ok, why = tts.available()
+        if not ok:
+            # Refuse rather than degrade. The available fallback is the English
+            # voice reading Spanish, which is precisely the rpc_code-0-and-noise
+            # failure this path exists to avoid — it would look like success in
+            # the logs and be unusable in the room.
+            return {
+                "status": "failed",
+                "spoken": None,
+                "language": language,
+                "error": "spanish_tts_unavailable",
+                "detail": why,
+                "note": (
+                    "Refusing to fall back to the English voice: it reads Spanish "
+                    "unintelligibly while reporting success. Install Piper, or "
+                    "call again with language='english' and English text."
+                ),
+                "env": SIM_MODE,
+                "stub": False,
+            }
+
+        # One stream_id per utterance, minted fresh so this call interrupts
+        # whatever is currently playing. Milliseconds is the vendor's own
+        # convention; it only has to be different from the last one.
+        stream_id = f"c3po-{int(time.time() * 1000)}"
+
+        def _synth_and_play() -> tuple[int, str | None, float]:
+            pcm = tts.synthesize(text)
+            code, data = g1_rpc.play_pcm(pcm, stream_id)
+            return code, data, tts.duration_s(pcm)
+
+        try:
+            # Both halves off the event loop. Synthesis is CPU-bound and
+            # PlayStream is a blocking RPC per chunk; on the loop, a long
+            # sentence would stall every other tool call — stop_everything
+            # included, which is the one that must never wait behind speech.
+            code, data, seconds = await asyncio.to_thread(_synth_and_play)
+        except tts.TtsUnavailable as exc:
+            return {
+                "status": "failed", "spoken": None, "language": language,
+                "error": "spanish_tts_failed", "detail": str(exc),
+                "env": SIM_MODE, "stub": False,
+            }
+
+        return {
+            "status": "ok" if code == 0 else "failed",
+            "spoken": text if code == 0 else None,
+            "language": language,
+            "rpc_code": code,
+            "rpc_data": data,
+            # PlayStream acks on RECEIPT, not on completion — the vendor's own
+            # example fires it and sleeps a fixed 3 s. So this is computed from
+            # the bytes sent and is the only honest answer to "is it still
+            # talking?". Nothing here waits for it.
+            "speech_seconds": round(seconds, 2),
+            "stream_id": stream_id,
+            "via": "piper+playstream",
+            "error": None if code == 0 else f"rpc_error_code_{code}",
+            "env": SIM_MODE,
+            "stub": False,
+        }
 
     speaker_id = (
         g1_protocol.Speaker.CHINESE if language == "chinese" else g1_protocol.Speaker.ENGLISH
@@ -1178,6 +1259,7 @@ async def say(
         "language": language,
         "rpc_code": code,
         "rpc_data": data,
+        "via": "firmware_tts",
         "error": None if code == 0 else f"rpc_error_code_{code}",
         "env": SIM_MODE,
         "stub": False,
