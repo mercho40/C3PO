@@ -32,6 +32,17 @@ Every claim is tagged:
 > **under-travels command by ~2.2x** (25° commanded → ~5.5° achieved), matching
 > the ~2.35x `walk_to` measures in translation. The gains are fitted to the sim
 > policy and have never been re-fitted to this body.
+>
+> **And the response is NOT linear.** Re-tuning the teleop yaw policy the same
+> day (deadzone 8→6°, full scale 45→30°, cap 0.25→0.30 rad/s) raised the
+> commanded rate at a 25° head yaw by 2.07x — and produced **3.4x** more actual
+> rotation: +19.5° where the same input had given +5.3° and +5.8°. A larger
+> command clears stiction in the walk policy disproportionately well.
+>
+> The practical consequence: **a single scale factor will not correct this
+> path.** Anyone re-fitting the gains should measure at several command
+> magnitudes rather than one, or the correction will be right at exactly one
+> speed and wrong either side of it. **[live]** 2026-08-20
 
 ## Contents
 
