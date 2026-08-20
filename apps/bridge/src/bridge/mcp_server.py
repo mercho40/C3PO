@@ -1710,12 +1710,52 @@ def describe_surroundings() -> dict:
                 world_model.Observation(label=lm.name, range_m=rng, bearing_deg=bearing)
             )
 
+    # THE PERCEPTION REPORT, if the container is up and publishing on domain 42.
+    #
+    # This was hardcoded to detector_online=False with a comment saying
+    # perception was not deployed. It has been deployed for a while: the link
+    # runs, reports arrive, and `world_model.from_report` — written for exactly
+    # this, fully tested — was called from nowhere. The robot's eyes were built
+    # and not plugged in, the same way the link itself was.
+    #
+    # `latest_report()` returns None for a container that is absent, one whose
+    # report is older than REPORT_OFFLINE_AFTER_S, and one whose version was
+    # refused. All three are the same fact to a model — nothing looked — and
+    # from_report degrades all three identically. That is why the fallback below
+    # is not a special case but the honest snapshot.
+    report = None
+    report_age = None
+    try:
+        from bridge.sdk.perception_link import get_link
+
+        report, report_age = get_link().latest_report()
+    except Exception:
+        # Never let a perception fault take down the one tool an operator uses
+        # to ask what is going on. Degrading to "offline" is always available.
+        log.exception("describe_surroundings.perception_read_failed")
+
+    if report is not None:
+        merged = dict(report)
+        # The container reports the pose FAST-LIO believes; the bridge reports
+        # the one the control board believes. Prefer perception's — it is the
+        # frame the objects were measured in, so mixing the two would place
+        # detections against a pose they were never relative to. Fall back to
+        # ours only when the container has none.
+        if not merged.get("pose") and pose is not None:
+            merged["pose"] = pose
+            merged["pose_age_s"] = pose_age
+        snapshot = world_model.from_report(merged, landmarks=landmarks).to_dict()
+        if report_age is not None:
+            snapshot["report_age_s"] = report_age
+        return snapshot
+
     return world_model.build(
         pose=pose,
         pose_age_s=pose_age,
         landmarks=landmarks,
-        # Perception is not deployed yet — these stay False so the snapshot
-        # says "offline" instead of implying a clear scene.
+        # No usable report: absent, stale, or version-refused. Explicitly
+        # offline rather than an empty scene — "nothing detected" and "nothing
+        # looked" must never be the same answer (D7).
         detector_online=False,
         lidar_online=False,
     ).to_dict()
