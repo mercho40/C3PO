@@ -311,6 +311,13 @@ class StateSampler:
             "mode_machine": low.mode_machine,
             "lowstate_age_s": (time.time() - low.received_at) if low.received_at else None,
             "fsm_id": fsm.fsm_id,
+            # The FSM comes from a DIFFERENT snapshot than the lowstate, with
+            # its own arrival time, and the caller gates on both. Returning the
+            # id without its age let the arm path pass a fresh-lowstate check
+            # while deciding on an FSM reading from minutes earlier — which is
+            # the difference between "the robot is standing locked" and "the
+            # robot has been walking since the last time anyone asked".
+            "fsm_age_s": (time.time() - fsm.received_at) if fsm.received_at else None,
         }
 
     def _on_bms(self, msg: Any) -> None:

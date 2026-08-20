@@ -119,6 +119,13 @@ JUMP_CONFIRM_FRAMES = 3
 # 0.5 s is ten missed messages — comfortably a dead link, not a hiccup.
 MAX_LOWSTATE_AGE_S = 0.5
 
+# How old the FSM reading may be when deciding whether it is safe to take the
+# arms. Much more generous than the lowstate limit because the FSM is polled
+# over RPC rather than streamed — seconds between reads is normal, and holding
+# it to a streaming topic's standard would refuse the arms constantly. What it
+# must not do is accept a reading from before the robot changed state.
+MAX_FSM_AGE_S = 5.0
+
 # FSM ids where Unitree documents `rt/arm_sdk` as supported.
 ALLOWED_FSM_IDS = frozenset({4, 500, 501})
 
@@ -248,6 +255,21 @@ class ArmSdkDriver:
             raise ArmSdkUnavailable(
                 f"lowstate reported {len(arm_q)} arm joints, expected 14 (G1JointIndex 15-28). "
                 "A 23-DoF or arms-only variant needs its own slot mapping before this runs."
+            )
+
+        fsm_age = state["fsm_age_s"]
+        if fsm_age is None:
+            raise ArmSdkUnavailable(
+                "the FSM state has never been read, so there is no way to tell whether the "
+                "robot is standing locked or walking. Both are possible and only one is safe "
+                "to blend arm setpoints into."
+            )
+        if fsm_age > MAX_FSM_AGE_S:
+            raise ArmSdkUnavailable(
+                f"the FSM reading is {fsm_age:.1f}s old (> {MAX_FSM_AGE_S}s). It is polled over "
+                "RPC, separately from rt/lowstate, so a healthy lowstate says nothing about "
+                "whether this number is current — and a robot that started walking since it "
+                "was taken still reads as the state it was in when it stopped answering."
             )
 
         fsm_id = state["fsm_id"]
