@@ -1192,6 +1192,19 @@ they have very different consequences:
   been found: `vui_service` exposes `START_PLAY`/`STOP_PLAY`/`GET_VOLUME`/`SET_VOLUME` and
   **no ASR or capture function at all** (§8.3), so if a trigger exists it is not there.
 
+**ANSWERED 2026-08-21: THE FEED IS GATED ON THE REMOTE'S WAKE-UP MODE.** Holding
+**L1+L2** opens it; releasing closes it. Two runs, both with the join verified: 212 packets
+/ 33.9 s of audio in a 45 s window, then 262 packets / 41.9 s while a person spoke Spanish
+into it, transcribed live. At rest, across every earlier probe, exactly zero. **[live]**
+
+So `listen()` has a **human prerequisite** and cannot run unattended: something has to hold
+a button on the remote for the robot to hear anything. That is a hard constraint on every
+voice design downstream — an always-listening assistant is not available on this hardware
+without the App-side equivalent, which is untested.
+
+Everything below was the investigation that got here, and is kept because each step
+eliminated a cheaper explanation.
+
 **A stopped service is NOT the explanation** — the obvious third reading, checked and
 killed. `robot_state` 1003 `ServiceList` reports `vui_service` *and*
 `audio_player_service` both running on 2026-08-21 (`status: 0`; polarity confirmed against
