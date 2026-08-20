@@ -471,3 +471,49 @@ def test_the_snapshot_still_fits_the_token_budget_it_was_designed_for():
     ]
     wm = from_wire(objects=objects, objects_omitted=8)
     assert wm.approx_tokens() < 400
+
+
+# ---------------------------------------------------------------------------
+# Packaging — the failure that only shows up at launch time
+# ---------------------------------------------------------------------------
+
+
+def test_setup_cfg_puts_console_scripts_where_ros2_looks():
+    """Without this, the package builds clean and cannot be launched.
+
+    setuptools installs console_scripts to `<prefix>/bin/`; `ros2 launch` and
+    `ros2 run` look only in `<prefix>/lib/<pkg>/`. With no setup.cfg the build
+    succeeds, `ros2 pkg list` shows the package, and the first symptom is a
+    launch-time error naming a MISSING DIRECTORY rather than the missing file
+    that would have created it. Cost us one Stage 3 attempt.
+    """
+    from conftest import NAV_PKG
+
+    cfg = NAV_PKG / "setup.cfg"
+    assert cfg.exists(), "ament_python packages need a setup.cfg — see the file's own comment"
+    text = cfg.read_text()
+    assert "script_dir=$base/lib/c3po_perception" in text
+    assert "install_scripts=$base/lib/c3po_perception" in text
+
+
+def test_every_console_script_names_a_real_module_attribute():
+    """`ros2 run` failing on a typo'd entry point is a runtime-only error too."""
+    import ast
+    from conftest import NAV_PKG
+
+    setup_py = (NAV_PKG / "setup.py").read_text()
+    # entry points look like "name = c3po_perception.module:main"
+    targets = [
+        line.split("=", 1)[1].strip().strip('",')
+        for line in setup_py.splitlines()
+        if "= c3po_perception." in line and ":" in line
+    ]
+    assert targets, "no console_scripts found in setup.py"
+    for target in targets:
+        module_path, func = target.split(":")
+        module_file = NAV_PKG / module_path.replace(".", "/")
+        module_file = module_file.with_suffix(".py")
+        assert module_file.exists(), f"{target} points at a module that does not exist"
+        tree = ast.parse(module_file.read_text())
+        names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+        assert func in names, f"{target}: {module_file.name} has no `{func}`"
