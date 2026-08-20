@@ -126,17 +126,25 @@ async def probe_joint(driver, side: str, index: int, name: str) -> str | None:
     await asyncio.sleep(0 if isinstance(driver, DryDriver) else HOLD_S)
 
     print(f"  expected for sign +1: {EXPECTED[name]}")
-    answer = ask("  did that happen?  [y]es / [n]o, it went the other way / [s]kip / anything else aborts:")
+    answer = ask(
+        "  did that happen?  y = yes / n = no, it went the other way / "
+        "s = skip / anything else ABORTS:"
+    )
 
     print("  returning to neutral ...")
     _command_side(driver, side, NEUTRAL)
     await asyncio.sleep(0 if isinstance(driver, DryDriver) else HOLD_S)
 
-    if answer == "y":
+    # Accept the whole word as well as the letter. The prompt reads
+    # "[y]es / [n]o", which invites typing "yes" — and on the dry run that is
+    # exactly what happened, aborting the sequence. Defaulting to abort is
+    # right for a typo; it is wrong for the most natural possible answer to
+    # the question being asked.
+    if answer in ("y", "yes", "si", "sí"):
         return "+1.0"
-    if answer == "n":
+    if answer in ("n", "no"):
         return "-1.0"
-    if answer == "s":
+    if answer in ("s", "skip"):
         return None
     raise KeyboardInterrupt
 
@@ -181,7 +189,7 @@ async def main_async(args) -> int:
         "\n!! The robot's arms are about to move.\n"
         "!! It must be STANDING (FSM 4 / 500 / 501), with the e-stop in your hand.\n"
     )
-    if ask("type 'ready' to engage rt/arm_sdk:") != "ready":
+    if ask("type 'ready' to engage rt/arm_sdk:") not in ("ready", "y", "yes"):
         print("aborted.")
         return 1
 
