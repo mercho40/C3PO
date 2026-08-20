@@ -201,3 +201,32 @@ async def maybe_report_progress(
     except Exception as exc:
         log.debug("locomotion.progress.failed", task_id=task.task_id, error=str(exc))
     return task.progress
+
+
+def teleop_conflict() -> str | None:
+    """Why this skill must not command velocity right now, or None.
+
+    `rt/run_command/cmd` has no arbitration. Two processes writing velocity at
+    20-50 Hz give a robot that obeys whichever message landed last, alternating
+    tens of times a second, with neither writer able to tell. Both writers exist
+    and are reachable at once: this process runs walk_to / turn / walk_velocity,
+    and the teleop stream runs the headset.
+
+    The collision is ordinary, not exotic — the operator walks the robot across
+    a room while the agent, asked in the chat panel to "go to the door", starts
+    a walk_to. Both requests are legitimate. Only one can be obeyed.
+
+    The person in the headset wins. They are in the room with the robot, they
+    can see what it is about to hit, and they did not ask a language model for
+    permission to move. An agent's plan can wait.
+    """
+    from bridge.estop import teleop_is_driving
+
+    if not teleop_is_driving():
+        return None
+    return (
+        "a teleoperation session is driving the robot right now. Two commanders on "
+        "rt/run_command/cmd means the robot obeys whichever message landed last, so this "
+        "skill will not add itself as a second one. Ask the operator to disconnect the "
+        "headset stream, or wait for them to finish."
+    )

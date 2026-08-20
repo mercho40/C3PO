@@ -24,6 +24,7 @@ from typing import Any
 import structlog
 
 from bridge.sdk import g1_rpc
+from bridge.skills._locomotion import teleop_conflict
 from bridge.skills.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
@@ -82,6 +83,15 @@ async def run(
     log.info("walk_velocity.start", task_id=task.task_id, requested=requested, clamped=clamped)
 
     try:
+        conflict = teleop_conflict()
+        if conflict is not None:
+            task.status = "failed"
+            task.phase = "teleop_active"
+            task.error = conflict
+            task.ended_at = time.time()
+            log.warning("walk_velocity.teleop_active", task_id=task.task_id)
+            return task.to_dict()
+
         code, data = await asyncio.to_thread(
             g1_rpc.call_set_velocity, clamped_vx, clamped_vy, clamped_vyaw, clamped_duration
         )
