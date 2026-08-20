@@ -239,16 +239,39 @@ behind the `unitree_slam` **and** `lidar_driver` services being switched on. **[
 (`slam_navigation_services_interface`, 2026-07-20.) Our zero-hit grep ran on the Jetson,
 and topics/services can be absent until switched on (§8), so the correct statement is
 **"documented, not enabled or not installed on this unit"** — `robot_state` 1003
-`ServiceList` settles it. Note its response envelope is unlike every other service:
-`{"succeed":bool,"errorCode":int,"info":str,"data":{}}` **inside** `data`, so `rpc_code 0`
-does not imply success there. **[web]** Its 1102 pose navigation is a second motion
-commander — see §10.
+`ServiceList` settles it, and it **works on this unit**: `rpc_code 0`, 2026-08-21. **[live]**
 
-**`bashrunner` — a reported vendor shell-run service, unverified.** The robot reportedly
-exposes `/api/bashrunner/request` over DDS: a remote shell-execution path. **[?]** Never
-probed on this unit — `robot_state` 1003 `ServiceList` (§8) or a `3203` discriminator
-would settle it. Context: `docs/DECISIONS.md` D8 (shell access) — confirm it exists
-before designing around it.
+```python
+c = _G1Client("robot_state", (1003,), timeout_s=5.0)   # register 1003 and nothing else
+c._SetApiVerson("1.0.0.0"); c.Init()
+code, data = c.call_raw(1003, "{}")
+```
+
+⚠️ **The documented envelope is wrong here.** The web docs describe
+`{"succeed":bool,"errorCode":int,"info":str,"data":{}}` **[web]**; this robot returns a
+**bare JSON array** of `{"name","protect","status"}` with no envelope at all. Parse
+defensively — code expecting `data.succeed` gets an AttributeError on a successful call.
+
+**Status polarity confirmed, and it is the inverted one.** `status` is `0 = running,
+1 = stopped` — the opposite of the `swit` input to `ServiceSwitch`. Verified without
+trusting the docs: `robot_state` reports `status: 0` *while answering this very call*, so
+0 cannot mean stopped. `protect: 1` marks the services `ServiceSwitch` refuses with 5202 —
+`basic_service`, `robot_state`, `webrtc_bridge`, `webrtc_signal_server`. **[live]**
+
+Snapshot 2026-08-21 — stopped were `unitree_slam`, `auto_test_arm`, `auto_test_low`,
+`ota_box`; **everything else was running**, including `vui_service`,
+`audio_player_service`, `chat_go`, `ai_sport` and `lidar_driver`. The two audio services
+being up is what rules out "a stopped service" as the reason the mic multicast is silent
+(`ROBOT-HARDWARE.md` §8.2).
+
+**`bashrunner` — CONFIRMED PRESENT AND RUNNING on this unit.** `ServiceList` lists it with
+`protect: 0, status: 0`, upgrading it from **[?]** to **[live]**, 2026-08-21. The reported
+`/api/bashrunner/request` DDS shell-execution path therefore has a live service behind it.
+Two consequences, and the second matters more than the first: `docs/DECISIONS.md` D8 can
+be designed against something real, **and this robot accepts remote shell execution over
+DDS from anything on its wired LAN, with no authentication in the DDS layer.** It is
+`protect: 0`, so unlike `basic_service` it can be switched off. Nobody has sent it a
+request and this note is not an invitation to.
 
 **Two namespaces, one word.** `robot_state`'s `ServiceSwitch` takes _process/service_
 names — Unitree publishes the list as `ai_sport` (Main Motion Control Service),
