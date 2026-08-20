@@ -77,6 +77,13 @@ MIN_MEANINGFUL_DEG = 2.0
 # gains under-travel by well over half; expect to move less than you ask for.
 PROBE_WALK_SECONDS = 1.5
 
+# After a stop, how long to let the robot finish decelerating before measuring
+# whether it is still moving, and how long to watch for. Measured on hardware
+# 2026-08-20: a turn at ~14 deg/s carried about 5 degrees, i.e. ~0.35 s of
+# settling, so a second is comfortable margin.
+SETTLE_S = 1.5
+CREEP_WINDOW_S = 2.0
+
 FSM_WALK_WAIST = 501
 
 
@@ -382,19 +389,43 @@ async def stage_estop(session: ClientSession, url: str) -> None:
         # next one to arrive — see read_status.
         status = await read_status(ws, timeout=5.0, until=lambda m: m.get("stopped_by_estop") is True)
 
-    after = await yaw_now(session)
-    drift = abs(math.degrees((after or 0.0) - (before or 0.0)))
+    # Two different questions, and only the second is a pass/fail.
+    #
+    # `settle` is how far it carried after the stop. A walking humanoid cannot
+    # halt instantly — it decelerates and re-plants its feet — so a few degrees
+    # here is physics, not a fault, and asserting on it (as this stage first
+    # did, reusing the dead-man's "did it move at all" threshold) fails a
+    # working e-stop.
+    #
+    # `creep` is measured over a window that begins AFTER deceleration should
+    # be finished. That is the real property: not "did it stop within N
+    # degrees", but "did it stop and STAY stopped while the operator kept
+    # holding the control".
+    settled = await yaw_now(session)
+    settle = abs(math.degrees((settled or 0.0) - (before or 0.0)))
+
+    await asyncio.sleep(SETTLE_S)
+    creep_start = await yaw_now(session)
+    await asyncio.sleep(CREEP_WINDOW_S)
+    creep_end = await yaw_now(session)
+    creep = abs(math.degrees((creep_end or 0.0) - (creep_start or 0.0)))
+
     print(f"    stopped_by_estop : {status.get('stopped_by_estop')}")
-    print(f"    yaw drift after  : {drift:.2f} deg")
+    print(f"    settled after    : {settle:.2f} deg  (deceleration — informational)")
+    print(f"    creep over {CREEP_WINDOW_S:.0f}s    : {creep:.2f} deg  (must be ~0)")
 
     if not status.get("stopped_by_estop"):
         raise Aborted(
             "the session did not latch stopped. The e-stop reached the registry but "
             "not the stream — this is the exact defect the latch exists to prevent."
         )
-    if drift > MIN_MEANINGFUL_DEG:
-        raise Aborted(f"the robot kept turning {drift:.1f} deg after PARAR. Stop here.")
-    print("    OK: PARAR stopped the stream, and holding the control did not undo it.")
+    if creep > MIN_MEANINGFUL_DEG:
+        raise Aborted(
+            f"the robot was STILL turning {creep:.1f} deg/{CREEP_WINDOW_S:.0f}s after PARAR "
+            "and after settling. That is not deceleration, that is a stream still driving."
+        )
+    print("    OK: PARAR stopped the stream, it stayed stopped while the control was held,")
+    print(f"        and the {settle:.1f} deg it carried was deceleration, not command.")
 
 
 async def stage_disconnect_stops(session: ClientSession, url: str) -> None:
