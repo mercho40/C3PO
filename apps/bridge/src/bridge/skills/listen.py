@@ -473,6 +473,10 @@ def iter_alsa_frames(device: str = "", frame_bytes: int = FRAME_BYTES) -> Iterat
         ["arecord", "-D", device, "-f", "S16_LE", "-r", str(MIC_SAMPLE_RATE),
          "-c", "1", "-t", "raw", "-q"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if proc.stdout is None:
+        proc.terminate()
+        raise ListenUnavailable(f"arecord gave no stdout for {device}")
+
     log.info("listen.alsa_opened", device=device)
     try:
         while True:

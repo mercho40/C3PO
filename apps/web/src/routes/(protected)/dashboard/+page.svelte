@@ -10,6 +10,7 @@
   } from "@lucide/svelte";
   import { Input } from "$lib/components/ui/input/index.js";
   import PostureFigure from "$lib/components/posture-figure.svelte";
+  import AwarenessPanel from "$lib/components/awareness-panel.svelte";
   import { projectPose } from "$lib/robot/live-state.svelte";
   import { getRobotLive } from "$lib/robot/context";
   import {
@@ -303,4 +304,12 @@
       </span>
     </div>
   </section>
+</div>
+
+<!-- What the robot SEES and HEARS. Full width rather than squeezed into the
+     column stack, because the D7 notes are sentences ("detection is OFFLINE —
+     this is not an empty scene") and they lose their force wrapped to a narrow
+     gutter. They are the part an operator must actually read. -->
+<div class="mt-4">
+  <AwarenessPanel />
 </div>

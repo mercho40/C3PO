@@ -80,12 +80,12 @@ loops. A 240 x 240 grid encodes to ~540 bytes of indexed PNG, so polling it at
 
 **It takes a different route from the camera, and that asymmetry is deliberate.**
 
-|          | Live camera                        | Live map                             |
-| -------- | ---------------------------------- | ------------------------------------ |
-| Path     | browser → robot `:8081` **direct** | browser → `back` → bridge `:8001`    |
-| Auth     | none (the tunnel is the boundary)  | Better Auth, via `back`              |
-| Tunnel   | needs `-L 8081`                    | needs nothing extra                  |
-| Env      | `PUBLIC_ROBOT_CAM_URL`             | none — it uses `PUBLIC_API_URL`      |
+|        | Live camera                        | Live map                          |
+| ------ | ---------------------------------- | --------------------------------- |
+| Path   | browser → robot `:8081` **direct** | browser → `back` → bridge `:8001` |
+| Auth   | none (the tunnel is the boundary)  | Better Auth, via `back`           |
+| Tunnel | needs `-L 8081`                    | needs nothing extra               |
+| Env    | `PUBLIC_ROBOT_CAM_URL`             | none — it uses `PUBLIC_API_URL`   |
 
 The reason is what each port serves. `:8081` serves nothing but frames, so
 handing a browser a route to it costs only the frames. `:8001` is the **bridge**,
@@ -100,7 +100,7 @@ Two consequences worth knowing before you debug either:
   your tunnel and the map does not, so a tunnel opened for `back` alone gives
   you a map and a dead video panel. That is the expected state, not a fault.
 - **"No map" has three distinct forms**, and they need different fixes: `sin
-  mapa` means nothing is publishing a costmap — almost always that no nav2 stage
+mapa` means nothing is publishing a costmap — almost always that no nav2 stage
   is running, and the bridge's hint naming the command sits in the tooltip;
   `mapa no disponible` means the console cannot reach `back`; and a map shown at
   reduced opacity with `desactualizado` is real but stale. Showing an old map is

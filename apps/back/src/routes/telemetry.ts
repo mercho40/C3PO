@@ -53,7 +53,10 @@ async function proxyJson(
   }
 
   if (upstream.status === 503) {
-    return status(503, await upstream.json().catch(() => ({ error: "unavailable" })));
+    return status(
+      503,
+      await upstream.json().catch(() => ({ error: "unavailable" })),
+    );
   }
   if (!upstream.ok) return status(502, { error: "bridge_error" });
 
@@ -79,10 +82,14 @@ export const telemetryRoutes = new Elysia()
       },
     },
   )
-  .get("/telemetry/voice", ({ status }) => proxyJson("/telemetry/voice", status), {
-    detail: {
-      summary:
-        "Recent speech heard by the robot, plus whether it can hear at all. Non-consuming.",
-      tags: ["telemetry"],
+  .get(
+    "/telemetry/voice",
+    ({ status }) => proxyJson("/telemetry/voice", status),
+    {
+      detail: {
+        summary:
+          "Recent speech heard by the robot, plus whether it can hear at all. Non-consuming.",
+        tags: ["telemetry"],
+      },
     },
-  });
+  );
