@@ -39,7 +39,7 @@ import json
 import os
 import socket
 import struct
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import structlog
 
@@ -57,13 +57,23 @@ MIC_SAMPLE_RATE = 16000
 VOSK_MODEL = os.environ.get(
     "VOSK_MODEL", os.path.expanduser("~/.local/share/vosk/vosk-model-small-es-0.42"))
 
-# Argentine Spanish imperatives, plus the English one because it is universally
-# understood under stress and costs nothing to add. "alto" also means "tall",
-# which will occasionally false-fire — accepted deliberately per the bias above.
-# `[unk]` is REQUIRED by Vosk's grammar mode: without it the decoder must map
-# every sound onto one of the listed phrases, so unrelated speech is forced into
-# a spurious "pará". It is the escape hatch that makes the restriction safe.
-DEFAULT_STOP_PHRASES = ["pará", "para", "alto", "frená", "frena", "stop"]
+# CHOSEN FROM MEASURED DECODES, not from what reads well. Every obvious
+# candidate failed on this model (measured 2026-08-21, synthesised es_AR):
+#
+#     "pará"     -> "para"      the commonest preposition in Spanish
+#     "alto"     -> "alta"
+#     "stop"     -> "sí"
+#     "basta ya" -> "las tasas"
+#     "frená"    -> not in the model's vocabulary at all
+#
+# So a single "pará" cannot be told from "para ayudarte", and D6.3's own warning
+# — decide the phrase for separability, not charm — rules it out. What survived:
+# "emergencia" decodes exactly, and the doubled form "pará pará" -> "para para"
+# is stable and does not occur in ordinary speech.
+#
+# THIS LIST IS NOT VALIDATED FOR SAFETY USE. It is separable on synthesised
+# speech; the case that matters is a stressed human, and that needs recordings.
+DEFAULT_STOP_PHRASES = ["emergencia", "para para", "detener"]
 
 # 16-bit mono at 16 kHz: 0.125 s. Small enough that stop latency is dominated by
 # the decoder rather than by buffering.
@@ -128,8 +138,15 @@ class StopPhraseDetector:
         from vosk import KaldiRecognizer, Model
 
         self.phrases = [p.lower() for p in (phrases or DEFAULT_STOP_PHRASES)]
-        self._rec = KaldiRecognizer(Model(VOSK_MODEL), sample_rate,
-                                    _grammar(self.phrases))
+        # FULL VOCABULARY, not a restricted grammar, and this reverses D6.3's
+        # assumption on measured evidence. A grammar of allowed phrases must map
+        # every acoustic segment onto one of them, and `[unk]` does not reliably
+        # absorb the rest: a friendly sentence about helping with the project
+        # decoded as "pará | stop stop para alto" — the robot would halt
+        # whenever anyone spoke near it, which is not a cheap false positive but
+        # an unusable one. Full decoding renders that same sentence as ordinary
+        # words, so the phrase match sees what was actually said.
+        self._rec = KaldiRecognizer(Model(VOSK_MODEL), sample_rate)
         self._rec.SetWords(False)
 
     def _hit(self, text: str) -> str | None:
@@ -168,6 +185,88 @@ def detect_in_pcm(pcm: bytes, phrases: list[str] | None = None,
         if hit:
             return hit
     return None
+
+
+class Transcriber:
+    """Continuous Spanish speech -> text. Full vocabulary, streaming.
+
+    Separate from StopPhraseDetector on purpose, even though both wrap the same
+    model: the stop detector is safety-critical and must stay in the bridge
+    (D6.2), while general transcription is what the voice process will do with
+    the same multicast group. Two objects, two recognisers, one model on disk.
+    """
+
+    def __init__(self, sample_rate: int = MIC_SAMPLE_RATE) -> None:
+        ok, why = available()
+        if not ok:
+            raise ListenUnavailable(why)
+        from vosk import KaldiRecognizer, Model
+
+        self._rec = KaldiRecognizer(Model(VOSK_MODEL), sample_rate)
+
+    def feed(self, pcm: bytes) -> str | None:
+        """One frame in; a FINAL utterance out, or None while still listening.
+
+        Only finals are returned. Partials matter for the stop phrase, where
+        latency is the whole point, and are noise here — an agent should act on
+        what someone finished saying, not on the first syllable of it.
+        """
+        if self._rec.AcceptWaveform(pcm):
+            text = json.loads(self._rec.Result()).get("text", "").strip()
+            return text or None
+        return None
+
+    def flush(self) -> str | None:
+        """Whatever is still buffered, at end of stream. Needed for finite
+        sources (a file, a synthesised clip) whose last utterance never gets the
+        trailing silence that would close it."""
+        text = json.loads(self._rec.FinalResult()).get("text", "").strip()
+        return text or None
+
+
+def transcribe_pcm(pcm: bytes, frame_bytes: int = FRAME_BYTES) -> list[str]:
+    """Transcribe a complete buffer. The offline entry point, mirroring
+    `detect_in_pcm` — this is what makes the loop testable with no microphone."""
+    t = Transcriber()
+    out = [text for off in range(0, len(pcm), frame_bytes)
+           if (text := t.feed(pcm[off : off + frame_bytes]))]
+    if (tail := t.flush()):
+        out.append(tail)
+    return out
+
+
+def listen_loop(
+    frames: Iterator[bytes],
+    on_text: Callable[[str], None] | None = None,
+    on_stop: Callable[[str], None] | None = None,
+    phrases: list[str] | None = None,
+) -> None:
+    """Run both recognisers over one stream of PCM frames.
+
+    `frames` is any iterator of 16 kHz mono 16-bit chunks — `iter_mic_frames()`
+    in production, a file or synthesised audio in tests. That indirection is the
+    point: the microphone is currently gated (ROBOT-HARDWARE.md §8.2), and
+    keeping the source abstract means everything downstream of it is finished
+    and exercised rather than waiting on hardware.
+
+    THE STOP DETECTOR IS FED FIRST, and if it fires, `on_stop` runs before
+    `on_text` is even considered for that frame. Transcription is best-effort;
+    stopping is not, and it must never queue behind a slower consumer.
+    """
+    detector = StopPhraseDetector(phrases=phrases)
+    transcriber = Transcriber()
+
+    for frame in frames:
+        hit = detector.feed(frame)
+        if hit:
+            log.warning("listen.stop_phrase", phrase=hit)
+            detector.reset()
+            if on_stop is not None:
+                on_stop(hit)
+
+        text = transcriber.feed(frame)
+        if text and on_text is not None:
+            on_text(text)
 
 
 def _iface_addr() -> str:
