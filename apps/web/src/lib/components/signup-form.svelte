@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from "$app/state";
   import { Loader2, TriangleAlert } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
@@ -10,7 +11,9 @@
   const id = $props.id();
 
   let name = $state("");
-  let email = $state("");
+  // Pre-filled when the landing page's email capture hands off here (it has
+  // no waitlist backend of its own -- signup IS the real flow).
+  let email = $state(page.url.searchParams.get("email") ?? "");
   let password = $state("");
   let confirmPassword = $state("");
   let loading = $state(false);

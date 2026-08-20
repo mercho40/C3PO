@@ -95,7 +95,7 @@ export const organization = pgTable(
     name: text("name").notNull(),
     slug: text("slug").notNull().unique(),
     logo: text("logo"),
-    createdAt: timestamp("created_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
     metadata: text("metadata"),
   },
   (table) => [uniqueIndex("organization_slug_uidx").on(table.slug)],
@@ -112,7 +112,7 @@ export const member = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     role: text("role").default("member").notNull(),
-    createdAt: timestamp("created_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
     index("member_organizationId_idx").on(table.organizationId),

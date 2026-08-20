@@ -9,6 +9,7 @@
     "dev": "turbo run dev",
     "format": "prettier --write \"**/*.{ts,tsx,svelte,json,md}\"",
     "check-types": "turbo run check-types",
+    "test": "turbo run test",
     "start": "turbo run start"
   },
   "devDependencies": {

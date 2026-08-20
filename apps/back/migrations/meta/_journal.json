@@ -15,6 +15,13 @@
       "when": 1786478864995,
       "tag": "0001_whole_smasher",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786718505517,
+      "tag": "0002_simple_deadpool",
+      "breakpoints": true
     }
   ]
 }

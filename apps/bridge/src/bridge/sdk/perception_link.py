@@ -203,6 +203,8 @@ class PerceptionLink:
         self._cmd_vel_topic: Any = None
         self._summary_reader: Any = None
         self._cmd_vel_reader: Any = None
+        self._costmap_topic: Any = None
+        self._costmap_reader: Any = None
 
         # --- world summary
         self._report: dict[str, Any] | None = None
@@ -232,8 +234,6 @@ class PerceptionLink:
 
         self._started = False
         self._stop = threading.Event()
-        self._costmap_topic = None
-        self._costmap_reader = None
         self._reader_thread: threading.Thread | None = None
         self._issue_thread: threading.Thread | None = None
 

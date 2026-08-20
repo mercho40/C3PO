@@ -25,6 +25,12 @@ LOG_DIR="${C3PO_LOG_DIR:-$HOME/.c3po/logs}"
 BRIDGE_PID="$RUN_DIR/bridge.pid"
 BRIDGE_LOG="$LOG_DIR/bridge.log"
 
+# The VR teleop stream. Not managed by run_c3po or the boot unit: it exists to
+# serve a person who is currently wearing a headset, so it is per-session,
+# started by hand, and stopped when that person takes it off.
+TELEOP_PID="$RUN_DIR/teleop.pid"
+TELEOP_LOG="$LOG_DIR/teleop.log"
+
 # Containers belonging to the colleague's stack. Matched by prefix so a new
 # `gemm-*` container is picked up without editing this script.
 GEMM_PREFIX="${GEMM_PREFIX:-gemm}"
@@ -108,6 +114,43 @@ bridge_pid() {
     printf '%s' "$pid"
 }
 
+# Every live bridge, whoever started it. `bridge_pid` only knows the one named
+# in the pidfile, and on 2026-08-20 that was exactly the problem: a bridge was
+# running and serving while the pidfile named a different, dead process.
+running_bridge_pids() {
+    pgrep -f 'bridge\.mcp_server' 2>/dev/null || true
+}
+
+# Reconcile the pidfile with reality, and say so when they disagree.
+#
+# `run_c3po` and the systemd unit BOTH start a bridge and BOTH write this
+# pidfile, with no awareness of each other. Run one by hand while the unit owns
+# the service and they race: the manual instance cannot bind 8001 and dies, but
+# not before overwriting the pidfile with its own pid. systemd is Type=forking
+# with PIDFile=, so it then waits for a process that no longer exists and sits
+# in `activating` until TimeoutStartSec — while `bridge_running` reports false
+# and `run_teleop` refuses to start, on the grounds that there is no e-stop.
+#
+# There IS an e-stop. That is what makes this worth fixing rather than
+# documenting: a bookkeeping error that presents as a safety refusal teaches
+# operators to bypass safety refusals.
+#
+# Returns 0 if a usable bridge exists (correcting the pidfile if needed).
+reconcile_bridge_pidfile() {
+    bridge_pid >/dev/null 2>&1 && return 0
+
+    local live
+    live="$(running_bridge_pids | head -1)"
+    [ -n "$live" ] || return 1
+
+    warn "the pidfile names a dead process, but a bridge IS running (pid $live)."
+    warn "that happens when run_c3po and the systemd unit race for this file."
+    mkdir -p "$(dirname "$BRIDGE_PID")"
+    printf '%s' "$live" > "$BRIDGE_PID"
+    ok "pidfile corrected to $live"
+    return 0
+}
+
 bridge_running() { bridge_pid >/dev/null 2>&1; }
 
 # `uv run` execs nothing — it forks the interpreter as a child and waits. So
@@ -137,6 +180,21 @@ stray_bridge_pids() {
     pgrep -f 'bridge\.mcp_server' 2>/dev/null || true
 }
 
+# Same shape as bridge_pid, for a sidecar named by its pidfile.
+sidecar_pid() {
+    local pidfile="$1" pid
+    [ -f "$pidfile" ] || return 1
+    pid="$(cat "$pidfile" 2>/dev/null || true)"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    printf '%s' "$pid"
+}
+
+stray_teleop_pids() {
+    pgrep -f 'bridge\.teleop\.server' 2>/dev/null || true
+}
+
+
 # --- safety ----------------------------------------------------------------
 
 # Everything on this machine that can command the robot. Checking only for
@@ -153,7 +211,10 @@ stray_bridge_pids() {
 #
 # Override for a stack we haven't met yet:
 #   OTHER_COMMANDER_PATTERNS='cmd_vel_to_loco|my_new_thing' run_c3po
-OTHER_COMMANDER_PATTERNS="${OTHER_COMMANDER_PATTERNS:-cmd_vel_to_loco|xr_teleoperate|brainco_hand_server}"
+# `unitree_slam` earns its place for a non-obvious reason: its 1102 pose
+# navigation closes its own velocity loop, so it is a locomotion commander even
+# though nothing in its name says so (`docs/ROBOT-HARDWARE.md`).
+OTHER_COMMANDER_PATTERNS="${OTHER_COMMANDER_PATTERNS:-cmd_vel_to_loco|xr_teleoperate|brainco_hand_server|unitree_slam}"
 
 # `pgrep -f` matches whole command lines, so it will happily match the shell
 # that is asking the question — `ssh robot 'pgrep -f cmd_vel_to_loco'` reports

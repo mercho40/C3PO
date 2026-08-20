@@ -194,3 +194,35 @@ def test_arms_when_explicitly_enabled(monkeypatch):
     finally:
         monkeypatch.delenv("LINK_WATCHDOG", raising=False)
         importlib.reload(wd_mod)
+
+
+def test_poll_tools_record_operator_contact(monkeypatch):
+    """`_last_contact` must track the operator, not the process's own uptime.
+
+    Regression test for a watchdog that was inert by construction: `touch()`
+    was called only from `start()`, so `should_trip()` measured time since the
+    watchdog booted. With LINK_WATCHDOG=on that safe-stops a perfectly healthy
+    session the moment any task outlives LINK_TIMEOUT_S, and then latches
+    `_tripped` with nothing left to clear it. The poll-shaped tools are the
+    liveness signal this module's own docstring nominates.
+    """
+    from bridge import mcp_server, watchdog
+
+    touched: list[str] = []
+
+    class FakeWatchdog:
+        def touch(self) -> None:
+            touched.append("touch")
+
+    monkeypatch.setattr(mcp_server, "get_watchdog", lambda: FakeWatchdog())
+    monkeypatch.setattr(mcp_server, "SIM_MODE", "stub")
+
+    mcp_server.get_state()
+    assert touched, "get_state must record operator contact"
+
+    touched.clear()
+    mcp_server.list_active_tasks()
+    assert touched, "list_active_tasks must record operator contact"
+
+    # And the real object still exposes the method the tools rely on.
+    assert hasattr(watchdog.get_watchdog(), "touch")

@@ -521,6 +521,67 @@ walk is a different risk class from one in a container. Requirements before it s
 unevaluated (catalogue entry in `ROBOT-API.md`'s service catalogue). Evaluate it before
 designing around it.
 
+## D9 — Arm teleoperation: retargeting, not inverse kinematics
+
+**Decided 2026-08-19**, while building `apps/bridge/src/bridge/teleop/`.
+
+**Context.** The colleague's `xr_teleoperate` already drives this robot's arms from a Quest,
+and it does so with full IK: casadi + pinocchio solving against `g1_body29_hand14.urdf`,
+mapping the operator's wrist *pose* to fourteen joint angles. That is the better technique,
+and reusing it was explicitly considered and explicitly authorised.
+
+**What blocked it.** That URDF lives in their tree on the Jetson, and no G1 link lengths or
+joint axes exist anywhere in this repo. The Jetson has not been reachable from the dev
+machine, so their code has never actually been read — only the parts of its behaviour our own
+live inspection recorded (`docs/ROBOT-HARDWARE.md`).
+
+**Decided:** map **direction and extension** instead of solving for position.
+
+- shoulder → wrist *direction* → shoulder pitch and roll
+- *fraction of the operator's own reach* extended → elbow angle, by law of cosines on two
+  equal links
+- operator reach measured once, at calibration, from their first extended-arm frame
+
+Every one of those quantities is scale-free, so none of them needs the robot's dimensions and
+none of them needs the operator's. A 1.55 m and a 1.95 m operator both map "fully extended" to
+"robot fully extended".
+
+**What this costs.** The robot's hand does not end up where the operator's hand is, in metres.
+Handing an object to someone at a measured point is out of reach until there is a real solver.
+
+**Why it is still the right call.** The alternative was not "IK" — it was "IK with guessed link
+lengths", which converges, reports success, and puts the elbow somewhere else. A solver that is
+confidently wrong about a humanoid's arm is worse than a mapping that is honestly approximate.
+And what the person wearing the headset means by "the robot copies my arms" is direction,
+extension and rotation, all of which this delivers.
+
+**Revisit when** the URDF is in hand — either measured off the robot or extracted with
+permission. At that point `retarget.py` becomes one implementation behind a seam that
+`arm_sdk.py` already has, and nothing above it changes.
+
+### D9.1 — Both hardware paths ship disabled
+
+Not caution for its own sake. Two specific facts are unknown and neither can be settled from
+any document:
+
+1. **No source gives the positive direction of any G1 arm joint.** The order is well
+   established (`docs/ROBOT-API.md`); the signs are not. `scripts/arm_sign_check.py` settles
+   them in about two minutes with a person watching.
+2. **~~Which hands are fitted is unresolved~~ — settled 2026-08-19 while this was being
+   written**: the operator looked at the robot and found **two BrainCo hands**, one of them
+   physically unplugged during the earlier probe. So the units question is answered ([0,1],
+   not Dex3 radians), and `hands.py`'s refusal to default is now a formality rather than a
+   live unknown. One thing the settlement *adds*, though: a BrainCo has **no firmware
+   deadman**, unlike the Dex3's timeout bit, so any hold has to be bounded by the bridge —
+   which is a reason to keep the gate rather than drop it.
+
+So `TELEOP_ARM_ENABLED` and `TELEOP_HAND_ENABLED` are not configuration. They are a record
+that a human has done the corresponding check. Head-yaw turning and the walk axis are *not*
+gated, because they ride on `_locomotion.send_velocity_async` — already-vetted machinery with
+a hardware clamp and a firmware deadman under it.
+
+---
+
 ## Closed decisions
 
 Questions asked once and answered, kept so they are not re-opened by accident.

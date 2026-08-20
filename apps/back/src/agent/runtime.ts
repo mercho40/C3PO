@@ -120,8 +120,9 @@ const SYSTEM_PREAMBLE = [
   "Keep operator-facing replies concise: say what you did and what happened.",
 ].join("\n");
 
-/** A compact catalogue appended to the system prompt so the model knows scope. */
-async function buildSystemPrompt(): Promise<string> {
+/** A compact catalogue appended to the system prompt so the model knows scope.
+ * Exported for testing — pure string generation once the catalogue is in hand. */
+export async function buildSystemPrompt(): Promise<string> {
   const lines = (await listSkills()).map((s) => {
     const where =
       s.works.sim && s.works.real

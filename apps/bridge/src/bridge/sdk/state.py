@@ -44,6 +44,12 @@ log = structlog.get_logger(__name__)
 _SIM_MODE = os.environ.get("SIM_MODE", "stub")
 _TOPICS = g1_protocol.topics_for(_SIM_MODE)
 LOWSTATE_TOPIC = _TOPICS.lowstate
+
+# Arm joints in the fixed 35-slot motor array: 15-21 left, 22-28 right, in the
+# order shoulder pitch/roll/yaw, elbow, wrist roll/pitch/yaw. Index 29 is not a
+# joint at all — it is the `rt/arm_sdk` blend weight. See docs/ROBOT-API.md §9.3.
+ARM_JOINT_START = 15
+ARM_JOINT_END = 29
 SIM_STATE_TOPIC = _TOPICS.sportmodestate
 ODOM_TOPIC = _TOPICS.odom
 BMS_TOPIC = _TOPICS.bmsstate
@@ -63,6 +69,15 @@ class _LowStateSnapshot:
     motor_count: int = 0
     has_imu: bool = False
     raw_message_count: int = 0
+    # Measured positions of the 14 arm joints (G1JointIndex 15-28), radians.
+    # Kept because `teleop.arm_sdk` must start its weight ramp from where the
+    # arms actually *are*: `rt/arm_sdk` blends
+    # `executed = motion*(1-w) + ours*w`, so raising w while commanding a
+    # different pose than the measured one drags the arm across that gap at a
+    # speed set by the ramp, not by any velocity limit. Unitree's own warning
+    # is explicit that a position gap plus a moving weight "may cause the
+    # robotic arm to move at high speed" (`docs/ROBOT-API.md`).
+    arm_q: tuple[float, ...] = ()
 
 
 @dataclass
@@ -233,15 +248,42 @@ class StateSampler:
             )
 
     def _on_lowstate(self, msg: Any) -> None:
+        motors = msg.motor_state
+        # Slice defensively: a 23-DoF or arms-only variant reports a shorter
+        # array, and this runs in a DDS callback where an IndexError would be
+        # swallowed by the SDK's reader thread rather than surfacing.
+        arm_q: tuple[float, ...] = ()
+        if len(motors) >= ARM_JOINT_END:
+            arm_q = tuple(float(motors[i].q) for i in range(ARM_JOINT_START, ARM_JOINT_END))
         with self._lock:
             self._lowstate = _LowStateSnapshot(
                 received_at=time.time(),
                 tick=int(msg.tick),
                 mode_machine=int(msg.mode_machine),
-                motor_count=len(msg.motor_state),
+                motor_count=len(motors),
                 has_imu=msg.imu_state is not None,
                 raw_message_count=self._lowstate.raw_message_count + 1,
+                arm_q=arm_q,
             )
+
+    def get_arm_state(self) -> dict[str, Any]:
+        """Arm-relevant slice of state, for the teleop arm path.
+
+        Separate from `get_state()` because that one is shaped for the MCP
+        tool and for an LLM to read, is built fresh on every call, and does
+        not carry per-joint positions. This is read at 50 Hz by
+        `teleop.arm_sdk`, which needs exactly four things and none of the
+        prose.
+        """
+        with self._lock:
+            low = self._lowstate
+            fsm = self._fsm
+        return {
+            "arm_q": low.arm_q,
+            "mode_machine": low.mode_machine,
+            "lowstate_age_s": (time.time() - low.received_at) if low.received_at else None,
+            "fsm_id": fsm.fsm_id,
+        }
 
     def _on_bms(self, msg: Any) -> None:
         # `soc` is a uint8 percentage; the vendor's own low-battery predicate is
