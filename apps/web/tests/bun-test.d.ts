@@ -14,6 +14,14 @@
  * else; widen it when a test needs more, rather than reaching for the global
  * package again.
  */
+/** Minimal `Bun.serve` surface, for tests that stand up a real HTTP server. */
+declare const Bun: {
+  serve(options: {
+    port?: number;
+    fetch: (req: Request) => Response | Promise<Response>;
+  }): { port: number; stop(closeActiveConnections?: boolean): void };
+};
+
 declare module "bun:test" {
   export function describe(label: string, body: () => void): void;
   export function test(label: string, body: () => void | Promise<void>): void;
@@ -28,7 +36,10 @@ declare module "bun:test" {
     toBeLessThan(expected: number): void;
     toBeLessThanOrEqual(expected: number): void;
     toBeUndefined(): void;
+    toContain(expected: unknown): void;
     toThrow(expected?: unknown): void;
+    /** Negation. Only the matchers actually used are declared. */
+    not: Omit<Matchers, "not">;
   }
 
   export function expect(actual: unknown): Matchers;
