@@ -259,6 +259,55 @@ function measureGrip(frame: XRFrame, hand: XRHand, space: XRSpace): number {
   return Math.min(1, Math.max(0, total / counted / FULL_CURL_RAD));
 }
 
+/**
+ * Draw the camera once per eye, into each eye's own viewport.
+ *
+ * ONE VIEWPORT PER EYE, AND THIS IS WHY THE CAMERA WAS INVISIBLE.
+ *
+ * The canvas backing the XR context is created detached and never sized, so
+ * its drawing buffer is the HTML default 300x150 — and GL seeds the viewport
+ * from the drawing buffer at context creation. Nothing in the app ever called
+ * `gl.viewport`. The XR layer's framebuffer is nothing like that shape: on a
+ * Quest 3 it is roughly 2064x2208 PER EYE, both eyes side by side in one
+ * buffer.
+ *
+ * `gl.clear` is scissor-bounded, so the transparent clear covered everything
+ * and the view looked correct-but-empty. `drawArrays` is VIEWPORT-bounded, so
+ * a full clip-space quad landed in a 300x150 patch in the corner of one eye.
+ * In passthrough that reads as "the room, with a smear"; in VR as "black, with
+ * a postage stamp". Both were reported as "no camera", and both sent us
+ * looking at the perception stack and the SSH tunnel.
+ *
+ * The per-view loop WebXR requires was also absent entirely, and the draw ran
+ * BEFORE `getViewerPose` — so the views did not exist yet and it could not
+ * have been correct even with the viewport set. Hence the argument order here:
+ * a pose is required to get one at all.
+ *
+ * Returns the error if drawing threw, so the caller can drop the camera
+ * without losing the head pose it is in the middle of sampling.
+ */
+export function drawPerEye(
+  gl: WebGLRenderingContext,
+  layer: XRWebGLLayer,
+  pose: XRViewerPose,
+  camera: { draw(opaque: boolean): void },
+  opaque: boolean,
+): unknown | null {
+  for (const view of pose.views) {
+    const vp = layer.getViewport(view);
+    if (!vp) continue;
+    gl.viewport(vp.x, vp.y, vp.width, vp.height);
+    try {
+      // The camera IS the view in VR; in passthrough it is a heads-up layer
+      // over the room, so it does not paint over what the operator can see.
+      camera.draw(opaque);
+    } catch (err) {
+      return err ?? new Error("camera draw failed");
+    }
+  }
+  return null;
+}
+
 export class XrTeleopSession {
   #session: XRSession | null = null;
   #referenceSpace: XRReferenceSpace | null = null;
@@ -486,43 +535,25 @@ export class XrTeleopSession {
         // staleness timeout (not this module) decides when that should stop
         // the robot; a single missed frame at 72-120Hz isn't it.
 
-        // ONE VIEWPORT PER EYE, AND THIS IS WHY THE CAMERA WAS INVISIBLE.
-        //
-        // The canvas backing this context is created detached and never sized,
-        // so its drawing buffer is the HTML default 300x150 — and GL seeds the
-        // viewport from the drawing buffer at context creation. The XR layer's
-        // framebuffer is nothing like that shape: on a Quest 3 it is roughly
-        // 2064x2208 PER EYE, both eyes side by side in one buffer.
-        //
-        // `gl.clear` is scissor-bounded so the transparent clear covered
-        // everything, but `drawArrays` is VIEWPORT-bounded — so a full
-        // clip-space quad landed in a 300x150 patch in the corner of one eye.
-        // In passthrough that reads as "the room, with a smear"; in VR as
-        // "black, with a postage stamp". Both were reported as "no camera".
-        //
-        // The fix is the loop WebXR requires and this renderer never had: ask
-        // the layer for each view's viewport and draw once per eye. It also has
-        // to happen after getViewerPose, because that is what produces the
-        // views — drawing before it, as this did, could not have been correct
-        // even with the viewport set.
-        const opaque = this.#mode !== "immersive-ar";
-        for (const view of pose.views) {
-          const vp = layer.getViewport(view);
-          if (!vp) continue;
-          gl.viewport(vp.x, vp.y, vp.width, vp.height);
-          try {
-            // The camera IS the view in VR; in passthrough it is a heads-up
-            // layer over the room, so it does not paint over what the operator
-            // can see.
-            this.#camera?.draw(opaque);
-          } catch (err) {
+        if (this.#camera) {
+          const failure = drawPerEye(
+            gl,
+            layer,
+            pose,
+            this.#camera,
+            this.#mode !== "immersive-ar",
+          );
+          if (failure) {
             // Shader compile or link failure throws out of draw(), and this
             // callback is what samples head pose. Letting it escape kills
             // steering silently for the rest of the session while the robot
             // stays safe but unresponsive. Drop the picture, keep the pose.
             this.#cameraBroken = true;
             this.#camera = null;
-            console.error("[xr] camera layer disabled after draw failure", err);
+            console.error(
+              "[xr] camera layer disabled after draw failure",
+              failure,
+            );
           }
         }
 
