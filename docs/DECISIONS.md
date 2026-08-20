@@ -226,23 +226,42 @@ don't pin it** — holding the provider package on an old maintenance major to d
 change would have frozen three packages, where moving the whole line cost a single renamed
 import.
 
-## D6 — Voice: local wake word, cloud STT, local TTS
+## D6 — Voice: fully local — wake word, STT and TTS all on the robot
 
 **Decided:**
 
 | Function      | Where          | Component                                   |
 | ------------- | -------------- | ------------------------------------------- |
-| Wake word     | **local**, CPU | openWakeWord / tflite — **Spanish phrase, D6.1**  |
-| "Stop" phrase | **local**, CPU | same model, second keyword — see below           |
-| Speech → text | cloud          | Deepgram streaming — handles Spanish             |
-| Text → speech | cloud          | external synth → `PlayStream` — **required, D6.1** |
+| Wake word     | **local**, CPU | Vosk `small-es` + grammar — **no training, D6.3** |
+| "Stop" phrase | **local**, CPU | same recogniser, second phrase — see below        |
+| Speech → text | **local**, CPU | faster-whisper INT8 — **D6.3**                    |
+| Text → speech | **local**, CPU | Piper `es_AR` → `PlayStream` — **D6.1, D6.3**     |
 
-**Why not local STT:** the brain is already cloud, so if the network drops there is no
-reply to speak and local Whisper buys **zero** offline capability while competing with
-YOLO for the GPU. **This reasoning does NOT extend to TTS, and D6.2 reverses that half:**
-the sentences most worth saying — "estoy atascado", a refusal, a warning — are exactly the
-ones that must survive a network drop, and Piper needs no key and no network. **Why the wake word must be local:** continuously streaming a
-microphone to the cloud is untenable on cost, bandwidth and privacy grounds.
+> The rows above are the CURRENT answer. D6 originally specified cloud STT and cloud TTS,
+> and openWakeWord for the keyword; D6.1 → D6.3 replaced all three. The reasoning below is
+> kept because it is still why the wake word must be local — only its *component* changed.
+
+**~~Why not local STT~~ — superseded, and worth reading as a lesson.** The original
+argument was: the brain is already cloud, so if the network drops there is no reply to
+speak, and local Whisper buys **zero** offline capability while competing with YOLO for the
+GPU. Two of its three premises did not survive contact.
+
+*The offline-capability premise was already half wrong.* It holds for STT and fails for
+TTS: the sentences most worth saying — "estoy atascado", a refusal, a warning — are exactly
+the ones that must survive a network drop (D6.1, D6.2).
+
+*The GPU-contention premise was simply wrong for this workload.* faster-whisper runs INT8
+on the CPU here; it never touches the GPU, so it competes with YOLO for nothing (D6.3).
+
+*And the conclusion was overtaken by a constraint, not an argument:* no cloud is permitted
+in this deployment, so local STT is not a trade-off to be weighed — it is the only option.
+The reasoning that DID survive is the next paragraph: the wake word must be local, and for
+reasons that have nothing to do with capability.
+
+**Why the wake word must be local** — the argument that survived all three revisions:
+continuously streaming a microphone to the cloud is untenable on cost, bandwidth and
+privacy grounds. Under D6.3 it is moot in the same way the STT conclusion is: nothing
+leaves the robot at all.
 
 **The safety exception:** the local wake-word model also detects **"stop"**, wired directly
 to `stop_everything` without going through the agent. A spoken stop is the one voice
@@ -305,6 +324,10 @@ people will rely on it.
 this deployment does not use.
 
 ### D6.2 — The voice stack, and where each piece runs
+
+> **Two rows below are superseded by D6.3** — STT is no longer cloud, and the wake word is
+> no longer a trained openWakeWord model. Everything else here still stands, and the
+> reasoning for the process split is the load-bearing part.
 
 **Decided:** the loop is **local at both ends and cloud only in the middle**, and it is
 split across two processes by *criticality*, not by convenience.
@@ -392,6 +415,69 @@ none, because people rely on it.
 
 **Not built.** Nothing above exists. `apps/bridge` has `speak()` (firmware TTS) and no
 `play_pcm()`; the SDK's `_CallRequestWithParamAndBin` is present and unused.
+
+### D6.3 — No cloud. The whole loop runs on the robot, and needs no GPU
+
+**Decided:** **no cloud anywhere in the voice path.** D6.2's one cloud hop (Deepgram via
+`back`) is removed. The LAN H100 is a *last resort* for training only — it needs a
+professor's permission, so nothing on the critical path may assume it.
+
+This turned out to make the design **smaller**, not harder. The revised stack:
+
+| Stage            | Runs in           | Component                                    | Needs        |
+| ---------------- | ----------------- | -------------------------------------------- | ------------ |
+| Mic capture      | onboard           | UDP multicast, 16 kHz mono s16le              | a socket     |
+| **Stop phrase**  | **`apps/bridge`** | **Vosk `small-es` + restricted grammar**      | 39 MB, CPU   |
+| VAD              | voice process     | Silero VAD v5 (already on this robot)         | CPU          |
+| Speech → text    | voice process     | faster-whisper, INT8                          | CPU          |
+| Reasoning        | `apps/back`       | TIC AI — **on-campus, not public cloud**      | the LAN      |
+| Text → speech    | onboard           | Piper `es_AR`                                 | CPU          |
+| Playback         | `apps/bridge`     | `PlayStream` + PCM in `.binary`               | —            |
+
+**The wake word needs no training, and that is the whole point.** D6.2 assumed a custom
+openWakeWord model, which means synthetic data generation, a Linux GPU, and therefore the
+H100 and therefore asking someone. **Vosk replaces that with a JSON list.**
+`KaldiRecognizer(model, 16000, '["pará", "alto", "[unk]"]')` restricts the decoder to those
+phrases; `SetGrammar()` changes them at runtime. `vosk-model-small-es-0.42` is **39 MB**,
+CPU-only, and shipped for "Android and RPi" — an Orin NX is far past that bar.
+
+Its published WER is 16.02 % on Common Voice, and that number is **not** the one that
+matters here: it is full open-vocabulary transcription. A restricted grammar collapses the
+search space to a handful of phrases, and accuracy on those is far higher. Changing the
+stop word becomes editing a string, not retraining a model — which for **safety-critical
+code that has to be tuned against real recordings of stressed speakers** is the difference
+between a day and a week per iteration.
+
+It also takes the mic format as-is: Vosk wants 16 kHz mono, which is exactly what the
+multicast feed carries. No resampling on the way in. (Piper's `es_AR` still needs 22050→
+16000 on the way out — D6.2.)
+
+**STT is local, and is already proven on this exact machine.** `Systran/faster-whisper-base`
+is cached on-robot, dated 2026-08-06, from the co-tenant's own mic→Whisper work — so the
+path is not speculative. Prefer **`small`, INT8**: INT8 halves memory for under 0.2 % WER
+regression, and `base` is noticeably weaker in Spanish than `small`.
+
+**Run it on the CPU, not the GPU**, at least first. CTranslate2 on GPU requires cuDNN, which
+is not in the bridge's venv and would drag the voice process into a CUDA container (the
+vision image is ~10 GB) purely to transcribe five-second utterances. The Orin NX has 8
+cores measured at ~13 % idle. Utterance latency on CPU is **unmeasured and is the number to
+take first** — if it is unacceptable, the GPU is free (`GR3D_FREQ 0 %`, detector ~5 %) and
+the fallback is a container, not a redesign.
+
+**Nothing here needs the H100.** If a dedicated wake-word model is ever wanted — lower
+always-on CPU than a Kaldi decoder — that is the one thing worth asking a professor for,
+and it is an optimisation, not a prerequisite. Same shape as the detector fine-tune: train
+off-robot, infer on-robot.
+
+**What "no cloud" does not change:** the reasoning still runs in `apps/back` against TIC
+AI, which is an on-campus gateway rather than public cloud, and the robot still holds no
+credentials — now trivially, because nothing in this path has one. The spoken stop still
+bypasses the agent entirely, so it is unaffected by where reasoning happens or whether the
+network is up at all.
+
+**Still gated on the same test.** Every row above that reads *"mic"* assumes the raw
+multicast feed is reachable without the remote's wake-up mode (D6.2). That is unverified,
+zero-risk to check, and everything in the listening half is downstream of it.
 
 ## D7 — The world-model contract
 
@@ -521,10 +607,13 @@ from both publishing velocity commands.
 1. Reactive primitives alongside Nav2 goals? (D4) — decide after the first real navigation
    run.
 2. How much must keep working with no network? Currently: wake word, the spoken "stop", the
-   firmware velocity deadman, and Nav2 once a goal is set. Everything else is
-   cloud-dependent.
+   firmware velocity deadman, and Nav2 once a goal is set — plus, under D6.3, the entire
+   voice loop except the reasoning step, since STT and TTS both became local. What is left
+   network-dependent is the agent itself.
 3. Shell policy specifics (D8).
-4. D6.1 — cloud Cartesia vs onboard TTS + `PlayStream`, now that both exist. Decide when
-   the voice loop is built.
+4. ~~Cloud TTS vs onboard TTS + `PlayStream`~~ — **answered (D6.1, D6.3):** the firmware
+   has no Spanish voice, so synthesis must be external, and it is Piper running locally.
+   What remains open is a *test*, not a decision: whether the raw multicast mic feed is
+   reachable without the remote's wake-up mode. The whole listening half depends on it.
 5. Interlock with the `gemm` stack — still social, not technical (D1); tracked as an open
    item in `OPERATIONS.md`.
