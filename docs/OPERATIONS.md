@@ -243,6 +243,32 @@ per-host values in `apps/bridge/.env.example`).
 
 Rollback: the bridge is a git checkout — `git checkout <sha> && run_c3po`.
 
+### When the robot ignores everything
+
+Symptom: every posture and locomotion command returns **rpc_code 0** and the
+robot does not move. `get_state` reports `posture="unknown"` and `fsm_id=None`,
+and the bridge log fills with `rpc_code=3102` from the FSM poller.
+
+This is almost never a network fault, and it looks exactly like one — we
+checked cables, `DDS_INTERFACE`, `ROBOT_HOST` and the peer config before
+finding it on 2026-08-20. The robot has **no motion controller loaded**. The
+colleague's `xr_teleoperate` calls `Enter_Debug_Mode()`, which loops
+`ReleaseMode()` until nothing is loaded, and that state lives in the robot — so
+killing their processes does not undo it, and neither does restarting ours.
+
+Diagnose and fix, in that order:
+
+```bash
+cd ~/c3po/apps/bridge && set -a && . ./.env && set +a
+uv run python scripts/select_motion_mode.py --check-only   # empty name = this
+uv run python scripts/select_motion_mode.py                # robot supported!
+```
+
+`check_motion_mode` is the diagnostic that distinguishes this from a wrong FSM
+id, because both answer `code 0` from the sport service and look identical
+otherwise. Expect to need this **once per session** whenever the robot is
+shared.
+
 ### Putting a Quest on the console
 
 WebXR refuses `immersive-vr` outside a **secure context**, so browsing the headset
