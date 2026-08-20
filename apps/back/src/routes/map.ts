@@ -74,7 +74,10 @@ export const mapRoutes = new Elysia().get(
     // with its body intact rather than flattening it into a generic error, so
     // the console can say WHY there is no map instead of just that there isn't.
     if (upstream.status === 503) {
-      return status(503, await upstream.json().catch(() => ({ error: "no_costmap" })));
+      return status(
+        503,
+        await upstream.json().catch(() => ({ error: "no_costmap" })),
+      );
     }
     if (!upstream.ok) return status(502, { error: "bridge_error" });
 
@@ -97,7 +100,8 @@ export const mapRoutes = new Elysia().get(
   },
   {
     detail: {
-      summary: "Nav2's global costmap as a PNG, with placement metadata on X-C3PO-* headers.",
+      summary:
+        "Nav2's global costmap as a PNG, with placement metadata on X-C3PO-* headers.",
       tags: ["map"],
     },
   },

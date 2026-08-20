@@ -230,8 +230,8 @@ import.
 
 **Decided:**
 
-| Function      | Where          | Component                                   |
-| ------------- | -------------- | ------------------------------------------- |
+| Function      | Where          | Component                                         |
+| ------------- | -------------- | ------------------------------------------------- |
 | Wake word     | **local**, CPU | Vosk `small-es` + grammar — **no training, D6.3** |
 | "Stop" phrase | **local**, CPU | same recogniser, second phrase — see below        |
 | Speech → text | **local**, CPU | faster-whisper INT8 — **D6.3**                    |
@@ -239,21 +239,21 @@ import.
 
 > The rows above are the CURRENT answer. D6 originally specified cloud STT and cloud TTS,
 > and openWakeWord for the keyword; D6.1 → D6.3 replaced all three. The reasoning below is
-> kept because it is still why the wake word must be local — only its *component* changed.
+> kept because it is still why the wake word must be local — only its _component_ changed.
 
 **~~Why not local STT~~ — superseded, and worth reading as a lesson.** The original
 argument was: the brain is already cloud, so if the network drops there is no reply to
 speak, and local Whisper buys **zero** offline capability while competing with YOLO for the
 GPU. Two of its three premises did not survive contact.
 
-*The offline-capability premise was already half wrong.* It holds for STT and fails for
+_The offline-capability premise was already half wrong._ It holds for STT and fails for
 TTS: the sentences most worth saying — "estoy atascado", a refusal, a warning — are exactly
 the ones that must survive a network drop (D6.1, D6.2).
 
-*The GPU-contention premise was simply wrong for this workload.* faster-whisper runs INT8
+_The GPU-contention premise was simply wrong for this workload._ faster-whisper runs INT8
 on the CPU here; it never touches the GPU, so it competes with YOLO for nothing (D6.3).
 
-*And the conclusion was overtaken by a constraint, not an argument:* no cloud is permitted
+_And the conclusion was overtaken by a constraint, not an argument:_ no cloud is permitted
 in this deployment, so local STT is not a trade-off to be weighed — it is the only option.
 The reasoning that DID survive is the next paragraph: the wake word must be local, and for
 reasons that have nothing to do with capability.
@@ -283,12 +283,12 @@ longer _necessary_, only optional for languages the firmware lacks" — Spanish 
 language the firmware lacks, so external synthesis is **necessary**, and it is on the
 critical path rather than a nice-to-have.
 
-| Function      | D6 said                          | With Spanish                                            |
-| ------------- | -------------------------------- | ------------------------------------------------------- |
-| Text → speech | onboard TTS, cloud optional      | **external synth → `PlayStream`, mandatory**            |
-| Speech → text | Deepgram streaming               | unchanged — Deepgram handles Spanish                    |
-| Wake word     | `hey_claude.tflite`              | **a Spanish phrase — a custom openWakeWord model**      |
-| "Stop" phrase | English "stop"                   | **Spanish, and still the safety path**                  |
+| Function      | D6 said                     | With Spanish                                       |
+| ------------- | --------------------------- | -------------------------------------------------- |
+| Text → speech | onboard TTS, cloud optional | **external synth → `PlayStream`, mandatory**       |
+| Speech → text | Deepgram streaming          | unchanged — Deepgram handles Spanish               |
+| Wake word     | `hey_claude.tflite`         | **a Spanish phrase — a custom openWakeWord model** |
+| "Stop" phrase | English "stop"              | **Spanish, and still the safety path**             |
 
 **Why the firmware cannot be made to do it.** `speaker_id` is 0 = Chinese, 1 = English,
 there is no third voice, and it is verified on this robot that neither reads Spanish
@@ -330,20 +330,20 @@ this deployment does not use.
 > reasoning for the process split is the load-bearing part.
 
 **Decided:** the loop is **local at both ends and cloud only in the middle**, and it is
-split across two processes by *criticality*, not by convenience.
+split across two processes by _criticality_, not by convenience.
 
-| Stage            | Runs in            | Component                                   | Why there                                                       |
-| ---------------- | ------------------ | ------------------------------------------- | --------------------------------------------------------------- |
-| Mic capture      | onboard            | UDP multicast join, `239.168.123.161:5555`  | the group is on `192.168.123.0/24`; unreachable off-robot        |
-| **Stop phrase**  | **`apps/bridge`**  | openWakeWord ONNX, Spanish                  | shortest possible path to `stop_everything` — see below          |
-| VAD + wake word  | voice process      | Silero VAD v5 + openWakeWord                | ML deps stay out of the process that owns the stop               |
-| Speech → text    | `apps/back`        | Deepgram Nova-3, `es-419`                   | the key lives where every other key lives, never on the robot    |
-| Text → speech    | onboard            | **Piper**, `es_AR` — local, offline         | no key, no network, Argentine accent                             |
-| Playback         | `apps/bridge`      | `PlayStream` 1003/1004 + PCM in `.binary`   | actuation chokepoint; `_CallRequestWithParamAndBin` already ships |
+| Stage           | Runs in           | Component                                  | Why there                                                         |
+| --------------- | ----------------- | ------------------------------------------ | ----------------------------------------------------------------- |
+| Mic capture     | onboard           | UDP multicast join, `239.168.123.161:5555` | the group is on `192.168.123.0/24`; unreachable off-robot         |
+| **Stop phrase** | **`apps/bridge`** | openWakeWord ONNX, Spanish                 | shortest possible path to `stop_everything` — see below           |
+| VAD + wake word | voice process     | Silero VAD v5 + openWakeWord               | ML deps stay out of the process that owns the stop                |
+| Speech → text   | `apps/back`       | Deepgram Nova-3, `es-419`                  | the key lives where every other key lives, never on the robot     |
+| Text → speech   | onboard           | **Piper**, `es_AR` — local, offline        | no key, no network, Argentine accent                              |
+| Playback        | `apps/bridge`     | `PlayStream` 1003/1004 + PCM in `.binary`  | actuation chokepoint; `_CallRequestWithParamAndBin` already ships |
 
 **Multicast is what makes the safety split free.** The mic is a multicast group, not a
 device, so **two processes can join it independently**. The bridge joins it and runs
-*nothing but* the stop detector — a ~1 MB ONNX on CPU, no STT, no synthesis, no network.
+_nothing but_ the stop detector — a ~1 MB ONNX on CPU, no STT, no synthesis, no network.
 The voice process joins the same group for everything else. So **if the voice process
 dies, hangs, or is being rebuilt, the spoken stop still works**, and it never crosses a
 process boundary to reach `stop_everything`. That is the D6 safety exception implemented
@@ -354,23 +354,23 @@ subscriber" to a voice service: a shared process is a shared failure.
 comes back. `back` already holds every credential, and the rule that **the robot holds no
 cloud credentials** is a real security property — it is physically accessible, shared with
 another team, and runs third-party containers. Nova-3 covers `es-419` at <300 ms streaming.
-Local `faster-whisper` is the documented fallback and is *proven on this exact machine*:
+Local `faster-whisper` is the documented fallback and is _proven on this exact machine_:
 `Systran/faster-whisper-base` is cached on-robot from the co-tenant's own mic→Whisper work.
 It costs accuracy and Orin compute, and buys back only the network — which the agent needs
 anyway, so it buys nothing the stop phrase does not already provide.
 
 **TTS is local, and that is a change from D6.** D6 assumed cloud TTS; D6.1 established that
-*external* synthesis is mandatory because the firmware has no Spanish voice. External does
+_external_ synthesis is mandatory because the firmware has no Spanish voice. External does
 not have to mean cloud. Piper runs on aarch64 from a prebuilt binary, streams raw 16-bit
 mono PCM on `--output-raw`, needs no key, and works with the network down — which matters
 precisely for the sentences worth saying when things are going wrong ("estoy atascado").
 
 **The `es_AR` voice costs a resampler, and that is the trade to make consciously:**
 
-| voice            | accent        | quality | rate      | vs `PlayStream`'s 16 kHz    |
-| ---------------- | ------------- | ------- | --------- | ---------------------------- |
-| `es_AR/daniela`  | **Argentine** | high    | 22 050 Hz | needs 22050→16000 (320/441)  |
-| `es_ES/carlfm`   | Spain         | x_low   | 16 000 Hz | native, no resampling        |
+| voice           | accent        | quality | rate      | vs `PlayStream`'s 16 kHz    |
+| --------------- | ------------- | ------- | --------- | --------------------------- |
+| `es_AR/daniela` | **Argentine** | high    | 22 050 Hz | needs 22050→16000 (320/441) |
+| `es_ES/carlfm`  | Spain         | x_low   | 16 000 Hz | native, no resampling       |
 
 `PlayStream` hard-rejects anything but 16 kHz mono 16-bit — both vendor examples enforce
 it. Neither `ffmpeg` nor `sox` is installed on the robot, so a resampler is a Python
@@ -381,13 +381,13 @@ papercut and the resampler is one dependency, written once.
 **Three constraints that are not ours to fix, and must be designed around:**
 
 1. **The vendor assistant competes for the one speaker and cannot be disabled in
-   software.** `vui_service` provides TTS, `PlayStream`, volume *and* the light strip — one
+   software.** `vui_service` provides TTS, `PlayStream`, volume _and_ the light strip — one
    service, so silencing the assistant silences us. `PlayStop` is scoped by `app_name`, so
    we cannot stop their stream and they cannot stop ours. Use our own `app_name`, expect
    contention, do not plan around removing it.
 2. **The onboard ASR is unreachable by design.** `voice` api 1002 is registered by every
-   vendor client and called by none, and the built-in recognition is gated on *wake-up
-   mode*, switched by **L1+L2 on the remote or in the App** — a human prerequisite we
+   vendor client and called by none, and the built-in recognition is gated on _wake-up
+   mode_, switched by **L1+L2 on the remote or in the App** — a human prerequisite we
    cannot satisfy over DDS. This is why STT is ours and not the robot's.
 3. **Audio is almost certainly not FSM-gated**, which makes speech the channel that still
    works when motion is being refused. Structural evidence only; the cheap confirmation is
@@ -435,20 +435,20 @@ does not stream at rest and has no software trigger (D6.3, `ROBOT-HARDWARE.md` �
 ### D6.3 — No cloud. The whole loop runs on the robot, and needs no GPU
 
 **Decided:** **no cloud anywhere in the voice path.** D6.2's one cloud hop (Deepgram via
-`back`) is removed. The LAN H100 is a *last resort* for training only — it needs a
+`back`) is removed. The LAN H100 is a _last resort_ for training only — it needs a
 professor's permission, so nothing on the critical path may assume it.
 
 This turned out to make the design **smaller**, not harder. The revised stack:
 
-| Stage            | Runs in           | Component                                    | Needs        |
-| ---------------- | ----------------- | -------------------------------------------- | ------------ |
-| Mic capture      | onboard           | UDP multicast, 16 kHz mono s16le              | a socket     |
-| **Stop phrase**  | **`apps/bridge`** | **Vosk `small-es` + restricted grammar**      | 39 MB, CPU   |
-| VAD              | voice process     | Silero VAD v5 (already on this robot)         | CPU          |
-| Speech → text    | voice process     | faster-whisper, INT8                          | CPU          |
-| Reasoning        | `apps/back`       | TIC AI — **on-campus, not public cloud**      | the LAN      |
-| Text → speech    | onboard           | Piper `es_AR`                                 | CPU          |
-| Playback         | `apps/bridge`     | `PlayStream` + PCM in `.binary`               | —            |
+| Stage           | Runs in           | Component                                | Needs      |
+| --------------- | ----------------- | ---------------------------------------- | ---------- |
+| Mic capture     | onboard           | UDP multicast, 16 kHz mono s16le         | a socket   |
+| **Stop phrase** | **`apps/bridge`** | **Vosk `small-es` + restricted grammar** | 39 MB, CPU |
+| VAD             | voice process     | Silero VAD v5 (already on this robot)    | CPU        |
+| Speech → text   | voice process     | faster-whisper, INT8                     | CPU        |
+| Reasoning       | `apps/back`       | TIC AI — **on-campus, not public cloud** | the LAN    |
+| Text → speech   | onboard           | Piper `es_AR`                            | CPU        |
+| Playback        | `apps/bridge`     | `PlayStream` + PCM in `.binary`          | —          |
 
 **The wake word needs no training, and that is the whole point.** D6.2 assumed a custom
 openWakeWord model, which means synthetic data generation, a Linux GPU, and therefore the
@@ -495,7 +495,7 @@ network is up at all.
 feed **is** gated on the remote's wake-up mode. Holding L1+L2 opens it, releasing closes
 it, and live Spanish was transcribed through the full chain (`ROBOT-HARDWARE.md` §8.2).
 
-Every row above that reads *"mic"* therefore carries a **human prerequisite**. This is not
+Every row above that reads _"mic"_ therefore carries a **human prerequisite**. This is not
 a tuning problem to engineer around: an always-on wake word is unavailable on this hardware
 while a person must hold a button for the microphone to exist at all. Two consequences
 worth stating plainly, because they change what the voice loop can be:
@@ -517,6 +517,7 @@ worth stating plainly, because they change what the voice loop can be:
   The trade is real and worth stating: the body-mounted array is better placed for someone
   standing in front of the robot and travels with it, while a USB mic is wherever its cable
   reaches. `C3PO_AUDIO_SOURCE=multicast` forces the array back.
+
 - **The spoken stop cannot be relied on as a safety device.** D6.2 put the stop phrase in
   the bridge so it would survive a dead voice process — but no software placement helps
   when the microphone is closed unless somebody is already holding the remote. And a person
@@ -571,7 +572,7 @@ designing around it.
 
 **Context.** The colleague's `xr_teleoperate` already drives this robot's arms from a Quest,
 and it does so with full IK: casadi + pinocchio solving against `g1_body29_hand14.urdf`,
-mapping the operator's wrist *pose* to fourteen joint angles. That is the better technique,
+mapping the operator's wrist _pose_ to fourteen joint angles. That is the better technique,
 and reusing it was explicitly considered and explicitly authorised.
 
 **What blocked it.** That URDF lives in their tree on the Jetson, and no G1 link lengths or
@@ -581,8 +582,8 @@ live inspection recorded (`docs/ROBOT-HARDWARE.md`).
 
 **Decided:** map **direction and extension** instead of solving for position.
 
-- shoulder → wrist *direction* → shoulder pitch and roll
-- *fraction of the operator's own reach* extended → elbow angle, by law of cosines on two
+- shoulder → wrist _direction_ → shoulder pitch and roll
+- _fraction of the operator's own reach_ extended → elbow angle, by law of cosines on two
   equal links
 - operator reach measured once, at calibration, from their first extended-arm frame
 
@@ -615,12 +616,12 @@ any document:
    written**: the operator looked at the robot and found **two BrainCo hands**, one of them
    physically unplugged during the earlier probe. So the units question is answered ([0,1],
    not Dex3 radians), and `hands.py`'s refusal to default is now a formality rather than a
-   live unknown. One thing the settlement *adds*, though: a BrainCo has **no firmware
+   live unknown. One thing the settlement _adds_, though: a BrainCo has **no firmware
    deadman**, unlike the Dex3's timeout bit, so any hold has to be bounded by the bridge —
    which is a reason to keep the gate rather than drop it.
 
 So `TELEOP_ARM_ENABLED` and `TELEOP_HAND_ENABLED` are not configuration. They are a record
-that a human has done the corresponding check. Head-yaw turning and the walk axis are *not*
+that a human has done the corresponding check. Head-yaw turning and the walk axis are _not_
 gated, because they ride on `_locomotion.send_velocity_async` — already-vetted machinery with
 a hardware clamp and a firmware deadman under it.
 
@@ -718,7 +719,7 @@ from both publishing velocity commands.
 3. Shell policy specifics (D8).
 4. ~~Cloud TTS vs onboard TTS + `PlayStream`~~ — **answered (D6.1, D6.3):** the firmware
    has no Spanish voice, so synthesis must be external, and it is Piper running locally.
-   What remains open is a *test*, not a decision: whether the raw multicast mic feed is
+   What remains open is a _test_, not a decision: whether the raw multicast mic feed is
    reachable without the remote's wake-up mode. The whole listening half depends on it.
 5. Interlock with the `gemm` stack — still social, not technical (D1); tracked as an open
    item in `OPERATIONS.md`.

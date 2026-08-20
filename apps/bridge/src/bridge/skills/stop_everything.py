@@ -77,6 +77,28 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     # degrees. See bridge/estop.py.
     signal_stop()
 
+    # CLOSE THE NAV GATE, and do it here — synchronously, before any await.
+    #
+    # Without this, "stop" means "pause". The zero-velocity burst below halts
+    # the gait, and then Nav2's next tick arrives ~50 ms later, passes through
+    # an open gate, and the robot walks on. Every other thing this function does
+    # would be undone by a planner that was never told to stop.
+    #
+    # perception_link.disable() also opens a brake window, so the gap between
+    # closing the gate and the firmware's own 1 s SET_VELOCITY deadman is
+    # covered by zeros rather than by coasting.
+    #
+    # Wrapped, and deliberately not allowed to fail the stop: if the perception
+    # link is absent or broken there is nothing to close, and refusing to stop
+    # the robot because the gate could not be read would be the worst possible
+    # trade.
+    try:
+        from bridge.sdk.perception_link import get_link
+
+        get_link().disable(reason="stop_everything")
+    except Exception:
+        log.exception("stop_everything.gate_close_failed")
+
     registry = get_registry()
     active = registry.list_active()
     cancelled_ids: list[str] = []

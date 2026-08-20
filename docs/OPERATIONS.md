@@ -298,8 +298,8 @@ serve a person who is currently wearing a headset. The camera comes from
 `apps/perception`'s vision container (`perception_up perception`, port 8081), which is the
 process that owns the D435i.
 
-| Process | Start | Port | What it is |
-| --- | --- | --- | --- |
+| Process                | Start        | Port | What it is                                                      |
+| ---------------------- | ------------ | ---- | --------------------------------------------------------------- |
 | `bridge.teleop.server` | `run_teleop` | 8767 | Head yaw + both wrists + finger closure from the headset, 30 Hz |
 
 The port numbering is not arbitrary and the constraint is tight — everything else on this
@@ -331,10 +331,10 @@ sets of setpoints will simply interleave.
 **Both hardware paths in the teleop server ship disabled** and stay that way until a person
 has run the corresponding check on the robot:
 
-| Env | Unblocked by | Why it is gated |
-| --- | --- | --- |
-| `TELEOP_ARM_ENABLED=1` | `scripts/arm_sign_check.py` | No source gives the positive direction of any G1 arm joint |
-| `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE=brainco` + `TELEOP_BRAINCO_OPEN_AT` | inspection | The hands are **two BrainCo** (settled 2026-08-19). Units are [0,1], not Dex3 radians — and BrainCo has **no firmware deadman**, so any hold must be bounded by the bridge |
+| Env                                                                             | Unblocked by                | Why it is gated                                                                                                                                                            |
+| ------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TELEOP_ARM_ENABLED=1`                                                          | `scripts/arm_sign_check.py` | No source gives the positive direction of any G1 arm joint                                                                                                                 |
+| `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE=brainco` + `TELEOP_BRAINCO_OPEN_AT` | inspection                  | The hands are **two BrainCo** (settled 2026-08-19). Units are [0,1], not Dex3 radians — and BrainCo has **no firmware deadman**, so any hold must be bounded by the bridge |
 
 Put them in `apps/bridge/.env` once settled, not on the command line, so the answer
 survives the next session. Head-yaw turning and the walk axis are not gated — they ride on
@@ -397,18 +397,22 @@ cites them as the verification step. There is **no CD**: web is automatic on Ver
 
 Plain facts, not a roadmap. Each stays here until fixed.
 
-- **`back` cannot reach the bridge under Bun.** The MCP SDK's
-  `StreamableHTTPClientTransport` fails under Bun 1.4.0 with _"The socket connection was
-  closed unexpectedly"_, while the identical code under Node v26 connects and lists all
-  28 tools with `_meta` intact — same URL, same moment, same machine. Not the network,
-  not the bridge: `curl` gets a clean 200 and a raw `fetch()` _in Bun_ returns the SSE
-  body fine; the break is in the SDK transport's long-lived stream handling on Bun.
-  (Observed on Bun 1.4.0; CI and `packageManager` pin 1.3.12, where it is unverified.) This
-  is the second Bun trap here (with web's `--bun`/`make_trackable` failure —
-  `apps/web/README.md`): Bun has repeatedly been wrong for library code that holds a
-  stream open. Options, none chosen: run `back` under Node (Elysia has a Node adapter);
-  plain request/response POSTs instead of the SDK transport; upgrade/patch the MCP SDK.
-  Until one is picked, `back` deploys but cannot call a single robot tool.
+- **`back` → bridge under Bun: FIXED, on localhost at least.** This was recorded as a hard
+  blocker — the MCP SDK's `StreamableHTTPClientTransport` failing under Bun 1.4.0 with
+  _"The socket connection was closed unexpectedly"_ while the same code under Node listed
+  all tools. Re-tested 2026-08-21 on **Bun 1.4.0 with SDK 1.29.0**: `apps/back`'s own
+  `bridge/client.ts` connects, lists **31 tools**, and successfully calls `get_state`,
+  `say` and `listen` against a stub bridge. The likeliest cause is the SDK upgrade; the
+  original entry did not record which SDK version failed, which is why this took a
+  re-test rather than a changelog read. **Record the dependency version next time a
+  library bug is filed here.**
+
+  ⚠️ **Verified against localhost, NOT through the SSH tunnel** — and the tunnel is the
+  condition the original failure was observed under, on a long-lived stream. Re-run the
+  same check against `g1-orin.local:8001` through `ssh -L` before treating the robot path
+  as proven. If it fails only there, the fault is the tunnel's stream handling, not Bun's,
+  and the fallback is plain request/response POSTs rather than the SDK transport.
+
 - **`BRIDGE_URL` default is wrong on both host and port** (`apps/back/.env.example`):
   the real target is an SSH tunnel to `g1-orin.local:8001`, not `127.0.0.1:8000`. The
   8000 default is also baked into code — `apps/back/src/bridge/client.ts` (`BRIDGE_URL`

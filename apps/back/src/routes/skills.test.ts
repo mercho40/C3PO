@@ -55,7 +55,11 @@ mock.module("../bridge/client", () => {
   };
 });
 
-const FIXTURE_PARAMS = { type: "object", properties: {}, additionalProperties: true };
+const FIXTURE_PARAMS = {
+  type: "object",
+  properties: {},
+  additionalProperties: true,
+};
 
 function fixtureSkill(name: string, classification: string) {
   return {
@@ -94,7 +98,9 @@ mock.module("../skills", () => ({
     source: "bridge",
     ageSeconds: 0,
   })),
-  getSkill: mock(async (name: string) => FIXTURE_SKILLS.find((s) => s.name === name)),
+  getSkill: mock(async (name: string) =>
+    FIXTURE_SKILLS.find((s) => s.name === name),
+  ),
   listSkills: mock(async () => FIXTURE_SKILLS),
 }));
 
