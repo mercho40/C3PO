@@ -53,7 +53,14 @@ start_sidecar() {
         . ./.env
         set +a
         export PATH="$HOME/.local/bin:$PATH"
-        nohup uv run python -m "$module" >>"$logfile" 2>&1 &
+        # `< /dev/null` matters as much as the nohup, and for a different
+        # reason. nohup stops SIGHUP killing the process; the stdin redirect
+        # stops `ssh c3po run_teleop` from hanging. A backgrounded child that
+        # still holds the session's stdin keeps the channel open, so ssh sits
+        # there with nothing to print until you press ^C — which looks like a
+        # process that failed to start, and invites a second run_teleop.
+        # run_c3po does the same thing for the same reason.
+        nohup uv run python -m "$module" >>"$logfile" 2>&1 < /dev/null &
         echo $! >"$pidfile"
     )
 }
