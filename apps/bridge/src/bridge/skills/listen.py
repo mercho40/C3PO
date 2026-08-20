@@ -59,7 +59,8 @@ MIC_IFACE_PREFIX = "192.168.123."
 MIC_SAMPLE_RATE = 16000
 
 VOSK_MODEL = os.environ.get(
-    "VOSK_MODEL", os.path.expanduser("~/.local/share/vosk/vosk-model-small-es-0.42"))
+    "VOSK_MODEL", os.path.expanduser("~/.local/share/vosk/vosk-model-small-es-0.42")
+)
 
 # CHOSEN FROM MEASURED DECODES, not from what reads well. Every obvious
 # candidate failed on this model (measured 2026-08-21, synthesised es_AR):
@@ -97,12 +98,11 @@ def available() -> tuple[bool, str]:
     try:
         import vosk  # noqa: F401
     except ImportError:
-        return False, (
-            "vosk is not installed — add it to apps/bridge and `uv sync` on the robot")
+        return False, ("vosk is not installed — add it to apps/bridge and `uv sync` on the robot")
     if not os.path.isdir(VOSK_MODEL):
         return False, (
-            f"vosk model not found at {VOSK_MODEL} — "
-            "see apps/bridge/scripts/install_vosk.sh")
+            f"vosk model not found at {VOSK_MODEL} — see apps/bridge/scripts/install_vosk.sh"
+        )
     return True, ""
 
 
@@ -139,8 +139,9 @@ class StopPhraseDetector:
     and this decodes among six options plus "something else".
     """
 
-    def __init__(self, phrases: list[str] | None = None,
-                 sample_rate: int = MIC_SAMPLE_RATE) -> None:
+    def __init__(
+        self, phrases: list[str] | None = None, sample_rate: int = MIC_SAMPLE_RATE
+    ) -> None:
         ok, why = available()
         if not ok:
             raise ListenUnavailable(why)
@@ -179,8 +180,9 @@ class StopPhraseDetector:
         self._rec.Reset()
 
 
-def detect_in_pcm(pcm: bytes, phrases: list[str] | None = None,
-                  frame_bytes: int = FRAME_BYTES) -> str | None:
+def detect_in_pcm(
+    pcm: bytes, phrases: list[str] | None = None, frame_bytes: int = FRAME_BYTES
+) -> str | None:
     """Run the detector over a whole buffer. The offline entry point.
 
     This is what makes the stop phrase testable with no microphone: feed it
@@ -237,9 +239,12 @@ def transcribe_pcm(pcm: bytes, frame_bytes: int = FRAME_BYTES) -> list[str]:
     """Transcribe a complete buffer. The offline entry point, mirroring
     `detect_in_pcm` — this is what makes the loop testable with no microphone."""
     t = Transcriber()
-    out = [text for off in range(0, len(pcm), frame_bytes)
-           if (text := t.feed(pcm[off : off + frame_bytes]))]
-    if (tail := t.flush()):
+    out = [
+        text
+        for off in range(0, len(pcm), frame_bytes)
+        if (text := t.feed(pcm[off : off + frame_bytes]))
+    ]
+    if tail := t.flush():
         out.append(tail)
     return out
 
@@ -276,9 +281,9 @@ class WhisperTranscriber:
                 "faster-whisper is not installed — `uv sync --extra stt` on the robot"
             ) from exc
 
-        self._model = WhisperModel(model_name or WHISPER_MODEL,
-                                   device=WHISPER_DEVICE,
-                                   compute_type=WHISPER_COMPUTE)
+        self._model = WhisperModel(
+            model_name or WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE
+        )
 
     def transcribe(self, pcm: bytes) -> str:
         """16 kHz mono 16-bit PCM -> Spanish text. Empty string if nothing said."""
@@ -293,8 +298,7 @@ class WhisperTranscriber:
         # language pinned rather than detected: this deployment is Spanish, and
         # letting Whisper guess on a short noisy clip is how a Spanish utterance
         # comes back confidently transcribed as Portuguese.
-        segments, _info = self._model.transcribe(
-            audio, language="es", beam_size=1, vad_filter=True)
+        segments, _info = self._model.transcribe(audio, language="es", beam_size=1, vad_filter=True)
         return " ".join(seg.text.strip() for seg in segments).strip()
 
 
@@ -428,9 +432,9 @@ def alsa_capture_devices() -> list[str]:
     which would look exactly like a room where nobody is talking.
     """
     import subprocess
+
     try:
-        out = subprocess.run(["arecord", "-l"], capture_output=True, text=True,
-                             timeout=5).stdout
+        out = subprocess.run(["arecord", "-l"], capture_output=True, text=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
         return []
 
@@ -466,13 +470,28 @@ def iter_alsa_frames(device: str = "", frame_bytes: int = FRAME_BYTES) -> Iterat
             raise ListenUnavailable(
                 "no ALSA capture device — the Jetson has no built-in microphone, "
                 "so continuous listening needs a USB mic plugged in. Without one, "
-                "use the robot's own mic (push-to-talk, hold L1+L2).")
+                "use the robot's own mic (push-to-talk, hold L1+L2)."
+            )
         device = found[0]
 
     proc = subprocess.Popen(
-        ["arecord", "-D", device, "-f", "S16_LE", "-r", str(MIC_SAMPLE_RATE),
-         "-c", "1", "-t", "raw", "-q"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        [
+            "arecord",
+            "-D",
+            device,
+            "-f",
+            "S16_LE",
+            "-r",
+            str(MIC_SAMPLE_RATE),
+            "-c",
+            "1",
+            "-t",
+            "raw",
+            "-q",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
     log.info("listen.alsa_opened", device=device)
     try:
         while True:
@@ -491,14 +510,22 @@ def describe_audio_source() -> dict[str, Any]:
     """Which source will be used, and whether it can listen continuously."""
     devices = alsa_capture_devices()
     if AUDIO_SOURCE == "alsa" or (AUDIO_SOURCE == "auto" and devices):
-        return {"source": "alsa", "device": ALSA_DEVICE or (devices[0] if devices else None),
-                "always_on": True, "devices": devices}
+        return {
+            "source": "alsa",
+            "device": ALSA_DEVICE or (devices[0] if devices else None),
+            "always_on": True,
+            "devices": devices,
+        }
     return {
-        "source": "multicast", "device": f"{MIC_GROUP}:{MIC_PORT}",
-        "always_on": False, "devices": devices,
-        "note": ("the robot's own mic is push-to-talk: it streams only while "
-                 "somebody holds L1+L2. Plug a USB mic into the Jetson for "
-                 "continuous listening."),
+        "source": "multicast",
+        "device": f"{MIC_GROUP}:{MIC_PORT}",
+        "always_on": False,
+        "devices": devices,
+        "note": (
+            "the robot's own mic is push-to-talk: it streams only while "
+            "somebody holds L1+L2. Plug a USB mic into the Jetson for "
+            "continuous listening."
+        ),
     }
 
 
@@ -538,10 +565,14 @@ class MicListener:
     `on_stop=` to opt into acting on it.
     """
 
-    def __init__(self, whisper: bool = True, phrases: list[str] | None = None,
-                 max_keep: int = 32,
-                 source: Callable[[], Iterator[bytes]] | None = None,
-                 build: Callable[[], tuple[Any, Any, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        whisper: bool = True,
+        phrases: list[str] | None = None,
+        max_keep: int = 32,
+        source: Callable[[], Iterator[bytes]] | None = None,
+        build: Callable[[], tuple[Any, Any, Any]] | None = None,
+    ) -> None:
         """`source` and `build` exist so this is testable off the robot.
 
         vosk ships no macOS wheel and the mic is a multicast group on hardware
@@ -576,8 +607,7 @@ class MicListener:
             return
         self._on_stop = on_stop
         self._stop_evt.clear()
-        self._thread = threading.Thread(target=self._run, name="mic-listener",
-                                        daemon=True)
+        self._thread = threading.Thread(target=self._run, name="mic-listener", daemon=True)
         self._thread.start()
         log.info("mic_listener.started", whisper=self._whisper)
 
@@ -679,8 +709,8 @@ class MicListener:
                 # microphone is shut". None means no audio has EVER arrived,
                 # which on this robot means nobody has held L1+L2.
                 "seconds_since_audio": (
-                    None if self._last_audio_at is None
-                    else round(now - self._last_audio_at, 1)),
+                    None if self._last_audio_at is None else round(now - self._last_audio_at, 1)
+                ),
                 "mic_ever_open": self._last_audio_at is not None,
                 "pending": len(self._pending),
             }
@@ -700,15 +730,16 @@ def get_mic_listener() -> MicListener:
 
 def _iface_addr() -> str:
     import subprocess
-    out = subprocess.run(["ip", "-4", "-o", "addr", "show"],
-                         capture_output=True, text=True).stdout
+
+    out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True).stdout
     for line in out.splitlines():
         for tok in line.split():
             if tok.startswith(MIC_IFACE_PREFIX):
                 return tok.split("/")[0]
     raise ListenUnavailable(
         f"no interface on {MIC_IFACE_PREFIX}0/24 — the mic feed is on the robot's "
-        "internal wired LAN, so this must run onboard, not on a laptop")
+        "internal wired LAN, so this must run onboard, not on a laptop"
+    )
 
 
 def iter_mic_frames(timeout_s: float = 1.0) -> Iterator[bytes]:
@@ -723,9 +754,11 @@ def iter_mic_frames(timeout_s: float = 1.0) -> Iterator[bytes]:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("", MIC_PORT))
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
-                    struct.pack("4s4s", socket.inet_aton(MIC_GROUP),
-                                socket.inet_aton(addr)))
+    sock.setsockopt(
+        socket.IPPROTO_IP,
+        socket.IP_ADD_MEMBERSHIP,
+        struct.pack("4s4s", socket.inet_aton(MIC_GROUP), socket.inet_aton(addr)),
+    )
     sock.settimeout(timeout_s)
     log.info("listen.mic_joined", group=MIC_GROUP, port=MIC_PORT, iface=addr)
     try:

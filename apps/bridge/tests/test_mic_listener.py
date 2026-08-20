@@ -59,8 +59,7 @@ class FakeWhisper:
 
 def make(frames, whisper=True, **kw):
     det, trans, whis = FakeDetector(), FakeTranscriber(), FakeWhisper() if whisper else None
-    lis = MicListener(source=lambda: iter(frames),
-                      build=lambda: (det, trans, whis), **kw)
+    lis = MicListener(source=lambda: iter(frames), build=lambda: (det, trans, whis), **kw)
     return lis, det, trans, whis
 
 
@@ -158,8 +157,10 @@ def test_a_raising_stop_callback_is_survived():
 def test_a_missing_recogniser_is_recorded_not_swallowed():
     """This runs in a daemon thread: an exception would vanish into stderr while
     poll() kept returning an innocent empty list forever."""
-    lis = MicListener(source=lambda: iter([b"aa"]),
-                      build=lambda: (_ for _ in ()).throw(ListenUnavailable("no vosk")))
+    lis = MicListener(
+        source=lambda: iter([b"aa"]),
+        build=lambda: (_ for _ in ()).throw(ListenUnavailable("no vosk")),
+    )
     lis.start()
     time.sleep(0.3)
     diag = lis.diagnostics()
@@ -169,7 +170,9 @@ def test_a_missing_recogniser_is_recorded_not_swallowed():
 def test_diagnostics_separate_a_shut_mic_from_a_quiet_room():
     """The distinction the agent needs: with no audio EVER, an empty transcript
     means nobody held the button — not that nobody spoke."""
-    lis = MicListener(source=lambda: iter(()), build=lambda: (FakeDetector(), FakeTranscriber(), None))
+    lis = MicListener(
+        source=lambda: iter(()), build=lambda: (FakeDetector(), FakeTranscriber(), None)
+    )
     lis.start()
     time.sleep(0.2)
     assert lis.diagnostics()["mic_ever_open"] is False
@@ -204,15 +207,20 @@ card 1: APE [NVIDIA Jetson Orin NX APE], device 1: tegra-dlink-1 XBAR-ADMAIF2-1 
   Subdevices: 1/1
 """
 
-ARECORD_WITH_USB_MIC = ARECORD_JETSON_BARE + """card 2: Device [USB Audio Device], device 0: USB Audio [USB Audio]
+ARECORD_WITH_USB_MIC = (
+    ARECORD_JETSON_BARE
+    + """card 2: Device [USB Audio Device], device 0: USB Audio [USB Audio]
   Subdevices: 1/1
 """
+)
 
 
 def _fake_arecord(monkeypatch, output: str):
     monkeypatch.setattr(
-        subprocess, "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=output, stderr=""))
+        subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=output, stderr=""),
+    )
 
 
 def test_tegra_routing_devices_are_not_mistaken_for_microphones(monkeypatch):
@@ -259,7 +267,9 @@ def test_the_source_can_be_forced(monkeypatch):
 
 def test_missing_arecord_is_not_a_crash(monkeypatch):
     """A dev machine has no alsa-utils; selection must fall back, not explode."""
+
     def boom(*a, **k):
         raise FileNotFoundError("arecord")
+
     monkeypatch.setattr(subprocess, "run", boom)
     assert listen_mod.alsa_capture_devices() == []

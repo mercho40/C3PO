@@ -266,6 +266,40 @@ def calibrate_arm_length(
     return clamp(math.dist(hand.position, origin), MIN_ARM_LENGTH_M, MAX_ARM_LENGTH_M)
 
 
+def _shoulder_pitch(forward: float, down: float) -> float:
+    """Sagittal shoulder angle: 0 is the arm hanging, +pi/2 is straight ahead.
+
+    `atan2(forward, down)` alone is correct everywhere the joint can actually
+    go, and catastrophic just outside it.
+
+    The joint's limit is +/-90 degrees, so the arm cannot reach overhead at
+    all. But `atan2` does not know that: it keeps going, and the hand raised
+    straight up sits exactly on its branch cut. One degree of wobble there —
+    the hand a hair in front of vertical versus a hair behind — swings the
+    result from +179 to -179 degrees. Clamping to the joint limit turns that
+    into a jump from +90 to -90, and the driver's rate limiter, doing its job,
+    faithfully sweeps the arm through the full 180 degrees at 0.6 rad/s. Five
+    seconds of a humanoid arm travelling from straight ahead to straight back,
+    because the operator's raised hand shook.
+
+    Above shoulder height the arm is out of reach whatever we do, so the only
+    question is which unreachable answer to give. This gives the forward limit,
+    because that is the continuous one: a hand raised the way hands are raised
+    — up the front — passes through forward-horizontal at exactly +90 and stays
+    there as it rises. No jump anywhere along that path.
+
+    The discontinuity does not vanish; it cannot, for a joint that spans half
+    the circle. It moves to "behind the shoulder AND above it", which is a
+    place a human arm essentially cannot go without the shoulder rolling out
+    first — and where the old code was already producing nonsense.
+    """
+    if down <= 0.0:
+        # At or above shoulder height. `forward >= 0` covers the overhead case
+        # (forward == 0) on purpose: the arm is going up, not backwards.
+        return math.pi / 2 if forward >= 0.0 else -math.pi / 2
+    return math.atan2(forward, down)
+
+
 def _elbow_angle(reach_m: float, arm_length_m: float) -> float:
     """Elbow flexion from how far the operator has extended, radians.
 
@@ -368,7 +402,7 @@ def retarget_arm(
     # side, where pitch genuinely stops being distinguishable from yaw.
     lateral = d[0] if side == "right" else -d[0]
     shoulder_roll = math.asin(clamp(lateral, -1.0, 1.0))
-    shoulder_pitch = math.atan2(-d[2], -d[1])
+    shoulder_pitch = _shoulder_pitch(forward=-d[2], down=-d[1])
 
     elbow = _elbow_angle(reach, arm_length_m)
 

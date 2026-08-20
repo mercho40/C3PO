@@ -10,6 +10,7 @@ disabled by default and every gate that lets it through has to be deliberate.
 from __future__ import annotations
 
 import asyncio
+import math
 
 import pytest
 
@@ -181,8 +182,13 @@ async def test_targets_are_slewed_not_jumped(driver, enabled):
     await driver.engage()
     try:
         # A full-scale shoulder command the operator could produce in one frame.
+        # Sent repeatedly, the way the dispatch loop sends it — a target this
+        # far from the current one has to persist to be accepted at all (see
+        # JUMP_CONFIRM_FRAMES), and one isolated frame asking for 86 degrees is
+        # a singularity flip, not an operator.
         far = ArmAngles(1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        driver.command(far, far)
+        for _ in range(arm_sdk.JUMP_CONFIRM_FRAMES):
+            driver.command(far, far)
         await asyncio.sleep(0.1)
     finally:
         await driver.release()
@@ -338,5 +344,66 @@ async def test_letting_go_of_the_arms_clears_the_failure(driver, enabled, monkey
     try:
         await asyncio.sleep(0.05)
         assert published
+    finally:
+        await driver.release()
+
+
+async def test_a_one_frame_flip_is_not_chased(driver, enabled):
+    """The singularity guard, stated as the failure it prevents.
+
+    `shoulder_pitch` spans half a circle, so the mapping from hand position to
+    it has a branch cut, and the honest place for it is directly overhead. A
+    hand held up there wobbling a degree either side of vertical flips the
+    target between the two joint limits. The rate limiter cannot help: handed a
+    target 180 degrees away it does exactly what it is for, and sweeps the arm
+    the whole way at 0.6 rad/s. Five seconds of travel per wobble.
+    """
+    await driver.engage()
+    try:
+        here = ArmAngles(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        flipped = ArmAngles(math.pi / 2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        # Two frames of the flip, then back — a wobble, not a movement.
+        driver.command(flipped, None)
+        driver.command(flipped, None)
+        driver.command(here, None)
+
+        assert driver._target[0] == pytest.approx(0.0), (
+            "a flip that did not persist must not become the target"
+        )
+    finally:
+        await driver.release()
+
+
+async def test_a_sustained_large_move_still_lands(driver, enabled):
+    """The guard is a delay, not a refusal.
+
+    An operator who genuinely swings an arm gets there 60 ms later. If a large
+    but real movement could be rejected outright, the mirror would simply stop
+    following past a certain speed, which is worse than the problem.
+    """
+    await driver.engage()
+    try:
+        far = ArmAngles(math.pi / 2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        for _ in range(arm_sdk.JUMP_CONFIRM_FRAMES):
+            driver.command(far, None)
+
+        assert driver._target[0] == pytest.approx(math.pi / 2)
+    finally:
+        await driver.release()
+
+
+async def test_ordinary_motion_is_never_delayed(driver, enabled):
+    """Everything under the threshold lands on the frame it arrives.
+
+    0.6 rad/s of commanded rate is 0.7 degrees per frame at 50 Hz, so real
+    teleoperation lives nowhere near the 60-degree threshold. If normal frames
+    were being held even briefly, the mirror would feel laggy for no reason.
+    """
+    await driver.engage()
+    try:
+        for step in (0.1, 0.2, 0.35, 0.5):
+            driver.command(ArmAngles(step, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), None)
+            assert driver._target[0] == pytest.approx(step)
     finally:
         await driver.release()

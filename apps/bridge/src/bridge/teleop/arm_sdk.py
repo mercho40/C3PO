@@ -50,6 +50,7 @@ human has watched it run.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import time
 from typing import Any
@@ -86,6 +87,33 @@ RAMP_S = 2.0
 # 1.3 m humanoid, and hand tracking spikes when a hand re-enters the tracking
 # volume. ~34 deg/s is slow enough to watch and step away from.
 MAX_JOINT_RATE_RAD_S = 0.6
+
+# A target jump larger than this has to persist before it is accepted.
+#
+# The rate limiter above bounds how fast the arm moves, not how far. Handed a
+# target 180 degrees away it does its job perfectly: it sweeps the arm the
+# whole way, at 0.6 rad/s, for five seconds.
+#
+# Something does hand it exactly that. `shoulder_pitch` spans half a circle, so
+# any mapping from hand position to it has a branch cut somewhere, and the
+# honest place for it is directly overhead (see `_shoulder_pitch` in
+# retarget.py). A hand held up there, wobbling a degree either side of
+# vertical, flips the target between the two joint limits — and without this,
+# each flip launches another five-second sweep, in whichever direction the
+# wobble last landed.
+#
+# 60 degrees is well above any single-frame motion a human arm produces at
+# 50 Hz (0.6 rad/s of commanded rate is 0.7 degrees per frame) and well below
+# the 180 the singularity produces.
+MAX_TARGET_JUMP_RAD = math.radians(60)
+
+# How many consecutive frames a large jump must persist before it is accepted.
+#
+# Not a rejection — a delay. An operator who genuinely moves fast, or who
+# really does want the arm on the other side, gets there 60 ms later and will
+# not notice. A singularity flip does not survive it, because a wobble crosses
+# back before the count is met.
+JUMP_CONFIRM_FRAMES = 3
 
 # Refuse to engage on state older than this. `rt/lf/lowstate` runs ~20 Hz, so
 # 0.5 s is ten missed messages — comfortably a dead link, not a hiccup.
@@ -131,6 +159,9 @@ class ArmSdkDriver:
         #: server.py. This one guards the arm-hold timeout, and a backwards
         #: clock step here holds a stale arm pose indefinitely instead of
         #: ramping the arm_sdk weight down.
+        #: Per-joint count of consecutive frames asking for an implausibly
+        #: large target change. See `_set_target`.
+        self._jump_frames = [0] * 14
         self._last_frame_at = 0.0
         self._published = 0
         # Set when the publish loop dies. Latched, because its error path
@@ -255,6 +286,7 @@ class ArmSdkDriver:
         # MAX_JOINT_RATE_RAD_S like every frame after it.
         self._current = list(arm_q)
         self._target = list(arm_q)
+        self._jump_frames = [0] * 14
         self._weight = 0.0
         self._releasing = False
         self._last_frame_at = time.monotonic()
@@ -320,10 +352,34 @@ class ArmSdkDriver:
         hand briefly leaves the tracking volume does not get a dropped arm.
         """
         if left is not None:
-            self._target[0:7] = list(left.as_tuple())
+            self._set_target(0, left.as_tuple())
         if right is not None:
-            self._target[7:14] = list(right.as_tuple())
+            self._set_target(7, right.as_tuple())
         self._last_frame_at = time.monotonic()
+
+    def _set_target(self, base: int, values: tuple[float, ...]) -> None:
+        """Write a side's targets, holding any that jumped implausibly far.
+
+        See MAX_TARGET_JUMP_RAD. A jump has to be asked for on
+        JUMP_CONFIRM_FRAMES frames in a row before it lands, which costs a
+        genuine fast movement 60 ms and costs a singularity flip everything.
+        """
+        for offset, value in enumerate(values):
+            i = base + offset
+            if abs(value - self._target[i]) <= MAX_TARGET_JUMP_RAD:
+                self._target[i] = value
+                self._jump_frames[i] = 0
+                continue
+            self._jump_frames[i] += 1
+            if self._jump_frames[i] >= JUMP_CONFIRM_FRAMES:
+                log.info(
+                    "arm_sdk.large_jump_accepted",
+                    joint=i,
+                    from_rad=round(self._target[i], 3),
+                    to_rad=round(value, 3),
+                )
+                self._target[i] = value
+                self._jump_frames[i] = 0
 
     def hold(self) -> None:
         """Freeze the target where it is — the dead-man's arm behaviour."""

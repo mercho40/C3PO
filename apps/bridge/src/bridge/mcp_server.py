@@ -1241,9 +1241,13 @@ async def say(
             code, data, seconds = await asyncio.to_thread(_synth_and_play)
         except tts.TtsUnavailable as exc:
             return {
-                "status": "failed", "spoken": None, "language": language,
-                "error": "spanish_tts_failed", "detail": str(exc),
-                "env": SIM_MODE, "stub": False,
+                "status": "failed",
+                "spoken": None,
+                "language": language,
+                "error": "spanish_tts_failed",
+                "detail": str(exc),
+                "env": SIM_MODE,
+                "stub": False,
             }
 
         return {
@@ -1288,6 +1292,7 @@ async def say(
 # ---------------------------------------------------------------------------
 # Tool: listen
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     meta=skill_meta(
@@ -1355,10 +1360,14 @@ async def listen(
     """
     if SIM_MODE != "real":
         return {
-            "status": "ok", "heard": [], "transcript": "", "stop_heard": None,
+            "status": "ok",
+            "heard": [],
+            "transcript": "",
+            "stop_heard": None,
             "mic_ever_open": False,
             "note": f"SIM_MODE={SIM_MODE} has no microphone.",
-            "env": SIM_MODE, "stub": True,
+            "env": SIM_MODE,
+            "stub": True,
         }
 
     import asyncio
@@ -1370,9 +1379,13 @@ async def listen(
         ok, why = listen_skill.available()
         if not ok:
             return {
-                "status": "failed", "heard": [], "transcript": "",
-                "error": "stt_not_installed", "detail": why,
-                "env": SIM_MODE, "stub": False,
+                "status": "failed",
+                "heard": [],
+                "transcript": "",
+                "error": "stt_not_installed",
+                "detail": why,
+                "env": SIM_MODE,
+                "stub": False,
             }
         listener.start()
 
@@ -1407,13 +1420,15 @@ async def listen(
         "always_listening": source["always_on"],
         "audio_source": source["source"],
         "note": (
-            None if diag["mic_ever_open"] or source["always_on"]
+            None
+            if diag["mic_ever_open"] or source["always_on"]
             else "The microphone has never opened. The robot's own mic is "
-                 "push-to-talk — it hears nothing unless somebody holds L1+L2 on "
-                 "the remote. This is NOT silence in the room. For continuous "
-                 "listening a USB microphone has to be plugged into the Jetson."
+            "push-to-talk — it hears nothing unless somebody holds L1+L2 on "
+            "the remote. This is NOT silence in the room. For continuous "
+            "listening a USB microphone has to be plugged into the Jetson."
         ),
-        "env": SIM_MODE, "stub": False,
+        "env": SIM_MODE,
+        "stub": False,
     }
 
 
