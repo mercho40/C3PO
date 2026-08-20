@@ -82,6 +82,40 @@ def test_tool_surface_is_exactly_what_we_expect(tools):
     )
 
 
+#: Every skill `apps/web`'s /vr-control dispatches by name. That page is the
+#: only consumer that hard-codes skill names in a different language, so
+#: nothing else catches a rename — a removed or renamed tool here turns a
+#: button in a headset into a silent 404, discovered while wearing it.
+VR_CONTROL_DEPENDENCIES = {
+    # Locomotion, from the walk buttons and head-yaw turning.
+    "walk_velocity",
+    # Bring-up. The order matters and 501 is the walk program for this body:
+    # `start_walking` (500) returned success and did nothing for two sessions.
+    "damp",
+    "prepare",
+    "start_walking_waist",
+    # Preset gestures.
+    "wave",
+    "dance",
+    "shake_hand",
+    "hug",
+    "clap",
+    "release_arm",
+    # The e-stop, which the console's PARAR button and the teleop latch share.
+    "stop_everything",
+}
+
+
+def test_vr_control_can_still_reach_every_skill_it_names(tools):
+    missing = VR_CONTROL_DEPENDENCIES - set(tools)
+    assert not missing, (
+        f"/vr-control dispatches {sorted(missing)}, which the bridge no longer offers. "
+        "Those are hard-coded strings in a .svelte file, so nothing else fails first — "
+        "the button just returns 404 to somebody wearing a headset. Update "
+        "apps/web/src/routes/(protected)/vr-control/+page.svelte in the same change."
+    )
+
+
 def test_every_tool_has_a_description(tools):
     """The docstring IS the product — it is what the LLM reads to choose a tool.
 
