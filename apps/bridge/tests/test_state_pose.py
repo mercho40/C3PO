@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 import types
 
 from bridge.sdk import g1_protocol, state
@@ -122,3 +123,76 @@ def test_pose_is_null_before_any_message():
     sampler._lowstate = _live_lowstate()
 
     assert sampler.get_state()["pose"] is None
+
+
+# --- bridge health, not robot health ---------------------------------------
+#
+# Added after 2026-08-20, where a long-lived bridge lost its RPC clients and
+# its odom subscription while lowstate kept flowing. `get_state` reported a
+# posture read 54 minutes earlier as though it were current, and every command
+# returned rpc_code 0 and did nothing. That reads as a broken robot. It was a
+# bridge that needed restarting, and nothing said so.
+
+
+def test_a_failing_fsm_poll_is_reported_not_hidden(monkeypatch):
+    from bridge.sdk import state as state_mod
+
+    sampler = state_mod.StateSampler()
+    sampler._lowstate = state_mod._LowStateSnapshot(
+        received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
+    )
+    # A run of failed polls, as the poller now records them.
+    sampler._fsm = state_mod._FsmSnapshot(
+        received_at=time.time(),
+        fsm_id=501,
+        fsm_mode=0,
+        consecutive_failures=state_mod.FSM_FAILURES_BEFORE_FAULT,
+    )
+
+    faults = sampler.get_state()["faults"]
+
+    assert any("fsm_rpc_failing" in f for f in faults), (
+        "a persistently failing FSM poll must surface — otherwise the last good "
+        "posture is reported as current and the robot looks healthy while "
+        "ignoring every command"
+    )
+
+
+def test_an_old_fsm_reading_is_called_stale(monkeypatch):
+    from bridge.sdk import state as state_mod
+
+    sampler = state_mod.StateSampler()
+    sampler._lowstate = state_mod._LowStateSnapshot(
+        received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
+    )
+    sampler._fsm = state_mod._FsmSnapshot(
+        received_at=time.time() - 3600, fsm_id=501, fsm_mode=0
+    )
+
+    faults = sampler.get_state()["faults"]
+
+    assert any("stale_fsm" in f for f in faults), "an hour-old posture must not read as current"
+
+
+def test_a_dead_odom_subscription_is_reported(monkeypatch):
+    from bridge.sdk import state as state_mod
+
+    sampler = state_mod.StateSampler()
+    sampler._lowstate = state_mod._LowStateSnapshot(
+        received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
+    )
+    # Pose arrived once, long ago, and then stopped — lowstate is still fine.
+    sampler._pose = state_mod._PoseSnapshot(
+        received_at=time.time() - 60,
+        x_meters_world=1.0,
+        y_meters_world=2.0,
+        z_meters_world=0.0,
+        yaw_radians_world=0.5,
+    )
+
+    faults = sampler.get_state()["faults"]
+
+    assert any("stale_pose" in f for f in faults), (
+        "every distance and angle measured in this project comes from odom; a "
+        "dead subscription must be visible, not silently frozen"
+    )
