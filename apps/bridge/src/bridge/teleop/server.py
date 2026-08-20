@@ -427,6 +427,21 @@ async def _safe_stop(session: TeleopSession) -> None:
             log.warning("teleop.arm_release_failed", exc_info=True)
 
 
+# How long a connecting operator waits for a departing one's teardown before
+# being refused. Teardown is not instant on real hardware: `_safe_stop` sends a
+# zero-velocity command, and that is a DDS RPC that waits for an ack. Holding
+# the single-session slot across that window meant a client which dropped and
+# immediately reconnected — a Wi-Fi blip, mid-session, with the headset on —
+# was told "a session is already active" by its own previous self.
+#
+# Found on the robot 2026-08-20 by teleop_smoke_test.py, whose stage 2
+# reconnects milliseconds after stage 1 closes. The unit tests missed it
+# because in stub mode teardown is instantaneous.
+#
+# Deliberately short. It is a grace period for a reconnect, not a queue: two
+# people really trying to drive at once should still be refused, promptly.
+RECONNECT_GRACE_S = 3.0
+
 _active: TeleopSession | None = None
 
 
@@ -439,9 +454,18 @@ async def handle_client(ws: ServerConnection) -> None:
     """
     global _active
     if _active is not None:
-        log.warning("teleop.session_refused", remote=ws.remote_address)
-        await ws.close(code=1013, reason="a teleop session is already active")
-        return
+        # Wait out a departing session's teardown before refusing — see
+        # RECONNECT_GRACE_S. Polling rather than an Event because the thing
+        # being waited on is a module-level slot cleared in a `finally`, and a
+        # missed set would strand the next operator for the whole grace period.
+        deadline = time.time() + RECONNECT_GRACE_S
+        while _active is not None and time.time() < deadline:
+            await asyncio.sleep(0.05)
+        if _active is not None:
+            log.warning("teleop.session_refused", remote=ws.remote_address)
+            await ws.close(code=1013, reason="a teleop session is already active")
+            return
+        log.info("teleop.session_slot_freed_in_time", remote=ws.remote_address)
 
     session = TeleopSession()
     _active = session

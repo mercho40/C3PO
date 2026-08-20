@@ -212,3 +212,56 @@ async def test_the_exact_payload_the_browser_client_builds(sent):
     # The extended right arm is what calibration measures reach from.
     assert status["calibrated"] is True
     assert any(c[0] == pytest.approx(srv.WALK_MAX_VEL) for c in sent)
+
+
+async def test_a_reconnect_during_teardown_is_not_refused(sent, monkeypatch):
+    """Found on the robot: the session slot outlived the socket.
+
+    Teardown sends a zero-velocity command, which on real hardware is a DDS RPC
+    that waits for an ack — not instant. The single-session slot was held for
+    that whole window, so a client that dropped and immediately reconnected was
+    refused by its own previous self. On a headset that is a Wi-Fi blip ending
+    the session outright.
+
+    Stub-mode teardown is instantaneous, which is exactly why every existing
+    test passed. So this one makes teardown slow on purpose.
+    """
+    real_stop = srv._safe_stop
+
+    async def slow_stop(session):
+        await asyncio.sleep(0.4)
+        await real_stop(session)
+
+    monkeypatch.setattr(srv, "_safe_stop", slow_stop)
+
+    server, url = await _serve()
+    async with server:
+        async with connect(url) as first:
+            await first.send(_frame(1))
+            await asyncio.sleep(0.1)
+        # No pause: reconnect while the previous teardown is still running.
+        async with connect(url) as second:
+            await second.send(_frame(1))
+            raw = await asyncio.wait_for(second.recv(), timeout=5.0)
+            assert json.loads(raw)["type"] == "status"
+
+
+async def test_a_genuine_second_operator_is_still_refused(sent, monkeypatch):
+    # The grace period must not become a queue. Someone actually holding the
+    # session still turns a second connection away, and promptly.
+    monkeypatch.setattr(srv, "RECONNECT_GRACE_S", 0.3)
+
+    server, url = await _serve()
+    async with server:
+        async with connect(url) as first:
+            await first.send(_frame(1))
+            await asyncio.sleep(0.1)
+
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(Exception) as excinfo:
+                async with connect(url) as second:
+                    await second.recv()
+            waited = asyncio.get_running_loop().time() - started
+
+            assert "1013" in str(excinfo.value) or "already active" in str(excinfo.value)
+            assert waited < 2.0, "refusal should be prompt, not a long block"
