@@ -65,7 +65,12 @@ describe("catalogue resilience", () => {
   test("the e-stop stays resolvable when a sibling tool is malformed", async () => {
     const { getSkill } = await import("./catalogue");
     toolsToReturn = [
-      { name: "broken", description: "malformed", inputSchema: {}, _meta: { c3po: {} } },
+      {
+        name: "broken",
+        description: "malformed",
+        inputSchema: {},
+        _meta: { c3po: {} },
+      },
       goodMeta("stop_everything", "safety"),
     ];
 
@@ -78,7 +83,12 @@ describe("catalogue resilience", () => {
   test("a malformed tool is excluded rather than given a guessed danger level", async () => {
     const { getCatalogue } = await import("./catalogue");
     toolsToReturn = [
-      { name: "sketchy", description: "bad meta", inputSchema: {}, _meta: { c3po: { classification: "gesture" } } },
+      {
+        name: "sketchy",
+        description: "bad meta",
+        inputSchema: {},
+        _meta: { c3po: { classification: "gesture" } },
+      },
     ];
 
     const snap = await getCatalogue();

@@ -73,7 +73,9 @@ export type VoiceLoopState = {
 const DEFAULT_POLL_MS = 1000;
 
 export class VoiceLoop {
-  private readonly deps: Required<Pick<VoiceLoopDeps, "callTool" | "runAgent">> &
+  private readonly deps: Required<
+    Pick<VoiceLoopDeps, "callTool" | "runAgent">
+  > &
     VoiceLoopDeps;
   private readonly pollMs: number;
   private readonly actOnStopPhrase: boolean;

@@ -844,10 +844,10 @@
           Esta cuenta no figura como admin. <strong
             >Los gestos y la puesta en marcha van a fallar con 403</strong
           >
-          — invocar skills directamente requiere rol admin. Caminar y girar con
-          la cabeza SÍ funcionan: van por el stream de teleoperación, que no
-          pasa por esa puerta. PARAR también funciona siempre, porque está
-          clasificado como skill de seguridad.
+          — invocar skills directamente requiere rol admin. Caminar y girar con la
+          cabeza SÍ funcionan: van por el stream de teleoperación, que no pasa por
+          esa puerta. PARAR también funciona siempre, porque está clasificado como
+          skill de seguridad.
           <br />
           <span class="text-ink-soft"
             >Si el rol se cambió recién, puede ser sólo la sesión guardada: se

@@ -16,14 +16,13 @@ Every claim is tagged:
   claim is a hypothesis, never a fact — official or not.
 - **[?]** — believed, not verified. Do not build safety-critical logic on these.
 
-
 > **Yaw sign, settled 2026-08-20.** A commanded **positive** yaw rotates the G1
 > **counterclockwise** (left, seen from above) — the same direction WebXR calls
 > positive head yaw. Measured three times off `rt/odommodestate` during the
 > first VR teleop session: +5.26°, +5.77°, and again in a full smoke-test run,
 > each from a +25° head yaw held for 2 s through `send_velocity`.
 >
-> This closes the question `turn` was blocked on (*"may rotate the wrong way"*,
+> This closes the question `turn` was blocked on (_"may rotate the wrong way"_,
 > 2026-08-15). Note what it does **not** close: `turn` itself still has
 > `works_real=False`, because nobody has watched its closed loop converge. The
 > shared sign is verified; the skill is not.
@@ -254,7 +253,7 @@ defensively — code expecting `data.succeed` gets an AttributeError on a succes
 
 **Status polarity confirmed, and it is the inverted one.** `status` is `0 = running,
 1 = stopped` — the opposite of the `swit` input to `ServiceSwitch`. Verified without
-trusting the docs: `robot_state` reports `status: 0` *while answering this very call*, so
+trusting the docs: `robot_state` reports `status: 0` _while answering this very call_, so
 0 cannot mean stopped. `protect: 1` marks the services `ServiceSwitch` refuses with 5202 —
 `basic_service`, `robot_state`, `webrtc_bridge`, `webrtc_signal_server`. **[live]**
 
@@ -307,10 +306,10 @@ boot, so while it is down the Jetson-side speaker volume is unset. **[live]**)
 vendor client is constructed with `enableLease = false`, including
 `LocoClient() : Client(LOCO_SERVICE_NAME, false)`. **[src]**
 
-The lease mechanism exists — api_id **101 LEASE_APPLY** (`{"name": str}` →
+The lease mechanism exists — api*id **101 LEASE_APPLY** (`{"name": str}` →
 `{"id": int64, "term": int64}`), **102 LEASE_RENEWAL**, default term 1 000 000 µs — but
-nothing uses it. **[src]** So the robot does not arbitrate: _whoever publishes to the
-request topic is obeyed_. The one-commander invariant (`docs/OPERATIONS.md`) is enforced
+nothing uses it. **[src]** So the robot does not arbitrate: \_whoever publishes to the
+request topic is obeyed*. The one-commander invariant (`docs/OPERATIONS.md`) is enforced
 entirely by our own scripts and by the teams sharing the robot agreeing, never by the
 firmware.
 
@@ -1237,8 +1236,8 @@ shape is what our path uses; if `SET_VOLUME` ever answers 100, try the C++ shape
 A naming trap in the official docs: the page titled _"VuiClient Service Interface"_
 (2025-10-22) documents no VuiClient — the only class it defines is
 `unitree::robot::g1::AudioClient`, with exactly the six functions above. It publishes no
-api_ids and has no `ASR` function (consistent with our 1002 finding). Three different
-things carry the letters _vui_: the Go2-only RPC service `vui` (§1.3), the switchable
+api*ids and has no `ASR` function (consistent with our 1002 finding). Three different
+things carry the letters \_vui*: the Go2-only RPC service `vui` (§1.3), the switchable
 process `vui_service` (§7.3), and this mistitled page. None of them is the DDS service
 `voice`. **[web]**
 
@@ -1264,19 +1263,19 @@ the next utterance with a **new** `stream_id` — no `PlayStop` first.
 **Which parameters are actually required — probed 2026-08-21 with digital silence, so
 nothing was audible. [live]**
 
-| parameter sent                        | `rpc_code` |
-| ------------------------------------- | ---------- |
-| `{"app_name","stream_id"}`            | 0          |
-| `{"stream_id"}` — no app_name         | **0**      |
-| `{}`                                  | **100**    |
-| `garbage` (not JSON)                  | **100**    |
+| parameter sent                | `rpc_code` |
+| ----------------------------- | ---------- |
+| `{"app_name","stream_id"}`    | 0          |
+| `{"stream_id"}` — no app_name | **0**      |
+| `{}`                          | **100**    |
+| `garbage` (not JSON)          | **100**    |
 
 Two things follow. **`stream_id` is the required field and `app_name` is optional** —
 undocumented, and it does not change our practice: `PlayStop` is scoped by `app_name`, so
 omitting it would leave an unstoppable stream. Send it always.
 
 And more usefully: **this service really does validate, so `rpc_code 0` here carries
-information.** That is worth stating because on the *sibling* api (1001 TTS) it does not —
+information.** That is worth stating because on the _sibling_ api (1001 TTS) it does not —
 Spanish text returns 0 and emits gibberish (§7, D6.1). The two live on the same service, so
 "0 means nothing on `voice`" is the wrong lesson to generalise: 1001 does not check the
 text against the voice, while 1003 rejects a malformed envelope. What 0 still does **not**

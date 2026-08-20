@@ -34,7 +34,10 @@ function fakeVisionServer(): Fake {
     port: 0,
     fetch(req) {
       const path = new URL(req.url).pathname;
-      const cors = { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" };
+      const cors = {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store",
+      };
 
       if (path === "/status") {
         if (live) frames += 1;
@@ -58,10 +61,16 @@ function fakeVisionServer(): Fake {
       if (path === "/stream.mjpg") {
         opened.push(req.url);
         return new Response("--frame\r\n", {
-          headers: { ...cors, "Content-Type": "multipart/x-mixed-replace; boundary=frame" },
+          headers: {
+            ...cors,
+            "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+          },
         });
       }
-      return new Response("not a c3po vision endpoint", { status: 404, headers: cors });
+      return new Response("not a c3po vision endpoint", {
+        status: 404,
+        headers: cors,
+      });
     },
   });
 
@@ -79,7 +88,9 @@ describe("endpoint", () => {
   test("tolerates a trailing slash or none", () => {
     expect(endpoint("http://x:8081", "status")).toBe("http://x:8081/status");
     expect(endpoint("http://x:8081/", "status")).toBe("http://x:8081/status");
-    expect(endpoint("http://x:8081///", "stream.mjpg")).toBe("http://x:8081/stream.mjpg");
+    expect(endpoint("http://x:8081///", "stream.mjpg")).toBe(
+      "http://x:8081/stream.mjpg",
+    );
   });
 });
 
@@ -115,7 +126,13 @@ describe("against a live server", () => {
     try {
       await wait(1200);
       expect(last).not.toBeUndefined();
-      for (const k of ["live", "frame_age_s", "frames", "clients", "stale_after_s"]) {
+      for (const k of [
+        "live",
+        "frame_age_s",
+        "frames",
+        "clients",
+        "stale_after_s",
+      ]) {
         expect(Object.keys(last ?? {})).toContainEqual(k);
       }
     } finally {

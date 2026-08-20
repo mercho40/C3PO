@@ -79,7 +79,9 @@ export class Costmap {
       if (res.status === 503) {
         // Expected whenever no nav2 stage is up. Keep the last image on screen
         // rather than blanking it — but say why nothing is arriving.
-        const body = (await res.json().catch(() => null)) as { hint?: string } | null;
+        const body = (await res.json().catch(() => null)) as {
+          hint?: string;
+        } | null;
         this.reason = body?.hint ?? "no costmap is being published";
         this.unreachable = false;
         return;

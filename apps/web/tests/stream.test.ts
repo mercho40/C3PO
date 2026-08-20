@@ -119,7 +119,9 @@ describe("staleness — the bug this file exists for", () => {
     expect(live.hands.left?.tracked).toBe(true);
     expect(live.hands.right?.grip).toBe(0.5);
 
-    const stale = buildFrame(input({ left: hand, right: hand, vrActive: false }));
+    const stale = buildFrame(
+      input({ left: hand, right: hand, vrActive: false }),
+    );
     expect(stale.hands.left?.tracked).toBe(false);
     expect(stale.hands.right?.tracked).toBe(false);
     expect(stale.hands.left?.pos).toBeUndefined();
