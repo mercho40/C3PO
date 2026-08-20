@@ -1114,43 +1114,67 @@ async def say(
         ),
     ],
     language: Annotated[
-        Literal["english", "chinese"],
+        Literal["spanish", "english", "chinese"],
         Field(
             description=(
-                "Which of the firmware's two voices to use. These are the ONLY "
-                "two that exist — there is no Spanish voice, and the English one "
-                "does not read Spanish intelligibly. Do NOT pass Spanish text to "
-                "this tool: it returns success and produces unusable audio. The "
-                "robot cannot mix languages in one utterance either — send "
-                "separate calls instead."
+                "Language of `text`. **spanish** is this deployment's operating "
+                "language and the default; it is synthesised on the robot and "
+                "played as audio, so it does not use the firmware's voices at "
+                "all. english/chinese use the firmware's own two voices. Match "
+                "this to the text you actually wrote — labelling Spanish as "
+                "english does not fail, it produces an English voice attempting "
+                "Spanish phonemes. One language per utterance; send separate "
+                "calls to switch."
             )
         ),
-    ] = "english",
+    ] = "spanish",
 ) -> dict:
     """Speak text aloud through the robot's own speaker (voice service, TTS).
 
-    ⚠️ THIS TOOL CANNOT SPEAK SPANISH, AND SPANISH IS THIS DEPLOYMENT'S
-    OPERATING LANGUAGE. The firmware has exactly two voices — `speaker_id` 0 is
-    Chinese, 1 is English, there is no third, and it has been verified on this
-    robot that NEITHER READS SPANISH INTELLIGIBLY. That is a hard wall in the
-    firmware, not a preference or a missing argument: passing Spanish text here
-    produces an English voice attempting Spanish phonemes, which "succeeds"
-    with rpc_code 0 and is unusable.
+    TWO DIFFERENT MECHANISMS LIVE BEHIND ONE TOOL, and the split is forced by
+    the firmware rather than chosen:
 
-    Spanish must go out through `PlayStream` (`api_id` 1003/1004) instead —
-    synthesise externally, push PCM. That path is NOT implemented here yet; see
-    `docs/DECISIONS.md` D6.1 for the decision and `docs/ROBOT-API.md` §7 for the
-    wire format. The co-tenant `gemm` stack already does this, so it is proven
-    on this hardware.
+      spanish  -> synthesised locally by Piper (`es_AR/daniela`), resampled to
+                  16 kHz, and pushed as PCM through `PlayStream` (1003).
+      en / zh  -> the firmware's own TTS (1001), `speaker_id` 1 / 0.
 
-    Real on hardware: on-robot text-to-speech, no cloud round-trip and no API
-    key. Logs only on stub and sim, which have no speaker.
+    The firmware has exactly two voices and no third. It was verified on this
+    robot that neither reads Spanish intelligibly, and — the part that matters —
+    passing Spanish to firmware TTS returns **rpc_code 0** while emitting
+    unusable audio. A false success, which is why Spanish never touches that
+    path here and why this tool refuses loudly instead of falling back to it
+    when local synthesis is unavailable. Silence with an explanation beats
+    confident noise. See `docs/DECISIONS.md` D6.1/D6.3.
 
-    Worth reaching for more than it sounds. Speech appears not to be gated by
-    the locomotion FSM, so it is a channel the robot still has when motion is
-    being refused — which is a situation this robot gets into. Saying what you
-    are about to do, or that you are stuck, is usually better than silence when
-    a person is standing next to a humanoid.
+    Everything is local and offline: no cloud, no API key, and Spanish still
+    works with the network down — which is exactly when "estoy atascado" is
+    worth saying. Logs only on stub and sim, which have no speaker.
+
+    INTERRUPTION IS FREE AND IMPLICIT for Spanish. `PlayStream`'s `stream_id` is
+    the interrupt model — a new id interrupts whatever is playing — and each
+    call here mints a new one. So a second `say` barges in over the first rather
+    than queueing behind it, with no stop call needed. Firmware TTS has no such
+    model and no documented behaviour for overlapping calls.
+
+    The robot's speaker is SHARED with the co-tenant `gemm` stack and there is
+    no arbitration. We publish under our own `app_name` ("c3po"), so their
+    assistant cannot stop our speech and we cannot stop theirs — expect
+    occasional talking over each other; it is not a bug to fix here.
+
+    Worth reaching for more than it sounds. Speech is not gated by the
+    locomotion FSM, so it is a channel the robot still has when motion is being
+    refused — which is a situation this robot gets into. Saying what you are
+    about to do, or that you are stuck, is usually better than silence when a
+    person is standing next to a humanoid.
+
+    Measured rather than assumed, 2026-08-21: the voice service answered
+    GET_VOLUME with rpc_code 0 while fsm_id was 0 (ZeroTorque) — the robot limp,
+    with motion categorically unavailable and another stack owning it. What that
+    establishes is that the SERVICE is reachable in that state; it is not proof
+    that audio reached the speaker, which cannot be checked without making noise
+    in a shared room. That confirmation has since happened: Spanish played audibly
+    through the speaker on 2026-08-21, so the whole path is proven, not merely
+    accepted by the RPC.
 
     One utterance at a time, and one language per utterance: the firmware has
     no mixed Chinese/English voice. There is also no documented behaviour for
@@ -1171,8 +1195,74 @@ async def say(
         }
 
     import asyncio
+    import time
 
     from bridge.sdk import g1_protocol, g1_rpc
+
+    if language == "spanish":
+        from bridge.skills import tts
+
+        ok, why = tts.available()
+        if not ok:
+            # Refuse rather than degrade. The available fallback is the English
+            # voice reading Spanish, which is precisely the rpc_code-0-and-noise
+            # failure this path exists to avoid — it would look like success in
+            # the logs and be unusable in the room.
+            return {
+                "status": "failed",
+                "spoken": None,
+                "language": language,
+                "error": "spanish_tts_unavailable",
+                "detail": why,
+                "note": (
+                    "Refusing to fall back to the English voice: it reads Spanish "
+                    "unintelligibly while reporting success. Install Piper, or "
+                    "call again with language='english' and English text."
+                ),
+                "env": SIM_MODE,
+                "stub": False,
+            }
+
+        # One stream_id per utterance, minted fresh so this call interrupts
+        # whatever is currently playing. Milliseconds is the vendor's own
+        # convention; it only has to be different from the last one.
+        stream_id = f"c3po-{int(time.time() * 1000)}"
+
+        def _synth_and_play() -> tuple[int, str | None, float]:
+            pcm = tts.synthesize(text)
+            code, data = g1_rpc.play_pcm(pcm, stream_id)
+            return code, data, tts.duration_s(pcm)
+
+        try:
+            # Both halves off the event loop. Synthesis is CPU-bound and
+            # PlayStream is a blocking RPC per chunk; on the loop, a long
+            # sentence would stall every other tool call — stop_everything
+            # included, which is the one that must never wait behind speech.
+            code, data, seconds = await asyncio.to_thread(_synth_and_play)
+        except tts.TtsUnavailable as exc:
+            return {
+                "status": "failed", "spoken": None, "language": language,
+                "error": "spanish_tts_failed", "detail": str(exc),
+                "env": SIM_MODE, "stub": False,
+            }
+
+        return {
+            "status": "ok" if code == 0 else "failed",
+            "spoken": text if code == 0 else None,
+            "language": language,
+            "rpc_code": code,
+            "rpc_data": data,
+            # PlayStream acks on RECEIPT, not on completion — the vendor's own
+            # example fires it and sleeps a fixed 3 s. So this is computed from
+            # the bytes sent and is the only honest answer to "is it still
+            # talking?". Nothing here waits for it.
+            "speech_seconds": round(seconds, 2),
+            "stream_id": stream_id,
+            "via": "piper+playstream",
+            "error": None if code == 0 else f"rpc_error_code_{code}",
+            "env": SIM_MODE,
+            "stub": False,
+        }
 
     speaker_id = (
         g1_protocol.Speaker.CHINESE if language == "chinese" else g1_protocol.Speaker.ENGLISH
@@ -1188,9 +1278,142 @@ async def say(
         "language": language,
         "rpc_code": code,
         "rpc_data": data,
+        "via": "firmware_tts",
         "error": None if code == 0 else f"rpc_error_code_{code}",
         "env": SIM_MODE,
         "stub": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool: listen
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="perception",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=False,
+        works_real=True,
+        typical_failure_modes=["mic_never_opened", "stt_not_installed"],
+    )
+)
+async def listen(
+    wait_s: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            le=30.0,
+            description=(
+                "0 (the default) returns instantly with whatever has already "
+                "been heard — use this while doing something else. Give it a "
+                "few seconds ONLY when you have just asked a question and are "
+                "waiting for the answer; the call blocks for that long."
+            ),
+        ),
+    ] = 0.0,
+) -> dict:
+    """What has been said to the robot. Returns instantly by default.
+
+    THE ROBOT IS ALWAYS LISTENING WHEN IT CAN BE — a background thread consumes
+    the microphone continuously, so speech is transcribed before you ask for it.
+    This tool reads that buffer; it does not start listening, and calling it more
+    often does not make the robot hear more.
+
+    Each call CONSUMES what it returns. Two calls in a row will not show the same
+    utterance twice, so act on what you get.
+
+    WHETHER THE ROBOT HEARS CONTINUOUSLY DEPENDS ON ITS AUDIO SOURCE, and
+    `always_listening` in the result says which you have:
+
+        true   a USB microphone is attached to the Jetson. Continuous, no
+               button, and an empty result genuinely means nobody spoke.
+        false  the robot's own mic array is in use. It is PUSH-TO-TALK: it
+               streams only while a person holds L1+L2 on the remote
+               (`docs/ROBOT-HARDWARE.md` §8.2), and no RPC can open it —
+               `vui_service` has no capture function. An empty result then
+               usually means nobody is holding the remote, NOT that the room is
+               silent.
+
+    In the push-to-talk case the two are still distinguishable:
+
+        mic_ever_open: false   nobody has held the button; the robot has never
+                               had the chance to hear anything
+        mic_ever_open: true    audio has arrived before; empty now means quiet
+
+    Never conclude "nobody answered" from an empty result without checking that
+    flag. If it is false, say out loud that you cannot hear unless they hold the
+    button — the person may not know.
+
+    Use `wait_s=0` while walking or working: it costs nothing and cannot stall
+    anything. Reach for a few seconds only right after asking a question, and
+    remember that the whole bridge — including `stop_everything` — waits with
+    you for that long.
+    """
+    if SIM_MODE != "real":
+        return {
+            "status": "ok", "heard": [], "transcript": "", "stop_heard": None,
+            "mic_ever_open": False,
+            "note": f"SIM_MODE={SIM_MODE} has no microphone.",
+            "env": SIM_MODE, "stub": True,
+        }
+
+    import asyncio
+
+    from bridge.skills import listen as listen_skill
+
+    listener = listen_skill.get_mic_listener()
+    if not listener.is_running():
+        ok, why = listen_skill.available()
+        if not ok:
+            return {
+                "status": "failed", "heard": [], "transcript": "",
+                "error": "stt_not_installed", "detail": why,
+                "env": SIM_MODE, "stub": False,
+            }
+        listener.start()
+
+    items = listener.poll()
+    if not items and wait_s > 0:
+        # Poll rather than block on a condition: the listener is a plain thread
+        # and this keeps the wait cancellable and bounded, with the event loop
+        # free the whole time.
+        deadline = asyncio.get_running_loop().time() + wait_s
+        while not items and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.25)
+            items = listener.poll()
+
+    diag = listener.diagnostics()
+    source = listen_skill.describe_audio_source()
+    speech = [i for i in items if i["kind"] == "speech"]
+    stops = [i for i in items if i["kind"] == "stop"]
+
+    return {
+        "status": "ok",
+        "heard": [{"text": i["text"], "age_s": i["age_s"]} for i in speech],
+        "transcript": " ".join(i["text"] for i in speech).strip(),
+        # Reported, not acted on. Whoever is holding the remote to make the robot
+        # hear at all already has a physical e-stop under their thumb.
+        "stop_heard": stops[0]["text"] if stops else None,
+        "mic_ever_open": diag["mic_ever_open"],
+        "seconds_since_audio": diag["seconds_since_audio"],
+        "listener_error": diag["error"],
+        # Whether the robot is listening continuously or only while a button is
+        # held. The agent needs this to interpret silence: with always_on true,
+        # an empty result really does mean nobody spoke.
+        "always_listening": source["always_on"],
+        "audio_source": source["source"],
+        "note": (
+            None if diag["mic_ever_open"] or source["always_on"]
+            else "The microphone has never opened. The robot's own mic is "
+                 "push-to-talk — it hears nothing unless somebody holds L1+L2 on "
+                 "the remote. This is NOT silence in the room. For continuous "
+                 "listening a USB microphone has to be plugged into the Jetson."
+        ),
+        "env": SIM_MODE, "stub": False,
     }
 
 
@@ -1735,6 +1958,34 @@ def main() -> None:
             log.info("perception.link.started", domain=42, gate="closed")
         except Exception:
             log.exception("perception.link.start_failed")
+
+        # START LISTENING AT BOOT, not on the first `listen` call. Otherwise the
+        # first thing anyone says is the one thing the robot cannot hear: the
+        # buffer would only begin filling once the agent thought to ask, and
+        # people speak before they are asked to.
+        #
+        # This is cheap while nobody is talking — the mic is push-to-talk, so a
+        # closed feed delivers no packets and the thread sits in a socket
+        # timeout. There is no audio to decode until somebody holds L1+L2.
+        #
+        # And that button is the privacy boundary, which is worth being explicit
+        # about: the robot transcribes only while a person is deliberately
+        # holding a control to talk to it. Transcripts live in a bounded
+        # in-memory buffer and are never written to disk.
+        try:
+            from bridge.skills.listen import available as stt_available
+            from bridge.skills.listen import get_mic_listener
+
+            ok, why = stt_available()
+            if ok:
+                get_mic_listener().start()
+                log.info("mic_listener.started")
+            else:
+                # Not an error: the bridge runs fine without ears, and `listen`
+                # reports the reason with the fix attached when asked.
+                log.info("mic_listener.disabled", reason=why)
+        except Exception:
+            log.exception("mic_listener.start_failed")
 
     if BRIDGE_TRANSPORT in ("http", "streamable-http"):
         log.info(

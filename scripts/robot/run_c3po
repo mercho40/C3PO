@@ -103,8 +103,29 @@ info "logging to $BRIDGE_LOG"
     # submodule the package does not ship. Sync explicitly and re-apply the
     # patch here, or `git pull && run_c3po` leaves the bridge dying on
     # ModuleNotFoundError with the reason buried in the log.
-    info "syncing bridge dependencies"
-    uv sync --quiet
+    # `--extra voice` IS LOAD-BEARING AND MUST NOT BE DROPPED. It installs vosk,
+    # which is the spoken-stop detector (D6.2: the stop phrase runs inside this
+    # process, so it never crosses a boundary to reach stop_everything).
+    #
+    # `uv sync` PRUNES extras it is not asked for, so a plain `uv sync` here
+    # would uninstall vosk on the next restart and the spoken stop would stop
+    # existing — with the bridge otherwise healthy and no error anywhere. It is
+    # an extra rather than a dependency only because vosk ships no macOS wheel
+    # and a hard dependency would break every Mac checkout (see pyproject).
+    # BOTH EXTRAS, and `uv sync` PRUNES any it is not asked for — so dropping
+    # either one uninstalls that half of the voice loop on the next restart,
+    # with the bridge otherwise healthy and no error anywhere.
+    #
+    #   voice = vosk        the spoken stop, in this process by D6.2
+    #   stt   = whisper     transcription, behind the `listen` tool
+    #
+    # They are separate extras because D6.2 wants ML deps out of the process
+    # that owns the stop, and today both end up here anyway: there is no voice
+    # process yet, and `listen` lives in the bridge. The split is kept so that
+    # when one is built, `stt` moves to it by changing this line rather than by
+    # untangling a dependency list.
+    info "syncing bridge dependencies (voice + stt extras)"
+    uv sync --quiet --extra voice --extra stt
     ./scripts/postsync.sh
 
     # The bridge defaults to stdio, for use as a direct MCP client child

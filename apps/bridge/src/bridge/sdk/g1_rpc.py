@@ -17,6 +17,7 @@ intends to use and callers pass the parameter JSON.
 from __future__ import annotations
 
 import json
+from typing import Final
 
 import structlog
 from unitree_sdk2py.rpc.client import Client
@@ -131,6 +132,8 @@ def _get_voice_client() -> _G1Client:
             g1_protocol.VOICE_SERVICE,
             (
                 g1_protocol.API_ID_VOICE_TTS,
+                g1_protocol.API_ID_VOICE_START_PLAY,
+                g1_protocol.API_ID_VOICE_STOP_PLAY,
                 g1_protocol.API_ID_VOICE_GET_VOLUME,
                 g1_protocol.API_ID_VOICE_SET_VOLUME,
             ),
@@ -166,6 +169,78 @@ def speak(text: str, speaker_id: int = g1_protocol.Speaker.ENGLISH) -> tuple[int
 def get_volume() -> tuple[int, str | None]:
     """Read the robot's speaker volume. Getter, safe."""
     return _get_voice_client().call_raw(g1_protocol.API_ID_VOICE_GET_VOLUME, json.dumps({}))
+
+
+# Our own app_name, and it is not cosmetic. PlayStop is scoped by app_name, so
+# this is the reason gemm-ai cannot stop our speech and we cannot stop theirs —
+# they publish on this same service as "gemm-ai". Sharing a name would let two
+# stacks silence each other with no way to tell which did it.
+PLAY_APP_NAME: Final[str] = "c3po"
+
+# 1 s of 16 kHz mono 16-bit. The on-robot example's "96000 bytes (3 s)" is a
+# convention, not a protocol rule — the official example passes a whole ~5 s WAV
+# in one call. Smaller chunks are chosen for latency to first sound, not for
+# safety: chunks sharing a stream_id concatenate gaplessly, so this costs
+# nothing but gets speech started sooner.
+PLAY_CHUNK_BYTES: Final[int] = 32000
+
+
+def play_pcm(
+    pcm: bytes,
+    stream_id: str,
+    app_name: str = PLAY_APP_NAME,
+) -> tuple[int, str | None]:
+    """Push 16 kHz mono 16-bit PCM to the speaker (voice/1003 START_PLAY).
+
+    This is how the robot speaks Spanish. The firmware TTS has no Spanish voice
+    and answers rpc_code 0 while emitting noise (D6.1), so anything not Chinese
+    or English is synthesised off-board and arrives here as PCM.
+
+    `stream_id` IS THE INTERRUPT MODEL, per the vendor: the *same* id continues
+    playback from cache, a *different* id interrupts whatever is playing. So
+    every chunk of one utterance must reuse one id — that is what makes them
+    concatenate instead of each one cutting off the last — and barging in means
+    calling again with a NEW id, with no PlayStop first.
+
+    Format is not negotiable: both vendor examples hard-reject anything but
+    16 kHz mono 16-bit, and stereo is documented as causing playback issues.
+
+    Returns the LAST chunk's (rpc_code, data), and stops at the first failure so
+    a rejected format does not spend thirty more calls being rejected.
+    """
+    if not pcm:
+        return 0, None
+
+    client = _get_voice_client()
+    param = json.dumps({"app_name": app_name, "stream_id": stream_id})
+    code, data = 0, None
+    for offset in range(0, len(pcm), PLAY_CHUNK_BYTES):
+        chunk = pcm[offset : offset + PLAY_CHUNK_BYTES]
+        code, data = client._CallRequestWithParamAndBin(
+            g1_protocol.API_ID_VOICE_START_PLAY, param, chunk
+        )
+        if code != 0:
+            log.warning(
+                "voice.play_pcm.chunk_failed",
+                rpc_code=code,
+                offset=offset,
+                total=len(pcm),
+                hint="100 is the service's only declared error: Invalid parameter",
+            )
+            return code, data
+    return code, data
+
+
+def stop_play(app_name: str = PLAY_APP_NAME) -> tuple[int, str | None]:
+    """Stop OUR playback (voice/1004). Scoped by app_name, not stream_id.
+
+    Three of four sources agree it takes app_name; the on-robot C++ example
+    passing a stream_id is simply wrong. The scoping is a feature here — it is
+    structurally impossible for this to silence the co-tenant's assistant.
+    """
+    return _get_voice_client().call_raw(
+        g1_protocol.API_ID_VOICE_STOP_PLAY, json.dumps({"app_name": app_name})
+    )
 
 
 _motion_switcher_client: _G1Client | None = None
