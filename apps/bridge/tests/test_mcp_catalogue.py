@@ -75,6 +75,12 @@ EXPECTED_TOOLS = {
     # the mic is gated on a remote button nobody in software can press.
     "say",
     "listen",
+    # THE GATE. arm_navigation is the single point where a planning stack
+    # becomes a moving humanoid — nothing else opens it, and stop_everything
+    # closes it. It is in this list so that adding or renaming it can never
+    # happen without somebody looking at that sentence again.
+    "arm_navigation",
+    "disarm_navigation",
 }
 
 
