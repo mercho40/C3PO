@@ -16,9 +16,23 @@ built-in controller throughout, because `rt/arm_sdk` blends rather than
 bypasses (`executed = motion*(1-w) + ours*w`).
 
     RUN THIS STANDING NEXT TO THE ROBOT, WITH THE PHYSICAL E-STOP IN REACH.
-    The robot must be STANDING, not walking: unitree_sdk2_python #146 reports
-    a G1 driven through arm_sdk while walking bent forward at the waist and
-    lost balance. Bring this up in FSM 4 / 500 / 501.
+
+    **FSM 4 ONLY.** This script now refuses to run in 500 or 501, even though
+    `arm_sdk` itself permits them. Learned the hard way on 2026-08-20: started
+    at 501, and the robot stepped continuously through the whole probe. 501 is
+    a *gait program* — its policy is live and actively balancing, so blending
+    arm commands into it perturbs that balance and the policy answers by
+    stepping. It does not matter that no velocity was ever commanded.
+
+    That made the readings worthless (a moving body cannot be attributed to
+    the joint under test) and put us in exactly the condition
+    unitree_sdk2_python #146 describes: a G1 driven through arm_sdk in a gait
+    program, bending forward and losing balance. Ours was on a gantry.
+
+    FSM 4 is locked stance: the legs are held and the robot physically cannot
+    step, so any movement you see is the joint being probed. Get there with
+    `damp` then `prepare` — note that `prepare` will NOT transition directly
+    from 501, it acks with code 0 and does nothing.
 
     ssh c3po
     cd ~/c3po/apps/bridge
@@ -191,6 +205,20 @@ async def main_async(args) -> int:
     )
     if ask("type 'ready' to engage rt/arm_sdk:") not in ("ready", "y", "yes"):
         print("aborted.")
+        return 1
+
+    # Refuse a gait program outright — see the module docstring. The driver
+    # allows 4/500/501 because Unitree documents all three; this script is
+    # stricter because it needs a still body to produce a readable answer, and
+    # because a stepping robot is the one condition the arm path's only field
+    # report of a balance loss describes.
+    fsm = get_sampler().get_arm_state().get("fsm_id")
+    if fsm != 4:
+        print(f"\nrefused: the robot is in FSM {fsm}, not 4 (locked stance).")
+        print("500 and 501 are gait programs — their policy balances actively, so")
+        print("blending arm commands makes the robot step, which both ruins the")
+        print("reading and is the documented balance hazard. Get to 4 first:")
+        print("    damp, then prepare   (prepare will NOT transition from 501)")
         return 1
 
     driver = get_driver()
