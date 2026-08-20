@@ -27,6 +27,12 @@ bypasses (`executed = motion*(1-w) + ours*w`).
 
 Every prompt defaults to abort. Anything other than an explicit answer stops
 the run and ramps the weight back down.
+
+**Rehearse it first with `--dry`.** That walks the identical prompt sequence
+with no DDS, no publisher and no robot, so you can read every question and
+decide your answers at a desk rather than composing them while standing next to
+a powered humanoid. The only difference is that nothing moves — which is why
+the dry run cannot tell you a sign, only what it is going to ask.
 """
 
 from __future__ import annotations
@@ -75,6 +81,35 @@ def ask(question: str) -> str:
         return ""
 
 
+class DryDriver:
+    """Stands in for the real driver under `--dry`. Publishes nothing.
+
+    Deliberately not a mock of the whole `ArmSdkDriver` surface — it implements
+    exactly what this script calls, so if the script grows a call this class
+    does not have, the dry run fails loudly instead of quietly diverging from
+    what the real run would do.
+    """
+
+    engaged = False
+
+    async def engage(self) -> None:
+        print("  [dry] would engage rt/arm_sdk from the measured arm pose")
+        print("  [dry] would ramp the blend weight 0 -> 1 over 2.0 s")
+
+    def command(self, left, right) -> None:
+        side = "left" if left is not None else "right"
+        angles = left if left is not None else right
+        moved = [
+            f"{name}={math.degrees(v):+.1f}deg"
+            for name, v in zip(JOINTS, angles.as_tuple(), strict=True)
+            if abs(v) > 1e-9
+        ]
+        print(f"  [dry] would command {side} arm: {', '.join(moved) or 'neutral'}")
+
+    async def release(self) -> None:
+        print("  [dry] would ramp the blend weight 1 -> 0 over 2.0 s and let go")
+
+
 def _command_side(driver, side: str, angles: ArmAngles) -> None:
     """Drive one arm and leave the other alone (`None` means "hold")."""
     driver.command(angles if side == "left" else None, angles if side == "right" else None)
@@ -88,14 +123,14 @@ async def probe_joint(driver, side: str, index: int, name: str) -> str | None:
 
     print(f"\n  moving {side} {name} by +{math.degrees(PROBE_RAD):.0f} deg ...")
     _command_side(driver, side, angles)
-    await asyncio.sleep(HOLD_S)
+    await asyncio.sleep(0 if isinstance(driver, DryDriver) else HOLD_S)
 
     print(f"  expected for sign +1: {EXPECTED[name]}")
     answer = ask("  did that happen?  [y]es / [n]o, it went the other way / [s]kip / anything else aborts:")
 
     print("  returning to neutral ...")
     _command_side(driver, side, NEUTRAL)
-    await asyncio.sleep(HOLD_S)
+    await asyncio.sleep(0 if isinstance(driver, DryDriver) else HOLD_S)
 
     if answer == "y":
         return "+1.0"
@@ -107,6 +142,25 @@ async def probe_joint(driver, side: str, index: int, name: str) -> str | None:
 
 
 async def main_async(args) -> int:
+    if args.dry:
+        print("\n*** DRY RUN — no DDS, no publisher, nothing moves. ***")
+        print("*** Answers are not recorded as signs; this only rehearses the script. ***\n")
+        driver = DryDriver()
+        results: dict[str, str] = {}
+        try:
+            for index, name in enumerate(JOINTS):
+                if args.joints and name not in args.joints:
+                    continue
+                sign = await probe_joint(driver, args.side, index, name)
+                if sign is not None:
+                    results[name] = sign
+        except KeyboardInterrupt:
+            print("\n[dry] aborted — on a real run this is where the weight would ramp down.")
+            return 1
+        print(f"\n[dry] {len(results)} joint(s) answered. Nothing was written anywhere.")
+        print("[dry] Re-run without --dry, next to the robot, to record real signs.")
+        return 0
+
     from bridge.sdk.connection import init_dds
 
     init_dds(
@@ -178,6 +232,11 @@ def main() -> int:
         nargs="*",
         default=None,
         help="only probe these joints (default: all seven, in order)",
+    )
+    parser.add_argument(
+        "--dry",
+        action="store_true",
+        help="rehearse the prompts with no DDS and no motion",
     )
     args = parser.parse_args()
     return asyncio.run(main_async(args))
