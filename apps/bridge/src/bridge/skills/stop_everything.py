@@ -47,6 +47,7 @@ from typing import Any
 
 import structlog
 
+from bridge.estop import signal_stop
 from bridge.skills._locomotion import DEFAULT_HEIGHT, stop_motion_sync
 from bridge.skills.task_runtime import get_registry
 
@@ -70,6 +71,12 @@ SIM_MODE = os.environ.get("SIM_MODE", "stub")
 
 async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     """Cancel all running tasks and send a zero-velocity burst."""
+    # Cross-process first, and before any await: the teleop stream runs in its
+    # own process with its own TaskRegistry, so the cancellation below cannot
+    # reach it. Found on the robot when PARAR left it turning for another 27
+    # degrees. See bridge/estop.py.
+    signal_stop()
+
     registry = get_registry()
     active = registry.list_active()
     cancelled_ids: list[str] = []
