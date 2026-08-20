@@ -1080,13 +1080,31 @@ async def say(
         Literal["english", "chinese"],
         Field(
             description=(
-                "Which voice to use. The robot cannot mix languages in one "
-                "utterance — send separate calls instead."
+                "Which of the firmware's two voices to use. These are the ONLY "
+                "two that exist — there is no Spanish voice, and the English one "
+                "does not read Spanish intelligibly. Do NOT pass Spanish text to "
+                "this tool: it returns success and produces unusable audio. The "
+                "robot cannot mix languages in one utterance either — send "
+                "separate calls instead."
             )
         ),
     ] = "english",
 ) -> dict:
     """Speak text aloud through the robot's own speaker (voice service, TTS).
+
+    ⚠️ THIS TOOL CANNOT SPEAK SPANISH, AND SPANISH IS THIS DEPLOYMENT'S
+    OPERATING LANGUAGE. The firmware has exactly two voices — `speaker_id` 0 is
+    Chinese, 1 is English, there is no third, and it has been verified on this
+    robot that NEITHER READS SPANISH INTELLIGIBLY. That is a hard wall in the
+    firmware, not a preference or a missing argument: passing Spanish text here
+    produces an English voice attempting Spanish phonemes, which "succeeds"
+    with rpc_code 0 and is unusable.
+
+    Spanish must go out through `PlayStream` (`api_id` 1003/1004) instead —
+    synthesise externally, push PCM. That path is NOT implemented here yet; see
+    `docs/DECISIONS.md` D6.1 for the decision and `docs/ROBOT-API.md` §7 for the
+    wire format. The co-tenant `gemm` stack already does this, so it is proven
+    on this hardware.
 
     Real on hardware: on-robot text-to-speech, no cloud round-trip and no API
     key. Logs only on stub and sim, which have no speaker.
@@ -1098,7 +1116,10 @@ async def say(
     a person is standing next to a humanoid.
 
     One utterance at a time, and one language per utterance: the firmware has
-    no mixed Chinese/English voice.
+    no mixed Chinese/English voice. There is also no documented behaviour for
+    calling it while speech is already playing, so this is not the tool to use
+    for anything that must be interruptible — `PlayStream` is, and its
+    `stream_id` is the interrupt model (same id concatenates, new id barges in).
     """
     log.info("say.called", text=text, language=language, sim_mode=SIM_MODE)
 
