@@ -304,6 +304,9 @@ async def test_lowering_the_arms_does_not_stall_locomotion(session, sent, monkey
         def request_release(self):
             released["requested"] = True
 
+        def clear_failure(self):
+            released["cleared"] = True
+
         async def release(self):
             released["awaited"] = True
             await asyncio.sleep(2.0)
@@ -321,3 +324,63 @@ async def test_lowering_the_arms_does_not_stall_locomotion(session, sent, monkey
     assert released["awaited"] is False
     # And the turn the operator is still asking for went out on the same tick.
     assert sent[-1][2] == pytest.approx(srv.YAW_MAX_RAD_S)
+
+
+# -- loop resilience --------------------------------------------------------
+
+
+async def test_a_failing_dispatch_ends_the_session_instead_of_dying_quietly(
+    session, sent, monkeypatch
+):
+    """A control loop that cannot control must hand back, loudly.
+
+    Only `CancelledError` used to be caught, so anything else — a DDS publisher
+    that fails, a hand driver that raises, an unexpected error from `engage()`
+    — killed the loop while the WebSocket kept ingesting frames. The session
+    looked alive from the page, status stopped updating, and nothing dispatched
+    or stopped until the operator happened to disconnect.
+    """
+    closed: list[tuple[int, str]] = []
+
+    class _FakeWs:
+        async def send(self, _message):
+            return None
+
+        async def close(self, code=1000, reason=""):
+            closed.append((code, reason))
+
+    calls = {"n": 0}
+
+    async def exploding_dispatch(_session, _now):
+        calls["n"] += 1
+        raise RuntimeError("DDS publisher went away")
+
+    monkeypatch.setattr(srv, "_dispatch_once", exploding_dispatch)
+
+    await asyncio.wait_for(srv._dispatch_loop(session, _FakeWs()), timeout=2.0)
+
+    # It gave up rather than spinning on the failure at the dispatch rate.
+    assert calls["n"] == 1
+    # And it told the client, so the page can say the link is gone.
+    assert closed and closed[0][0] == 1011
+
+
+async def test_a_failing_dispatch_still_stops_the_robot(session, sent, monkeypatch):
+    class _FakeWs:
+        async def send(self, _message):
+            return None
+
+        async def close(self, code=1000, reason=""):
+            return None
+
+    session.ingest(parse_frame(frame(walk=1.0)))
+    await srv._dispatch_once(session, session.last_frame_at)
+    assert session.moving is True
+
+    async def exploding_dispatch(_session, _now):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(srv, "_dispatch_once", exploding_dispatch)
+    await asyncio.wait_for(srv._dispatch_loop(session, _FakeWs()), timeout=2.0)
+
+    assert sent[-1] == (0.0, 0.0, 0.0, srv.STAND_HEIGHT)

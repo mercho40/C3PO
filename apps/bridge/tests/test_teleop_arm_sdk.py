@@ -284,3 +284,59 @@ async def test_repeated_release_requests_are_idempotent(driver, enabled):
     # Still one smooth ramp down, not ten overlapping ones.
     assert falling == sorted(falling, reverse=True)
     await driver.release()
+
+
+# -- failure containment ----------------------------------------------------
+
+
+async def test_a_dead_publish_loop_is_not_retried_every_tick(driver, enabled, monkeypatch):
+    """A failed loop must latch, not invite an immediate re-engage.
+
+    `_run`'s error path clears `_engaged`, so the dispatch loop's next tick saw
+    a disengaged driver and called `engage()` again — 20 times a second, each
+    attempt building a publisher and ramping a weight, against a fault that is
+    not going away.
+    """
+    boom = {"n": 0}
+
+    def exploding_publish():
+        boom["n"] += 1
+        raise RuntimeError("DDS publisher went away")
+
+    monkeypatch.setattr(driver, "_publish", exploding_publish)
+
+    await driver.engage()
+    for _ in range(50):
+        if not driver.engaged:
+            break
+        await asyncio.sleep(0.02)
+    assert driver.engaged is False
+
+    # The dispatch loop would try again here. It must be refused, with a reason
+    # the UI can show, rather than starting another doomed publish loop.
+    with pytest.raises(ArmSdkUnavailable, match="publish loop failed"):
+        await driver.engage()
+
+
+async def test_letting_go_of_the_arms_clears_the_failure(driver, enabled, monkeypatch):
+    # Recovery is deliberate, same shape as every other latch here: stop asking
+    # for the arms, then ask again.
+    monkeypatch.setattr(driver, "_publish", lambda: (_ for _ in ()).throw(RuntimeError("nope")))
+    await driver.engage()
+    for _ in range(50):
+        if not driver.engaged:
+            break
+        await asyncio.sleep(0.02)
+    with pytest.raises(ArmSdkUnavailable):
+        await driver.engage()
+
+    driver.clear_failure()
+
+    published: list[dict] = []
+    monkeypatch.setattr(driver, "_publish", lambda: published.append({"weight": driver._weight}))
+    await driver.engage()
+    try:
+        await asyncio.sleep(0.05)
+        assert published
+    finally:
+        await driver.release()

@@ -7,6 +7,7 @@
     "dev": "vite dev --port 3001",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "bun test",
     "start": "PORT=3001 bun ./build/index.js",
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",

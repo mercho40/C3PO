@@ -16,8 +16,18 @@
  *
  * 1. **Decimation.** WebXR fires at 72-120 Hz. The bridge dispatches at 20 Hz
  *    and the arm loop runs at 50. Sending every XR frame would be 3-6x the
- *    traffic for setpoints that are discarded on arrival, so frames are sent
- *    on a fixed interval with the most recent sample.
+ *    traffic for setpoints that are discarded on arrival, so the sender runs
+ *    on a fixed interval and PULLS the current payload rather than being
+ *    pushed one to remember.
+ *
+ *    That direction matters more than it looks. An earlier version held the
+ *    last payload it was given and resent it every tick, which meant any state
+ *    that stopped updating kept being transmitted as if it were current: lose
+ *    hand tracking, or end the XR session, with the operator's head turned,
+ *    and the last big yaw kept going out 30 times a second and the robot kept
+ *    rotating. Pulling makes staleness impossible to hold onto — the provider
+ *    is re-consulted on every single send, so "the headset stopped talking"
+ *    and "the headset says zero" cannot look the same.
  * 2. **Send even when idle.** A frame still goes out while the operator holds
  *    nothing, carrying `enabled: false`. That is what makes the bridge's
  *    staleness dead-man mean something: silence has to be reserved for "the
@@ -63,12 +73,16 @@ export type TeleopFramePayload = {
 };
 
 export type TeleopHandle = {
-  /** Replace the payload sent on the next tick. Cheap; call it per XR frame. */
-  update: (payload: TeleopFramePayload) => void;
   close: () => void;
 };
 
 export type TeleopCallbacks = {
+  /**
+   * Called on every send to build the frame. Must be cheap and must return
+   * CURRENT state — anything it reads that may have gone stale has to be
+   * checked here, not cached by the caller.
+   */
+  getFrame: () => TeleopFramePayload;
   onState: (state: TeleopState, detail?: string) => void;
   onStatus?: (status: TeleopStatus) => void;
 };
@@ -87,6 +101,72 @@ export function idlePayload(): TeleopFramePayload {
   };
 }
 
+/** Everything `buildFrame` needs. Passed in so the policy stays pure. */
+export type TeleopInput = {
+  now: number;
+  /** Whether an XR session is currently live. */
+  vrActive: boolean;
+  /** `Date.now()` of the last accepted XR pose sample, or 0 if none. */
+  lastSampleAt: number;
+  staleAfterMs: number;
+  yawErrorRadians: number;
+  yawDeadzoneRadians: number;
+  headPosition: [number, number, number];
+  left: HandSample | null;
+  right: HandSample | null;
+  walking: "forward" | "back" | null;
+  armsRequested: boolean;
+};
+
+/** A wrist as `$lib/webxr/xr-teleop.ts` reports it. */
+export type HandSample = {
+  position: [number, number, number];
+  orientation: [number, number, number, number];
+  grip: number;
+};
+
+function handPayload(hand: HandSample | null) {
+  if (!hand) return { tracked: false };
+  return {
+    tracked: true,
+    pos: hand.position,
+    quat: hand.orientation,
+    grip: hand.grip,
+  };
+}
+
+/**
+ * Decide what to transmit, given everything the page currently knows.
+ *
+ * Pure, and separated from the page for one reason: this is where a real bug
+ * lived and it needs tests. Headset-derived state is only usable if a session
+ * is live AND a sample arrived recently — either condition alone is the stale
+ * case. When it is not fresh, this reports zeroes and untracked hands rather
+ * than the last values seen, so "the headset stopped talking" and "the headset
+ * says zero" are indistinguishable to the robot, which is the safe reading.
+ *
+ * `enabled` is the dead-man: a walk button held, or the head turned past the
+ * deadzone. Mirroring the arms alone does not count — the operator's hands are
+ * busy being tracked and cannot also be pressing something.
+ */
+export function buildFrame(input: TeleopInput): TeleopFramePayload {
+  const fresh =
+    input.vrActive && input.now - input.lastSampleAt < input.staleAfterMs;
+  const yaw = fresh ? input.yawErrorRadians : 0;
+  const turning = Math.abs(yaw) > input.yawDeadzoneRadians;
+  const arms = input.armsRequested && fresh;
+
+  return {
+    enabled: input.walking !== null || turning || arms,
+    walk: input.walking === "forward" ? 1 : input.walking === "back" ? -1 : 0,
+    arms,
+    head: { yaw, pos: fresh ? input.headPosition : [0, 1.6, 0] },
+    hands: fresh
+      ? { left: handPayload(input.left), right: handPayload(input.right) }
+      : { left: { tracked: false }, right: { tracked: false } },
+  };
+}
+
 export function connectTeleop(
   url: string,
   callbacks: TeleopCallbacks,
@@ -94,7 +174,6 @@ export function connectTeleop(
   let socket: WebSocket | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
   let seq = 0;
-  let payload = idlePayload();
   let closed = false;
 
   callbacks.onState("connecting");
@@ -105,7 +184,7 @@ export function connectTeleop(
       "error",
       err instanceof Error ? err.message : String(err),
     );
-    return { update: () => {}, close: () => {} };
+    return { close: () => {} };
   }
 
   socket.addEventListener("open", () => {
@@ -117,6 +196,15 @@ export function connectTeleop(
       // already stale by the time it arrives. Skipping a tick lets the socket
       // drain and keeps what does arrive current.
       if (socket.bufferedAmount > 4096) return;
+      // Pulled, never remembered. See the note at the top of this file.
+      let payload: TeleopFramePayload;
+      try {
+        payload = callbacks.getFrame();
+      } catch {
+        // A throwing provider must not be read as "keep doing what you were
+        // doing". Idle is the only safe interpretation.
+        payload = idlePayload();
+      }
       socket.send(
         JSON.stringify({
           v: PROTOCOL_VERSION,
@@ -162,9 +250,6 @@ export function connectTeleop(
   });
 
   return {
-    update: (next) => {
-      payload = next;
-    },
     close: () => {
       closed = true;
       if (timer) clearInterval(timer);

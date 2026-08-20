@@ -124,6 +124,9 @@ async def test_stop_releases_the_arms_too(session, sent, monkeypatch):
         def request_release(self):
             released["called"] = True
 
+        def clear_failure(self):
+            released["cleared"] = True
+
         async def release(self):
             released["called"] = True
 
