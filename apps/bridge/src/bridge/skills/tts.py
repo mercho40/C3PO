@@ -49,7 +49,8 @@ KAISER_BETA = 5.0
 
 PIPER_BIN = os.environ.get("PIPER_BIN", os.path.expanduser("~/.local/share/piper/piper"))
 PIPER_VOICE = os.environ.get(
-    "PIPER_VOICE", os.path.expanduser("~/.local/share/piper/es_AR-daniela-high.onnx"))
+    "PIPER_VOICE", os.path.expanduser("~/.local/share/piper/es_AR-daniela-high.onnx")
+)
 
 # Long enough for a paragraph on an Orin NX, short enough that a wedged binary
 # does not hold the tool call open forever.
@@ -142,11 +143,13 @@ def available() -> tuple[bool, str]:
     if not binary:
         return False, (
             f"piper binary not found at {PIPER_BIN} nor on PATH — "
-            "run apps/bridge/scripts/install_piper.sh on the robot")
+            "run apps/bridge/scripts/install_piper.sh on the robot"
+        )
     if not os.path.isfile(PIPER_VOICE):
         return False, (
             f"piper voice not found at {PIPER_VOICE} — "
-            "run apps/bridge/scripts/install_piper.sh on the robot")
+            "run apps/bridge/scripts/install_piper.sh on the robot"
+        )
     return True, ""
 
 
@@ -170,14 +173,19 @@ def synthesize(text: str) -> bytes:
     )
     if proc.returncode != 0:
         raise TtsUnavailable(
-            f"piper exited {proc.returncode}: {proc.stderr.decode('utf-8', 'replace')[:300]}")
+            f"piper exited {proc.returncode}: {proc.stderr.decode('utf-8', 'replace')[:300]}"
+        )
     if not proc.stdout:
         raise TtsUnavailable("piper produced no audio (empty stdout)")
 
     pcm16k = resample_to_16k(proc.stdout)
-    log.info("tts.synthesized", chars=len(text),
-             piper_bytes=len(proc.stdout), pcm_bytes=len(pcm16k),
-             seconds=round(len(pcm16k) / (TARGET_RATE * 2), 2))
+    log.info(
+        "tts.synthesized",
+        chars=len(text),
+        piper_bytes=len(proc.stdout),
+        pcm_bytes=len(pcm16k),
+        seconds=round(len(pcm16k) / (TARGET_RATE * 2), 2),
+    )
     return pcm16k
 
 

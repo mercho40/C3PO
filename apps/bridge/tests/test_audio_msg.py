@@ -18,11 +18,19 @@ import pytest
 
 from bridge.sdk.audio_msg import ASR_STALE_AFTER_S, AudioMsgLink, parse_audio_msg
 
-ASR_PAYLOAD = json.dumps({
-    "index": 1, "timestamp": 29319303490, "text": "pará", "angle": 90,
-    "speaker_id": 0, "sense": "unknown", "confidence": 0.95,
-    "language": "es-ES", "is_final": True,
-})
+ASR_PAYLOAD = json.dumps(
+    {
+        "index": 1,
+        "timestamp": 29319303490,
+        "text": "pará",
+        "angle": 90,
+        "speaker_id": 0,
+        "sense": "unknown",
+        "confidence": 0.95,
+        "language": "es-ES",
+        "is_final": True,
+    }
+)
 
 
 class Clock:
@@ -42,6 +50,7 @@ def link():
 
 
 # --- parsing ---------------------------------------------------------------
+
 
 def test_play_state_and_asr_are_told_apart():
     assert parse_audio_msg('{"play_state":1}')["kind"] == "play_state"
@@ -77,6 +86,7 @@ def test_junk_is_ignored_not_guessed_at(raw):
 
 # --- playback state --------------------------------------------------------
 
+
 def test_playback_tracks_start_and_stop(link):
     assert link.is_playing() is False
     link.handle('{"play_state":1}')
@@ -103,6 +113,7 @@ def test_a_new_utterance_rearms_the_wait(link):
 
 # --- ASR -------------------------------------------------------------------
 
+
 def test_recognised_speech_is_exposed_with_its_age(link):
     link.handle(ASR_PAYLOAD)
     asr, age = link.latest_asr()
@@ -126,7 +137,7 @@ def test_asr_callback_fires_and_a_raising_one_cannot_kill_the_reader(link):
     assert got == ["pará"]
 
     link.on_asr(lambda a: (_ for _ in ()).throw(RuntimeError("boom")))
-    link.handle(ASR_PAYLOAD)          # must not raise
+    link.handle(ASR_PAYLOAD)  # must not raise
     link.handle('{"play_state":1}')
     assert link.is_playing() is True
 

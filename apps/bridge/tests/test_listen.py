@@ -31,7 +31,7 @@ vosk_ok, vosk_why = listen.available()
 def _tts_ready() -> tuple[bool, str]:
     try:
         from bridge.skills import tts
-    except ImportError as exc:                      # pragma: no cover
+    except ImportError as exc:  # pragma: no cover
         return False, str(exc)
     return tts.available()
 
@@ -45,22 +45,31 @@ needs_audio = pytest.mark.skipif(
 
 # --- matching logic (no vosk needed) ---------------------------------------
 
-@pytest.mark.parametrize("heard", [
-    "emergencia", "EMERGENCIA", "eh emergencia", "para para", "detener ya"])
+
+@pytest.mark.parametrize(
+    "heard", ["emergencia", "EMERGENCIA", "eh emergencia", "para para", "detener ya"]
+)
 def test_fragments_and_repeats_all_count_as_a_stop(heard):
     """What a real shout decodes to mid-partial: fragments, repeats, case.
     Exact matching rejects all of these."""
     assert listen.match_phrase(heard, listen.DEFAULT_STOP_PHRASES) is not None
 
 
-@pytest.mark.parametrize("heard", [
-    "", "hola", "seguí adelante", "girá a la derecha",
-    # THE ONE THAT DROVE THE PHRASE LIST. "para" is the commonest preposition in
-    # Spanish, and this model decodes a shouted "pará" as "para" — so a bare
-    # "para" cannot be a stop word without halting the robot mid-sentence
-    # whenever anyone explains what it is for.
-    "estoy aquí para ayudarte con el proyecto",
-    "voy a caminar hasta la puerta para buscar la caja"])
+@pytest.mark.parametrize(
+    "heard",
+    [
+        "",
+        "hola",
+        "seguí adelante",
+        "girá a la derecha",
+        # THE ONE THAT DROVE THE PHRASE LIST. "para" is the commonest preposition in
+        # Spanish, and this model decodes a shouted "pará" as "para" — so a bare
+        # "para" cannot be a stop word without halting the robot mid-sentence
+        # whenever anyone explains what it is for.
+        "estoy aquí para ayudarte con el proyecto",
+        "voy a caminar hasta la puerta para buscar la caja",
+    ],
+)
 def test_ordinary_speech_is_not_a_stop(heard):
     assert listen.match_phrase(heard, listen.DEFAULT_STOP_PHRASES) is None
 
@@ -72,7 +81,8 @@ def test_stop_phrases_are_ones_this_model_can_actually_decode():
     would be a stop word that never fires, or one that fires constantly."""
     banned = {"pará", "para", "alto", "stop", "frená", "basta"}
     assert not (banned & set(listen.DEFAULT_STOP_PHRASES)), (
-        "a phrase this model mis-decodes was re-added to the stop list")
+        "a phrase this model mis-decodes was re-added to the stop list"
+    )
     assert "emergencia" in listen.DEFAULT_STOP_PHRASES
 
 
@@ -81,10 +91,12 @@ def test_mic_constants_match_the_documented_feed():
     assert listen.MIC_PORT == 5555
     assert listen.MIC_SAMPLE_RATE == 16000
     assert listen.MIC_IFACE_PREFIX == "192.168.123.", (
-        "binding any other interface yields zero packets with no error")
+        "binding any other interface yields zero packets with no error"
+    )
 
 
 # --- real decoding (robot only) --------------------------------------------
+
 
 @needs_audio
 @pytest.mark.parametrize("spoken", ["pará", "pará, pará", "alto", "stop"])
@@ -107,6 +119,7 @@ def test_unrelated_spanish_does_not_trigger_a_stop():
 
 
 # --- the loop (robot only) --------------------------------------------------
+
 
 def _frames(pcm: bytes, size: int = listen.FRAME_BYTES):
     return (pcm[i : i + size] for i in range(0, len(pcm), size))
@@ -165,11 +178,11 @@ def test_a_clip_with_no_trailing_silence_is_not_swallowed():
 def test_transcribe_pcm_is_the_offline_entry_point():
     from bridge.skills import tts
 
-    assert any("puerta" in t for t in
-               listen.transcribe_pcm(tts.synthesize("abrí la puerta")))
+    assert any("puerta" in t for t in listen.transcribe_pcm(tts.synthesize("abrí la puerta")))
 
 
 # --- whisper transcription (robot only) -------------------------------------
+
 
 def _whisper_ready() -> tuple[bool, str]:
     try:
@@ -181,7 +194,8 @@ def _whisper_ready() -> tuple[bool, str]:
 
 whisper_ok, whisper_why = _whisper_ready()
 needs_whisper = pytest.mark.skipif(
-    not whisper_ok, reason=f"needs faster-whisper + piper on the robot: {whisper_why}")
+    not whisper_ok, reason=f"needs faster-whisper + piper on the robot: {whisper_why}"
+)
 
 
 @needs_whisper
@@ -191,7 +205,8 @@ def test_whisper_transcribes_spanish_accurately():
     from bridge.skills import tts
 
     text = listen.transcribe_pcm_whisper(
-        tts.synthesize("Buenos días. Caminá hasta la puerta y buscá la caja azul.")).lower()
+        tts.synthesize("Buenos días. Caminá hasta la puerta y buscá la caja azul.")
+    ).lower()
     for word in ("puerta", "caja", "azul"):
         assert word in text, f"{word!r} missing from {text!r}"
 
@@ -213,7 +228,8 @@ def test_whisper_beats_vosk_on_the_same_audio():
     whisper_hits = sum(w in whisper_text for w in wanted)
     assert whisper_hits >= vosk_hits, (
         f"whisper {whisper_hits}/{len(wanted)} did not beat vosk {vosk_hits}/{len(wanted)}\n"
-        f"  vosk   : {vosk_text!r}\n  whisper: {whisper_text!r}")
+        f"  vosk   : {vosk_text!r}\n  whisper: {whisper_text!r}"
+    )
 
 
 @needs_whisper
@@ -230,6 +246,5 @@ def test_the_loop_uses_whisper_text_and_still_fires_the_stop():
 
     heard, stops = [], []
     clip = tts.synthesize("emergencia, pará todo")
-    listen.listen_loop(_frames(clip), on_text=heard.append, on_stop=stops.append,
-                       whisper=True)
+    listen.listen_loop(_frames(clip), on_text=heard.append, on_stop=stops.append, whisper=True)
     assert stops, "the stop must fire regardless of which transcriber is used"

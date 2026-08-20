@@ -281,3 +281,60 @@ def test_left_mirrors_right_where_bilateral_symmetry_says_it_must():
     assert left["elbow"] == right["elbow"]
     assert left["shoulder_roll"] == -right["shoulder_roll"]
     assert left["shoulder_yaw"] == -right["shoulder_yaw"]
+
+
+class TestShoulderPitchContinuity:
+    """The branch cut, and why it is where it is.
+
+    `atan2(forward, down)` is correct everywhere the joint can go and
+    catastrophic just outside it. The joint's limit is +/-90 degrees, so the
+    arm cannot reach overhead — but atan2 keeps going, and a hand raised
+    straight up sits exactly on its cut. One degree of wobble swung the result
+    from +179 to -179, which after clamping is a jump between the two joint
+    limits.
+    """
+
+    @staticmethod
+    def _dir(elevation_deg: float, behind: bool = False) -> tuple[float, float]:
+        """(forward, down) for a hand `elevation_deg` above horizontal."""
+        rad = math.radians(elevation_deg)
+        forward = math.cos(rad) * (-1.0 if behind else 1.0)
+        return forward, -math.sin(rad)
+
+    def test_hanging_arm_is_zero(self):
+        assert retarget._shoulder_pitch(forward=0.0, down=1.0) == pytest.approx(0.0)
+
+    def test_straight_ahead_is_ninety(self):
+        assert retarget._shoulder_pitch(forward=1.0, down=0.0) == pytest.approx(math.pi / 2)
+
+    def test_the_path_a_hand_actually_takes_is_continuous(self):
+        """Raising a hand up the front: down, forward, overhead. No jumps."""
+        previous = retarget._shoulder_pitch(forward=0.0, down=1.0)
+        for elevation in range(-90, 91, 1):
+            forward, down = self._dir(elevation)
+            pitch = retarget._shoulder_pitch(forward=forward, down=down)
+            assert abs(pitch - previous) < math.radians(2), (
+                f"jump of {math.degrees(abs(pitch - previous)):.0f} degrees at "
+                f"{elevation} degrees elevation"
+            )
+            previous = pitch
+
+    def test_wobbling_overhead_does_not_flip_the_arm(self):
+        """The exact case: a raised hand shaking a degree either side of vertical."""
+        just_forward = retarget._shoulder_pitch(*self._dir(89))
+        overhead = retarget._shoulder_pitch(forward=0.0, down=-1.0)
+
+        assert just_forward == pytest.approx(overhead)
+        assert overhead == pytest.approx(math.pi / 2)
+
+    def test_everything_above_the_shoulder_saturates_forward(self):
+        for elevation in (1, 15, 45, 89, 90):
+            forward, down = self._dir(elevation)
+            assert retarget._shoulder_pitch(forward=forward, down=down) == pytest.approx(
+                math.pi / 2
+            ), f"{elevation} degrees should saturate at the forward limit"
+
+    def test_reaching_back_below_the_shoulder_is_still_negative(self):
+        """The guard must not flatten the whole rear half of the range."""
+        forward, down = self._dir(-45, behind=True)
+        assert retarget._shoulder_pitch(forward=forward, down=down) < 0

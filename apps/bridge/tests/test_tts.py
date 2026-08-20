@@ -24,8 +24,9 @@ IN_RATE = tts.PIPER_RATE
 OUT_RATE = tts.TARGET_RATE
 
 
-def tone(freq_hz: float, seconds: float = 0.25, rate: int = IN_RATE,
-         amplitude: float = 0.5) -> bytes:
+def tone(
+    freq_hz: float, seconds: float = 0.25, rate: int = IN_RATE, amplitude: float = 0.5
+) -> bytes:
     t = np.arange(int(rate * seconds)) / rate
     return (amplitude * np.sin(2 * np.pi * freq_hz * t) * 32767).astype("<i2").tobytes()
 
@@ -132,7 +133,7 @@ class _FakeVoiceClient:
     def _CallRequestWithParamAndBin(self, api_id, param, binary):  # noqa: N802, ANN001
         self.calls.append((api_id, param, binary))
         if self._fail_at is not None and len(self.calls) > self._fail_at:
-            return 100, None          # the service's only declared error
+            return 100, None  # the service's only declared error
         return 0, None
 
     def call_raw(self, api_id, param):  # noqa: ANN001
@@ -157,7 +158,7 @@ def test_every_chunk_of_one_utterance_reuses_one_stream_id(fake_voice):
 
     from bridge.sdk import g1_rpc
 
-    pcm = b"\x01\x02" * (g1_rpc.PLAY_CHUNK_BYTES)   # several chunks' worth
+    pcm = b"\x01\x02" * (g1_rpc.PLAY_CHUNK_BYTES)  # several chunks' worth
     g1_rpc.play_pcm(pcm, "stream-abc")
 
     assert len(fake_voice.calls) > 1, "test needs a multi-chunk buffer to be meaningful"
@@ -169,7 +170,7 @@ def test_chunks_partition_the_audio_exactly_once(fake_voice):
     """No dropped tail, no duplicated bytes — reassembly must equal the input."""
     from bridge.sdk import g1_rpc
 
-    pcm = bytes(range(256)) * 700          # not a multiple of the chunk size
+    pcm = bytes(range(256)) * 700  # not a multiple of the chunk size
     g1_rpc.play_pcm(pcm, "s")
     assert b"".join(binary for _, _, binary in fake_voice.calls) == pcm
 
