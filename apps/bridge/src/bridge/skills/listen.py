@@ -75,6 +75,11 @@ VOSK_MODEL = os.environ.get(
 # speech; the case that matters is a stressed human, and that needs recordings.
 DEFAULT_STOP_PHRASES = ["emergencia", "para para", "detener"]
 
+# 30 s of 16 kHz mono 16-bit — Whisper's own window. Past this a continuous
+# talker would grow the buffer unboundedly AND get nothing back until they
+# paused, so the loop cuts and transcribes instead.
+MAX_UTTERANCE_BYTES = 30 * 16000 * 2
+
 # 16-bit mono at 16 kHz: 0.125 s. Small enough that stop latency is dominated by
 # the decoder rather than by buffering.
 FRAME_BYTES = 4000
@@ -235,11 +240,71 @@ def transcribe_pcm(pcm: bytes, frame_bytes: int = FRAME_BYTES) -> list[str]:
     return out
 
 
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
+# INT8 halves memory for well under a point of WER, and the Orin NX has no spare
+# RAM to spend: 15 GB shared between us, the detector and another team's SLAM.
+WHISPER_COMPUTE = os.environ.get("WHISPER_COMPUTE", "int8")
+# CPU, not CUDA. ctranslate2 on GPU needs cuDNN, which is not in this venv and
+# would drag the voice path into the ~10 GB vision container to transcribe
+# five-second utterances (D6.3). The GPU is free; this is not why it is free.
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
+
+
+class WhisperTranscriber:
+    """Accurate Spanish transcription. Batch, not streaming — and that matters.
+
+    Vosk decodes frame by frame and can answer mid-utterance; Whisper needs a
+    whole utterance and returns nothing useful until it has one. They are not
+    interchangeable, which is why both are here: Vosk keeps the stop phrase fast,
+    Whisper makes the transcript worth acting on.
+
+    The quality gap is the reason for the swap. `vosk-model-small-es` is 39 MB
+    and built for keyword spotting; asked to transcribe, it rendered "buenos
+    días" as "guapa días" on this robot. Whisper is the model D6.3 always named
+    for STT.
+    """
+
+    def __init__(self, model_name: str | None = None) -> None:
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise ListenUnavailable(
+                "faster-whisper is not installed — `uv sync --extra stt` on the robot"
+            ) from exc
+
+        self._model = WhisperModel(model_name or WHISPER_MODEL,
+                                   device=WHISPER_DEVICE,
+                                   compute_type=WHISPER_COMPUTE)
+
+    def transcribe(self, pcm: bytes) -> str:
+        """16 kHz mono 16-bit PCM -> Spanish text. Empty string if nothing said."""
+        import numpy as np
+
+        if not pcm:
+            return ""
+        # Whisper wants float32 in [-1, 1]; 32768 rather than 32767 so that
+        # full-scale negative maps to exactly -1.0 and cannot overshoot.
+        audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+
+        # language pinned rather than detected: this deployment is Spanish, and
+        # letting Whisper guess on a short noisy clip is how a Spanish utterance
+        # comes back confidently transcribed as Portuguese.
+        segments, _info = self._model.transcribe(
+            audio, language="es", beam_size=1, vad_filter=True)
+        return " ".join(seg.text.strip() for seg in segments).strip()
+
+
+def transcribe_pcm_whisper(pcm: bytes, model_name: str | None = None) -> str:
+    """One-shot Whisper transcription. The offline entry point."""
+    return WhisperTranscriber(model_name).transcribe(pcm)
+
+
 def listen_loop(
     frames: Iterator[bytes],
     on_text: Callable[[str], None] | None = None,
     on_stop: Callable[[str], None] | None = None,
     phrases: list[str] | None = None,
+    whisper: bool = True,
 ) -> None:
     """Run both recognisers over one stream of PCM frames.
 
@@ -251,10 +316,33 @@ def listen_loop(
 
     THE STOP DETECTOR IS FED FIRST, and if it fires, `on_stop` runs before
     `on_text` is even considered for that frame. Transcription is best-effort;
-    stopping is not, and it must never queue behind a slower consumer.
+    stopping is not, and it must never queue behind a slower consumer. With
+    `whisper=True` that ordering stops being a formality — Whisper takes about a
+    second per utterance, and the stop must not wait behind it.
+
+    SEGMENTATION COMES FROM VOSK, FOR FREE. Whisper needs whole utterances and
+    Vosk already finds their boundaries: it returns a final result exactly when
+    speech stops. So the loop buffers audio, and when Vosk closes an utterance it
+    hands that buffer to Whisper. No Silero, no energy threshold, no extra
+    dependency, and one fewer thing to tune.
+
+    `whisper=False` falls back to Vosk's own text — useful when faster-whisper is
+    not installed, and noticeably worse: "buenos días" comes back as "guapa
+    días", because a 39 MB keyword spotter is being asked to transcribe.
     """
     detector = StopPhraseDetector(phrases=phrases)
     transcriber = Transcriber()
+
+    whisperer = None
+    if whisper:
+        try:
+            whisperer = WhisperTranscriber()
+        except ListenUnavailable as exc:
+            # Degrade rather than refuse: a worse transcript still lets someone
+            # test, and the stop phrase — the part that matters — is unaffected.
+            log.warning("listen.whisper_unavailable", reason=str(exc))
+
+    utterance = bytearray()
 
     for frame in frames:
         hit = detector.feed(frame)
@@ -264,9 +352,28 @@ def listen_loop(
             if on_stop is not None:
                 on_stop(hit)
 
+        if whisperer is not None:
+            utterance.extend(frame)
+
         text = transcriber.feed(frame)
-        if text and on_text is not None:
-            on_text(text)
+        if text:
+            # Vosk closed an utterance: hand the buffered audio to Whisper and
+            # emit ITS text instead. Vosk's own result is discarded here — it was
+            # only ever the segmenter and the stop detector.
+            if whisperer is not None:
+                better = whisperer.transcribe(bytes(utterance))
+                utterance.clear()
+                text = better or text
+            if on_text is not None:
+                on_text(text)
+        elif whisperer is not None and len(utterance) > MAX_UTTERANCE_BYTES:
+            # Someone talking continuously never gives Vosk a boundary, so the
+            # buffer would grow without limit and the first transcript would
+            # arrive only when they stopped. Cut it, transcribe, carry on.
+            better = whisperer.transcribe(bytes(utterance))
+            utterance.clear()
+            if better and on_text is not None:
+                on_text(better)
 
     # FLUSH, and it is not an edge case. Vosk emits a final result only at an
     # utterance boundary — i.e. trailing silence — so a finite source (a file, a
@@ -276,6 +383,8 @@ def listen_loop(
     # recogniser is broken. A live mic never reaches here, which is exactly why
     # this is easy to omit and hard to notice.
     tail = transcriber.flush()
+    if whisperer is not None and utterance:
+        tail = whisperer.transcribe(bytes(utterance)) or tail
     if tail and on_text is not None:
         on_text(tail)
 
