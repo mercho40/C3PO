@@ -1192,10 +1192,24 @@ they have very different consequences:
   been found: `vui_service` exposes `START_PLAY`/`STOP_PLAY`/`GET_VOLUME`/`SET_VOLUME` and
   **no ASR or capture function at all** (§8.3), so if a trigger exists it is not there.
 
-Distinguishing them is one probe away and needs a person: hold **L1+L2** on the remote and
-re-run the count. `apps/bridge/scripts/mic_probe.py` is that probe, and it prints the
-verdict rather than raw counts so the answer does not depend on reading IGMP tables
-correctly. Recording a room still needs consent — this counts bytes and decodes nothing.
+**A stopped service is NOT the explanation** — the obvious third reading, checked and
+killed. `robot_state` 1003 `ServiceList` reports `vui_service` *and*
+`audio_player_service` both running on 2026-08-21 (`status: 0`; polarity confirmed against
+`robot_state` reporting itself running while answering — `ROBOT-API.md` §8). So the mic is
+silent with its owning services up.
+
+Distinguishing the two remaining readings needs a person: hold **L1+L2** on the remote and
+re-run the count. `apps/bridge/scripts/mic_wakeup_probe.py` does both halves at once — it
+counts multicast bytes *and* decodes `LowState_.wireless_remote`, because a run where
+nobody pressed anything and a run where the press changed nothing are the same column of
+zeros, and only the button field tells them apart. It prints a verdict rather than raw
+counts.
+
+First run, 2026-08-21: 929 lowstate frames, **0 remote-shaped** — an all-zero
+`wireless_remote` blob is the vendor's own `isJoystickTimeout_` predicate (§9.5), so the
+R3 was not transmitting at all and the run is correctly reported INCONCLUSIVE rather than
+as a confident zero. That is the script working, not failing. Recording a room still needs
+consent — this counts bytes and decodes nothing.
 
 **And the privacy fact, stated plainly:** while `gemm-ai.service` runs, it continuously
 Whisper-transcribes this feed — **the mic is always on and everything said near this robot
