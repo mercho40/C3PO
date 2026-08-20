@@ -180,6 +180,12 @@ class TeleopSession:
         #: detection, so hand commands go out on transitions rather than at
         #: the dispatch rate.
         self.arms_active = False
+        #: Whether a stop command has already gone out for this session.
+        #: `_safe_stop` runs twice by design — once from the dispatch loop's
+        #: cancellation path, once from the handler's `finally`, so a crashed
+        #: loop still stops the robot. Sending twice is free; *waiting* twice
+        #: is not, and it doubled how long the single-session slot stayed held.
+        self.stop_issued = False
         self.hands = hands_mod.build_driver()
 
     # -- ingest ---------------------------------------------------------
@@ -441,15 +447,24 @@ async def _safe_stop(session: TeleopSession) -> None:
     """Bring everything to rest. Runs on every exit path, including cancellation."""
     from bridge.skills._locomotion import send_velocity_async
 
-    try:
-        # Shielded: this is the one command that must survive the cancellation
-        # that brought us here. Without it, a client that disconnects mid-turn
-        # leaves the robot rotating until the firmware's 1 s duration expires.
-        await asyncio.shield(
-            asyncio.ensure_future(send_velocity_async(0.0, 0.0, 0.0, STAND_HEIGHT))
-        )
-    except (Exception, asyncio.CancelledError):
-        log.warning("teleop.stop_velocity_failed", exc_info=True)
+    # Shielded: this is the one command that must survive the cancellation that
+    # brought us here. Without it, a client that disconnects mid-turn leaves the
+    # robot rotating until the firmware's 1 s duration expires. Bounded: see
+    # STOP_ACK_BUDGET_S — the send continues in the background either way, we
+    # simply stop *waiting* on an ack that cannot make anything safer.
+    stop = asyncio.ensure_future(send_velocity_async(0.0, 0.0, 0.0, STAND_HEIGHT))
+    if session.stop_issued:
+        # A stop already went out moments ago. Send another — cheap, and covers
+        # the case where the first never left — but do not wait on it again.
+        log.debug("teleop.stop_repeat_unawaited")
+    else:
+        session.stop_issued = True
+        try:
+            await asyncio.wait_for(asyncio.shield(stop), timeout=STOP_ACK_BUDGET_S)
+        except asyncio.TimeoutError:
+            log.warning("teleop.stop_velocity_unacked", budget_s=STOP_ACK_BUDGET_S)
+        except (Exception, asyncio.CancelledError):
+            log.warning("teleop.stop_velocity_failed", exc_info=True)
     session.moving = False
     try:
         session.hands.relax()
@@ -477,6 +492,21 @@ async def _safe_stop(session: TeleopSession) -> None:
 # Deliberately short. It is a grace period for a reconnect, not a queue: two
 # people really trying to drive at once should still be refused, promptly.
 RECONNECT_GRACE_S = 3.0
+
+# How long teardown will wait for the robot to acknowledge its stop command.
+#
+# `send_velocity_async` is a DDS RPC with SPORT_TIMEOUT_S (10 s) of headroom.
+# That is right for a command whose result matters; it is wrong here. Teardown
+# is best-effort by definition, and underneath it the firmware's own
+# `duration` deadman stops the robot within a second of the last setpoint
+# whatever we hear back. Waiting nine more seconds for an ack makes the robot
+# no safer and holds the single-session slot the whole time.
+#
+# Found on the robot 2026-08-20: with no motion controller loaded the RPC never
+# answers, teardown took the full timeout, and a client reconnecting was
+# refused by its own previous session — past even the grace period above.
+# The stop still goes out; it is shielded, so it completes in the background.
+STOP_ACK_BUDGET_S = 2.0
 
 _active: TeleopSession | None = None
 
