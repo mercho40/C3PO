@@ -496,18 +496,29 @@ async def stage_disconnect_stops(session: ClientSession, url: str) -> None:
             "clean stop afterwards would prove nothing. Check the FSM and retry."
         )
 
-    await ws.close()
-    print("    socket closed. Watching for 3s...")
-
     before = await yaw_now(session)
-    await asyncio.sleep(3.0)
-    after = await yaw_now(session)
-    drift = abs(math.degrees((after or 0.0) - (before or 0.0)))
-    print(f"    yaw drift after disconnect: {drift:.2f} deg")
-    if drift > MIN_MEANINGFUL_DEG:
+    await ws.close()
+    print("    socket closed.")
+
+    # Same settle/creep split as stage 6, and for the same reason: a robot
+    # mid-turn decelerates and re-plants its feet, so total drift measures
+    # physics, not a fault. This stage previously asserted on the total and
+    # passed by 0.02 degrees on 2026-08-20 — which is luck, not a check.
+    await asyncio.sleep(SETTLE_S)
+    settled = await yaw_now(session)
+    settle = abs(math.degrees((settled or 0.0) - (before or 0.0)))
+
+    creep_start = await yaw_now(session)
+    await asyncio.sleep(CREEP_WINDOW_S)
+    creep_end = await yaw_now(session)
+    creep = abs(math.degrees((creep_end or 0.0) - (creep_start or 0.0)))
+
+    print(f"    settled after    : {settle:.2f} deg  (deceleration — informational)")
+    print(f"    creep over {CREEP_WINDOW_S:.0f}s    : {creep:.2f} deg  (must be ~0)")
+    if creep > MIN_MEANINGFUL_DEG:
         raise Aborted(
-            f"the robot kept turning {drift:.1f} deg after the socket died. "
-            "The server's shutdown stop did not reach the robot."
+            f"the robot was STILL turning {creep:.1f} deg/{CREEP_WINDOW_S:.0f}s after the "
+            "socket died and after settling. The server's shutdown stop did not reach it."
         )
     print("    OK: it was turning, the socket died, and it stopped on its own.")
 
