@@ -49,8 +49,15 @@ else
     [ -f "$DEST/$NAME/am/final.mdl" ] || die "unpacked, but $NAME/am/final.mdl is missing"
 fi
 
-say "verifying the decoder loads and the grammar restricts"
-python3 - "$DEST/$NAME" <<'PY' || die "vosk could not load the model — is `uv sync --extra voice` done?"
+# The BRIDGE's interpreter, not the system one. vosk is installed into the venv
+# by `uv sync --extra voice`, so verifying with /usr/bin/python3 reports
+# ModuleNotFoundError on a perfectly good install and sends you debugging the
+# wrong thing.
+PY_BIN="$(dirname "$(dirname "$(readlink -f "$0")")")/.venv/bin/python"
+[ -x "$PY_BIN" ] || PY_BIN=python3
+
+say "verifying the decoder loads and the grammar restricts ($PY_BIN)"
+"$PY_BIN" - "$DEST/$NAME" <<'PY' || die "vosk could not load the model — run: uv sync --extra voice"
 import json, sys
 from vosk import KaldiRecognizer, Model
 rec = KaldiRecognizer(Model(sys.argv[1]), 16000, json.dumps(["pará", "alto", "[unk]"]))
