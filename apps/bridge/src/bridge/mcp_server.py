@@ -1129,11 +1129,18 @@ async def say(
     Real on hardware: on-robot text-to-speech, no cloud round-trip and no API
     key. Logs only on stub and sim, which have no speaker.
 
-    Worth reaching for more than it sounds. Speech appears not to be gated by
-    the locomotion FSM, so it is a channel the robot still has when motion is
-    being refused — which is a situation this robot gets into. Saying what you
-    are about to do, or that you are stuck, is usually better than silence when
-    a person is standing next to a humanoid.
+    Worth reaching for more than it sounds. Speech is not gated by the
+    locomotion FSM, so it is a channel the robot still has when motion is being
+    refused — which is a situation this robot gets into. Saying what you are
+    about to do, or that you are stuck, is usually better than silence when a
+    person is standing next to a humanoid.
+
+    Measured rather than assumed, 2026-08-21: the voice service answered
+    GET_VOLUME with rpc_code 0 while fsm_id was 0 (ZeroTorque) — the robot limp,
+    with motion categorically unavailable and another stack owning it. What that
+    establishes is that the SERVICE is reachable in that state; it is not proof
+    that audio reached the speaker, which cannot be checked without making noise
+    in a shared room. Treat playback as verified only when someone has heard it.
 
     One utterance at a time, and one language per utterance: the firmware has
     no mixed Chinese/English voice. There is also no documented behaviour for
