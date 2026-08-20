@@ -1309,11 +1309,19 @@ async def listen(
     Each call CONSUMES what it returns. Two calls in a row will not show the same
     utterance twice, so act on what you get.
 
-    ⚠️ THE MICROPHONE IS PUSH-TO-TALK AND THE BUTTON IS NOT YOURS. It streams
-    only while a person holds L1+L2 on the remote (`docs/ROBOT-HARDWARE.md`
-    §8.2); there is no RPC to open it. So an empty result usually means nobody is
-    holding the remote, NOT that the room is silent — and the two are reported
-    differently:
+    WHETHER THE ROBOT HEARS CONTINUOUSLY DEPENDS ON ITS AUDIO SOURCE, and
+    `always_listening` in the result says which you have:
+
+        true   a USB microphone is attached to the Jetson. Continuous, no
+               button, and an empty result genuinely means nobody spoke.
+        false  the robot's own mic array is in use. It is PUSH-TO-TALK: it
+               streams only while a person holds L1+L2 on the remote
+               (`docs/ROBOT-HARDWARE.md` §8.2), and no RPC can open it —
+               `vui_service` has no capture function. An empty result then
+               usually means nobody is holding the remote, NOT that the room is
+               silent.
+
+    In the push-to-talk case the two are still distinguishable:
 
         mic_ever_open: false   nobody has held the button; the robot has never
                                had the chance to hear anything
@@ -1362,6 +1370,7 @@ async def listen(
             items = listener.poll()
 
     diag = listener.diagnostics()
+    source = listen_skill.describe_audio_source()
     speech = [i for i in items if i["kind"] == "speech"]
     stops = [i for i in items if i["kind"] == "stop"]
 
@@ -1375,11 +1384,17 @@ async def listen(
         "mic_ever_open": diag["mic_ever_open"],
         "seconds_since_audio": diag["seconds_since_audio"],
         "listener_error": diag["error"],
+        # Whether the robot is listening continuously or only while a button is
+        # held. The agent needs this to interpret silence: with always_on true,
+        # an empty result really does mean nobody spoke.
+        "always_listening": source["always_on"],
+        "audio_source": source["source"],
         "note": (
-            None if diag["mic_ever_open"]
-            else "The microphone has never opened — nobody has held L1+L2 on the "
-                 "remote. This is not silence; the robot cannot hear at all "
-                 "until somebody does."
+            None if diag["mic_ever_open"] or source["always_on"]
+            else "The microphone has never opened. The robot's own mic is "
+                 "push-to-talk — it hears nothing unless somebody holds L1+L2 on "
+                 "the remote. This is NOT silence in the room. For continuous "
+                 "listening a USB microphone has to be plugged into the Jetson."
         ),
         "env": SIM_MODE, "stub": False,
     }

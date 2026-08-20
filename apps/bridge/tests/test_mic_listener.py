@@ -185,3 +185,81 @@ def test_whisper_disabled_falls_back_to_the_segmenter_text():
     lis.start()
     items = drain(lis)
     assert items[0]["text"] == "vosk text"
+
+
+# --- audio source selection -------------------------------------------------
+#
+# "Always listening" is a source question, not a code question: the robot's own
+# mic is push-to-talk and cannot be opened from software. These pin the
+# selection logic, which decides whether the robot can hear continuously.
+
+import subprocess  # noqa: E402
+
+from bridge.skills import listen as listen_mod  # noqa: E402
+
+ARECORD_JETSON_BARE = """**** List of CAPTURE Hardware Devices ****
+card 1: APE [NVIDIA Jetson Orin NX APE], device 0: tegra-dlink-0 XBAR-ADMAIF1-0 []
+  Subdevices: 1/1
+card 1: APE [NVIDIA Jetson Orin NX APE], device 1: tegra-dlink-1 XBAR-ADMAIF2-1 []
+  Subdevices: 1/1
+"""
+
+ARECORD_WITH_USB_MIC = ARECORD_JETSON_BARE + """card 2: Device [USB Audio Device], device 0: USB Audio [USB Audio]
+  Subdevices: 1/1
+"""
+
+
+def _fake_arecord(monkeypatch, output: str):
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=output, stderr=""))
+
+
+def test_tegra_routing_devices_are_not_mistaken_for_microphones(monkeypatch):
+    """THE TRAP. Every Jetson lists tegra-dlink/ADMAIF capture devices whether
+    or not a mic exists, and opening one yields SILENCE rather than an error —
+    indistinguishable from a room where nobody is talking. Treating them as a
+    microphone would make the robot look deaf with no diagnosable cause."""
+    _fake_arecord(monkeypatch, ARECORD_JETSON_BARE)
+    assert listen_mod.alsa_capture_devices() == []
+
+
+def test_a_usb_microphone_is_found_alongside_the_tegra_noise(monkeypatch):
+    _fake_arecord(monkeypatch, ARECORD_WITH_USB_MIC)
+    assert listen_mod.alsa_capture_devices() == ["plughw:2,0"]
+
+
+def test_without_a_usb_mic_the_robot_cannot_listen_continuously(monkeypatch):
+    """The honest report: the built-in mic is push-to-talk, so always_on is
+    false and the note says what hardware would change that."""
+    _fake_arecord(monkeypatch, ARECORD_JETSON_BARE)
+    monkeypatch.setattr(listen_mod, "AUDIO_SOURCE", "auto")
+    chosen = listen_mod.describe_audio_source()
+    assert chosen["source"] == "multicast"
+    assert chosen["always_on"] is False
+    assert "USB mic" in chosen["note"]
+
+
+def test_a_usb_mic_switches_the_robot_to_always_on(monkeypatch):
+    _fake_arecord(monkeypatch, ARECORD_WITH_USB_MIC)
+    monkeypatch.setattr(listen_mod, "AUDIO_SOURCE", "auto")
+    chosen = listen_mod.describe_audio_source()
+    assert chosen["source"] == "alsa"
+    assert chosen["always_on"] is True
+    assert chosen["device"] == "plughw:2,0"
+
+
+def test_the_source_can_be_forced(monkeypatch):
+    """So the robot's own mic stays reachable even with a USB mic attached —
+    its array is on the body and better placed for someone standing in front."""
+    _fake_arecord(monkeypatch, ARECORD_WITH_USB_MIC)
+    monkeypatch.setattr(listen_mod, "AUDIO_SOURCE", "multicast")
+    assert listen_mod.describe_audio_source()["source"] == "multicast"
+
+
+def test_missing_arecord_is_not_a_crash(monkeypatch):
+    """A dev machine has no alsa-utils; selection must fall back, not explode."""
+    def boom(*a, **k):
+        raise FileNotFoundError("arecord")
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert listen_mod.alsa_capture_devices() == []
