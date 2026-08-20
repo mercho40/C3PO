@@ -16,6 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   angleBetween,
+  drawPerEye,
   fingerCurl,
   normalizeAngle,
   quaternionYaw,
@@ -61,14 +62,24 @@ describe("quaternionYaw — the steering signal", () => {
     // Looking up and down must not steer the robot. Head pitch is deliberately
     // dropped — there is no wired neck control to send it to.
     for (const deg of [-60, -30, 30, 60]) {
-      const pitch = { x: Math.sin((deg * DEG) / 2), y: 0, z: 0, w: Math.cos((deg * DEG) / 2) };
+      const pitch = {
+        x: Math.sin((deg * DEG) / 2),
+        y: 0,
+        z: 0,
+        w: Math.cos((deg * DEG) / 2),
+      };
       expect(Math.abs(quaternionYaw(pitch))).toBeLessThan(1e-6);
     }
   });
 
   test("roll alone does not produce yaw", () => {
     for (const deg of [-40, 40]) {
-      const roll = { x: 0, y: 0, z: Math.sin((deg * DEG) / 2), w: Math.cos((deg * DEG) / 2) };
+      const roll = {
+        x: 0,
+        y: 0,
+        z: Math.sin((deg * DEG) / 2),
+        w: Math.cos((deg * DEG) / 2),
+      };
       expect(Math.abs(quaternionYaw(roll))).toBeLessThan(1e-6);
     }
   });
@@ -116,14 +127,22 @@ describe("normalizeAngle", () => {
 });
 
 describe("fingerCurl — never executed in a real session", () => {
-  const straight: [Vec3, Vec3, Vec3] = [[0, 0, 0], [0, 0, 1], [0, 0, 2]];
+  const straight: [Vec3, Vec3, Vec3] = [
+    [0, 0, 0],
+    [0, 0, 1],
+    [0, 0, 2],
+  ];
 
   test("a straight finger is open", () => {
     expect(fingerCurl(...straight)).toBeCloseTo(0, 6);
   });
 
   test("a right-angled finger is partly closed", () => {
-    const bent: [Vec3, Vec3, Vec3] = [[0, 0, 0], [0, 0, 1], [0, 1, 1]];
+    const bent: [Vec3, Vec3, Vec3] = [
+      [0, 0, 0],
+      [0, 0, 1],
+      [0, 1, 1],
+    ];
     const curl = fingerCurl(...bent);
     expect(curl).toBeGreaterThan(0.5);
     expect(curl).toBeLessThan(1.0);
@@ -132,19 +151,32 @@ describe("fingerCurl — never executed in a real session", () => {
   test("SCALE-FREE: a small hand and a large hand read the same", () => {
     // The entire reason curl was chosen over fingertip-to-palm distance. An
     // uncalibrated distance measure reads a child's hand as a permanent fist.
-    const small: [Vec3, Vec3, Vec3] = [[0, 0, 0], [0, 0, 0.3], [0, 0.3, 0.3]];
-    const large: [Vec3, Vec3, Vec3] = [[0, 0, 0], [0, 0, 1.4], [0, 1.4, 1.4]];
+    const small: [Vec3, Vec3, Vec3] = [
+      [0, 0, 0],
+      [0, 0, 0.3],
+      [0, 0.3, 0.3],
+    ];
+    const large: [Vec3, Vec3, Vec3] = [
+      [0, 0, 0],
+      [0, 0, 1.4],
+      [0, 1.4, 1.4],
+    ];
     expect(fingerCurl(...small)).toBeCloseTo(fingerCurl(...large), 6);
   });
 
   test("translation-free: the same gesture anywhere in the room", () => {
-    const moved = straight.map((p) => [p[0] + 3, p[1] - 2, p[2] + 9] as Vec3) as
-      [Vec3, Vec3, Vec3];
+    const moved = straight.map(
+      (p) => [p[0] + 3, p[1] - 2, p[2] + 9] as Vec3,
+    ) as [Vec3, Vec3, Vec3];
     expect(fingerCurl(...moved)).toBeCloseTo(fingerCurl(...straight), 6);
   });
 
   test("clamped to [0,1] however far it folds", () => {
-    const folded: [Vec3, Vec3, Vec3] = [[0, 0, 0], [0, 0, 1], [0, 0, 0]];
+    const folded: [Vec3, Vec3, Vec3] = [
+      [0, 0, 0],
+      [0, 0, 1],
+      [0, 0, 0],
+    ];
     const curl = fingerCurl(...folded);
     expect(curl).toBeLessThanOrEqual(1);
     expect(curl).toBeGreaterThanOrEqual(0);
@@ -154,7 +186,11 @@ describe("fingerCurl — never executed in a real session", () => {
     // Coincident points give no direction. An unknown grip must read as OPEN:
     // on a fitted hand, "closed" is a command to clench around whatever is
     // in front of it, and these hands have no firmware deadman.
-    const degenerate: [Vec3, Vec3, Vec3] = [[1, 1, 1], [1, 1, 1], [1, 1, 1]];
+    const degenerate: [Vec3, Vec3, Vec3] = [
+      [1, 1, 1],
+      [1, 1, 1],
+      [1, 1, 1],
+    ];
     expect(fingerCurl(...degenerate)).toBe(0);
   });
 });
@@ -177,5 +213,100 @@ describe("vector helpers", () => {
 
   test("subtract", () => {
     expect(subtract([3, 5, 7], [1, 2, 3])).toEqual([2, 3, 4]);
+  });
+});
+
+/**
+ * The bug that cost two headset sessions.
+ *
+ * Nothing threw, nothing logged, and the code read as correct. The renderer
+ * simply never called `gl.viewport`, so every draw went into the 300x150
+ * default seeded from an unsized canvas — a postage stamp in the corner of one
+ * eye of a ~2064x2208-per-eye framebuffer. It was reported as "the camera does
+ * not work" and sent us to the perception container and the SSH tunnel.
+ *
+ * These assert the two things that make it visible: the viewport is set from
+ * the LAYER (never assumed), and it is set once PER EYE.
+ */
+describe("drawPerEye — why the camera was invisible", () => {
+  type Rect = { x: number; y: number; width: number; height: number };
+
+  function harness(views: string[], viewports: (Rect | null)[]) {
+    const viewportCalls: number[][] = [];
+    const draws: boolean[] = [];
+    const gl = {
+      viewport: (x: number, y: number, w: number, h: number) =>
+        viewportCalls.push([x, y, w, h]),
+    } as unknown as WebGLRenderingContext;
+    let i = 0;
+    const layer = {
+      getViewport: () => viewports[i++] ?? null,
+    } as unknown as XRWebGLLayer;
+    const pose = { views } as unknown as XRViewerPose;
+    const camera = { draw: (opaque: boolean) => draws.push(opaque) };
+    return { gl, layer, pose, camera, viewportCalls, draws };
+  }
+
+  const LEFT = { x: 0, y: 0, width: 2064, height: 2208 };
+  const RIGHT = { x: 2064, y: 0, width: 2064, height: 2208 };
+
+  test("sets the viewport for each eye, from the layer", () => {
+    const h = harness(["left", "right"], [LEFT, RIGHT]);
+    expect(drawPerEye(h.gl, h.layer, h.pose, h.camera, true)).toBeNull();
+
+    expect(h.viewportCalls).toEqual([
+      [0, 0, 2064, 2208],
+      [2064, 0, 2064, 2208],
+    ]);
+  });
+
+  test("draws once per eye — a single draw fills only one", () => {
+    const h = harness(["left", "right"], [LEFT, RIGHT]);
+    drawPerEye(h.gl, h.layer, h.pose, h.camera, true);
+    expect(h.draws.length).toBe(2);
+  });
+
+  test("passes opacity through — opaque in VR, blended over passthrough in AR", () => {
+    const vr = harness(["left", "right"], [LEFT, RIGHT]);
+    drawPerEye(vr.gl, vr.layer, vr.pose, vr.camera, true);
+    expect(vr.draws).toEqual([true, true]);
+
+    const ar = harness(["left", "right"], [LEFT, RIGHT]);
+    drawPerEye(ar.gl, ar.layer, ar.pose, ar.camera, false);
+    expect(ar.draws).toEqual([false, false]);
+  });
+
+  test("a view with no viewport is skipped, not drawn into the previous one", () => {
+    // Leaving the previous eye's viewport set would draw the second eye's
+    // image on top of the first — a doubled image in one eye and nothing in
+    // the other, which in a headset reads as a broken display rather than a
+    // missing viewport.
+    const h = harness(["left", "right"], [LEFT, null]);
+    drawPerEye(h.gl, h.layer, h.pose, h.camera, true);
+    expect(h.viewportCalls.length).toBe(1);
+    expect(h.draws.length).toBe(1);
+  });
+
+  test("a throwing draw is returned, not propagated", () => {
+    // This callback is what samples head pose. An exception escaping it kills
+    // steering for the rest of the session — the robot stays safe, and stops
+    // responding, with nothing on screen to say why.
+    const boom = new Error("shader link failed");
+    const gl = { viewport: () => {} } as unknown as WebGLRenderingContext;
+    const layer = { getViewport: () => LEFT } as unknown as XRWebGLLayer;
+    const pose = { views: ["left", "right"] } as unknown as XRViewerPose;
+    const camera = {
+      draw: () => {
+        throw boom;
+      },
+    };
+
+    expect(drawPerEye(gl, layer, pose, camera, true)).toBe(boom);
+  });
+
+  test("no views is not an error — tracking can be mid-recovery", () => {
+    const h = harness([], []);
+    expect(drawPerEye(h.gl, h.layer, h.pose, h.camera, true)).toBeNull();
+    expect(h.draws.length).toBe(0);
   });
 });
