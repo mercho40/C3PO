@@ -300,8 +300,12 @@ bt_navigator:
     # biped, triggered by a costmap glitch, is a fall. These two trees are the
     # upstream ones with Spin and BackUp removed from the recovery round-robin
     # and nothing else changed. See their headers.
-    default_nav_to_pose_bt_xml: "$(find-pkg-share c3po_perception)/behavior_trees/navigate_to_pose_biped.xml"
-    default_nav_through_poses_bt_xml: "$(find-pkg-share c3po_perception)/behavior_trees/navigate_through_poses_biped.xml"
+    # The two BT paths are NOT set here. `$(find-pkg-share ...)` is LAUNCH-FILE
+    # substitution syntax; a plain YAML parameter value is passed through
+    # literally, so bt_navigator received the dollar-sign string and reported
+    #   Couldn't open input XML file: $(find-pkg-share c3po_perception)/...
+    # nav2.launch.py sets both by absolute path via PathJoinSubstitution, the
+    # same way it already resolves nav2_params.yaml and MID360_config.json.
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_compute_path_through_poses_action_bt_node
