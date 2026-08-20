@@ -198,16 +198,20 @@ async def test_the_exact_payload_the_browser_client_builds(sent):
 
     async with server:
         async with connect(url) as ws:
-            await ws.send(json.dumps(browser_frame))
+            # Sent CALIBRATION_SAMPLES times: reach is only accepted once
+            # several consecutive frames agree, so that a tracking artefact
+            # cannot set the operator's arm length for the whole session.
+            for seq in range(srv.CALIBRATION_SAMPLES):
+                await ws.send(json.dumps({**browser_frame, "seq": seq}))
             # The dispatch loop emits its first status immediately, possibly
-            # before the frame is ingested -- read until one reflects it.
+            # before the frames are ingested -- read until one reflects them.
             status = {"frames_received": 0}
             for _ in range(20):
                 status = json.loads(await asyncio.wait_for(ws.recv(), timeout=3.0))
-                if status.get("frames_received"):
+                if status.get("frames_received", 0) >= srv.CALIBRATION_SAMPLES:
                     break
 
-    assert status["frames_received"] == 1
+    assert status["frames_received"] == srv.CALIBRATION_SAMPLES
     assert status["frames_rejected"] == 0
     # The extended right arm is what calibration measures reach from.
     assert status["calibrated"] is True

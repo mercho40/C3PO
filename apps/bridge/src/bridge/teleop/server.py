@@ -152,6 +152,26 @@ DISPATCH_PERIOD_S = 1.0 / DISPATCH_HZ
 # reach, the sample is a bent arm and tells us nothing about their span.
 CALIBRATION_MIN_FRACTION = 0.85
 
+# How many consecutive qualifying frames must agree before a reach is accepted,
+# and how far apart they may be.
+#
+# Calibration used to latch on the FIRST frame that cleared the minimum, and
+# hold it for the whole session. Quest hand tracking emits wild positions for a
+# frame or two as a hand enters or leaves the tracking volume — the protocol
+# rejects those beyond 1.5 m for exactly this reason, which means anything up
+# to 1.5 m gets through and is measured as if it were an arm.
+#
+# One such artefact set the operator's reach to nearly double a real one, and
+# `_elbow_angle` is `2 acos(reach / arm_length)`: with the denominator too
+# large, every real hand position reads as barely extended, so the elbow stays
+# almost straight for the rest of the session. Not an error, not a failure, no
+# log line — just an arm that will not bend, permanently.
+#
+# Five frames at 30-50 Hz is about a tenth of a second of the operator holding
+# still, which extending an arm involves anyway.
+CALIBRATION_SAMPLES = 5
+CALIBRATION_SPREAD_M = 0.06
+
 
 def yaw_to_vyaw(yaw_error: float) -> float:
     """Head yaw error -> commanded yaw rate. Deadzone, then linear to a cap.
@@ -200,6 +220,8 @@ class TeleopSession:
         self.frames_rejected = 0
         self.last_seq = -1
         self.arm_length_m = DEFAULT_ARM_LENGTH_M
+        #: Recent qualifying reach measurements, pending agreement.
+        self._calibration_samples: list[float] = []
         self.calibrated = False
         self.motion_started_at: float | None = None
         self.deadman_tripped = False
@@ -241,18 +263,47 @@ class TeleopSession:
         self._maybe_calibrate(frame)
 
     def _maybe_calibrate(self, frame: TeleopFrame) -> None:
-        """Learn the operator's reach the first time they extend an arm."""
+        """Learn the operator's reach once they hold an arm extended.
+
+        Deliberately not "the first frame that looks like a long arm" — see
+        CALIBRATION_SAMPLES. A tracking artefact is one frame; an operator
+        extending an arm is many, and they agree with each other.
+        """
         if self.calibrated:
             return
         for side, hand in (("right", frame.right), ("left", frame.left)):
             if hand is None:
                 continue
             measured = calibrate_arm_length(frame.head_position, frame.head_yaw, hand, side)  # type: ignore[arg-type]
-            if measured >= CALIBRATION_MIN_FRACTION * DEFAULT_ARM_LENGTH_M:
-                self.arm_length_m = measured
-                self.calibrated = True
-                log.info("teleop.calibrated", side=side, arm_length_m=round(measured, 3))
+            if measured < CALIBRATION_MIN_FRACTION * DEFAULT_ARM_LENGTH_M:
+                # Not extended. Not evidence of anything, so it does not break
+                # a run in progress either — the operator is simply between
+                # reaches.
+                continue
+
+            samples = self._calibration_samples
+            samples.append(measured)
+            if len(samples) > CALIBRATION_SAMPLES:
+                samples.pop(0)
+            if len(samples) < CALIBRATION_SAMPLES:
                 return
+
+            if max(samples) - min(samples) > CALIBRATION_SPREAD_M:
+                # The samples disagree by more than an arm changes length.
+                # Something in there is a tracking artefact; drop the oldest
+                # and keep looking rather than averaging it in.
+                samples.pop(0)
+                return
+
+            self.arm_length_m = sorted(samples)[len(samples) // 2]
+            self.calibrated = True
+            log.info(
+                "teleop.calibrated",
+                side=side,
+                arm_length_m=round(self.arm_length_m, 3),
+                spread_m=round(max(samples) - min(samples), 3),
+            )
+            return
 
     # -- dead-man -------------------------------------------------------
 
