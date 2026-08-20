@@ -14,6 +14,7 @@
    * routes/skills.ts`), so whoever logs in here needs `role: "admin"`.
    */
   import { onDestroy, onMount } from "svelte";
+  import { browser } from "$app/environment";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { env } from "$env/dynamic/public";
@@ -174,7 +175,7 @@
     if (error) {
       const status = error.status as number;
       if (status === 401) {
-        await goto("/login");
+        if (browser) await goto("/login");
         return;
       }
       walkError =
@@ -463,6 +464,15 @@
   });
 
   onDestroy(() => {
+    // SSR runs component setup and teardown on the server, so this fired
+    // there — and its safety stop called `goto("/login")` on a 401, which
+    // throws "Cannot call goto(...) on the server" and took the whole dev
+    // server down with it. The page had never been rendered before the first
+    // headset session, which is exactly when it surfaced.
+    //
+    // Nothing in this teardown means anything off the client: there is no
+    // robot to stop from a render process.
+    if (!browser) return;
     walking = null;
     armsRequested = false;
     vr?.stop();
@@ -534,7 +544,7 @@
     try {
       const { error } = await createApi(fetch).skills({ name }).invoke.post({});
       if (error && (error.status as number) === 401) {
-        await goto("/login");
+        if (browser) await goto("/login");
         return;
       }
       presetOutcome = { ...presetOutcome, [name]: error ? "error" : "ok" };
