@@ -298,6 +298,26 @@ async def turn(
     yaw velocity until error is within tolerance or timeout elapses. Reports
     progress via `ctx.report_progress`. Cancellable via `cancel_task` or
     `stop_everything`.
+
+    **The yaw sign is no longer the blocker.** `works_real` was set False on
+    2026-08-15 because "turn's yaw sign convention is still unverified and may
+    rotate the wrong way". That is now settled: on 2026-08-20 a commanded
+    positive yaw rotated the robot counterclockwise, measured three times off
+    `rt/odommodestate` (+5.26, +5.77 and again in a full run), through the same
+    `send_velocity` path this skill uses. Positive really is left.
+
+    It stays False anyway, and deliberately. `works_real` means *a human has
+    watched this skill run* — and nobody has watched `turn`. What was verified
+    is the sign convention it shares with the teleop stream, not this skill's
+    own closed loop: it reads pose, computes an error, and decides when to
+    stop, and none of that has executed on hardware. Flipping the flag on
+    evidence about a shared component would be exactly the kind of claim the
+    flag exists to prevent.
+
+    What it needs is one supervised run: a small delta (30-45 degrees) with
+    room to rotate, watching whether it converges and stops inside tolerance.
+    Expect it to be slow — measured yaw under-travels command by ~2.2x on this
+    body, so allow generous timeouts.
     """
     log.info(
         "turn.called",
