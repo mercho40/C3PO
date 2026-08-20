@@ -552,7 +552,10 @@ def test_describe_surroundings_actually_consumes_the_perception_report():
     """
     src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "mcp_server.py"
     body = src.read_text()
-    tool = body.split("def describe_surroundings", 1)[-1].split("@mcp.tool", 1)[0]
+    # The snapshot logic lives in surroundings_snapshot(), shared by the tool
+    # and the read-only /telemetry/surroundings route so the console and the
+    # agent cannot be shown different scenes.
+    tool = body.split("def surroundings_snapshot", 1)[-1].split("@mcp.tool", 1)[0]
 
     assert "latest_report()" in tool, (
         "describe_surroundings must read the perception link — without it the "
