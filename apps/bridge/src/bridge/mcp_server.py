@@ -1278,116 +1278,109 @@ async def say(
         danger_level="low",
         status="real",
         cancellable=False,
-        expected_duration_s=10.0,
+        expected_duration_s=0.1,
         works_sim=False,
         works_real=True,
-        typical_failure_modes=["mic_not_open", "stt_not_installed"],
+        typical_failure_modes=["mic_never_opened", "stt_not_installed"],
     )
 )
 async def listen(
-    seconds: Annotated[
+    wait_s: Annotated[
         float,
         Field(
-            ge=1.0,
+            ge=0.0,
             le=30.0,
             description=(
-                "How long to listen. The microphone only streams while a person "
-                "HOLDS L1+L2 on the remote, so this is the window they have to "
-                "hold it and speak — pick something a human can actually sit "
-                "through, not 30 s by default."
+                "0 (the default) returns instantly with whatever has already "
+                "been heard — use this while doing something else. Give it a "
+                "few seconds ONLY when you have just asked a question and are "
+                "waiting for the answer; the call blocks for that long."
             ),
         ),
-    ] = 10.0,
+    ] = 0.0,
 ) -> dict:
-    """Listen to the microphone and return what was said, in Spanish.
+    """What has been said to the robot. Returns instantly by default.
 
-    ⚠️ THIS REQUIRES A PERSON TO HOLD L1+L2 ON THE REMOTE. The G1's microphone is
-    a multicast feed published by the control board, and it is gated on the
-    remote's wake-up mode: silent at rest, streaming only while the combination
-    is held (measured 2026-08-21, `docs/ROBOT-HARDWARE.md` §8.2). There is no RPC
-    to open it — `vui_service` has no capture function — so this is
-    **push-to-talk, and the button is not ours to press.**
+    THE ROBOT IS ALWAYS LISTENING WHEN IT CAN BE — a background thread consumes
+    the microphone continuously, so speech is transcribed before you ask for it.
+    This tool reads that buffer; it does not start listening, and calling it more
+    often does not make the robot hear more.
 
-    That is a property of the robot, not a limitation of this tool, and it has a
-    consequence worth stating: **the robot cannot be left listening.** An
-    always-on assistant is not available on this hardware. If you call this and
-    nobody is holding the remote, you will get silence — which is reported as
-    `heard_nothing` with `mic_open: false`, never as an empty transcript, because
-    "nobody spoke" and "the microphone was closed" are different facts and an
-    agent that confuses them will draw confident conclusions from an empty room.
+    Each call CONSUMES what it returns. Two calls in a row will not show the same
+    utterance twice, so act on what you get.
 
-    Transcription is faster-whisper (Spanish, pinned — not auto-detected). A stop
-    phrase heard during the window is reported separately in `stop_heard`: it is
-    a convenience signal, and **not a safety device**. Anyone holding the remote
-    already has a physical e-stop under their thumb, which is faster and cannot
-    mis-hear.
+    ⚠️ THE MICROPHONE IS PUSH-TO-TALK AND THE BUTTON IS NOT YOURS. It streams
+    only while a person holds L1+L2 on the remote (`docs/ROBOT-HARDWARE.md`
+    §8.2); there is no RPC to open it. So an empty result usually means nobody is
+    holding the remote, NOT that the room is silent — and the two are reported
+    differently:
+
+        mic_ever_open: false   nobody has held the button; the robot has never
+                               had the chance to hear anything
+        mic_ever_open: true    audio has arrived before; empty now means quiet
+
+    Never conclude "nobody answered" from an empty result without checking that
+    flag. If it is false, say out loud that you cannot hear unless they hold the
+    button — the person may not know.
+
+    Use `wait_s=0` while walking or working: it costs nothing and cannot stall
+    anything. Reach for a few seconds only right after asking a question, and
+    remember that the whole bridge — including `stop_everything` — waits with
+    you for that long.
     """
-    log.info("listen.called", seconds=seconds, sim_mode=SIM_MODE)
-
     if SIM_MODE != "real":
         return {
-            "status": "ok", "transcript": "", "heard": [], "stop_heard": None,
-            "note": f"SIM_MODE={SIM_MODE} has no microphone — nothing was recorded.",
+            "status": "ok", "heard": [], "transcript": "", "stop_heard": None,
+            "mic_ever_open": False,
+            "note": f"SIM_MODE={SIM_MODE} has no microphone.",
             "env": SIM_MODE, "stub": True,
         }
 
     import asyncio
-    import time
 
     from bridge.skills import listen as listen_skill
 
-    ok, why = listen_skill.available()
-    if not ok:
-        return {
-            "status": "failed", "transcript": "", "heard": [],
-            "error": "stt_not_installed", "detail": why,
-            "env": SIM_MODE, "stub": False,
-        }
+    listener = listen_skill.get_mic_listener()
+    if not listener.is_running():
+        ok, why = listen_skill.available()
+        if not ok:
+            return {
+                "status": "failed", "heard": [], "transcript": "",
+                "error": "stt_not_installed", "detail": why,
+                "env": SIM_MODE, "stub": False,
+            }
+        listener.start()
 
-    def _listen() -> tuple[list[str], list[str], int]:
-        heard: list[str] = []
-        stops: list[str] = []
-        frames_seen = 0
-        deadline = time.monotonic() + seconds
+    items = listener.poll()
+    if not items and wait_s > 0:
+        # Poll rather than block on a condition: the listener is a plain thread
+        # and this keeps the wait cancellable and bounded, with the event loop
+        # free the whole time.
+        deadline = asyncio.get_running_loop().time() + wait_s
+        while not items and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.25)
+            items = listener.poll()
 
-        def bounded():
-            nonlocal frames_seen
-            for frame in listen_skill.iter_mic_frames(timeout_s=0.5):
-                frames_seen += 1
-                yield frame
-                if time.monotonic() > deadline:
-                    return
-
-        listen_skill.listen_loop(bounded(), on_text=heard.append,
-                                 on_stop=stops.append)
-        return heard, stops, frames_seen
-
-    # Off the event loop: this blocks for `seconds` and Whisper adds ~1 s per
-    # utterance on top. On the loop it would stall every other tool call for the
-    # whole window — including stop_everything.
-    heard, stops, frames = await asyncio.to_thread(_listen)
-
-    if frames == 0:
-        return {
-            "status": "heard_nothing",
-            "transcript": "", "heard": [], "stop_heard": None,
-            "mic_open": False,
-            "note": (
-                "No audio arrived: the microphone is gated and nobody was holding "
-                "L1+L2 on the remote during the window. This is NOT silence in the "
-                "room — nothing was recorded at all. Ask the person to hold L1+L2 "
-                "and speak, then call again."
-            ),
-            "env": SIM_MODE, "stub": False,
-        }
+    diag = listener.diagnostics()
+    speech = [i for i in items if i["kind"] == "speech"]
+    stops = [i for i in items if i["kind"] == "stop"]
 
     return {
         "status": "ok",
-        "transcript": " ".join(heard).strip(),
-        "heard": heard,
-        "stop_heard": stops[0] if stops else None,
-        "mic_open": True,
-        "audio_seconds": round(frames * 0.128, 1),
+        "heard": [{"text": i["text"], "age_s": i["age_s"]} for i in speech],
+        "transcript": " ".join(i["text"] for i in speech).strip(),
+        # Reported, not acted on. Whoever is holding the remote to make the robot
+        # hear at all already has a physical e-stop under their thumb.
+        "stop_heard": stops[0]["text"] if stops else None,
+        "mic_ever_open": diag["mic_ever_open"],
+        "seconds_since_audio": diag["seconds_since_audio"],
+        "listener_error": diag["error"],
+        "note": (
+            None if diag["mic_ever_open"]
+            else "The microphone has never opened — nobody has held L1+L2 on the "
+                 "remote. This is not silence; the robot cannot hear at all "
+                 "until somebody does."
+        ),
         "env": SIM_MODE, "stub": False,
     }
 
@@ -1938,6 +1931,34 @@ def main() -> None:
             log.info("perception.link.started", domain=42, gate="closed")
         except Exception:
             log.exception("perception.link.start_failed")
+
+        # START LISTENING AT BOOT, not on the first `listen` call. Otherwise the
+        # first thing anyone says is the one thing the robot cannot hear: the
+        # buffer would only begin filling once the agent thought to ask, and
+        # people speak before they are asked to.
+        #
+        # This is cheap while nobody is talking — the mic is push-to-talk, so a
+        # closed feed delivers no packets and the thread sits in a socket
+        # timeout. There is no audio to decode until somebody holds L1+L2.
+        #
+        # And that button is the privacy boundary, which is worth being explicit
+        # about: the robot transcribes only while a person is deliberately
+        # holding a control to talk to it. Transcripts live in a bounded
+        # in-memory buffer and are never written to disk.
+        try:
+            from bridge.skills.listen import available as stt_available
+            from bridge.skills.listen import get_mic_listener
+
+            ok, why = stt_available()
+            if ok:
+                get_mic_listener().start()
+                log.info("mic_listener.started")
+            else:
+                # Not an error: the bridge runs fine without ears, and `listen`
+                # reports the reason with the fix attached when asked.
+                log.info("mic_listener.disabled", reason=why)
+        except Exception:
+            log.exception("mic_listener.start_failed")
 
     if BRIDGE_TRANSPORT in ("http", "streamable-http"):
         log.info(
