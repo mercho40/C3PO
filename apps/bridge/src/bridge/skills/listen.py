@@ -268,6 +268,17 @@ def listen_loop(
         if text and on_text is not None:
             on_text(text)
 
+    # FLUSH, and it is not an edge case. Vosk emits a final result only at an
+    # utterance boundary — i.e. trailing silence — so a finite source (a file, a
+    # synthesised clip, a mic stream that ends) leaves its LAST utterance, and
+    # often its only one, sitting in the decoder. Without this the loop returns
+    # an empty transcript for a perfectly good 2.5 s clip and looks like the
+    # recogniser is broken. A live mic never reaches here, which is exactly why
+    # this is easy to omit and hard to notice.
+    tail = transcriber.flush()
+    if tail and on_text is not None:
+        on_text(tail)
+
 
 def _iface_addr() -> str:
     import subprocess
