@@ -70,7 +70,11 @@ fatal=0
 for entry in "${PORTS[@]}"; do
     port="${entry%%:*}"; rest="${entry#*:}"
     label="${rest%:*}"; required="${rest##*:}"
-    if nc -z 127.0.0.1 "$port" 2>/dev/null; then
+    # Both stacks. Vite binds `localhost`, which on macOS resolves to ::1 and
+    # NOT 127.0.0.1 — so an IPv4-only check reports a perfectly healthy dev
+    # server as down, and refuses to forward to it. Found while setting up the
+    # first real headset session.
+    if nc -z 127.0.0.1 "$port" 2>/dev/null || nc -z ::1 "$port" 2>/dev/null; then
         ok "$port  $label"
     elif [ "$required" = "yes" ]; then
         err "$port  $label — NOT listening"
