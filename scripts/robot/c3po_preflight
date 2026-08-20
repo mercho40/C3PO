@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Everything that must be true before the robot is allowed to move under Nav2.
+#
+#     c3po_preflight
+#
+# Run this standing next to the robot, before arming. It checks and reports; it
+# changes nothing, starts nothing and arms nothing.
+#
+# WHY A SEPARATE SCRIPT FROM c3po_health: health answers "is the stack up",
+# which is a question about processes. This answers "is it safe to let a planner
+# drive a 1.3 m humanoid", which is a question about the ROBOT — its posture,
+# what it can see, whether anyone else is commanding it, and whether the numbers
+# bounding its speed have ever been measured.
+#
+# It cannot make that judgement for you. It surfaces the facts a person needs
+# and refuses to print a reassuring summary when any of them is unknown.
+
+set -uo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+. "$here/_common.sh"
+
+port="${BRIDGE_PORT:-8001}"
+blockers=0
+warnings=0
+
+pass()  { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+warns() { printf '  \033[33m!\033[0m %s\n' "$1"; warnings=$((warnings + 1)); }
+block() { printf '  \033[31m✗\033[0m %s\n' "$1"; blockers=$((blockers + 1)); }
+
+get() { curl -fsS --max-time 5 "http://127.0.0.1:${port}$1" 2>/dev/null; }
+
+say "C3PO preflight — read this before arming"
+echo
+
+# --- 1. can the robot be stopped? -------------------------------------------
+# First, and a blocker, because every other check assumes this one passed.
+if bridge_running && get /telemetry/gate >/dev/null; then
+    pass "bridge is up and answering — stop_everything is available"
+else
+    block "BRIDGE IS DOWN OR WEDGED — there is no stop_everything. Do not arm."
+fi
+
+gate="$(get /telemetry/gate || true)"
+case "$gate" in
+    *'"enabled":true'*) warns "the cmd_vel gate is ALREADY ARMED — the robot can be driven right now" ;;
+    *'"enabled":false'*) pass "cmd_vel gate is closed" ;;
+    *) block "cannot read the cmd_vel gate" ;;
+esac
+
+# --- 2. is anything else commanding the robot? ------------------------------
+# Two commanders on one control API is the conflict DDS domains cannot isolate.
+if warn_if_other_commander >/dev/null 2>&1; then
+    pass "no other commander detected on the control API"
+else
+    block "SOMETHING ELSE CAN DRIVE THE LEGS (gemm's cmd_vel_to_loco?) — resolve before arming"
+fi
+
+# --- 3. does the planner have real senses? ----------------------------------
+# The distinction that matters: Nav2 will happily plan through a costmap built
+# from synthetic input and drive the robot into whatever the fake did not model.
+scene="$(get /telemetry/surroundings || true)"
+case "$scene" in
+    *'"lidar":"ok"'*)   pass "LiDAR is online — the costmap is built from real returns" ;;
+    *'"lidar":"offline"'*) block "LIDAR IS OFFLINE — Nav2 would plan against a costmap with nothing in it" ;;
+    *) warns "cannot read perception state" ;;
+esac
+case "$scene" in
+    *'"detector":"ok"'*) pass "object detection is online" ;;
+    *) warns "object detection is offline — obstacles the LiDAR misses will not be seen" ;;
+esac
+
+# --- 4. is a stage running that actually claims the sensors? ----------------
+stage="$(perception_stage 2>/dev/null || true)"
+case "$stage" in
+    nav2)        pass "perception stage: nav2 (real sensors)" ;;
+    nav2-fake)   block "perception stage is NAV2-FAKE — odom and scan are SYNTHETIC. The robot is pinned at the origin in its own belief and will drive blind." ;;
+    "")          block "no perception stage running — nothing is publishing a costmap" ;;
+    *)           warns "perception stage: $stage — no Nav2, so nothing will plan" ;;
+esac
+
+# --- 5. the numbers that bound the motion -----------------------------------
+# Reported every time, on purpose. These clamps are the last line between a
+# planner error and a fast humanoid, and they have never been measured on this
+# robot — the code says so itself.
+case "$gate" in
+    *'"clamps"'*)
+        pass "velocity clamps are enforced by the gate"
+        warns "clamps are UNMEASURED reasoned defaults — nobody has watched this robot walk at them" ;;
+    *) warns "could not read the clamps" ;;
+esac
+
+# --- 6. is a person actually here? ------------------------------------------
+warns "a person must be watching with the e-stop in reach — this script cannot check that"
+
+echo
+if [ "$blockers" -gt 0 ]; then
+    err "$blockers blocker(s) and $warnings warning(s) — DO NOT ARM"
+    exit 1
+fi
+warn "$warnings warning(s), no blockers"
+echo
+info "If you are satisfied, arm for the manoeuvre and not for the plan:"
+info "  arm_navigation(reason=\"<what and who>\", seconds=<just enough>)"
+info "The gate closes itself when it expires, and on stop_everything."

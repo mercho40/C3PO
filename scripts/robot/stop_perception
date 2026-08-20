@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stop the perception containers, leaving the bridge alone.
+#
+# `stop_c3po` takes down the whole stack; this is the half that systemd needs
+# for ExecStop, and the half you want when handing the sensors back to the other
+# team without giving up the ability to stop the robot.
+#
+# ORDER MATTERS AND IS NOT OBVIOUS: the nav container is the only thing that
+# emits /c3po/cmd_vel, so stopping it removes the source of motion commands. The
+# bridge's gate is still what refuses them, and it stays up — "perception is
+# down" must never be the reason the robot is safe.
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+. "$here/_common.sh"
+
+running="$(perception_running_containers)"
+if [ -z "$running" ]; then
+    info "no perception containers running"
+    exit 0
+fi
+
+say "Stopping perception: $running"
+for c in $running; do
+    # -t 20, not the default 10: Nav2's lifecycle nodes and FAST-LIO both take
+    # a moment to unwind, and SIGKILLing a costmap mid-write is how you get a
+    # container that will not start next time.
+    _docker stop -t 20 "$c" >/dev/null 2>&1 || true
+done
+
+still="$(perception_running_containers)"
+if [ -n "$still" ]; then
+    err "ignored SIGTERM after 20s — killing: $still"
+    for c in $still; do _docker kill "$c" >/dev/null 2>&1 || true; done
+fi
+ok "perception stopped; the bridge and its closed gate are untouched"
