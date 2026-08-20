@@ -1261,6 +1261,29 @@ playback."_ **[web]** So: one `stream_id` per utterance (the vendor uses a milli
 timestamp), reused for every chunk so they concatenate gaplessly; to **barge in**, send
 the next utterance with a **new** `stream_id` — no `PlayStop` first.
 
+**Which parameters are actually required — probed 2026-08-21 with digital silence, so
+nothing was audible. [live]**
+
+| parameter sent                        | `rpc_code` |
+| ------------------------------------- | ---------- |
+| `{"app_name","stream_id"}`            | 0          |
+| `{"stream_id"}` — no app_name         | **0**      |
+| `{}`                                  | **100**    |
+| `garbage` (not JSON)                  | **100**    |
+
+Two things follow. **`stream_id` is the required field and `app_name` is optional** —
+undocumented, and it does not change our practice: `PlayStop` is scoped by `app_name`, so
+omitting it would leave an unstoppable stream. Send it always.
+
+And more usefully: **this service really does validate, so `rpc_code 0` here carries
+information.** That is worth stating because on the *sibling* api (1001 TTS) it does not —
+Spanish text returns 0 and emits gibberish (§7, D6.1). The two live on the same service, so
+"0 means nothing on `voice`" is the wrong lesson to generalise: 1001 does not check the
+text against the voice, while 1003 rejects a malformed envelope. What 0 still does **not**
+prove is that audio reached the speaker — the PCM bytes themselves are not validated (an
+all-zero buffer is accepted, as it must be), so **audibility is only ever confirmed by a
+person in the room.**
+
 PCM must be **16 kHz mono 16-bit**; both vendor examples hard-reject anything else, and
 the mobile-app path warns that stereo may cause playback issues. **[web]** The "96000
 bytes (3 s) per chunk" pattern is an on-robot-example convention, not a protocol
