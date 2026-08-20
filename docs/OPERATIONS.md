@@ -243,6 +243,27 @@ per-host values in `apps/bridge/.env.example`).
 
 Rollback: the bridge is a git checkout — `git checkout <sha> && run_c3po`.
 
+### Putting a Quest on the console
+
+WebXR refuses `immersive-vr` outside a **secure context**, so browsing the headset
+to `http://<mac-ip>:3001` gives a page where `navigator.xr` is simply undefined —
+/vr-control reports "WebXR no está disponible" with nothing visibly wrong. HTTPS
+with a self-signed cert works but means clicking through a certificate warning
+inside a headset, per port.
+
+`http://localhost` **is** a secure context (a potentially trustworthy origin, and
+Quest Browser is Chromium), so the answer is USB: `scripts/quest_setup.sh` uses
+`adb reverse` to forward the headset's own localhost to this machine. The page
+becomes secure-context, `ws://localhost:8767` is same-scheme so there is no
+mixed-content problem, and nothing is exposed to the school LAN — a bonus, given
+the teleop socket has no authentication of its own.
+
+The script verifies every port is listening **before** forwarding, because a
+forward to a dead port succeeds now and fails later, in the headset, as a page
+that will not load. Needs `adb` (`brew install --cask android-platform-tools`),
+developer mode on the headset, and the in-headset "Allow USB debugging?" prompt
+accepted — that last one is easy to miss. ⚠️ Not yet tested with a real headset.
+
 ### The VR teleop stream on the Jetson 🔧
 
 One more process now runs beside the bridge, for `/vr-control`. It is not under

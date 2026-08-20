@@ -499,6 +499,40 @@
     { name: "release_arm", label: "Relajar brazos", icon: RotateCcw },
   ] as const;
 
+  // ---------------------------------------------------------------------
+  // Bring-up.
+  //
+  // Without this the page was unusable on hardware and the reason was
+  // invisible. Walking needs the robot in a walk program, and `rt/arm_sdk`
+  // needs FSM 4 / 500 / 501 — but /vr-control only ever *displayed* posture,
+  // it could not change it. So an operator already wearing the headset would
+  // press Adelante, get nothing, enable the arm mirror, get "FSM ... is not
+  // one of [4, 500, 501]", and have to take the headset off to fix it
+  // somewhere else.
+  //
+  // The order is the one that actually worked on this robot (2026-08-15):
+  // damp -> prepare (4) -> start_walking_waist (501). **501, not 500** — the
+  // two are walk programs selected by waist DoF and this body reports
+  // mode_machine 5, the 29-DoF/3-DoF-waist variant. 500 was the blocker for
+  // two whole sessions of Start() returning success and doing nothing.
+  const bringUp = [
+    {
+      name: "damp",
+      label: "1 · Amortiguar",
+      hint: "Punto de partida seguro. El robot se sostiene blando.",
+    },
+    {
+      name: "prepare",
+      label: "2 · Preparar",
+      hint: "FSM 4. Habilita el espejo de brazos.",
+    },
+    {
+      name: "start_walking_waist",
+      label: "3 · Habilitar marcha",
+      hint: "FSM 501 — el programa de marcha de ESTE cuerpo. Habilita caminar y girar.",
+    },
+  ] as const;
+
   type PresetOutcome = "ok" | "error" | null;
   let presetBusy = $state<string | null>(null);
   let presetOutcome = $state<Record<string, PresetOutcome>>({});
@@ -610,6 +644,38 @@
       </div>
     </section>
   {/if}
+
+  <section class="flex flex-col gap-4 panel p-5">
+    <span class="eyebrow">Puesta en marcha</span>
+    <p class="readout">
+      Estado actual:
+      <strong class={LOAD_TEXT[posture.load]}>{posture.label}</strong>
+      — {posture.detail}
+    </p>
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      {#each bringUp as step (step.name)}
+        <button
+          type="button"
+          class="flex min-h-20 flex-col items-start justify-center gap-1 tile-interactive p-3 text-left text-sm text-ink disabled:opacity-60"
+          disabled={presetBusy === step.name}
+          onclick={() => runPreset(step.name)}
+        >
+          <span class="font-display font-semibold">{step.label}</span>
+          <span class="text-xs text-ink-mute">{step.hint}</span>
+          {#if presetOutcome[step.name] === "error"}
+            <span class="text-xs text-danger-soft">Falló</span>
+          {:else if presetOutcome[step.name] === "ok"}
+            <span class="text-xs text-cyan">Enviado</span>
+          {/if}
+        </button>
+      {/each}
+    </div>
+    <p class="readout">
+      En este orden. Caminar y girar necesitan el paso 3; el espejo de brazos
+      necesita el 2 o el 3. Si algo se ignora en silencio, casi siempre es
+      porque el robot no está en ninguno de esos estados.
+    </p>
+  </section>
 
   <section class="flex flex-col gap-4 panel p-5">
     <span class="eyebrow">Caminar</span>
