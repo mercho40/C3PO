@@ -1685,6 +1685,45 @@ def main() -> None:
     elif SIM_MODE == "real":
         log.info("watchdog.disabled", reason="LINK_WATCHDOG not set")
 
+    # JOIN DOMAIN 42. Nothing did this before, and the omission was invisible
+    # because every symptom looked like a problem somewhere else:
+    #
+    #   * /telemetry/costmap.png returned 503 "no costmap received" while Nav2
+    #     was publishing costmaps a process away — indistinguishable from Nav2
+    #     not running, which is exactly what the hint text suggests.
+    #   * `ros2 topic info /c3po/cmd_vel --verbose` reported Subscription
+    #     count: 0, so the cmd_vel gate had nothing to refuse. A gate that
+    #     never receives cannot be shown to be closed; it is just absent.
+    #   * describe_surroundings kept reporting perception offline, which reads
+    #     as an honest "not deployed yet" rather than as an unwired link.
+    #
+    # PerceptionLink was fully written and tested throughout — it was simply
+    # never started, so domain 42 had no participant on this side at all.
+    #
+    # STARTING IS NOT ARMING, and that separation is what makes this safe to do
+    # at boot. start() creates the participant and the readers and nothing
+    # else; the gate stays default-closed with disabled_reason "never armed".
+    # _tick() returns before touching _forward while the gate is shut, so
+    # _default_forward — the one path where a Twist becomes SET_VELOCITY —
+    # remains unreachable until something arms the gate deliberately. Nothing
+    # can today: `arm_navigation` is Stage 8 and does not exist yet.
+    #
+    # Failure here must not take the bridge down. A robot whose MCP server
+    # refuses to boot has no stop_everything, which is a far worse state than
+    # one that cannot see its costmap — and this is the first thing that runs
+    # after a reboot, where DDS is exactly what is flaky (see the eth0 boot
+    # race in docs/OPERATIONS.md).
+    if SIM_MODE in ("real", "isaac"):
+        # Local import for the same reason the routes use one: module scope must
+        # stay free of CycloneDDS so the bridge imports on a laptop.
+        from bridge.sdk.perception_link import get_link
+
+        try:
+            get_link().start()
+            log.info("perception.link.started", domain=42, gate="closed")
+        except Exception:
+            log.exception("perception.link.start_failed")
+
     if BRIDGE_TRANSPORT in ("http", "streamable-http"):
         log.info(
             "c3po-bridge.start",
