@@ -161,8 +161,8 @@ State as of the 2026-08-13/14 survey, with 2026-08-15 recon updates folded in.
 | G1 "head camera"         | **is the D435i colour node** — see §6                                                               | `/dev/video4`                                                                   | nobody (`master_service` stopped)      | stopped, recoverable                              |
 | G1 chest camera          | would be `/dev/video10`                                                                             | —                                                                               | nobody                                 | **absent** — no such device electrically          |
 | Hands                    | RS485 behind FTDI FT4232H `0403:6011`; a Dex3 pair would be served from the **control board**, §7.2 | `/dev/ttyUSB0–3`                                                                | `brainco_hand_server` (ttyUSB1)        | one right hand answering; identity **[?]** — §7.3 |
-| Mic array (4 mics)       | control board, **not** the Jetson                                                                   | UDP mcast `239.168.123.161:5555`                                                | `gemm-ai.service` joined the group     | live, continuously transcribed while gemm-ai runs |
-| Speaker + RGB LED        | control board                                                                                       | `voice` RPC service (`vui_service`)                                             | shared, **no arbitration, 3+ writers** | live — `GET_VOLUME` answered 2026-08-15           |
+| Mic array (4 mics)       | control board, **not** the Jetson                                                                   | UDP mcast `239.168.123.161:5555`                                                | `gemm-ai.service` joined the group     | joined but **silent at rest** — §8.2              |
+| Speaker + RGB LED        | control board                                                                                       | `voice` RPC service (`vui_service`)                                             | shared, **no arbitration, 3+ writers** | live — answered at **FSM 0**, 2026-08-21          |
 | Body IMU                 | inside `LowState_`                                                                                  | `rt/lf/lowstate`                                                                | shared (DDS)                           | live, ~20 Hz                                      |
 | Battery / BMS            | own DDS topic                                                                                       | `rt/lf/bmsstate`                                                                | shared (DDS)                           | live, ~20 Hz — bridge reads `soc` (§9.2)          |
 | Wireless controller (R3) | control board radio                                                                                 | **`LowState_.wireless_remote[40]`** — `rt/wirelesscontroller` is Go2-only, §9.3 | shared (DDS)                           | see `docs/ROBOT-API.md` for the decode            |
@@ -1175,9 +1175,54 @@ At the snapshot the group **was** joined on eth0: `/proc/net/igmp` shows `A17BA8
 The DDS group `239.255.0.1` was present at the same time with 6 users — two different
 groups, both live. **[live]**
 
-**Joined ≠ flowing.** Whether packets are actually arriving was _not_ established, and
-proving it means recording whoever is standing next to the robot — that needs explicit
-consent, not a command.
+**Joined ≠ flowing, and now measured: at rest it does NOT flow.** 2026-08-20, with
+`gemm-ai.service` active and holding `0.0.0.0:5555`, a second subscriber joined the group
+on eth0 and read **0 packets in 12 s** while the robot sat idle. The join was verified
+rather than assumed — `/proc/net/igmp` showed `A17BA8EF` against eth0 — because on this
+feed a silent socket is the expected result of binding the wrong interface, so an
+unverified zero is worth nothing. **[live]**
+
+That kills "continuously streaming" as a working assumption, and with it the idea that a
+`listen()` skill can simply open a socket whenever it likes. Two readings remain open and
+they have very different consequences:
+
+- the feed is **gated on the remote's wake-up mode**, exactly as ASR output is — a future
+  `listen()` then has a human prerequisite and cannot be part of an unattended loop;
+- or it streams **only on demand**, and something must ask first. No RPC to ask with has
+  been found: `vui_service` exposes `START_PLAY`/`STOP_PLAY`/`GET_VOLUME`/`SET_VOLUME` and
+  **no ASR or capture function at all** (§8.3), so if a trigger exists it is not there.
+
+**ANSWERED 2026-08-21: THE FEED IS GATED ON THE REMOTE'S WAKE-UP MODE.** Holding
+**L1+L2** opens it; releasing closes it. Two runs, both with the join verified: 212 packets
+/ 33.9 s of audio in a 45 s window, then 262 packets / 41.9 s while a person spoke Spanish
+into it, transcribed live. At rest, across every earlier probe, exactly zero. **[live]**
+
+So `listen()` has a **human prerequisite** and cannot run unattended: something has to hold
+a button on the remote for the robot to hear anything. That is a hard constraint on every
+voice design downstream — an always-listening assistant is not available on this hardware
+without the App-side equivalent, which is untested.
+
+Everything below was the investigation that got here, and is kept because each step
+eliminated a cheaper explanation.
+
+**A stopped service is NOT the explanation** — the obvious third reading, checked and
+killed. `robot_state` 1003 `ServiceList` reports `vui_service` *and*
+`audio_player_service` both running on 2026-08-21 (`status: 0`; polarity confirmed against
+`robot_state` reporting itself running while answering — `ROBOT-API.md` §8). So the mic is
+silent with its owning services up.
+
+Distinguishing the two remaining readings needs a person: hold **L1+L2** on the remote and
+re-run the count. `apps/bridge/scripts/mic_wakeup_probe.py` does both halves at once — it
+counts multicast bytes *and* decodes `LowState_.wireless_remote`, because a run where
+nobody pressed anything and a run where the press changed nothing are the same column of
+zeros, and only the button field tells them apart. It prints a verdict rather than raw
+counts.
+
+First run, 2026-08-21: 929 lowstate frames, **0 remote-shaped** — an all-zero
+`wireless_remote` blob is the vendor's own `isJoystickTimeout_` predicate (§9.5), so the
+R3 was not transmitting at all and the run is correctly reported INCONCLUSIVE rather than
+as a confident zero. That is the script working, not failing. Recording a room still needs
+consent — this counts bytes and decodes nothing.
 
 **And the privacy fact, stated plainly:** while `gemm-ai.service` runs, it continuously
 Whisper-transcribes this feed — **the mic is always on and everything said near this robot

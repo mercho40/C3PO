@@ -239,16 +239,39 @@ behind the `unitree_slam` **and** `lidar_driver` services being switched on. **[
 (`slam_navigation_services_interface`, 2026-07-20.) Our zero-hit grep ran on the Jetson,
 and topics/services can be absent until switched on (§8), so the correct statement is
 **"documented, not enabled or not installed on this unit"** — `robot_state` 1003
-`ServiceList` settles it. Note its response envelope is unlike every other service:
-`{"succeed":bool,"errorCode":int,"info":str,"data":{}}` **inside** `data`, so `rpc_code 0`
-does not imply success there. **[web]** Its 1102 pose navigation is a second motion
-commander — see §10.
+`ServiceList` settles it, and it **works on this unit**: `rpc_code 0`, 2026-08-21. **[live]**
 
-**`bashrunner` — a reported vendor shell-run service, unverified.** The robot reportedly
-exposes `/api/bashrunner/request` over DDS: a remote shell-execution path. **[?]** Never
-probed on this unit — `robot_state` 1003 `ServiceList` (§8) or a `3203` discriminator
-would settle it. Context: `docs/DECISIONS.md` D8 (shell access) — confirm it exists
-before designing around it.
+```python
+c = _G1Client("robot_state", (1003,), timeout_s=5.0)   # register 1003 and nothing else
+c._SetApiVerson("1.0.0.0"); c.Init()
+code, data = c.call_raw(1003, "{}")
+```
+
+⚠️ **The documented envelope is wrong here.** The web docs describe
+`{"succeed":bool,"errorCode":int,"info":str,"data":{}}` **[web]**; this robot returns a
+**bare JSON array** of `{"name","protect","status"}` with no envelope at all. Parse
+defensively — code expecting `data.succeed` gets an AttributeError on a successful call.
+
+**Status polarity confirmed, and it is the inverted one.** `status` is `0 = running,
+1 = stopped` — the opposite of the `swit` input to `ServiceSwitch`. Verified without
+trusting the docs: `robot_state` reports `status: 0` *while answering this very call*, so
+0 cannot mean stopped. `protect: 1` marks the services `ServiceSwitch` refuses with 5202 —
+`basic_service`, `robot_state`, `webrtc_bridge`, `webrtc_signal_server`. **[live]**
+
+Snapshot 2026-08-21 — stopped were `unitree_slam`, `auto_test_arm`, `auto_test_low`,
+`ota_box`; **everything else was running**, including `vui_service`,
+`audio_player_service`, `chat_go`, `ai_sport` and `lidar_driver`. The two audio services
+being up is what rules out "a stopped service" as the reason the mic multicast is silent
+(`ROBOT-HARDWARE.md` §8.2).
+
+**`bashrunner` — CONFIRMED PRESENT AND RUNNING on this unit.** `ServiceList` lists it with
+`protect: 0, status: 0`, upgrading it from **[?]** to **[live]**, 2026-08-21. The reported
+`/api/bashrunner/request` DDS shell-execution path therefore has a live service behind it.
+Two consequences, and the second matters more than the first: `docs/DECISIONS.md` D8 can
+be designed against something real, **and this robot accepts remote shell execution over
+DDS from anything on its wired LAN, with no authentication in the DDS layer.** It is
+`protect: 0`, so unlike `basic_service` it can be switched off. Nobody has sent it a
+request and this note is not an invitation to.
 
 **Two namespaces, one word.** `robot_state`'s `ServiceSwitch` takes _process/service_
 names — Unitree publishes the list as `ai_sport` (Main Motion Control Service),
@@ -1238,6 +1261,32 @@ playback."_ **[web]** So: one `stream_id` per utterance (the vendor uses a milli
 timestamp), reused for every chunk so they concatenate gaplessly; to **barge in**, send
 the next utterance with a **new** `stream_id` — no `PlayStop` first.
 
+**Which parameters are actually required — probed 2026-08-21 with digital silence, so
+nothing was audible. [live]**
+
+| parameter sent                        | `rpc_code` |
+| ------------------------------------- | ---------- |
+| `{"app_name","stream_id"}`            | 0          |
+| `{"stream_id"}` — no app_name         | **0**      |
+| `{}`                                  | **100**    |
+| `garbage` (not JSON)                  | **100**    |
+
+Two things follow. **`stream_id` is the required field and `app_name` is optional** —
+undocumented, and it does not change our practice: `PlayStop` is scoped by `app_name`, so
+omitting it would leave an unstoppable stream. Send it always.
+
+And more usefully: **this service really does validate, so `rpc_code 0` here carries
+information.** That is worth stating because on the *sibling* api (1001 TTS) it does not —
+Spanish text returns 0 and emits gibberish (§7, D6.1). The two live on the same service, so
+"0 means nothing on `voice`" is the wrong lesson to generalise: 1001 does not check the
+text against the voice, while 1003 rejects a malformed envelope. What 0 still does **not**
+prove is that audio reached the speaker — the PCM bytes themselves are not validated (an
+all-zero buffer is accepted, as it must be) — so audibility had to be confirmed by ear.
+**It was, 2026-08-21: Spanish synthesised by Piper and pushed through `PlayStream` played
+audibly on the robot's speaker. [live]** The full path — external synthesis, 22050->16000
+resample, chunked `START_PLAY` — is therefore proven end to end, and D6.1's wall (no
+Spanish voice in firmware) is worked around rather than merely designed around.
+
 PCM must be **16 kHz mono 16-bit**; both vendor examples hard-reject anything else, and
 the mobile-app path warns that stereo may cause playback issues. **[web]** The "96000
 bytes (3 s) per chunk" pattern is an on-robot-example convention, not a protocol
@@ -1657,6 +1706,14 @@ typedef struct { uint8_t head[2]; BtnUnion btn;
                  float lx, rx, ry, L2, ly;      // NOTE the order
                  uint8_t idle[16]; } xRockerBtnDataStruct;
 ```
+
+⚠️ **THE HEADER ON THIS ROBOT IS `{0x55, 0x51}`, NOT `{0xFE, 0xEF}`.** Both the vendor
+header and Unitree's `remote_control_data` page give `0xFE 0xEF`; this G1 does not. Dumped
+raw from `rt/lf/lowstate` 2026-08-21: idle is `5551 0000...`, holding L2+R2 is
+`5551 3000...` — and `0x0030` is exactly `0x0010|0x0020` = R2|L2 from the table below. So
+**the bit masks are correct and only the magic bytes are wrong.** Accept both: rejecting
+frames on the documented value made a probe report "no controller present" while somebody
+was holding buttons down, which is a failure that looks like dead hardware. **[live]**
 
 **Axis-order trap:** inside the packet the floats are **lx, rx, ry, L2, ly** — _not_ the
 lx/ly/rx/ry order of the `rt/wirelesscontroller` DDS message. Reading it in message order
@@ -2120,9 +2177,12 @@ Ordered by how much each unblocks.
     timeouts and 7401 handling (§6.5).
 23. **Does `rt/audio_msg` carry `play_state` on this firmware, and does it fire for our
     `PlayStream` or only the assistant's playback?** (§7.1)
-24. **Is the raw mic multicast at 239.168.123.161:5555 gated on wake-up mode**, the way
-    ASR output explicitly is? Decides whether a future `listen()` has a human
-    prerequisite (§7.2).
+24. ~~**Is the raw mic multicast at 239.168.123.161:5555 gated on wake-up mode**~~ —
+    **ANSWERED 2026-08-21: YES.** Silent at rest; holding **L1+L2** on the remote opens the
+    feed and releasing closes it (212 packets / 33.9 s, then 262 packets / 41.9 s of live
+    speech, transcribed). `listen()` therefore has a **human prerequisite** and cannot run
+    unattended. `vui_service` has no capture RPC, so the remote — or the App equivalent,
+    untested — is the only opener. See `ROBOT-HARDWARE.md` §8.2. **[live]**
 
 ### Known divergences between this reference and the bridge code
 

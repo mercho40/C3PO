@@ -413,8 +413,24 @@ phrase for separability, not charm — short, distinct, and unlikely in ordinary
 D6.1's warning stands: a spoken stop that works in demos and not in panic is worse than
 none, because people rely on it.
 
-**Not built.** Nothing above exists. `apps/bridge` has `speak()` (firmware TTS) and no
-`play_pcm()`; the SDK's `_CallRequestWithParamAndBin` is present and unused.
+**The TTS half is BUILT** (2026-08-21). `apps/bridge/src/bridge/skills/tts.py` synthesises
+with Piper `es_AR/daniela` and resamples 22050 -> 16000 in numpy (polyphase 320/441 — scipy
+is not in the venv and would be a ~40 MB wheel for one function); `g1_rpc.play_pcm()` ships
+it over `PlayStream`; `say(language="spanish")` is the default path and **refuses rather
+than falling back** to the English voice when Piper is missing, because that fallback is
+precisely D6.1's rpc_code-0-and-noise failure.
+
+Measured on the robot: synthesis runs at **0.7x realtime** (4.0 s for a 2.8 s utterance)
+on a Jetson also carrying the co-tenant's SLAM — fine for short sentences, and the number
+to watch if utterances get long. `START_PLAY` accepts our envelope (`rpc_code 0`) and
+rejects malformed ones with 100, so the wire format is confirmed (`ROBOT-API.md` §7).
+
+**Confirmed audible 2026-08-21** — a person heard the robot speak Spanish through its own
+speaker. Development up to that point used digital silence, because the speaker is shared
+with the co-tenant and has no arbitration; the one test that needed a human got a human.
+
+**The speaking half of D6 is done.** The listening half remains blocked on the mic, which
+does not stream at rest and has no software trigger (D6.3, `ROBOT-HARDWARE.md` §8.2).
 
 ### D6.3 — No cloud. The whole loop runs on the robot, and needs no GPU
 
@@ -475,9 +491,37 @@ credentials — now trivially, because nothing in this path has one. The spoken 
 bypasses the agent entirely, so it is unaffected by where reasoning happens or whether the
 network is up at all.
 
-**Still gated on the same test.** Every row above that reads *"mic"* assumes the raw
-multicast feed is reachable without the remote's wake-up mode (D6.2). That is unverified,
-zero-risk to check, and everything in the listening half is downstream of it.
+**THE TEST IS DONE, AND THE ANSWER CONSTRAINS THE DESIGN.** 2026-08-21: the raw multicast
+feed **is** gated on the remote's wake-up mode. Holding L1+L2 opens it, releasing closes
+it, and live Spanish was transcribed through the full chain (`ROBOT-HARDWARE.md` §8.2).
+
+Every row above that reads *"mic"* therefore carries a **human prerequisite**. This is not
+a tuning problem to engineer around: an always-on wake word is unavailable on this hardware
+while a person must hold a button for the microphone to exist at all. Two consequences
+worth stating plainly, because they change what the voice loop can be:
+
+- **The wake word loses most of its purpose.** Its job was to decide when the robot is
+  being addressed; a held button already answers that, and answers it more reliably than
+  any acoustic model. Push-to-talk is not a downgrade here, it is the interaction the
+  hardware actually supports.
+- **Continuous listening needs a USB microphone, and that is the whole fix.** Nothing in
+  software opens the built-in array, so if the robot is to hear without a button it needs
+  a second ear. `skills/listen.py` selects an ALSA capture device over the multicast group
+  automatically, so plugging one into the Jetson switches the robot to always-on with no
+  code change and no config. The Jetson currently exposes no real capture device — the
+  `tegra-dlink`/`ADMAIF` entries `arecord -l` lists are the SoC's internal routing fabric,
+  they appear whether or not a mic exists, and opening one yields **silence rather than an
+  error**, which is indistinguishable from an empty room. The selector filters them out
+  for exactly that reason.
+
+  The trade is real and worth stating: the body-mounted array is better placed for someone
+  standing in front of the robot and travels with it, while a USB mic is wherever its cable
+  reaches. `C3PO_AUDIO_SOURCE=multicast` forces the array back.
+- **The spoken stop cannot be relied on as a safety device.** D6.2 put the stop phrase in
+  the bridge so it would survive a dead voice process — but no software placement helps
+  when the microphone is closed unless somebody is already holding the remote. And a person
+  holding the remote has a physical e-stop under their thumb, which is faster and cannot
+  mis-hear. **Treat the spoken stop as a convenience, and never as the safety story.**
 
 ## D7 — The world-model contract
 
