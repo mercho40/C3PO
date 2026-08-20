@@ -167,9 +167,7 @@ def _degrade(sources: dict[str, SourceStatus], notes: list[str]) -> None:
         notes.append("Object detection is stale; treat obstacles as uncertain.")
 
     if sources.get("lidar") == "offline":
-        notes.append(
-            "LiDAR is OFFLINE — free-space distances are unavailable, not infinite."
-        )
+        notes.append("LiDAR is OFFLINE — free-space distances are unavailable, not infinite.")
     if sources.get("pose") == "offline":
         notes.append("Pose is unavailable; relative motion cannot be verified.")
 

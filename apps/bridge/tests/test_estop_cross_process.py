@@ -67,9 +67,10 @@ def test_a_stop_in_another_process_is_visible_here(tmp_path):
     before = time.time()
 
     subprocess.run(
-        [sys.executable, "-c",
-         "from bridge.estop import signal_stop; signal_stop()"],
-        env=env, check=True, capture_output=True,
+        [sys.executable, "-c", "from bridge.estop import signal_stop; signal_stop()"],
+        env=env,
+        check=True,
+        capture_output=True,
     )
 
     # Read it the way the teleop session does, against the same directory.

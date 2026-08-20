@@ -391,8 +391,7 @@ def test_importing_the_link_pulls_in_no_ros_and_no_dds():
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _SHARED_XML = _REPO_ROOT / "apps" / "perception" / "config" / "cyclonedds-domain42.xml"
-_DETECTOR_PY = (_REPO_ROOT / "apps" / "perception" / "vision" / "c3po_vision"
-                / "detector.py")
+_DETECTOR_PY = _REPO_ROOT / "apps" / "perception" / "vision" / "c3po_vision" / "detector.py"
 
 # Each of these, on any side, is a way to build a participant that starts
 # cleanly and then sees nothing:
@@ -470,14 +469,16 @@ def test_diagnostics_carries_the_keys_the_gate_route_reads():
 
     assert "gate" in diag, (
         "diagnostics() no longer embeds the gate — /telemetry/gate in "
-        "mcp_server.py builds its whole body from this key")
+        "mcp_server.py builds its whole body from this key"
+    )
     for key in ("started", "domain_id", "reports_received"):
         assert key in diag, f"/telemetry/gate reports link.{key}"
 
     for key in ("enabled", "cmd_vel_received", "dropped_while_disabled", "last_sent"):
         assert key in diag["gate"], (
             f"gate.{key} is one of the four fields Stage 4 reads together to "
-            "show Nav2 publishing into a shut gate")
+            "show Nav2 publishing into a shut gate"
+        )
 
 
 def test_a_fresh_gate_reports_refusal_not_silence():
@@ -495,7 +496,8 @@ def test_a_fresh_gate_reports_refusal_not_silence():
     assert gate["dropped_while_disabled"] == 0
     assert gate["disabled_reason"], (
         "a closed gate must say WHY it is closed — an operator reading this "
-        "endpoint is asking why the robot will not move")
+        "endpoint is asking why the robot will not move"
+    )
 
 
 def test_main_starts_the_perception_link_on_real_hardware():
@@ -518,7 +520,8 @@ def test_main_starts_the_perception_link_on_real_hardware():
 
     assert "get_link().start()" in main_body, (
         "main() must start the perception link — constructing it via get_link() "
-        "creates the singleton but joins no domain")
+        "creates the singleton but joins no domain"
+    )
 
 
 def test_starting_the_link_is_not_arming_it():

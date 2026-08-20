@@ -110,9 +110,7 @@ async def run(ctx: Any | None = None) -> dict[str, Any]:
             task.progress = i / len(SEQUENCE)
             if ctx is not None:
                 try:
-                    await ctx.report_progress(
-                        progress=task.progress, total=1.0, message=task.phase
-                    )
+                    await ctx.report_progress(progress=task.progress, total=1.0, message=task.phase)
                 except Exception:
                     pass  # progress is best-effort
 

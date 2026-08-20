@@ -146,7 +146,9 @@ class TeleopFrame:
         return self.left is not None or self.right is not None
 
 
-def _parse_hand(raw: Any, side: str, head_position: tuple[float, float, float]) -> HandSample | None:
+def _parse_hand(
+    raw: Any, side: str, head_position: tuple[float, float, float]
+) -> HandSample | None:
     """Return None for an untracked hand rather than raising.
 
     A hand leaving the tracking volume is normal operation, not a protocol
@@ -192,7 +194,9 @@ def parse_frame(raw: str | bytes) -> TeleopFrame:
         # Refusing an unknown version is the point of having one. A future
         # client that changes the meaning of a field must not be interpreted
         # under today's meanings by an older bridge.
-        raise FrameError(f"unsupported protocol version {version!r} (this bridge speaks {PROTOCOL_VERSION})")
+        raise FrameError(
+            f"unsupported protocol version {version!r} (this bridge speaks {PROTOCOL_VERSION})"
+        )
 
     try:
         seq = int(payload["seq"])

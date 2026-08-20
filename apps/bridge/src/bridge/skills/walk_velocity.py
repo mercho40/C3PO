@@ -90,7 +90,12 @@ async def run(
             task.phase = "rpc_error"
             task.error = f"rpc_error_code_{code}"
             task.ended_at = time.time()
-            task.result = {"requested": requested, "clamped": clamped, "rpc_code": code, "rpc_data": data}
+            task.result = {
+                "requested": requested,
+                "clamped": clamped,
+                "rpc_code": code,
+                "rpc_data": data,
+            }
             return task.to_dict()
 
         task.phase = "moving"
@@ -100,7 +105,9 @@ async def run(
             if task.cancel_event.is_set():
                 cancelled = True
                 break
-            task.progress = max(0.0, min(0.999, 1.0 - (deadline - time.time()) / max(clamped_duration, 1e-6)))
+            task.progress = max(
+                0.0, min(0.999, 1.0 - (deadline - time.time()) / max(clamped_duration, 1e-6))
+            )
             await asyncio.sleep(0.05)
 
         if cancelled:
@@ -115,7 +122,12 @@ async def run(
             task.progress = 1.0
 
         task.ended_at = time.time()
-        task.result = {"requested": requested, "clamped": clamped, "rpc_code": code, "rpc_data": data}
+        task.result = {
+            "requested": requested,
+            "clamped": clamped,
+            "rpc_code": code,
+            "rpc_data": data,
+        }
         log.info(
             "walk_velocity.done",
             task_id=task.task_id,
@@ -142,9 +154,7 @@ async def run(
         # firmware's own `duration` deadman already guarantees a halt within
         # clamped_duration (<=3s); this only makes it stop sooner.
         try:
-            await asyncio.shield(
-                asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5)
-            )
+            await asyncio.shield(asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5))
         except (Exception, asyncio.CancelledError):
             pass
         raise  # never swallow cancellation -- the caller is entitled to it

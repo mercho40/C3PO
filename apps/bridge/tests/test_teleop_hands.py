@@ -17,6 +17,8 @@ from bridge.teleop.hands import (
     Dex3HandDriver,
     NullHandDriver,
     build_driver,
+    get_driver,
+    reset_driver,
     dex3_mode_byte,
 )
 
@@ -185,3 +187,30 @@ def test_dex3_never_exceeds_the_configured_closure():
     for side in ("left", "right"):
         for value in driver.target_pose(side, 1.0):
             assert abs(value) <= max(DEX3_CLOSED_MAGNITUDE) + 1e-9
+
+
+def test_the_driver_is_shared_across_sessions(monkeypatch):
+    """One driver per process, not per connection.
+
+    A driver holds DDS publishers that cannot be closed, so building one per
+    session leaked a writer per reconnect onto the hand's command topic — and
+    reconnects are routine: a Wi-Fi blip, the headset sleeping, the operator
+    stepping out of the room.
+    """
+    monkeypatch.setenv("TELEOP_HAND_ENABLED", "1")
+    monkeypatch.setenv("TELEOP_HAND_TYPE", "dex3")
+
+    first = get_driver()
+    second = get_driver()
+
+    assert first is second
+
+
+def test_resetting_rebuilds_from_the_current_config(monkeypatch):
+    monkeypatch.setenv("TELEOP_HAND_ENABLED", "1")
+    monkeypatch.setenv("TELEOP_HAND_TYPE", "dex3")
+    assert isinstance(get_driver(), Dex3HandDriver)
+
+    reset_driver()
+    monkeypatch.setenv("TELEOP_HAND_ENABLED", "0")
+    assert isinstance(get_driver(), NullHandDriver)

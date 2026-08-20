@@ -82,8 +82,31 @@ def test_every_sequence_gesture_is_in_the_official_action_table():
     # bypasses SKILL_REQUESTS entirely (it's a custom multi-step skill like
     # walk_velocity, not a _g1_request.py one-shot dispatch), so nothing else
     # checks these ids against the robot's own GetActionList.
-    official = {1, 11, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
-                28, 29, 30, 33, 34, 36, 99}
+    official = {
+        1,
+        11,
+        12,
+        13,
+        15,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        33,
+        34,
+        36,
+        99,
+    }
     for gesture in dance.SEQUENCE:
         assert gesture.value in official, f"{gesture.name}={gesture.value} is not a vendor action"
 

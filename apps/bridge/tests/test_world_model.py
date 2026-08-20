@@ -25,9 +25,7 @@ from bridge.world_model import (
 
 
 def obs(label: str, range_m: float, bearing_deg: float = 0.0, age_s: float = 0.0):
-    return Observation(
-        label=label, range_m=range_m, bearing_deg=bearing_deg, age_s=age_s
-    )
+    return Observation(label=label, range_m=range_m, bearing_deg=bearing_deg, age_s=age_s)
 
 
 # --------------------------------------------------------------------------

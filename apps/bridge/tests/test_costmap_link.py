@@ -108,7 +108,7 @@ def test_an_old_map_is_still_served_but_marked_stale(link):
 
 
 def test_status_reports_nothing_rather_than_zeroes_when_no_map_has_arrived(link):
-    """"No map yet" must be distinguishable from "a 0x0 map".
+    """ "No map yet" must be distinguishable from "a 0x0 map".
 
     Same rule as the world model's: absent is not empty. The HTTP route turns
     `present: False` into a 503 rather than a blank image for exactly this

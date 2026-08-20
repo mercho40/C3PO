@@ -78,6 +78,7 @@ async def _await_fsm(target: int, timeout_s: float) -> int | None:
         await asyncio.sleep(0.25)
     return latest
 
+
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
 
 

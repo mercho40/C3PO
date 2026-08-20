@@ -118,9 +118,7 @@ class LinkWatchdog:
         if self._thread is not None:
             return
         self.touch()
-        self._thread = threading.Thread(
-            target=self._loop, name="link-watchdog", daemon=True
-        )
+        self._thread = threading.Thread(target=self._loop, name="link-watchdog", daemon=True)
         self._thread.start()
         log.info("watchdog.started", timeout_s=self._timeout_s)
 

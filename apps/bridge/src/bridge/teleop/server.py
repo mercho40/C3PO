@@ -66,6 +66,7 @@ import asyncio
 import json
 import math
 import os
+import signal
 import time
 from typing import Any
 
@@ -119,6 +120,24 @@ WALK_MAX_VEL = 0.2
 STAND_HEIGHT = 0.78
 
 # --- Dead-man --------------------------------------------------------------
+# Every deadline below that guards MOTION reads `time.monotonic`, never
+# `time.time`. A wall clock is a statement about what time it is, and it can
+# be corrected: NTP steps it, a VM resumes with a stale one, an operator fixes
+# a wrong timezone mid-session. Any of those move it backwards, and a backwards
+# jump makes `now - last_frame_at` negative — so a link that has been silent
+# for a minute reads as fresh, `stale()` returns False, and the last commanded
+# velocity keeps going out to a robot nobody is talking to. The same jump
+# rescues the continuous-motion latch from tripping and stretches the e-stop
+# release dwell to whatever the correction was.
+#
+# The robot onboard is the realistic case, not a hypothetical: it has no RTC,
+# so it boots at the epoch and steps its clock by decades the moment it reaches
+# an NTP server — which is often seconds after the bridge starts.
+#
+# Wall-clock time is still right for anything an operator will read (`ended_at`
+# in a task record) and for the e-stop sentinel, whose timestamps are file
+# mtimes compared against other processes' file mtimes. Those are timestamps.
+# These are durations.
 STALE_FRAME_S = 0.4
 MAX_CONTINUOUS_MOTION_S = 8.0
 
@@ -196,7 +215,7 @@ class TeleopSession:
         #: loop still stops the robot. Sending twice is free; *waiting* twice
         #: is not, and it doubled how long the single-session slot stayed held.
         self.stop_issued = False
-        self.hands = hands_mod.build_driver()
+        self.hands = hands_mod.get_driver()
 
     # -- ingest ---------------------------------------------------------
 
@@ -217,7 +236,7 @@ class TeleopSession:
                 return
         self.last_seq = frame.seq
         self.frame = frame
-        self.last_frame_at = time.time()
+        self.last_frame_at = time.monotonic()
         self.frames_received += 1
         self._maybe_calibrate(frame)
 
@@ -287,7 +306,7 @@ class TeleopSession:
         Clearing writes an acknowledgement that outlives this process, so the
         next session does not inherit a stop the operator already cleared.
         """
-        now = time.time() if now is None else now
+        now = time.monotonic() if now is None else now
 
         stop_at = last_stop_at()
         if stop_at > self._seen_stop_at:
@@ -464,7 +483,7 @@ async def _dispatch_loop(session: TeleopSession, ws: ServerConnection) -> None:
     last_status = 0.0
     try:
         while True:
-            now = time.time()
+            now = time.monotonic()
             await _dispatch_once(session, now)
             # Status back to the client ~2 Hz: enough for the UI to show the
             # dead-man and why the arms are not engaged, cheap enough to
@@ -585,8 +604,8 @@ async def handle_client(ws: ServerConnection) -> None:
         # RECONNECT_GRACE_S. Polling rather than an Event because the thing
         # being waited on is a module-level slot cleared in a `finally`, and a
         # missed set would strand the next operator for the whole grace period.
-        deadline = time.time() + RECONNECT_GRACE_S
-        while _active is not None and time.time() < deadline:
+        deadline = time.monotonic() + RECONNECT_GRACE_S
+        while _active is not None and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
         if _active is not None:
             log.warning("teleop.session_refused", remote=ws.remote_address)
@@ -627,6 +646,59 @@ async def handle_client(ws: ServerConnection) -> None:
         log.info("teleop.session_ended", **session.status())
 
 
+#: How long shutdown waits for the robot to be brought to rest before giving up
+#: and exiting anyway. Generous compared with STOP_ACK_BUDGET_S because this
+#: path also ramps the arm_sdk weight down, which is a timed ramp rather than a
+#: single command — cutting it short is what drops the arms.
+SHUTDOWN_BUDGET_S = 6.0
+
+
+async def _shutdown(reason: str) -> None:
+    """Bring the robot to rest on the way out. Best-effort, bounded.
+
+    Without this, stopping the teleop server left the robot exactly as the last
+    frame set it: `arm_sdk` weight still at 1.0 holding whatever pose the
+    operator's arms were in, and the hands still gripping. Nothing downstream
+    corrects that — `arm_sdk` has a frame timeout that ramps the weight down,
+    but the hands have no timeout at all, so a closed hand stays closed until
+    something tells it otherwise.
+
+    That is the normal way this process dies. `systemctl restart`, a redeploy,
+    Ctrl-C in the terminal it was started from, the supervisor cycling it — all
+    SIGTERM, and all previously left a humanoid holding a pose with its fists
+    shut and nobody connected to it.
+
+    Bounded because a shutdown that hangs is worse than one that gives up: the
+    supervisor escalates to SIGKILL, and then nothing runs at all.
+    """
+    log.warning("teleop.shutdown", reason=reason)
+    session = _active
+    try:
+        if session is not None:
+            await asyncio.wait_for(_safe_stop(session), timeout=SHUTDOWN_BUDGET_S)
+            return
+
+        # No session, but the arms and hands can still be engaged: a session
+        # that ended uncleanly, or a driver engaged by something else in this
+        # process. Do the same work without one.
+        from bridge.skills._locomotion import send_velocity_async
+
+        async def _rest() -> None:
+            try:
+                await send_velocity_async(0.0, 0.0, 0.0, STAND_HEIGHT)
+            except Exception:
+                log.warning("teleop.shutdown_stop_failed", exc_info=True)
+            driver = get_driver()
+            if driver.engaged:
+                await driver.release()
+
+        await asyncio.wait_for(_rest(), timeout=SHUTDOWN_BUDGET_S)
+    except asyncio.TimeoutError:
+        log.warning("teleop.shutdown_incomplete", budget_s=SHUTDOWN_BUDGET_S)
+    except Exception:
+        log.warning("teleop.shutdown_failed", exc_info=True)
+
+
 async def _main() -> None:
     from bridge.sdk.connection import init_dds
 
@@ -640,6 +712,16 @@ async def _main() -> None:
 
     get_sampler().start()
 
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stopping.set)
+        except NotImplementedError:  # pragma: no cover - not POSIX
+            # Windows has no add_signal_handler. Nothing here runs there, but
+            # failing to start is a worse answer than running without it.
+            log.warning("teleop.signal_handler_unavailable", signal=sig.name)
+
     async with serve(handle_client, TELEOP_HOST, TELEOP_PORT):
         log.info(
             "teleop.listening",
@@ -648,7 +730,13 @@ async def _main() -> None:
             sim_mode=os.environ.get("SIM_MODE", "stub"),
             arm=get_driver().status(),
         )
-        await asyncio.Future()
+        # Waiting on an Event rather than `asyncio.Future()`: the signal
+        # handler has to be able to reach the shutdown below. A bare Future
+        # only ever ends by KeyboardInterrupt unwinding the stack, which does
+        # not run on SIGTERM at all.
+        await stopping.wait()
+
+    await _shutdown("signal")
 
 
 def run() -> None:

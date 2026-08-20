@@ -53,8 +53,7 @@ def test_the_module_does_not_stringify_its_annotations():
     # annotations happen to be resolvable anyway.
     source = pathlib.Path(ros_idl.__file__).read_text()
     assert not any(
-        line.startswith("from __future__ import annotations")
-        for line in source.splitlines()
+        line.startswith("from __future__ import annotations") for line in source.splitlines()
     )
 
 

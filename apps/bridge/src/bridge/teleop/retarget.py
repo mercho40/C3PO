@@ -357,7 +357,9 @@ def retarget_arm(
     if reach < MIN_DIRECTION_M:
         # Hand at the shoulder: direction is noise. Fold the arm and keep the
         # shoulder where a folded arm belongs rather than amplifying jitter.
-        return _finish(side, ArmAngles(0.0, 0.0, 0.0, _elbow_angle(reach, arm_length_m), 0.0, 0.0, 0.0))
+        return _finish(
+            side, ArmAngles(0.0, 0.0, 0.0, _elbow_angle(reach, arm_length_m), 0.0, 0.0, 0.0)
+        )
 
     d = (v[0] / reach, v[1] / reach, v[2] / reach)
 

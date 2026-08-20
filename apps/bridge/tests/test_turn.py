@@ -92,7 +92,9 @@ async def test_turn_cancellation_stops_promptly(monkeypatch):
     sampler = _FakeSampler([_pose(0.0)] * 1000)
     monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
 
-    task_future = asyncio.ensure_future(turn.run(delta_yaw_radians=math.radians(90), timeout_s=30.0))
+    task_future = asyncio.ensure_future(
+        turn.run(delta_yaw_radians=math.radians(90), timeout_s=30.0)
+    )
     await asyncio.sleep(0.05)  # let it register and start looping
 
     active = get_registry().list_active()

@@ -95,6 +95,7 @@ DEX3_CLOSED_MAGNITUDE = (0.60, 0.35, 0.30, 1.10, 1.10, 1.10, 1.10)
 DEX3_RIGHT_SIGNS = (1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0)
 DEX3_LEFT_SIGNS = (1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0)
 
+
 # `RIS_Mode_t { id:4, status:3, timeout:1 }`, confirmed verbatim by Unitree.
 # status 1 = FOC (driven), timeout 1 = enable the firmware's 1 s deadman on the
 # hand motors. Always set timeout, never clear it: it is free safety of exactly
@@ -235,6 +236,40 @@ class Dex3HandDriver(HandDriver):
             motor.kp = DEX3_KP
             motor.kd = DEX3_KD
         self._publisher(side).Write(cmd)
+
+
+_driver: HandDriver | None = None
+
+
+def get_driver() -> HandDriver:
+    """The process's one hand driver, built on first use.
+
+    A driver holds DDS publishers, created lazily and never destroyed — there
+    is no unmake for a `ChannelPublisher`, and the SDK gives no way to close
+    one. So a driver per session was a publisher leak per session, on a
+    connection that reconnects every time the Wi-Fi blips or the headset
+    sleeps. Twenty reconnects meant twenty writers on `rt/brainco/left/cmd`,
+    all live, all publishing.
+
+    That is not merely untidy. DDS writers are a bounded resource, and multiple
+    writers on one topic with the default QoS make the reader's ownership
+    arbitrary — the hand would be taking commands from whichever stale writer
+    won, including ones belonging to sessions that ended long ago.
+
+    Matches how the arm driver is already reached (`arm_sdk.get_driver`), which
+    is the pattern this should have followed from the start: the hardware is a
+    property of the robot, not of whoever happens to be connected to it.
+    """
+    global _driver
+    if _driver is None:
+        _driver = build_driver()
+    return _driver
+
+
+def reset_driver() -> None:
+    """Drop the cached driver. For tests, and for a config reload."""
+    global _driver
+    _driver = None
 
 
 def build_driver() -> HandDriver:

@@ -246,15 +246,11 @@ class StateSampler:
                 self._note_fsm_failure()
                 continue
             with self._lock:
-                self._fsm = _FsmSnapshot(
-                    received_at=time.time(), fsm_id=fsm_id, fsm_mode=fsm_mode
-                )
+                self._fsm = _FsmSnapshot(received_at=time.time(), fsm_id=fsm_id, fsm_mode=fsm_mode)
 
     def _note_fsm_failure(self) -> None:
         with self._lock:
-            self._fsm = replace(
-                self._fsm, consecutive_failures=self._fsm.consecutive_failures + 1
-            )
+            self._fsm = replace(self._fsm, consecutive_failures=self._fsm.consecutive_failures + 1)
 
     def _on_odom(self, msg: Any) -> None:
         """Vendor odometry (unitree_go SportModeState_) → world pose.

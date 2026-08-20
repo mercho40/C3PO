@@ -155,8 +155,31 @@ def test_every_gesture_id_is_in_the_official_action_table():
     is back on 36 (`forward_push`) after a day on 23.
     """
     # The robot's own GetActionList, read live 2026-08-15.
-    official = {1, 11, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
-                28, 29, 30, 33, 34, 36, 99}
+    official = {
+        1,
+        11,
+        12,
+        13,
+        15,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        33,
+        34,
+        36,
+        99,
+    }
 
     for gesture in g1_protocol.Gesture:
         assert gesture.value in official, f"{gesture.name}={gesture.value} is not a vendor action"
@@ -245,4 +268,5 @@ async def test_an_unreadable_fsm_is_unverified_not_failed(monkeypatch):
 def _fake_fsm(value):
     async def _fake(target, timeout_s):
         return value
+
     return _fake

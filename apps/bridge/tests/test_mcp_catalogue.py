@@ -286,9 +286,7 @@ def test_apps_back_does_not_reintroduce_a_second_catalogue():
     if not skills_dir.is_dir():
         pytest.skip(f"apps/back not present at {skills_dir}")
 
-    offenders = [
-        ts.name for ts in skills_dir.glob("*.ts") if "defineSkill(" in ts.read_text()
-    ]
+    offenders = [ts.name for ts in skills_dir.glob("*.ts") if "defineSkill(" in ts.read_text()]
     assert not offenders, (
         "apps/back has hand-written skill definitions again: "
         f"{sorted(offenders)}. The catalogue comes from the bridge — add the tool "

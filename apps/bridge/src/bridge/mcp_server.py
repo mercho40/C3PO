@@ -88,6 +88,7 @@ mcp = FastMCP(
 # Tool: get_state
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool(
     meta=skill_meta(
         classification="introspection",
@@ -147,6 +148,7 @@ def get_state() -> dict:
 # ---------------------------------------------------------------------------
 # Tool: walk_to
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     meta=skill_meta(
@@ -243,6 +245,7 @@ async def walk_to(
 # ---------------------------------------------------------------------------
 # Tool: turn
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     meta=skill_meta(
@@ -467,6 +470,7 @@ async def walk_velocity(
 # ---------------------------------------------------------------------------
 # Tool: stop_everything
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     meta=skill_meta(
@@ -1075,6 +1079,7 @@ async def dance(ctx: Context) -> dict:
 # Tool: say
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool(
     meta=skill_meta(
         classification="speech",
@@ -1223,9 +1228,7 @@ def remember_landmark(
     if pose is None:
         return {"status": "failed", "name": name, "error": "no_pose"}
 
-    landmark = get_landmark_store().remember(
-        name, pose, frame_tick=_current_frame_tick()
-    )
+    landmark = get_landmark_store().remember(name, pose, frame_tick=_current_frame_tick())
     log.info("remember_landmark.saved", name=name, pose=landmark.to_dict())
     return {"status": "ok", **landmark.to_dict()}
 
@@ -1313,9 +1316,7 @@ def list_landmarks() -> dict:
     landmarks = get_landmark_store().list_all()
     return {
         "count": len(landmarks),
-        "landmarks": [
-            _with_frame_status(lm.to_dict(), lm) for lm in landmarks
-        ],
+        "landmarks": [_with_frame_status(lm.to_dict(), lm) for lm in landmarks],
     }
 
 
@@ -1346,6 +1347,7 @@ def forget_landmark(
 # ---------------------------------------------------------------------------
 # Tool: cancel_task
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     meta=skill_meta(
@@ -1404,6 +1406,7 @@ def cancel_task(
 # ---------------------------------------------------------------------------
 # Tool: describe_surroundings
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     meta=skill_meta(
@@ -1465,15 +1468,11 @@ def describe_surroundings() -> dict:
             dx = lm.x_meters_world - float(pose["x_m"])
             dy = lm.y_meters_world - float(pose["y_m"])
             rng = math.hypot(dx, dy)
-            bearing = math.degrees(
-                math.atan2(dy, dx) - math.radians(float(pose["yaw_deg"]))
-            )
+            bearing = math.degrees(math.atan2(dy, dx) - math.radians(float(pose["yaw_deg"])))
             # Normalise into (-180, 180] so "left" and "right" stay meaningful.
             bearing = (bearing + 180.0) % 360.0 - 180.0
             landmarks.append(
-                world_model.Observation(
-                    label=lm.name, range_m=rng, bearing_deg=bearing
-                )
+                world_model.Observation(label=lm.name, range_m=rng, bearing_deg=bearing)
             )
 
     return world_model.build(
@@ -1490,6 +1489,7 @@ def describe_surroundings() -> dict:
 # ---------------------------------------------------------------------------
 # Tool: list_active_tasks
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(
     meta=skill_meta(
