@@ -17,7 +17,14 @@ that is not a test. Three CLI publishers cost nothing, are readable in `ps`, and
 — the point of Stage 3 — can be killed INDIVIDUALLY to watch a single source go
 offline while the others stay up:
 
-    docker exec c3po-perception-nav pkill -f 'topic pub /c3po/objects'
+    docker exec c3po-perception-nav pkill -f '/c3po/objects'
+
+Match on the TOPIC ALONE. `pkill -f 'topic pub /c3po/objects'` looks right and
+never matches: FAKE_HZ is passed as `-r 4`, so the real cmdline reads
+`ros2 topic pub -r 4 /c3po/objects ...` and the two words are not adjacent.
+pkill exits 1 silently, nothing dies, the detector stays online, and the test
+you were running appears to disprove "absent is not empty". Verified on the
+robot 2026-08-20.
 
 Within DETECTOR_OFFLINE_AFTER_S (1.5 s) the summary must flip to
 detector_online: false with `objects: []` AND a plain-language note — not to a
