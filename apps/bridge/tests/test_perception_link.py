@@ -496,3 +496,43 @@ def test_a_fresh_gate_reports_refusal_not_silence():
     assert gate["disabled_reason"], (
         "a closed gate must say WHY it is closed — an operator reading this "
         "endpoint is asking why the robot will not move")
+
+
+def test_main_starts_the_perception_link_on_real_hardware():
+    """The link must be STARTED, not merely constructed.
+
+    It was fully implemented, fully tested, and never started, so domain 42 had
+    no participant on the bridge side. Every symptom pointed elsewhere: the
+    costmap route 503'd exactly as it would with Nav2 down, `ros2 topic info`
+    showed Subscription count: 0 on /c3po/cmd_vel so the gate had nothing to
+    refuse, and describe_surroundings reported perception offline, which reads
+    as "not deployed yet" rather than as a missing wire.
+
+    Read as source rather than by importing: mcp_server pulls in the whole tool
+    catalogue and its DDS-adjacent imports, which is precisely what the rest of
+    this suite avoids.
+    """
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "mcp_server.py"
+    body = src.read_text()
+    main_body = body.split("def main()", 1)[-1]
+
+    assert "get_link().start()" in main_body, (
+        "main() must start the perception link — constructing it via get_link() "
+        "creates the singleton but joins no domain")
+
+
+def test_starting_the_link_is_not_arming_it():
+    """start() must never open the gate, whatever else it does.
+
+    This is the property that makes starting at boot safe: the participant and
+    the readers come up, and _default_forward — where a Twist becomes
+    SET_VELOCITY — stays unreachable because _tick() returns before touching it
+    while the gate is shut. A boot that armed navigation would be a robot that
+    walks when the Jetson powers on.
+    """
+    link = pl.PerceptionLink()
+    assert link.is_enabled() is False
+
+    gate = link.diagnostics()["gate"]
+    assert gate["enabled"] is False
+    assert gate["arm_expires_in_s"] is None, "nothing may hold an arming window at rest"
