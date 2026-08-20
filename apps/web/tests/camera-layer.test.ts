@@ -1,0 +1,255 @@
+/**
+ * Tests for the XR camera layer.
+ *
+ * Every failure mode below renders as a BLACK VIEW in a headset, which is
+ * indistinguishable from "the camera isn't running" and from "the overlay
+ * didn't composite" — the exact confusion that cost a headset session. None of
+ * them throw, and none are visible from the code.
+ *
+ * WebGL is stubbed rather than run. That is honest about what this covers: the
+ * setup decisions that silently produce black, not whether pixels arrive. The
+ * uncovered half needs a headset, and no test here should be read as standing
+ * in for one.
+ */
+
+import { describe, expect, test } from "bun:test";
+import { CameraLayer } from "../src/lib/webxr/camera-layer";
+
+// --- a WebGL context that records what was asked of it ---------------------
+
+type Call = { fn: string; args: unknown[] };
+
+function stubGl() {
+  const calls: Call[] = [];
+  const rec =
+    (fn: string, ret: unknown = null) =>
+    (...args: unknown[]) => {
+      calls.push({ fn, args });
+      return ret;
+    };
+  const gl: Record<string, unknown> = {
+    TEXTURE_2D: "TEXTURE_2D",
+    TEXTURE_WRAP_S: "WRAP_S",
+    TEXTURE_WRAP_T: "WRAP_T",
+    TEXTURE_MIN_FILTER: "MIN",
+    TEXTURE_MAG_FILTER: "MAG",
+    CLAMP_TO_EDGE: "CLAMP_TO_EDGE",
+    LINEAR: "LINEAR",
+    RGB: "RGB",
+    UNSIGNED_BYTE: "UBYTE",
+    ARRAY_BUFFER: "ARRAY_BUFFER",
+    STATIC_DRAW: "STATIC_DRAW",
+    VERTEX_SHADER: "VS",
+    FRAGMENT_SHADER: "FS",
+    COMPILE_STATUS: "COMPILE",
+    LINK_STATUS: "LINK",
+    TRIANGLES: "TRIANGLES",
+    FLOAT: "FLOAT",
+    BLEND: "BLEND",
+    SRC_ALPHA: "SRC_ALPHA",
+    ONE_MINUS_SRC_ALPHA: "1-SRC_ALPHA",
+    createShader: rec("createShader", {}),
+    shaderSource: rec("shaderSource"),
+    compileShader: rec("compileShader"),
+    getShaderParameter: rec("getShaderParameter", true),
+    getShaderInfoLog: rec("getShaderInfoLog", ""),
+    deleteShader: rec("deleteShader"),
+    createProgram: rec("createProgram", {}),
+    attachShader: rec("attachShader"),
+    linkProgram: rec("linkProgram"),
+    getProgramParameter: rec("getProgramParameter", true),
+    getProgramInfoLog: rec("getProgramInfoLog", ""),
+    getAttribLocation: rec("getAttribLocation", 0),
+    getUniformLocation: rec("getUniformLocation", {}),
+    createBuffer: rec("createBuffer", {}),
+    bindBuffer: rec("bindBuffer"),
+    bufferData: rec("bufferData"),
+    createTexture: rec("createTexture", {}),
+    bindTexture: rec("bindTexture"),
+    texParameteri: rec("texParameteri"),
+    texImage2D: rec("texImage2D"),
+    useProgram: rec("useProgram"),
+    enableVertexAttribArray: rec("enableVertexAttribArray"),
+    vertexAttribPointer: rec("vertexAttribPointer"),
+    uniform1f: rec("uniform1f"),
+    enable: rec("enable"),
+    blendFunc: rec("blendFunc"),
+    drawArrays: rec("drawArrays"),
+    disable: rec("disable"),
+    deleteTexture: rec("deleteTexture"),
+    deleteBuffer: rec("deleteBuffer"),
+    deleteProgram: rec("deleteProgram"),
+  };
+  return { gl: gl as unknown as WebGLRenderingContext, calls };
+}
+
+// --- a minimal <img> stand-in ----------------------------------------------
+
+class FakeImage {
+  crossOrigin: string | null = null;
+  naturalWidth = 0;
+  src = "";
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  /** Pretend a frame decoded. */
+  arrive(width = 960) {
+    this.naturalWidth = width;
+    this.onload?.();
+  }
+}
+
+function withFakeImage<T>(body: (made: FakeImage[]) => T): T {
+  const made: FakeImage[] = [];
+  const original = globalThis.Image;
+  // @ts-expect-error — deliberately swapping the constructor for the test
+  globalThis.Image = function () {
+    const img = new FakeImage();
+    made.push(img);
+    return img;
+  };
+  try {
+    return body(made);
+  } finally {
+    globalThis.Image = original;
+  }
+}
+
+describe("attach", () => {
+  test("sets crossOrigin before src — without it WebGL renders black", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      new CameraLayer(gl).attach("http://127.0.0.1:8081/stream.mjpg");
+      // A texture sourced from an image the page cannot read back throws on
+      // upload. The symptom is a black view, not an error anyone sees.
+      expect(made[0].crossOrigin).toBe("anonymous");
+      expect(made[0].src).toBe("http://127.0.0.1:8081/stream.mjpg");
+    });
+  });
+
+  test("reports no frame until one actually decodes", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.attach("http://x/stream.mjpg");
+      expect(layer.hasFrame).toBe(false);
+      made[0].arrive();
+      expect(layer.hasFrame).toBe(true);
+    });
+  });
+
+  test("a stream that errors does not report a frame", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.attach("http://x/stream.mjpg");
+      made[0].onerror?.();
+      expect(layer.hasFrame).toBe(false);
+    });
+  });
+});
+
+describe("draw", () => {
+  test("does nothing before a frame arrives, and does not throw", () => {
+    withFakeImage(() => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.attach("http://x/stream.mjpg");
+      layer.draw(true);
+      expect(calls.some((c) => c.fn === "drawArrays")).toBe(false);
+      expect(layer.framesUploaded).toBe(0);
+    });
+  });
+
+  test("non-power-of-two safety is set — the other silent black", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.attach("http://x/stream.mjpg");
+      made[0].arrive(960); // 960x540 is not a power of two
+      layer.draw(true);
+
+      const params = calls.filter((c) => c.fn === "texParameteri").map((c) => c.args);
+      // WebGL1 silently refuses to sample a non-POT texture with REPEAT or
+      // mipmaps. It renders black rather than complaining.
+      expect(params).toContainEqual(["TEXTURE_2D", "WRAP_S", "CLAMP_TO_EDGE"]);
+      expect(params).toContainEqual(["TEXTURE_2D", "WRAP_T", "CLAMP_TO_EDGE"]);
+      expect(params).toContainEqual(["TEXTURE_2D", "MIN", "LINEAR"]);
+      expect(params).toContainEqual(["TEXTURE_2D", "MAG", "LINEAR"]);
+    });
+  });
+
+  test("draws opaque in VR and translucent under passthrough", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.attach("http://x/stream.mjpg");
+      made[0].arrive();
+
+      layer.draw(true);
+      layer.draw(false);
+      const alphas = calls.filter((c) => c.fn === "uniform1f").map((c) => c.args[1]);
+      // Opaque in VR: the camera IS the world. Translucent in AR: covering
+      // passthrough would hide the robot the operator is standing next to.
+      expect(alphas[0]).toBe(1.0);
+      expect(alphas[1]).toBeCloseTo(0.85);
+    });
+  });
+
+  test("a throwing upload skips the frame instead of ending the session", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      // A tainted or half-decoded image throws here in a real context.
+      (gl as unknown as Record<string, unknown>).texImage2D = () => {
+        throw new Error("tainted canvas");
+      };
+      const layer = new CameraLayer(gl);
+      layer.attach("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true); // must not throw
+      expect(calls.some((c) => c.fn === "drawArrays")).toBe(false);
+    });
+  });
+
+  test("counts uploads so the page can tell live from frozen", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.attach("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true);
+      layer.draw(true);
+      expect(layer.framesUploaded).toBe(2);
+    });
+  });
+});
+
+describe("dispose", () => {
+  test("cuts the src — otherwise the MJPEG request stays open", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.attach("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true);
+      layer.dispose();
+
+      // An ended session must stop pulling frames. The request lives for as
+      // long as the element points at it.
+      expect(made[0].src).toBe("");
+      expect(layer.hasFrame).toBe(false);
+      for (const fn of ["deleteTexture", "deleteBuffer", "deleteProgram"]) {
+        expect(calls.some((c) => c.fn === fn)).toBe(true);
+      }
+    });
+  });
+
+  test("is safe before anything was ever drawn", () => {
+    withFakeImage(() => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.attach("http://x/stream.mjpg");
+      layer.dispose(); // must not throw
+      expect(layer.hasFrame).toBe(false);
+    });
+  });
+});
