@@ -448,3 +448,51 @@ def test_the_vision_detectors_inline_copy_agrees_too():
             f"{_DETECTOR_PY.name} no longer carries {setting!r}. It writes "
             "rt/c3po/objects into the same domain 42 the nav container reads."
         )
+
+
+def test_diagnostics_carries_the_keys_the_gate_route_reads():
+    """/telemetry/gate reads diagnostics() BY KEY, so renames must fail loudly.
+
+    The route builds its body from diagnostics()["gate"] and reports the link's
+    liveness from "started" / "domain_id" / "reports_received". Every one of
+    those is looked up with .get(), which is right for a telemetry endpoint —
+    it must not 500 while someone is trying to read why the robot is not
+    moving — but it also means a rename downstream would turn the route into a
+    cheerful `{}` instead of an error.
+
+    That failure is worse than a crash here. The whole point of the endpoint is
+    to prove the gate refused traffic; an empty body would read as "no drops"
+    to a human skimming it, which is the exact opposite of what a broken gate
+    would actually be doing.
+    """
+    link = pl.PerceptionLink()
+    diag = link.diagnostics()
+
+    assert "gate" in diag, (
+        "diagnostics() no longer embeds the gate — /telemetry/gate in "
+        "mcp_server.py builds its whole body from this key")
+    for key in ("started", "domain_id", "reports_received"):
+        assert key in diag, f"/telemetry/gate reports link.{key}"
+
+    for key in ("enabled", "cmd_vel_received", "dropped_while_disabled", "last_sent"):
+        assert key in diag["gate"], (
+            f"gate.{key} is one of the four fields Stage 4 reads together to "
+            "show Nav2 publishing into a shut gate")
+
+
+def test_a_fresh_gate_reports_refusal_not_silence():
+    """Closed-by-default must be VISIBLE, not merely true.
+
+    last_sent is None and the gate is disabled before anything arms it — and
+    those two have to be readable, because "nothing was sent" and "nothing was
+    ever received" are different facts that look identical from outside.
+    """
+    link = pl.PerceptionLink()
+    gate = link.diagnostics()["gate"]
+
+    assert gate["enabled"] is False, "the cmd_vel gate must start closed"
+    assert gate["last_sent"] is None, "nothing may have been sent before arming"
+    assert gate["dropped_while_disabled"] == 0
+    assert gate["disabled_reason"], (
+        "a closed gate must say WHY it is closed — an operator reading this "
+        "endpoint is asking why the robot will not move")

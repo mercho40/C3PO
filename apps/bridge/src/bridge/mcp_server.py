@@ -1620,6 +1620,51 @@ async def costmap_png(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
+@mcp.custom_route("/telemetry/gate", methods=["GET"])
+async def gate_status(request):  # noqa: ANN001, ANN201 - starlette types
+    """The cmd_vel gate's own account of itself: what it got, what it refused.
+
+    perception_link.status() has always described itself as "what Stage 4 reads
+    while Nav2 plans against a shut gate", but nothing exposed it — no tool, no
+    route — so the one property Stage 4 exists to prove was the one property
+    that could not be observed from outside the process.
+
+    The interesting reading is the CONJUNCTION, and it is worth stating because
+    either half alone is misleading:
+
+        cmd_vel_received      climbing   - Nav2 is planning and publishing
+        dropped_while_disabled climbing  - every one of them was refused
+        last_sent             null       - nothing ever reached the robot
+
+    `dropped_while_disabled` rising on its own could just mean nothing is
+    listening. `last_sent: null` on its own could just mean nothing was ever
+    sent. Together they say the gate is doing its job under live load, which is
+    a different and much stronger claim than "the robot did not move".
+
+    READ-ONLY, AND STRUCTURALLY SO — same as the costmap route above. It reads
+    counters. There is no arm/disarm here and there must never be: arming is a
+    deliberate, audited, expiring action (`arm_navigation`), not a GET.
+    """
+    from starlette.responses import JSONResponse
+
+    from bridge.sdk.perception_link import get_link
+
+    # diagnostics() already embeds status() as its "gate" key, so it is the only
+    # call made here — asking for both would evaluate the gate twice and could
+    # report two different instants under one timestamp.
+    diag = get_link().diagnostics()
+    body = dict(diag.get("gate") or {})
+    # Whether anything is publishing at all — otherwise a quiet gate and a quiet
+    # DOMAIN look identical, and someone spends an afternoon debugging a gate
+    # that never had a single message to refuse.
+    body["link"] = {
+        "started": diag.get("started"),
+        "domain_id": diag.get("domain_id"),
+        "reports_received": diag.get("reports_received"),
+    }
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
 def main() -> None:
     """Run the MCP server.
 
