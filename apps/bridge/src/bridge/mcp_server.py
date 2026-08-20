@@ -1773,37 +1773,16 @@ def cancel_task(
 
 # ---------------------------------------------------------------------------
 # Tool: describe_surroundings
-# ---------------------------------------------------------------------------
+def surroundings_snapshot() -> dict:
+    """The D7 world-model snapshot, as a plain dict.
 
-@mcp.tool(
-    meta=skill_meta(
-        classification="perception",
-        danger_level="low",
-        status="real",
-        cancellable=False,
-        expected_duration_s=0.1,
-        works_sim=True,
-        works_real=True,
-        typical_failure_modes=["bridge_disconnected", "no_pose"],
-    )
-)
-def describe_surroundings() -> dict:
-    """Return a compact, egocentric snapshot of what the robot can perceive.
-
-    Ranges are metres from the robot; bearings are degrees with 0 straight
-    ahead and POSITIVE TO THE LEFT — the same sign as `turn`'s
-    delta_yaw_radians, so a bearing can be turned toward directly.
-
-    Read `sources` and `notes` before acting. A source reported as `offline`
-    means that sense is NOT WORKING, which is different from it reporting
-    nothing: an absent `objects` list with `detector: offline` does not mean
-    the path is clear, it means nothing looked. `objects_omitted` counts
-    obstacles that exist but were not listed.
-
-    Today the perception stack (LiDAR/camera/detector) is not deployed, so this
-    honestly reports everything offline rather than an empty scene. Pose comes
-    through once the bridge is running against a robot.
+    Extracted so the `describe_surroundings` TOOL and the read-only
+    `/telemetry/surroundings` ROUTE cannot drift apart. Two callers building
+    the same snapshot independently is how an operator console ends up
+    showing something subtly different from what the agent was told — and
+    the whole point of D7 is that there is one contract, interpreted once.
     """
+
     from bridge import world_model
     from bridge.skills.landmarks import get_store
 
@@ -1895,6 +1874,40 @@ def describe_surroundings() -> dict:
         detector_online=False,
         lidar_online=False,
     ).to_dict()
+
+
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="perception",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["bridge_disconnected", "no_pose"],
+    )
+)
+def describe_surroundings() -> dict:
+    """Return a compact, egocentric snapshot of what the robot can perceive.
+
+    Ranges are metres from the robot; bearings are degrees with 0 straight
+    ahead and POSITIVE TO THE LEFT — the same sign as `turn`'s
+    delta_yaw_radians, so a bearing can be turned toward directly.
+
+    Read `sources` and `notes` before acting. A source reported as `offline`
+    means that sense is NOT WORKING, which is different from it reporting
+    nothing: an absent `objects` list with `detector: offline` does not mean
+    the path is clear, it means nothing looked. `objects_omitted` counts
+    obstacles that exist but were not listed.
+
+    Today the perception stack (LiDAR/camera/detector) is not deployed, so this
+    honestly reports everything offline rather than an empty scene. Pose comes
+    through once the bridge is running against a robot.
+    """
+    return surroundings_snapshot()
 
 
 # ---------------------------------------------------------------------------
@@ -2073,6 +2086,73 @@ async def gate_status(request):  # noqa: ANN001, ANN201 - starlette types
         "reports_received": diag.get("reports_received"),
     }
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/telemetry/surroundings", methods=["GET"])
+async def surroundings_json(request):  # noqa: ANN001, ANN201 - starlette types
+    """The D7 snapshot the agent sees, for the operator console.
+
+    Deliberately the SAME `surroundings_snapshot()` the `describe_surroundings`
+    tool returns, not a parallel implementation. If the console built its own
+    view of the scene, an operator and the agent could be looking at subtly
+    different worlds while debugging the same incident — which is the exact
+    failure D7's "one contract, interpreted once" exists to prevent.
+
+    Read-only and structurally so, like the costmap and gate routes: it composes
+    a snapshot from data already received and can actuate nothing.
+    """
+    from starlette.responses import JSONResponse
+
+    try:
+        return JSONResponse(surroundings_snapshot(),
+                            headers={"Cache-Control": "no-store"})
+    except Exception:
+        log.exception("telemetry.surroundings_failed")
+        # 503 rather than a partial scene: an operator must never be shown an
+        # empty world that is actually a broken endpoint.
+        return JSONResponse({"error": "could not build a snapshot"}, status_code=503)
+
+
+@mcp.custom_route("/telemetry/voice", methods=["GET"])
+async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
+    """What the robot has heard recently, and whether it can hear at all.
+
+    Uses `recent()` rather than `poll()` — READING THIS MUST NOT CONSUME. The
+    agent's `listen` tool drains the buffer; if the console drained it too, an
+    operator leaving the page open would silently eat the utterances the agent
+    was supposed to act on. The two readers must not compete.
+    """
+    from starlette.responses import JSONResponse
+
+    try:
+        from bridge.skills import listen as listen_skill
+
+        listener = listen_skill.get_mic_listener()
+        diag = listener.diagnostics()
+        source = listen_skill.describe_audio_source()
+        items = listener.recent(120.0) if diag["running"] else []
+        return JSONResponse(
+            {
+                "running": diag["running"],
+                "error": diag["error"],
+                # The distinction an operator needs to read silence correctly:
+                # with a push-to-talk mic, nothing heard usually means nobody
+                # held the button — not a quiet room.
+                "always_listening": source["always_on"],
+                "audio_source": source["source"],
+                "mic_ever_open": diag["mic_ever_open"],
+                "seconds_since_audio": diag["seconds_since_audio"],
+                "utterances": diag["utterances"],
+                "recent": [
+                    {"text": i["text"], "kind": i["kind"], "age_s": i["age_s"]}
+                    for i in items
+                ],
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    except Exception:
+        log.exception("telemetry.voice_failed")
+        return JSONResponse({"error": "voice telemetry unavailable"}, status_code=503)
 
 
 def main() -> None:
