@@ -183,3 +183,66 @@ def test_topics_for_refuses_unknown_sim_mode():
     assert g1_protocol.topics_for("real") is g1_protocol.REAL_TOPICS
     for good in ("isaac", "mujoco_local", "stub"):
         assert g1_protocol.topics_for(good) is g1_protocol.SIM_TOPICS
+
+
+# --- an ack is not a transition ---------------------------------------------
+#
+# `SetFsmId` answers rpc_code 0 and does NOTHING in at least two situations met
+# on 2026-08-20: asking for FSM 4 from a walk program, and asking for anything
+# while no motion controller is loaded. Both reported "completed", which sent
+# us checking cables and DDS config instead of the robot's state.
+
+
+async def test_a_posture_that_never_transitions_says_so(monkeypatch):
+    from bridge.sdk import g1_rpc
+    from bridge.skills import _g1_request
+
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda api_id, data: (0, ""))
+    # The robot acks, and stays exactly where it was.
+    monkeypatch.setattr(_g1_request, "_await_fsm", _fake_fsm(501))
+
+    result = await _g1_request.run_g1_request("prepare", None)
+
+    assert result["status"] == "completed", "the RPC did succeed — status must not lie about that"
+    assert result["phase"] == "acked_no_transition"
+    assert result["result"]["transitioned"] is False
+    assert result["result"]["fsm_after"] == 501
+    assert "controller" in result["result"]["note"]
+
+
+async def test_a_posture_that_lands_reports_transitioned(monkeypatch):
+    from bridge.sdk import g1_rpc
+    from bridge.skills import _g1_request
+
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda api_id, data: (0, ""))
+    monkeypatch.setattr(_g1_request, "_await_fsm", _fake_fsm(4))
+
+    result = await _g1_request.run_g1_request("prepare", None)
+
+    assert result["phase"] == "dispatched"
+    assert result["result"]["transitioned"] is True
+
+
+async def test_an_unreadable_fsm_is_unverified_not_failed(monkeypatch):
+    # If the check itself cannot run, the dispatch still succeeded. Reporting
+    # "did not transition" on missing evidence is the overreach this guards.
+    from bridge.sdk import g1_rpc
+    from bridge.skills import _g1_request
+
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda api_id, data: (0, ""))
+    monkeypatch.setattr(_g1_request, "_await_fsm", _fake_fsm(None))
+
+    result = await _g1_request.run_g1_request("prepare", None)
+
+    assert result["status"] == "completed"
+    assert result["phase"] == "dispatched", "unverified must not read as failed"
+    assert result["result"]["transitioned"] is None
+
+
+def _fake_fsm(value):
+    async def _fake(target, timeout_s):
+        return value
+    return _fake
