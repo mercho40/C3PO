@@ -18,6 +18,12 @@ setup(
         ("share/ament_index/resource_index/packages",
          ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
+        # behavior_trees/ is installed for the same reason config/ is:
+        # nav2_params.yaml resolves it through $(find-pkg-share), which only
+        # sees the SHARE directory. A tree left in the source tree is a tree
+        # bt_navigator cannot load.
+        (os.path.join("share", package_name, "behavior_trees"),
+         glob("behavior_trees/*.xml")),
         (os.path.join("share", package_name, "launch"),
          glob("launch/*.launch.py")),
         # glob("config/*") on purpose — MID360_config.json is consumed by

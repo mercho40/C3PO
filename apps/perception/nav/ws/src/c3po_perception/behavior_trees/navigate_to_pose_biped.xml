@@ -1,0 +1,68 @@
+<!--
+  navigate_to_pose, with only the recoveries a BIPED can safely take.
+
+  Identical to nav2_bt_navigator's
+  navigate_to_pose_w_replanning_and_recovery.xml in its planning and control
+  half — 1 Hz replanning, ClearEntireCostmap on a planner or controller failure,
+  six top-level retries. The ONLY change is the RecoveryActions round-robin:
+  upstream cycles Clear -> Spin -> Wait -> BackUp; we cycle Clear -> Wait.
+
+  WHY, AND WHY THIS FILE HAS TO EXIST AT ALL.
+
+  behavior_server runs `behavior_plugins: ["wait"]` deliberately: BackUp, Spin
+  and DriveOnHeading are written for a wheeled base, and an autonomous
+  spin-in-place on a biped, triggered by a costmap glitch, is a fall.
+
+  But disabling the behaviours is only half the job. The default BT still
+  REFERENCES <Spin> and <BackUp>, and bt_navigator resolves those action
+  servers at load time, not at first use:
+
+      "spin" action server not available after waiting for 1.00s
+      Exception when loading BT: Action server spin not available
+      Failed to bring up all requested nodes. Aborting bringup.
+
+  So a behaviour we deliberately do not run stopped the entire bringup — and
+  because bt_navigator sits before velocity_smoother in the lifecycle manager's
+  node_names, it also took down the only path to /c3po/cmd_vel. Trimming the
+  behaviours without pinning a matching tree is the same shape of mistake as
+  trimming plugin_lib_names was: the config said one thing and the XML another.
+
+  WHAT THE ROBOT DOES WHEN IT IS STUCK, NOW. It clears both costmaps, waits 5 s,
+  and tries again, six times. If the obstacle was a stale costmap artefact the
+  clear fixes it; if it was real, the robot waits rather than blindly rotating
+  next to it. When it genuinely cannot proceed it fails the goal and says so,
+  which for a 1.3 m humanoid standing next to a person is the correct outcome —
+  an honest refusal beats an unsupervised recovery manoeuvre.
+
+  RE-ADDING Spin OR BackUp MEANS THREE EDITS, NOT ONE: the plugin here, the
+  behavior_plugins list in nav2_params.yaml, and a supervised window to watch
+  the first one fire. Do them together or not at all.
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+          </Sequence>
+          <Wait wait_duration="5"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>
