@@ -37,4 +37,7 @@ export const env = {
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ?? "",
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ?? "",
   PORT: Number(process.env.PORT) || 3000,
+  //: Comma-separated emails granted `role: "admin"` at boot. Empty means
+  //: nobody — see admin-bootstrap.ts for why this exists at all.
+  ADMIN_EMAILS: process.env.ADMIN_EMAILS ?? "",
 };
