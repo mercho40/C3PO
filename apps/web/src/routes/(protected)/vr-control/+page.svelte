@@ -749,6 +749,17 @@
       </dl>
     {/if}
 
+    {#if teleopStatus?.stopped_by_estop}
+      <p
+        role="alert"
+        class="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5 text-sm text-ink"
+      >
+        <strong>Detenido por PARAR.</strong> El puente cortó el movimiento. Soltá
+        los controles (y bajá la cabeza al centro) para volver a habilitarlo — se
+        mantiene detenido mientras sigas apretando.
+      </p>
+    {/if}
+
     {#if teleopStatus?.deadman_tripped}
       <p role="alert" class="text-sm text-warn">
         Hombre muerto activado: se mantuvo el movimiento demasiado tiempo. Soltá
