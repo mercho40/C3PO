@@ -65,6 +65,20 @@ def generate_launch_description() -> LaunchDescription:
     share = FindPackageShare("c3po_perception")
     params = PathJoinSubstitution([share, "config", "nav2_params.yaml"])
 
+    # Behaviour trees, resolved HERE and not in the YAML. A parameter file is
+    # read literally — `$(find-pkg-share ...)` in it reaches bt_navigator as a
+    # dollar sign and a filename. Substitutions only expand in a launch file,
+    # so the absolute paths are built here and passed as an override.
+    #
+    # Both are ours rather than upstream's: behavior_plugins is ["wait"], and
+    # bt_navigator resolves every action server its trees name at LOAD time, so
+    # the stock trees' <Spin>/<BackUp> abort bringup for behaviours we
+    # deliberately never run. See the trees' own headers.
+    bt_to_pose = PathJoinSubstitution(
+        [share, "behavior_trees", "navigate_to_pose_biped.xml"])
+    bt_through_poses = PathJoinSubstitution(
+        [share, "behavior_trees", "navigate_through_poses_biped.xml"])
+
     args = [
         DeclareLaunchArgument("lidar_height_m", default_value="1.15"),
         DeclareLaunchArgument("mount_yaw_deg", default_value="0.0"),
@@ -172,7 +186,10 @@ def generate_launch_description() -> LaunchDescription:
             executable="bt_navigator",
             name="bt_navigator",
             output="screen",
-            parameters=[params],
+            parameters=[params, {
+                "default_nav_to_pose_bt_xml": bt_to_pose,
+                "default_nav_through_poses_bt_xml": bt_through_poses,
+            }],
             remappings=TF_REMAPS,
         ),
         Node(
