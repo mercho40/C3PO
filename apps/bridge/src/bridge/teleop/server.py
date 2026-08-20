@@ -75,7 +75,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from bridge.teleop import hands as hands_mod
 from bridge.teleop.arm_sdk import ArmSdkUnavailable, get_driver
 from bridge.teleop.protocol import FrameError, TeleopFrame, parse_frame
-from bridge.estop import last_stop_at
+from bridge.estop import last_stop_at, record_ack, stop_is_standing
 from bridge.skills.task_runtime import get_registry
 from bridge.teleop.retarget import (
     DEFAULT_ARM_LENGTH_M,
@@ -165,6 +165,16 @@ class TeleopSession:
         #: starting after an OLD stop does not immediately latch on it — what
         #: matters is a stop during *this* session.
         self._seen_stop_at = last_stop_at()
+        #: A stop outlives the session that was running when it was pressed.
+        #: Reconnecting is not a way to clear one — before this, a fresh
+        #: session recorded the existing stop as "already seen" and started
+        #: unlatched, so PARAR followed by a reconnect (which the operator
+        #: does *reflexively* when the robot stops responding) resumed a
+        #: halted robot with no acknowledgement from anyone.
+        self._release_since: float | None = None
+        if stop_is_standing():
+            self.stopped = True
+            log.warning("teleop.estop.inherited", stop_at=self._seen_stop_at)
         self.frame: TeleopFrame | None = None
         self.last_frame_at = 0.0
         self.frames_received = 0
@@ -239,32 +249,79 @@ class TeleopSession:
             self.task.phase = "ended"
             self.task.ended_at = time.time()
 
-    def check_estop(self) -> bool:
-        """Latch `stopped` if the session has been cancelled. Returns the latch.
+    def check_estop(self, now: float | None = None) -> bool:
+        """Latch `stopped` if a stop has been raised. Returns the latch.
 
-        Clearing is deliberate and one-directional: only the operator releasing
-        the dead-man clears it, and clearing also re-arms the underlying event
-        so a second PARAR works exactly like the first.
+        Two independent sources, covering different failures. The cancel event
+        catches a stop raised inside THIS process. The sentinel catches one
+        raised in the bridge's — which is where the console's PARAR button
+        actually lands, and which the registry cannot reach.
+
+        **Clearing is the part that matters.** It used to be a single
+        condition: latched, and the last frame we hold has `enabled` false.
+        Three ways that let a stopped robot start moving again with nobody
+        deciding it should.
+
+        The last frame we hold is not a live statement of operator intent. It
+        is whatever arrived most recently, and it stays there forever once
+        frames stop — so a stop pressed after the link died cleared itself on
+        the next tick against a frame from before the stop existed. The link
+        being down is precisely when a stop must hold.
+
+        A dead-man going false is not an acknowledgement either. It is the
+        single most likely thing to happen in the second after an emergency
+        stop: the operator lets go. So PARAR -> flinch -> re-grip resumed the
+        robot, and the flinch was doing the clearing.
+
+        And `enabled` false is the *resting* state of the controls. Any frame
+        arriving while the operator is not actively commanding — every frame
+        during a pause — cleared the latch, so a stop pressed while the robot
+        was idle was gone before the operator looked up.
+
+        So clearing now needs a live link and a deliberate act: fresh frames,
+        the dead-man held released continuously for `ESTOP_RELEASE_DWELL_S`,
+        and no new stop during that window. Releasing is still the gesture —
+        there is no new control to find in a headset — but it has to be a held
+        release rather than an instant, and the link has to be alive to see it.
+
+        Clearing writes an acknowledgement that outlives this process, so the
+        next session does not inherit a stop the operator already cleared.
         """
-        # Two independent sources, covering different failures. The cancel
-        # event catches a stop raised inside THIS process. The sentinel catches
-        # one raised in the bridge's — which is where the console's PARAR
-        # button actually lands, and which the registry cannot reach.
+        now = time.time() if now is None else now
+
         stop_at = last_stop_at()
         if stop_at > self._seen_stop_at:
             self._seen_stop_at = stop_at
             if not self.stopped:
                 log.warning("teleop.estop", source="sentinel", task_id=self.task.task_id)
             self.stopped = True
+            self._release_since = None  # a new stop restarts the dwell
         if self.task.cancel_event.is_set():
             if not self.stopped:
                 log.warning("teleop.estop", source="registry", task_id=self.task.task_id)
+                self._release_since = None
             self.stopped = True
-        if self.stopped and self.frame is not None and not self.frame.enabled:
-            self.stopped = False
-            self.task.cancel_event.clear()
-            log.info("teleop.estop.cleared", task_id=self.task.task_id)
-        return self.stopped
+
+        if not self.stopped:
+            self._release_since = None
+            return False
+
+        released = self.frame is not None and not self.frame.enabled and not self.stale(now)
+        if not released:
+            self._release_since = None
+            return True
+        if self._release_since is None:
+            self._release_since = now
+            return True
+        if now - self._release_since < ESTOP_RELEASE_DWELL_S:
+            return True
+
+        self.stopped = False
+        self._release_since = None
+        self.task.cancel_event.clear()
+        record_ack()
+        log.info("teleop.estop.cleared", task_id=self.task.task_id)
+        return False
 
     def stale(self, now: float) -> bool:
         return self.last_frame_at == 0.0 or (now - self.last_frame_at) > STALE_FRAME_S
@@ -319,7 +376,7 @@ async def _dispatch_once(session: TeleopSession, now: float) -> None:
     # Before anything else: has the e-stop been pressed? `wants_motion` also
     # consults the latch, but this is what sets it, and it must run even on a
     # tick where no frame has arrived.
-    session.check_estop()
+    session.check_estop(now)
     allowed = session.wants_motion(now)
 
     vx = 0.0
@@ -344,9 +401,7 @@ async def _dispatch_once(session: TeleopSession, now: float) -> None:
     await _dispatch_arms(session, frame, allowed)
 
 
-async def _dispatch_arms(
-    session: TeleopSession, frame: TeleopFrame | None, allowed: bool
-) -> None:
+async def _dispatch_arms(session: TeleopSession, frame: TeleopFrame | None, allowed: bool) -> None:
     driver = get_driver()
 
     wants_arms = allowed and frame is not None and frame.arms
@@ -390,7 +445,9 @@ async def _dispatch_arms(
         else None
     )
     right = (
-        retarget_arm("right", frame.head_position, frame.head_yaw, frame.right, session.arm_length_m)
+        retarget_arm(
+            "right", frame.head_position, frame.head_yaw, frame.right, session.arm_length_m
+        )
         if frame.right is not None
         else None
     )
@@ -507,6 +564,10 @@ RECONNECT_GRACE_S = 3.0
 # refused by its own previous session — past even the grace period above.
 # The stop still goes out; it is shielded, so it completes in the background.
 STOP_ACK_BUDGET_S = 2.0
+
+#: How long the operator must hold the dead-man RELEASED, on a live link,
+#: before a latched stop clears. See `check_estop` for why this is not zero.
+ESTOP_RELEASE_DWELL_S = 1.0
 
 _active: TeleopSession | None = None
 

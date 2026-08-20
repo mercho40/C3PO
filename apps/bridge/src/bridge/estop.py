@@ -33,6 +33,17 @@ Why a file and not DDS, a socket, or a lock:
 
 It is not a lock and does not arbitrate anything. It answers exactly one
 question: *has somebody hit stop since I started?*
+
+There is a second sentinel beside it, `stop_acknowledged`, and it exists
+because the first one on its own has no way to end. A stop that can only be
+observed is a stop that every process must treat as permanent, so something has
+to record that an operator deliberately cleared it. Keeping that record in the
+same place, with the same properties, means a teleop server that restarts ten
+seconds after a stop still knows whether that stop was resolved or is still
+standing — and starts latched if it was not.
+
+The asymmetry between them is deliberate: *anything* may signal a stop, and
+only an operator at the controls may acknowledge one.
 """
 
 from __future__ import annotations
@@ -84,3 +95,52 @@ def last_stop_at() -> float:
         return sentinel_path().stat().st_mtime
     except OSError:
         return 0.0
+
+
+ACK_NAME = "stop_acknowledged"
+
+
+def ack_path() -> Path:
+    return DEFAULT_RUN_DIR / ACK_NAME
+
+
+def record_ack() -> float:
+    """Record that an operator cleared the standing stop. Returns the timestamp.
+
+    Acknowledges every stop up to now rather than one specific timestamp: the
+    operator is at the controls confirming they are ready to resume, and that
+    statement covers whatever led to the halt, not one particular signal of it.
+
+    Best-effort in the same way `signal_stop` is, but the failure leans the
+    other way. A write that fails leaves the stop looking unacknowledged, so
+    the next session starts latched — annoying, and the safe direction.
+    """
+    now = time.time()
+    try:
+        DEFAULT_RUN_DIR.mkdir(parents=True, exist_ok=True)
+        path = ack_path()
+        path.write_text(f"{now}\n")
+        os.utime(path, (now, now))
+        return now
+    except OSError as exc:
+        log.warning("estop.ack_write_failed", path=str(ack_path()), error=str(exc))
+        return now
+
+
+def last_ack_at() -> float:
+    """When a stop was last acknowledged, or 0.0 if never."""
+    try:
+        return ack_path().stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def stop_is_standing() -> bool:
+    """True if a stop has been signalled and not since acknowledged.
+
+    This is the question a process should ask at startup, and the reason the
+    ack file exists: without it, a bridge restarted moments after an e-stop
+    comes up with no memory of it and happily accepts the next frame.
+    """
+    stop_at = last_stop_at()
+    return stop_at > 0.0 and stop_at > last_ack_at()
