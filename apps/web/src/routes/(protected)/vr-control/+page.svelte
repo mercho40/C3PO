@@ -117,6 +117,36 @@
   //: the on-page panel: they share a source but not a decoder, so one can be
   //: live while the other is not.
   let xrCameraLive = $state(false);
+
+  // --- USB link watch ---------------------------------------------------
+  //
+  // `adb reverse` forwards live on the USB connection, not the headset. Unplug
+  // the cable, jostle it, or let the device drop its ADB session and ALL of
+  // them vanish at once — and nothing recreates them. From inside the headset
+  // that is indistinguishable from the server being down, which is exactly how
+  // it presented on 2026-08-20: "localhost is not working", with every service
+  // on the Mac perfectly healthy.
+  //
+  // Polling our own origin is enough to tell them apart, because the page was
+  // served through the same forward that would have died.
+  let linkLost = $state(false);
+  let linkTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startLinkWatch() {
+    if (linkTimer) return;
+    linkTimer = setInterval(async () => {
+      try {
+        await fetch(`/vr-control?ping=${Date.now()}`, {
+          method: "HEAD",
+          cache: "no-store",
+          signal: AbortSignal.timeout(4000),
+        });
+        linkLost = false;
+      } catch {
+        linkLost = true;
+      }
+    }, 5000);
+  }
   let handTrackingSupported = $state(false);
   let vrActive = $state(false);
   let vrError = $state<string | null>(null);
@@ -157,6 +187,14 @@
   let handLeft: HandSample | null = null;
   let handRight: HandSample | null = null;
   let handsVisible = $state(false);
+
+  onMount(() => {
+    startLinkWatch();
+    return () => {
+      if (linkTimer) clearInterval(linkTimer);
+      linkTimer = null;
+    };
+  });
 
   onMount(() => {
     void checkXrSupport().then((s) => {
@@ -807,6 +845,20 @@
       empiece a girar; a más ángulo, más rápido, hasta 30°. Se puede combinar
       con los botones de caminar.
     </p>
+    {#if linkLost}
+      <p
+        role="alert"
+        class="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5 text-sm text-ink"
+      >
+        <strong>Se perdió el enlace USB.</strong> La página ya no alcanza su
+        propio servidor, así que los reenvíos de <code>adb reverse</code> se
+        cayeron — normalmente porque se desconectó el cable del visor. En la
+        Mac:
+        <code>./scripts/quest_setup.sh</code>. El robot está bien; lo que se
+        cortó es el camino hasta él.
+      </p>
+    {/if}
+
     {#if vrActive && !xrCameraLive}
       <p
         role="alert"

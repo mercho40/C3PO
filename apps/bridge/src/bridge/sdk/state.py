@@ -32,7 +32,7 @@ import math
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import structlog
@@ -105,12 +105,32 @@ class _FsmSnapshot:
     received_at: float = 0.0
     fsm_id: int | None = None
     fsm_mode: int | None = None
+    #: Consecutive failed polls since the last good one. The poller used to
+    #: `continue` past a failure, which left the previous snapshot in place and
+    #: reported it as current — on 2026-08-20 `get_state` showed a posture read
+    #: 54 MINUTES earlier, while every RPC was timing out. That looks like a
+    #: healthy robot ignoring commands, and it cost an hour twice.
+    consecutive_failures: int = 0
 
 
 # How often the FSM poller asks the robot. Posture is for humans and the LLM,
 # not for a control loop, so this is deliberately slow — it costs a DDS
 # round-trip each time and nothing downstream needs it fresher.
 FSM_POLL_INTERVAL_S = 0.5
+
+#: Consecutive failed FSM polls before `get_state` reports a fault. At 0.5 s a
+#: poll this is ~5 s of silence — long enough to ride out a dropped packet,
+#: short enough that an operator notices before drawing conclusions.
+FSM_FAILURES_BEFORE_FAULT = 10
+
+#: How old an FSM reading can be before it is called stale. The posture stays
+#: reported (it is the last thing that was true) but stops being presented as
+#: current.
+FSM_STALE_AFTER_S = 10.0
+
+#: How old a pose reading can be before it is called stale. Odom publishes at
+#: ~50 Hz on this robot, so two seconds is forty missed messages.
+POSE_STALE_AFTER_S = 2.0
 
 
 @dataclass
@@ -216,13 +236,25 @@ class StateSampler:
                 fsm_mode = g1_rpc.get_fsm_mode()
             except Exception as exc:  # never let the poller die
                 log.warning("fsm.poll_failed", error=str(exc))
+                self._note_fsm_failure()
                 continue
             if fsm_id is None and fsm_mode is None:
+                # The service answered nothing. Keep the last good reading —
+                # a single dropped packet should not blank the posture — but
+                # COUNT it, so a persistent failure becomes visible instead of
+                # masquerading as the last thing that worked.
+                self._note_fsm_failure()
                 continue
             with self._lock:
                 self._fsm = _FsmSnapshot(
                     received_at=time.time(), fsm_id=fsm_id, fsm_mode=fsm_mode
                 )
+
+    def _note_fsm_failure(self) -> None:
+        with self._lock:
+            self._fsm = replace(
+                self._fsm, consecutive_failures=self._fsm.consecutive_failures + 1
+            )
 
     def _on_odom(self, msg: Any) -> None:
         """Vendor odometry (unitree_go SportModeState_) → world pose.
@@ -348,6 +380,29 @@ class StateSampler:
         now = time.time()
         lowstate_age = now - low.received_at
         faults: list[str] = []
+
+        # --- the bridge's own health, not the robot's ------------------------
+        #
+        # These three are the difference between "the robot is broken" and
+        # "restart the bridge", and on 2026-08-20 we spent an hour on the first
+        # reading before finding it was the second. A long-lived bridge can
+        # lose its RPC clients and individual subscriptions while OTHER
+        # subscriptions keep flowing, so no single signal catches it.
+        if fsm.consecutive_failures >= FSM_FAILURES_BEFORE_FAULT:
+            faults.append(
+                f"fsm_rpc_failing_{fsm.consecutive_failures}_polls"
+                "__restart_the_bridge_if_this_persists"
+            )
+        if fsm.received_at and (now - fsm.received_at) > FSM_STALE_AFTER_S:
+            # The posture below is real, but it is HISTORY. Say so.
+            faults.append(f"stale_fsm_{now - fsm.received_at:.0f}s")
+        if pose_snap.received_at and (now - pose_snap.received_at) > POSE_STALE_AFTER_S:
+            # Every distance and angle this project has measured comes from
+            # odom. On 2026-08-20 its subscription died while lowstate's kept
+            # working — so the link looked healthy, the pose simply stopped
+            # advancing, and a measurement taken then would have been silently
+            # meaningless rather than obviously absent.
+            faults.append(f"stale_pose_{now - pose_snap.received_at:.0f}s")
         if lowstate_age > 1.0:
             faults.append(f"stale_lowstate_{lowstate_age:.1f}s")
 
