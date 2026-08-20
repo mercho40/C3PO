@@ -47,6 +47,7 @@ import json
 import math
 import sys
 import time
+from collections.abc import Callable
 from typing import Any
 
 try:
@@ -134,14 +135,28 @@ def frame(seq: int, **overrides: Any) -> str:
     return json.dumps(payload)
 
 
-async def read_status(ws: Any, timeout: float = 3.0) -> dict:
-    """Wait for a status message that reflects at least one ingested frame."""
+async def read_status(
+    ws: Any, timeout: float = 3.0, until: Callable[[dict], bool] | None = None
+) -> dict:
+    """Wait for a status message, optionally one satisfying `until`.
+
+    Status is published on a ~2 Hz timer, independently of what the client is
+    doing, so several can already be in flight. Without `until`, the first one
+    carrying any frames wins — which is fine for "is the session alive" and
+    *wrong* for anything that has just changed: stage 6 read a status published
+    a second before the e-stop latched and reported the latch had not happened,
+    while the robot's own log showed it plainly. Assert on the message that
+    reflects the event, not on whichever arrives next.
+    """
     deadline = time.time() + timeout
     latest: dict = {}
     while time.time() < deadline:
         raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
         latest = json.loads(raw)
-        if latest.get("frames_received"):
+        if until is not None:
+            if until(latest):
+                return latest
+        elif latest.get("frames_received"):
             return latest
     return latest
 
@@ -363,7 +378,9 @@ async def stage_estop(session: ClientSession, url: str) -> None:
             await ws.send(frame(seq, enabled=True, head={"yaw": math.radians(PROBE_YAW_DEG), "pos": [0, 1.62, 0]}))
             seq += 1
             await asyncio.sleep(0.03)
-        status = await read_status(ws)
+        # Wait for a status that actually reflects the stop, not merely the
+        # next one to arrive — see read_status.
+        status = await read_status(ws, timeout=5.0, until=lambda m: m.get("stopped_by_estop") is True)
 
     after = await yaw_now(session)
     drift = abs(math.degrees((after or 0.0) - (before or 0.0)))
