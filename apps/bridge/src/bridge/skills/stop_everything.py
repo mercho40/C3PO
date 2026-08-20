@@ -95,9 +95,7 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     # is an event loop that can still answer a second stop press or a state
     # poll while these blocking DDS calls are in flight.
     start = time.time()
-    await asyncio.to_thread(
-        stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S
-    )
+    await asyncio.to_thread(stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S)
     duration = time.time() - start
 
     # `stop_motion_sync` above now dispatches per SIM_MODE, so on real hardware

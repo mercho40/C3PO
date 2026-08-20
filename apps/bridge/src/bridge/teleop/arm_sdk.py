@@ -127,6 +127,10 @@ class ArmSdkDriver:
         self._current: list[float] = [0.0] * 14
         self._target: list[float] = [0.0] * 14
         self._mode_machine = 0
+        #: Monotonic, not wall clock — see the note above STALE_FRAME_S in
+        #: server.py. This one guards the arm-hold timeout, and a backwards
+        #: clock step here holds a stale arm pose indefinitely instead of
+        #: ramping the arm_sdk weight down.
         self._last_frame_at = 0.0
         self._published = 0
         # Set when the publish loop dies. Latched, because its error path
@@ -253,10 +257,12 @@ class ArmSdkDriver:
         self._target = list(arm_q)
         self._weight = 0.0
         self._releasing = False
-        self._last_frame_at = time.time()
+        self._last_frame_at = time.monotonic()
         self._engaged = True
         self._task = asyncio.create_task(self._run())
-        log.info("arm_sdk.engaged", mode_machine=mode_machine, start_pose=[round(q, 3) for q in arm_q])
+        log.info(
+            "arm_sdk.engaged", mode_machine=mode_machine, start_pose=[round(q, 3) for q in arm_q]
+        )
 
     def request_release(self) -> None:
         """Start the ramp-down without waiting for it. For the control loop.
@@ -317,17 +323,17 @@ class ArmSdkDriver:
             self._target[0:7] = list(left.as_tuple())
         if right is not None:
             self._target[7:14] = list(right.as_tuple())
-        self._last_frame_at = time.time()
+        self._last_frame_at = time.monotonic()
 
     def hold(self) -> None:
         """Freeze the target where it is — the dead-man's arm behaviour."""
         self._target = list(self._current)
-        self._last_frame_at = time.time()
+        self._last_frame_at = time.monotonic()
 
     def relax_toward_neutral(self) -> None:
         """Aim both arms at the resting pose, still rate-limited."""
         self._target = list(NEUTRAL.as_tuple()) * 2
-        self._last_frame_at = time.time()
+        self._last_frame_at = time.monotonic()
 
     # -- the loop -------------------------------------------------------
 
@@ -383,7 +389,7 @@ class ArmSdkDriver:
                     # Frames stopped arriving: freeze rather than continuing to
                     # chase a stale target. This is the arm half of the
                     # dead-man; `server.py` owns the locomotion half.
-                    if time.time() - self._last_frame_at > FRAME_TIMEOUT_S:
+                    if time.monotonic() - self._last_frame_at > FRAME_TIMEOUT_S:
                         self._target = list(self._current)
 
                 self._slew()

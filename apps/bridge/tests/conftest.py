@@ -29,3 +29,18 @@ def isolated_run_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(estop, "DEFAULT_RUN_DIR", run_dir)
     monkeypatch.setenv("C3PO_RUN_DIR", str(run_dir))
     return run_dir
+
+
+@pytest.fixture(autouse=True)
+def fresh_hand_driver():
+    """The hand driver is a process singleton, so it must not outlive a test.
+
+    It is built from environment variables that tests monkeypatch, and caching
+    it across tests would mean the first test to touch it decides what every
+    later one sees.
+    """
+    from bridge.teleop import hands
+
+    hands.reset_driver()
+    yield
+    hands.reset_driver()

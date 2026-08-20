@@ -247,6 +247,7 @@ class BalanceMode:
     BALANCE_STAND: Final[int] = 0
     CONTINUOUS_GAIT: Final[int] = 1
 
+
 # api_ids are scoped *per service*, not globally — 7107 means SET_SPEED_MODE on
 # `sport` but something unrelated on `arm`. The full loco surface (from the
 # vendor's `g1_loco_client.hpp`; see docs/ROBOT-API.md §2) is:
@@ -486,9 +487,9 @@ class SkillRequest(NamedTuple):
 
 SKILL_REQUESTS: Final[dict[SkillName, SkillRequest]] = {
     # Full-body postures (api_id=7101)
-    "damp":          SkillRequest("sport_request", API_ID_G1_STATE, Mode.DAMP),
-    "zero_torque":   SkillRequest("sport_request", API_ID_G1_STATE, Mode.ZERO_TORQUE),
-    "prepare":       SkillRequest("sport_request", API_ID_G1_STATE, Mode.PREPARATION),
+    "damp": SkillRequest("sport_request", API_ID_G1_STATE, Mode.DAMP),
+    "zero_torque": SkillRequest("sport_request", API_ID_G1_STATE, Mode.ZERO_TORQUE),
+    "prepare": SkillRequest("sport_request", API_ID_G1_STATE, Mode.PREPARATION),
     "start_walking": SkillRequest("sport_request", API_ID_G1_STATE, Mode.WALK),
     # 500 and 501 are two different walk PROGRAMS selected by waist DoF, not a
     # generic start and a variant of it. Unitree's `basic_services_interface`
@@ -501,28 +502,29 @@ SKILL_REQUESTS: Final[dict[SkillName, SkillRequest]] = {
     # The official Python LocoClient has no method for 501 at all, which is
     # part of why we keep our own catalogue rather than delegating to it.
     "start_walking_waist": SkillRequest("sport_request", API_ID_G1_STATE, Mode.WALK_WAIST),
-    "sit_g1":        SkillRequest("sport_request", API_ID_G1_STATE, Mode.SEATING),
-    "lie_up":        SkillRequest("sport_request", API_ID_G1_STATE, Mode.LIE_UP),
+    "sit_g1": SkillRequest("sport_request", API_ID_G1_STATE, Mode.SEATING),
+    "lie_up": SkillRequest("sport_request", API_ID_G1_STATE, Mode.LIE_UP),
     # Mode.SQUAT (2) is never actually sent by the reference implementation
     # (legion1581/unitree_ui) for G1 — both its "Squat" and "Squat-Up" buttons
     # send SQUAT_UP (706). Follow the verified value, not the unverified enum.
-    "squat":         SkillRequest("sport_request", API_ID_G1_STATE, Mode.SQUAT_UP),
+    "squat": SkillRequest("sport_request", API_ID_G1_STATE, Mode.SQUAT_UP),
     # Balance controller (api_id=7102) — NOT a posture, so not 7101. The
     # vendor's `BalanceStand()`. Sent while standing, it engages the
     # stand-and-balance controller; `Start()` (SetFsmId 500) was observed
     # returning code 0 without transitioning out of StandUp on 2026-08-12,
     # and this is the one documented call in that client we had never sent.
-    "balance_stand": SkillRequest("sport_request", API_ID_LOCO_SET_BALANCE_MODE,
-                                  BalanceMode.BALANCE_STAND),
+    "balance_stand": SkillRequest(
+        "sport_request", API_ID_LOCO_SET_BALANCE_MODE, BalanceMode.BALANCE_STAND
+    ),
     # Arm gestures (api_id=7106) — require a locomotion state
-    "wave":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.WAVE_ABOVE_HEAD),
+    "wave": SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.WAVE_ABOVE_HEAD),
     # Back to 36. Yesterday I moved this to 23 because Unitree's published
     # table has no 36 — but the ROBOT's own GetActionList does: id 36,
     # `forward_push`, gated on mode_machine [5, 6], and this robot is 5. The
     # published table is incomplete for this build. Still never executed here.
-    "point_at":      SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.FORWARD_PUSH),
-    "shake_hand":    SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.SHAKE_HAND),
-    "hug":           SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.HUG),
-    "clap":          SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.CLAMP),
-    "release_arm":   SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.RELEASE_ARM),
+    "point_at": SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.FORWARD_PUSH),
+    "shake_hand": SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.SHAKE_HAND),
+    "hug": SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.HUG),
+    "clap": SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.CLAMP),
+    "release_arm": SkillRequest("arm_request", API_ID_G1_UPPER_LIMBS, Gesture.RELEASE_ARM),
 }

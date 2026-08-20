@@ -22,8 +22,12 @@ from bridge.sdk import g1_protocol, state
 
 def _live_lowstate() -> state._LowStateSnapshot:
     return state._LowStateSnapshot(
-        received_at=1_000_000_000.0, tick=1, mode_machine=1, motor_count=35,
-        has_imu=True, raw_message_count=1,
+        received_at=1_000_000_000.0,
+        tick=1,
+        mode_machine=1,
+        motor_count=35,
+        has_imu=True,
+        raw_message_count=1,
     )
 
 
@@ -165,9 +169,7 @@ def test_an_old_fsm_reading_is_called_stale(monkeypatch):
     sampler._lowstate = state_mod._LowStateSnapshot(
         received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
     )
-    sampler._fsm = state_mod._FsmSnapshot(
-        received_at=time.time() - 3600, fsm_id=501, fsm_mode=0
-    )
+    sampler._fsm = state_mod._FsmSnapshot(received_at=time.time() - 3600, fsm_id=501, fsm_mode=0)
 
     faults = sampler.get_state()["faults"]
 

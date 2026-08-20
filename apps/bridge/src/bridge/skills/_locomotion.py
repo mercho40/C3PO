@@ -162,17 +162,23 @@ async def send_velocity_async(vx: float, vy: float, vyaw: float, height: float) 
 
 
 async def stop_motion(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> None:
-    """Send zero-velocity commands for `duration_s` so the robot rests cleanly."""
-    deadline = time.time() + duration_s
-    while time.time() < deadline:
+    """Send zero-velocity commands for `duration_s` so the robot rests cleanly.
+
+    Monotonic clock: a wall clock stepping FORWARD mid-burst (which is what an
+    NTP correction does on a machine that booted without an RTC — the robot
+    onboard, every time) ends the burst early, and this burst is what actually
+    stops the robot. A short one is a robot still carrying velocity.
+    """
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
         await send_velocity_async(0, 0, 0, height)
         await asyncio.sleep(LOOP_PERIOD_S)
 
 
 def stop_motion_sync(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> None:
     """Blocking variant of stop_motion for sync skills (e.g. stop_everything)."""
-    deadline = time.time() + duration_s
-    while time.time() < deadline:
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
         send_velocity(0, 0, 0, height)
         time.sleep(LOOP_PERIOD_S)
 

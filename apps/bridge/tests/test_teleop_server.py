@@ -316,7 +316,9 @@ async def test_lowering_the_arms_does_not_stall_locomotion(session, sent, monkey
 
     monkeypatch.setattr(srv, "get_driver", lambda: _FakeDriver())
     session.arms_active = True
-    session.ingest(parse_frame(frame(arms=False, head={"yaw": srv.YAW_FULL_SCALE_RAD, "pos": [0, 1.6, 0]})))
+    session.ingest(
+        parse_frame(frame(arms=False, head={"yaw": srv.YAW_FULL_SCALE_RAD, "pos": [0, 1.6, 0]}))
+    )
 
     await asyncio.wait_for(srv._dispatch_once(session, session.last_frame_at), timeout=0.5)
 

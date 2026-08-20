@@ -64,9 +64,7 @@ def test_real_mode_clamps_to_hardware_vetted_caps(monkeypatch):
     monkeypatch.setattr(
         g1_rpc,
         "call_set_velocity",
-        lambda vx, vy, omega, duration: (
-            seen.update(vx=vx, vy=vy, omega=omega) or (0, "")
-        ),
+        lambda vx, vy, omega, duration: seen.update(vx=vx, vy=vy, omega=omega) or (0, ""),
     )
 
     # Ask for the sim caps, which is exactly what a saturated controller does.
@@ -152,9 +150,7 @@ def test_stop_motion_sync_zeroes_velocity_on_real(monkeypatch):
     # stop_everything's safety fallback runs through here.
     monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
     calls: list = []
-    monkeypatch.setattr(
-        g1_rpc, "call_set_velocity", lambda *a: (calls.append(a), (0, ""))[1]
-    )
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (calls.append(a), (0, ""))[1])
 
     _locomotion.stop_motion_sync(height=0.78, duration_s=0.05)
 

@@ -33,8 +33,16 @@ def _bounds(param_name: str) -> tuple[float, float]:
 def test_mcp_tool_bounds_match_skill_clamps_for_linear_and_yaw_velocity():
     for param in ("vx", "vy", "vyaw"):
         lo, hi = _bounds(param)
-        assert lo == -walk_velocity_skill.MAX_LINEAR_VEL if param != "vyaw" else lo == -walk_velocity_skill.MAX_YAW_VEL
-        assert hi == walk_velocity_skill.MAX_LINEAR_VEL if param != "vyaw" else hi == walk_velocity_skill.MAX_YAW_VEL
+        assert (
+            lo == -walk_velocity_skill.MAX_LINEAR_VEL
+            if param != "vyaw"
+            else lo == -walk_velocity_skill.MAX_YAW_VEL
+        )
+        assert (
+            hi == walk_velocity_skill.MAX_LINEAR_VEL
+            if param != "vyaw"
+            else hi == walk_velocity_skill.MAX_YAW_VEL
+        )
 
 
 def test_mcp_tool_bounds_match_skill_duration_ceiling():

@@ -56,15 +56,12 @@ def wire(label: str, range_m: float, bearing_deg: float = 0.0, **extra):
 
 
 def test_a_well_formed_report_becomes_a_normal_snapshot():
-    wm = from_report(
-        report(objects=[wire("person", 2.0, 45.0, confidence=0.9, age_s=0.2)])
-    )
+    wm = from_report(report(objects=[wire("person", 2.0, 45.0, confidence=0.9, age_s=0.2)]))
     d = wm.to_dict()
 
     assert d["sources"] == {"pose": "ok", "detector": "ok", "lidar": "ok"}
     assert d["objects"] == [
-        {"label": "person", "range_m": 2.0, "bearing_deg": 45.0,
-         "confidence": 0.9, "age_s": 0.2}
+        {"label": "person", "range_m": 2.0, "bearing_deg": 45.0, "confidence": 0.9, "age_s": 0.2}
     ]
     assert d["free_space"] == {"ahead_m": 3.0, "left_m": 1.5}
     assert d["pose"] == {"x_m": 1.0, "y_m": 2.0, "yaw_deg": 30.0}
@@ -113,9 +110,7 @@ def test_perception_side_omissions_are_declared_even_when_we_truncate_nothing():
 def test_an_offline_detectors_omission_count_is_not_believed():
     # If the detector is offline its object list is dropped entirely, so its
     # claim about what it omitted is not evidence of anything either.
-    wm = from_report(
-        report(detector_online=False, objects=[wire("chair", 1.0)], objects_omitted=7)
-    )
+    wm = from_report(report(detector_online=False, objects=[wire("chair", 1.0)], objects_omitted=7))
 
     assert wm.objects == []
     assert wm.objects_omitted == 0
@@ -123,10 +118,7 @@ def test_an_offline_detectors_omission_count_is_not_believed():
 
 
 def test_build_sums_extra_omitted_directly():
-    many = [
-        Observation(label=f"o{i}", range_m=float(i + 1), bearing_deg=0.0)
-        for i in range(12)
-    ]
+    many = [Observation(label=f"o{i}", range_m=float(i + 1), bearing_deg=0.0) for i in range(12)]
     wm = build(detector_online=True, objects=many, extra_omitted=3)
     assert wm.objects_omitted == (12 - MAX_OBJECTS) + 3
 
@@ -134,9 +126,7 @@ def test_build_sums_extra_omitted_directly():
 def test_a_malformed_detection_is_counted_as_omitted_not_dropped():
     # A fragment we cannot read is still something the detector saw. Silently
     # discarding it would shrink the scene without saying so.
-    wm = from_report(
-        report(objects=[wire("person", 1.0), {"label": "ghost"}, "not-a-dict"])
-    )
+    wm = from_report(report(objects=[wire("person", 1.0), {"label": "ghost"}, "not-a-dict"]))
 
     assert [o.label for o in wm.objects] == ["person"]
     assert wm.objects_omitted == 2

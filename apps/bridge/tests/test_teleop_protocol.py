@@ -49,7 +49,16 @@ def test_parses_a_minimal_valid_frame():
 
 def test_parses_a_tracked_hand():
     frame = parse_frame(
-        _frame(hands={"right": {"tracked": True, "pos": [0.3, 1.3, -0.2], "quat": [0, 0, 0, 1], "grip": 0.4}})
+        _frame(
+            hands={
+                "right": {
+                    "tracked": True,
+                    "pos": [0.3, 1.3, -0.2],
+                    "quat": [0, 0, 0, 1],
+                    "grip": 0.4,
+                }
+            }
+        )
     )
 
     assert frame.right is not None
@@ -67,7 +76,9 @@ def test_untracked_hand_is_none_not_an_error():
 
 def test_hand_beyond_reach_is_treated_as_untracked():
     far = [0.0, 1.6 + MAX_HAND_DISTANCE_M + 0.5, 0.0]
-    frame = parse_frame(_frame(hands={"right": {"tracked": True, "pos": far, "quat": [0, 0, 0, 1]}}))
+    frame = parse_frame(
+        _frame(hands={"right": {"tracked": True, "pos": far, "quat": [0, 0, 0, 1]}})
+    )
     assert frame.right is None
 
 
@@ -114,7 +125,9 @@ def test_rejects_non_unit_quaternion():
     # rotates, which reads downstream as a real but wrong hand direction.
     with pytest.raises(FrameError, match="not a unit quaternion"):
         parse_frame(
-            _frame(hands={"right": {"tracked": True, "pos": [0.3, 1.3, -0.2], "quat": [0, 0, 0, 0.5]}})
+            _frame(
+                hands={"right": {"tracked": True, "pos": [0.3, 1.3, -0.2], "quat": [0, 0, 0, 0.5]}}
+            )
         )
 
 
@@ -130,7 +143,16 @@ def test_normalises_a_slightly_off_unit_quaternion():
 def test_rejects_grip_out_of_range():
     with pytest.raises(FrameError, match="out of range"):
         parse_frame(
-            _frame(hands={"right": {"tracked": True, "pos": [0.3, 1.3, -0.2], "quat": [0, 0, 0, 1], "grip": 1.5}})
+            _frame(
+                hands={
+                    "right": {
+                        "tracked": True,
+                        "pos": [0.3, 1.3, -0.2],
+                        "quat": [0, 0, 0, 1],
+                        "grip": 1.5,
+                    }
+                }
+            )
         )
 
 

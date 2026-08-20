@@ -96,9 +96,7 @@ class Landmark:
             yaw_radians_world=float(d["yaw_radians_world"]),
             saved_at=float(d.get("saved_at", time.time())),
             seq=int(d.get("seq", 0)),
-            frame_tick=(
-                int(d["frame_tick"]) if d.get("frame_tick") is not None else None
-            ),
+            frame_tick=(int(d["frame_tick"]) if d.get("frame_tick") is not None else None),
         )
 
 

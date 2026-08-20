@@ -72,7 +72,7 @@ SUPPORTED_REPORT_VERSIONS = frozenset({1})
 # operator plans against a picture of somewhere the robot has left.
 COSTMAP_STALE_AFTER_S = 5.0
 
-REPORT_OFFLINE_AFTER_S = 2.0   # perception publishes at 4 Hz; 8 missed ticks
+REPORT_OFFLINE_AFTER_S = 2.0  # perception publishes at 4 Hz; 8 missed ticks
 
 # Our own staleness deadman, and it sits ABOVE the firmware's 1 s SET_VELOCITY
 # one (VELOCITY_DURATION_S in skills/_locomotion.py). A wedged Nav2 therefore
@@ -598,9 +598,7 @@ class PerceptionLink:
         """Gate state — what Stage 4 reads while Nav2 plans against a shut gate."""
         now = self._clock()
         with self._lock:
-            enabled = self._enabled and (
-                self._armed_until is None or now < self._armed_until
-            )
+            enabled = self._enabled and (self._armed_until is None or now < self._armed_until)
             return {
                 "enabled": enabled,
                 "disabled_reason": None if enabled else (self._disabled_reason or "disabled"),
@@ -635,9 +633,7 @@ class PerceptionLink:
         """
         report, age = self.latest_report()
         with self._lock:
-            raw_age = (
-                round(self._clock() - self._report_at, 3) if self._report_at else None
-            )
+            raw_age = round(self._clock() - self._report_at, 3) if self._report_at else None
         return {
             "domain_id": self._domain_id,
             "started": self._started,

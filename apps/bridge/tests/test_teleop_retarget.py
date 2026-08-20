@@ -122,7 +122,10 @@ def test_turning_the_head_does_not_sweep_the_arms():
     yaw = math.radians(37)
     origin_straight = shoulder_origin(HEAD, 0.0, "right")
     straight = retarget_arm(
-        "right", HEAD, 0.0, hand_at(origin_straight[0], origin_straight[1], origin_straight[2] - 0.5)
+        "right",
+        HEAD,
+        0.0,
+        hand_at(origin_straight[0], origin_straight[1], origin_straight[2] - 0.5),
     )
 
     origin_turned = shoulder_origin(HEAD, yaw, "right")
@@ -132,7 +135,11 @@ def test_turning_the_head_does_not_sweep_the_arms():
         "right",
         HEAD,
         yaw,
-        hand_at(origin_turned[0] + forward[0], origin_turned[1] + forward[1], origin_turned[2] + forward[2]),
+        hand_at(
+            origin_turned[0] + forward[0],
+            origin_turned[1] + forward[1],
+            origin_turned[2] + forward[2],
+        ),
     )
 
     assert turned.shoulder_pitch == pytest.approx(straight.shoulder_pitch, abs=1e-6)
@@ -182,7 +189,9 @@ def test_wrist_is_off_by_default():
     assert (without.wrist_roll, without.wrist_pitch, without.wrist_yaw) == (0.0, 0.0, 0.0)
 
     with_wrist = retarget_arm("right", HEAD, 0.0, rotated, include_wrist=True)
-    assert any(abs(v) > 1e-6 for v in (with_wrist.wrist_roll, with_wrist.wrist_pitch, with_wrist.wrist_yaw))
+    assert any(
+        abs(v) > 1e-6 for v in (with_wrist.wrist_roll, with_wrist.wrist_pitch, with_wrist.wrist_yaw)
+    )
 
 
 def test_wrist_mapping_is_neutral_when_the_arm_hangs_down():
@@ -205,11 +214,15 @@ def test_wrist_mapping_is_neutral_when_the_arm_hangs_down():
 
 def test_calibration_measures_reach_and_stays_in_human_range():
     origin = shoulder_origin(HEAD, 0.0, "right")
-    measured = calibrate_arm_length(HEAD, 0.0, hand_at(origin[0] + 0.7, origin[1], origin[2]), "right")
+    measured = calibrate_arm_length(
+        HEAD, 0.0, hand_at(origin[0] + 0.7, origin[1], origin[2]), "right"
+    )
     assert measured == pytest.approx(0.7)
 
     # A tracking spike must not scale every later elbow angle.
-    absurd = calibrate_arm_length(HEAD, 0.0, hand_at(origin[0] + 5.0, origin[1], origin[2]), "right")
+    absurd = calibrate_arm_length(
+        HEAD, 0.0, hand_at(origin[0] + 5.0, origin[1], origin[2]), "right"
+    )
     assert absurd == retarget.MAX_ARM_LENGTH_M
 
 
@@ -239,7 +252,6 @@ def test_quat_to_matrix_is_a_rotation():
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
     )
     assert det == pytest.approx(1.0)
-
 
 
 def test_the_measured_signs_are_the_ones_in_the_table():

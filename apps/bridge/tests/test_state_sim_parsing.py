@@ -44,7 +44,11 @@ def test_on_sim_state_parses_nested_json_string_and_updates_pose():
 def test_on_sim_state_accepts_inner_dict_not_only_json_string():
     # `inner_raw` is used as-is when it's already a dict, not re-parsed.
     sampler = state.StateSampler()
-    outer = {"init_state": {"articulation": {"robot": {"root_pose": [[3.0, 4.0, 0.0, 1.0, 0.0, 0.0, 0.0]]}}}}
+    outer = {
+        "init_state": {
+            "articulation": {"robot": {"root_pose": [[3.0, 4.0, 0.0, 1.0, 0.0, 0.0, 0.0]]}}
+        }
+    }
 
     sampler._on_sim_state(_msg(outer))
 
@@ -55,7 +59,11 @@ def test_on_sim_state_accepts_inner_dict_not_only_json_string():
 def test_on_sim_state_computes_yaw_from_quaternion():
     sampler = state.StateSampler()
     half = math.sqrt(2) / 2  # 90-degree yaw: qw=qz=cos/sin(45deg)
-    outer = {"init_state": json.dumps({"articulation": {"robot": {"root_pose": [[0, 0, 0, half, 0, 0, half]]}}})}
+    outer = {
+        "init_state": json.dumps(
+            {"articulation": {"robot": {"root_pose": [[0, 0, 0, half, 0, 0, half]]}}}
+        )
+    }
 
     sampler._on_sim_state(_msg(outer))
 
@@ -81,7 +89,9 @@ def test_on_sim_state_missing_expected_keys_does_not_crash_or_update():
 
 def test_on_sim_state_short_pose_array_does_not_crash_or_update():
     sampler = state.StateSampler()
-    outer = {"init_state": json.dumps({"articulation": {"robot": {"root_pose": [[1.0, 2.0]]}}})}  # too short
+    outer = {
+        "init_state": json.dumps({"articulation": {"robot": {"root_pose": [[1.0, 2.0]]}}})
+    }  # too short
 
     sampler._on_sim_state(_msg(outer))  # ValueError from unpacking, swallowed
 
@@ -92,9 +102,18 @@ def test_get_state_reflects_sim_pose_after_on_sim_state(monkeypatch):
     monkeypatch.setattr(state, "_SIM_MODE", "isaac")
     sampler = state.StateSampler()
     sampler._lowstate = state._LowStateSnapshot(
-        received_at=1_000_000_000.0, tick=1, mode_machine=1, motor_count=35, has_imu=True, raw_message_count=1
+        received_at=1_000_000_000.0,
+        tick=1,
+        mode_machine=1,
+        motor_count=35,
+        has_imu=True,
+        raw_message_count=1,
     )
-    outer = {"init_state": json.dumps({"articulation": {"robot": {"root_pose": [[1.0, 2.0, 0.0, 1.0, 0.0, 0.0, 0.0]]}}})}
+    outer = {
+        "init_state": json.dumps(
+            {"articulation": {"robot": {"root_pose": [[1.0, 2.0, 0.0, 1.0, 0.0, 0.0, 0.0]]}}}
+        )
+    }
     sampler._on_sim_state(_msg(outer))
 
     result = sampler.get_state()

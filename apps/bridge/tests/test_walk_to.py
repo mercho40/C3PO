@@ -81,9 +81,7 @@ async def test_walk_to_arrives_as_pose_approaches_target(monkeypatch):
     # target (5, 0), stop_distance 1.0 -- sequence walks the reported
     # distance down from 5.0 to 0.5 (within stop distance) over a few loop
     # iterations.
-    sampler = _FakeSampler(
-        [_pose(0.0, 0.0), _pose(0.0, 0.0), _pose(3.0, 0.0), _pose(4.5, 0.0)]
-    )
+    sampler = _FakeSampler([_pose(0.0, 0.0), _pose(0.0, 0.0), _pose(3.0, 0.0), _pose(4.5, 0.0)])
     monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
 
     result = await walk_to.run(target_x=5.0, target_y=0.0, stop_distance_m=1.0, timeout_s=5.0)

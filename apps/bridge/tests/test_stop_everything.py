@@ -31,7 +31,7 @@ async def test_stop_everything_cancels_in_flight_walk_velocity(monkeypatch):
     monkeypatch.setattr(
         g1_rpc,
         "call_set_velocity",
-        lambda vx, vy, vyaw, duration: (velocity_calls.append((vx, vy, vyaw, duration)) or (0, "")),
+        lambda vx, vy, vyaw, duration: velocity_calls.append((vx, vy, vyaw, duration)) or (0, ""),
     )
     monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
 
@@ -57,7 +57,7 @@ async def test_stop_everything_cancels_in_flight_walk_velocity(monkeypatch):
 async def test_stop_everything_dispatches_damp_in_real_mode(monkeypatch):
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
     damp_calls = []
-    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: (damp_calls.append(mode) or (0, "")))
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (0, ""))
 
     result = await stop_everything.run()
 
@@ -70,7 +70,7 @@ async def test_stop_everything_dispatches_damp_in_real_mode(monkeypatch):
 async def test_stop_everything_skips_damp_outside_real_mode(monkeypatch):
     monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
     damp_calls = []
-    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: (damp_calls.append(mode) or (0, "")))
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (0, ""))
 
     result = await stop_everything.run()
 
@@ -107,7 +107,7 @@ async def test_stop_everything_reports_failure_after_exhausting_retries(monkeypa
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
     monkeypatch.setattr(stop_everything, "REAL_DAMP_RETRY_DELAY_S", 0.0)
     damp_calls = []
-    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: (damp_calls.append(mode) or (3104, None)))
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (3104, None))
 
     result = await stop_everything.run()
 
