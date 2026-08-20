@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Put the stack controls on PATH — run_c3po / stop_c3po / run_gemm / stop_gemm /
-# perception_up / build_perception / measure.sh — and bound ~/.c3po/logs.
+# perception_up / build_perception / measure.sh, plus the per-session VR
+# sidecars run_teleop / stop_teleop — and bound ~/.c3po/logs.
 #
 # Symlinks rather than copies, so `git pull` in the checkout updates the
 # commands with no reinstall step. Run this on the robot.
@@ -21,7 +22,9 @@ mkdir -p "$target"
 # because each already resolves _common.sh through `readlink -f "$BASH_SOURCE"`
 # specifically so it can be reached through one of these symlinks. measure.sh
 # keeps its extension so the command matches the filename the plan names.
-for cmd in run_c3po stop_c3po run_gemm stop_gemm perception_up build_perception measure.sh; do
+# run_teleop / stop_teleop are per-session VR sidecar controls, reached the same
+# way.
+for cmd in run_c3po stop_c3po run_gemm stop_gemm perception_up build_perception measure.sh run_teleop stop_teleop; do
     chmod +x "$here/$cmd"
     ln -sf "$here/$cmd" "$target/$cmd"
     echo "  linked $target/$cmd -> $here/$cmd"

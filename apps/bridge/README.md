@@ -104,6 +104,33 @@ ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po
 
 That starts a _second_ bridge process on the robot alongside the one `run_c3po` manages — two processes able to command the legs through the same API, the exact condition the stack scripts' stray-commander checks exist to prevent (one-commander invariant: `docs/OPERATIONS.md`). One bridge, reached over a tunnel, keeps the actuation chokepoint singular.
 
+### The teleop stream (Quest arm mirroring)
+
+A third process, beside the MCP server and the camera relay:
+
+```bash
+uv run python -m bridge.teleop.server     # WebSocket on 127.0.0.1:8767
+```
+
+It carries head yaw, both wrists and finger closure from the headset at ~30 Hz
+and is the only commander of locomotion while a session is open. Deliberately
+not MCP: a stream of expiring setpoints is a different shape from a task, and
+routing it through JSON-RPC would put a round-trip and a task-registry entry in
+front of every frame. Loopback-bound with no auth of its own — tunnel it, same
+as 8001.
+
+**Both hardware paths are off by default**, and stay off until a person has
+verified what the documentation cannot tell us:
+
+| Path | Gate | What has to happen first |
+| --- | --- | --- |
+| Arms (`rt/arm_sdk`) | `TELEOP_ARM_ENABLED=1` + `SIM_MODE=real` | `scripts/arm_sign_check.py` — no source gives the positive direction of any G1 arm joint |
+| Fingers | `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE` | `scripts/hand_probe.py` — which hands are fitted is unresolved, and the two candidates disagree on topic, type, motor count *and units* |
+
+With neither set, the stream still runs: head yaw turns the robot and the walk
+axis drives it, which is the part that rides on already-vetted machinery
+(`_locomotion.send_velocity_async`, the same hardware clamp `walk_to` uses).
+
 ### Direct skill calls (no MCP)
 
 Skills are async — call them with `asyncio.run`:
@@ -116,12 +143,6 @@ from bridge.skills.walk_to import run
 print(asyncio.run(run(target_x=1.0, target_y=0.0, stop_distance_m=0.4, timeout_s=60)))
 ```
 
-## Tests
-
-```bash
-uv run pytest    # hardware-free; CI runs these
-```
-
 ## Diagnostic scripts
 
 | Script                        | Purpose                                                                                                                    |
@@ -129,9 +150,24 @@ uv run pytest    # hardware-free; CI runs these
 | `scripts/dds_scan.py`         | List DDS participants + topics across candidate domains — diagnose which domain a peer is on, what it publishes/subscribes |
 | `scripts/peek_sim_state.py`   | Subscribe to `rt/sim_state` and print decoded pose JSON                                                                    |
 | `scripts/rotate.py <radians>` | Rotate the robot in place by a yaw delta (see its docstring for the `--` trick with negative radians)                      |
+| `scripts/vr_smoke_test.py`    | **Supervised first-motion ladder** for the VR teleop path: read-only → speech → `wave` → `dance` → first `walk_velocity` → stop path. Prompts before every escalation, refuses to run against a stub, aborts on the first failure. Run it standing next to the robot with the e-stop in reach; `--skip-legs` omits the only stage that commands the legs |
+| `scripts/teleop_smoke_test.py` | **Supervised bring-up for the teleop stream**, acting as the browser so nothing needs a headset. Preflight -> confirm the arms are refused -> confirm a released dead-man commands nothing -> **settle the yaw sign** -> walk axis -> confirm a dropped socket stops the robot. Stage 4 is the one that matters: if the sign is inverted, turning your head left turns the robot right, and that is a bad thing to find out while wearing something that covers your eyes |
+| `scripts/arm_sign_check.py`   | **Settle the arm joint sign conventions.** Engages `rt/arm_sdk` from the measured pose, moves ONE joint by 12 degrees, holds, asks which way it went, returns to neutral. Prints a `JOINT_SIGNS` block to paste into `teleop/retarget.py`. Every prompt defaults to abort, and `--dry` rehearses the whole prompt sequence with no DDS and no motion. Run it standing next to a **standing** robot with the e-stop in reach — `arm_sdk` while walking is a reported balance loss |
+| `scripts/hand_probe.py`       | Passively subscribe to every candidate hand state topic and print what answers. Writes nothing. Largely historical now that the hands are settled as two BrainCo by inspection (`docs/ROBOT-HARDWARE.md`), but still the quickest way to confirm a hand is *connected* — one was found unplugged |
 | `scripts/postsync.sh`         | Patch unitree_sdk2py's broken `__init__.py` after `uv sync`                                                                |
 
 All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set in the environment.
+
+## Tests
+
+```bash
+uv run pytest        # all tests, see tests/
+uv run pytest -v     # verbose
+uv run ruff check src tests   # lint
+uv run mypy src               # type-check
+```
+
+No DDS/hardware needed — everything that touches DDS is monkeypatched (`unitree_sdk2py`'s `ChannelPublisher`/`ChannelSubscriber`/RPC client are never actually constructed in test runs).
 
 ## Layout
 
@@ -155,6 +191,15 @@ src/bridge/
     landmarks.py        remember/recall/list named poses
     task_runtime.py     Task records + registry, cooperative cancellation
     stop_everything.py  cancel-all + zero-velocity burst (+ damp on real hardware)
+    walk_velocity.py    open-loop velocity, real hardware only — no pose needed
+    dance.py            choreographed gesture sequence via call_arm()
+  teleop/               continuous teleoperation — a 30-60Hz control stream, not a task.
+                        Own WebSocket ingest (8767), own process.
+    protocol.py         wire frame -> validated dataclass; rejects NaN and non-unit quaternions
+    retarget.py         operator wrist pose -> 7 joint angles per arm. Pure geometry, no IK
+    arm_sdk.py          50Hz rt/arm_sdk LowCmd_ publisher — DISABLED unless TELEOP_ARM_ENABLED=1
+    hands.py            grip scalar -> BrainCo [0,1] (or Dex3 radians, which this robot lacks)
+    server.py           the session: WebSocket, three dead-men, dispatch
 ```
 
 ## Known issues

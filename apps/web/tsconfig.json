@@ -10,7 +10,12 @@
     "skipLibCheck": true,
     "sourceMap": true,
     "strict": true,
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    // The generated base config pins "types" to ["node"], which suppresses
+    // auto-inclusion of every other @types/* package -- without this,
+    // @types/webxr's ambient globals (XRSession, navigator.xr, ...) never
+    // load, even though the package is installed.
+    "types": ["node", "webxr"]
   }
   // Path aliases are handled by https://svelte.dev/docs/kit/configuration#alias
   // except $lib which is handled by https://svelte.dev/docs/kit/configuration#files

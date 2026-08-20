@@ -142,9 +142,22 @@ done
 if [ "$ready" -eq 1 ]; then
     ok "bridge started (pid $(bridge_pid)), listening on ${port}"
 elif bridge_running; then
-    warn "bridge is up (pid $(bridge_pid)) but nothing is listening on ${port} after 15s"
-    warn "last lines of $BRIDGE_LOG:"
+    # A live PID that never bound its port is a FAILED start, not a warning.
+    #
+    # This branch used to fall through to starting perception and announcing
+    # "c3po stack up", exiting 0. Under the unit's Type=forking +
+    # Restart=on-failure, exit 0 with a live PID is systemd's definition of a
+    # healthy start: `systemctl status` shows active, Restart never fires, and
+    # nothing retries. The result is a robot whose MCP server is unreachable —
+    # so no reachable stop_everything — reported as fine. That is the exact
+    # failure this unit was created to prevent (see its header comment).
+    err "bridge is up (pid $(bridge_pid)) but nothing is listening on ${port} after 15s"
+    err "treating as a failed start so systemd retries rather than reporting healthy"
+    err "last lines of $BRIDGE_LOG:"
     tail -15 "$BRIDGE_LOG" >&2 || true
+    # Leave the PID file: systemd's Type=forking cleanup needs it to reap the
+    # process it was told to track.
+    exit 1
 else
     err "bridge failed to start — last lines of $BRIDGE_LOG:"
     tail -15 "$BRIDGE_LOG" >&2 || true

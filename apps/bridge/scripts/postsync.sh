@@ -56,9 +56,15 @@ fi
 # is invisible on a Mac and raises OSError on the Jetson, the moment anything
 # constructs CRC(). That is the rt/lowcmd and rt/arm_sdk path.
 #
-# Warn rather than fail: the RPC clients we use today never touch CRC, so a
-# missing .so must not block a bridge start. It only has to stop being a
-# surprise later.
+# The file IS in the source uv checked out — it is only the *install* that drops
+# it. So recover it from uv's own cache rather than warning and moving on:
+# same git checkout, same commit, same provenance as the install itself.
+# Verified on the Jetson 2026-08-20, where the missing .so was what stood
+# between us and the arm path.
+#
+# Only warn if no source can be found. The RPC clients we use for locomotion
+# and gestures never touch CRC, so this must never block a bridge start — it
+# only has to stop being a surprise the first time someone drives an arm.
 if [[ "$(uname -s)" == "Linux" ]]; then
     arch="$(uname -m)"
     case "$arch" in
@@ -67,10 +73,22 @@ if [[ "$(uname -s)" == "Linux" ]]; then
         *) so="" ;;
     esac
     if [[ -n "$so" && ! -f "$SITE/utils/lib/$so" ]]; then
-        echo "postsync: WARNING — $SITE/utils/lib/$so is missing." >&2
-        echo "postsync: upstream ships no package_data, so the CRC library is not" >&2
-        echo "postsync: installed. Harmless for the RPC clients, but CRC() will" >&2
-        echo "postsync: raise OSError — which blocks any rt/lowcmd or rt/arm_sdk work." >&2
+        # -newer ordering is not worth it: this is a handful of bytes of CRC32
+        # that has not changed upstream in years. Any copy from the cache beats
+        # no copy at all.
+        src="$(find "${UV_CACHE_DIR:-$HOME/.cache/uv}" -path "*/unitree_sdk2py/utils/lib/$so" \
+               -type f 2>/dev/null | head -1)"
+        if [[ -n "$src" ]]; then
+            mkdir -p "$SITE/utils/lib"
+            cp "$src" "$SITE/utils/lib/$so"
+            echo "postsync: restored utils/lib/$so from $src"
+        else
+            echo "postsync: WARNING — $SITE/utils/lib/$so is missing." >&2
+            echo "postsync: upstream ships no package_data, so the CRC library is not" >&2
+            echo "postsync: installed, and no copy was found in uv's cache to restore." >&2
+            echo "postsync: Harmless for the RPC clients, but CRC() will raise OSError —" >&2
+            echo "postsync: which blocks any rt/lowcmd or rt/arm_sdk work." >&2
+        fi
     fi
 fi
 

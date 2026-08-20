@@ -26,7 +26,7 @@ from bridge.skills._locomotion import (
     LOOP_PERIOD_S,
     MAX_YAW_VEL,
     maybe_report_progress,
-    send_velocity,
+    send_velocity_async,
     stop_motion,
 )
 from bridge.skills.task_runtime import get_registry
@@ -113,7 +113,7 @@ async def run(
             )
 
             vyaw = max(-MAX_YAW_VEL, min(MAX_YAW_VEL, KP_YAW * err))
-            send_velocity(0.0, 0.0, vyaw, height)
+            await send_velocity_async(0.0, 0.0, vyaw, height)
             await asyncio.sleep(LOOP_PERIOD_S)
 
         task.phase = "stopping"
@@ -154,6 +154,21 @@ async def run(
             duration_s=round(task.ended_at - task.started_at, 2),
         )
         return task.to_dict()
+
+    except asyncio.CancelledError:
+        # See walk_to's matching branch: CancelledError is a BaseException, so
+        # `except Exception` misses it, the stop sequence is skipped, and the
+        # task stays "running" forever in a registry that only reaps finished
+        # ones.
+        task.status = "cancelled"
+        task.phase = "cancelled"
+        task.ended_at = time.time()
+        log.info("turn.cancelled", task_id=task.task_id)
+        try:
+            await asyncio.shield(asyncio.ensure_future(stop_motion(height)))
+        except (Exception, asyncio.CancelledError):
+            pass
+        raise  # never swallow cancellation
 
     except Exception as exc:
         task.status = "failed"

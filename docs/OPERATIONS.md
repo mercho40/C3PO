@@ -243,6 +243,80 @@ per-host values in `apps/bridge/.env.example`).
 
 Rollback: the bridge is a git checkout — `git checkout <sha> && run_c3po`.
 
+### Putting a Quest on the console
+
+WebXR refuses `immersive-vr` outside a **secure context**, so browsing the headset
+to `http://<mac-ip>:3001` gives a page where `navigator.xr` is simply undefined —
+/vr-control reports "WebXR no está disponible" with nothing visibly wrong. HTTPS
+with a self-signed cert works but means clicking through a certificate warning
+inside a headset, per port.
+
+`http://localhost` **is** a secure context (a potentially trustworthy origin, and
+Quest Browser is Chromium), so the answer is USB: `scripts/quest_setup.sh` uses
+`adb reverse` to forward the headset's own localhost to this machine. The page
+becomes secure-context, `ws://localhost:8767` is same-scheme so there is no
+mixed-content problem, and nothing is exposed to the school LAN — a bonus, given
+the teleop socket has no authentication of its own.
+
+The script verifies every port is listening **before** forwarding, because a
+forward to a dead port succeeds now and fails later, in the headset, as a page
+that will not load. Needs `adb` (`brew install --cask android-platform-tools`),
+developer mode on the headset, and the in-headset "Allow USB debugging?" prompt
+accepted — that last one is easy to miss. ⚠️ Not yet tested with a real headset.
+
+### The VR teleop stream on the Jetson 🔧
+
+One more process now runs beside the bridge, for `/vr-control`. It is not under
+`run_c3po` or the boot unit — it is started by hand, per session, because it exists to
+serve a person who is currently wearing a headset. The camera comes from
+`apps/perception`'s vision container (`perception_up perception`, port 8081), which is the
+process that owns the D435i.
+
+| Process | Start | Port | What it is |
+| --- | --- | --- | --- |
+| `bridge.teleop.server` | `run_teleop` | 8767 | Head yaw + both wrists + finger closure from the headset, 30 Hz |
+
+The port numbering is not arbitrary and the constraint is tight — everything else on this
+Jetson is already spoken for: **8000** `gemm-ai.service`, **8001** our bridge, **8081** perception's
+vision MJPEG, **8765** the colleague's `foxglove_bridge`, **55555/60000** teleimager
+itself (`docs/ROBOT-HARDWARE.md`).
+
+It binds loopback and **has no authentication at all** — less even than the MCP transport,
+which at least sits behind `apps/back`'s session guard, and it carries live setpoints for
+the arms. Tunnel it:
+
+```bash
+ssh -N -o ControlMaster=no \
+    -L 8001:127.0.0.1:8001 \
+    -L 8081:127.0.0.1:8081 \
+    -L 8767:127.0.0.1:8767 c3po
+```
+
+`ControlMaster=no` matters: a forward on the shared master evaporates when the master idles
+out, and the failure then presents as an unreachable bridge with no obvious cause.
+
+**One commander at a time, and the teleop server is one.** While a session is open it is
+the only writer of `SetVelocity` — `/vr-control` suspends its own `walk_velocity` loop and
+routes the walk buttons through the stream instead. Do not drive the robot from Claude Code
+or the console while someone is wearing the headset; nothing at the DDS layer will stop you
+(every vendor client is `enableLease=false`, so whoever publishes is obeyed) and the two
+sets of setpoints will simply interleave.
+
+**Both hardware paths in the teleop server ship disabled** and stay that way until a person
+has run the corresponding check on the robot:
+
+| Env | Unblocked by | Why it is gated |
+| --- | --- | --- |
+| `TELEOP_ARM_ENABLED=1` | `scripts/arm_sign_check.py` | No source gives the positive direction of any G1 arm joint |
+| `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE=brainco` + `TELEOP_BRAINCO_OPEN_AT` | inspection | The hands are **two BrainCo** (settled 2026-08-19). Units are [0,1], not Dex3 radians — and BrainCo has **no firmware deadman**, so any hold must be bounded by the bridge |
+
+Put them in `apps/bridge/.env` once settled, not on the command line, so the answer
+survives the next session. Head-yaw turning and the walk axis are not gated — they ride on
+`_locomotion.send_velocity_async`, which already carries the hardware clamp and sits above
+the firmware's own `duration` deadman.
+
+⚠️ **The teleop stream has never run against the robot.**
+
 ### `apps/perception` → G1 Jetson
 
 Built with `scripts/robot/build_perception`, run with `perception_up <stage>` — and

@@ -16,13 +16,16 @@ Today:
   request topic, so for `SIM_MODE=isaac` we log the intended dispatch and
   return `status=completed phase=logged_only`. Honest stub — no false
   motion claims.
-- For `SIM_MODE=real`, we'd publish a `unitree_api::msg::dds_::Request_`
-  on the resolved topic. That path waits for the Transport layer (Phase
-  16 in spec); we raise `NotImplementedError` so we don't silently no-op
-  against real hardware.
+- For `SIM_MODE=real`, we dispatch a live RPC via `bridge.sdk.g1_rpc`
+  (`call_sport_api`/`call_arm`) on the resolved topic — this actually
+  moves the robot. No client-side FSM precondition check runs here: the
+  transition-rule data in `g1_protocol.py` is reference material, not a
+  gate — a client-side rule built on partly-unverified sources could refuse
+  a transition the firmware would have accepted, turning a bridge bug into
+  a false "the robot can't do that". The firmware already rejects illegal
+  transitions itself and says so (error 7302, "Invalid fsm id"), which is
+  the answer we actually want.
 - For `SIM_MODE=stub`, we return a clean stub result.
-
-When the Transport layer lands, this file is the only place to change.
 """
 
 from __future__ import annotations

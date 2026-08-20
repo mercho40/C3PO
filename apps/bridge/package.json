@@ -5,8 +5,10 @@
   "scripts": {
     "mcp": "uv run --project . python -m bridge.mcp_server",
     "serve:http": "BRIDGE_TRANSPORT=http SIM_MODE=stub uv run --project . python -m bridge.mcp_server",
+    "teleop": "uv run --project . python -m bridge.teleop.server",
     "build": "uv sync && bash scripts/postsync.sh",
-    "check-types": "echo 'mypy not yet configured'",
+    "check-types": "uv run --project . mypy src",
+    "lint": "uv run --project . ruff check src tests",
     "test": "uv run --project . pytest"
   }
 }
