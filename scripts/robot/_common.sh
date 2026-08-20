@@ -25,13 +25,11 @@ LOG_DIR="${C3PO_LOG_DIR:-$HOME/.c3po/logs}"
 BRIDGE_PID="$RUN_DIR/bridge.pid"
 BRIDGE_LOG="$LOG_DIR/bridge.log"
 
-# The two VR sidecars. Not managed by run_c3po or the boot unit: both exist to
-# serve a person who is currently wearing a headset, so they are per-session,
+# The VR teleop stream. Not managed by run_c3po or the boot unit: it exists to
+# serve a person who is currently wearing a headset, so it is per-session,
 # started by hand, and stopped when that person takes it off.
 TELEOP_PID="$RUN_DIR/teleop.pid"
 TELEOP_LOG="$LOG_DIR/teleop.log"
-RELAY_PID="$RUN_DIR/camera_relay.pid"
-RELAY_LOG="$LOG_DIR/camera_relay.log"
 
 # Containers belonging to the colleague's stack. Matched by prefix so a new
 # `gemm-*` container is picked up without editing this script.
@@ -159,9 +157,6 @@ stray_teleop_pids() {
     pgrep -f 'bridge\.teleop\.server' 2>/dev/null || true
 }
 
-stray_relay_pids() {
-    pgrep -f 'bridge\.camera_relay' 2>/dev/null || true
-}
 
 # --- safety ----------------------------------------------------------------
 

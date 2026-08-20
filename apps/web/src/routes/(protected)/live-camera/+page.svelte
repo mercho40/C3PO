@@ -60,16 +60,6 @@
   });
   const handles: Partial<Record<CamId, SimCamHandle>> = {};
 
-  let { data } = $props();
-
-  // This viewer only applies to the sim's teleimager WebRTC servers -- three
-  // fixed ports, one per camera. Real G1 has one camera, not three, and its
-  // verified-working setup uses a different transport entirely (see
-  // apps/bridge README's Phase 1b notes + the VR teleop research). Don't even
-  // attempt sim ports against real hardware -- show why instead of a
-  // perpetual, unexplained "Sin señal".
-  const realHardware = $derived(data.env === "real");
-
   // Default to the host serving the console (browser runs on the sim box), so no
   // config is needed in the co-located setup; override with PUBLIC_SIM_CAM_HOST.
   let host = $state("");
@@ -80,7 +70,6 @@
   let canvasEl = $state<HTMLDivElement | null>(null);
 
   function start(id: CamId, port: number) {
-    if (realHardware) return;
     handles[id]?.close();
     rt[id] = blank();
     // Statement bodies, not expression bodies: returning the assignment made
@@ -159,7 +148,7 @@
   onMount(() => {
     robotBase = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
     host = env.PUBLIC_SIM_CAM_HOST || location.hostname;
-    if (!realHardware) reconnectAll();
+    reconnectAll();
     return () => {
       robotHandle?.close();
       for (const c of cameras) handles[c.id]?.close();
@@ -363,18 +352,6 @@
   {/if}
 {/snippet}
 
-{#if realHardware}
-  <div class="flex h-full items-center justify-center panel">
-    <div class="flex max-w-md flex-col items-center gap-3 px-6 text-center">
-      <VideoOff class="size-6 text-ink-mute" />
-      <span class="stamp-quiet text-lg text-ink">No disponible contra hardware real</span>
-      <p class="text-sm leading-relaxed text-ink-mute">
-        Este visor asume el simulador (tres cámaras fijas, WebRTC por puerto). El G1 real tiene una
-        sola cámara y usa un transporte distinto — ver <a href="/vr-control" class="underline hover:text-ink">Control VR</a> en su lugar, no este panel.
-      </p>
-    </div>
-  </div>
-{:else}
 <div class="flex h-full min-h-0 flex-col gap-4 pb-2 lg:flex-row">
   <!-- Main feed -->
   <section
@@ -564,4 +541,3 @@
     {/if}
   </aside>
 </div>
-{/if}

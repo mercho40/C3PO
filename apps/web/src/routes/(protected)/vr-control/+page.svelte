@@ -5,7 +5,7 @@
    * of the robot's own camera feed, all dispatched through `POST
    * /skills/:name/invoke` (the same admin-gated raw control surface
    * `stop-button.svelte` already uses) or, for the camera, the relay in
-   * `apps/bridge/src/bridge/camera_relay.py`. This page is meant to be
+   * `apps/perception`'s vision container. This page is meant to be
    * opened directly in the Quest 3's browser, hence oversized touch/pointer
    * targets throughout, and the whole page doubles as a WebXR `dom-overlay`
    * root so the buttons stay usable while a VR session is active.
@@ -51,10 +51,10 @@
     type TeleopStatus,
   } from "$lib/teleop/stream";
   import {
-    connectRealCamera,
-    type RealCamHandle,
-    type RealCamState,
-  } from "$lib/camera/real-camera";
+    connectRobotCamera,
+    type RobotCamHandle,
+    type RobotCamState,
+  } from "$lib/robot/mjpeg-camera";
 
   let { data } = $props();
 
@@ -428,28 +428,42 @@
 
   // --- Camera mirror ---------------------------------------------------
   //
-  // `connectRealCamera` talks to `apps/bridge/src/bridge/camera_relay.py`,
-  // which passively subscribes to teleimager's existing JPEG feed and
-  // re-publishes it over WebSocket -- see that module's docstring for the
-  // full transport story and its "only reachable directly today" caveat
-  // (same LAN as the Jetson, or an SSH tunnel; no apps/back proxy yet).
-  let camState = $state<RealCamState>("connecting");
+  // Same source as /live-camera: `apps/perception`'s vision container, which
+  // is the process that already owns the D435i — and a V4L2 device has exactly
+  // one owner, so it is the only thing that CAN show this picture.
+  //
+  // This page previously used its own WebSocket relay over teleimager's ZeroMQ
+  // feed. That path is gone: teleimager is not running on the robot, and the
+  // `/dev/video4` it opened no longer exists (colour moved to video5). Two
+  // camera transports where one cannot work is worse than one that does.
+  //
+  // The status poll is not decoration. An <img> pointed at an MJPEG stream
+  // keeps showing its last frame forever, with no event — so a camera that
+  // died two minutes ago looks identical to a working one. The picture comes
+  // from the <img>; whether it is LIVE comes from /status.
+  let camState = $state<RobotCamState>("closed");
   let camDetail = $state("");
   let camFrameUrl = $state<string | null>(null);
-  let camHandle: RealCamHandle | null = null;
+  let camLive = $state(false);
+  let camHandle: RobotCamHandle | null = null;
 
   function connectCamera() {
     camHandle?.close();
-    camFrameUrl = null;
-    const host = env.PUBLIC_REAL_CAM_HOST || location.hostname;
-    const port = env.PUBLIC_REAL_CAM_PORT || "8766";
-    const protocol = location.protocol === "https:" ? "wss" : "ws";
-    camHandle = connectRealCamera(`${protocol}://${host}:${port}`, {
-      onFrame: (url) => (camFrameUrl = url),
+    const base = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
+    if (!base) {
+      camState = "error";
+      camDetail = "PUBLIC_ROBOT_CAM_URL no está configurado.";
+      return;
+    }
+    camHandle = connectRobotCamera(base, {
       onState: (state, detail) => {
         camState = state;
         camDetail = detail ?? "";
       },
+      onStatus: (status) => {
+        camLive = status?.live ?? false;
+      },
+      onStreamUrl: (url) => (camFrameUrl = url),
     });
   }
 
@@ -558,7 +572,9 @@
   {#if realHardware}
     <section class="flex flex-col gap-3 panel p-5">
       <div class="flex items-center justify-between gap-2">
-        <span class="eyebrow">Cámara</span>
+        <span class="eyebrow"
+          >Cámara{camFrameUrl && !camLive ? " · congelada" : ""}</span
+        >
         <Button
           variant="outline"
           size="sm"
@@ -571,11 +587,12 @@
       <div
         class="flex aspect-video items-center justify-center overflow-hidden rounded-lg bg-trench"
       >
-        {#if camState === "live" && camFrameUrl}
+        {#if camFrameUrl && (camState === "live" || camState === "stale")}
           <img
             src={camFrameUrl}
             alt="Cámara del robot"
             class="h-full w-full object-contain"
+            class:opacity-40={!camLive}
           />
         {:else}
           <div class="flex flex-col items-center gap-2 text-ink-mute">

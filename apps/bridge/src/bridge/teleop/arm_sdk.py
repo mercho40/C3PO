@@ -42,9 +42,9 @@ shoulder is an arm swinging the opposite way from the one the operator
 expects. Run `scripts/arm_sign_check.py` with a person watching the robot,
 settle the signs, then set the variable.
 
-Never live-tested. Same posture as `walk_velocity`, `dance` and
-`camera_relay`: written from documented interfaces, verified against fakes,
-and not to be trusted until a human has watched it run.
+Never live-tested. Same posture as `walk_velocity` and `dance`: written from
+documented interfaces, verified against fakes, and not to be trusted until a
+human has watched it run.
 """
 
 from __future__ import annotations

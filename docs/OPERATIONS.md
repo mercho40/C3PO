@@ -243,25 +243,26 @@ per-host values in `apps/bridge/.env.example`).
 
 Rollback: the bridge is a git checkout — `git checkout <sha> && run_c3po`.
 
-### Sidecar processes on the Jetson: camera relay and teleop 🔧
+### The VR teleop stream on the Jetson 🔧
 
-Two more processes now run beside the bridge, both for `/vr-control`. Neither is under
-`run_c3po` or the boot unit — they are started by hand, per session, because both exist to
-serve a person who is currently wearing a headset.
+One more process now runs beside the bridge, for `/vr-control`. It is not under
+`run_c3po` or the boot unit — it is started by hand, per session, because it exists to
+serve a person who is currently wearing a headset. The camera comes from
+`apps/perception`'s vision container (`perception_up perception`, port 8081), which is the
+process that owns the D435i.
 
 | Process | Start | Port | What it is |
 | --- | --- | --- | --- |
 | `bridge.teleop.server` | `run_teleop` | 8767 | Head yaw + both wrists + finger closure from the headset, 30 Hz |
-| `bridge.camera_relay` | `run_teleop` | 8766 | ⚠️ **Superseded.** Passive ZeroMQ SUB on teleimager's JPEG feed. `apps/perception`'s vision container on **8081** is the path that actually holds the D435i; this one depends on `teleimager.image_server`, which is not running, and on `/dev/video4`, which no longer exists |
 
 The port numbering is not arbitrary and the constraint is tight — everything else on this
 Jetson is already spoken for: **8000** `gemm-ai.service`, **8001** our bridge, **8081** perception's
 vision MJPEG, **8765** the colleague's `foxglove_bridge`, **55555/60000** teleimager
 itself (`docs/ROBOT-HARDWARE.md`).
 
-Both bind loopback and **neither has any authentication at all** — less even than the MCP
-transport, which at least sits behind `apps/back`'s session guard. The teleop socket
-carries live setpoints for the arms; the relay is a raw frame firehose. Tunnel both:
+It binds loopback and **has no authentication at all** — less even than the MCP transport,
+which at least sits behind `apps/back`'s session guard, and it carries live setpoints for
+the arms. Tunnel it:
 
 ```bash
 ssh -N -o ControlMaster=no \
@@ -293,9 +294,7 @@ survives the next session. Head-yaw turning and the walk axis are not gated — 
 `_locomotion.send_velocity_async`, which already carries the hardware clamp and sits above
 the firmware's own `duration` deadman.
 
-⚠️ **Neither sidecar has ever run against the robot.** The camera relay additionally has
-nothing to relay right now: `teleimager.image_server` is not running, and `/dev/video4` no
-longer exists — colour moved to `/dev/video5` (`docs/ROBOT-HARDWARE.md`).
+⚠️ **The teleop stream has never run against the robot.**
 
 ### `apps/perception` → G1 Jetson
 

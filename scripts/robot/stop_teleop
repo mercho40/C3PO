@@ -13,10 +13,10 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=_common.sh
 . "$here/_common.sh"
 
-say "Stopping VR sidecars"
+say "Stopping VR teleop"
 
 stopped=0
-for pair in "teleop stream:$TELEOP_PID:stray_teleop_pids" "camera relay:$RELAY_PID:stray_relay_pids"; do
+for pair in "teleop stream:$TELEOP_PID:stray_teleop_pids"; do
     label="${pair%%:*}"; rest="${pair#*:}"
     pidfile="${rest%%:*}"; strayfn="${rest##*:}"
 
@@ -49,7 +49,7 @@ for pair in "teleop stream:$TELEOP_PID:stray_teleop_pids" "camera relay:$RELAY_P
 done
 
 if [ "$stopped" = "1" ]; then
-    ok "VR sidecars stopped. The bridge is untouched — stop_c3po if you want that too."
+    ok "VR teleop stopped. The bridge is untouched — stop_c3po if you want that too."
 else
     info "nothing was running"
 fi

@@ -117,7 +117,7 @@ and is the only commander of locomotion while a session is open. Deliberately
 not MCP: a stream of expiring setpoints is a different shape from a task, and
 routing it through JSON-RPC would put a round-trip and a task-registry entry in
 front of every frame. Loopback-bound with no auth of its own — tunnel it, same
-as 8001 and 8766.
+as 8001.
 
 **Both hardware paths are off by default**, and stay off until a person has
 verified what the documentation cannot tell us:
@@ -150,15 +150,12 @@ print(asyncio.run(run(target_x=1.0, target_y=0.0, stop_distance_m=0.4, timeout_s
 | `scripts/dds_scan.py`         | List DDS participants + topics across candidate domains — diagnose which domain a peer is on, what it publishes/subscribes |
 | `scripts/peek_sim_state.py`   | Subscribe to `rt/sim_state` and print decoded pose JSON                                                                    |
 | `scripts/rotate.py <radians>` | Rotate the robot in place by a yaw delta (see its docstring for the `--` trick with negative radians)                      |
-| `scripts/peek_camera_relay.py` | Connect to a running `camera_relay` over WebSocket for 5s, print frame count/size/fps                                     |
 | `scripts/vr_smoke_test.py`    | **Supervised first-motion ladder** for the VR teleop path: read-only → speech → `wave` → `dance` → first `walk_velocity` → stop path. Prompts before every escalation, refuses to run against a stub, aborts on the first failure. Run it standing next to the robot with the e-stop in reach; `--skip-legs` omits the only stage that commands the legs |
 | `scripts/arm_sign_check.py`   | **Settle the arm joint sign conventions.** Engages `rt/arm_sdk` from the measured pose, moves ONE joint by 12 degrees, holds, asks which way it went, returns to neutral. Prints a `JOINT_SIGNS` block to paste into `teleop/retarget.py`. Every prompt defaults to abort. Run it standing next to a **standing** robot with the e-stop in reach — `arm_sdk` while walking is a reported balance loss |
 | `scripts/hand_probe.py`       | Passively subscribe to every candidate hand state topic and print what answers. Writes nothing. Largely historical now that the hands are settled as two BrainCo by inspection (`docs/ROBOT-HARDWARE.md`), but still the quickest way to confirm a hand is *connected* — one was found unplugged |
 | `scripts/postsync.sh`         | Patch unitree_sdk2py's broken `__init__.py` after `uv sync`                                                                |
 
-All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set in the environment,
-except `peek_camera_relay.py`, which only needs `CAMERA_RELAY_HOST`/`CAMERA_RELAY_PORT` (both optional,
-same defaults as the relay itself).
+All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set in the environment.
 
 ## Tests
 
@@ -176,8 +173,6 @@ No DDS/hardware needed — everything that touches DDS is monkeypatched (`unitre
 ```
 src/bridge/
   mcp_server.py         FastMCP server — the skill catalogue as MCP tools; stdio or http transport
-  camera_relay.py       teleimager ZeroMQ JPEG -> WebSocket (⚠️ superseded by apps/perception's
-                        MJPEG server, which is the process that actually holds the camera)
   skill_meta.py         safety/capability metadata attached to every tool (MCP _meta)
   watchdog.py           operator-link watchdog — safe the robot when the link drops
   world_model.py        world-model contract: what perception hands the agent
