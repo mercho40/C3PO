@@ -2122,7 +2122,10 @@ Ordered by how much each unblocks.
     `PlayStream` or only the assistant's playback?** (§7.1)
 24. **Is the raw mic multicast at 239.168.123.161:5555 gated on wake-up mode**, the way
     ASR output explicitly is? Decides whether a future `listen()` has a human
-    prerequisite (§7.2).
+    prerequisite (§7.2). **Half answered 2026-08-20:** it does not stream at rest — a
+    verified join read 0 packets in 12 s with `gemm-ai` also subscribed
+    (`ROBOT-HARDWARE.md` §8.2). Whether L1+L2 opens it is the remaining half, and it needs
+    a person at the robot; `vui_service` has no capture RPC to open it with.
 
 ### Known divergences between this reference and the bridge code
 
