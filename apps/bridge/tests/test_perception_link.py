@@ -562,10 +562,13 @@ def test_describe_surroundings_actually_consumes_the_perception_report():
 
     assert "latest_report()" in tool, (
         "describe_surroundings must read the perception link — without it the "
-        "snapshot reports offline while reports are arriving")
+        "snapshot reports offline while reports are arriving"
+    )
     assert "from_report" in tool, (
         "the container's wire shape has exactly one interpreter (world_model."
-        "from_report); re-parsing it here would fork the D7 contract")
+        "from_report); re-parsing it here would fork the D7 contract"
+    )
     assert "detector_online=False" in tool, (
         "the no-report fallback must still degrade explicitly — 'nothing "
-        "detected' and 'nothing looked' are different answers (D7)")
+        "detected' and 'nothing looked' are different answers (D7)"
+    )
