@@ -96,10 +96,34 @@ if [ "${C3PO_TAKE_CAMERA_YES:-0}" != "1" ]; then
     [ "$answer" = "take" ] || { info "nothing changed"; exit 1; }
 fi
 
+# CAN WE ACTUALLY DO THIS? Ask before trying, because failing to ask produces a
+# confidently wrong diagnosis at the end of this script.
+#
+# sudo on this robot needs a password, and `perception_up` calls take_camera
+# over a non-interactive SSH session where sudo cannot prompt. Both commands
+# below then fail, both are swallowed (`2>/dev/null || true`, correct on their
+# own terms), the holder is naturally still there, and the script concludes
+# "something is restarting it — find the supervisor before forcing it". That
+# sends somebody hunting a phantom watchdog when the real answer is "we were
+# never allowed to stop it". Observed exactly this way on the first nav2
+# bring-up that needed the camera.
+if ! sudo -n true 2>/dev/null; then
+    if [ ! -t 0 ]; then
+        err "cannot stop master_service: sudo needs a password and there is no terminal"
+        err "  this is a permission problem, NOT a stubborn process."
+        err "  Run it yourself, on the robot, where sudo can ask:"
+        err "      take_camera"
+        err "  or leave the camera where it is — the bridge already serves it at"
+        err "  http://127.0.0.1:8001/camera without taking the device from anyone."
+        exit 2
+    fi
+    info "sudo will ask for a password"
+fi
+
 # Order matters. `systemctl stop` alone leaves the children behind: they are
 # re-parented to init (PPID 1, verified on this robot), so the unit stop never
 # reaps them and the device stays held by a process whose supervisor is gone.
-info "stopping master_service (sudo may ask for a password)"
+info "stopping master_service"
 sudo systemctl stop master_service 2>/dev/null || true
 sudo pkill -9 -f "[v]ideohub_pc4" 2>/dev/null || true
 

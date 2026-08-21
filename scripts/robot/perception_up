@@ -325,9 +325,29 @@ check_vision() {
         for c in $(perception_containers); do
             case "$c" in *vision*) _docker logs --tail 15 "$c" 2>&1 | sed 's/^/      /' >&2 ;; esac
         done
-        warn "  'Device or resource busy' means teleimager still holds /dev/video4."
-        warn "  Stopping gemm does NOT free it: teleimager is a host process under a"
-        warn "  watchdog, so kill _image_service_watchdog.sh as well as the server."
+        # Do not name a holder we have not looked for. This message used to say
+        # "teleimager still holds /dev/video4" unconditionally, and teleimager
+        # is usually not running at all — so it sent people after the wrong
+        # process while `videohub_pc4` (Unitree's, restarted at every boot) sat
+        # there holding the device.
+        warn "  'Device or resource busy' means something else has /dev/video4."
+        holders="$(ps -eo pid=,args= | awk -v me="$$" '
+            $1 != me && index($0, "/dev/video4") > 0 && index($0, "awk") == 0 { print }')"
+        holders="$holders$(pgrep -af '[r]ealsense2_camera_node' 2>/dev/null || true)"
+        if [ -n "$holders" ]; then
+            warn "  it is:"
+            echo "$holders" | sed 's/^/        /' >&2
+            case "$holders" in
+                *videohub*)
+                    warn "  that is Unitree's, restarted by master_service at every boot."
+                    warn "  Free it with 'take_camera' — it needs a real terminal for sudo."
+                    warn "  Or leave it: the bridge serves that camera at :8001/camera." ;;
+                *realsense2_camera*)
+                    warn "  that is gemm's node — 'stop_gemm' releases it." ;;
+            esac
+        else
+            warn "  nothing in the process table names it — try: sudo fuser -v /dev/video4"
+        fi
         warn "  'cannot import tensorrt' or a TRT build means wait 2-5 min and retry."
         return 1
     fi
