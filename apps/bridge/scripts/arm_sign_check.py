@@ -199,9 +199,17 @@ async def main_async(args) -> int:
             break
         await asyncio.sleep(0.1)
 
+    # Says FSM 4, and only 4, because that is what the gate below enforces.
+    # It used to read "FSM 4 / 500 / 501" — the driver's range, not this
+    # script's — so the operator was told a gait program was acceptable
+    # immediately before being refused for being in one. Worse, 501 is exactly
+    # what made the robot walk during a sign check once already: the prompt was
+    # describing the hazard as a valid state.
     print(
         "\n!! The robot's arms are about to move.\n"
-        "!! It must be STANDING (FSM 4 / 500 / 501), with the e-stop in your hand.\n"
+        "!! It must be in FSM 4 — LOCKED STANCE, not a gait program — with the\n"
+        "!! e-stop in your hand. 500 and 501 will be refused: their policy\n"
+        "!! balances actively, so blending arm commands makes the robot step.\n"
     )
     if ask("type 'ready' to engage rt/arm_sdk:") not in ("ready", "y", "yes"):
         print("aborted.")
