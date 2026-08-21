@@ -8,6 +8,7 @@ import { mapRoutes } from "@back/routes/map";
 import { telemetryRoutes } from "@back/routes/telemetry";
 import { agentRoutes } from "@back/routes/agent";
 import { chatsRoutes } from "@back/routes/chats";
+import { voiceRoutes } from "@back/routes/voice";
 import { reconcileAdmins } from "@back/lib/admin-bootstrap";
 
 // Before listening: make sure the accounts that are supposed to be able to
@@ -39,7 +40,8 @@ const app = new Elysia()
       .use(mapRoutes)
       .use(telemetryRoutes)
       .use(agentRoutes)
-      .use(chatsRoutes),
+      .use(chatsRoutes)
+      .use(voiceRoutes),
   )
   .listen(Number(process.env.PORT) || 3000);
 
