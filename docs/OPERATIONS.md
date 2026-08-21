@@ -435,6 +435,21 @@ cites them as the verification step. There is **no CD**: web is automatic on Ver
 
 Plain facts, not a roadmap. Each stays here until fixed.
 
+- **The bridge unit's `Type=exec` cutover is prepared and NOT installed.**
+  `scripts/robot/c3po-bridge-exec.service` replaces the hand-rolled pidfile,
+  `nohup`, SIGTERM→SIGKILL escalation and process-tree kill in
+  `run_c3po`/`stop_c3po` with what systemd already does — and removes the
+  documented race where both write `~/.c3po/run/bridge.pid`, systemd waits for a
+  pid that no longer exists, and `run_teleop` then refuses to start on the
+  grounds that there is no e-stop. There is one. It became possible once the
+  bridge started loading its own `.env` (`bridge/env_file.py`), which was the
+  only thing `run_c3po` did that a unit could not.
+
+  It is not live because it has never been started on the robot, and if it is
+  wrong the bridge does not come up — which is the process that owns
+  `stop_everything`. The cutover, its verification and its rollback are written
+  at the bottom of that file; it is a two-minute swap with somebody present.
+
 - **`back` → bridge under Bun: FIXED, on localhost at least.** This was recorded as a hard
   blocker — the MCP SDK's `StreamableHTTPClientTransport` failing under Bun 1.4.0 with
   _"The socket connection was closed unexpectedly"_ while the same code under Node listed

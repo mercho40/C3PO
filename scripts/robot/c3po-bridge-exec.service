@@ -1,0 +1,108 @@
+# The bridge unit, Type=exec — PREPARED, NOT INSTALLED.
+#
+# This is the cutover that deletes ~335 lines of process supervision from
+# run_c3po and stop_c3po. It is NOT symlinked by install_stack.sh and nothing
+# uses it yet, deliberately: see "why this is not live" at the bottom.
+#
+# WHAT IT REMOVES, AND WHY THAT IS THE POINT
+# ------------------------------------------
+# run_c3po/stop_c3po hand-roll a pidfile, `nohup`, a SIGTERM->SIGKILL
+# escalation, stray-process detection and a process-tree kill. systemd does all
+# of it, and does it better — a cgroup cannot miss a child the way a pid walk
+# can. Worse, having both is what creates the bug `_common.sh` documents at
+# length in `reconcile_bridge_pidfile`:
+#
+#   run_c3po and the systemd unit BOTH write ~/.c3po/run/bridge.pid. Start one
+#   by hand while the unit owns the service and they race: the manual instance
+#   cannot bind 8001 and dies, but not before overwriting the pidfile with its
+#   own pid. systemd is Type=forking with PIDFile=, so it then waits for a
+#   process that no longer exists and sits in `activating` until
+#   TimeoutStartSec — while `bridge_running` reports false and `run_teleop`
+#   refuses to start, on the grounds that there is no e-stop.
+#
+#   There IS an e-stop. A bookkeeping error that presents as a safety refusal
+#   teaches operators to bypass safety refusals.
+#
+# One supervisor, no pidfile, no race.
+#
+# WHAT MADE THIS POSSIBLE. The bridge loads its own `.env` now
+# (`bridge/env_file.py`), so ExecStart can name the interpreter directly. That
+# was the only thing run_c3po was doing that systemd could not.
+#
+# NOT EnvironmentFile=. It does not parse this file the way `.` does — our own
+# .env.example ships `SIM_MODE=stub    # 'stub' | 'isaac' | ...` and
+# EnvironmentFile keeps everything after the `=`, so SIM_MODE becomes the
+# comment. Not stub, not real, and not an error either.
+
+[Unit]
+Description=C3PO bridge — MCP server for the G1 (does not claim the robot at boot)
+Documentation=file:///home/unitree/c3po/docs/OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# exec, not forking: systemd tracks the process it started. No PIDFile at all,
+# which is the whole point — there is no second writer to race with.
+Type=exec
+User=unitree
+Group=unitree
+WorkingDirectory=/home/unitree/c3po/apps/bridge
+
+# `uv` lives in ~/.local/bin, which Ubuntu adds from ~/.profile — a file
+# systemd never sources. Without this the unit dies on "uv: command not found".
+Environment=HOME=/home/unitree
+Environment=PATH=/home/unitree/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=BRIDGE_TRANSPORT=http
+Environment=BRIDGE_HOST=127.0.0.1
+Environment=BRIDGE_PORT=8001
+
+# Dependencies before the process, and never fatal on their own: a robot that
+# refuses to boot its bridge because the network was down has no
+# stop_everything, which is far worse than stale dependencies. run_c3po's sync
+# is already hash-gated and offline-safe; `-` makes a failure non-fatal here too.
+ExecStartPre=-/home/unitree/c3po/scripts/robot/bridge_sync
+
+ExecStart=/home/unitree/c3po/apps/bridge/.venv/bin/python -m bridge.mcp_server
+
+# NO ExecStop. `stop_c3po` takes the whole STACK down — bridge plus every
+# perception container — which is right for an operator typing it and wrong for
+# a unit whose job is one process. systemd stops what it started and reaps the
+# cgroup; docker containers belong to docker.service, so perception is untouched.
+KillMode=control-group
+TimeoutStopSec=20
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
+# ---------------------------------------------------------------------------
+# WHY THIS IS NOT LIVE YET
+# ---------------------------------------------------------------------------
+#
+# It has never been started on the robot. The failure mode if it is wrong is
+# that the bridge does not come up — and the bridge is what owns
+# `stop_everything`, so an unattended reboot onto a broken unit leaves a robot
+# with no stop. That asymmetry is worth two minutes of verification rather than
+# a guess, and the current Type=forking unit works.
+#
+# THE CUTOVER, once somebody is at the robot:
+#
+#   1. ln -sf ~/c3po/scripts/robot/c3po-bridge-exec.service \
+#             /etc/systemd/system/c3po-bridge.service
+#      sudo systemctl daemon-reload
+#   2. sudo systemctl restart c3po-bridge
+#   3. systemctl is-active c3po-bridge          -> active
+#      curl -sS 127.0.0.1:8001/telemetry/gate   -> JSON, gate closed
+#      docker ps                                -> perception UNTOUCHED
+#   4. sudo systemctl stop c3po-bridge; docker ps  -> still untouched
+#      sudo systemctl start c3po-bridge
+#
+# ROLLBACK is the same ln -sf pointing back at c3po-bridge.service, plus a
+# daemon-reload. Nothing else changes, and the checkout keeps both files.
+#
+# AFTER it is proven, these can go: the pidfile writing in run_c3po, the
+# SIGTERM/SIGKILL escalation in stop_c3po, and `reconcile_bridge_pidfile`,
+# `stray_bridge_pids`, `descendant_pids` and `bridge_tree_pids` in _common.sh —
+# together the ~335 lines this exists to delete.
