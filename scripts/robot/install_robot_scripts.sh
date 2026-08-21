@@ -54,11 +54,17 @@ chmod +x "$here/_common.sh"
 NOT_A_COMMAND="_common.sh install_robot_scripts.sh install_boot_unit.sh
                install_stack.sh c3po-bridge.service c3po-perception@.service
                c3po-health.service c3po-health.timer c3po-logs.logrotate"
+# Collapse the newlines out of both lists before matching. `case` does no word
+# splitting, so a name that happens to sit after a line break is preceded by a
+# newline rather than a space and `*" $name "*` never matches it — which had
+# this check reporting four entries that were on the lists all along. A checker
+# that cries wolf gets ignored, and then it is worse than not having one.
+known=" $(echo $COMMANDS $NOT_A_COMMAND) "
 missing=""
 for f in "$here"/*; do
     name="$(basename "$f")"
     [ -f "$f" ] || continue
-    case " $COMMANDS $NOT_A_COMMAND " in *" $name "*) continue ;; esac
+    case "$known" in *" $name "*) continue ;; esac
     missing="$missing $name"
 done
 if [ -n "$missing" ]; then
