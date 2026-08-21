@@ -33,7 +33,7 @@
  *   from starting; the next restart reconciles.
  */
 
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "@back/db/drizzle";
 import { user } from "@back/db/schema";
 import { env } from "@back/lib/env";
@@ -48,10 +48,16 @@ export async function reconcileAdmins(): Promise<string[]> {
   const emails = adminEmails();
   if (emails.length === 0) return [];
 
+  // Compared case-insensitively on BOTH sides. `adminEmails()` lowercases the
+  // allowlist, but `user.email` is whatever was typed at sign-up — so an
+  // account created as "Operador@Gmail.com" would never match a lowercased
+  // list, and the only symptom would be the "no account yet" warning about an
+  // address that plainly does have one. Silent, and exactly the kind of thing
+  // nobody thinks to check at 2am.
   const rows = await db
     .select({ id: user.id, email: user.email, role: user.role })
     .from(user)
-    .where(inArray(user.email, emails));
+    .where(inArray(sql`lower(${user.email})`, emails));
 
   const promoted: string[] = [];
   for (const row of rows) {
