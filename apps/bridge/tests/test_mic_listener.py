@@ -408,8 +408,14 @@ def test_an_already_remote_backend_is_not_re_probed(monkeypatch):
     assert probes == []
 
 
-def test_the_listener_upgrades_mid_run_at_an_utterance_boundary(monkeypatch):
-    """End to end through the thread: the swap must actually reach the loop."""
+def test_the_listener_upgrades_without_anyone_speaking(monkeypatch):
+    """A quiet room must reach the GPU on its own.
+
+    Observed on the robot: the STT container is normally started AFTER the
+    bridge, and the probe used to run only after an utterance was transcribed.
+    So in a silent room the upgrade never fired, and the first person to speak
+    paid the CPU path to buy an upgrade for the second.
+    """
     import bridge.skills.listen as mod
 
     monkeypatch.setattr(mod, "REMOTE_RECHECK_S", 0.0)
@@ -421,13 +427,21 @@ def test_the_listener_upgrades_mid_run_at_an_utterance_boundary(monkeypatch):
     monkeypatch.setattr(mod, "remote_whisper_status", lambda: {"available": True, "model": "m"})
     monkeypatch.setattr(mod, "RemoteWhisper", Upgraded)
 
-    # Two utterances. The first is transcribed by the CPU fake; the probe fires
-    # at that boundary, so the second must come back from the GPU stand-in.
-    lis, _det, _trans, _whis = make([b"aa", b".", b"bb", b"."], min_seconds=0.0)
+    # A source that yields nothing and then blocks briefly: no frames, no
+    # transcripts, nothing for an audio-driven probe to hook into. The timer
+    # thread is the only thing that can upgrade here, which is the whole point.
+    def silent_then_speak():
+        time.sleep(0.15)
+        yield b"aa"
+        yield b"."
+
+    import bridge.skills.listen as listen_mod
+
+    det, trans, whis = FakeDetector(), FakeTranscriber(), FakeWhisper()
+    listen_mod.WHISPER_MIN_SECONDS = 0.0
+    lis = MicListener(source=silent_then_speak, build=lambda: (det, trans, whis))
     lis.start()
     items = drain(lis)
 
     texts = [i["text"] for i in items if i["kind"] == "speech"]
-    assert len(texts) == 2, texts
-    assert texts[0].startswith("whisper text"), texts
-    assert texts[1] == "GPU TEXT", texts
+    assert texts == ["GPU TEXT"], texts

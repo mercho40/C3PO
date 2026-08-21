@@ -303,8 +303,8 @@ VISION_PORT = int(os.environ.get("C3PO_STT_PORT", "8082"))
 # starts. A tight timeout here turns a slow first utterance into a lost one.
 VISION_TIMEOUT_S = float(os.environ.get("C3PO_VISION_STT_TIMEOUT_S", "30"))
 # How often the CPU fallback looks to see whether the GPU server has appeared.
-# Only ever runs while we are on the slow path, and only at utterance
-# boundaries — see `upgrade_whisperer_if_possible`.
+# Runs on its own timer thread, which stops as soon as it has upgraded — see
+# `MicListener._watch_backend`.
 REMOTE_RECHECK_S = float(os.environ.get("C3PO_STT_RECHECK_S", "30"))
 
 
@@ -466,9 +466,13 @@ def upgrade_whisperer_if_possible(current: Any) -> Any:
     the bridge silently kept the CPU path — 3.5-6.6 s per utterance against the
     GPU's ~1.9 s, reported only in a log line written at boot, hours earlier.
 
-    Called at utterance boundaries, never mid-sentence: `remote_whisper_status`
-    is an HTTP call with a 3 s timeout, and a hung server must not be able to
-    stall the audio thread in the middle of somebody speaking.
+    Called from a timer thread, never from the audio loop. Two audio-driven
+    versions were both wrong: probing after a transcript meant a quiet room never
+    upgraded, and probing on an empty utterance buffer meant almost never,
+    because the buffer fills on every frame — and a silent multicast mic delivers
+    no frames at all, so the loop is not running to notice anything. It is also
+    an HTTP call with a 3 s timeout, which has no business on the thread that
+    carries speech.
     """
     if isinstance(current, RemoteWhisper):
         return current
@@ -761,6 +765,9 @@ class MicListener:
         that run everywhere, and only the models themselves need the robot.
         """
         self._whisper = whisper
+        #: The live transcriber. Swapped by `_watch_backend` when the GPU server
+        #: appears, so the audio loop must read it rather than close over it.
+        self._whisperer: Any | None = None
         self._phrases = phrases
         self._max_keep = max_keep
         self._source = source or (lambda: default_source())
@@ -814,8 +821,22 @@ class MicListener:
             log.error("mic_listener.unavailable", reason=str(exc))
             return
 
+        # THE BACKEND CHOICE IS NOT AUDIO-DRIVEN, and two attempts at making it
+        # so were both wrong. Probing after a transcript meant a quiet room never
+        # upgraded at all; probing when the utterance buffer was empty meant
+        # almost never, because the buffer fills on EVERY frame. And a genuinely
+        # silent multicast mic delivers no frames whatsoever, so this loop is not
+        # running to notice anything.
+        #
+        # A timer thread owns it instead. The loop reads `self._whisperer` each
+        # time rather than closing over a local, so the swap actually reaches it.
+        self._whisperer = whisperer
+        if whisperer is not None:
+            threading.Thread(
+                target=self._watch_backend, name="stt-backend-watch", daemon=True
+            ).start()
+
         utterance = bytearray()
-        next_probe = time.monotonic() + REMOTE_RECHECK_S
         for frame in self._source():
             if self._stop_evt.is_set():
                 break
@@ -834,26 +855,39 @@ class MicListener:
                     except Exception:
                         log.exception("mic_listener.on_stop_failed")
 
-            if whisperer is not None:
+            current = self._whisperer
+            if current is not None:
                 utterance.extend(frame)
 
             text = transcriber.feed(frame)
             if text:
-                if whisperer is not None:
+                if current is not None:
                     if len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S:
-                        text = whisperer.transcribe(bytes(utterance)) or text
+                        text = current.transcribe(bytes(utterance)) or text
                     utterance.clear()
                 self._record(text, kind="speech")
-                # An utterance just ended, so the audio thread is between
-                # sentences: the safe moment to ask whether the GPU server has
-                # appeared. See `upgrade_whisperer_if_possible`.
-                if whisperer is not None and time.monotonic() >= next_probe:
-                    next_probe = time.monotonic() + REMOTE_RECHECK_S
-                    whisperer = upgrade_whisperer_if_possible(whisperer)
-            elif whisperer is not None and len(utterance) > MAX_UTTERANCE_BYTES:
-                if better := whisperer.transcribe(bytes(utterance)):
+            elif current is not None and len(utterance) > MAX_UTTERANCE_BYTES:
+                if better := current.transcribe(bytes(utterance)):
                     self._record(better, kind="speech")
                 utterance.clear()
+
+    def _watch_backend(self) -> None:
+        """Re-probe for the GPU transcriber until it appears, then stop.
+
+        Off the audio thread on purpose: the probe is an HTTP call with a 3 s
+        timeout, and the loop it serves may be blocked on a socket read for
+        minutes at a time. Exits as soon as it has upgraded — there is nothing
+        to downgrade to, and a thread that keeps asking a question it has already
+        answered is just noise in the log.
+        """
+        while not self._stop_evt.wait(REMOTE_RECHECK_S):
+            current = self._whisperer
+            if current is None:
+                return
+            upgraded = upgrade_whisperer_if_possible(current)
+            if upgraded is not current:
+                self._whisperer = upgraded
+                return
 
     def _record(self, text: str, kind: str) -> None:
         item = {"text": text, "kind": kind, "at": time.monotonic()}
