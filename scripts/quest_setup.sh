@@ -24,8 +24,22 @@
 # will not load — which is the worst possible moment to learn the SSH tunnel
 # dropped.
 #
-# NOT YET TESTED AGAINST AN ACTUAL QUEST. The reasoning above is sound and the
-# checks below are real, but nobody has run this with a headset plugged in.
+# FIRST RUN AGAINST A REAL QUEST: 2026-08-21. adb detection, authorisation, the
+# port checks and all four `adb reverse` forwards work, and the Quest browser
+# loads the console over `http://localhost:3001` — confirmed by Vite
+# server-rendering a request that came from the headset. The secure-context
+# reasoning above holds.
+#
+# Two bugs surfaced on that run, both now fixed and both worth knowing about:
+#   * Vite binds `localhost` -> `::1` ONLY, while `adb reverse` connects over
+#     IPv4. The forward succeeded and the headset got a blank page with nothing
+#     logged anywhere. `apps/web/package.json` now passes `--host 127.0.0.1`.
+#   * The empty-tunnel check below was defeated by `pipefail` (see §3).
+#
+# STILL UNPROVEN: that an immersive WebXR session drives the robot. On the first
+# run no teleop session ever registered (`list_active_tasks` stayed empty),
+# because 8767 was not yet forwarded. Head yaw reaching the robot from a headset
+# has not been observed end to end.
 
 set -euo pipefail
 
@@ -84,13 +98,25 @@ for entry in "${PORTS[@]}"; do
     listening=0
     case "$port" in
         8081|8767)
-            if curl -sS --max-time 4 -o /dev/null "http://127.0.0.1:$port/" 2>&1 \
-                 | grep -qE "reset by peer|Empty reply|Recv failure"; then
-                listening=0   # tunnel up, nothing behind it on the robot
-                tunnel_empty=1
-            elif nc -z 127.0.0.1 "$port" 2>/dev/null; then
-                listening=1
-            fi
+            # Capture first, match second. Under `set -o pipefail` (line 31) a
+            # `curl | grep` pipeline reports CURL's status, not grep's — and the
+            # curl that proves the tunnel is empty exits 52/56 by definition. So
+            # the match was computed correctly and then thrown away, the `elif`
+            # ran, and `nc -z` awarded the dead port a green tick. That is the
+            # failure this script's header promises to prevent, committed again
+            # by the fix for it. Found with a real headset on 2026-08-21.
+            probe=$(curl -sS --max-time 4 -o /dev/null "http://127.0.0.1:$port/" 2>&1 || true)
+            case "$probe" in
+                *"reset by peer"*|*"Empty reply"*|*"Recv failure"*)
+                    listening=0   # tunnel up, nothing behind it on the robot
+                    tunnel_empty=1
+                    ;;
+                *)
+                    if nc -z 127.0.0.1 "$port" 2>/dev/null; then
+                        listening=1
+                    fi
+                    ;;
+            esac
             ;;
         *)
             if nc -z 127.0.0.1 "$port" 2>/dev/null || nc -z ::1 "$port" 2>/dev/null; then
