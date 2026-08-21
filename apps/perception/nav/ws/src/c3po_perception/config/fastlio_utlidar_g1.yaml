@@ -18,14 +18,19 @@
 #                          the callback never fires and the node sits silent
 #                          with no error, exactly as it did on first light.
 #
-#   timestamp_unit         ⚠️ UNVERIFIED, AND THE ONE THING TO CHECK FIRST.
-#                          Velodyne convention is seconds; Unitree publishes a
-#                          float32 `time` whose UNIT IS NOT DOCUMENTED. Get this
-#                          wrong and undistortion is scaled wrongly: the map
-#                          smears while walking and looks fine standing still,
-#                          which is a slow thing to notice. If odometry drifts
-#                          under motion, try 0 (seconds), 1 (ms), 2 (us),
-#                          3 (ns) in that order and keep the one that is crisp.
+#   timestamp_unit: 3      NANOSECONDS. Measured, not guessed: the `time` field
+#                          runs to ~9.75e6 on a 10 Hz scan whose header stamp
+#                          tracks wall clock, and nanoseconds is the only unit
+#                          that makes a ~100 ms span out of that. Velodyne
+#                          convention is seconds, so this is NOT the obvious
+#                          value and the obvious value is wrong.
+#
+#                          Getting it wrong does not merely degrade
+#                          undistortion — it stalls FAST-LIO completely. At
+#                          unit 1 (ms) it read the scan as spanning ~9750
+#                          SECONDS, then waited for IMU that far ahead, which
+#                          never came: subscriptions healthy, data arriving,
+#                          zero output, and not one log line saying why.
 #
 # Everything else -- extrinsics, blind, scan_rate -- is inherited unchanged from
 # the driver config; the sensor and its mounting have not moved.
@@ -90,7 +95,7 @@
       # map. Self-returns are stationary in the body frame and will fight the
       # scan-to-map registration, so they are not merely cosmetic. UNMEASURED.
       blind: 0.5
-      timestamp_unit: 1      # MILLISECONDS - see the header note; VERIFY on hardware
+      timestamp_unit: 3      # NANOSECONDS - measured, see the header note
       scan_rate: 10          # must equal the driver's publish_freq
 
     mapping:
