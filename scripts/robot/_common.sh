@@ -97,9 +97,22 @@ perception_stage() {
         --format '{{index .Config.Labels "c3po.stage"}}' 2>/dev/null || true
 }
 
+# Whether we are holding a DEVICE somebody else could want. This is what
+# run_gemm and run_c3po report, so being wrong here sends people looking for a
+# contention that is not happening.
+#
+# "Any perception container is running and the stage is not fake" was the old
+# rule and it is now wrong twice over. The LiDAR stopped being a device claim
+# when odometry.launch.py moved to lidar_source:=republish — an ordinary
+# multi-consumer topic — and `stt` opens nothing at all, yet ran the nav-label
+# lookup, found no nav container, compared "" against "fake" and concluded we
+# held both sensors while transcribing speech on the GPU.
+#
+# The camera is the only device claim left, and the vision container is the one
+# thing that opens it. C3PO_LIDAR_SOURCE=driver is the documented exception and
+# is not detected here; a run that sets it knows it took the Livox.
 perception_holds_sensors() {
-    perception_running || return 1
-    [ "$(perception_stage)" != "fake" ]
+    [ -n "$(_docker ps --filter 'name=^c3po-perception-vision' --format '{{.Names}}' 2>/dev/null)" ]
 }
 
 # --- bridge ----------------------------------------------------------------

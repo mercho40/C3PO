@@ -129,7 +129,24 @@ else
     info "stage '$stage' claims no device — gemm is left alone"
 fi
 
+# STT COMPOSES WITH THE OTHER STAGES; IT DOES NOT REPLACE THEM.
+#
+# `stt` opens no device and runs no ROS — that is the entire reason it is a
+# separate stage, and it is stated as such above. But this loop removed every
+# container matching the perception prefix, so `perception_up stt` tore down a
+# running nav2 and `perception_up nav2` tore down a running STT server. The two
+# things that were designed to coexist could not, and the failure was silent in
+# the direction that matters: the bridge falls back to CPU whisper and says so
+# only in a log line nobody is reading at that moment.
+#
+# So the removal is scoped to what this stage is about to replace. `stt` clears
+# only the STT container; every other stage clears everything BUT it.
 for c in $(perception_containers); do
+    if [ "$needs_stt" = 1 ]; then
+        [ "$c" = "c3po-perception-stt" ] || continue
+    else
+        [ "$c" = "c3po-perception-stt" ] && continue
+    fi
     info "removing existing $c"; _docker rm -f "$c" >/dev/null
 done
 mkdir -p "$PERCEPTION_LOG_DIR" "$HOME/.c3po/models"

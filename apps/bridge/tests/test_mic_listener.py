@@ -363,3 +363,71 @@ def test_a_dead_container_yields_empty_text_not_an_exception(monkeypatch):
     r = mod.RemoteWhisper(host="127.0.0.1", port=1)   # nothing listens there
     assert r.transcribe(b"\x00\x00" * 1000) == ""
     assert r.transcribe(b"") == ""
+
+
+# --- upgrading off the CPU fallback -----------------------------------------
+#
+# The backend used to be chosen once at bridge boot and never revisited, which
+# made the GPU upgrade a circular errand: the GPU transcriber lives in a
+# perception container, and restarting the bridge to re-pick stops perception.
+
+
+def test_the_cpu_fallback_upgrades_once_the_gpu_server_appears(monkeypatch):
+    import bridge.skills.listen as mod
+
+    monkeypatch.setattr(mod, "remote_whisper_status", lambda: {"available": True, "model": "ggml-base.bin"})
+
+    # A class, not a lambda: `upgrade_whisperer_if_possible` does an isinstance
+    # check against this name, so a stub that is not a type tests nothing.
+    class Remote:
+        pass
+
+    monkeypatch.setattr(mod, "RemoteWhisper", Remote)
+
+    assert isinstance(mod.upgrade_whisperer_if_possible(FakeWhisper()), Remote)
+
+
+def test_it_stays_on_the_fallback_while_the_gpu_server_is_absent(monkeypatch):
+    import bridge.skills.listen as mod
+
+    monkeypatch.setattr(
+        mod, "remote_whisper_status", lambda: {"available": False, "reason": "refused"}
+    )
+    cpu = FakeWhisper()
+    assert mod.upgrade_whisperer_if_possible(cpu) is cpu
+
+
+def test_an_already_remote_backend_is_not_re_probed(monkeypatch):
+    """The probe is an HTTP call on the audio thread. Never pay for it twice."""
+    import bridge.skills.listen as mod
+
+    probes = []
+    monkeypatch.setattr(mod, "remote_whisper_status", lambda: probes.append(1) or {"available": True})
+    remote = mod.RemoteWhisper()
+    assert mod.upgrade_whisperer_if_possible(remote) is remote
+    assert probes == []
+
+
+def test_the_listener_upgrades_mid_run_at_an_utterance_boundary(monkeypatch):
+    """End to end through the thread: the swap must actually reach the loop."""
+    import bridge.skills.listen as mod
+
+    monkeypatch.setattr(mod, "REMOTE_RECHECK_S", 0.0)
+
+    class Upgraded:
+        def transcribe(self, pcm: bytes) -> str:
+            return "GPU TEXT"
+
+    monkeypatch.setattr(mod, "remote_whisper_status", lambda: {"available": True, "model": "m"})
+    monkeypatch.setattr(mod, "RemoteWhisper", Upgraded)
+
+    # Two utterances. The first is transcribed by the CPU fake; the probe fires
+    # at that boundary, so the second must come back from the GPU stand-in.
+    lis, _det, _trans, _whis = make([b"aa", b".", b"bb", b"."], min_seconds=0.0)
+    lis.start()
+    items = drain(lis)
+
+    texts = [i["text"] for i in items if i["kind"] == "speech"]
+    assert len(texts) == 2, texts
+    assert texts[0].startswith("whisper text"), texts
+    assert texts[1] == "GPU TEXT", texts

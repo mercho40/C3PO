@@ -302,6 +302,10 @@ VISION_PORT = int(os.environ.get("C3PO_STT_PORT", "8082"))
 # Generous: it covers a cold CUDA context on the first call after the container
 # starts. A tight timeout here turns a slow first utterance into a lost one.
 VISION_TIMEOUT_S = float(os.environ.get("C3PO_VISION_STT_TIMEOUT_S", "30"))
+# How often the CPU fallback looks to see whether the GPU server has appeared.
+# Only ever runs while we are on the slow path, and only at utterance
+# boundaries — see `upgrade_whisperer_if_possible`.
+REMOTE_RECHECK_S = float(os.environ.get("C3PO_STT_RECHECK_S", "30"))
 
 
 class RemoteWhisper:
@@ -444,6 +448,40 @@ def build_whisperer() -> Any | None:
     except ListenUnavailable as exc:
         log.warning("listen.whisper_unavailable", reason=str(exc))
         return None
+
+
+def upgrade_whisperer_if_possible(current: Any) -> Any:
+    """Swap the CPU fallback for the GPU server once that server shows up.
+
+    WHY THIS IS NOT JUST "RESTART THE BRIDGE". `build_whisperer` runs once, when
+    the listener thread starts, so the backend is decided at bridge boot and
+    never revisited. That made upgrading a circular errand on this robot: the
+    GPU transcriber lives in a perception container, and restarting the bridge
+    runs `stop_c3po`, which stops perception. Start STT then restart the bridge
+    and you have stopped STT; start STT after and the bridge never notices. The
+    only way through was an ordering nobody should have to know.
+
+    It is also the honest shape for the thing itself. The vision container is
+    started, stopped and replaced by hand many times in a session, and each time
+    the bridge silently kept the CPU path — 3.5-6.6 s per utterance against the
+    GPU's ~1.9 s, reported only in a log line written at boot, hours earlier.
+
+    Called at utterance boundaries, never mid-sentence: `remote_whisper_status`
+    is an HTTP call with a 3 s timeout, and a hung server must not be able to
+    stall the audio thread in the middle of somebody speaking.
+    """
+    if isinstance(current, RemoteWhisper):
+        return current
+    status = remote_whisper_status()
+    if not status.get("available"):
+        return current
+    log.info(
+        "listen.whisper_backend",
+        backend="vision-container-gpu",
+        model=status.get("model"),
+        note="upgraded from the CPU fallback without a restart",
+    )
+    return RemoteWhisper()
 
 
 def listen_loop(
@@ -777,6 +815,7 @@ class MicListener:
             return
 
         utterance = bytearray()
+        next_probe = time.monotonic() + REMOTE_RECHECK_S
         for frame in self._source():
             if self._stop_evt.is_set():
                 break
@@ -805,6 +844,12 @@ class MicListener:
                         text = whisperer.transcribe(bytes(utterance)) or text
                     utterance.clear()
                 self._record(text, kind="speech")
+                # An utterance just ended, so the audio thread is between
+                # sentences: the safe moment to ask whether the GPU server has
+                # appeared. See `upgrade_whisperer_if_possible`.
+                if whisperer is not None and time.monotonic() >= next_probe:
+                    next_probe = time.monotonic() + REMOTE_RECHECK_S
+                    whisperer = upgrade_whisperer_if_possible(whisperer)
             elif whisperer is not None and len(utterance) > MAX_UTTERANCE_BYTES:
                 if better := whisperer.transcribe(bytes(utterance)):
                     self._record(better, kind="speech")

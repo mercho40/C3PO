@@ -226,7 +226,8 @@ if perception_running; then
     stage="$(perception_stage)"
     for c in $(perception_running_containers); do ok "already running: $c"; done
     if perception_holds_sensors; then
-        warn "perception (stage=$stage) is holding the RealSense and the Livox — gemm cannot run"
+        warn "perception (stage=$stage) is holding the RealSense — gemm's camera node cannot run"
+        info "  the Livox is NOT held: it arrives on the vendor's DDS republish"
     fi
 else
     info "perception not started (bridge only)"
