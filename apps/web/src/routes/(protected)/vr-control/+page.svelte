@@ -21,6 +21,7 @@
   import {
     ArrowUp,
     ArrowDown,
+    Eye,
     Glasses,
     Hand,
     Link2,
@@ -169,6 +170,27 @@
   // Latched once the dead-man fires; blocks all motion until the operator
   // visibly lets go (head back to centre / fresh button press).
   let deadManTripped = false;
+
+  //: OBSERVE-ONLY: watch the robot's view, command nothing.
+  //
+  //: For the second person in the room, for a demo, and for checking a camera
+  //: without becoming a commander. Set BEFORE the session starts and never
+  //: changed while one is live — a toggle mid-session would mean the operator
+  //: cannot tell by looking whether the thing on their head is driving.
+  //
+  //: There are two independent ways this page commands the robot — the teleop
+  //: socket the bridge PULLS frames from, and the local `sendVelocity` loop —
+  //: so one flag on one branch would not be enough. Closed at three points:
+  //:   1. entering observe-only calls `disconnectStream()`, and the connect
+  //:      button is disabled for the session, so the socket does not exist;
+  //:   2. `loopShouldRun()` returns false, so the local loop never starts —
+  //:      it keys on `vrActive`, which IS set for an observer;
+  //:   3. `buildFrame()` takes `observeOnly` and returns the idle payload
+  //:      before reading any pose — in the pure policy, where it is tested,
+  //:      rather than in a caller that has to remember.
+  //: Any one would do. Three means a later edit to one of them cannot quietly
+  //: arm a headset whose wearer was told it was passive.
+  let viewOnly = $state(false);
 
   let vrSupported = $state(false);
   let arSupported = $state(false);
@@ -340,6 +362,11 @@
   }
 
   function loopShouldRun(): boolean {
+    // Observe-only commands nothing, and this is the guard that matters most:
+    // the condition below is true whenever `vrActive` is, and an observer's
+    // session sets `vrActive` like any other. Without this line, entering
+    // "view only" would start the velocity loop on the operator's head pose.
+    if (viewOnly) return false;
     // While the socket is up the bridge owns locomotion. Running this loop too
     // would put two writers on SetVelocity. `bridgeHolds`, not `streaming`:
     // a stalled socket is still transmitting.
@@ -495,10 +522,25 @@
   //: one that blocks on the headset's own consent prompt.
   let enteringVr = false;
 
-  async function enterVr() {
+  /**
+   * @param observe Enter without becoming a commander — see `viewOnly`.
+   */
+  async function enterVr(observe = false) {
     if (enteringVr) return;
     enteringVr = true;
+    viewOnly = observe;
     try {
+      if (observe) {
+        // An already-open teleop socket is the one path that survives every
+        // guard on `viewOnly`: the bridge PULLS frames from it, so it does not
+        // care what this page thinks its mode is. Close it before the headset
+        // goes on, rather than trusting the operator to notice a connected
+        // stream and a passive session at the same time.
+        disconnectStream();
+        // Anything already in flight from before is not this session's to keep
+        // holding: an observer inherits no held buttons.
+        releaseAllControls();
+      }
       await startVrSession();
     } finally {
       enteringVr = false;
@@ -526,6 +568,11 @@
         },
         onEnd: () => {
           vrActive = false;
+          // Back to commanding by default. Observe-only is a property of ONE
+          // session, chosen on the way in; leaving it latched would mean the
+          // next operator's "Entrar en VR" silently did nothing to the robot
+          // and they would have no way to tell from inside the headset.
+          viewOnly = false;
           xrMode = null;
           xrCameraLive = false;
           xrCameraEverHadFrame = false;
@@ -605,6 +652,13 @@
    */
   function buildTeleopFrame(): TeleopFramePayload {
     return buildFrame({
+      // Third guard, and the one that cannot be forgotten by a caller:
+      // `buildFrame` returns the idle payload on this before reading any pose.
+      // `connectStream()` is not called in observe-only, so nothing should
+      // pull this at all — but "should" is doing load-bearing work in that
+      // sentence, and being wrong means a headset commanding a robot while its
+      // wearer believes it cannot.
+      observeOnly: viewOnly,
       now: Date.now(),
       vrActive,
       lastSampleAt: lastYawSampleAt,
@@ -1182,11 +1236,30 @@
         navegador del Quest para usar esta función.
       </p>
     {:else if !vrActive}
-      <Button onclick={enterVr} class="w-fit gap-2 cta">
-        <Glasses class="size-4" /> Entrar en VR
-      </Button>
+      <div class="flex flex-wrap items-center gap-3">
+        <Button onclick={() => enterVr(false)} class="w-fit gap-2 cta">
+          <Glasses class="size-4" /> Entrar en VR
+        </Button>
+        <Button
+          variant="outline"
+          onclick={() => enterVr(true)}
+          class="w-fit gap-2"
+        >
+          <Eye class="size-4" /> Entrar solo para ver
+        </Button>
+      </div>
+      <p class="readout">
+        «Solo para ver» muestra la cámara del robot sin comandarlo: no abre el
+        stream de teleoperación, no mueve nada y no toma el control si otra
+        persona está manejando.
+      </p>
     {:else}
       <div class="flex flex-wrap items-center gap-3">
+        {#if viewOnly}
+          <Badge variant="outline" class="gap-1">
+            <Eye class="size-3" /> Solo vista — no comanda
+          </Badge>
+        {/if}
         <Button variant="outline" onclick={recenterVr}>Recentrar</Button>
         <Button variant="outline" onclick={exitVr}>Salir de VR</Button>
         <span class="readout">
@@ -1288,9 +1361,23 @@
 
     <div class="flex flex-wrap items-center gap-3">
       {#if !streaming}
-        <Button onclick={connectStream} class="w-fit gap-2 cta">
+        <!-- Locked during an observe-only session. Opening this socket is
+             exactly what makes the headset a commander, and the bridge PULLS
+             from it — so leaving the button live would let one tap turn a
+             session someone entered as passive into one that drives, with no
+             change visible inside the headset. -->
+        <Button
+          onclick={connectStream}
+          disabled={viewOnly && vrActive}
+          class="w-fit gap-2 cta"
+        >
           <Link2 class="size-4" /> Conectar puente
         </Button>
+        {#if viewOnly && vrActive}
+          <span class="readout">
+            Sesión en modo solo vista — salí de VR para poder comandar.
+          </span>
+        {/if}
       {:else}
         <Button variant="outline" onclick={disconnectStream} class="gap-2">
           <Link2Off class="size-4" /> Desconectar

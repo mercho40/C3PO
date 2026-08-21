@@ -122,6 +122,16 @@ export type TeleopInput = {
   right: HandSample | null;
   walking: "forward" | "back" | null;
   armsRequested: boolean;
+  /**
+   * Observe-only: render the robot's view, command nothing.
+   *
+   * Checked FIRST and unconditionally. The point of putting it here rather
+   * than at the call site is that this function is the single thing the
+   * teleop socket sends — every field the bridge acts on is decided in this
+   * one pure, tested place, so "passive" is a property of the payload rather
+   * than of whichever caller remembered to check a flag.
+   */
+  observeOnly?: boolean;
 };
 
 /** A wrist as `$lib/webxr/xr-teleop.ts` reports it. */
@@ -156,6 +166,10 @@ function handPayload(hand: HandSample | null) {
  * busy being tracked and cannot also be pressing something.
  */
 export function buildFrame(input: TeleopInput): TeleopFramePayload {
+  // Before anything is read from the pose. An observer's head still tracks,
+  // their hands are still visible, and their walk buttons still exist in the
+  // DOM — none of it may reach the robot, so none of it is consulted.
+  if (input.observeOnly) return idlePayload();
   const fresh =
     input.vrActive && input.now - input.lastSampleAt < input.staleAfterMs;
   const yaw = fresh ? input.yawErrorRadians : 0;
