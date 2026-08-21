@@ -435,6 +435,23 @@ cites them as the verification step. There is **no CD**: web is automatic on Ver
 
 Plain facts, not a roadmap. Each stays here until fixed.
 
+- **Written and never run on hardware.** These are not suspected broken — they
+  are untested, which is a different claim and a weaker one. Several can be
+  checked in a single bring-up, so they are listed together:
+
+  | What                                                    | How to check it                                                                                                         |
+  | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+  | The camera relay (`:8001/camera` picking the live feed) | `take_camera`, then `curl :8001/camera/status` — `source` should flip from `videohub` to `vision` with no config change |
+  | `build_perception` (now a shim over `bringup/build.py`) | `build_perception vision --dry-run`, then a real `vision` build                                                         |
+  | `measure.sh`'s sampling loop (its parsing is tested)    | `measure.sh idle 90` — the verdict table should fill in, not read UNKNOWN                                               |
+  | The `np.bool` fix in the detector                       | a build with a COLD engine cache; it is confirmed on a warm one                                                         |
+  | The `Type=exec` bridge unit                             | its own entry below                                                                                                     |
+  | The voice loop end to end                               | start it from the dashboard and say something to the robot                                                              |
+
+  The last one is the only one that can move the robot, and it should be done
+  with somebody's hand near the e-stop: the loop's whole job is turning
+  overheard speech into tool calls.
+
 - **The bridge unit's `Type=exec` cutover is prepared and NOT installed.**
   `scripts/robot/c3po-bridge-exec.service` replaces the hand-rolled pidfile,
   `nohup`, SIGTERM→SIGKILL escalation and process-tree kill in
@@ -462,7 +479,7 @@ Plain facts, not a roadmap. Each stays here until fixed.
 
   **Now verified through the SSH tunnel too, 2026-08-22** — the condition the original
   failure was observed under. `apps/back`'s `bridge/client.ts` over `ssh -L
-  8001:127.0.0.1:8001` to the real robot: **33 tools listed**, `get_state` returned. So
+8001:127.0.0.1:8001` to the real robot: **33 tools listed**, `get_state` returned. So
   the tunnel's stream handling is not a factor and the fallback (plain request/response
   POSTs instead of the SDK transport) is not needed. The blocker is fully closed.
 

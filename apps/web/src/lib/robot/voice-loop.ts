@@ -33,7 +33,11 @@ export type VoiceResult =
   | { ok: true; state: VoiceLoopState }
   | { ok: false; reason: string };
 
-async function ask(url: string, init: RequestInit, what: string): Promise<VoiceResult> {
+async function ask(
+  url: string,
+  init: RequestInit,
+  what: string,
+): Promise<VoiceResult> {
   let res: Response;
   try {
     res = await fetch(url, { credentials: "include", ...init });
@@ -57,7 +61,10 @@ export function voiceStatus(base: string): Promise<VoiceResult> {
   return ask(`${base}/voice/status`, {}, "read");
 }
 
-export function voiceCommand(base: string, which: "start" | "stop"): Promise<VoiceResult> {
+export function voiceCommand(
+  base: string,
+  which: "start" | "stop",
+): Promise<VoiceResult> {
   return ask(`${base}/voice/${which}`, { method: "POST" }, which);
 }
 

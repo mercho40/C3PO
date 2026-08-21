@@ -843,10 +843,10 @@ depth will not resolve, still needs the device.
 
 **The two routes are mutually exclusive, and that decides a run before it starts:**
 
-| `videohub_pc4` | `:8001/camera` | our detector | who typically causes it              |
-| -------------- | -------------- | ------------ | ------------------------------------ |
-| alive          | **works**      | cannot start | nobody has taken the camera          |
-| killed         | dark, says why | **works**    | `take_camera`, or gemm's bring-up    |
+| `videohub_pc4` | `:8001/camera` | our detector | who typically causes it           |
+| -------------- | -------------- | ------------ | --------------------------------- |
+| alive          | **works**      | cannot start | nobody has taken the camera       |
+| killed         | dark, says why | **works**    | `take_camera`, or gemm's bring-up |
 
 `scripts/robot/take_camera` is the one place that performs the swap, because stopping
 `master_service` is a change to a shared robot and not a bring-up step: it also carries the

@@ -24,12 +24,11 @@ function serve(replies: { status?: Reply; start?: Reply; stop?: Reply }) {
     fetch(req) {
       const path = new URL(req.url).pathname;
       calls.push(`${req.method} ${path}`);
-      const reply =
-        path.endsWith("/start")
-          ? replies.start
-          : path.endsWith("/stop")
-            ? replies.stop
-            : replies.status;
+      const reply = path.endsWith("/start")
+        ? replies.start
+        : path.endsWith("/stop")
+          ? replies.stop
+          : replies.status;
       if (!reply) return new Response("no", { status: 500 });
       return new Response(JSON.stringify(reply.body), {
         status: reply.status,
@@ -51,7 +50,12 @@ const STOPPED = {
   lastHeard: null,
 };
 
-const RUNNING = { ...STOPPED, running: true, micEverOpen: true, utterancesHeard: 3 };
+const RUNNING = {
+  ...STOPPED,
+  running: true,
+  micEverOpen: true,
+  utterancesHeard: 3,
+};
 
 /** The base URL is an argument, so the fake needs no fetch patching. */
 

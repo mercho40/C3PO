@@ -101,7 +101,8 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
     {
       auth: true,
       detail: {
-        summary: "Stop the voice loop. The robot keeps listening; nothing acts.",
+        summary:
+          "Stop the voice loop. The robot keeps listening; nothing acts.",
         tags: ["voice"],
       },
     },
