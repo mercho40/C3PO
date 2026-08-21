@@ -11,6 +11,7 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import PostureFigure from "$lib/components/posture-figure.svelte";
   import AwarenessPanel from "$lib/components/awareness-panel.svelte";
+  import VoiceControl from "$lib/components/voice-control.svelte";
   import { projectPose } from "$lib/robot/live-state.svelte";
   import { getRobotLive } from "$lib/robot/context";
   import {
@@ -312,4 +313,12 @@
      gutter. They are the part an operator must actually read. -->
 <div class="mt-4">
   <AwarenessPanel />
+</div>
+
+<!-- The switch that makes what the robot hears into what it does. Directly
+     under the panel that shows what it heard, because the two are read
+     together: an operator deciding whether to hand the agent the microphone
+     wants the last few utterances in view while deciding. -->
+<div class="mt-4">
+  <VoiceControl />
 </div>
