@@ -70,8 +70,8 @@ if [ "$needs_lidar" = 1 ] || [ "$needs_camera" = 1 ]; then
     if [ -n "$(gemm_running)" ]; then
         warn "stage '$stage' claims shared sensors"
         info "stopping gemm to release them"
-        info "  (this frees the Livox; the D435i colour node may still be held"
-        info "   by teleimager, which is a host process — stop_gemm will say so)"
+        info "  (both sensors: stop_gemm stops gemm's containers for the Livox,"
+        info "   and teleimager for the D435i colour node it holds on the host)"
         "$here/stop_gemm"
     fi
 else

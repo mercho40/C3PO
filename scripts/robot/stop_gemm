@@ -55,10 +55,51 @@ ok "gemm's CONTAINERS stopped (Livox released)"
 # specific: the vision container then dies on `Device or resource busy`,
 # `perception_up` reports success anyway, and somebody concludes the camera
 # hardware is broken when it is merely contended.
-if pgrep -f "teleimager" >/dev/null 2>&1; then
-    warn "teleimager is STILL RUNNING and holds /dev/video4 (the D435i colour node)"
-    warn "  the vision container will fail with 'Device or resource busy' until it stops"
-    warn "  it is a host process, not a container, so this script does not touch it"
-    warn "  kill the watchdog first or it restarts:"
-    warn "    pkill -f _image_service_watchdog.sh && pkill -f teleimager"
+# And now actually release it, rather than describing how.
+#
+# This script's whole job is to take gemm's sensors, and it already stops gemm's
+# containers to do it. It simply never finished: `teleimager.image_server` is a
+# HOST process, not a container, so `docker stop` never touched it — while the
+# script printed "sensors released (RealSense, Livox)".
+#
+# Leaving it to the operator was the wrong call. It is a two-command incantation
+# with an ordering constraint that is invisible unless you know it (kill the
+# server alone and the watchdog restarts it within seconds), and the person who
+# needs it is the one standing at a robot wondering why the camera is dark. The
+# script already announced this intent; making it true is smaller than making
+# the human remember it.
+#
+# Order matters and is the whole trick: watchdog first, then the server.
+#
+# Opt out with C3PO_KEEP_TELEIMAGER=1 — for a session that wants gemm's image
+# service left alone and does not need our own camera.
+if [ "${C3PO_KEEP_TELEIMAGER:-0}" = "1" ]; then
+    if pgrep -f "teleimager" >/dev/null 2>&1; then
+        warn "teleimager left running (C3PO_KEEP_TELEIMAGER=1) — it holds /dev/video4,"
+        warn "  so our vision container will fail with 'Device or resource busy'"
+    fi
+elif pgrep -f "teleimager" >/dev/null 2>&1; then
+    warn "teleimager holds /dev/video4 (the D435i colour node) — stopping it"
+    # Watchdog FIRST. Killing the server alone just gets it restarted.
+    pkill -f "_image_service_watchdog.sh" 2>/dev/null || true
+    sleep 0.5
+    pkill -f "teleimager" 2>/dev/null || true
+
+    gone=0
+    for _ in $(seq 1 10); do
+        pgrep -f "teleimager" >/dev/null 2>&1 || { gone=1; break; }
+        sleep 0.5
+    done
+
+    if [ "$gone" = "1" ]; then
+        ok "teleimager stopped — /dev/video4 is free"
+        info "  run_gemm brings it back with the rest of gemm's stack"
+    else
+        err "teleimager is still alive after SIGTERM:"
+        pgrep -af "teleimager" 2>/dev/null | sed 's/^/      /' >&2 || true
+        err "  the vision container will fail with 'Device or resource busy'"
+        err "  something is restarting it — find the supervisor before forcing it"
+    fi
+else
+    ok "/dev/video4 is free (teleimager not running)"
 fi
