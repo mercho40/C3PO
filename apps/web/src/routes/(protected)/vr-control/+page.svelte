@@ -80,6 +80,13 @@
    * every event that means "the operator is no longer holding this".
    */
   function releaseAllControls() {
+    // Cleared unconditionally, and BEFORE the walking check. This runs on
+    // session end, blur, visibility change and pointer cancel — every "the
+    // operator is no longer holding this" event. Leaving it set would mean the
+    // next stick sample compared against a stale direction, saw no change, and
+    // returned without ever calling startWalking again: the stick would be
+    // dead until the operator waggled it through neutral.
+    stickWalk = null;
     if (walking !== null) {
       walking = null;
       if (!bridgeHolds && !loopShouldRun()) {
@@ -486,6 +493,48 @@
     void sendVelocity(wantVx, wantVyaw, STEP_S);
   }
 
+  //: Which direction the thumbstick is currently asking for, so a change is
+  //: distinguishable from the same intent repeated at frame rate. `onSample`
+  //: fires 72-120 times a second; without this, every frame of a held stick
+  //: would look like a fresh press and keep re-arming the dead-man, which is
+  //: exactly the latch that stops a runaway.
+  let stickWalk: WalkDir | null = null;
+
+  /**
+   * Thumbstick -> walk, with the same rules as the on-screen buttons.
+   *
+   * Only ever drives walking it started itself. If the operator is holding a
+   * DOM button (passthrough, where the overlay composites) that press owns
+   * `walking`, and a stick reading 0 must not cancel it — two input paths
+   * fighting over one piece of state is how a held button silently stops
+   * working.
+   */
+  function applyWalkAxis(axis: -1 | 0 | 1) {
+    // Observers do not walk. `startWalking` would be blocked downstream by
+    // `loopShouldRun()` and by `buildFrame`, but not setting the state at all
+    // means the UI does not show a walk that is not happening either.
+    if (viewOnly) {
+      stickWalk = null;
+      return;
+    }
+    const want: WalkDir | null =
+      axis === 1 ? "forward" : axis === -1 ? "back" : null;
+    if (want === stickWalk) return; // unchanged; do not re-arm anything
+
+    if (want === null) {
+      // Released. Only stop what the stick started — see above.
+      if (stickWalk !== null && walking === stickWalk) stopWalking();
+      stickWalk = null;
+      return;
+    }
+    // Pushed, or pushed the other way. Reverse goes through a stop so the
+    // dead-man re-arms and a new motion window starts, rather than sliding
+    // from forward to back inside one window that never resets.
+    if (walking !== null && walking !== want) stopWalking();
+    stickWalk = want;
+    startWalking(want);
+  }
+
   function startWalking(dir: WalkDir) {
     if (walking) return;
     walking = dir;
@@ -565,6 +614,7 @@
           handRight = s.right;
           lastYawSampleAt = Date.now();
           noteHandsVisible();
+          applyWalkAxis(s.walkAxis);
         },
         onEnd: () => {
           vrActive = false;

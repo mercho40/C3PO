@@ -23,6 +23,8 @@ import {
   normalizeAngle,
   quaternionYaw,
   subtract,
+  walkAxisFrom,
+  WALK_STICK_DEADZONE,
   type Vec3,
 } from "../src/lib/webxr/xr-teleop";
 
@@ -363,5 +365,62 @@ describe("overlay transparency — drawn correctly, then painted over", () => {
     const el = root("rgb(6, 9, 15)", "");
     stripOverlayBackground(el);
     expect(el.style.display).toBe("flex");
+  });
+});
+
+describe("walkAxisFrom — the thumbstick that walks the robot", () => {
+  /**
+   * The sign is the whole risk here. Getting it backwards means the robot
+   * walks TOWARD the operator when they pull back to stop it — the panic
+   * gesture producing the opposite of what it asks for, on a 35 kg humanoid,
+   * driven by someone whose eyes are covered.
+   *
+   * Per the gamepad spec, stick Y is NEGATIVE when pushed away from the user.
+   */
+  const AWAY = -1; // pushed away from the operator
+  const TOWARD = 1; // pulled back toward the operator
+
+  test("pushing the stick AWAY walks forward", () => {
+    expect(walkAxisFrom([0, 0, 0, AWAY])).toBe(1);
+  });
+
+  test("pulling the stick BACK walks backward", () => {
+    expect(walkAxisFrom([0, 0, 0, TOWARD])).toBe(-1);
+  });
+
+  test("a resting thumb is not a walk request", () => {
+    for (const y of [0, 0.1, -0.1, 0.3, -0.3, 0.59, -0.59]) {
+      expect(walkAxisFrom([0, 0, 0, y])).toBe(0);
+    }
+  });
+
+  test("the deadzone boundary is inclusive, so exactly-at-threshold moves", () => {
+    expect(walkAxisFrom([0, 0, 0, -WALK_STICK_DEADZONE])).toBe(1);
+    expect(walkAxisFrom([0, 0, 0, WALK_STICK_DEADZONE])).toBe(-1);
+  });
+
+  test("falls back to the two-axis layout when there is no second pair", () => {
+    // Some runtimes report only [x, y]. Reading axes[3] there is undefined,
+    // and undefined must not read as "not walking" when the operator IS.
+    expect(walkAxisFrom([0, AWAY])).toBe(1);
+    expect(walkAxisFrom([0, TOWARD])).toBe(-1);
+    expect(walkAxisFrom([0, 0])).toBe(0);
+  });
+
+  test("no controller, no axes, or garbage is 0 — never a movement", () => {
+    expect(walkAxisFrom(null)).toBe(0);
+    expect(walkAxisFrom(undefined)).toBe(0);
+    expect(walkAxisFrom([])).toBe(0);
+    expect(walkAxisFrom([0])).toBe(0);
+    expect(walkAxisFrom([0, NaN])).toBe(0);
+    expect(walkAxisFrom([0, 0, 0, NaN])).toBe(0);
+    expect(walkAxisFrom([0, Infinity])).toBe(0);
+  });
+
+  test("a fully deflected stick is the same intent as a just-past one", () => {
+    // No proportional speed: walk_velocity's own clamp owns the magnitude, and
+    // a stick that goes faster the harder you push is a stick that surprises
+    // you at the extremes.
+    expect(walkAxisFrom([0, 0, 0, -1])).toBe(walkAxisFrom([0, 0, 0, -0.61]));
   });
 });

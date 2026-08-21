@@ -45,7 +45,53 @@ export type XrSample = {
   headPosition: [number, number, number];
   left: HandSample | null;
   right: HandSample | null;
+  /**
+   * Walk intent from a controller thumbstick: 1 forward, -1 back, 0 neutral.
+   *
+   * A thumbstick rather than a drawn button, because it is a dead-man the
+   * hardware enforces: let go and it springs to centre, so "stop" needs no
+   * code path, no event, and nothing to be working. A button drawn into the
+   * scene has to be found by eye, pressed by raycast, and RELEASED by another
+   * raycast — and the release is the one that matters. Under passthrough the
+   * page's own DOM buttons already work; this is for `immersive-vr`, where
+   * `dom-overlay` does not composite and there is nothing to press.
+   *
+   * 0 when no controller is present, which is the same as "not asking to
+   * walk". Hand-tracking-only sessions keep working exactly as before.
+   */
+  walkAxis: -1 | 0 | 1;
 };
+
+/**
+ * Thumbstick Y to a walk intent. Pure, so the thresholds are testable.
+ *
+ * WebXR's standard mapping puts the primary thumbstick on axes[2]/axes[3],
+ * with axes[0]/axes[1] the touchpad — but not every runtime populates four
+ * axes, so this falls back to [0]/[1] when the pair is absent rather than
+ * reading undefined and deciding the operator is not asking for anything.
+ *
+ * Y is NEGATIVE when a stick is pushed away from the operator, per the
+ * gamepad spec. Forward is therefore -y, and getting that backwards would
+ * mean the robot walks toward someone who pulled back to stop — so it is
+ * stated here once and tested, rather than inferred at the call site.
+ *
+ * The deadzone is deliberately large. This is not a game: a resting thumb, a
+ * stick that does not quite centre, or a knock while reaching for something
+ * must all read as "not walking", and the cost of a high threshold is only
+ * that the operator pushes further.
+ */
+export const WALK_STICK_DEADZONE = 0.6;
+
+export function walkAxisFrom(
+  axes: readonly number[] | null | undefined,
+): -1 | 0 | 1 {
+  if (!axes) return 0;
+  const y = axes.length >= 4 ? axes[3] : axes[1];
+  if (typeof y !== "number" || !Number.isFinite(y)) return 0;
+  if (y <= -WALK_STICK_DEADZONE) return 1; // pushed away = forward
+  if (y >= WALK_STICK_DEADZONE) return -1; // pulled back = backward
+  return 0;
+}
 
 export type XrTeleopOptions = {
   /**
@@ -645,6 +691,7 @@ export class XrTeleopSession {
           yawErrorRadians: normalizeAngle(yaw - this.#forwardYaw),
           headPosition: [p.x, p.y, p.z],
           ...hands,
+          walkAxis: this.#sampleWalkAxis(active),
         });
       };
       session.requestAnimationFrame(onFrame);
@@ -695,6 +742,40 @@ export class XrTeleopSession {
       else if (source.handedness === "right") right = sample;
     }
     return { left, right };
+  }
+
+  /**
+   * Walk intent from whichever controller is reporting one.
+   *
+   * Either hand, and the LARGEST magnitude wins rather than the first found:
+   * `inputSources` has no guaranteed order, so first-wins would make which
+   * controller works depend on enumeration order — fine in testing, confusing
+   * in a headset, and impossible to diagnose from inside one.
+   *
+   * Contradictory sticks (one forward, one back) cancel to 0. That is the
+   * safe reading of "two hands disagree", and it is what a startled operator
+   * grabbing both controllers produces.
+   */
+  #sampleWalkAxis(session: XRSession): -1 | 0 | 1 {
+    let best: -1 | 0 | 1 = 0;
+    let bestMag = 0;
+    let sawForward = false;
+    let sawBack = false;
+    for (const source of session.inputSources) {
+      const axes = source.gamepad?.axes;
+      const intent = walkAxisFrom(axes);
+      if (intent === 0) continue;
+      if (intent > 0) sawForward = true;
+      else sawBack = true;
+      const y = axes && axes.length >= 4 ? axes[3] : axes?.[1];
+      const mag = Math.abs(typeof y === "number" ? y : 0);
+      if (mag > bestMag) {
+        bestMag = mag;
+        best = intent;
+      }
+    }
+    if (sawForward && sawBack) return 0;
+    return best;
   }
 
   #makeOverlayTransparent(root: HTMLElement): void {
