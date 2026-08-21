@@ -1564,15 +1564,21 @@ async def listen(
         # Whether the robot is listening continuously or only while a button is
         # held. The agent needs this to interpret silence: with always_on true,
         # an empty result really does mean nobody spoke.
+        # CONFIGURED vs OBSERVED, and the agent needs the second one.
+        # `audio_flowing` is measured — audio arrived in the last few seconds.
+        # `always_listening` only says the SOURCE is a type that cannot gate,
+        # and the robot's own multicast feed has been seen both gated and
+        # free-running on the same day, so it is not a reliable guide.
+        "audio_flowing": diag.get("audio_flowing", False),
         "always_listening": source["always_on"],
         "audio_source": source["source"],
         "note": (
-            None
-            if diag["mic_ever_open"] or source["always_on"]
-            else "The microphone has never opened. The robot's own mic is "
-            "push-to-talk — it hears nothing unless somebody holds L1+L2 on "
-            "the remote. This is NOT silence in the room. For continuous "
-            "listening a USB microphone has to be plugged into the Jetson."
+            None if diag.get("audio_flowing") or diag["mic_ever_open"] or source["always_on"]
+            else "No audio has arrived. The robot's own microphone has been seen "
+            "BOTH gated on the remote's L1+L2 wake-up mode and free-running with "
+            "no remote at all, so silence here is not proof of either. It does "
+            "mean nothing was recorded — do not read it as a quiet room. Holding "
+            "L1+L2 is the known way to open the feed."
         ),
         "env": SIM_MODE,
         "stub": False,
