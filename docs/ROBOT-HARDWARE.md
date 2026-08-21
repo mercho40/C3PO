@@ -354,6 +354,33 @@ documented dependency (Lidar Driver ≥ 1.0.0.5), toggled with no vendor SDK via
 and the `ServiceList` probe live in `docs/ROBOT-API.md` §8). The gemm client for it is
 `gemm_bringup/tools/g1_service.py`. **[src]**
 
+**MEASURED 2026-08-21, and it changes the recommendation.** A subscriber in our own
+`humble` container, on domain 0 with CycloneDDS pinned to `eth0`: **[live]**
+
+```
+/utlidar/cloud_livox_mid360   sensor_msgs/msg/PointCloud2   9.71 Hz   20064 pts   point_step 22
+    x y z intensity (float32) | ring (uint16) | time (float32, offset 18)
+/utlidar/imu_livox_mid360     sensor_msgs/msg/Imu
+publisher QoS (both):  RELIABLE, KEEP_LAST(1), VOLATILE
+```
+
+Three things follow, and together they make Route 1 far more attractive than it looked:
+
+1. **The cloud carries PER-POINT `time`, plus `ring`.** That is the velodyne layout, which
+   FAST-LIO reads natively as `lid_type: 2` — so the CustomMsg requirement that appeared to
+   rule this route out does not apply. No custom preprocessor. (`time_unit` still has to be
+   matched to the field's units; check before trusting the odometry.)
+2. **The IMU is a standard `sensor_msgs/msg/Imu`.** The "unitree*sdk2py ships no `Imu*`"
+   blocker is real but irrelevant here: it binds the _bridge_, which has no ROS. A ROS 2
+   node gets the type for free.
+3. **The publishers are RELIABLE.** The contradiction below is settled in favour of the bag
+   metadata; the prose was wrong. A BEST_EFFORT subscriber still matches (requested weaker
+   than offered), which is why a default-QoS probe sees data when the service is on.
+
+Two caveats that stay: `KEEP_LAST(1)` means a slow subscriber silently DROPS rather than
+queues, and the topics are on **domain 0** — reaching them from our domain-42 containers is
+the real cost of this route, not the message format.
+
 **QoS trap, and it already burned the gemm team once:** their 2026-08-07 conclusion that
 "these topics do not exist in any DDS domain" was wrong — it came from probing with a
 default-QoS subscriber while the service was switched **off**. Their note claims the
@@ -1611,8 +1638,7 @@ these are the hardware ones.
    power-cycling after running our driver and re-testing which host receives point data.
 4. **Sign of `/livox/imu` linear_acceleration.z with the robot static** — the
    inverted-mount gravity trap (§4.8) — and whether acceleration is in g or m/s².
-5. **RELIABLE or BEST_EFFORT on the `utlidar` topics?** Bag metadata and gemm's prose
-   contradict each other (§4.5); a default subscriber sees nothing if the prose is right.
+5. ~~**RELIABLE or BEST_EFFORT on the `utlidar` topics?**~~ **ANSWERED 2026-08-21: RELIABLE**, KEEP_LAST(1), VOLATILE — read straight off the publisher with `ros2 topic info --verbose` from our own humble container (§4.5). The bag metadata was right; the prose was wrong.
 6. **The real `base_link → lidar_link` translation.** gemm's default `z = 1.0` is marked
    "APROXIMADA". Unitree gives `(−0.0, 0.0, −0.47618)` with an "inverted" placement — but
    the z sign is wrong for a head mount as literally stated, so validate against a real

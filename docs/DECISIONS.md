@@ -140,6 +140,26 @@ it is the recorded fallback.
 | Object detection     | **YOLO11 + TensorRT**        | cheap enough to run continuously on the Orin                                                        |
 | 3D grounding         | RealSense depth × YOLO boxes | the step that turns detection into _spatial_ knowledge                                              |
 
+**The LiDAR route is under review, and the blocker turned out not to exist.** Taking the
+raw unicast means repointing the sensor's flash-backed registers at our Jetson: it steals
+the stream from the control board (and so from the co-tenant), and it persists across
+reboots. The vendor's DDS republish is the sharing-friendly alternative, and it looked
+ruled out because FAST-LIO needs per-point timestamps that only Livox `CustomMsg` carries.
+
+Measured 2026-08-21: **it carries them.** `/utlidar/cloud_livox_mid360` is a
+`sensor_msgs/msg/PointCloud2` with `ring` (uint16) and `time` (float32) — the velodyne
+layout FAST-LIO reads natively as `lid_type: 2` — at 9.71 Hz, alongside a standard
+`sensor_msgs/msg/Imu`, both RELIABLE (`ROBOT-HARDWARE.md` §4.5).
+
+**Not migrating yet, and the reason is sequencing rather than doubt.** Nav2 has never
+driven this robot; changing the odometry source underneath an unproven autonomy stack means
+a misbehaviour cannot be attributed to the planner, the clamps or the new input. The real
+remaining cost is also not the message format but the **domain crossing**: those topics are
+on domain 0, our containers are deliberately domain-42-only, and putting FAST-LIO on
+domain 0 would place our TF and costmaps on the shared wire that domain 42 exists to keep
+them off. A relay is the likely answer, and it needs measuring at ~2 MB/s before it is a
+plan. Revisit once one supervised Nav2 run has happened.
+
 Two corrections to the original record, both from implementation research (the full
 refuted-claims list lives in `apps/perception/README.md`):
 
