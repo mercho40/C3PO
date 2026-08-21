@@ -100,6 +100,18 @@ async def run(ctx: Any | None = None) -> dict[str, Any]:
     try:
         for i, gesture in enumerate(SEQUENCE):
             if task.cancel_event.is_set():
+                # Release the arm on the way out. `SEQUENCE` interleaves
+                # RELEASE_ARM between gestures precisely because a gesture
+                # LATCHES its final pose — but bailing out here skipped the
+                # next one, so a cancelled dance left the arm holding whatever
+                # keyframe it was on. Every gesture after that returns 7401
+                # until somebody sends 99, and PARAR sends Damp, not this.
+                try:
+                    await asyncio.to_thread(
+                        g1_rpc.call_arm, int(g1_protocol.Gesture.RELEASE_ARM)
+                    )
+                except Exception:
+                    log.warning("dance.cancel_release_failed", exc_info=True)
                 task.status = "cancelled"
                 task.phase = "cancelled"
                 task.result = {"steps": steps}

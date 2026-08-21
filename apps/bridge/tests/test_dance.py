@@ -168,6 +168,12 @@ async def test_cancel_stops_before_next_step(monkeypatch):
     result = await run_and_cancel()
 
     assert result["status"] == "cancelled"
-    # Cancel is checked at the top of each loop iteration, so only the
-    # already-in-flight first call completes before the sequence stops.
-    assert len(calls) == 1
+    # The in-flight first call, then a RELEASE_ARM on the way out.
+    #
+    # A gesture LATCHES its final pose, which is why SEQUENCE interleaves
+    # RELEASE_ARM between gestures. Bailing out on cancel used to skip the next
+    # one, so a cancelled dance left the arm holding a keyframe and every later
+    # gesture returned 7401 until somebody sent 99 by hand. PARAR sends Damp,
+    # not this.
+    assert len(calls) == 2
+    assert calls[-1] == int(g1_protocol.Gesture.RELEASE_ARM)

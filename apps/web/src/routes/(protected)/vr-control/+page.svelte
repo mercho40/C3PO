@@ -845,33 +845,116 @@
   const GESTURE_FSM = ["walk", "walk_waist", "run"];
   const canGesture = $derived(GESTURE_FSM.includes(live.state?.posture ?? ""));
 
-  type PresetOutcome = "ok" | "error" | "denied" | "needs_walk" | null;
+  //: An outcome now carries its own words, because the interesting failures are
+  //: all distinguishable and used to be indistinguishable.
+  //:
+  //: THE BRIDGE NEVER RAISES. `run_g1_request` RETURNS `{status: "failed",
+  //: phase: "rpc_error", error: "rpc_error_code_7401"}` on a firmware refusal,
+  //: so FastMCP reports no error, apps/back returns HTTP 200, and this page —
+  //: which read only the HTTP status — called it success. There is no `ok`
+  //: branch on a gesture tile, so a refused gesture rendered NOTHING AT ALL:
+  //: the tile dimmed for a few seconds, un-dimmed, and said nothing whether it
+  //: waved or was refused. And a bring-up step that provably did nothing
+  //: rendered "Enviado" in cyan.
+  //:
+  //: The diagnosis was in the response body the whole time. The bridge already
+  //: writes `phase`, `error` and a `note` explaining exactly what to do.
+  type PresetOutcome = { kind: "ok" | "warn" | "error"; text: string } | null;
+
+  //: Firmware codes worth naming. Everything else falls through to the code
+  //: itself, which is still better than "Falló".
+  const RPC_HINTS: Record<string, string> = {
+    // The arm is holding a sustained pose from a previous gesture. There is a
+    // button for this in the same grid, and nothing used to point at it.
+    rpc_error_code_7401:
+      "Un brazo quedó sosteniendo la pose anterior — tocá «Relajar brazos»",
+    // Something else owns rt/arm_sdk: the arm mirror, or a colleague's stack.
+    rpc_error_code_7400:
+      "rt/arm_sdk está ocupado — apagá el espejo de brazos (o el stack del compañero)",
+    rpc_error_code_7404:
+      "El servicio de brazos rechazó el gesto en este estado",
+  };
   let presetBusy = $state<string | null>(null);
   let presetOutcome = $state<Record<string, PresetOutcome>>({});
+
+  function httpOutcome(status: number): PresetOutcome {
+    if (status === 403) return { kind: "warn", text: "Requiere admin" };
+    // 502 is the ONLY thing apps/back turns a bridge problem into, and it means
+    // the bridge process itself is unreachable — not that the robot refused.
+    // A firmware refusal is a 200; see the note on PresetOutcome.
+    if (status === 502)
+      return {
+        kind: "error",
+        text: "El puente no responde — ¿está corriendo run_c3po?",
+      };
+    return { kind: "error", text: `Falló (HTTP ${status})` };
+  }
+
+  function bodyOutcome(body: Record<string, unknown> | null): PresetOutcome {
+    if (!body) return { kind: "ok", text: "Enviado" };
+
+    const phase = typeof body.phase === "string" ? body.phase : "";
+    const err = typeof body.error === "string" ? body.error : "";
+    const result = (body.result ?? {}) as Record<string, unknown>;
+
+    if (body.status === "failed" || err) {
+      return { kind: "error", text: RPC_HINTS[err] ?? (err || "Falló") };
+    }
+
+    // The firmware acks FSM ids it will not honour — SetFsmId(99999) returns 0
+    // — so a zero code proves nothing about a bring-up step. The bridge checks
+    // afterwards and says so; this used to print "Enviado" over the top of it.
+    if (phase === "acked_no_transition") {
+      const note = typeof body.note === "string" ? body.note : "";
+      return {
+        kind: "error",
+        text: note || "Aceptado, pero el robot NO cambió de estado",
+      };
+    }
+    if (result.transitioned === false) {
+      return {
+        kind: "error",
+        text: "Aceptado, pero el robot NO cambió de estado",
+      };
+    }
+    if (result.transitioned === true) {
+      return { kind: "ok", text: "Listo" };
+    }
+    // `transitioned: null` means unverified, which is not the same as failed
+    // and must not be reported as either.
+    if (result.transitioned === null) {
+      return { kind: "warn", text: "Enviado (sin confirmar)" };
+    }
+    return { kind: "ok", text: "Enviado" };
+  }
 
   async function runPreset(name: string) {
     if (presetBusy) return;
     presetBusy = name;
     presetOutcome = { ...presetOutcome, [name]: null };
     try {
-      const { error } = await createApi(fetch).skills({ name }).invoke.post({});
+      const { data, error } = await createApi(fetch)
+        .skills({ name })
+        .invoke.post({});
       const status = error ? (error.status as number) : 0;
       if (status === 401) {
         if (browser) await goto("/login");
         return;
       }
-      // A 502 while the robot is not in a locomotion FSM is the precondition,
-      // not a fault. Say which, so nobody goes looking at the robot.
-      const outcome: PresetOutcome = !error
-        ? "ok"
-        : status === 403
-          ? "denied"
-          : status === 502 && !canGesture
-            ? "needs_walk"
-            : "error";
-      presetOutcome = { ...presetOutcome, [name]: outcome };
-    } catch {
-      presetOutcome = { ...presetOutcome, [name]: "error" };
+      presetOutcome = {
+        ...presetOutcome,
+        [name]: error
+          ? httpOutcome(status)
+          : bodyOutcome(data as Record<string, unknown> | null),
+      };
+    } catch (err) {
+      presetOutcome = {
+        ...presetOutcome,
+        [name]: {
+          kind: "error",
+          text: err instanceof Error ? err.message : "No se pudo enviar",
+        },
+      };
     } finally {
       presetBusy = null;
     }
@@ -1028,12 +1111,16 @@
         >
           <span class="font-display font-semibold">{step.label}</span>
           <span class="text-xs text-ink-mute">{step.hint}</span>
-          {#if presetOutcome[step.name] === "denied"}
-            <span class="text-xs text-warn">Requiere admin</span>
-          {:else if presetOutcome[step.name] === "error"}
-            <span class="text-xs text-danger-soft">Falló</span>
-          {:else if presetOutcome[step.name] === "ok"}
-            <span class="text-xs text-cyan">Enviado</span>
+          {#if presetBusy === step.name}
+            <span class="text-xs text-ink-mute">Enviando…</span>
+          {:else if presetOutcome[step.name]}
+            <span
+              class="text-xs {presetOutcome[step.name]!.kind === 'ok'
+                ? 'text-cyan'
+                : presetOutcome[step.name]!.kind === 'warn'
+                  ? 'text-warn'
+                  : 'text-danger-soft'}">{presetOutcome[step.name]!.text}</span
+            >
           {/if}
         </button>
       {/each}
@@ -1354,12 +1441,17 @@
           {#if untested}
             <Badge variant="outline" class="text-2xs">Sin probar en real</Badge>
           {/if}
-          {#if presetOutcome[preset.name] === "denied"}
-            <span class="text-xs text-warn">Requiere admin</span>
-          {:else if presetOutcome[preset.name] === "needs_walk"}
-            <span class="text-xs text-warn">Necesita marcha</span>
-          {:else if presetOutcome[preset.name] === "error"}
-            <span class="text-xs text-danger-soft">Falló</span>
+          {#if presetBusy === preset.name}
+            <span class="text-xs text-ink-mute">Enviando…</span>
+          {:else if presetOutcome[preset.name]}
+            <span
+              class="text-xs {presetOutcome[preset.name]!.kind === 'ok'
+                ? 'text-cyan'
+                : presetOutcome[preset.name]!.kind === 'warn'
+                  ? 'text-warn'
+                  : 'text-danger-soft'}"
+              >{presetOutcome[preset.name]!.text}</span
+            >
           {/if}
         </button>
       {/each}
