@@ -53,15 +53,21 @@ say "Taking $DEV from the vendor camera service"
 # means the common case answers without a password prompt. videohub_pc4 names
 # the device it opens right there in its command line.
 holder_argv() {
-    ps -eo pid=,args= | awk -v me="$$" '
-        $1 != me && index($0, "'"$DEV"'") > 0 && index($0, "awk") == 0 { print }
+    ps -eo pid=,args= | awk -v me="$$" -v dev="$DEV" '
+        $1 != me && index($0, dev) > 0 && index($0, "awk") == 0 { print }
     '
+    # librealsense opens the node without naming it in argv, so the scan above
+    # is BLIND to gemm's camera node — and a blind scan here does not report
+    # "unknown", it reports "nothing has it", which would tell an operator the
+    # device is free while the other team is pulling 15 fps off it. Match it by
+    # name for exactly that reason.
+    pgrep -af "[r]ealsense2_camera_node" 2>/dev/null || true
 }
 
 current="$(holder_argv)"
 if [ -z "$current" ]; then
-    ok "nothing in the process table has $DEV open — it may already be free"
-    info "  confirm with: sudo fuser -v $DEV"
+    ok "no known holder of $DEV in the process table"
+    info "  this cannot prove the device is free — confirm with: sudo fuser -v $DEV"
     exit 0
 fi
 
