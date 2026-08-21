@@ -286,8 +286,14 @@ WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 
 # The vision container's HTTP surface. Same host — both run --network host on
 # the Jetson — so this is a loopback call, not a network hop.
-VISION_HOST = os.environ.get("C3PO_VISION_STREAM_HOST", "127.0.0.1")
-VISION_PORT = int(os.environ.get("C3PO_VISION_STREAM_PORT", "8081"))
+# The STT server's own port, NOT the detector's (8081). They are separate on
+# purpose: the detector's HTTP surface only exists while the detector runs, and
+# the detector opens the RealSense. Speech-to-text needs the GPU, not the
+# camera, so serving it from there would claim a sensor away from the co-tenant
+# for no reason. `python3 -m c3po_vision.transcribe` serves this one and opens
+# no device.
+VISION_HOST = os.environ.get("C3PO_STT_HOST", "127.0.0.1")
+VISION_PORT = int(os.environ.get("C3PO_STT_PORT", "8082"))
 # Generous: it covers a cold CUDA context on the first call after the container
 # starts. A tight timeout here turns a slow first utterance into a lost one.
 VISION_TIMEOUT_S = float(os.environ.get("C3PO_VISION_STT_TIMEOUT_S", "30"))
