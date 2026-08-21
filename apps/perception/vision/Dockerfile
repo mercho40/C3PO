@@ -209,9 +209,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends git build-essen
  && cmake --build /tmp/whisper/build -j3 --target whisper-cli \
  && mkdir -p /opt/c3po/whisper \
  && cp /tmp/whisper/build/bin/whisper-cli /opt/c3po/whisper/ \
- && (cp /tmp/whisper/build/ggml/src/**/libggml*.so /opt/c3po/whisper/ 2>/dev/null || true) \
- && (cp /tmp/whisper/build/src/libwhisper.so* /opt/c3po/whisper/ 2>/dev/null || true) \
- && ldconfig /opt/c3po/whisper \
+ # `find`, not a `**` glob: bash does not expand ** recursively without
+ # globstar, so the first attempt silently copied only the CUDA backend and
+ # left libggml-base/libggml/libggml-cpu behind. The binary then loaded, and
+ # died at runtime on "libggml-base.so => not found".
+ && find /tmp/whisper/build -name 'libggml*.so*' -exec cp -a {} /opt/c3po/whisper/ \; \
+ && find /tmp/whisper/build -name 'libwhisper.so*' -exec cp -a {} /opt/c3po/whisper/ \; \
+ # ldconfig needs the directory ON THE SEARCH PATH, not as an argument —
+ # `ldconfig <dir>` scans it but writes nothing durable, which is why
+ # whisper-cli still reported "libwhisper.so.1 => not found".
+ && echo /opt/c3po/whisper > /etc/ld.so.conf.d/c3po-whisper.conf \
+ && ldconfig \
  # EXISTS is not enough, and this is the assertion that matters. whisper.cpp
  # falls back to a CPU build SILENTLY when CUDA is not found at configure time —
  # which is the exact failure that sent transcription to the CPU in the first
@@ -219,8 +227,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends git build-essen
  # is ten times too slow would otherwise ship, and only show up as latency.
  # Linking libcudart is the cheap proof that -DGGML_CUDA=1 actually took.
  && test -x /opt/c3po/whisper/whisper-cli \
- && (ldd /opt/c3po/whisper/whisper-cli | grep -q libcudart \
-     || (echo "FATAL: whisper-cli did not link CUDA — GGML_CUDA silently fell back to CPU" && false)) \
+ # CUDA lives in libggml-cuda.so, NOT in the CLI — checking the binary for
+ # libcudart passes on a CPU-only build and proves nothing. This is the
+ # assertion that actually catches a silent fallback.
+ && (ldd /opt/c3po/whisper/libggml-cuda.so 2>/dev/null | grep -q libcudart \
+     || (echo "FATAL: libggml-cuda.so missing or not linked against CUDA — GGML_CUDA fell back to CPU" && false)) \
+ # And every library must RESOLVE. The first build shipped a binary whose
+ # loader could not find libwhisper.so.1, which fails only when someone
+ # finally runs it.
+ && (ldd /opt/c3po/whisper/whisper-cli | grep "not found" \
+     && (echo "FATAL: whisper-cli has unresolved libraries (see above)" && false) || true) \
  && rm -rf /tmp/whisper \
  && rm -rf /var/lib/apt/lists/*
 
