@@ -45,6 +45,10 @@ if [ -f "$WEB_ENV" ]; then
               | tail -1 | cut -d= -f2- | tr -d '"'"'"' \r' | xargs 2>/dev/null || true)
 fi
 CAM_URL_SOURCE="apps/web/.env"
+# The multipart boundary stream.py emits between frames. Finding it in the body
+# is what distinguishes "serving pictures" from "answered the socket".
+STREAM_BOUNDARY="c3poframe"
+live_ok=0
 if [ -z "$CAM_URL" ]; then
     CAM_URL="${PUBLIC_ROBOT_CAM_URL:-}"
     CAM_URL_SOURCE="the shell environment"
@@ -183,9 +187,11 @@ else
         esac
     else
         ok "the camera server answers /status"
+        live_ok=0
         case "$status_body" in
             *'"live":true'*|*'"live": true'*)
                 ok "and it says it is LIVE — there are frames to show"
+                live_ok=1
                 ;;
             *'"live"'*)
                 warn "but it says live: false — the server is up, the D435i is not producing"
@@ -198,13 +204,23 @@ else
                 ;;
         esac
 
-        code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' "$CAM_URL/stream.mjpg" 2>/dev/null)
-        if [ "$code" = "200" ]; then
-            ok "the stream itself returns 200 — the whole chain to this Mac works"
-            note "if the headset still shows nothing after this, it is the renderer, not the feed"
-        else
-            bad "/status works but the stream returned $code"
-            note "the server is up but not serving frames — restart perception_up perception"
+        # Only worth asking when /status says there ARE frames. Running it
+        # regardless meant preflight could print "the D435i is not producing"
+        # and "the whole chain works" four lines apart.
+        if [ "$live_ok" = "1" ]; then
+            # NOT the status code. The server sends 200 and the multipart
+            # headers unconditionally, before it has waited for any frame — so
+            # a 200 proves the socket opened and nothing else. What proves a
+            # picture is a boundary marker in the body.
+            if curl -sS --max-time 6 "$CAM_URL/stream.mjpg" 2>/dev/null \
+                 | head -c 4096 | grep -q "$STREAM_BOUNDARY"; then
+                ok "real frame data is arriving — the whole chain to this Mac works"
+                note "if the headset still shows nothing after this, it is the renderer"
+            else
+                bad "/status says live, but no frame data came out of the stream"
+                note "the server is answering and not sending pictures. Restart it:"
+                note "  perception_up perception"
+            fi
         fi
     fi
 fi

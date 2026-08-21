@@ -154,7 +154,8 @@ if [ "$needs_camera" = 1 ]; then
     # sets C3PO_VISION_STREAM_HOST=0.0.0.0 on purpose — an unauthenticated camera
     # feed on a shared network should be a sentence someone typed, not a default.
     # The console reaches it the same way it reaches the bridge:
-    #   ssh -f -N -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 c3po
+    #   ssh -f -N -o ControlMaster=no \
+    #       -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 c3po
     if [ "${C3PO_VISION_STREAM:-1}" = "1" ]; then
         info "video: http://${C3PO_VISION_STREAM_HOST:-127.0.0.1}:${C3PO_VISION_STREAM_PORT:-8081}/stream.mjpg (tunnel it; PUBLIC_ROBOT_CAM_URL in apps/web)"
     else

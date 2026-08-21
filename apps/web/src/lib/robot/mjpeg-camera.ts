@@ -24,7 +24,7 @@
 // The stream binds the Jetson's loopback by default, so `PUBLIC_ROBOT_CAM_URL`
 // normally points at a local port forwarded over the same SSH tunnel that
 // carries the bridge:
-//   ssh -f -N -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 c3po
+//   ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 c3po
 // That is also why this is plain HTTP with no certificate dance: the transport
 // is already an encrypted tunnel, and a self-signed cert per port is the thing
 // that makes the sim's cameras annoying to bring up.
