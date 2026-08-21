@@ -160,6 +160,45 @@ RUN python3 -c "import numpy; assert numpy.__version__ == '1.24.4', 'numpy is ' 
  && python3 -c "import pyrealsense2, cyclonedds, sys; print('pyrealsense2 + cyclonedds import under python', sys.version.split()[0])" \
  && python3 -c "import PIL; assert PIL.__version__ == '10.4.0', 'Pillow is ' + PIL.__version__ + ', not the pinned 10.4.0'; from PIL import features; assert features.check('jpg'), 'Pillow built without JPEG support — the wheel was not used and the operator video would fail at the first encode, at runtime, on the robot'; print('Pillow', PIL.__version__, 'jpeg ok')"
 
+# --- whisper.cpp, built WITH CUDA -------------------------------------------
+#
+# Spanish transcription runs here rather than in the bridge, and the reason is
+# not preference. The PyPI ctranslate2 aarch64 wheel is compiled WITHOUT CUDA
+# ("This CTranslate2 package was not compiled with CUDA support"), so
+# faster-whisper on the bridge could never reach a GPU at all — it ran on eight
+# CPU cores shared with the co-tenant's SLAM, at 3.5-6.6 s for a short
+# utterance. This image already holds CUDA 11.4, and the GPU idles at ~0-5%.
+#
+# whisper.cpp AND NOT faster-whisper, because this image is Python 3.8 (JetPack
+# 5's TensorRT bindings hard-depend `python3 << 3.9`) and faster-whisper needs
+# 3.9+. A C++ CLI makes the interpreter version irrelevant — the same reasoning
+# that made Piper a binary rather than a package.
+#
+# GGML_CUDA=1 is the whole point of building from source instead of downloading
+# a release: the prebuilt binaries are CPU-only. CMAKE_CUDA_ARCHITECTURES=87 is
+# Orin (sm_87) — "native" would work on this machine and silently produce a
+# binary that runs nowhere else, which is a bad property for an image.
+ARG WHISPER_CPP_REF=v1.7.4
+RUN apt-get update && apt-get install -y --no-install-recommends git cmake build-essential \
+ && git clone --depth 1 -b ${WHISPER_CPP_REF} https://github.com/ggerganov/whisper.cpp /tmp/whisper \
+ && cmake -S /tmp/whisper -B /tmp/whisper/build \
+      -DGGML_CUDA=1 \
+      -DCMAKE_CUDA_ARCHITECTURES=87 \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DWHISPER_BUILD_TESTS=OFF \
+      -DWHISPER_BUILD_EXAMPLES=ON \
+ && cmake --build /tmp/whisper/build -j3 --target whisper-cli \
+ && mkdir -p /opt/c3po/whisper \
+ && cp /tmp/whisper/build/bin/whisper-cli /opt/c3po/whisper/ \
+ && (cp /tmp/whisper/build/ggml/src/**/libggml*.so /opt/c3po/whisper/ 2>/dev/null || true) \
+ && (cp /tmp/whisper/build/src/libwhisper.so* /opt/c3po/whisper/ 2>/dev/null || true) \
+ && ldconfig /opt/c3po/whisper \
+ # The binary must EXIST and RUN. `--help` needs no model, no GPU and no audio,
+ # so it fails the build on a broken link rather than at 3am on the robot.
+ && test -x /opt/c3po/whisper/whisper-cli \
+ && rm -rf /tmp/whisper \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY c3po_vision /opt/c3po/c3po_vision
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

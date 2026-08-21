@@ -57,6 +57,8 @@ MIC_PORT = int(os.environ.get("C3PO_MIC_PORT", "5555"))
 # gated microphone rather than a wrong interface.
 MIC_IFACE_PREFIX = "192.168.123."
 MIC_SAMPLE_RATE = 16000
+# 16 kHz mono 16-bit. Used to turn a buffer length into seconds.
+TARGET_BYTES_PER_S = MIC_SAMPLE_RATE * 2
 
 VOSK_MODEL = os.environ.get(
     "VOSK_MODEL", os.path.expanduser("~/.local/share/vosk/vosk-model-small-es-0.42")
@@ -249,6 +251,29 @@ def transcribe_pcm(pcm: bytes, frame_bytes: int = FRAME_BYTES) -> list[str]:
     return out
 
 
+# WHISPER IS NOT A BLANKET UPGRADE, AND THE MEASUREMENTS SAY SO.
+# Benchmarked on this Jetson, warm (model already loaded), synthesised es_AR:
+#
+#     clip                       vosk            whisper
+#     "Para."            0.66s   ~370 ms  cara   3.58 s  "!Bien!"      <- wrong
+#     "Camina hasta      1.35s   ~370 ms  ok     4.00 s  "caminaste
+#      la puerta."                                        la puerta."   <- wrong
+#     long sentence      3.53s   ~370 ms  ok     6.64 s  ok
+#
+# Two things fall out. Whisper is 10-18x SLOWER here, and it is WORSE on short
+# utterances -- it is trained on 30 s windows and mangles a one-word clip. Short
+# utterances are exactly what commands to a robot look like, so routing
+# everything through it would make the common case both slower and less correct.
+#
+# So: SHORT UTTERANCES KEEP VOSK'S TEXT, long ones go to Whisper, where its
+# better language modelling and punctuation actually pay for the latency.
+#
+# What this benchmark CANNOT settle is the case that motivated the swap: Vosk
+# rendered live far-field mic audio as "guapa dias" for "buenos dias". Piper's
+# audio is clean, level and unhurried, so it does not test noise robustness at
+# all. If Whisper wins there, this threshold is the thing to lower.
+WHISPER_MIN_SECONDS = float(os.environ.get("WHISPER_MIN_SECONDS", "2.0"))
+
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
 # INT8 halves memory for well under a point of WER, and the Orin NX has no spare
 # RAM to spend: 15 GB shared between us, the detector and another team's SLAM.
@@ -257,6 +282,80 @@ WHISPER_COMPUTE = os.environ.get("WHISPER_COMPUTE", "int8")
 # would drag the voice path into the ~10 GB vision container to transcribe
 # five-second utterances (D6.3). The GPU is free; this is not why it is free.
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
+
+
+# The vision container's HTTP surface. Same host — both run --network host on
+# the Jetson — so this is a loopback call, not a network hop.
+VISION_HOST = os.environ.get("C3PO_VISION_STREAM_HOST", "127.0.0.1")
+VISION_PORT = int(os.environ.get("C3PO_VISION_STREAM_PORT", "8081"))
+# Generous: it covers a cold CUDA context on the first call after the container
+# starts. A tight timeout here turns a slow first utterance into a lost one.
+VISION_TIMEOUT_S = float(os.environ.get("C3PO_VISION_STT_TIMEOUT_S", "30"))
+
+
+class RemoteWhisper:
+    """Transcription over HTTP, on the GPU, in the vision container.
+
+    WHY THE WORK MOVED OUT OF THIS PROCESS. faster-whisper here ran on the CPU
+    and could not do otherwise: the PyPI ctranslate2 aarch64 wheel is compiled
+    WITHOUT CUDA, so the GPU was unreachable from Python on this machine. It
+    took 3.5-6.6 s for a short utterance on eight cores shared with the
+    co-tenant's SLAM, while the GPU idled at 0-5 percent.
+
+    Moving it also restores something D6.2 asked for and the CPU version had
+    quietly broken: ML dependencies stay OUT of the process that owns
+    `stop_everything`. The bridge keeps vosk — small, CPU, streaming, and the
+    stop phrase needs it — and shed ctranslate2, onnxruntime and av.
+
+    DEGRADES, NEVER RAISES INTO THE LOOP. If the container is down or has no
+    model, this returns "" and the caller keeps the segmenter's text. A missing
+    GPU transcriber must cost transcript QUALITY, never the utterance.
+    """
+
+    def __init__(self, host: str = VISION_HOST, port: int = VISION_PORT) -> None:
+        self._url = f"http://{host}:{port}/transcribe"
+
+    def transcribe(self, pcm: bytes) -> str:
+        if not pcm:
+            return ""
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            self._url, data=pcm, method="POST",
+            headers={"Content-Type": "application/octet-stream"})
+        try:
+            with urllib.request.urlopen(req, timeout=VISION_TIMEOUT_S) as resp:
+                payload = _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # 503 is the container saying "no model" — expected, not a fault.
+            log.warning("listen.remote_whisper_unavailable",
+                        code=exc.code, url=self._url)
+            return ""
+        except Exception as exc:
+            log.warning("listen.remote_whisper_failed",
+                        error=str(exc)[:200], url=self._url)
+            return ""
+
+        text = (payload.get("text") or "").strip()
+        if text:
+            log.info("listen.remote_whisper", ms=payload.get("ms"),
+                     seconds=payload.get("seconds"))
+        return text
+
+
+def remote_whisper_status() -> dict[str, Any]:
+    """Ask the vision container whether GPU transcription is ready."""
+    import json as _json
+    import urllib.request
+
+    url = f"http://{VISION_HOST}:{VISION_PORT}/transcribe/status"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            return dict(_json.loads(resp.read().decode("utf-8")))
+    except Exception as exc:
+        return {"available": False, "reason": f"vision container unreachable: {exc}"}
 
 
 class WhisperTranscriber:
@@ -307,6 +406,35 @@ def transcribe_pcm_whisper(pcm: bytes, model_name: str | None = None) -> str:
     return WhisperTranscriber(model_name).transcribe(pcm)
 
 
+def build_whisperer() -> Any | None:
+    """Pick a transcriber: GPU in the vision container first, CPU here second.
+
+    PREFERRING REMOTE IS THE POINT. The local path cannot use the GPU on this
+    machine at all — the ctranslate2 aarch64 wheel has no CUDA — so it is the
+    fallback, not the default. It stays because a bridge running without the
+    vision container should still transcribe, just slowly.
+
+    Returns None if neither is available, and the caller then keeps the
+    segmenter's text. Losing Whisper must cost transcript quality, never the
+    utterance.
+    """
+    status = remote_whisper_status()
+    if status.get("available"):
+        log.info("listen.whisper_backend", backend="vision-container-gpu",
+                 model=status.get("model"))
+        return RemoteWhisper()
+
+    try:
+        whisperer = WhisperTranscriber()
+        log.warning("listen.whisper_backend", backend="local-cpu",
+                    reason=status.get("reason"),
+                    note="the GPU path is in the vision container; is it running?")
+        return whisperer
+    except ListenUnavailable as exc:
+        log.warning("listen.whisper_unavailable", reason=str(exc))
+        return None
+
+
 def listen_loop(
     frames: Iterator[bytes],
     on_text: Callable[[str], None] | None = None,
@@ -341,14 +469,7 @@ def listen_loop(
     detector = StopPhraseDetector(phrases=phrases)
     transcriber = Transcriber()
 
-    whisperer = None
-    if whisper:
-        try:
-            whisperer = WhisperTranscriber()
-        except ListenUnavailable as exc:
-            # Degrade rather than refuse: a worse transcript still lets someone
-            # test, and the stop phrase — the part that matters — is unaffected.
-            log.warning("listen.whisper_unavailable", reason=str(exc))
+    whisperer = build_whisperer() if whisper else None
 
     utterance = bytearray()
 
@@ -369,9 +490,13 @@ def listen_loop(
             # emit ITS text instead. Vosk's own result is discarded here — it was
             # only ever the segmenter and the stop detector.
             if whisperer is not None:
-                better = whisperer.transcribe(bytes(utterance))
+                # Route by LENGTH. Below the threshold Whisper is both slower
+                # and less accurate than the segmenter that already produced
+                # `text`, so calling it would cost seconds to get a worse
+                # answer. See WHISPER_MIN_SECONDS.
+                if len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S:
+                    text = whisperer.transcribe(bytes(utterance)) or text
                 utterance.clear()
-                text = better or text
             if on_text is not None:
                 on_text(text)
         elif whisperer is not None and len(utterance) > MAX_UTTERANCE_BYTES:
@@ -630,7 +755,7 @@ class MicListener:
             else:
                 detector = StopPhraseDetector(phrases=self._phrases)
                 transcriber = Transcriber()
-                whisperer = WhisperTranscriber() if self._whisper else None
+                whisperer = build_whisperer() if self._whisper else None
         except ListenUnavailable as exc:
             # Recorded rather than raised: this is a daemon thread, and an
             # exception here would vanish into stderr while `poll()` kept
@@ -665,7 +790,8 @@ class MicListener:
             text = transcriber.feed(frame)
             if text:
                 if whisperer is not None:
-                    text = whisperer.transcribe(bytes(utterance)) or text
+                    if len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S:
+                        text = whisperer.transcribe(bytes(utterance)) or text
                     utterance.clear()
                 self._record(text, kind="speech")
             elif whisperer is not None and len(utterance) > MAX_UTTERANCE_BYTES:

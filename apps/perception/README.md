@@ -412,3 +412,38 @@ load-bearing part), `sdk/perception_link.py` (the domain-42 link and cmd_vel
 gate) and `world_model.py` (`from_report()`, the D7 contract). Operational
 scripts live in `scripts/robot/`: `perception_up`, `build_perception`,
 `measure.sh`, plus the perception-aware `run_c3po`/`stop_c3po`/`_common.sh`.
+
+## Spanish transcription runs here, on the GPU
+
+`POST /transcribe` on the vision container's HTTP surface (`:8081`) takes raw
+**16 kHz mono 16-bit PCM** and returns Spanish text. `GET /transcribe/status`
+reports whether the model is present.
+
+**Why this container.** The bridge ran faster-whisper on the CPU and could not
+do otherwise: the PyPI `ctranslate2` aarch64 wheel is compiled **without CUDA**,
+so the GPU was unreachable from Python on this machine. It measured 3.5–6.6 s
+for a short utterance, on eight cores shared with the co-tenant's SLAM, while
+the GPU idled at 0–5 %. This image already has CUDA 11.4.
+
+It also puts the ML dependencies back outside the process that owns
+`stop_everything`, which is what D6.2 asked for and the CPU version had quietly
+broken. The bridge keeps `vosk` (39 MB, CPU, streaming — the spoken stop needs
+it) and sheds ctranslate2, onnxruntime and av.
+
+**Why whisper.cpp and not faster-whisper.** This image is **Python 3.8**, because
+JetPack 5's TensorRT bindings hard-depend on `python3 (<< 3.9)`; faster-whisper
+needs 3.9+. A C++ CLI makes the interpreter version irrelevant — the same reason
+Piper is a binary rather than a package. Built with `GGML_CUDA=1`, which is the
+whole point of building from source: the prebuilt releases are CPU-only.
+
+**The model is not in the image.** Same reasoning as the TensorRT plan: it is
+148 MB, changes far less often than the code, and a rebuild should not cost a
+re-download. Fetch it on a laptop — the robot's egress to model hosts measured
+~7 KB/s — and place it in `~/.c3po/models/`, which is bind-mounted read-only:
+
+```bash
+curl -fLO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+# push it over in chunks; a single scp of this size stalls silently
+```
+
+`ggml-base.bin`, not `ggml-base.en.bin` — the `.en` models are English-only.

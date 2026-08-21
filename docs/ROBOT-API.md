@@ -1929,7 +1929,7 @@ Publisher-side QoS recorded in the bags for `/lf/lowstate`, `/lf/bmsstate`,
 VOLATILE**, infinite deadline/lifespan/liveliness. **[live]** Depth 1 is the part that
 matters: there is no history to catch up on, so a slow subscriber silently drops samples.
 Our reader depth of 10 is legal but buys nothing. (The colleague's prose calls the
-`utlidar` topics BEST_EFFORT while their own bag metadata records RELIABLE — trust the
+`utlidar` topics BEST_EFFORT while their own bag metadata records RELIABLE. **Settled 2026-08-21: the publishers are RELIABLE** (`ROBOT-HARDWARE.md` §4.5). Historically — trust the
 metadata, but verify.)
 
 ⚠️ **Our CycloneDDS config is never actually applied — the vendor SDK overrides it.**

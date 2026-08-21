@@ -140,6 +140,26 @@ it is the recorded fallback.
 | Object detection     | **YOLO11 + TensorRT**        | cheap enough to run continuously on the Orin                                                        |
 | 3D grounding         | RealSense depth × YOLO boxes | the step that turns detection into _spatial_ knowledge                                              |
 
+**The LiDAR route is under review, and the blocker turned out not to exist.** Taking the
+raw unicast means repointing the sensor's flash-backed registers at our Jetson: it steals
+the stream from the control board (and so from the co-tenant), and it persists across
+reboots. The vendor's DDS republish is the sharing-friendly alternative, and it looked
+ruled out because FAST-LIO needs per-point timestamps that only Livox `CustomMsg` carries.
+
+Measured 2026-08-21: **it carries them.** `/utlidar/cloud_livox_mid360` is a
+`sensor_msgs/msg/PointCloud2` with `ring` (uint16) and `time` (float32) — the velodyne
+layout FAST-LIO reads natively as `lid_type: 2` — at 9.71 Hz, alongside a standard
+`sensor_msgs/msg/Imu`, both RELIABLE (`ROBOT-HARDWARE.md` §4.5).
+
+**Not migrating yet, and the reason is sequencing rather than doubt.** Nav2 has never
+driven this robot; changing the odometry source underneath an unproven autonomy stack means
+a misbehaviour cannot be attributed to the planner, the clamps or the new input. The real
+remaining cost is also not the message format but the **domain crossing**: those topics are
+on domain 0, our containers are deliberately domain-42-only, and putting FAST-LIO on
+domain 0 would place our TF and costmaps on the shared wire that domain 42 exists to keep
+them off. A relay is the likely answer, and it needs measuring at ~2 MB/s before it is a
+plan. Revisit once one supervised Nav2 run has happened.
+
 Two corrections to the original record, both from implementation research (the full
 refuted-claims list lives in `apps/perception/README.md`):
 
@@ -472,6 +492,22 @@ multicast feed carries. No resampling on the way in. (Piper's `es_AR` still need
 is cached on-robot, dated 2026-08-06, from the co-tenant's own mic→Whisper work — so the
 path is not speculative. Prefer **`small`, INT8**: INT8 halves memory for under 0.2 % WER
 regression, and `base` is noticeably weaker in Spanish than `small`.
+
+**SUPERSEDED 2026-08-21 — it runs on the GPU, in the vision container.** The reasoning
+below was sound and its premise turned out to be false: the assumption was that GPU
+CTranslate2 merely _needed_ cuDNN. In fact the PyPI aarch64 wheel is compiled **without
+CUDA at all**, so the CPU was not a conservative first choice — it was the only choice
+Python on this machine offered. Measured warm: 3.5–6.6 s for a short utterance, on eight
+cores shared with the co-tenant's SLAM, while the GPU idled at 0–5 %.
+
+The fix cost no new container: `apps/perception/vision` already runs CUDA 11.4, so
+whisper.cpp is built there with `GGML_CUDA=1` and the bridge calls `POST /transcribe` over
+loopback. That also restores D6.2's split, which the CPU version had broken — the bridge
+now keeps only `vosk` for the spoken stop and sheds ctranslate2, onnxruntime and av.
+
+whisper.cpp rather than faster-whisper because the vision image is Python 3.8 (TensorRT
+bindings hard-depend `python3 << 3.9`) and faster-whisper needs 3.9+. Original reasoning
+below, kept because the CPU path is still the fallback when the container is down:
 
 **Run it on the CPU, not the GPU**, at least first. CTranslate2 on GPU requires cuDNN, which
 is not in the bridge's venv and would drag the voice process into a CUDA container (the
