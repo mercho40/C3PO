@@ -115,7 +115,7 @@ if [ "$QUICK" = "1" ]; then
 else
     for entry in "8767:teleop stream:fatal:run_teleop" \
                  "8001:bridge MCP:fatal:run_c3po" \
-                 "8081:camera MJPEG:warn:perception_up perception"; do
+                 "8081:camera MJPEG (only if PUBLIC_ROBOT_CAM_URL says 8081):warn:perception_up perception"; do
         port="${entry%%:*}"; rest="${entry#*:}"
         label="${rest%%:*}"; rest="${rest#*:}"
         sev="${rest%%:*}"; starter="${rest#*:}"
@@ -141,7 +141,12 @@ else
                 if [ "$sev" = "fatal" ]; then
                     bad "$port  $label — not forwarded at all"
                 else
-                    warn "$port  $label — not forwarded (no camera picture without it)"
+                    # NOT "no camera picture without it" any more. The default
+                    # feed is the bridge's videohub camera on 8001, which this
+                    # forward has nothing to do with — and section 3 says so
+                    # four lines later. A checklist that contradicts its own
+                    # advice teaches people to ignore the checklist.
+                    warn "$port  $label — not forwarded"
                 fi
                 note "ssh -N -o ControlMaster=no \\"
                 note "    -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 \\"
