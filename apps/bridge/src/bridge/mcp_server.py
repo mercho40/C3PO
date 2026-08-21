@@ -2324,9 +2324,16 @@ async def camera_status(request):  # noqa: ANN001, ANN201 - starlette types
     if unavailable is not None:
         return unavailable
 
+    from bridge.sdk import camera_relay
     from bridge.sdk.videohub import get_camera
 
-    return JSONResponse(get_camera().status(), headers={"Cache-Control": "no-store"})
+    videohub = get_camera().status()
+    vision = camera_relay.upstream_status()
+    source = camera_relay.choose_source(videohub, vision)
+    return JSONResponse(
+        camera_relay.merged_status(videohub, vision, source),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @mcp.custom_route("/camera/frame.jpg", methods=["GET"])
@@ -2343,21 +2350,76 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
     if unavailable is not None:
         return unavailable
 
+    from bridge.sdk import camera_relay
     from bridge.sdk.videohub import get_camera
 
     camera = get_camera()
-    seq, jpeg, _stamp = camera.snapshot()
-    if seq == 0 or jpeg is None:
-        status = camera.status()
-        return JSONResponse(
-            {"error": "no frame yet", "hint": status["hint"], "status": status},
-            status_code=503,
-        )
-    return Response(
-        content=jpeg,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "no-store", "Content-Length": str(len(jpeg))},
+    videohub = camera.status()
+    vision = camera_relay.upstream_status()
+    source = camera_relay.choose_source(videohub, vision)
+
+    if source == "videohub":
+        _seq, jpeg, _stamp = camera.snapshot()
+        if jpeg is not None:
+            return Response(
+                content=jpeg,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store", "Content-Length": str(len(jpeg))},
+            )
+
+    if source == "vision":
+        try:
+            body = await asyncio.to_thread(_relay_bytes, camera_relay.vision_url("frame.jpg"))
+        except Exception:
+            log.exception("camera.relay_frame_failed")
+        else:
+            return Response(content=body, media_type="image/jpeg",
+                            headers={"Cache-Control": "no-store"})
+
+    status = camera_relay.merged_status(videohub, vision, source)
+    return JSONResponse(
+        {"error": "no frame yet", "hint": status.get("hint"), "status": status},
+        status_code=503,
     )
+
+
+async def _relay_stream(url: str):
+    """Pipe an upstream MJPEG response straight through to the client.
+
+    Reads in a thread: `urllib` is blocking, and blocking the event loop here
+    would stall every other route — `stop_everything` among them, which is the
+    one that must never wait behind a video frame.
+    """
+    import urllib.request
+
+    try:
+        resp = await asyncio.to_thread(urllib.request.urlopen, url, None, 10.0)
+    except Exception:
+        log.exception("camera.relay_open_failed", url=url)
+        return
+    try:
+        while True:
+            chunk = await asyncio.to_thread(resp.read, 8192)
+            if not chunk:
+                return
+            yield chunk
+    except Exception:
+        # The operator closed the tab, or the upstream went away mid-stream.
+        # Ending the response IS how MJPEG says "no longer live".
+        return
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+
+
+def _relay_bytes(url: str, timeout: float = 5.0) -> bytes:
+    """Fetch a whole body. Blocking on purpose — callers use asyncio.to_thread."""
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return bytes(resp.read())
 
 
 @mcp.custom_route("/camera/stream.mjpg", methods=["GET"])
@@ -2376,18 +2438,34 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
     if unavailable is not None:
         return unavailable
 
+    from bridge.sdk import camera_relay
     from bridge.sdk.videohub import STALE_AFTER_S, get_camera
 
     camera = get_camera()
-    seq, jpeg, _stamp = camera.snapshot()
-    if seq == 0 or jpeg is None:
+    videohub = camera.status()
+    vision = camera_relay.upstream_status()
+    source = camera_relay.choose_source(videohub, vision)
+
+    if source is None:
         # Refuse before opening the response. A stream that opens and
         # immediately closes is indistinguishable at the client from a network
         # fault; a 503 with a reason is not.
-        status = camera.status()
+        status = camera_relay.merged_status(videohub, vision, source)
         return JSONResponse(
-            {"error": "no frame yet", "hint": status["hint"], "status": status},
+            {"error": "no frame yet", "hint": status.get("hint"), "status": status},
             status_code=503,
+        )
+
+    if source == "vision":
+        # RELAY, byte for byte. The vision container already emits the same
+        # multipart format with the same boundary, so re-framing it here would
+        # be re-encoding a stream we have no reason to touch — and would put a
+        # JPEG decode per frame on the bridge, which owns stop_everything.
+        media_type, headers = camera_relay.relay_headers("stream")
+        return StreamingResponse(
+            _relay_stream(camera_relay.vision_url("stream.mjpg")),
+            media_type=media_type,
+            headers=headers,
         )
 
     boundary = "c3poframe"
