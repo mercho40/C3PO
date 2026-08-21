@@ -44,11 +44,15 @@ case "$stage" in
         info "and the /c3po/cmd_vel path, with nothing taken from the other team"
         warn "Nav2 comes up UNCONFIGURED (autostart:=false); the bridge's cmd_vel gate stays closed" ;;
     odometry)
-        warn "sensors claimed: Livox Mid-360 — gemm will be stopped to release it" ;;
+        info "sensors claimed: NONE — the LiDAR arrives on the vendor's DDS republish"
+        info "  (odometry.launch.py defaults to lidar_source:=republish, an ordinary"
+        info "   multi-consumer topic; the Livox stays with whoever holds it)" ;;
     perception)
-        warn "sensors claimed: Livox Mid-360 AND RealSense D435i — gemm will be stopped" ;;
+        warn "sensors claimed: RealSense D435i — the DETECTOR needs the device for depth"
+        info "  the LiDAR is NOT claimed: it comes over the vendor republish" ;;
     nav2)
-        warn "sensors claimed: Livox Mid-360 AND RealSense D435i — gemm will be stopped"
+        warn "sensors claimed: RealSense D435i — the DETECTOR needs the device for depth"
+        info "  the LiDAR is NOT claimed: it comes over the vendor republish"
         warn "Nav2 comes up UNCONFIGURED (autostart:=false); the bridge's cmd_vel gate stays closed" ;;
 esac
 
@@ -72,21 +76,57 @@ needs_nav=1; needs_stt=0
 # the entire point of nav2-fake — Stage 4 was specified as sensor-free, and for
 # a while the only nav2 stage stopped gemm and took both sensors, which would
 # have made a step described as "Nav2 in isolation" the most invasive one yet.
+#
+# THE LIDAR IS NO LONGER A DEVICE CLAIM. `odometry.launch.py` defaults to
+# `lidar_source:=republish` — the cloud and IMU arrive as ordinary
+# multi-consumer DDS topics from the vendor's own republish, measured at 9.57 Hz
+# with the co-tenant's whole stack running. Claiming the Livox for these stages
+# was left over from the driver path, and it cost the other team a sensor we no
+# longer need to take. `C3PO_LIDAR_SOURCE=driver` puts the claim back for a run
+# that deliberately wants the raw feed (docs/ROBOT-HARDWARE.md §4).
 case "$stage" in
-    odometry) needs_lidar=1 ;;
-    perception|nav2) needs_lidar=1; needs_camera=1 ;;
+    perception|nav2) needs_camera=1 ;;
 esac
+if [ "${C3PO_LIDAR_SOURCE:-republish}" = "driver" ]; then
+    case "$stage" in
+        odometry|perception|nav2)
+            needs_lidar=1
+            # Claiming the device and telling the launch file to use it are two
+            # different things. Setting only the first would stop gemm, take the
+            # Livox, and then run the republish path anyway — a stolen sensor
+            # nothing reads, with every log line still saying "republish".
+            launch_args="$launch_args lidar_source:=driver"
+            warn "C3PO_LIDAR_SOURCE=driver — claiming the Livox device itself"
+            ;;
+    esac
+fi
 
 if [ "$needs_lidar" = 1 ] || [ "$needs_camera" = 1 ]; then
     if [ -n "$(gemm_running)" ]; then
-        warn "stage '$stage' claims shared sensors"
-        info "stopping gemm to release them"
-        info "  (both sensors: stop_gemm stops gemm's containers for the Livox,"
-        info "   and teleimager for the D435i colour node it holds on the host)"
+        warn "stage '$stage' claims a shared sensor"
+        info "stopping gemm to release it"
         "$here/stop_gemm"
     fi
+
+    # stop_gemm frees GEMM's holders and deliberately leaves `videohub_pc4`
+    # alone, because that one is Unitree's and not gemm's to stop. But a stage
+    # that needs the D435i needs it from WHOEVER has it, and this script has
+    # already said out loud that it claims the device. Announcing a claim and
+    # then leaving the device held is precisely how `perception_up` reported
+    # success with a dead camera for as long as it did.
+    #
+    # `take_camera` is confirm-gated for a human typing it directly. Here the
+    # operator already chose a camera stage, so running that stage IS the
+    # confirmation. It still refuses on its own if the holder is something
+    # neither of us should be killing.
+    if [ "$needs_camera" = 1 ] && pgrep -f "[v]ideohub_pc4 /dev/video4" >/dev/null 2>&1; then
+        warn "videohub_pc4 (Unitree's) holds /dev/video4 — the detector needs it"
+        info "  this also puts out the bridge's :8001/camera feed, which reads it"
+        C3PO_TAKE_CAMERA_YES=1 "$here/take_camera" \
+            || warn "could not release the camera — the detector will stay offline"
+    fi
 else
-    info "stage 'fake' uses no sensors — gemm is left alone"
+    info "stage '$stage' claims no device — gemm is left alone"
 fi
 
 for c in $(perception_containers); do
