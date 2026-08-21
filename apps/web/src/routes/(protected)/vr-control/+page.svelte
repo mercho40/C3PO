@@ -180,6 +180,12 @@
   //: the on-page panel: they share a source but not a decoder, so one can be
   //: live while the other is not.
   let xrCameraLive = $state(false);
+  //: Has the headset layer EVER decoded a frame? Distinct from `xrCameraLive`,
+  //: which is a liveness flag. Conflating them made the page tell the operator
+  //: "no frame ever arrived, perception is probably not running" during an
+  //: ordinary one-second stall — a confident, wrong diagnosis pointing them at
+  //: the robot while a real picture was on screen in front of them.
+  let xrCameraEverHadFrame = $state(false);
 
   // --- USB link watch ---------------------------------------------------
   //
@@ -356,7 +362,10 @@
   function refreshReadouts() {
     yawDisplayDeg = Math.round((yawErrorRadians * 180) / Math.PI);
     trackingStale = vrActive && Date.now() - lastYawSampleAt > VR_STALE_MS;
-    if (vr) xrCameraLive = camLive && vr.cameraHasFrame;
+    if (vr) {
+      xrCameraLive = camLive && vr.cameraHasFrame;
+      xrCameraEverHadFrame ||= vr.cameraHasFrame;
+    }
   }
 
   function ensureReadouts() {
@@ -389,7 +398,10 @@
    */
   function tick() {
     yawDisplayDeg = Math.round((yawErrorRadians * 180) / Math.PI);
-    if (vr) xrCameraLive = camLive && vr.cameraHasFrame;
+    if (vr) {
+      xrCameraLive = camLive && vr.cameraHasFrame;
+      xrCameraEverHadFrame ||= vr.cameraHasFrame;
+    }
     trackingStale = vrActive && Date.now() - lastYawSampleAt > VR_STALE_MS;
 
     if (!loopShouldRun()) {
@@ -491,6 +503,7 @@
           vrActive = false;
           xrMode = null;
           xrCameraLive = false;
+          xrCameraEverHadFrame = false;
           vr = null;
           // A held walk button does NOT survive the session that was showing
           // it. Nothing else clears `walking` here: the window listeners cover
@@ -1072,7 +1085,19 @@
       </p>
     {/if}
 
-    {#if vrActive && !xrCameraLive}
+    {#if vrActive && !realHardware}
+      <p
+        role="alert"
+        class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-ink"
+      >
+        <strong>La cámara ni siquiera se intentó.</strong> El puente no reportó
+        <code>SIM_MODE=real</code>, así que esta página nunca abrió el stream —
+        no es un problema de la cámara ni del túnel. Suele ser que falta
+        <code>-L 8001</code> en el túnel, que <code>run_c3po</code> no está
+        corriendo, o que <code>apps/bridge/.env</code> sigue en
+        <code>stub</code>. Corré <code>./scripts/preflight.sh</code>.
+      </p>
+    {:else if vrActive && !xrCameraEverHadFrame}
       <p
         role="alert"
         class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-ink"
@@ -1081,6 +1106,16 @@
         cámara. Casi siempre es que <code>perception_up perception</code> no está
         corriendo en el robot — es el proceso que tiene la D435i y sirve el stream
         en 8081.
+      </p>
+    {:else if vrActive && !xrCameraLive}
+      <p
+        role="alert"
+        class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-ink"
+      >
+        <strong>La imagen quedó congelada.</strong> Llegaron cuadros y dejaron
+        de llegar, así que <code>perception_up</code> SÍ está corriendo — lo que falló
+        son sus ticks, o el enlace. Lo que ves en el visor es una foto vieja, atenuada
+        a propósito para que se note. No manejes con eso.
       </p>
     {/if}
 

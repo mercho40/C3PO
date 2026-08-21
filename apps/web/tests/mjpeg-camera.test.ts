@@ -21,12 +21,15 @@ type Fake = {
   url: string;
   stop: () => void;
   setLive: (live: boolean) => void;
+  /** Stop advancing `frames` while still reporting live — the invisible gap. */
+  freezeFrames: (frozen: boolean) => void;
   /** Every stream.mjpg URL the client has opened, in order. */
   opened: string[];
 };
 
 function fakeVisionServer(): Fake {
   let live = true;
+  let frozen = false;
   let frames = 0;
   const opened: string[] = [];
 
@@ -40,7 +43,7 @@ function fakeVisionServer(): Fake {
       };
 
       if (path === "/status") {
-        if (live) frames += 1;
+        if (live && !frozen) frames += 1;
         // Field-for-field the shape `stream.py`'s status() returns.
         return Response.json(
           {
@@ -78,6 +81,7 @@ function fakeVisionServer(): Fake {
     url: `http://127.0.0.1:${server.port}`,
     stop: () => server.stop(true),
     setLive: (v: boolean) => (live = v),
+    freezeFrames: (v: boolean) => (frozen = v),
     opened,
   };
 }
@@ -217,4 +221,76 @@ describe("recovery — the bug this file was written for", () => {
       fake.stop();
     }
   });
+});
+
+/**
+ * The gap the age check cannot see.
+ *
+ * `stream.py` ends the response after `stale_after_s` without a frame — its
+ * only in-band way to say "no longer live" — but `/status.live` is an age
+ * comparison sampled at one instant. Polling at exactly the server's own
+ * threshold meant a 1.0-2.0 s gap could close the connection while every poll
+ * landed on a fresh frame either side of it.
+ *
+ * Nothing observed `live: false`, so nothing reopened, and the <img> held its
+ * last frame for the rest of the session — at full brightness, with a green
+ * badge, while the operator drove on a still photograph. Exactly the failure
+ * this module's docstring says it exists to prevent.
+ *
+ * Asserted on the stream URLs handed out rather than on server hits: there is
+ * no DOM here, so nothing actually fetches them. Handing out a new URL IS the
+ * reconnect — the browser reuses a dead MJPEG response otherwise, so a retry
+ * that does not change the URL is a retry that does nothing.
+ */
+test("a stall that never reports live:false still forces a reconnect", async () => {
+  const fake = fakeVisionServer();
+  const urls: string[] = [];
+  try {
+    const handle = connectRobotCamera(fake.url, {
+      onState: () => {},
+      onStatus: () => {},
+      onStreamUrl: (url) => urls.push(url),
+    });
+    try {
+      await Bun.sleep(700);
+      const before = urls.length;
+      expect(before).toBeGreaterThan(0);
+
+      // Frames stop arriving, but `live` never goes false — the server keeps
+      // reporting the last frame as recent enough at every sample.
+      fake.freezeFrames(true);
+      await Bun.sleep(1800);
+
+      expect(urls.length).toBeGreaterThan(before);
+      expect(urls[urls.length - 1]).not.toBe(urls[before - 1]);
+    } finally {
+      handle.close();
+    }
+  } finally {
+    fake.stop();
+  }
+});
+
+test("a healthy stream is never reconnected", async () => {
+  // The counter check must not be trigger-happy: a needless reopen drops the
+  // picture for a moment, and doing that to a working feed would be a new bug.
+  const fake = fakeVisionServer();
+  const urls: string[] = [];
+  try {
+    const handle = connectRobotCamera(fake.url, {
+      onState: () => {},
+      onStatus: () => {},
+      onStreamUrl: (url) => urls.push(url),
+    });
+    try {
+      await Bun.sleep(700);
+      const before = urls.length;
+      await Bun.sleep(2000);
+      expect(urls.length).toBe(before);
+    } finally {
+      handle.close();
+    }
+  } finally {
+    fake.stop();
+  }
 });

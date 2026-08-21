@@ -20,6 +20,8 @@ declare const Bun: {
     port?: number;
     fetch: (req: Request) => Response | Promise<Response>;
   }): { port: number; stop(closeActiveConnections?: boolean): void };
+  /** Promise-based sleep, for tests that have to let real timers elapse. */
+  sleep(ms: number): Promise<void>;
 };
 
 declare module "bun:test" {

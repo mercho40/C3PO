@@ -63,10 +63,24 @@ export interface RobotCamHandle {
   reconnect(): void;
 }
 
-// The vision container's own staleness threshold is 1 s and it closes the
-// connection at that point; polling faster than that only adds requests, and
-// polling much slower would let the badge lag the picture.
-const POLL_MS = 1000;
+// Half the vision container's own 1 s staleness threshold, not equal to it.
+//
+// Equal was a real bug. The server ends the response after `stale_after_s`
+// without a frame — that is its only in-band way to say "no longer live" — but
+// `/status.live` is an age comparison sampled at one instant. With a 1 s poll
+// against a 1 s threshold, a gap of 1.0-2.0 s closes the connection while
+// every poll happens to land on a fresh frame either side of it. Nothing ever
+// observes `live: false`, so nothing reopens, and the <img> holds its last
+// frame for the rest of the session at full brightness with a green badge.
+//
+// Sampling twice as fast shrinks that window; the counter below closes it.
+const POLL_MS = 500;
+
+// How many consecutive polls may report no new frames before the stream is
+// assumed dead. Two polls at 500 ms is the server's own 1 s threshold — the
+// point at which it has definitely closed the response on us — so this catches
+// exactly the gaps the age check misses, and no sooner.
+const STALLED_POLLS_BEFORE_REOPEN = 2;
 
 /** `http://host:8081/` + `stream.mjpg`, tolerating a trailing slash or none. */
 export function endpoint(baseUrl: string, path: string): string {
@@ -88,10 +102,22 @@ export function connectRobotCamera(
   // not-live, because that is exactly the condition under which it ends the
   // response; cleared by a successful reopen.
   let streamDead = false;
+  let lastDetail: string | undefined;
+
+  //: The server's own monotonic frame counter, as of the previous poll. The
+  //: age check cannot see a gap that both polls straddle; a counter that has
+  //: not moved between two polls can.
+  let lastFrames = -1;
+  let stalledPolls = 0;
 
   function setState(state: RobotCamState, detail?: string) {
-    if (closed || state === lastState) return;
+    // Compares the detail too. Deduping on `state` alone meant a repeated
+    // "stale" dropped its message, so the "sin cuadros hace N s" text froze at
+    // whatever N was on the first stale poll and never counted up — the one
+    // number telling the operator whether it is getting worse.
+    if (closed || (state === lastState && detail === lastDetail)) return;
     lastState = state;
+    lastDetail = detail;
     callbacks.onState(state, detail);
   }
 
@@ -115,6 +141,22 @@ export function connectRobotCamera(
         //
         // Without this, one momentary stall left the picture frozen for the
         // rest of the session while this endpoint cheerfully reported "live".
+        // A gap the age check cannot see: `live` is true at both ends of it,
+        // but the server closed our response somewhere in the middle and the
+        // <img> is now showing a still photograph.
+        if (status.frames === lastFrames) {
+          stalledPolls += 1;
+          if (stalledPolls >= STALLED_POLLS_BEFORE_REOPEN) {
+            stalledPolls = 0;
+            lastFrames = status.frames;
+            open();
+            return;
+          }
+        } else {
+          stalledPolls = 0;
+        }
+        lastFrames = status.frames;
+
         if (streamDead) {
           streamDead = false;
           open();
