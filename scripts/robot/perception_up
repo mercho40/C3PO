@@ -202,7 +202,35 @@ if [ "$needs_camera" = 1 ]; then
     fi
 fi
 
-for c in $(perception_containers); do _docker start "$c" >/dev/null && ok "started $c"; done
+if [ "$needs_stt" != 1 ]; then
+    for c in $(perception_containers); do _docker start "$c" >/dev/null && ok "started $c"; done
+fi
+
+# `stt` publishes no ROS topic at all — it is an HTTP server with a GPU. Gating
+# it on /c3po/world_summary waits 90 s for something that will never arrive and
+# then rolls back a container that was working. Its readiness is its own
+# endpoint answering.
+if [ "$needs_stt" = 1 ]; then
+    info "waiting for the STT endpoint on 127.0.0.1:8082"
+    stt_ready=0
+    # Generous: the entrypoint builds/loads the TensorRT plan before exec'ing
+    # the server, which is a one-off couple of minutes on a cold engine volume.
+    for _ in $(seq 1 60); do
+        if curl -fsS --max-time 3 http://127.0.0.1:8082/transcribe/status >/dev/null 2>&1; then
+            stt_ready=1; break
+        fi
+        sleep 3
+    done
+    if [ "$stt_ready" = 1 ]; then
+        ok "speech-to-text up on 127.0.0.1:8082 (GPU, no sensors claimed)"
+        curl -fsS --max-time 3 http://127.0.0.1:8082/transcribe/status 2>/dev/null || true
+        echo
+    else
+        err "the STT endpoint never answered — leaving the container up to inspect:"
+        err "  docker logs c3po-perception-stt"
+    fi
+    exit 0
+fi
 
 # `docker start` succeeding means the container started, not that the stack came
 # up. Gate on the actual topic.
