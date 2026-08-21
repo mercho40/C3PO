@@ -186,6 +186,12 @@
   //: ordinary one-second stall — a confident, wrong diagnosis pointing them at
   //: the robot while a real picture was on screen in front of them.
   let xrCameraEverHadFrame = $state(false);
+  //: The XR layer dropped the picture because drawing threw — a shader compile
+  //: or link failure, not anything to do with the robot. The session sets this
+  //: and nothing read it, so a GL failure was reported to the operator as
+  //: "perception is probably not running": the worst diagnosis attached to the
+  //: least likely cause.
+  let xrCameraBroken = $state(false);
 
   // --- USB link watch ---------------------------------------------------
   //
@@ -365,6 +371,7 @@
     if (vr) {
       xrCameraLive = camLive && vr.cameraHasFrame;
       xrCameraEverHadFrame ||= vr.cameraHasFrame;
+      xrCameraBroken = vr.cameraBroken;
     }
   }
 
@@ -401,6 +408,7 @@
     if (vr) {
       xrCameraLive = camLive && vr.cameraHasFrame;
       xrCameraEverHadFrame ||= vr.cameraHasFrame;
+      xrCameraBroken = vr.cameraBroken;
     }
     trackingStale = vrActive && Date.now() - lastYawSampleAt > VR_STALE_MS;
 
@@ -521,6 +529,7 @@
           xrMode = null;
           xrCameraLive = false;
           xrCameraEverHadFrame = false;
+          xrCameraBroken = false;
           vr = null;
           // A held walk button does NOT survive the session that was showing
           // it. Nothing else clears `walking` here: the window listeners cover
@@ -1118,7 +1127,18 @@
       </p>
     {/if}
 
-    {#if vrActive && !realHardware}
+    {#if vrActive && xrCameraBroken}
+      <p
+        role="alert"
+        class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-ink"
+      >
+        <strong>La capa de cámara falló al dibujar.</strong> Es un problema de WebGL
+        en el visor — un shader que no compiló —, no del robot ni de la cámara. El
+        seguimiento de cabeza sigue funcionando: se descartó la imagen y se conservó
+        la pose, a propósito. Salí y volvé a entrar a VR para reintentar con un contexto
+        nuevo.
+      </p>
+    {:else if vrActive && !realHardware}
       <p
         role="alert"
         class="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-sm text-ink"

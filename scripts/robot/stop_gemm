@@ -44,4 +44,21 @@ if [ -n "$still" ]; then
     exit 1
 fi
 
-ok "sensors released (RealSense, Livox)"
+ok "gemm's CONTAINERS stopped (Livox released)"
+
+# Deliberately not "sensors released". This function stops docker containers,
+# and the D435i's colour node is not always held by one.
+#
+# `teleimager.image_server` is a host process under `_image_service_watchdog.sh`
+# and it holds /dev/video4 — the D435i colour capture node. Nothing in this repo
+# stops it, and this line used to claim otherwise. The cost of that sentence is
+# specific: the vision container then dies on `Device or resource busy`,
+# `perception_up` reports success anyway, and somebody concludes the camera
+# hardware is broken when it is merely contended.
+if pgrep -f "teleimager" >/dev/null 2>&1; then
+    warn "teleimager is STILL RUNNING and holds /dev/video4 (the D435i colour node)"
+    warn "  the vision container will fail with 'Device or resource busy' until it stops"
+    warn "  it is a host process, not a container, so this script does not touch it"
+    warn "  kill the watchdog first or it restarts:"
+    warn "    pkill -f _image_service_watchdog.sh && pkill -f teleimager"
+fi

@@ -369,6 +369,12 @@ export class XrTeleopSession {
   #pendingStreamUrl = "";
   #pendingLive = true;
   #cameraBroken = false;
+  //: Held so the context can be explicitly released on teardown. A fresh
+  //: canvas and context are created per VR entry and were only ever reclaimed
+  //: by GC; Chrome force-loses the oldest context past roughly sixteen live
+  //: ones, which during a debugging session of repeated enter/exit could kill
+  //: an ACTIVE context and present as a black layer.
+  #gl: WebGLRenderingContext | null = null;
   #starting = false;
   //: The overlay root's own inline background, so it can be put back exactly
   //: as it was when the session ends. See `#makeOverlayTransparent`.
@@ -520,6 +526,7 @@ export class XrTeleopSession {
       // minimal one (the dom-overlay draws the actual UI on top).
       const canvas = document.createElement("canvas");
       const gl = canvas.getContext("webgl", { xrCompatible: true });
+      this.#gl = gl;
       if (!gl)
         throw new Error(
           "No se pudo crear un contexto WebGL para la sesión XR.",
@@ -569,6 +576,10 @@ export class XrTeleopSession {
         // Put the page back the way it looked before, or the console is left
         // with a transparent body over the browser's own background.
         this.#restoreOverlay();
+        // Release the context rather than waiting for GC — see `#gl`.
+        const lose = this.#gl?.getExtension("WEBGL_lose_context");
+        lose?.loseContext();
+        this.#gl = null;
         // A GL failure is per-session, not permanent: a re-entered session
         // gets a fresh context and deserves a fresh attempt at a picture.
         this.#cameraBroken = false;

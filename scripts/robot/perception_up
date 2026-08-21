@@ -70,6 +70,8 @@ if [ "$needs_lidar" = 1 ] || [ "$needs_camera" = 1 ]; then
     if [ -n "$(gemm_running)" ]; then
         warn "stage '$stage' claims shared sensors"
         info "stopping gemm to release them"
+        info "  (this frees the Livox; the D435i colour node may still be held"
+        info "   by teleimager, which is a host process — stop_gemm will say so)"
         "$here/stop_gemm"
     fi
 else
@@ -179,14 +181,60 @@ for _ in $(seq 1 90); do
     sleep 1
 done
 
+# The gate above proves the NAV container is publishing. It says nothing at all
+# about the vision container, which is a separate container, owns the D435i, and
+# serves the camera on 8081 — so this script has been reporting "perception up"
+# with the camera dead since the day it was written. That is how the camera
+# failure survived two headset sessions: every layer said success.
+#
+# Checked separately, and never fatal: somebody running the nav stack does not
+# care about 8081, and failing their bring-up over it would be wrong. But
+# somebody who wants a picture in a headset needs to be told here, standing at
+# the robot, rather than discovering it later from inside a Quest.
+check_vision() {
+    local name port
+    port="${C3PO_VISION_STREAM_PORT:-8081}"
+    name="$(_docker ps --filter 'name=c3po-perception-vision' --format '{{.Names}}' 2>/dev/null | head -1)"
+
+    if [ -z "$name" ]; then
+        warn "the VISION container is not running — there will be no camera"
+        warn "  (the check above only proves the NAV container is publishing)"
+        for c in $(perception_containers); do
+            case "$c" in *vision*) _docker logs --tail 15 "$c" 2>&1 | sed 's/^/      /' >&2 ;; esac
+        done
+        warn "  'Device or resource busy' means teleimager still holds /dev/video4."
+        warn "  Stopping gemm does NOT free it: teleimager is a host process under a"
+        warn "  watchdog, so kill _image_service_watchdog.sh as well as the server."
+        warn "  'cannot import tensorrt' or a TRT build means wait 2-5 min and retry."
+        return 1
+    fi
+
+    # Running is not serving. The engine build alone is a 2-5 minute window
+    # where the container is Up and 8081 is unbound.
+    for _ in $(seq 1 20); do
+        if curl -fsS --max-time 2 "http://127.0.0.1:${port}/status" >/dev/null 2>&1; then
+            ok "camera stream answering on ${port}"
+            return 0
+        fi
+        sleep 1
+    done
+    warn "the vision container is Up but ${port} is not answering after 20s"
+    warn "  usually the one-off TensorRT engine build (2-5 min). Re-run to check."
+    return 1
+}
+
 if [ "$ready" -eq 1 ]; then
     ok "perception up on DDS domain 42 (stage=$stage)"
+    check_vision || true
     [ "$stage" = "nav2" ] && warn "Nav2 is UNCONFIGURED (autostart:=false) — nothing plans until the lifecycle manager is transitioned"
     warn "/cmd_vel forwarding in the bridge stays OFF until arm_navigation is called"
 else
     err "no world summary after 90s:"
     for c in $(perception_containers); do _docker logs --tail 30 "$c" >&2 || true; done
     err "rolling back — stopping containers and leaving the sensors free"
+    err "NOTE: this removes the VISION container too, healthy or not — so a Livox"
+    err "or FAST-LIO problem takes the camera down with it. If all you need is a"
+    err "picture in the headset, run:  perception_up perception"
     for c in $(perception_containers); do _docker rm -f "$c" >/dev/null 2>&1 || true; done
     exit 1
 fi
