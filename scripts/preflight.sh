@@ -162,6 +162,20 @@ else
     # The three failures below are indistinguishable from inside the headset,
     # and were confused for each other across two sessions. curl separates them
     # because it distinguishes refused from reset from answered.
+    if [ -z "$CAM_URL" ]; then
+        # The page reads this from apps/web/.env and renders
+        # "PUBLIC_ROBOT_CAM_URL no está configurado" when it is missing. Probing
+        # a default here would hand the camera a green tick while the app shows
+        # that message — the exact mismatch reading the real file is meant to
+        # avoid, so say it instead of guessing.
+        bad "PUBLIC_ROBOT_CAM_URL is not set in apps/web/.env"
+        note "the page will not open the stream at all without it. Add:"
+        note "  PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8081"
+        note "(.env.example ships it empty, so a regenerated .env loses it)"
+        return 2>/dev/null || CAM_URL=""
+    fi
+    if [ -n "$CAM_URL" ]; then
+    note "camera URL from $CAM_URL_SOURCE: $CAM_URL"
     status_body=$(curl -sS --max-time 5 "$CAM_URL/status" 2>&1)
     status_rc=$?
 
@@ -222,6 +236,7 @@ else
                 note "  perception_up perception"
             fi
         fi
+    fi
     fi
 fi
 
