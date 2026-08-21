@@ -53,7 +53,8 @@ chmod +x "$here/_common.sh"
 # library the commands source.
 NOT_A_COMMAND="_common.sh install_robot_scripts.sh install_boot_unit.sh
                install_stack.sh c3po-bridge.service c3po-perception@.service
-               c3po-health.service c3po-health.timer c3po-logs.logrotate"
+               c3po-health.service c3po-health.timer c3po-logs.logrotate
+               c3po-camera.sudoers"
 # Collapse the newlines out of both lists before matching. `case` does no word
 # splitting, so a name that happens to sit after a line break is preceded by a
 # newline rather than a space and `*" $name "*` never matches it — which had

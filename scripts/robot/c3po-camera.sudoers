@@ -24,4 +24,9 @@
 # deliberately is the right shape for the one direction that takes a sensor away
 # from the other team's running app.
 unitree ALL=(root) NOPASSWD: /usr/bin/systemctl stop master_service
-unitree ALL=(root) NOPASSWD: /usr/bin/pkill -9 -f videohub_pc4
+# `-x` matches the executable NAME exactly, so this cannot reach
+# videohub_pc4_chest (a different camera, /dev/video10) and cannot be widened by
+# argument. Written to match take_camera byte for byte: sudoers globs its
+# arguments, so a pattern with brackets in it would authorise something other
+# than what is run.
+unitree ALL=(root) NOPASSWD: /usr/bin/pkill -9 -x videohub_pc4

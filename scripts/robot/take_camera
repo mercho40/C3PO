@@ -96,7 +96,13 @@ fi
 # sends somebody hunting a phantom watchdog when the real answer is "we were
 # never allowed to stop it". Observed exactly this way on the first nav2
 # bring-up that needed the camera.
-if ! sudo -n true 2>/dev/null; then
+# ASK ABOUT THE ACTUAL COMMAND, not about sudo in general. `sudo -n true` tests
+# whether we may run ANYTHING without a password, which stays false under the
+# narrow grant in c3po-camera.sudoers — that authorises exactly two commands and
+# nothing else. Testing the wrong thing here would make the grant look like it
+# had not been installed. `sudo -l <cmd>` answers the question actually being
+# asked: may I run THIS, unattended?
+if ! sudo -n -l /usr/bin/systemctl stop master_service >/dev/null 2>&1; then
     if [ ! -t 0 ]; then
         err "cannot stop master_service: sudo needs a password and there is no terminal"
         err "  this is a permission problem, NOT a stubborn process."
@@ -114,7 +120,21 @@ fi
 # reaps them and the device stays held by a process whose supervisor is gone.
 info "stopping master_service"
 sudo systemctl stop master_service 2>/dev/null || true
-sudo pkill -9 -f "[v]ideohub_pc4" 2>/dev/null || true
+# `-x` (exact process NAME) rather than `-f "[v]ideohub_pc4"` (full command
+# line), for two reasons that both matter here:
+#
+#   * No self-match to dodge. `-f` scans command lines, so sudo's own argv
+#     contains the pattern and pkill kills its own parent — which is why the
+#     bracket trick was there. `-x` without `-f` matches the executable name,
+#     and sudo's name is "sudo".
+#   * It is expressible in sudoers. The bracket is a GLOB to sudo's argument
+#     matcher, so a NOPASSWD rule written with `[v]ideohub_pc4` would authorise
+#     the literal `videohub_pc4` and not the string this actually passes —
+#     silently failing to match, forever.
+#
+# It also stops matching `videohub_pc4_chest`, which we never wanted to kill:
+# that one holds /dev/video10 and belongs to a camera we are not taking.
+sudo pkill -9 -x videohub_pc4 2>/dev/null || true
 
 freed=0
 for _ in $(seq 1 10); do
