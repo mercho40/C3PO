@@ -159,6 +159,27 @@ RUN source /opt/ros/humble/setup.bash \
  && test -d install/livox_ros_driver2 && test -d install/fast_lio \
  && rm -rf build log
 
+# --- domain_bridge: the LiDAR arrives on domain 0, we live on domain 42 ------
+#
+# Our own livox_ros_driver2 does NOT get the sensor while the vendor's
+# `lidar_driver` service is running: the command channel connects, the host
+# config push appears to succeed, and the point data keeps going to the control
+# board (ROBOT-HARDWARE.md §4.3, measured). The vendor's DDS republish is the
+# route that actually works — and it is multi-consumer, so it costs the
+# co-tenant nothing.
+#
+# But it publishes on DOMAIN 0, and this container is deliberately domain-42
+# only. A ROS 2 process is single-domain (ROS_DOMAIN_ID is process-wide), so
+# consuming it means either putting FAST-LIO on the shared domain — which would
+# put our TF and costmaps on the wire domain 42 exists to keep them off — or
+# bridging. domain_bridge is purpose-built for exactly this: one process, two
+# contexts, named topics only.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-humble-domain-bridge \
+ && test -f /opt/ros/humble/lib/domain_bridge/domain_bridge \
+      || (echo "FATAL: domain_bridge did not install" && false) \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY ws/src/c3po_perception src/c3po_perception
 
 # Our package alone, so this is the only layer a launch/config/python edit

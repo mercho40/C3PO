@@ -30,6 +30,7 @@ place.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import LaunchConfigurationEquals
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -60,9 +61,36 @@ def generate_launch_description() -> LaunchDescription:
         # applied. "differentiate" is the degraded fallback and is documented,
         # not recommended — read g1_odom_tf's docstring before setting it.
         DeclareLaunchArgument("twist_source", default_value="fastlio"),
+        # WHERE THE POINTS COME FROM. Defaults to the vendor republish because
+        # that is the one that WORKS: our own driver does not get the sensor
+        # while the vendor `lidar_driver` service holds it — the command channel
+        # connects, the config push looks fine, and the points keep going to the
+        # control board (ROBOT-HARDWARE.md §4.3, measured).
+        #
+        #   republish  domain_bridge carries rt/utlidar/* from domain 0 to 42.
+        #              Multi-consumer, so the co-tenant keeps its LiDAR, and
+        #              nothing is written to the sensor's flash.
+        #   driver     our own livox_ros_driver2, which TAKES the unicast. Only
+        #              works with the vendor service switched off, and mutates
+        #              the sensor's persistent config to do it.
+        DeclareLaunchArgument("lidar_source", default_value="republish"),
     ]
 
+    # The bridge: domain 0 -> 42, two named topics, one way. It replaces the
+    # driver rather than joining it — two sources on one FAST-LIO input would
+    # interleave clouds from different clocks.
+    lidar_bridge = Node(
+        package="domain_bridge",
+        executable="domain_bridge",
+        name="c3po_lidar_bridge",
+        output="screen",
+        arguments=[PathJoinSubstitution(
+            [share, "config", "lidar_domain_bridge.yaml"])],
+        condition=LaunchConfigurationEquals("lidar_source", "republish"),
+    )
+
     livox = Node(
+        condition=LaunchConfigurationEquals("lidar_source", "driver"),
         package="livox_ros_driver2",
         executable="livox_ros_driver2_node",
         name="livox_lidar_publisher",
@@ -87,7 +115,20 @@ def generate_launch_description() -> LaunchDescription:
         }],
     )
 
+    # Two configs, because the two sources differ in message type, topic names
+    # and timestamp units — not merely in where the bytes come from.
+    fast_lio_republish = Node(
+        condition=LaunchConfigurationEquals("lidar_source", "republish"),
+        package="fast_lio",
+        executable="fastlio_mapping",
+        name="laserMapping",
+        output="screen",
+        parameters=[PathJoinSubstitution(
+            [share, "config", "fastlio_utlidar_g1.yaml"]), {"use_sim_time": False}],
+    )
+
     fast_lio = Node(
+        condition=LaunchConfigurationEquals("lidar_source", "driver"),
         package="fast_lio",
         executable="fastlio_mapping",
         name="laserMapping",
@@ -129,4 +170,7 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    return LaunchDescription(args + [livox, fast_lio, odom_tf, to_scan])
+    return LaunchDescription(
+        args
+        + [lidar_bridge, livox, fast_lio_republish, fast_lio, odom_tf, to_scan]
+    )

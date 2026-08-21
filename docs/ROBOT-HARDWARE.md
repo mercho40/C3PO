@@ -390,6 +390,25 @@ fluyendo"_) **[src]** — except the bag metadata \_they_ produced records those
 each other; trust the metadata, but verify before relying on either. Depth-1 KEEP_LAST also
 means a slow subscriber silently drops rather than queues.
 
+**⚠️ ROUTE 2 DID NOT ACTUALLY WORK, measured 2026-08-21.** First light on the real sensor:
+`livox_ros_driver2` reported `Init lds lidar success!` and found the device
+(`GetFreeIndex key:livox_lidar_2021370048`), the LiDAR answered ping at 1.8 ms — and
+**`/livox/lidar` published nothing at all.** Meanwhile `rt/utlidar/cloud_livox_mid360` was
+still delivering 59 frames in 6 s. The sensor never redirected; it kept streaming to the
+control board, whose `lidar_driver` service was running the whole time. **[live]**
+
+So the "it steals the stream" warning below overstates what one driver can do while the
+vendor service holds the sensor: the command channel connects, the config push appears to
+succeed, and the point data keeps going somewhere else. That is the exact silent-failure
+shape the launch file warns about for a wrong `host_net_info` — except the address was
+correct (`192.168.123.164`, verified against eth0).
+
+**This makes Route 1 the route that works, not merely the polite one.** It is already
+delivering 10 Hz clouds with per-point `time` and a standard `Imu`, to any number of
+subscribers, with no flash writes and no fight (§4.5). Taking Route 2 would first require
+switching the vendor `lidar_driver` off via `ServiceSwitch` — a shared-service change that
+takes LiDAR from the co-tenant, rather than the local decision it was assumed to be.
+
 **Route 2 — run our own `livox_ros_driver2` (what the perception stack does).** The
 operative perception design (`apps/perception/README.md`) runs the driver in the nav
 container with `host_net_info` pointed at the Jetson — i.e. it **takes the unicast**, with
