@@ -179,11 +179,30 @@ RUN python3 -c "import numpy; assert numpy.__version__ == '1.24.4', 'numpy is ' 
 # Orin (sm_87) — "native" would work on this machine and silently produce a
 # binary that runs nowhere else, which is a bad property for an image.
 ARG WHISPER_CPP_REF=v1.7.4
-RUN apt-get update && apt-get install -y --no-install-recommends git cmake build-essential \
+# TWO PLATFORM TRAPS, BOTH HIT ON THE FIRST BUILD:
+#
+#  1. Ubuntu 20.04 ships CMake 3.16.3 and ggml-cuda requires >= 3.18, so the
+#     configure step dies with "CMake 3.18 or higher is required". apt cannot
+#     fix this on focal; the pip wheel is the least invasive newer CMake and
+#     touches nothing outside this image.
+#  2. ggml's -DGGML_NATIVE auto-detection emits
+#     `-mcpu=native+nodotprod+noi8mm+nosve`, which this GCC rejects outright
+#     ("unknown value ... for '-mcpu'"). Turning NATIVE off and naming the
+#     architecture explicitly is also the right call for an IMAGE: `native`
+#     bakes in whatever core built it, which is not a property you want in
+#     something meant to be reproducible.
+#
+# armv8.2-a+fp16+dotprod is the Orin NX's Cortex-A78AE.
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential python3-pip \
+ && pip3 install --no-cache-dir "cmake>=3.22" \
+ && export PATH=/usr/local/bin:$PATH \
+ && cmake --version \
  && git clone --depth 1 -b ${WHISPER_CPP_REF} https://github.com/ggerganov/whisper.cpp /tmp/whisper \
  && cmake -S /tmp/whisper -B /tmp/whisper/build \
       -DGGML_CUDA=1 \
       -DCMAKE_CUDA_ARCHITECTURES=87 \
+      -DGGML_NATIVE=OFF \
+      -DGGML_CPU_ARM_ARCH=armv8.2-a+fp16+dotprod \
       -DCMAKE_BUILD_TYPE=Release \
       -DWHISPER_BUILD_TESTS=OFF \
       -DWHISPER_BUILD_EXAMPLES=ON \
@@ -193,9 +212,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends git cmake build
  && (cp /tmp/whisper/build/ggml/src/**/libggml*.so /opt/c3po/whisper/ 2>/dev/null || true) \
  && (cp /tmp/whisper/build/src/libwhisper.so* /opt/c3po/whisper/ 2>/dev/null || true) \
  && ldconfig /opt/c3po/whisper \
- # The binary must EXIST and RUN. `--help` needs no model, no GPU and no audio,
- # so it fails the build on a broken link rather than at 3am on the robot.
+ # EXISTS is not enough, and this is the assertion that matters. whisper.cpp
+ # falls back to a CPU build SILENTLY when CUDA is not found at configure time —
+ # which is the exact failure that sent transcription to the CPU in the first
+ # place (the ctranslate2 wheel did the same thing). A binary that runs fine and
+ # is ten times too slow would otherwise ship, and only show up as latency.
+ # Linking libcudart is the cheap proof that -DGGML_CUDA=1 actually took.
  && test -x /opt/c3po/whisper/whisper-cli \
+ && (ldd /opt/c3po/whisper/whisper-cli | grep -q libcudart \
+     || (echo "FATAL: whisper-cli did not link CUDA — GGML_CUDA silently fell back to CPU" && false)) \
  && rm -rf /tmp/whisper \
  && rm -rf /var/lib/apt/lists/*
 
