@@ -57,7 +57,13 @@ class FakeWhisper:
         return f"whisper text ({len(pcm)}B)"
 
 
-def make(frames, whisper=True, **kw):
+def make(frames, whisper=True, min_seconds=0.0, monkeypatch=None, **kw):
+    """`min_seconds=0` by default so the buffering tests are not silently
+    skipping Whisper because these fake frames are a few bytes long. The routing
+    threshold gets its own test below, where it is the subject rather than a
+    hidden precondition."""
+    import bridge.skills.listen as mod
+    mod.WHISPER_MIN_SECONDS = min_seconds
     det, trans, whis = FakeDetector(), FakeTranscriber(), FakeWhisper() if whisper else None
     lis = MicListener(source=lambda: iter(frames),
                       build=lambda: (det, trans, whis), **kw)
@@ -263,3 +269,39 @@ def test_missing_arecord_is_not_a_crash(monkeypatch):
         raise FileNotFoundError("arecord")
     monkeypatch.setattr(subprocess, "run", boom)
     assert listen_mod.alsa_capture_devices() == []
+
+
+# --- whisper routing by utterance length ------------------------------------
+#
+# Measured on the robot, warm: Whisper is 10-18x slower than the segmenter AND
+# worse on short clips -- "Para." came back as "!Bien!". Short utterances are
+# what commands to a robot look like, so routing everything through it makes the
+# common case both slower and less correct.
+
+def test_short_utterances_keep_the_segmenter_text():
+    """Below the threshold, Whisper must not even be called: it would cost
+    seconds to return a worse answer."""
+    lis, _, _, whis = make([b"aa", b"."], min_seconds=10.0)
+    lis.start()
+    items = drain(lis)
+    assert items[0]["text"] == "vosk text"
+    assert whis.calls == [], "whisper was called on a short utterance"
+
+
+def test_long_utterances_go_to_whisper():
+    lis, _, _, whis = make([b"a" * 40000, b"."], min_seconds=1.0)
+    lis.start()
+    items = drain(lis)
+    assert whis.calls, "whisper was not called on a long utterance"
+    assert "whisper text" in items[0]["text"]
+
+
+def test_the_buffer_is_cleared_even_when_whisper_is_skipped():
+    """The skip must not leak audio into the NEXT utterance -- otherwise a run
+    of short utterances silently accumulates until it crosses the threshold and
+    one of them is transcribed with all the others' audio in front of it."""
+    lis, _, _, whis = make([b"aa", b".", b"bb", b"."], min_seconds=10.0)
+    lis.start()
+    drain(lis)
+    assert whis.calls == []
+    assert lis.diagnostics()["utterances"] == 2

@@ -57,6 +57,8 @@ MIC_PORT = int(os.environ.get("C3PO_MIC_PORT", "5555"))
 # gated microphone rather than a wrong interface.
 MIC_IFACE_PREFIX = "192.168.123."
 MIC_SAMPLE_RATE = 16000
+# 16 kHz mono 16-bit. Used to turn a buffer length into seconds.
+TARGET_BYTES_PER_S = MIC_SAMPLE_RATE * 2
 
 VOSK_MODEL = os.environ.get(
     "VOSK_MODEL", os.path.expanduser("~/.local/share/vosk/vosk-model-small-es-0.42"))
@@ -244,6 +246,29 @@ def transcribe_pcm(pcm: bytes, frame_bytes: int = FRAME_BYTES) -> list[str]:
     return out
 
 
+# WHISPER IS NOT A BLANKET UPGRADE, AND THE MEASUREMENTS SAY SO.
+# Benchmarked on this Jetson, warm (model already loaded), synthesised es_AR:
+#
+#     clip                       vosk            whisper
+#     "Para."            0.66s   ~370 ms  cara   3.58 s  "!Bien!"      <- wrong
+#     "Camina hasta      1.35s   ~370 ms  ok     4.00 s  "caminaste
+#      la puerta."                                        la puerta."   <- wrong
+#     long sentence      3.53s   ~370 ms  ok     6.64 s  ok
+#
+# Two things fall out. Whisper is 10-18x SLOWER here, and it is WORSE on short
+# utterances -- it is trained on 30 s windows and mangles a one-word clip. Short
+# utterances are exactly what commands to a robot look like, so routing
+# everything through it would make the common case both slower and less correct.
+#
+# So: SHORT UTTERANCES KEEP VOSK'S TEXT, long ones go to Whisper, where its
+# better language modelling and punctuation actually pay for the latency.
+#
+# What this benchmark CANNOT settle is the case that motivated the swap: Vosk
+# rendered live far-field mic audio as "guapa dias" for "buenos dias". Piper's
+# audio is clean, level and unhurried, so it does not test noise robustness at
+# all. If Whisper wins there, this threshold is the thing to lower.
+WHISPER_MIN_SECONDS = float(os.environ.get("WHISPER_MIN_SECONDS", "2.0"))
+
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
 # INT8 halves memory for well under a point of WER, and the Orin NX has no spare
 # RAM to spend: 15 GB shared between us, the detector and another team's SLAM.
@@ -365,9 +390,13 @@ def listen_loop(
             # emit ITS text instead. Vosk's own result is discarded here — it was
             # only ever the segmenter and the stop detector.
             if whisperer is not None:
-                better = whisperer.transcribe(bytes(utterance))
+                # Route by LENGTH. Below the threshold Whisper is both slower
+                # and less accurate than the segmenter that already produced
+                # `text`, so calling it would cost seconds to get a worse
+                # answer. See WHISPER_MIN_SECONDS.
+                if len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S:
+                    text = whisperer.transcribe(bytes(utterance)) or text
                 utterance.clear()
-                text = better or text
             if on_text is not None:
                 on_text(text)
         elif whisperer is not None and len(utterance) > MAX_UTTERANCE_BYTES:
@@ -635,7 +664,8 @@ class MicListener:
             text = transcriber.feed(frame)
             if text:
                 if whisperer is not None:
-                    text = whisperer.transcribe(bytes(utterance)) or text
+                    if len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S:
+                        text = whisperer.transcribe(bytes(utterance)) or text
                     utterance.clear()
                 self._record(text, kind="speech")
             elif whisperer is not None and len(utterance) > MAX_UTTERANCE_BYTES:
