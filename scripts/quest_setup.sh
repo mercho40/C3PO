@@ -74,13 +74,47 @@ for entry in "${PORTS[@]}"; do
     # NOT 127.0.0.1 — so an IPv4-only check reports a perfectly healthy dev
     # server as down, and refuses to forward to it. Found while setting up the
     # first real headset session.
-    if nc -z 127.0.0.1 "$port" 2>/dev/null || nc -z ::1 "$port" 2>/dev/null; then
+    # `nc -z` is enough for the two LOCAL servers, and actively misleading for
+    # the two TUNNELLED ones: `ssh -L` binds its local listener at setup time,
+    # before it knows anything about the far end, so a connect() succeeds
+    # whenever the ssh process is alive — whatever is running on the robot.
+    # That is exactly the "forward to a dead port" this script's header
+    # promises to prevent, and it was committing it. Forcing a byte through
+    # the channel is what tells them apart.
+    listening=0
+    case "$port" in
+        8081|8767)
+            if curl -sS --max-time 4 -o /dev/null "http://127.0.0.1:$port/" 2>&1 \
+                 | grep -qE "reset by peer|Empty reply|Recv failure"; then
+                listening=0   # tunnel up, nothing behind it on the robot
+                tunnel_empty=1
+            elif nc -z 127.0.0.1 "$port" 2>/dev/null; then
+                listening=1
+            fi
+            ;;
+        *)
+            if nc -z 127.0.0.1 "$port" 2>/dev/null || nc -z ::1 "$port" 2>/dev/null; then
+                listening=1
+            fi
+            ;;
+    esac
+    if [ "$listening" = "1" ]; then
         ok "$port  $label"
     elif [ "$required" = "yes" ]; then
-        err "$port  $label — NOT listening"
+        if [ "${tunnel_empty:-0}" = "1" ]; then
+            err "$port  $label — forwarded, but nothing is running on the robot"
+            tunnel_empty=0
+        else
+            err "$port  $label — NOT listening"
+        fi
         fatal=1
     else
-        warn "$port  $label — not listening (optional; no camera picture)"
+        if [ "${tunnel_empty:-0}" = "1" ]; then
+            warn "$port  $label — forwarded, but nothing running on the robot (no picture)"
+            tunnel_empty=0
+        else
+            warn "$port  $label — not listening (optional; no camera picture)"
+        fi
     fi
 done
 
