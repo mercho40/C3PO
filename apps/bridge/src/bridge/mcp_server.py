@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import time
 import uuid
 from typing import Annotated, Literal
 
@@ -2186,6 +2187,173 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
         return JSONResponse({"error": "voice telemetry unavailable"}, status_code=503)
 
 
+# ---------------------------------------------------------------------------
+# The head camera, over the bridge's own HTTP surface
+# ---------------------------------------------------------------------------
+#
+# WHY THE BRIDGE SERVES THIS AND NOT THE VISION CONTAINER. The container's
+# MJPEG server (`c3po_vision.stream`) is fed by the detector, and the detector
+# cannot start unless it owns `/dev/video4`. This feed exists for exactly the
+# case where it does NOT own it — `videohub_pc4` has the device — so putting it
+# in the vision container would put it in the one process guaranteed to be dead
+# whenever it is needed. The bridge is already a host process, already on DDS
+# domain 0 over eth0, and already serving read-only telemetry here.
+#
+# WHY NOT PORT 8081. That port belongs to the vision container, and two servers
+# racing for one bind is a coin-flip failure with a confusing symptom. Riding
+# 8001 costs nothing extra: the tunnel that reaches this bridge is already open
+# (`-L 8001:127.0.0.1:8001`), so unlike `:8081` this needs no second forward.
+# The console picks a feed with one variable, because `endpoint()` in
+# `apps/web/src/lib/robot/mjpeg-camera.ts` is a plain base + path join:
+#
+#     PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera   <- this, no -L 8081
+#     PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8081          <- the detector's
+#
+# The paths and the `/status` field names are identical to the vision
+# container's on purpose: one client in the console, two possible servers, no
+# branch anywhere in the browser.
+#
+# READ-ONLY, AND STRUCTURALLY SO — like the costmap, gate and surroundings
+# routes above. It reads a buffer a polling thread filled from a vendor RPC
+# whose only verb is "give me a picture". Nothing here can arm the gate,
+# publish, or reach anything that actuates.
+
+# How often the streaming generator looks for a new frame. Well under the
+# camera's own period so the poll adds no meaningful latency, and it is a sleep
+# rather than a condition wait because blocking a thread inside an async
+# generator would stall every other route on the event loop.
+_CAMERA_WAKE_S = 0.02
+
+
+def _camera_unavailable():  # noqa: ANN202 - starlette types
+    """The 503 body for "there is no camera here", or None if there is one."""
+    from starlette.responses import JSONResponse
+
+    if SIM_MODE != "real":
+        return JSONResponse(
+            {
+                "error": "the head camera is real-hardware only",
+                "sim_mode": SIM_MODE,
+                "hint": (
+                    "this feed reads the G1's videohub RPC; the sim's cameras are "
+                    "teleimager WebRTC servers on 60001-60003 (apps/web/README.md)"
+                ),
+            },
+            status_code=503,
+        )
+    return None
+
+
+@mcp.custom_route("/camera/status", methods=["GET"])
+async def camera_status(request):  # noqa: ANN001, ANN201 - starlette types
+    """Whether the picture is live, and if not, why — in one object.
+
+    `live` is the whole point: an `<img>` cannot tell the console the difference
+    between a feed and a photograph of one. `frames` is monotonic so a client
+    can catch a stall that both ends of an age comparison straddle, and `hint`
+    carries the ordinary cause of a dark feed — somebody took the device — so
+    nobody goes hunting for broken hardware.
+    """
+    from starlette.responses import JSONResponse
+
+    unavailable = _camera_unavailable()
+    if unavailable is not None:
+        return unavailable
+
+    from bridge.sdk.videohub import get_camera
+
+    return JSONResponse(get_camera().status(), headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/camera/frame.jpg", methods=["GET"])
+async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
+    """The newest frame as one JPEG, for a poll or a screenshot.
+
+    503 rather than a placeholder when nothing has arrived: "no picture yet" and
+    "a picture of an empty room" are different facts, and the whole reason this
+    module exists is that an operator could not tell them apart.
+    """
+    from starlette.responses import JSONResponse, Response
+
+    unavailable = _camera_unavailable()
+    if unavailable is not None:
+        return unavailable
+
+    from bridge.sdk.videohub import get_camera
+
+    camera = get_camera()
+    seq, jpeg, _stamp = camera.snapshot()
+    if seq == 0 or jpeg is None:
+        status = camera.status()
+        return JSONResponse(
+            {"error": "no frame yet", "hint": status["hint"], "status": status},
+            status_code=503,
+        )
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store", "Content-Length": str(len(jpeg))},
+    )
+
+
+@mcp.custom_route("/camera/stream.mjpg", methods=["GET"])
+async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
+    """MJPEG — what the console's `<img>` and the VR camera layer render.
+
+    ENDING THE RESPONSE IS THE MESSAGE. multipart/x-mixed-replace has no
+    in-band way to say "this is no longer live", so going quiet would leave the
+    browser showing its last frame at full brightness forever. Closing once no
+    new frame has arrived for `STALE_AFTER_S` is the signal, and it is the same
+    contract `c3po_vision.stream` already has with the same client.
+    """
+    from starlette.responses import JSONResponse, StreamingResponse
+
+    unavailable = _camera_unavailable()
+    if unavailable is not None:
+        return unavailable
+
+    from bridge.sdk.videohub import STALE_AFTER_S, get_camera
+
+    camera = get_camera()
+    seq, jpeg, _stamp = camera.snapshot()
+    if seq == 0 or jpeg is None:
+        # Refuse before opening the response. A stream that opens and
+        # immediately closes is indistinguishable at the client from a network
+        # fault; a 503 with a reason is not.
+        status = camera.status()
+        return JSONResponse(
+            {"error": "no frame yet", "hint": status["hint"], "status": status},
+            status_code=503,
+        )
+
+    boundary = "c3poframe"
+
+    async def frames():
+        last_seq = 0
+        last_new = time.monotonic()
+        while True:
+            current, data, _ = camera.snapshot()
+            if current != last_seq and data is not None:
+                last_seq = current
+                last_new = time.monotonic()
+                yield (
+                    "--{}\r\nContent-Type: image/jpeg\r\n"
+                    "Content-Length: {}\r\n\r\n".format(boundary, len(data)).encode("ascii")
+                    + data
+                    + b"\r\n"
+                )
+            elif time.monotonic() - last_new > STALE_AFTER_S:
+                return
+            await asyncio.sleep(_CAMERA_WAKE_S)
+
+    return StreamingResponse(
+        frames(),
+        media_type="multipart/x-mixed-replace; boundary=" + boundary,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+
 def main() -> None:
     """Run the MCP server.
 
@@ -2272,6 +2440,31 @@ def main() -> None:
                 log.info("mic_listener.disabled", reason=why)
         except Exception:
             log.exception("mic_listener.start_failed")
+
+        # THE HEAD CAMERA, at boot, and only on real hardware.
+        #
+        # Started here rather than on the first `/camera/*` request for the same
+        # reason the mic is: the operator who opens the console wants a picture
+        # now, and a feed that only begins filling when somebody asks is a feed
+        # that is always a beat behind. It is one 175 KB JPEG every 100 ms into
+        # a single buffer, and it costs nothing while nobody is watching.
+        #
+        # This does NOT touch the camera device. It reads the vendor's videohub
+        # RPC, which works precisely because `videohub_pc4` still owns
+        # /dev/video4 — see bridge/sdk/videohub.py. If somebody has taken the
+        # device for the detector, this stays dark and says so; that is an
+        # ordinary state, not a failure, and it must not be loud.
+        #
+        # Real only, not isaac: `videohub_pc4` is a service on the physical
+        # robot's Jetson. In the sim the cameras are teleimager WebRTC servers
+        # and a different page speaks to them.
+        if SIM_MODE == "real":
+            try:
+                from bridge.sdk.videohub import get_camera
+
+                get_camera().start()
+            except Exception:
+                log.exception("videohub.camera.start_failed")
 
     if BRIDGE_TRANSPORT in ("http", "streamable-http"):
         log.info(

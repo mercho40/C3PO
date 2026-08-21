@@ -157,8 +157,8 @@ State as of the 2026-08-13/14 survey, with 2026-08-15 recon updates folded in.
 | Device                   | Attaches via                                                                                        | Address / node                                                                  | Held by, at snapshot                   | Health                                            |
 | ------------------------ | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------- |
 | Livox Mid-360 LiDAR      | Ethernet, robot internal LAN — **also republished on DDS**, §4.5                                    | `192.168.123.120`, `0c:9a:e6:87:5c:4a`                                          | **not the Jetson** — some other host   | alive, 2.5 ms RTT; not streaming to us            |
-| Intel RealSense D435i    | USB 3.0 hub `2-2`, port 3 → `2-2.3`, `8086:0b3a`                                                    | `/dev/video0–5`, IIO accel+gyro                                                 | `teleimager.image_server` (video4)     | healthy; **depth and IR unclaimed**               |
-| G1 "head camera"         | **is the D435i colour node** — see §6                                                               | `/dev/video4`                                                                   | nobody (`master_service` stopped)      | stopped, recoverable                              |
+| Intel RealSense D435i    | USB 3.0 hub `2-2`, port 3 → `2-2.3`, `8086:0b3a`                                                    | `/dev/video0–5`, IIO accel+gyro                                                 | **contended — §6.6**                   | healthy; **depth and IR unclaimed**               |
+| G1 "head camera"         | **is the D435i colour node** — see §6                                                               | `/dev/video4`                                                                   | `videohub_pc4`, when nobody took it    | live; readable **without** the device — §6.6      |
 | G1 chest camera          | would be `/dev/video10`                                                                             | —                                                                               | nobody                                 | **absent** — no such device electrically          |
 | Hands                    | RS485 behind FTDI FT4232H `0403:6011`; a Dex3 pair would be served from the **control board**, §7.2 | `/dev/ttyUSB0–3`                                                                | `brainco_hand_server` (ttyUSB1)        | one right hand answering; identity **[?]** — §7.3 |
 | Mic array (4 mics)       | control board, **not** the Jetson                                                                   | UDP mcast `239.168.123.161:5555`                                                | `gemm-ai.service` joined the group     | joined but **silent at rest** — §8.2              |
@@ -781,9 +781,9 @@ a request/response snapshot, never as a continuous stream. **[src]**
 defines `VIDEO_SERVICE_NAME = "videohub"`, `VIDEO_API_VERSION = "1.0.0.1"`,
 `VIDEO_API_ID_GETIMAGESAMPLE = 1001`, and `VideoClient.GetImageSample()` calls
 `_CallBinary(1001, [])`. The service name maps exactly onto the binary's
-`rt/api/videohub/request|response`, so this Go2-labelled client **should** address the G1
-head videohub unchanged; a chest client would need service name `videohub_chest`. Untested
-— the service is stopped and an RPC is a write. **[src]**
+`rt/api/videohub/request|response`, so this Go2-labelled client addresses the G1 head
+videohub unchanged; a chest client would need service name `videohub_chest`. **Confirmed
+live 2026-08-21 — see §6.6.** **[src]** + **[live]**
 
 One mismatch to expect: the shipped `Go2FrontVideoData_` IDL is
 `{time_frame: uint64, video720p, video360p, video180p}`, but the G1 pipeline has **no 180p
@@ -813,6 +813,51 @@ Side effect worth knowing: `/unitree/etc/master_service/cmd/am-init` is
 `master_service` — while it is dead, that has not been applied. **[src]**
 
 ---
+
+### 6.6 The head camera without the device — measured
+
+**`GetImageSample` works, and it is how we read the head camera now.** Measured on this
+robot, 2026-08-21, while `videohub_pc4` kept `/dev/video4` open: **[live]**
+
+```
+ok=30 failed=0
+latency  min=6ms  median=20ms  max=33ms
+size     175-176 KB per frame     SOF0: 1920x1080
+throughput back-to-back: 49.69 Hz
+```
+
+That matches §6.4's read of the pipeline exactly — the 1080p JPEG appsink, served on
+request. `bridge/sdk/videohub.py` polls it and `apps/bridge` serves the result at
+`:8001/camera/{stream.mjpg,frame.jpg,status}`.
+
+**`rt/frontvideostream` is a red herring.** The writer exists (§6.4) but carried **nothing
+in 10 s** with the service running and healthy — so the continuous DDS stream is not the
+way in, and a consumer waiting on that topic waits forever with no error. The
+request/reply path is. **[live]**
+
+**This is the LiDAR answer applied to the camera** (§4.5, `docs/DECISIONS.md`): consume
+the vendor's own republish instead of claiming the sensor, and every consumer can have it
+at once. It costs the thing a JPEG cannot carry — **there is no depth here**, so the
+detector, which ranges a box by reading aligned depth under it and drops a detection whose
+depth will not resolve, still needs the device.
+
+**The two routes are mutually exclusive, and that decides a run before it starts:**
+
+| `videohub_pc4` | `:8001/camera` | our detector | who typically causes it              |
+| -------------- | -------------- | ------------ | ------------------------------------ |
+| alive          | **works**      | cannot start | nobody has taken the camera          |
+| killed         | dark, says why | **works**    | `take_camera`, or gemm's bring-up    |
+
+`scripts/robot/take_camera` is the one place that performs the swap, because stopping
+`master_service` is a change to a shared robot and not a bring-up step: it also carries the
+chest camera and the OTA pipe, and the colleague who first needed it could not confirm to
+100% that it leaves arm and balance control alone. `stop_gemm` therefore reports this
+holder and does not kill it — it stops **gemm's** things, and `videohub_pc4` is Unitree's.
+
+**A third route exists while the other team is up.** Their `realsense2_camera` node owns
+the device and publishes `/camera/camera/color/image_raw/compressed` (640x480 @15, JPEG
+q70) on ROS — an ordinary multi-consumer topic. It is the only route that works when they
+hold the camera, and it is downstream of a stack they can switch off. Not wired.
 
 ## 7. Hands — **two BrainCo**, settled by inspection
 

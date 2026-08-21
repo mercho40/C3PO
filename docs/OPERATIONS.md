@@ -73,6 +73,7 @@ The port map, in one place:
 | `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                                  |
 | `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback                |
 | Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera`'s real-robot feed; only up with `perception_up perception`/`nav2` |
+| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge — the same feed **without** owning `/dev/video4`       |
 | Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                                 |
 | G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                               |
 

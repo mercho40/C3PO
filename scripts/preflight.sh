@@ -170,12 +170,20 @@ else
         # avoid, so say it instead of guessing.
         bad "PUBLIC_ROBOT_CAM_URL is not set in apps/web/.env"
         note "the page will not open the stream at all without it. Add:"
-        note "  PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8081"
-        note "(.env.example ships it empty, so a regenerated .env loses it)"
+        note "  PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera"
+        note "(that is the bridge's videohub feed, which needs no second -L;"
+        note " http://127.0.0.1:8081 is the vision container's, which owns the"
+        note " D435i and only answers after take_camera + perception_up)"
         return 2>/dev/null || CAM_URL=""
     fi
     if [ -n "$CAM_URL" ]; then
     note "camera URL from $CAM_URL_SOURCE: $CAM_URL"
+    # Which feed this is decides every message below. The bridge's videohub feed
+    # and the vision container's are different ports, different owners and
+    # different fixes; telling somebody to add `-L 8081` when their URL says
+    # 8001 is the kind of confident wrong advice this script exists to end.
+    CAM_PORT=$(printf '%s' "$CAM_URL" | sed -n 's#^[a-z]*://[^:/]*:\([0-9][0-9]*\).*#\1#p')
+    [ -n "$CAM_PORT" ] || CAM_PORT=80
     status_body=$(curl -sS --max-time 5 "$CAM_URL/status" 2>&1)
     status_rc=$?
 
@@ -183,11 +191,16 @@ else
         case "$status_body" in
             *"Connection refused"*|*"Couldn't connect to server"*|*"Failed to connect"*)
                 bad "nothing is forwarding $CAM_URL"
-                note "the SSH tunnel is missing -L 8081. This is a tunnel problem, not a robot one."
+                note "the SSH tunnel is missing -L $CAM_PORT. This is a tunnel problem, not a robot one."
                 ;;
             *"reset by peer"*|*"Empty reply"*|*"Recv failure"*)
-                bad "the tunnel reaches the robot, and nothing is listening on 8081 there"
-                note "the vision container is not up. On the robot:  perception_up perception"
+                bad "the tunnel reaches the robot, and nothing is listening on $CAM_PORT there"
+                if [ "$CAM_PORT" = "8001" ]; then
+                    note "the BRIDGE is not up — this feed is served by it, not by perception."
+                    note "On the robot:  systemctl --user status c3po-bridge"
+                else
+                    note "the vision container is not up. On the robot:  perception_up perception"
+                fi
                 note "This is the failure that looked like a camera fault last time. It is not."
                 ;;
             *"timed out"*|*"Operation timed out"*)
@@ -214,9 +227,20 @@ else
                 # is wrong — and misleadingly so — whenever frames HAVE arrived.
                 if echo "$status_body" | grep -qE '"frames":[[:space:]]*0'; then
                     warn "live: false, and it has produced NOTHING since it started"
-                    note "the server is up and the D435i is not delivering — the camera"
-                    note "itself, not the tunnel and not the web app. Check the cable and"
-                    note "that nothing else has the device open."
+                    # The bridge's feed carries `hint`, because a dark videohub
+                    # feed nearly always means somebody took the device on
+                    # purpose — an ordinary state with a one-line fix, not a
+                    # broken camera. Prefer what the server knows over what this
+                    # script can guess from outside.
+                    cam_hint=$(printf '%s' "$status_body" \
+                        | sed -n 's/.*"hint":[[:space:]]*"\([^"]*\)".*/\1/p')
+                    if [ -n "$cam_hint" ] && [ "$cam_hint" != "null" ]; then
+                        note "$cam_hint"
+                    else
+                        note "the server is up and the D435i is not delivering — the camera"
+                        note "itself, not the tunnel and not the web app. Check the cable and"
+                        note "that nothing else has the device open."
+                    fi
                 else
                     warn "live: false, but frames HAVE arrived and then stopped"
                     note "so the camera works and the detector is up — its ticks are"

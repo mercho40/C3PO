@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Take /dev/video4 from Unitree's videohub service, so the DETECTOR can have it.
+#
+# This is the deliberate half of the camera question, split out of `stop_gemm`
+# because it is a decision and not a step. `stop_gemm` stops gemm's things; this
+# stops a VENDOR service on a robot two teams share, and that wants somebody to
+# type it on purpose.
+#
+# WHAT YOU ARE TRADING
+# --------------------
+# The D435i's colour node is single-owner and there are two useful owners:
+#
+#   videohub_pc4 (Unitree's)   The bridge reads frames from it over the vendor's
+#                              videohub RPC — 1920x1080 JPEG, ~50 Hz available,
+#                              no device contention, every consumer can have it
+#                              at once. COLOUR ONLY: there is no depth in a JPEG.
+#
+#   our detector (pyrealsense) Colour + depth aligned to colour, which is what
+#                              lets it put a RANGE on what it sees. It drops a
+#                              detection whose depth will not resolve rather
+#                              than guessing, so without the device it has
+#                              nothing to say.
+#
+# So this is not "fix the camera". It is: give up the operator's picture to gain
+# ranged object detection. Run it when you need the world model to see obstacles
+# the LiDAR misses; leave it alone when you want eyes on the room.
+#
+# WHAT IS UNCONFIRMED, AND SAY IT OUT LOUD
+# ----------------------------------------
+# `master_service` also supervises the chest camera and the OTA update pipe. The
+# other team investigated `/etc/init.d/master_service` when they hit this and
+# concluded it probably does not touch arm or balance control — "pero no lo pude
+# confirmar al 100%". Nobody has confirmed it since. Treat stopping it as a
+# change to a walking robot's environment: do it with the e-stop in reach, not
+# in the middle of a run.
+#
+# THE WAY BACK is one line and this script prints it: `sudo systemctl start
+# master_service`. It is also what a reboot does for you.
+
+set -euo pipefail
+# `readlink -f` — see the note in run_c3po; this is invoked through a symlink on
+# PATH, so BASH_SOURCE[0] is the link, not this file.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+DEV=/dev/video4
+
+say "Taking $DEV from the vendor camera service"
+
+# Who has it now, by argv rather than by fuser: fuser needs root to see a root
+# process's fd and sudo here is interactive, so asking the process table first
+# means the common case answers without a password prompt. videohub_pc4 names
+# the device it opens right there in its command line.
+holder_argv() {
+    ps -eo pid=,args= | awk -v me="$$" '
+        $1 != me && index($0, "'"$DEV"'") > 0 && index($0, "awk") == 0 { print }
+    '
+}
+
+current="$(holder_argv)"
+if [ -z "$current" ]; then
+    ok "nothing in the process table has $DEV open — it may already be free"
+    info "  confirm with: sudo fuser -v $DEV"
+    exit 0
+fi
+
+info "currently holding $DEV:"
+echo "$current" | sed 's/^/      /'
+
+# If it is NOT videohub, stopping master_service will not help and would be a
+# pointless hit to a shared robot. Say which case this is.
+if ! echo "$current" | grep -q "videohub"; then
+    err "that is not videohub_pc4 — stopping master_service would not free the device"
+    if echo "$current" | grep -q "realsense2_camera"; then
+        err "  it is gemm's realsense2_camera node: the OTHER TEAM has the camera"
+        err "  their stack owns it while gemm-bringup is up. Talk to them, or"
+        err "  'stop_gemm' if you have already agreed to take the sensors."
+    else
+        err "  find out what it is before killing anything"
+    fi
+    exit 1
+fi
+
+if [ "${C3PO_TAKE_CAMERA_YES:-0}" != "1" ]; then
+    warn "this stops Unitree's master_service (chest camera + OTA pipe too)"
+    warn "the operator's live feed at :8001/camera goes DARK — it reads videohub"
+    printf '  type "take" to continue: '
+    read -r answer
+    [ "$answer" = "take" ] || { info "nothing changed"; exit 1; }
+fi
+
+# Order matters. `systemctl stop` alone leaves the children behind: they are
+# re-parented to init (PPID 1, verified on this robot), so the unit stop never
+# reaps them and the device stays held by a process whose supervisor is gone.
+info "stopping master_service (sudo may ask for a password)"
+sudo systemctl stop master_service 2>/dev/null || true
+sudo pkill -9 -f "[v]ideohub_pc4" 2>/dev/null || true
+
+freed=0
+for _ in $(seq 1 10); do
+    [ -z "$(holder_argv)" ] && { freed=1; break; }
+    sleep 0.5
+done
+
+if [ "$freed" = "1" ]; then
+    ok "$DEV released — the detector can open the RealSense now"
+    info "  the bridge's :8001/camera feed is now dark BY DESIGN and reports why"
+    info "  give it back with:  sudo systemctl start master_service"
+    exit 0
+fi
+
+err "$DEV is still held after the stop:"
+holder_argv | sed 's/^/      /' >&2
+err "  master_service is known to restart itself — the other team could not find"
+err "  the mechanism either. Re-run, or look for the supervisor before forcing it."
+exit 1
