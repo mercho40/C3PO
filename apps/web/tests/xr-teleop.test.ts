@@ -16,6 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   angleBetween,
+  buttonPressed,
   drawPerEye,
   fingerCurl,
   restoreOverlayBackground,
@@ -422,5 +423,28 @@ describe("walkAxisFrom — the thumbstick that walks the robot", () => {
     // a stick that goes faster the harder you push is a stick that surprises
     // you at the extremes.
     expect(walkAxisFrom([0, 0, 0, -1])).toBe(walkAxisFrom([0, 0, 0, -0.61]));
+  });
+});
+
+describe("buttonPressed — the read that dispatches a gesture", () => {
+  test("reads `pressed`, not the analogue value", () => {
+    // A trigger resting at 0.02 is not a press. Reading `value` would make a
+    // gesture fire because someone's finger was touching the trigger.
+    expect(buttonPressed({ buttons: [{ pressed: false }] }, 0)).toBe(false);
+    expect(buttonPressed({ buttons: [{ pressed: true }] }, 0)).toBe(true);
+  });
+
+  test("a missing button, gamepad or index is not a press", () => {
+    expect(buttonPressed(null, 0)).toBe(false);
+    expect(buttonPressed(undefined, 0)).toBe(false);
+    expect(buttonPressed({}, 0)).toBe(false);
+    expect(buttonPressed({ buttons: [] }, 0)).toBe(false);
+    expect(buttonPressed({ buttons: [{ pressed: true }] }, 4)).toBe(false);
+  });
+
+  test("a button object without `pressed` is not a press", () => {
+    // Strict === true, so a runtime reporting `{value: 1}` and no `pressed`
+    // does not dispatch motion on a truthiness accident.
+    expect(buttonPressed({ buttons: [{}] }, 0)).toBe(false);
   });
 });

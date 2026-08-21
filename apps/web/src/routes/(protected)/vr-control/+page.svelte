@@ -87,6 +87,12 @@
     // returned without ever calling startWalking again: the stick would be
     // dead until the operator waggled it through neutral.
     stickWalk = null;
+    // Same reasoning for the buttons. A session that ended with the trigger
+    // held would leave `prev.trigger` true, so the NEXT session's first press
+    // is not an edge and does nothing — the operator presses, gets no gesture,
+    // and has no way to know they have to release a button they are not
+    // holding any more.
+    prevButtons = { trigger: false, primary: false };
     if (walking !== null) {
       walking = null;
       if (!bridgeHolds && !loopShouldRun()) {
@@ -493,6 +499,35 @@
     void sendVelocity(wantVx, wantVyaw, STEP_S);
   }
 
+  //: Previous frame's button state, for edge detection. The session reports
+  //: held-state at display rate, so without this a single press of A would
+  //: cycle the highlight through the whole list in under a tenth of a second
+  //: and the trigger would fire the same skill 70 times.
+  let prevButtons = { trigger: false, primary: false };
+
+  /**
+   * The in-headset preset menu: A cycles, trigger fires.
+   *
+   * Fires on the PRESS edge, not the release. A gesture is a one-shot with no
+   * hold semantics, and waiting for release means an operator who presses and
+   * keeps holding gets nothing and presses harder.
+   */
+  function applyMenuButtons(b: { trigger: boolean; primary: boolean }) {
+    const prev = prevButtons;
+    prevButtons = { ...b };
+    // Observers cycle the highlight — reading the list is not commanding — but
+    // the trigger does nothing. Being able to look at what exists is exactly
+    // what someone in view-only mode is there for.
+    if (b.primary && !prev.primary) vr?.advanceMenu();
+    if (viewOnly) return;
+    if (!(b.trigger && !prev.trigger)) return;
+    // `menuSelection` returns null for anything unverified, so this cannot
+    // dispatch untested motion even if the highlight somehow sat on it.
+    const item = vr?.menuSelection;
+    if (!item) return;
+    void runPreset(item.name);
+  }
+
   //: Which direction the thumbstick is currently asking for, so a change is
   //: distinguishable from the same intent repeated at frame rate. `onSample`
   //: fires 72-120 times a second; without this, every frame of a held stick
@@ -615,6 +650,7 @@
           lastYawSampleAt = Date.now();
           noteHandsVisible();
           applyWalkAxis(s.walkAxis);
+          applyMenuButtons(s.buttons);
         },
         onEnd: () => {
           vrActive = false;
@@ -669,6 +705,20 @@
       // immediately rather than waiting for the next reconnect.
       if (camFrameUrl) session.setCameraStream(camFrameUrl);
       session.setCameraLive(camLive);
+      // The preset list, with each entry's verification status straight from
+      // the catalogue. `catalogueFailed` is why this is not just
+      // `worksReal[name] === true`: an unreadable catalogue leaves the map
+      // empty, and treating empty as "nothing is verified" is the safe
+      // reading — the menu shows everything struck through and fires nothing,
+      // rather than quietly offering skills whose status we could not check.
+      session.setMenuItems(
+        presets.map((p) => ({
+          name: p.name,
+          label: p.label,
+          verified: !data.catalogueFailed && data.worksReal[p.name] === true,
+        })),
+      );
+      session.setMenuVisible(true);
       xrMode = session.mode;
       vrActive = true;
       ensureReadouts();
@@ -1036,6 +1086,11 @@
     if (presetBusy) return;
     presetBusy = name;
     presetOutcome = { ...presetOutcome, [name]: null };
+    // Mirror into the headset. Without this the operator in VR presses the
+    // trigger and sees nothing change — no spinner, no result, no way to tell
+    // a dispatched gesture from a swallowed press.
+    vr?.setMenuBusy(name);
+    vr?.setMenuStatus(null);
     try {
       const { data, error } = await createApi(fetch)
         .skills({ name })
@@ -1061,6 +1116,16 @@
       };
     } finally {
       presetBusy = null;
+      vr?.setMenuBusy(null);
+      // Whatever the page decided — sent, unconfirmed, refused, or a network
+      // failure — goes to the headset verbatim. `runPreset` already
+      // distinguishes those four, and an operator in VR needs the difference
+      // more than one looking at the screen does: "Enviado" and "Enviado (sin
+      // confirmar)" mean very different things about a robot they cannot see.
+      const outcome = presetOutcome[name];
+      vr?.setMenuStatus(
+        outcome ? { text: outcome.text, kind: outcome.kind } : null,
+      );
     }
   }
 </script>

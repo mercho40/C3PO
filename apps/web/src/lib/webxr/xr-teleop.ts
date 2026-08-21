@@ -26,6 +26,7 @@
  */
 
 import { CameraLayer } from "./camera-layer";
+import { MenuLayer, type MenuItem, type MenuStatus } from "./menu-layer";
 
 export type HandSample = {
   /** Wrist position in the reference space, metres. */
@@ -60,7 +61,39 @@ export type XrSample = {
    * walk". Hand-tracking-only sessions keep working exactly as before.
    */
   walkAxis: -1 | 0 | 1;
+  /**
+   * Controller buttons, OR-ed across both hands.
+   *
+   * Raw held-state, not edges. Edge detection belongs to whoever acts on it:
+   * this fires at display rate and has no idea what a press should mean, and
+   * a session that swallowed repeats would make a held button indistinguishable
+   * from a released one for any consumer that wanted the difference.
+   *
+   * `trigger` is buttons[0] and `primary` is buttons[4] (A/X) in the
+   * xr-standard mapping. Both false when there is no controller.
+   */
+  buttons: { trigger: boolean; primary: boolean };
 };
+
+/** Index in the `xr-standard` gamepad mapping. */
+const BUTTON_TRIGGER = 0;
+const BUTTON_PRIMARY = 4; // A on the right controller, X on the left
+
+/**
+ * Whether a gamepad button is pressed, tolerating every shape a runtime
+ * might hand back.
+ *
+ * `pressed` is the field to read — `value` is analogue and a trigger resting
+ * at 0.02 is not a press. A missing button reads as not pressed, because the
+ * alternative in a headset is a preset firing because a runtime reported one
+ * fewer button than expected.
+ */
+export function buttonPressed(
+  gamepad: { buttons?: readonly { pressed?: boolean }[] } | null | undefined,
+  index: number,
+): boolean {
+  return gamepad?.buttons?.[index]?.pressed === true;
+}
 
 /**
  * Thumbstick Y to a walk intent. Pure, so the thresholds are testable.
@@ -338,6 +371,12 @@ export function drawPerEye(
   pose: XRViewerPose,
   camera: { draw(opaque: boolean, vpWidth?: number, vpHeight?: number): void },
   opaque: boolean,
+  /**
+   * Drawn after the camera, into the same viewport, so it sits over the
+   * picture rather than under it. Optional: sessions without a menu pass
+   * nothing and this is a no-op.
+   */
+  menu?: { draw(vpWidth?: number, vpHeight?: number): void } | null,
 ): unknown | null {
   for (const view of pose.views) {
     const vp = layer.getViewport(view);
@@ -352,6 +391,7 @@ export function drawPerEye(
       // the eye's shape, which is how the first real session got a picture
       // that was live, correct, and visibly deformed.
       camera.draw(opaque, vp.width, vp.height);
+      menu?.draw(vp.width, vp.height);
     } catch (err) {
       return err ?? new Error("camera draw failed");
     }
@@ -417,6 +457,7 @@ export class XrTeleopSession {
   #mode: XRSessionMode | null = null;
   #options: XrTeleopOptions;
   #camera: CameraLayer | null = null;
+  #menu: MenuLayer | null = null;
   #pendingStreamUrl = "";
   #pendingLive = true;
   #cameraBroken = false;
@@ -469,6 +510,42 @@ export class XrTeleopSession {
 
   get active(): boolean {
     return this.#session !== null;
+  }
+
+  /**
+   * Preset menu, drawn in the headset. Everything here is a no-op before the
+   * session starts and after it ends, so the page can call them whenever its
+   * own state changes without tracking session lifetime.
+   */
+  setMenuItems(items: readonly MenuItem[]): void {
+    this.#menu?.setItems(items);
+  }
+
+  setMenuVisible(visible: boolean): void {
+    this.#menu?.setVisible(visible);
+  }
+
+  setMenuStatus(status: MenuStatus): void {
+    this.#menu?.setStatus(status);
+  }
+
+  setMenuBusy(name: string | null): void {
+    this.#menu?.setBusy(name);
+  }
+
+  /** Move the highlight to the next VERIFIED item. */
+  advanceMenu(): void {
+    this.#menu?.advance();
+  }
+
+  /** What firing the trigger would run, or null. Never an unverified skill. */
+  get menuSelection(): MenuItem | null {
+    const item = this.#menu?.selectedItem ?? null;
+    // Belt and braces: `advance()` only ever lands on verified entries, but
+    // the caller is about to COMMAND A ROBOT with whatever this returns, and
+    // an empty or all-unverified catalogue is exactly when the highlight has
+    // nowhere legitimate to sit.
+    return item?.verified ? item : null;
   }
 
   /** Whether any hand has been tracked since the session began. */
@@ -588,6 +665,7 @@ export class XrTeleopSession {
 
       if (this.#options.camera) {
         this.#camera = new CameraLayer(gl);
+        this.#menu = new MenuLayer(gl);
         // The URL arrives via setCameraStream(), possibly before this point —
         // apply whatever the page last told us so a reconnect that happened
         // during startup is not lost.
@@ -638,6 +716,8 @@ export class XrTeleopSession {
         // MJPEG request — an ended session must not keep pulling frames.
         this.#camera?.dispose();
         this.#camera = null;
+        this.#menu?.dispose();
+        this.#menu = null;
         this.#callbacks.onEnd?.();
       });
 
@@ -663,6 +743,7 @@ export class XrTeleopSession {
             pose,
             this.#camera,
             this.#mode !== "immersive-ar",
+            this.#menu,
           );
           if (failure) {
             // Shader compile or link failure throws out of draw(), and this
@@ -692,6 +773,7 @@ export class XrTeleopSession {
           headPosition: [p.x, p.y, p.z],
           ...hands,
           walkAxis: this.#sampleWalkAxis(active),
+          buttons: this.#sampleButtons(active),
         });
       };
       session.requestAnimationFrame(onFrame);
@@ -776,6 +858,19 @@ export class XrTeleopSession {
     }
     if (sawForward && sawBack) return 0;
     return best;
+  }
+
+  /** Buttons from any controller. Either hand works — see `#sampleWalkAxis`. */
+  #sampleButtons(session: XRSession): { trigger: boolean; primary: boolean } {
+    let trigger = false;
+    let primary = false;
+    for (const source of session.inputSources) {
+      const gp = source.gamepad;
+      if (!gp) continue;
+      if (buttonPressed(gp, BUTTON_TRIGGER)) trigger = true;
+      if (buttonPressed(gp, BUTTON_PRIMARY)) primary = true;
+    }
+    return { trigger, primary };
   }
 
   #makeOverlayTransparent(root: HTMLElement): void {
