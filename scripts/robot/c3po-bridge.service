@@ -38,7 +38,22 @@ Environment=PATH=/home/unitree/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sb
 Environment=C3PO_NO_TAKEOVER=1
 
 ExecStart=/home/unitree/c3po/scripts/robot/run_c3po
-ExecStop=/home/unitree/c3po/scripts/robot/stop_c3po
+
+# NO ExecStop, DELIBERATELY. `stop_c3po` takes the whole STACK down — bridge and
+# every perception container — which is right for an operator typing it and
+# wrong for this unit, whose job is one process.
+#
+# The cost of having it here was concrete and hit twice in one session:
+# `systemctl restart c3po-bridge`, done to pick up a code change, silently
+# stopped nav2 and the GPU speech server too. The second time it looked like the
+# transcriber had failed to upgrade — the bridge was correctly reporting no GPU
+# server, because the restart had just deleted it.
+#
+# Without ExecStop, systemd stops the main process named by PIDFile and reaps
+# what is left of its cgroup. Docker containers are not in this unit's cgroup —
+# they belong to docker.service — so perception is untouched, which is the whole
+# point. Perception has its own unit (`c3po-perception@.service`) and its own
+# operator command; the two lifecycles are separate and should look it.
 
 # run_c3po syncs dependencies before starting, which on a cold uv cache can
 # take minutes. The default 90s would kill it mid-sync.
