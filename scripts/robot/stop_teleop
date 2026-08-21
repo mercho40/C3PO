@@ -24,8 +24,16 @@ for pair in "teleop stream:$TELEOP_PID:stray_teleop_pids"; do
         info "stopping $label (pid $pid)"
         # SIGTERM first: the server's own handler is what sends the stop
         # command and ramps the arm weight down. SIGKILL would skip both.
+        #
+        # 8 s, not 5. The handler's own budget is SHUTDOWN_BUDGET_S (5 s in
+        # teleop/server.py), which covers a zero-velocity command that waits
+        # for an ack and then a 2 s arm_sdk weight ramp. At 5 s here the
+        # escalation landed *during* that ramp — killing the graceful shutdown
+        # precisely in the case it was written for, and leaving the arms
+        # blended at a part-way weight. Whatever these two numbers are, this
+        # one must be the larger.
         kill "$pid" 2>/dev/null || true
-        for _ in $(seq 1 25); do
+        for _ in $(seq 1 40); do
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.2
         done

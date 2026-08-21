@@ -740,7 +740,15 @@ async def handle_client(ws: ServerConnection) -> None:
 #: and exiting anyway. Generous compared with STOP_ACK_BUDGET_S because this
 #: path also ramps the arm_sdk weight down, which is a timed ramp rather than a
 #: single command — cutting it short is what drops the arms.
-SHUTDOWN_BUDGET_S = 6.0
+#:
+#: This number is not free to choose. It has to fit inside the window
+#: `scripts/robot/stop_teleop` allows before it escalates to SIGKILL, or the
+#: shutdown this budget exists to permit gets killed halfway through — arms
+#: still blended, weight part-way down, which is worse than either end state.
+#: The script waits 8 s; keep this comfortably under that, and keep it at least
+#: as large as STOP_ACK_BUDGET_S + ARM_RELEASE_BUDGET_S (2.0 + 2.5) or the
+#: outer timeout fires before the inner ones can.
+SHUTDOWN_BUDGET_S = 5.0
 
 
 async def _shutdown(reason: str) -> None:
