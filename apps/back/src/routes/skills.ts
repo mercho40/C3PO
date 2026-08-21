@@ -46,6 +46,15 @@ import {
 } from "../bridge/client";
 import { betterAuth } from "@back/lib/auth-plugin";
 
+//: Skills that must dispatch even when the catalogue cannot be read.
+//:
+//: Deliberately a hardcoded name and not a heuristic: this list exists to keep
+//: the e-stop working when the thing that normally answers "is this a safety
+//: skill?" is exactly what has failed. It is checked against the catalogue's
+//: own classification whenever the catalogue IS available, so the two cannot
+//: drift silently — see the test.
+export const SAFETY_SKILLS = new Set(["stop_everything"]);
+
 export const skillsRoutes = new Elysia({ prefix: "/skills" })
   .use(betterAuth)
   .guard({ auth: true }, (app) =>
@@ -92,12 +101,34 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
         "/:name/invoke",
         async ({ params: { name }, body, status, user }) => {
           const skill = await getSkill(name);
-          if (!skill) return status(404, { error: "skill_not_found", name });
+          const knownSafety = SAFETY_SKILLS.has(name);
+
+          // A missing catalogue entry is a 404 for everything EXCEPT a skill
+          // we already know is a stop.
+          //
+          // `getSkill` reads the catalogue, which is fetched from the bridge
+          // and cached. On a cold start with the bridge unreachable there is
+          // nothing cached, so the catalogue is empty and every lookup misses
+          // — including `stop_everything`. The dashboard's PARAR button then
+          // answered `skill_not_found`, which reads as a bug in the button
+          // rather than as "the bridge is unreachable", and is the single
+          // worst moment to hand somebody a misleading error.
+          //
+          // The stop does not need the catalogue. It needs to be dispatched.
+          // So a known safety skill skips the lookup and goes straight to the
+          // bridge, where it either works or fails with a transport error that
+          // says what is actually wrong.
+          if (!skill && !knownSafety) {
+            return status(404, { error: "skill_not_found", name });
+          }
 
           // Admin-only, except safety-classified skills (see file docstring)
           // — this bypasses the agent's reasoning loop entirely and
-          // dispatches straight to the bridge.
-          if (skill.classification !== "safety" && user.role !== "admin") {
+          // dispatches straight to the bridge. `knownSafety` covers the
+          // catalogue being unavailable: an e-stop must not become
+          // admin-gated because a fetch failed.
+          const isSafety = skill ? skill.classification === "safety" : knownSafety;
+          if (!isSafety && user.role !== "admin") {
             return status(403, {
               error: "admin_required",
               message:
@@ -109,13 +140,23 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
           // declared defaults, then check the body before dispatch. The schema
           // is plain JSON Schema from the bridge now, so this goes through Ajv
           // — TypeBox throws on a schema that lacks its own [Kind] symbol.
-          const {
-            ok,
-            value: args,
-            issues,
-          } = validateArgs(skill.parameters, body as Record<string, unknown>);
-          if (!ok) {
-            return status(422, { error: "invalid_params", name, issues });
+          // No catalogue entry means no schema to validate against. That only
+          // happens on the known-safety path above, where the arguments are
+          // empty and the right answer is to dispatch rather than to refuse.
+          let args: Record<string, unknown> = {};
+          if (skill) {
+            const validated = validateArgs(
+              skill.parameters,
+              body as Record<string, unknown>,
+            );
+            if (!validated.ok) {
+              return status(422, {
+                error: "invalid_params",
+                name,
+                issues: validated.issues,
+              });
+            }
+            args = validated.value;
           }
 
           try {

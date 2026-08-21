@@ -92,16 +92,21 @@ const FIXTURE_SKILLS = [
   },
 ];
 
+//: Set empty to simulate a cold start with the bridge unreachable: the
+//: catalogue is fetched from the bridge and cached, so with nothing cached
+//: every lookup misses — including the e-stop's.
+let catalogueSkills = FIXTURE_SKILLS;
+
 mock.module("../skills", () => ({
   getCatalogue: mock(async () => ({
-    skills: FIXTURE_SKILLS,
+    skills: catalogueSkills,
     source: "bridge",
     ageSeconds: 0,
   })),
   getSkill: mock(async (name: string) =>
-    FIXTURE_SKILLS.find((s) => s.name === name),
+    catalogueSkills.find((s) => s.name === name),
   ),
-  listSkills: mock(async () => FIXTURE_SKILLS),
+  listSkills: mock(async () => catalogueSkills),
 }));
 
 const { skillsRoutes } = await import("./skills");
@@ -119,6 +124,7 @@ function invoke(name: string, body: unknown) {
 describe("POST /skills/:name/invoke", () => {
   beforeEach(() => {
     sessionUser = null;
+    catalogueSkills = FIXTURE_SKILLS;
   });
 
   test("401 when there's no session", async () => {
@@ -164,4 +170,69 @@ describe("POST /skills/:name/invoke", () => {
     const json = (await res.json()) as { called: string };
     expect(json.called).toBe("wave");
   });
+});
+
+/**
+ * The catalogue must not be on the e-stop's critical path.
+ *
+ * `getSkill` reads a catalogue fetched from the bridge and cached. On a cold
+ * start with the bridge unreachable there is nothing cached, so the catalogue
+ * is empty and every lookup misses — including `stop_everything`. PARAR then
+ * answered `skill_not_found`, which reads as a bug in the button rather than
+ * as "the bridge is unreachable", at the single worst moment to hand somebody
+ * a misleading error.
+ */
+describe("PARAR when the catalogue cannot be read", () => {
+  beforeEach(() => {
+    sessionUser = null;
+    catalogueSkills = [];
+  });
+
+  test("stop_everything still dispatches with an empty catalogue", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    const res = await invoke("stop_everything", {});
+
+    expect(res.status).not.toBe(404);
+    expect(res.status).toBe(200);
+  });
+
+  test("and it is still reachable by a NON-admin with an empty catalogue", async () => {
+    // The safety exemption must not evaporate because a fetch failed — that
+    // would quietly make the e-stop admin-only exactly when things are broken.
+    sessionUser = { id: "u1", role: null };
+    const res = await invoke("stop_everything", {});
+
+    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(200);
+  });
+
+  test("an unknown skill is still 404, not dispatched", async () => {
+    // The bypass is a named list, not "dispatch anything we cannot find".
+    sessionUser = { id: "u1", role: "admin" };
+    const res = await invoke("not_a_real_skill", {});
+
+    expect(res.status).toBe(404);
+  });
+
+  test("a non-safety skill is still 404 rather than silently dispatched", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    const res = await invoke("walk_velocity", { vx: 0.2 });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+test("the hardcoded safety list agrees with the catalogue's own classification", async () => {
+  // The list exists for when the catalogue cannot be read, so it cannot be
+  // derived from it — which means the two can drift. This is what catches it:
+  // anything the bridge classifies as safety must be in the list, or it loses
+  // its exemption precisely when the catalogue is unavailable.
+  const classifiedSafety = FIXTURE_SKILLS.filter(
+    (s) => s.classification === "safety",
+  ).map((s) => s.name);
+
+  const { SAFETY_SKILLS } = await import("./skills");
+  for (const name of classifiedSafety) {
+    expect(SAFETY_SKILLS.has(name)).toBe(true);
+  }
 });
