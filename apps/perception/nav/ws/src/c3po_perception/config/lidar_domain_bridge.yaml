@@ -21,13 +21,19 @@ topics:
   # no CustomMsg and no custom preprocessor needed.
   /utlidar/cloud_livox_mid360:
     type: sensor_msgs/msg/PointCloud2
-    # The publisher offers RELIABLE, KEEP_LAST(1), VOLATILE (measured, not
-    # assumed — their prose says BEST_EFFORT and their bag metadata says
-    # RELIABLE; the publisher settles it). BEST_EFFORT here is deliberate: a
-    # weaker request still matches, and for a 10 Hz sensor stream a dropped
-    # frame is better than head-of-line blocking on a busy Jetson.
+    # RELIABLE, AND THIS WAS THE SECOND QoS TRAP OF THE DAY.
+    #
+    # best_effort was tried first, reasoning that a dropped frame beats
+    # head-of-line blocking on a busy Jetson. It republished happily and
+    # FAST-LIO received nothing: FAST-LIO subscribes with the rclcpp default,
+    # which is RELIABLE, and a BEST_EFFORT publisher does not satisfy it. The
+    # bridge said so and, as ever, blamed the subscriber.
+    #
+    # The upstream publisher IS reliable (measured off the publisher, §4.5), so
+    # matching it costs nothing and keeps the default-QoS consumer working. The
+    # shallow depth is what bounds queuing instead.
     qos:
-      reliability: best_effort
+      reliability: reliable
       history: keep_last
       depth: 5
 
@@ -35,7 +41,10 @@ topics:
   # IESKF and no motion undistortion.
   /utlidar/imu_livox_mid360:
     type: sensor_msgs/msg/Imu
+    # Reliable for the same reason as the cloud: FAST-LIO's subscriber is
+    # RELIABLE by default and would otherwise receive no IMU at all — which is
+    # not a degraded IESKF, it is no IESKF.
     qos:
-      reliability: best_effort
+      reliability: reliable
       history: keep_last
       depth: 50
