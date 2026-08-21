@@ -101,25 +101,11 @@ ok "gemm's CONTAINERS stopped (Livox released)"
 # WHO HAS IT, WITHOUT NEEDING ROOT. `fuser` is the authority but it only sees a
 # root process's fd as root, and sudo on this robot is interactive — a probe
 # that prompts for a password in the middle of a bring-up is a probe nobody
-# runs. The process table answers the same question here for free: both holders
-# names the device in its own argv (`videohub_pc4 /dev/video4`), and the one
-# that does not — gemm's node opens it through librealsense — is worth matching
-# by name anyway, because "the other team has it" is the answer that changes
-# what you do next. `sudo fuser -v /dev/video4` stays the authority when a
-# person wants to be sure; this is what a script can honestly check unattended.
+# runs. The process table answers the same question for free.
 #
-# `$1 != me` and the awk exclusion are not paranoia: a pattern containing
-# "/dev/video4" matches the very command line doing the searching, and that
-# self-match has already cost this project one wrong diagnosis.
-holder_lines() {
-    ps -eo pid=,args= | awk -v me="$$" '
-        $1 != me && index($0, "/dev/video4") > 0 && index($0, "awk") == 0 { print }
-    '
-    # librealsense opens the node without naming it in argv, so the ps scan
-    # above cannot see gemm's camera node. It is worth naming separately
-    # because it is the case where the answer is "the other team has it".
-    pgrep -af "[r]ealsense2_camera_node" 2>/dev/null || true
-}
+# `video_device_holders` lives in _common.sh because this check existed three
+# times, written from scratch each time, and the copies did not agree — see the
+# note there. It is covered by scripts/tests/run.sh.
 
 # gemm's own image server. Ours to stop, and the ordering is the whole trick:
 # watchdog first, or it restarts the server within seconds.
@@ -154,7 +140,7 @@ elif pgrep -f "[t]eleimager" >/dev/null 2>&1; then
 fi
 
 # Now the only claim that matters, and it is observed rather than inferred.
-holders="$(holder_lines)"
+holders="$(video_device_holders)"
 
 if [ -z "$holders" ]; then
     ok "/dev/video4 has no holder in the process table"

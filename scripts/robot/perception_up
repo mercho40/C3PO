@@ -331,9 +331,7 @@ check_vision() {
         # process while `videohub_pc4` (Unitree's, restarted at every boot) sat
         # there holding the device.
         warn "  'Device or resource busy' means something else has /dev/video4."
-        holders="$(ps -eo pid=,args= | awk -v me="$$" '
-            $1 != me && index($0, "/dev/video4") > 0 && index($0, "awk") == 0 { print }')"
-        holders="$holders$(pgrep -af '[r]ealsense2_camera_node' 2>/dev/null || true)"
+        holders="$(video_device_holders)"
         if [ -n "$holders" ]; then
             warn "  it is:"
             echo "$holders" | sed 's/^/        /' >&2

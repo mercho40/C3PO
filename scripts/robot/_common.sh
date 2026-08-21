@@ -266,3 +266,111 @@ warn_if_other_commander() {
     err "Stop it before driving, or set OTHER_COMMANDER_PATTERNS if this is a false match."
     return 1
 }
+
+# --- who holds the camera ---------------------------------------------------
+#
+# ONE IMPLEMENTATION, because there were three. `stop_gemm`, `take_camera` and
+# `perception_up` each grew their own copy of this, written from scratch each
+# time, and they did not agree: take_camera's copy matched only processes that
+# NAME the device in their argv, which librealsense does not do — so it reported
+# "nothing has it" while the other team pulled 15 fps off the sensor. Three
+# copies of a rule is three chances to get it wrong, and it took two of them.
+#
+# SNAPSHOT FIRST, THEN FILTER, and that ordering is the design rather than a
+# style choice. The obvious form of this — `ps | grep /dev/video4` — matches the
+# grep's OWN command line, because the pattern is in its argv. Every previous
+# copy papered over that with an exclusion (`index($0,"awk") == 0`, a bracket
+# class like `[v]ideohub`), which is a rule you have to remember every single
+# time and which silently breaks the day a real holder has "awk" in its path.
+# Capturing the table into a variable first means the filter process does not
+# exist yet when the snapshot is taken, so it cannot match itself and no
+# exclusion is needed. That property is what makes this testable: the filter is
+# a pure function over text.
+VIDEO_DEVICE="${VIDEO_DEVICE:-/dev/video4}"
+
+# The programs that actually open this camera, which is the ONLY reliable
+# signal available without root.
+#
+# Everything else is a guess about arguments, and arguments lie in both
+# directions: `grep /dev/video4 stop_gemm` passes the device as a real argv
+# token while opening nothing, and gemm's ROS node opens the device while never
+# mentioning it (librealsense enumerates by USB path). No amount of cleverness
+# about the command line separates those two; the program name does.
+#
+# The cost is honest and stated where it matters: a holder we have not seen
+# before is missed. That is why `stop_gemm` says "no holder in the process
+# table" rather than "the camera is free", and points at `sudo fuser -v`, which
+# is the authority. This check is for the common case, unattended, without a
+# password prompt in the middle of a bring-up.
+#
+# Split in two because the device path disambiguates one group and not the
+# other: `videohub_pc4` runs twice, once per camera, and only the instance
+# holding THIS device counts (the chest one takes /dev/video10).
+VIDEO_HOLDERS_BY_DEVICE="${VIDEO_HOLDERS_BY_DEVICE:-videohub_pc4 teleimager}"
+VIDEO_HOLDERS_BY_NAME="${VIDEO_HOLDERS_BY_NAME:-realsense2_camera_node}"
+
+# Pure. Reads `pid args` lines on stdin, prints those that hold the device.
+#
+# A DEVICE PATH IS MATCHED AS A WHOLE ARGUMENT, never as a substring, and that
+# distinction is not pedantry — it was caught by the test suite the hour it was
+# written. Any process whose command line merely MENTIONS the device matches a
+# substring search: an editor with the file open, a grep, a colleague's shell,
+# or the very command someone is using to debug the camera. The scan then
+# reports that process as holding the sensor, which is the same class of
+# confident-wrong answer as the self-match it replaced.
+#
+# `videohub_pc4 /dev/video4` passes it the device as its own argv token, so
+# comparing tokens is both stricter and exactly right. A shell that happens to
+# contain the string inside a longer quoted command has no such token.
+filter_video_holders() {
+    local dev="${1:-$VIDEO_DEVICE}"
+    local by_dev="${2:-$VIDEO_HOLDERS_BY_DEVICE}"
+    local by_name="${3:-$VIDEO_HOLDERS_BY_NAME}"
+    awk -v dev="$dev" -v by_dev="$by_dev" -v by_name="$by_name" '
+        function prog(path,   parts, n) {
+            n = split(path, parts, "/")
+            return parts[n]
+        }
+        {
+            # $1 is the pid, $2 the executable, $3.. the arguments.
+            name = prog($2)
+
+            # Group one: known program AND this device among its arguments.
+            # Both halves are required — `videohub_pc4` runs once per camera and
+            # only the instance holding THIS device is the one in the way.
+            n = split(by_dev, want, " ")
+            for (j = 1; j <= n; j++) {
+                if (want[j] == "" || index(name, want[j]) == 0) continue
+                for (i = 3; i <= NF; i++)
+                    if ($i == dev) { print; next }
+            }
+
+            # Group two: known program, device never named. The program IS the
+            # evidence, because librealsense opens by USB path.
+            n = split(by_name, want, " ")
+            for (j = 1; j <= n; j++)
+                if (want[j] != "" && index(name, want[j]) > 0) { print; next }
+        }
+    '
+}
+
+# The real thing: snapshot the process table, then filter it.
+video_device_holders() {
+    local table
+    table="$(ps -eo pid=,args= 2>/dev/null || true)"
+    printf '%s\n' "$table" | filter_video_holders "$@"
+}
+
+# A one-word answer for the callers that branch on WHO has it, since the fix
+# differs: `take_camera` for Unitree's, `stop_gemm` for the co-tenant's.
+#   videohub | gemm | other | none
+video_holder_kind() {
+    local holders
+    holders="$(video_device_holders "$@")"
+    if [ -z "${holders//[[:space:]]/}" ]; then echo none; return; fi
+    case "$holders" in
+        *videohub*) echo videohub ;;
+        *realsense2_camera*) echo gemm ;;
+        *) echo other ;;
+    esac
+}

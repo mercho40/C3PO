@@ -52,19 +52,8 @@ say "Taking $DEV from the vendor camera service"
 # process's fd and sudo here is interactive, so asking the process table first
 # means the common case answers without a password prompt. videohub_pc4 names
 # the device it opens right there in its command line.
-holder_argv() {
-    ps -eo pid=,args= | awk -v me="$$" -v dev="$DEV" '
-        $1 != me && index($0, dev) > 0 && index($0, "awk") == 0 { print }
-    '
-    # librealsense opens the node without naming it in argv, so the scan above
-    # is BLIND to gemm's camera node — and a blind scan here does not report
-    # "unknown", it reports "nothing has it", which would tell an operator the
-    # device is free while the other team is pulling 15 fps off it. Match it by
-    # name for exactly that reason.
-    pgrep -af "[r]ealsense2_camera_node" 2>/dev/null || true
-}
 
-current="$(holder_argv)"
+current="$(video_device_holders)"
 if [ -z "$current" ]; then
     ok "no known holder of $DEV in the process table"
     info "  this cannot prove the device is free — confirm with: sudo fuser -v $DEV"
@@ -129,7 +118,7 @@ sudo pkill -9 -f "[v]ideohub_pc4" 2>/dev/null || true
 
 freed=0
 for _ in $(seq 1 10); do
-    [ -z "$(holder_argv)" ] && { freed=1; break; }
+    [ -z "$(video_device_holders)" ] && { freed=1; break; }
     sleep 0.5
 done
 
@@ -141,7 +130,7 @@ if [ "$freed" = "1" ]; then
 fi
 
 err "$DEV is still held after the stop:"
-holder_argv | sed 's/^/      /' >&2
+video_device_holders | sed 's/^/      /' >&2
 err "  master_service is known to restart itself — the other team could not find"
 err "  the mechanism either. Re-run, or look for the supervisor before forcing it."
 exit 1
