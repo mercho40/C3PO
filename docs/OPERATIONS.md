@@ -325,7 +325,21 @@ The script verifies every port is listening **before** forwarding, because a
 forward to a dead port succeeds now and fails later, in the headset, as a page
 that will not load. Needs `adb` (`brew install --cask android-platform-tools`),
 developer mode on the headset, and the in-headset "Allow USB debugging?" prompt
-accepted — that last one is easy to miss. ⚠️ Not yet tested with a real headset.
+accepted — that last one is easy to miss.
+
+✅ **First run against a real Quest: 2026-08-21.** Detection, authorisation, the
+port checks and all four forwards work, and the Quest browser loads the console
+over `http://localhost:3001` — the secure-context reasoning holds. Two bugs
+surfaced and were fixed on that run: Vite bound `::1` only while `adb reverse`
+connects over IPv4 (fixed with `--host 127.0.0.1` in `apps/web/package.json`),
+and the script's own empty-tunnel check was silently defeated by `pipefail`,
+awarding a dead camera port a green tick — the exact failure its header promises
+to prevent, reintroduced by the shape of the fix for it.
+
+⚠️ **Still unproven: that an immersive session drives the robot.** On the first
+run no teleop session ever registered — `list_active_tasks` stayed empty, because
+8767 was not forwarded at the time. Head yaw reaching the robot from a headset
+has not been observed end to end, and the yaw sign is still unsettled.
 
 ### The VR teleop stream on the Jetson 🔧
 
