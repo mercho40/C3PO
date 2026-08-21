@@ -28,14 +28,44 @@ mkdir -p "$target"
 # reason: they are invoked by bare name, over ssh, by a person standing next to
 # the robot who should not have to remember a path. preflight in particular is
 # meant to be typed from muscle memory before arming.
-for cmd in run_c3po stop_c3po run_gemm stop_gemm perception_up stop_perception \
-          build_perception measure.sh run_teleop stop_teleop \
-          c3po_health c3po_preflight; do
+# take_camera is here for a sharper version of the same reason: it is the one
+# command that needs a REAL TERMINAL, because it stops master_service and sudo
+# has to prompt. Somebody typing it at the robot must not also have to know
+# where the checkout lives.
+COMMANDS="run_c3po stop_c3po run_gemm stop_gemm perception_up stop_perception
+          build_perception measure.sh run_teleop stop_teleop
+          c3po_health c3po_preflight take_camera"
+
+for cmd in $COMMANDS; do
     chmod +x "$here/$cmd"
     ln -sf "$here/$cmd" "$target/$cmd"
     echo "  linked $target/$cmd -> $here/$cmd"
 done
 chmod +x "$here/_common.sh"
+
+# A new script that nobody adds to the list above is invisible until somebody
+# types its name and gets `command not found` — which happened to take_camera,
+# at the robot, in the middle of a bring-up. The list stays explicit (not every
+# file here is an operator command), but forgetting it is now loud.
+#
+# NOT_A_COMMAND is everything in this directory that is deliberately not linked:
+# the installers, the systemd units, the logrotate config, and the shared
+# library the commands source.
+NOT_A_COMMAND="_common.sh install_robot_scripts.sh install_boot_unit.sh
+               install_stack.sh c3po-bridge.service c3po-perception@.service
+               c3po-health.service c3po-health.timer c3po-logs.logrotate"
+missing=""
+for f in "$here"/*; do
+    name="$(basename "$f")"
+    [ -f "$f" ] || continue
+    case " $COMMANDS $NOT_A_COMMAND " in *" $name "*) continue ;; esac
+    missing="$missing $name"
+done
+if [ -n "$missing" ]; then
+    echo
+    echo "  NOTE: not on PATH and not marked as non-commands:$missing"
+    echo "        add each to COMMANDS or NOT_A_COMMAND in this script"
+fi
 
 # --- logrotate --------------------------------------------------------------
 #
