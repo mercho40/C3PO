@@ -64,6 +64,16 @@ class Runner:
     def makedirs(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
 
+    def shell(self, argv: Sequence[str]) -> Tuple[int, str]:
+        """A non-docker command. Same shape as `docker`, same reason."""
+        try:
+            proc = subprocess.run(
+                list(argv), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
+            )
+        except OSError as exc:
+            return 127, str(exc)
+        return proc.returncode, proc.stdout.decode("utf-8", "replace") if proc.stdout else ""
+
     def run_script(self, path: str, env: Optional[Dict[str, str]] = None) -> int:
         merged = dict(os.environ)
         merged.update(env or {})
