@@ -26,7 +26,12 @@
  */
 
 import { CameraLayer } from "./camera-layer";
-import { MenuLayer, type MenuItem, type MenuStatus } from "./menu-layer";
+import {
+  MenuLayer,
+  type MenuItem,
+  type MenuStatus,
+  type Readiness,
+} from "./menu-layer";
 
 export type HandSample = {
   /** Wrist position in the reference space, metres. */
@@ -533,6 +538,11 @@ export class XrTeleopSession {
     this.#menu?.setBusy(name);
   }
 
+  /** Why the robot can or cannot act — drawn where the operator is looking. */
+  setMenuReadiness(readiness: Readiness | null): void {
+    this.#menu?.setReadiness(readiness);
+  }
+
   /** Move the highlight to the next VERIFIED item. */
   advanceMenu(): void {
     this.#menu?.advance();
@@ -728,7 +738,21 @@ export class XrTeleopSession {
         active.requestAnimationFrame(onFrame);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
-        gl.clearColor(0, 0, 0, 0);
+        // OPAQUE black in VR, transparent under passthrough.
+        //
+        // The camera quad no longer fills the eye — it is fitted to the frame's
+        // aspect and inset — so whatever the clear leaves behind is now VISIBLE
+        // around it. Transparent in `immersive-vr` means the compositor shows
+        // its own background there, which reads as the picture floating in
+        // something rather than being the world. Black surround makes the frame
+        // the only lit thing in the headset, which is what "environment mode"
+        // means to the operator who asked for it.
+        //
+        // AR keeps the transparent clear: under passthrough the operator is in
+        // the same room as the robot, and painting their room black to show
+        // them a camera of it is the wrong trade.
+        const opaqueSurround = this.#mode !== "immersive-ar";
+        gl.clearColor(0, 0, 0, opaqueSurround ? 1 : 0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
         const pose = frame.getViewerPose(space);

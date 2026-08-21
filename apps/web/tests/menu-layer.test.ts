@@ -17,6 +17,7 @@ import {
   firstSelectable,
   nextSelectable,
   paintMenu,
+  readinessFor,
   type MenuItem,
 } from "../src/lib/webxr/menu-layer";
 
@@ -212,5 +213,98 @@ describe("paintMenu — what the operator is shown", () => {
     const { ctx } = stub2d();
     expect(() => paintMenu(ctx, REAL, 99, null, null)).not.toThrow();
     expect(() => paintMenu(ctx, REAL, -1, null, null)).not.toThrow();
+  });
+});
+
+describe("readinessFor — why nothing is happening", () => {
+  /**
+   * Reconstructed from the session of 2026-08-21. The operator reported three
+   * separate failures — gestures refused, walk buttons dead, no head turning —
+   * which were one fact the headset never showed them: the robot was limp in
+   * zero_torque. Each case below is a state that produced silence, and the
+   * sentence that should have been on the panel instead.
+   */
+
+  test("zero_torque names the bring-up ladder, not the FSM id", () => {
+    const r = readinessFor("zero_torque", true, []);
+    expect(r.ok).toBe(false);
+    // "FSM 0" is true and useless with a headset on.
+    expect(r.text).toContain("damp");
+    expect(r.text).toContain("501");
+  });
+
+  test("damp reads the same as zero_torque", () => {
+    expect(readinessFor("damp", true, []).ok).toBe(false);
+  });
+
+  test("a stripped motion controller names the script that fixes it", () => {
+    // posture goes 'unknown' when the FSM getters answer nothing, which is
+    // exactly what a colleague's xr_teleoperate leaves behind. Happened twice
+    // in one day; both times every command returned rpc_code 0 and did nothing.
+    for (const p of [null, undefined, "unknown", "no_data_yet"]) {
+      const r = readinessFor(p, true, []);
+      expect(r.ok).toBe(false);
+      expect(r.text).toContain("select_motion_mode");
+    }
+  });
+
+  test("preparation says gestures work even though walking does not", () => {
+    // FSM 4 permits arms but not walking. Reporting a flat "not ready" here
+    // would be wrong in the direction that wastes the operator's time.
+    const r = readinessFor("preparation", true, []);
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("Gestos");
+    expect(r.text).toContain("501");
+  });
+
+  test("the walk programs are the only ready states", () => {
+    for (const p of ["walk", "walk_waist", "run"]) {
+      expect(readinessFor(p, true, []).ok).toBe(true);
+    }
+  });
+
+  test("an unrecognised posture is not ready, and says what it is", () => {
+    const r = readinessFor("squat", true, []);
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("squat");
+  });
+
+  test("low battery outranks everything, including a ready posture", () => {
+    // The robot died mid-session at 14% while discharging at 2.3 A. This is
+    // the one state that gets worse while the operator reads the message, and
+    // the only one whose remedy is not a command.
+    const r = readinessFor("walk_waist", true, ["low_battery_14pct"]);
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("14");
+    expect(r.text).toContain("cargar");
+  });
+
+  test("offline outranks posture but not battery", () => {
+    expect(readinessFor("walk", false, []).ok).toBe(false);
+    expect(readinessFor("walk", false, []).text).toContain("conexión");
+    // A stale posture cached from before the link dropped must not read ready.
+    expect(readinessFor("walk", false, ["low_battery_9pct"]).text).toContain(
+      "9",
+    );
+  });
+
+  test("null faults are survived", () => {
+    expect(() => readinessFor("walk", true, null)).not.toThrow();
+    expect(() => readinessFor("walk", true, undefined)).not.toThrow();
+    expect(readinessFor("walk", true, null).ok).toBe(true);
+  });
+
+  test("the banner is drawn even when everything is fine", () => {
+    // An operator who only ever sees this line when something is wrong has no
+    // reason to trust its absence.
+    const { ctx, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, null, readinessFor("walk_waist", true, []));
+    expect(texts()).toContain("Listo");
+  });
+
+  test("the banner shows the not-ready reason on the panel", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, null, readinessFor("zero_torque", true, []));
+    expect(texts().some((t) => t.includes("damp"))).toBe(true);
   });
 });

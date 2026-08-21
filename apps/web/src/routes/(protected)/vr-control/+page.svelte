@@ -48,6 +48,7 @@
     checkXrSupport,
     type HandSample,
   } from "$lib/webxr/xr-teleop";
+  import { readinessFor } from "$lib/webxr/menu-layer";
   import {
     buildFrame,
     connectTeleop,
@@ -998,6 +999,23 @@
   // fine, it is simply standing still.
   const GESTURE_FSM = ["walk", "walk_waist", "run"];
   const canGesture = $derived(GESTURE_FSM.includes(live.state?.posture ?? ""));
+
+  //: The same fact, pushed to the ONE place the operator is actually looking.
+  //:
+  //: On 2026-08-21 an operator in the headset reported three failures —
+  //: gestures refused "something about the arm", walk buttons dead, no turning
+  //: with head movement — which were one fact: the robot was limp in
+  //: zero_torque. `canGesture` above already knew. It was on the page, behind
+  //: a headset, which is the same as nowhere.
+  const readiness = $derived(
+    readinessFor(live.state?.posture, live.online, live.state?.faults),
+  );
+  $effect(() => {
+    // Reads `readiness` so the effect re-runs when it changes; `setReadiness`
+    // is itself guarded against repaints for an unchanged value, because this
+    // ticks with every state poll.
+    vr?.setMenuReadiness(readiness);
+  });
 
   //: An outcome now carries its own words, because the interesting failures are
   //: all distinguishable and used to be indistinguishable.

@@ -47,6 +47,68 @@ export type MenuItem = {
 /** Status line under the list — the result of the last thing fired. */
 export type MenuStatus = { text: string; kind: "ok" | "warn" | "error" } | null;
 
+/** Whether the robot can act at all, and what to do if not. */
+export type Readiness = { text: string; ok: boolean };
+
+/**
+ * What the robot's posture means for the things a headset can ask of it.
+ *
+ * THIS EXISTS BECAUSE OF A REAL SESSION, 2026-08-21. The operator put the
+ * headset on and reported three separate failures: gestures "said something
+ * about the arm rejecting it", the walk buttons did nothing, and the robot did
+ * not turn with their head. All three were the same fact — the robot was limp
+ * in `zero_torque`, with no walk program and no arm-capable FSM — and nothing
+ * in the headset said so. Three symptoms, one cause, and an operator with
+ * their eyes covered has no way to find it.
+ *
+ * The page has known this all along: `canGesture` is derived from exactly this
+ * posture. It simply never reached the one place the operator was looking.
+ *
+ * Phrased as what to DO, not as what is wrong. "FSM 0" is true and useless in
+ * a headset; "hacé damp → prepare → 501" is the same information the operator
+ * can act on without taking it off.
+ */
+const GESTURE_POSTURES = ["walk", "walk_waist", "run"];
+
+export function readinessFor(
+  posture: string | null | undefined,
+  online: boolean,
+  faults: readonly string[] | null | undefined,
+): Readiness {
+  // A low battery is worth saying over everything else: it is the one state
+  // that gets WORSE while the operator reads the message, and the one whose
+  // remedy is not a command.
+  const low = (faults ?? []).find((f) => f.startsWith("low_battery"));
+  if (low) {
+    const pct = low.replace(/[^0-9]/g, "");
+    return { text: `BATERÍA ${pct}% — no operar, poner a cargar`, ok: false };
+  }
+  if (!online) {
+    return { text: "Sin conexión con el robot", ok: false };
+  }
+  if (!posture || posture === "unknown" || posture === "no_data_yet") {
+    // The signature of a stripped motion controller: the FSM getters answer
+    // nothing, so every command returns rpc_code 0 and does nothing at all.
+    // The remedy is a script, not a button, so name the script.
+    return {
+      text: "Sin controlador — correr select_motion_mode.py",
+      ok: false,
+    };
+  }
+  if (posture === "zero_torque" || posture === "damp") {
+    return { text: "Robot blando — damp → prepare → 501", ok: false };
+  }
+  if (posture === "preparation") {
+    // FSM 4: arms are permitted here, walking is not. Saying only "not ready"
+    // would be wrong in the direction that wastes the operator's time.
+    return { text: "Gestos sí · caminar necesita 501", ok: false };
+  }
+  if (GESTURE_POSTURES.includes(posture)) {
+    return { text: "Listo", ok: true };
+  }
+  return { text: `Postura ${posture} — 501 para operar`, ok: false };
+}
+
 const W = 512;
 const H = 320;
 
@@ -98,6 +160,7 @@ export function paintMenu(
   selected: number,
   status: MenuStatus,
   busy: string | null,
+  readiness: Readiness | null = null,
 ): void {
   ctx.clearRect(0, 0, W, H);
 
@@ -118,6 +181,22 @@ export function paintMenu(
   ctx.font = "400 15px system-ui, -apple-system, sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.38)";
   ctx.fillText("A · siguiente     gatillo · ejecutar", 22, 56);
+
+  // The readiness banner, top-right and impossible to miss. Drawn even when
+  // everything is fine: an operator who only ever sees this line when
+  // something is wrong has no reason to believe it when it is absent.
+  if (readiness) {
+    ctx.font = "600 14px system-ui, -apple-system, sans-serif";
+    const w = ctx.measureText(readiness.text).width;
+    ctx.fillStyle = readiness.ok
+      ? "rgba(80, 200, 130, 0.22)"
+      : "rgba(255, 110, 110, 0.26)";
+    ctx.fillRect(W - w - 34, 14, w + 20, 30);
+    ctx.fillStyle = readiness.ok
+      ? "rgba(150, 245, 190, 0.98)"
+      : "rgba(255, 190, 190, 0.98)";
+    ctx.fillText(readiness.text, W - w - 24, 30);
+  }
 
   const top = 84;
   const rowH = 34;
@@ -210,6 +289,7 @@ export class MenuLayer {
   #selected = 0;
   #status: MenuStatus = null;
   #busy: string | null = null;
+  #readiness: Readiness | null = null;
 
   constructor(gl: WebGLRenderingContext) {
     this.#gl = gl;
@@ -245,6 +325,17 @@ export class MenuLayer {
 
   setBusy(name: string | null): void {
     this.#busy = name;
+    this.#dirty = true;
+  }
+
+  setReadiness(readiness: Readiness | null): void {
+    // Guarded: this is pushed from a reactive effect on live state that ticks
+    // a few times a second, and repainting the canvas plus re-uploading the
+    // texture for an unchanged string is the one cost this panel was designed
+    // to avoid.
+    const prev = this.#readiness;
+    if (prev?.text === readiness?.text && prev?.ok === readiness?.ok) return;
+    this.#readiness = readiness;
     this.#dirty = true;
   }
 
@@ -316,7 +407,14 @@ export class MenuLayer {
     const gl = this.#gl;
 
     if (this.#dirty) {
-      paintMenu(ctx, this.#items, this.#selected, this.#status, this.#busy);
+      paintMenu(
+        ctx,
+        this.#items,
+        this.#selected,
+        this.#status,
+        this.#busy,
+        this.#readiness,
+      );
       this.#dirty = false;
       gl.bindTexture(gl.TEXTURE_2D, this.#texture);
       gl.texImage2D(

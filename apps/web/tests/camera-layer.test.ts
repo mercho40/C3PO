@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { CameraLayer } from "../src/lib/webxr/camera-layer";
+import { CameraLayer, FILL } from "../src/lib/webxr/camera-layer";
 
 // --- a WebGL context that records what was asked of it ---------------------
 
@@ -447,10 +447,11 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       // The image is relatively WIDER than the eye, so width is the binding
       // constraint: fill it, and take bars top and bottom. Shrinking x instead
       // would squeeze the picture — the deformation being fixed here.
-      expect(sx).toBe(1);
-      expect(sy).toBeCloseTo(1680 / 1760 / (640 / 480), 5);
-      expect(sy).toBeLessThan(1);
+      expect(sx).toBe(FILL);
+      expect(sy).toBeCloseTo(FILL * (1680 / 1760 / (640 / 480)), 5);
+      expect(sy).toBeLessThan(FILL);
       // And the aspect actually drawn matches the source: the whole point.
+      // Independent of FILL, which scales both axes equally.
       expect((1680 * sx) / (1760 * sy)).toBeCloseTo(640 / 480, 5);
     });
   });
@@ -464,9 +465,9 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
 
       layer.draw(true, 1000, 1000); // square eye
       const [sx, sy] = lastScale(calls)!;
-      expect(sx).toBe(1);
-      expect(sy).toBeCloseTo(1 / (1920 / 1080), 5);
-      expect(sy).toBeLessThan(1);
+      expect(sx).toBe(FILL);
+      expect(sy).toBeCloseTo(FILL * (1 / (1920 / 1080)), 5);
+      expect(sy).toBeLessThan(FILL);
     });
   });
 
@@ -478,7 +479,8 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       made[0].arrive(640, 480);
 
       layer.draw(true, 1280, 960); // same 4:3
-      expect(lastScale(calls)).toEqual([1, 1]);
+      // Matching aspect: no letterboxing, so both axes are exactly the inset.
+      expect(lastScale(calls)).toEqual([FILL, FILL]);
     });
   });
 
@@ -497,8 +499,8 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       ]) {
         layer.draw(true, w, h);
         const [sx, sy] = lastScale(calls)!;
-        expect(sx).toBeLessThanOrEqual(1);
-        expect(sy).toBeLessThanOrEqual(1);
+        expect(sx).toBeLessThanOrEqual(FILL);
+        expect(sy).toBeLessThanOrEqual(FILL);
         expect(sx).toBeGreaterThan(0);
         expect(sy).toBeGreaterThan(0);
       }
@@ -519,7 +521,7 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       const [sx, sy] = lastScale(calls)!;
       expect(Number.isNaN(sx)).toBe(false);
       expect(Number.isNaN(sy)).toBe(false);
-      expect([sx, sy]).toEqual([1, 1]);
+      expect([sx, sy]).toEqual([FILL, FILL]);
     });
   });
 
@@ -531,7 +533,7 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       made[0].arrive(640, 480);
 
       layer.draw(true); // non-XR callers pass no viewport
-      expect(lastScale(calls)).toEqual([1, 1]);
+      expect(lastScale(calls)).toEqual([FILL, FILL]);
     });
   });
 });

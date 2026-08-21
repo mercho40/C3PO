@@ -62,6 +62,27 @@ void main() {
   gl_Position = vec4(a_pos * u_scale, 0.0, 1.0);
 }`;
 
+/**
+ * How much of the eye the picture fills, after aspect fitting.
+ *
+ * 1.0 puts the frame edge-to-edge, which is what the first real session got
+ * and what the operator asked to back off: a 4:3 image stretched across the
+ * full field sits too close to focus on comfortably, and the eye has nowhere
+ * to rest. Insetting it makes the frame something you look AT rather than
+ * something pressed against your face — the same reason a cinema screen is not
+ * the whole room.
+ *
+ * Not a distance: this is a clip-space scale, so it changes the ANGLE the
+ * picture subtends, which is the thing that actually reads as "further away".
+ * There is no depth here to move it in — the quad is drawn in clip space, not
+ * positioned in the scene.
+ *
+ * 0.72 was chosen to leave a visible black margin on all sides at the Quest 3's
+ * aspect without shrinking the frame to a postage stamp. Reported from the
+ * first session that could see anything at all, 2026-08-21.
+ */
+export const FILL = 0.72;
+
 const FRAG = `
 precision mediump float;
 varying vec2 v_uv;
@@ -276,10 +297,11 @@ export class CameraLayer {
     // Every input is checked for > 0 before dividing. A zero or missing
     // dimension would make this NaN, and a NaN vertex position does not draw a
     // wrong picture — it draws NOTHING, which is the black view this whole
-    // module exists to stop. Falling back to 1,1 gives the old full-field
-    // behaviour: distorted, but visible, and visible wins.
-    let sx = 1;
-    let sy = 1;
+    // module exists to stop. Falling back to the inset gives the old
+    // full-field behaviour scaled down: distorted, but visible, and visible
+    // wins.
+    let sx = FILL;
+    let sy = FILL;
     const iw = img.naturalWidth;
     const ih = img.naturalHeight;
     if (
@@ -293,9 +315,9 @@ export class CameraLayer {
       const imgAspect = iw / ih;
       const vpAspect = vpWidth / vpHeight;
       if (imgAspect > vpAspect) {
-        sy = vpAspect / imgAspect; // wider than the eye: bars top and bottom
+        sy = FILL * (vpAspect / imgAspect); // bars top and bottom
       } else {
-        sx = imgAspect / vpAspect; // taller than the eye: bars left and right
+        sx = FILL * (imgAspect / vpAspect); // bars left and right
       }
     }
     gl.uniform2f(this.#scaleLoc, sx, sy);
