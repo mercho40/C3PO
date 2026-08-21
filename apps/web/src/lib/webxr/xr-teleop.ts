@@ -308,6 +308,54 @@ export function drawPerEye(
   return null;
 }
 
+/** What an overlay root looked like before the session took it over. */
+export type OverlayStyle = { background: string; display: string };
+
+/**
+ * Strip the overlay root's opaque background for the life of the session.
+ *
+ * THE DOM OVERLAY COMPOSITES ON TOP OF THE WEBGL LAYER. Everything the
+ * renderer draws — the camera quad, and under passthrough the room itself — is
+ * *behind* this element. The page styles it `bg-background`, which resolves to
+ * `#06090f`: fully opaque, edge to edge, because the UA promotes the overlay
+ * root to `position: fixed; inset: 0`.
+ *
+ * So the camera was being drawn correctly and then painted over. That is a
+ * second, independent cause of the same "no camera" symptom the viewport bug
+ * produced — and it is worse in `immersive-ar`, the mode this now prefers,
+ * because AR is exactly where the overlay composites. Fixing the viewport
+ * alone would have shown the operator the same black field and sent them
+ * looking at the renderer a third time.
+ *
+ * Done in script rather than CSS because it has to be tied to the session
+ * lifetime and undone afterwards — a console left with a transparent body
+ * shows the browser's background, not the app's. The panels inside keep their
+ * own backgrounds, so the controls stay readable against the room, which is
+ * what a heads-up overlay should look like.
+ *
+ * Returns the previous inline values so they can be put back exactly.
+ */
+export function stripOverlayBackground(root: HTMLElement): OverlayStyle {
+  const previous: OverlayStyle = {
+    background: root.style.background,
+    display: root.style.display,
+  };
+  root.style.background = "transparent";
+  // The UA also forces `display: block` on `:xr-overlay`, which collapses the
+  // root's flex column. Asking for flex back is harmless where the UA wins.
+  root.style.display = "flex";
+  return previous;
+}
+
+/** Undo `stripOverlayBackground`, restoring exactly what was there before. */
+export function restoreOverlayBackground(
+  root: HTMLElement,
+  previous: OverlayStyle,
+): void {
+  root.style.background = previous.background;
+  root.style.display = previous.display;
+}
+
 export class XrTeleopSession {
   #session: XRSession | null = null;
   #referenceSpace: XRReferenceSpace | null = null;
@@ -322,6 +370,10 @@ export class XrTeleopSession {
   #pendingLive = true;
   #cameraBroken = false;
   #starting = false;
+  //: The overlay root's own inline background, so it can be put back exactly
+  //: as it was when the session ends. See `#makeOverlayTransparent`.
+  #overlayRoot: HTMLElement | null = null;
+  #overlayStyleBackup: OverlayStyle | null = null;
   //: Set if stop() is called while start() is still in flight. The session
   //: does not exist yet, so there is nothing to end — this makes the newborn
   //: session end itself the moment it exists.
@@ -504,6 +556,7 @@ export class XrTeleopSession {
         }
         return;
       }
+      this.#makeOverlayTransparent(overlayRoot);
       this.#session = session;
       this.#referenceSpace = referenceSpace;
       this.#needsRecenter = true;
@@ -513,6 +566,12 @@ export class XrTeleopSession {
         this.#session = null;
         this.#referenceSpace = null;
         this.#mode = null;
+        // Put the page back the way it looked before, or the console is left
+        // with a transparent body over the browser's own background.
+        this.#restoreOverlay();
+        // A GL failure is per-session, not permanent: a re-entered session
+        // gets a fresh context and deserves a fresh attempt at a picture.
+        this.#cameraBroken = false;
         // Disposing cuts the <img> src, which is what actually closes the
         // MJPEG request — an ended session must not keep pulling frames.
         this.#camera?.dispose();
@@ -620,6 +679,19 @@ export class XrTeleopSession {
       else if (source.handedness === "right") right = sample;
     }
     return { left, right };
+  }
+
+  #makeOverlayTransparent(root: HTMLElement): void {
+    this.#overlayRoot = root;
+    this.#overlayStyleBackup = stripOverlayBackground(root);
+  }
+
+  #restoreOverlay(): void {
+    if (this.#overlayRoot && this.#overlayStyleBackup) {
+      restoreOverlayBackground(this.#overlayRoot, this.#overlayStyleBackup);
+    }
+    this.#overlayRoot = null;
+    this.#overlayStyleBackup = null;
   }
 
   /** End the session. `onEnd` fires once the browser confirms teardown. */

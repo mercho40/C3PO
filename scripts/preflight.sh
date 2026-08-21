@@ -34,7 +34,47 @@ WARNED=0
 QUICK=0
 [ "${1:-}" = "--quick" ] && QUICK=1
 
-CAM_URL="${PUBLIC_ROBOT_CAM_URL:-http://127.0.0.1:8081}"
+# Read the camera URL the WEB APP is configured with, not whatever happens to
+# be in this shell. Testing 127.0.0.1:8081 while apps/web/.env points somewhere
+# else (or nowhere — .env.example ships this key empty) gives the camera a full
+# green while the page renders "PUBLIC_ROBOT_CAM_URL no está configurado".
+WEB_ENV="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/apps/web/.env"
+CAM_URL=""
+if [ -f "$WEB_ENV" ]; then
+    CAM_URL=$(grep -E '^[[:space:]]*PUBLIC_ROBOT_CAM_URL=' "$WEB_ENV" 2>/dev/null \
+              | tail -1 | cut -d= -f2- | tr -d '"'"'"' \r' | xargs 2>/dev/null || true)
+fi
+CAM_URL_SOURCE="apps/web/.env"
+if [ -z "$CAM_URL" ]; then
+    CAM_URL="${PUBLIC_ROBOT_CAM_URL:-}"
+    CAM_URL_SOURCE="the shell environment"
+fi
+
+# `ssh -L` binds its local listener at SETUP time, before it knows anything
+# about the far end. So a plain connect() to a forwarded port SUCCEEDS whenever
+# the ssh process is alive, whatever is or is not running on the robot — which
+# makes `nc -z` useless here, and actively harmful: it is how a forgotten
+# run_teleop earns a green tick.
+#
+# Forcing a byte through the channel is what tells them apart. ssh opens the
+# channel, finds nothing listening, and drops the already-accepted local socket
+# — so the client sees a reset or an empty reply, never a refusal.
+#
+#   nothing  no listener at all — the tunnel is not up
+#   empty    tunnel is up, nothing is listening on the robot
+#   alive    something answered
+probe_tunnel() {
+    local port="$1" out rc
+    out=$(curl -sS --max-time 4 -o /dev/null "http://127.0.0.1:$port/" 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then echo alive; return; fi
+    case "$out" in
+        *"Connection refused"*|*"Couldn't connect to server"*|*"Failed to connect"*) echo nothing ;;
+        *"reset by peer"*|*"Empty reply"*|*"Recv failure"*|*"closed connection"*)     echo empty ;;
+        *"timed out"*|*"Operation timed out"*)                                        echo timeout ;;
+        # Any HTTP-level complaint means something spoke to us.
+        *) echo alive ;;
+    esac
+}
 
 # ---------------------------------------------------------------- this mac ---
 head_ "1. This machine"
@@ -69,20 +109,43 @@ head_ "2. The tunnel to the robot"
 if [ "$QUICK" = "1" ]; then
     warn "skipped (--quick)"
 else
-    for entry in "8767:teleop stream:fatal" "8081:camera MJPEG:warn"; do
+    for entry in "8767:teleop stream:fatal:run_teleop" \
+                 "8001:bridge MCP:fatal:run_c3po" \
+                 "8081:camera MJPEG:warn:perception_up perception"; do
         port="${entry%%:*}"; rest="${entry#*:}"
-        label="${rest%:*}"; sev="${rest##*:}"
-        if nc -z 127.0.0.1 "$port" 2>/dev/null; then
-            ok "$port  $label — forwarded and something is listening"
-        elif [ "$sev" = "fatal" ]; then
-            bad "$port  $label — nothing here"
-            note "the tunnel is not up, or run_teleop is not running on the robot:"
-            note "  ssh -N -o ControlMaster=no -L 8001:127.0.0.1:8001 \\"
-            note "      -L 8081:127.0.0.1:8081 -L 8767:127.0.0.1:8767 c3po"
-        else
-            warn "$port  $label — nothing here (no camera picture without it)"
-            note "add -L 8081:127.0.0.1:8081 to the tunnel, and run perception_up perception"
-        fi
+        label="${rest%%:*}"; rest="${rest#*:}"
+        sev="${rest%%:*}"; starter="${rest#*:}"
+        case "$(probe_tunnel "$port")" in
+            alive)
+                ok "$port  $label — answering"
+                ;;
+            empty)
+                # The distinction this whole function exists for.
+                if [ "$sev" = "fatal" ]; then
+                    bad "$port  $label — the tunnel works, nothing is running on the robot"
+                else
+                    warn "$port  $label — tunnel works, nothing running on the robot"
+                fi
+                note "on the robot:  $starter"
+                note "the forward is fine — do NOT go looking at the tunnel for this one"
+                ;;
+            timeout)
+                bad "$port  $label — timed out (the tunnel is wedged)"
+                note "kill the ssh process and open it again"
+                ;;
+            *)
+                if [ "$sev" = "fatal" ]; then
+                    bad "$port  $label — not forwarded at all"
+                else
+                    warn "$port  $label — not forwarded (no camera picture without it)"
+                fi
+                note "ssh -N -o ControlMaster=no \\"
+                note "    -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 \\"
+                note "    -L 8767:127.0.0.1:8767 c3po"
+                note "ControlMaster=no matters: a forward on a shared master evaporates"
+                note "when the master idles out, mid-session, with no obvious cause."
+                ;;
+        esac
     done
 fi
 

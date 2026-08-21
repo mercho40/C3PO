@@ -18,6 +18,8 @@ import {
   angleBetween,
   drawPerEye,
   fingerCurl,
+  restoreOverlayBackground,
+  stripOverlayBackground,
   normalizeAngle,
   quaternionYaw,
   subtract,
@@ -308,5 +310,58 @@ describe("drawPerEye — why the camera was invisible", () => {
     const h = harness([], []);
     expect(drawPerEye(h.gl, h.layer, h.pose, h.camera, true)).toBeNull();
     expect(h.draws.length).toBe(0);
+  });
+});
+
+/**
+ * The second independent cause of "no camera" — the one that would have
+ * survived fixing the first.
+ *
+ * The DOM overlay composites ON TOP of the WebGL layer. Everything the
+ * renderer draws — the camera quad, and under passthrough the room itself — is
+ * behind the overlay root. The page styles that root `bg-background`
+ * (#06090f, fully opaque) and the UA promotes it to `position: fixed;
+ * inset: 0`. So the camera was drawn correctly and then painted over, edge to
+ * edge, and the operator would have seen exactly the same black field.
+ */
+describe("overlay transparency — drawn correctly, then painted over", () => {
+  function root(background = "", display = "") {
+    return { style: { background, display } } as unknown as HTMLElement;
+  }
+
+  test("an opaque background is stripped", () => {
+    const el = root("rgb(6, 9, 15)", "flex");
+    stripOverlayBackground(el);
+    expect(el.style.background).toBe("transparent");
+  });
+
+  test("the previous values come back exactly", () => {
+    // Not "reset to empty" — the console is a normal page after the session
+    // ends, and a transparent body there shows the browser's background.
+    const el = root("rgb(6, 9, 15)", "flex");
+    const previous = stripOverlayBackground(el);
+    restoreOverlayBackground(el, previous);
+
+    expect(el.style.background).toBe("rgb(6, 9, 15)");
+    expect(el.style.display).toBe("flex");
+  });
+
+  test("a root with no inline style is restored to having none", () => {
+    // The real page styles the root with a class, not inline — so the correct
+    // restore is the empty string, letting the stylesheet apply again. Writing
+    // a literal colour back would pin it past a theme change.
+    const el = root("", "");
+    const previous = stripOverlayBackground(el);
+    expect(el.style.background).toBe("transparent");
+
+    restoreOverlayBackground(el, previous);
+    expect(el.style.background).toBe("");
+    expect(el.style.display).toBe("");
+  });
+
+  test("flex is re-asserted, because the UA forces display:block on :xr-overlay", () => {
+    const el = root("rgb(6, 9, 15)", "");
+    stripOverlayBackground(el);
+    expect(el.style.display).toBe("flex");
   });
 });

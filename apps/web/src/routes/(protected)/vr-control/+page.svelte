@@ -81,7 +81,7 @@
   function releaseAllControls() {
     if (walking !== null) {
       walking = null;
-      if (!streaming && !loopShouldRun()) {
+      if (!bridgeHolds && !loopShouldRun()) {
         stopLoop();
         void sendVelocity(0, 0, 0.5);
       }
@@ -234,6 +234,15 @@
   let teleop: TeleopHandle | null = null;
   let armsRequested = $state(false);
   const streaming = $derived(teleopState === "open");
+  //: The bridge holds locomotion whenever the socket is up — INCLUDING while
+  //: stalled. `streaming` goes false there, which used to re-open the door for
+  //: this page's own velocity loop: the socket is still OPEN, its 33 Hz sender
+  //: is still transmitting, and the moment the bridge starts reading again
+  //: both writers are live on SetVelocity. `stalled` is a diagnosis, not a
+  //: handover.
+  const bridgeHolds = $derived(
+    teleopState === "open" || teleopState === "stalled",
+  );
 
   // Raw pose, updated at XR frame rate (~72-120Hz) -- kept as a plain
   // variable rather than $state so looking around doesn't force a Svelte
@@ -319,9 +328,10 @@
   }
 
   function loopShouldRun(): boolean {
-    // While the stream is open the bridge owns locomotion. Running this loop
-    // too would put two writers on SetVelocity.
-    if (streaming) return false;
+    // While the socket is up the bridge owns locomotion. Running this loop too
+    // would put two writers on SetVelocity. `bridgeHolds`, not `streaming`:
+    // a stalled socket is still transmitting.
+    if (bridgeHolds) return false;
     return walking !== null || vrActive;
   }
 
@@ -437,7 +447,9 @@
     // re-arms the dead-man, and starts a full new motion window.
     deadManTripped = false;
     motionStartedAt = null;
-    if (streaming) return;
+    // `bridgeHolds`, not `streaming`: a stalled socket is still open and still
+    // transmitting, so starting this loop would make two writers.
+    if (bridgeHolds) return;
     ensureLoopRunning();
     tick(); // immediate feedback, don't wait for the next interval tick
   }
@@ -445,7 +457,7 @@
   function stopWalking() {
     if (!walking) return;
     walking = null;
-    if (streaming) return;
+    if (bridgeHolds) return;
     if (!loopShouldRun()) {
       stopLoop();
       void sendVelocity(0, 0, 0.5);
@@ -480,6 +492,18 @@
           xrMode = null;
           xrCameraLive = false;
           vr = null;
+          // A held walk button does NOT survive the session that was showing
+          // it. Nothing else clears `walking` here: the window listeners cover
+          // pointerup/cancel/blur/visibilitychange, and session end fires none
+          // of them reliably — the document becomes *visible* when an
+          // immersive session ends, not hidden.
+          //
+          // Without this, taking the headset off mid-stride left `walking` set
+          // and `loopShouldRun()` true, so the page kept dispatching
+          // walk_velocity every 900 ms to a robot nobody was watching, until
+          // the 8 s hold latch caught it. That is about 1.6 m of unattended
+          // walking.
+          releaseAllControls();
           // Leaving VR must not leave the arms up: the stream's own frames stop
           // carrying `arms: true`, which is the bridge's cue to ramp the
           // arm_sdk weight back down.
@@ -488,6 +512,11 @@
           armsRequested = false;
           handLeft = null;
           handRight = null;
+          // The readout timer is started on VR entry and was never stopped:
+          // `stopReadouts()` had no callers at all, so a 200 ms interval
+          // outlived the session and the component, writing $state on a
+          // destroyed page for as long as the tab lived.
+          stopReadouts();
           if (!loopShouldRun()) {
             stopLoop();
             void sendVelocity(0, 0, 0.5);
@@ -688,6 +717,13 @@
     teleop?.close();
     teleop = null;
     stopLoop();
+    // The readout timer is separate from the control loop and `stopLoop()`
+    // does not touch it. Left running, it fires every 200 ms and writes state
+    // on a destroyed component for as long as the tab is open, and every
+    // return to this page adds another one.
+    stopReadouts();
+    camHandle?.close();
+    camHandle = null;
     void sendVelocity(0, 0, 0.5);
   });
 
