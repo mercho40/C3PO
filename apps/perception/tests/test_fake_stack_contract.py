@@ -121,3 +121,39 @@ def test_fake_cloud_outruns_the_expected_update_rate():
     assert float(hz.group(1)) > 1.0 / min(rates), (
         f"fake cloud at {hz.group(1)} Hz cannot keep a buffer fresh that expects "
         f"an update every {min(rates)} s")
+
+
+# --- the LiDAR source ------------------------------------------------------
+#
+# Our own driver does NOT get the sensor while the vendor `lidar_driver` service
+# holds it: measured 2026-08-21, it reported success and published nothing while
+# rt/utlidar/* kept flowing at 10 Hz. The republish is the route that works.
+
+def test_the_lidar_defaults_to_the_republish_not_our_own_driver():
+    launch = (NAV_PKG / "launch" / "odometry.launch.py").read_text()
+    decl = launch.split('DeclareLaunchArgument("lidar_source"', 1)[-1].split(")", 1)[0]
+    assert '"republish"' in decl, (
+        "lidar_source must default to the republish — our own driver silently "
+        "publishes nothing while the vendor service holds the sensor")
+
+
+def test_the_republish_config_reads_the_velodyne_layout():
+    """The republish is a PointCloud2 with ring+time, not livox CustomMsg.
+
+    lidar_type 1 expects CustomMsg: the callback never fires, and FAST-LIO sits
+    silent with no error — the same shape as the first-light failure. 2 is the
+    velodyne reader, which is what ring+time actually is.
+    """
+    cfg = (NAV_PKG / "config" / "fastlio_utlidar_g1.yaml").read_text()
+    assert "lidar_type: 2" in cfg
+    assert "/utlidar/cloud_livox_mid360" in cfg
+    assert "/utlidar/imu_livox_mid360" in cfg, "FAST-LIO needs the IMU too"
+
+
+def test_the_domain_bridge_carries_named_topics_only():
+    """Domain 42 exists so our TF, costmaps and velocities cannot reach the wire
+    the control board and the co-tenant share. A wildcard bridge would quietly
+    undo that, so the config must name its topics."""
+    cfg = (NAV_PKG / "config" / "lidar_domain_bridge.yaml").read_text()
+    assert "from_domain: 0" in cfg and "to_domain: 42" in cfg
+    assert "*" not in cfg.split("topics:", 1)[-1], "no wildcards across the domain boundary"
