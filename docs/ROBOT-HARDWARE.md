@@ -1218,7 +1218,27 @@ they have very different consequences:
   been found: `vui_service` exposes `START_PLAY`/`STOP_PLAY`/`GET_VOLUME`/`SET_VOLUME` and
   **no ASR or capture function at all** (§8.3), so if a trigger exists it is not there.
 
-**ANSWERED 2026-08-21: THE FEED IS GATED ON THE REMOTE'S WAKE-UP MODE.** Holding
+**⚠️ THE ANSWER BELOW IS INCOMPLETE — the feed has since been observed
+free-running with no remote at all.** Later the same day, after several reboots:
+**157 packets / 25.1 s of audio over a 25 s window (1.00x realtime), with
+`btn=0x0000` and `wireless_remote` reporting the R3 not transmitting.** Nobody
+was holding anything. **[live]**
+
+So "gated on wake-up mode" is not the whole rule. Three candidate explanations,
+none confirmed: L1+L2 **latches** rather than being held (this was flagged as
+untested and is the simplest fit); something in the co-tenant's stack — whose
+container roster changed that day — holds the mode open; or the vendor assistant
+opens it for its own reasons.
+
+**What to rely on: measure, do not assume.** `listen` reports `audio_flowing`
+from observed packets rather than inferring from which source is configured,
+precisely because the same feed has now been seen both gated and free-running
+within a day. Treat the button as a way to OPEN the feed, not as proof it is
+shut.
+
+The original finding, which stands as far as it goes:
+
+**GATED ON THE REMOTE'S WAKE-UP MODE.** Holding
 **L1+L2** opens it; releasing closes it. Two runs, both with the join verified: 212 packets
 / 33.9 s of audio in a 45 s window, then 262 packets / 41.9 s while a person spoke Spanish
 into it, transcribed live. At rest, across every earlier probe, exactly zero. **[live]**

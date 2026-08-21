@@ -60,6 +60,11 @@ MIC_SAMPLE_RATE = 16000
 # 16 kHz mono 16-bit. Used to turn a buffer length into seconds.
 TARGET_BYTES_PER_S = MIC_SAMPLE_RATE * 2
 
+# How recently audio must have arrived to call the microphone open. The feed
+# runs at ~7 packets/s when it runs at all, so a couple of seconds of silence
+# means the source stopped, not that the room went quiet.
+AUDIO_FLOWING_WINDOW_S = 3.0
+
 VOSK_MODEL = os.environ.get(
     "VOSK_MODEL", os.path.expanduser("~/.local/share/vosk/vosk-model-small-es-0.42"))
 
@@ -818,6 +823,14 @@ class MicListener:
                     None if self._last_audio_at is None
                     else round(now - self._last_audio_at, 1)),
                 "mic_ever_open": self._last_audio_at is not None,
+                # OBSERVED, not inferred from configuration. The multicast feed
+                # was measured as push-to-talk on 2026-08-21 and then found
+                # streaming continuously with no remote connected on the same
+                # day — so which source is configured does NOT reliably say
+                # whether the robot can hear. Recent audio does.
+                "audio_flowing": (
+                    self._last_audio_at is not None
+                    and (now - self._last_audio_at) < AUDIO_FLOWING_WINDOW_S),
                 "pending": len(self._pending),
             }
 
