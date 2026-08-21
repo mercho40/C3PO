@@ -90,9 +90,21 @@ function stubGl() {
 class FakeImage {
   crossOrigin: string | null = null;
   naturalWidth = 0;
+  width = 0;
+  height = 0;
   src = "";
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  //: The layer attaches the element to the document so Blink keeps advancing
+  //: the MJPEG stream — a detached image has no rendering observer and may
+  //: stop after the first decoded part. Modelled here so the test exercises
+  //: the same lifecycle the browser does.
+  attached = false;
+  style = { cssText: "" };
+  setAttribute() {}
+  remove() {
+    this.attached = false;
+  }
   /** Pretend a frame decoded. */
   arrive(width = 960) {
     this.naturalWidth = width;
@@ -103,6 +115,17 @@ class FakeImage {
 function withFakeImage<T>(body: (made: FakeImage[]) => T): T {
   const made: FakeImage[] = [];
   const original = globalThis.Image;
+  const originalDoc = (globalThis as { document?: unknown }).document;
+  // A minimal document, so `setStreamUrl` takes the attach path the browser
+  // takes. Without one it silently skips it and the test proves nothing.
+  (globalThis as { document?: unknown }).document = {
+    body: {
+      appendChild: (el: FakeImage) => {
+        el.attached = true;
+        return el;
+      },
+    },
+  };
   // @ts-expect-error — deliberately swapping the constructor for the test
   globalThis.Image = function () {
     const img = new FakeImage();
@@ -113,6 +136,11 @@ function withFakeImage<T>(body: (made: FakeImage[]) => T): T {
     return body(made);
   } finally {
     globalThis.Image = original;
+    if (originalDoc === undefined) {
+      delete (globalThis as { document?: unknown }).document;
+    } else {
+      (globalThis as { document?: unknown }).document = originalDoc;
+    }
   }
 }
 
@@ -343,5 +371,56 @@ test("alpha is blended separately, or a dimmed feed goes nearly invisible", () =
     expect(straight.length).toBe(0);
     // The alpha SOURCE factor must be ONE, not SRC_ALPHA — that is the fix.
     expect(separate[0].args[2]).toBe("ONE");
+  });
+});
+
+describe("the stream element is attached, and cleaned up", () => {
+  test("it goes into the document, or Blink may stop advancing the stream", () => {
+    // An MJPEG stream in an <img> advances through the same machinery as an
+    // animated image, and Blink pauses that for elements with no rendering
+    // observer. A detached image is exactly that: onload fires for the first
+    // decoded part, so everything reports healthy, and the bitmap may then
+    // never change again — a live camera showing one frozen moment.
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      new CameraLayer(gl).setStreamUrl("http://x:8081/stream.mjpg");
+      expect(made[0].attached).toBe(true);
+    });
+  });
+
+  test("it is 1x1 and transparent, not display:none", () => {
+    // display:none has no rendering observer either, and would reintroduce
+    // exactly the problem attaching is meant to solve.
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      new CameraLayer(gl).setStreamUrl("http://x:8081/stream.mjpg");
+      expect(made[0].style.cssText).not.toContain("display:none");
+      expect(made[0].style.cssText).toContain("opacity:0");
+      expect(made[0].width).toBe(1);
+    });
+  });
+
+  test("swapping the URL removes the old element", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x:8081/stream.mjpg?c=1");
+      layer.setStreamUrl("http://x:8081/stream.mjpg?c=2");
+
+      expect(made[0].attached).toBe(false);
+      expect(made[1].attached).toBe(true);
+    });
+  });
+
+  test("dispose removes it, so a session leaves nothing behind", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x:8081/stream.mjpg");
+      layer.dispose();
+
+      expect(made[0].attached).toBe(false);
+      expect(made[0].src).toBe("");
+    });
   });
 });

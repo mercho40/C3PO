@@ -728,9 +728,21 @@
     });
   }
 
-  onMount(() => {
-    if (realHardware) connectCamera();
-    return () => camHandle?.close();
+  // An $effect rather than a one-shot in onMount, because `realHardware` can
+  // become true LATER and nothing used to notice.
+  //
+  // It is derived from `data.env`, which comes from /state — apps/back, then
+  // the bridge over port 8001. Open this page while any of that is still
+  // coming up (very easy during a rushed setup) and `data.env` is null, so
+  // `connectCamera()` never ran, the camera panel and its Reconectar button
+  // were not rendered at all, and the headset got an empty layer. Nothing
+  // re-ran it when /state started working: `refreshRole`'s invalidateAll
+  // updates `data.env` without touching the camera. The only recovery was
+  // reloading the page — in a headset, with no keyboard.
+  $effect(() => {
+    if (!realHardware) return;
+    if (camHandle) return;
+    connectCamera();
   });
 
   onDestroy(() => {

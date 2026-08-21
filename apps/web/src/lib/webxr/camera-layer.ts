@@ -137,12 +137,36 @@ export class CameraLayer {
       this.#img.onload = null;
       this.#img.onerror = null;
       this.#img.src = "";
+      this.#img.remove();
     }
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => (this.#ready = true);
     img.onerror = () => (this.#ready = false);
     img.src = streamUrl;
+
+    // ATTACHED TO THE DOCUMENT, DELIBERATELY, DESPITE NEVER BEING LOOKED AT.
+    //
+    // An MJPEG stream in an <img> advances through the same machinery as an
+    // animated image, and Blink pauses that for elements with no rendering
+    // observer. A detached image is exactly that: `onload` fires for the first
+    // decoded part, so `#ready` and `hasFrame` go true and everything looks
+    // healthy — and then the bitmap may simply stop updating. The texture is
+    // re-uploaded every XR frame from a picture that never changes, which
+    // reads in the headset as a live camera showing one frozen moment.
+    //
+    // 1x1 and transparent rather than `display: none`, because a display:none
+    // element has no rendering observer either and reintroduces the very
+    // problem. `aria-hidden` keeps it out of the accessibility tree, since it
+    // carries no information for anyone reading the page.
+    if (typeof document !== "undefined") {
+      img.width = 1;
+      img.height = 1;
+      img.setAttribute("aria-hidden", "true");
+      img.style.cssText =
+        "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;";
+      document.body.appendChild(img);
+    }
     this.#img = img;
   }
 
@@ -251,6 +275,9 @@ export class CameraLayer {
       this.#img.onload = null;
       this.#img.onerror = null;
       this.#img.src = "";
+      // Attached in setStreamUrl — see the note there. Leaving it in the
+      // document would keep a 1x1 element per session for the tab's lifetime.
+      this.#img.remove();
       this.#img = null;
     }
     this.#url = "";
