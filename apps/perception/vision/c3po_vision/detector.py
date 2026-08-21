@@ -366,6 +366,64 @@ class SyntheticSource:
 # --------------------------------------------------------------------------
 
 
+# `trt.nptype()` cannot be called on this image. TensorRT's Python bindings
+# build their dtype table with `np.bool`, an alias NumPy REMOVED in 1.24.0 —
+# and vision/Dockerfile pins numpy to 1.24.4 EXACTLY, on purpose (the base
+# image ships 1.17.4, which a `numpy<2` bound would silently satisfy). The pin
+# is right; the call site was the problem.
+#
+# The failure is nastier than a normal version skew because the table is built
+# lazily, inside nptype(). Importing tensorrt works, constructing the engine
+# works, and it dies on the FIRST BINDING of the first engine load with
+# `AttributeError: module 'numpy' has no attribute 'bool'` from inside a
+# vendor file — which reads as a broken TensorRT install rather than two
+# pinned versions disagreeing. Cost us the camera on 2026-08-21.
+#
+# Mapping it here depends on neither. Built on first use, not at import: numpy
+# and tensorrt are function-local imports throughout this module, on purpose —
+# it stays importable on a machine with neither installed, which is what lets
+# the tests run off the Jetson.
+_TRT_TO_NUMPY: Optional[Dict[Any, Any]] = None
+
+
+def _np_dtype(dt: Any) -> Any:
+    """TensorRT binding dtype -> numpy dtype, by exact byte width.
+
+    Deliberately raises on anything unmapped (BF16, FP8) rather than widening
+    to the nearest numpy type. These allocations are sized by `host.nbytes`
+    and copied by width, so a dtype that is close but not the same size does
+    not degrade the output — it silently mis-sizes the device buffer.
+    """
+    global _TRT_TO_NUMPY
+    if _TRT_TO_NUMPY is None:
+        import numpy as np
+        import tensorrt as trt
+
+        # getattr so a TensorRT lacking a member drops that entry rather than
+        # failing here — the same class of breakage this function exists to fix.
+        _TRT_TO_NUMPY = {
+            getattr(trt.DataType, name): np_type
+            for name, np_type in (
+                ("FLOAT", np.float32),
+                ("HALF", np.float16),
+                ("INT8", np.int8),
+                ("UINT8", np.uint8),
+                ("INT32", np.int32),
+                ("INT64", np.int64),
+                ("BOOL", np.bool_),
+            )
+            if hasattr(trt.DataType, name)
+        }
+    try:
+        return _TRT_TO_NUMPY[dt]
+    except KeyError:
+        raise RuntimeError(
+            f"no exact numpy dtype for TensorRT binding dtype {dt!r}. "
+            "Re-export the engine in a supported precision, or add the "
+            "mapping here only if the byte width matches exactly."
+        ) from None
+
+
 class TensorRTDetector:
     """YOLO11 on a prebuilt TRT plan. NMS on the CPU, on purpose.
 
@@ -418,7 +476,7 @@ class TensorRTDetector:
 
         for i in range(self._engine.num_bindings):
             shape = tuple(self._engine.get_binding_shape(i))
-            dtype = trt.nptype(self._engine.get_binding_dtype(i))
+            dtype = _np_dtype(self._engine.get_binding_dtype(i))
             host = np.empty(shape, dtype=dtype)
             device = cuda.mem_alloc(host.nbytes)
             self._host[i] = host
