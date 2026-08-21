@@ -127,7 +127,9 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
           // dispatches straight to the bridge. `knownSafety` covers the
           // catalogue being unavailable: an e-stop must not become
           // admin-gated because a fetch failed.
-          const isSafety = skill ? skill.classification === "safety" : knownSafety;
+          const isSafety = skill
+            ? skill.classification === "safety"
+            : knownSafety;
           if (!isSafety && user.role !== "admin") {
             return status(403, {
               error: "admin_required",

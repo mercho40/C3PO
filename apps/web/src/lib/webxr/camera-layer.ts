@@ -282,7 +282,14 @@ export class CameraLayer {
     let sy = 1;
     const iw = img.naturalWidth;
     const ih = img.naturalHeight;
-    if (vpWidth && vpHeight && vpWidth > 0 && vpHeight > 0 && iw > 0 && ih > 0) {
+    if (
+      vpWidth &&
+      vpHeight &&
+      vpWidth > 0 &&
+      vpHeight > 0 &&
+      iw > 0 &&
+      ih > 0
+    ) {
       const imgAspect = iw / ih;
       const vpAspect = vpWidth / vpHeight;
       if (imgAspect > vpAspect) {
