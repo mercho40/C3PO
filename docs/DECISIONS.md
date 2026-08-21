@@ -493,6 +493,22 @@ is cached on-robot, dated 2026-08-06, from the co-tenant's own mic→Whisper wor
 path is not speculative. Prefer **`small`, INT8**: INT8 halves memory for under 0.2 % WER
 regression, and `base` is noticeably weaker in Spanish than `small`.
 
+**SUPERSEDED 2026-08-21 — it runs on the GPU, in the vision container.** The reasoning
+below was sound and its premise turned out to be false: the assumption was that GPU
+CTranslate2 merely _needed_ cuDNN. In fact the PyPI aarch64 wheel is compiled **without
+CUDA at all**, so the CPU was not a conservative first choice — it was the only choice
+Python on this machine offered. Measured warm: 3.5–6.6 s for a short utterance, on eight
+cores shared with the co-tenant's SLAM, while the GPU idled at 0–5 %.
+
+The fix cost no new container: `apps/perception/vision` already runs CUDA 11.4, so
+whisper.cpp is built there with `GGML_CUDA=1` and the bridge calls `POST /transcribe` over
+loopback. That also restores D6.2's split, which the CPU version had broken — the bridge
+now keeps only `vosk` for the spoken stop and sheds ctranslate2, onnxruntime and av.
+
+whisper.cpp rather than faster-whisper because the vision image is Python 3.8 (TensorRT
+bindings hard-depend `python3 << 3.9`) and faster-whisper needs 3.9+. Original reasoning
+below, kept because the CPU path is still the fallback when the container is down:
+
 **Run it on the CPU, not the GPU**, at least first. CTranslate2 on GPU requires cuDNN, which
 is not in the bridge's venv and would drag the voice process into a CUDA container (the
 vision image is ~10 GB) purely to transcribe five-second utterances. The Orin NX has 8
