@@ -305,3 +305,51 @@ def test_the_buffer_is_cleared_even_when_whisper_is_skipped():
     drain(lis)
     assert whis.calls == []
     assert lis.diagnostics()["utterances"] == 2
+
+
+# --- which whisper backend gets used ----------------------------------------
+#
+# The local path CANNOT use the GPU on this machine: the ctranslate2 aarch64
+# wheel is compiled without CUDA. So remote-first is not a preference, it is the
+# only way the GPU is reachable at all — and a regression to local-first would
+# silently cost 10x latency with everything still "working".
+
+def test_the_gpu_container_is_preferred_when_available(monkeypatch):
+    import bridge.skills.listen as mod
+    monkeypatch.setattr(mod, "remote_whisper_status",
+                        lambda: {"available": True, "model": "ggml-base.bin"})
+    assert isinstance(mod.build_whisperer(), mod.RemoteWhisper)
+
+
+def test_it_falls_back_to_local_cpu_when_the_container_is_down(monkeypatch):
+    import bridge.skills.listen as mod
+
+    class FakeLocal:
+        pass
+
+    monkeypatch.setattr(mod, "remote_whisper_status",
+                        lambda: {"available": False, "reason": "unreachable"})
+    monkeypatch.setattr(mod, "WhisperTranscriber", lambda: FakeLocal())
+    assert isinstance(mod.build_whisperer(), FakeLocal)
+
+
+def test_neither_available_returns_none_rather_than_raising(monkeypatch):
+    """The caller then keeps the segmenter's text. Losing Whisper must cost
+    transcript QUALITY, never the utterance itself."""
+    import bridge.skills.listen as mod
+    monkeypatch.setattr(mod, "remote_whisper_status", lambda: {"available": False})
+
+    def boom():
+        raise mod.ListenUnavailable("no model")
+
+    monkeypatch.setattr(mod, "WhisperTranscriber", boom)
+    assert mod.build_whisperer() is None
+
+
+def test_a_dead_container_yields_empty_text_not_an_exception(monkeypatch):
+    """RemoteWhisper must never raise into the listening loop — an unreachable
+    container would otherwise kill the thread that also carries the stop phrase."""
+    import bridge.skills.listen as mod
+    r = mod.RemoteWhisper(host="127.0.0.1", port=1)   # nothing listens there
+    assert r.transcribe(b"\x00\x00" * 1000) == ""
+    assert r.transcribe(b"") == ""

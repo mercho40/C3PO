@@ -278,9 +278,71 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                 return self._status()
             if path == "/frame.jpg":
                 return self._frame()
+            if path == "/transcribe/status":
+                return self._transcribe_status()
             if path in ("/stream.mjpg", "/"):
                 return self._stream()
             self.send_error(404, "not a c3po vision endpoint")
+
+        def do_POST(self) -> None:
+            """POST /transcribe — raw 16 kHz mono 16-bit PCM in, Spanish out.
+
+            The ONLY endpoint here that is not read-only, and it is still inert:
+            it consumes audio and returns text. It cannot move the robot, cannot
+            touch the camera, and holds nothing.
+
+            The bridge calls this instead of running Whisper itself, so the
+            process that owns stop_everything keeps no ML stack (D6.2) and the
+            inference lands on a GPU that is otherwise idle.
+            """
+            path = self.path.split("?", 1)[0].rstrip("/") or "/"
+            if path != "/transcribe":
+                self.send_error(404, "not a c3po vision endpoint")
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self.send_error(400, "bad Content-Length")
+                return
+            # A cap, because this is a socket anyone on loopback can post to and
+            # the buffer is read into memory. 120 s of audio is far past any
+            # utterance and still only ~3.8 MB.
+            if length <= 0 or length > 120 * 16000 * 2:
+                self.send_error(400, "expected 1..120s of 16kHz mono 16-bit PCM")
+                return
+
+            pcm = self.rfile.read(length)
+            if len(pcm) != length:
+                self.send_error(400, "short read")
+                return
+
+            try:
+                from c3po_vision import transcribe as tr
+
+                result = tr.transcribe(pcm)
+            except Exception as exc:  # noqa: BLE001 - reported, never raised at a client
+                # 503 rather than 500: "the model is not installed" is a state
+                # the caller can act on, and the bridge degrades to its own
+                # segmenter rather than losing the utterance.
+                body = json.dumps({"error": str(exc)[:300]}).encode("utf-8")
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+            self._headers("application/json", {"Content-Length": str(len(body))})
+            self.wfile.write(body)
+
+        def _transcribe_status(self) -> None:
+            from c3po_vision import transcribe as tr
+
+            body = json.dumps(tr.status()).encode("utf-8")
+            self._headers("application/json", {"Content-Length": str(len(body))})
+            self.wfile.write(body)
 
         def _status(self) -> None:
             body = json.dumps(latest.status(time.time())).encode("ascii")
