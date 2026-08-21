@@ -291,12 +291,25 @@ if [ -f "$RUN_DIR/stop_everything" ]; then
     ack_at=0
     [ -f "$RUN_DIR/stop_acknowledged" ] && ack_at=$(stat -f %m "$RUN_DIR/stop_acknowledged" 2>/dev/null || echo 0)
     if [ "$stop_at" -gt "$ack_at" ]; then
-        warn "an emergency stop is recorded and has not been cleared"
+        warn "an emergency stop is recorded on THIS MACHINE and has not been cleared"
         note "this is not broken — a stop deliberately outlives the session it was pressed in."
         note "It clears itself once you connect: hold the dead-man RELEASED for one full second."
         note "Pressed at: $(date -r "$stop_at" '+%H:%M:%S on %d %b')"
+        # The sentinel is per-machine by construction (estop.py: DEFAULT_RUN_DIR
+        # is $HOME/.c3po/run on whatever host is running). When the bridge runs
+        # ONBOARD — which it does for real hardware, because DDS only exists on
+        # the robot's internal LAN — the sentinel that actually latches teleop
+        # is the ROBOT's, not this one. Saying "a stop is standing" without
+        # saying whose is how a months-old local sim stop gets read as a live
+        # safety state on the robot, and vice versa: a real standing stop
+        # onboard is invisible from here.
+        note "Read from: $RUN_DIR (this machine)"
+        note "The onboard bridge keeps its OWN sentinel and that one is what latches"
+        note "teleop on real hardware. Check it with:"
+        note "    ssh c3po 'ls -l ~/.c3po/run/'"
     else
-        ok "no stop outstanding"
+        ok "no stop outstanding on this machine"
+        note "(the onboard bridge keeps its own — this check cannot see it)"
     fi
 else
     ok "no stop outstanding"
