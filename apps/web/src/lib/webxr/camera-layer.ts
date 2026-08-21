@@ -51,11 +51,15 @@
 
 const VERT = `
 attribute vec2 a_pos;
+uniform vec2 u_scale;
 varying vec2 v_uv;
 void main() {
   // Flip V: WebGL texture origin is bottom-left, image origin is top-left.
+  // UVs come from the UNSCALED attribute, so the image still maps 0..1 across
+  // the quad however the quad is scaled — the scale letterboxes, it does not
+  // crop or zoom.
   v_uv = vec2((a_pos.x + 1.0) * 0.5, 1.0 - (a_pos.y + 1.0) * 0.5);
-  gl_Position = vec4(a_pos, 0.0, 1.0);
+  gl_Position = vec4(a_pos * u_scale, 0.0, 1.0);
 }`;
 
 const FRAG = `
@@ -91,6 +95,7 @@ export class CameraLayer {
   #texture: WebGLTexture | null = null;
   #posLoc = -1;
   #alphaLoc: WebGLUniformLocation | null = null;
+  #scaleLoc: WebGLUniformLocation | null = null;
   #img: HTMLImageElement | null = null;
   #ready = false;
   #uploaded = 0;
@@ -201,6 +206,7 @@ export class CameraLayer {
     this.#program = program;
     this.#posLoc = gl.getAttribLocation(program, "a_pos");
     this.#alphaLoc = gl.getUniformLocation(program, "u_alpha");
+    this.#scaleLoc = gl.getUniformLocation(program, "u_scale");
 
     this.#buffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.#buffer);
@@ -222,8 +228,24 @@ export class CameraLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   }
 
-  /** Draw the newest frame across the whole view. Safe to call every frame. */
-  draw(opaque: boolean): void {
+  /**
+   * Draw the newest frame into the current viewport, preserving aspect ratio.
+   * Safe to call every frame.
+   *
+   * `vpWidth`/`vpHeight` are the eye viewport this is being drawn into, and
+   * they are not optional in practice. The quad used to cover clip space
+   * outright, which stretches the frame to whatever shape the eye viewport is:
+   * the D435i serves 640x480 (4:3) and a Quest 3 eye viewport is nothing like
+   * 4:3, so the picture arrived visibly distorted — and in VR, where this quad
+   * IS the world, that distortion is the entire view. Reported from the first
+   * real session, 2026-08-21.
+   *
+   * Letterboxed, never cropped: the operator is driving a robot by this
+   * picture, and silently discarding the edges of their field of view is a
+   * worse failure than black bars. Callers that cannot supply a viewport get
+   * the old full-field behaviour, which keeps the non-XR paths working.
+   */
+  draw(opaque: boolean, vpWidth?: number, vpHeight?: number): void {
     const gl = this.#gl;
     const img = this.#img;
     if (!img || !this.#ready || img.naturalWidth === 0) return;
@@ -248,6 +270,28 @@ export class CameraLayer {
     // mid-motion is worse than seeing an obviously-old one.
     const alpha = (opaque ? 1.0 : 0.85) * (this.#live ? 1.0 : 0.45);
     gl.uniform1f(this.#alphaLoc, alpha);
+
+    // Fit the frame inside the viewport without distorting it. Shrink one axis
+    // — never grow, so the quad always stays within clip space.
+    // Every input is checked for > 0 before dividing. A zero or missing
+    // dimension would make this NaN, and a NaN vertex position does not draw a
+    // wrong picture — it draws NOTHING, which is the black view this whole
+    // module exists to stop. Falling back to 1,1 gives the old full-field
+    // behaviour: distorted, but visible, and visible wins.
+    let sx = 1;
+    let sy = 1;
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
+    if (vpWidth && vpHeight && vpWidth > 0 && vpHeight > 0 && iw > 0 && ih > 0) {
+      const imgAspect = iw / ih;
+      const vpAspect = vpWidth / vpHeight;
+      if (imgAspect > vpAspect) {
+        sy = vpAspect / imgAspect; // wider than the eye: bars top and bottom
+      } else {
+        sx = imgAspect / vpAspect; // taller than the eye: bars left and right
+      }
+    }
+    gl.uniform2f(this.#scaleLoc, sx, sy);
     gl.enable(gl.BLEND);
     // Separate, because the straight `blendFunc` applies SRC_ALPHA to the
     // alpha channel as well — so the framebuffer alpha came out as the square

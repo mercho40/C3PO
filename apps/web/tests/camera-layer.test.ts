@@ -73,6 +73,7 @@ function stubGl() {
     enableVertexAttribArray: rec("enableVertexAttribArray"),
     vertexAttribPointer: rec("vertexAttribPointer"),
     uniform1f: rec("uniform1f"),
+    uniform2f: rec("uniform2f"),
     enable: rec("enable"),
     blendFunc: rec("blendFunc"),
     blendFuncSeparate: rec("blendFuncSeparate"),
@@ -90,6 +91,7 @@ function stubGl() {
 class FakeImage {
   crossOrigin: string | null = null;
   naturalWidth = 0;
+  naturalHeight = 0;
   width = 0;
   height = 0;
   src = "";
@@ -106,8 +108,9 @@ class FakeImage {
     this.attached = false;
   }
   /** Pretend a frame decoded. */
-  arrive(width = 960) {
+  arrive(width = 960, height = 720) {
     this.naturalWidth = width;
+    this.naturalHeight = height;
     this.onload?.();
   }
 }
@@ -421,6 +424,114 @@ describe("the stream element is attached, and cleaned up", () => {
 
       expect(made[0].attached).toBe(false);
       expect(made[0].src).toBe("");
+    });
+  });
+});
+
+describe("aspect fit — the picture that was live, correct and deformed", () => {
+  /** The x,y passed to `u_scale` on the most recent draw. */
+  function lastScale(calls: { fn: string; args: unknown[] }[]) {
+    const c = calls.filter((c) => c.fn === "uniform2f").at(-1);
+    return c ? [c.args[1] as number, c.args[2] as number] : null;
+  }
+
+  test("the D435i's 4:3 frame in a Quest eye keeps its proportions", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480); // the D435i's actual output
+
+      layer.draw(true, 1680, 1760); // a Quest eye viewport: TALLER than 4:3
+      const [sx, sy] = lastScale(calls)!;
+      // The image is relatively WIDER than the eye, so width is the binding
+      // constraint: fill it, and take bars top and bottom. Shrinking x instead
+      // would squeeze the picture — the deformation being fixed here.
+      expect(sx).toBe(1);
+      expect(sy).toBeCloseTo(1680 / 1760 / (640 / 480), 5);
+      expect(sy).toBeLessThan(1);
+      // And the aspect actually drawn matches the source: the whole point.
+      expect((1680 * sx) / (1760 * sy)).toBeCloseTo(640 / 480, 5);
+    });
+  });
+
+  test("a wide frame in a squarer eye is letterboxed", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(1920, 1080); // 16:9
+
+      layer.draw(true, 1000, 1000); // square eye
+      const [sx, sy] = lastScale(calls)!;
+      expect(sx).toBe(1);
+      expect(sy).toBeCloseTo(1 / (1920 / 1080), 5);
+      expect(sy).toBeLessThan(1);
+    });
+  });
+
+  test("a frame matching the eye fills it exactly", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480);
+
+      layer.draw(true, 1280, 960); // same 4:3
+      expect(lastScale(calls)).toEqual([1, 1]);
+    });
+  });
+
+  test("never scales ABOVE 1 — the quad stays inside clip space", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480);
+
+      for (const [w, h] of [
+        [100, 4000],
+        [4000, 100],
+        [1, 1],
+        [1920, 1080],
+      ]) {
+        layer.draw(true, w, h);
+        const [sx, sy] = lastScale(calls)!;
+        expect(sx).toBeLessThanOrEqual(1);
+        expect(sy).toBeLessThanOrEqual(1);
+        expect(sx).toBeGreaterThan(0);
+        expect(sy).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  test("a zero dimension falls back to full field, NOT to NaN", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      // A frame whose height never decoded. Dividing by it gives NaN, and a
+      // NaN vertex position draws NOTHING — the black view this module exists
+      // to prevent, reintroduced by the fix for a distorted one.
+      made[0].arrive(640, 0);
+
+      layer.draw(true, 1680, 1760);
+      const [sx, sy] = lastScale(calls)!;
+      expect(Number.isNaN(sx)).toBe(false);
+      expect(Number.isNaN(sy)).toBe(false);
+      expect([sx, sy]).toEqual([1, 1]);
+    });
+  });
+
+  test("no viewport given keeps the old full-field behaviour", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480);
+
+      layer.draw(true); // non-XR callers pass no viewport
+      expect(lastScale(calls)).toEqual([1, 1]);
     });
   });
 });

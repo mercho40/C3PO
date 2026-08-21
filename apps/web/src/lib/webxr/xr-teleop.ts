@@ -290,7 +290,7 @@ export function drawPerEye(
   gl: WebGLRenderingContext,
   layer: XRWebGLLayer,
   pose: XRViewerPose,
-  camera: { draw(opaque: boolean): void },
+  camera: { draw(opaque: boolean, vpWidth?: number, vpHeight?: number): void },
   opaque: boolean,
 ): unknown | null {
   for (const view of pose.views) {
@@ -300,7 +300,12 @@ export function drawPerEye(
     try {
       // The camera IS the view in VR; in passthrough it is a heads-up layer
       // over the room, so it does not paint over what the operator can see.
-      camera.draw(opaque);
+      //
+      // The viewport goes to draw() as well as to gl.viewport(): the quad is
+      // aspect-fitted to it. Setting the viewport alone stretches the frame to
+      // the eye's shape, which is how the first real session got a picture
+      // that was live, correct, and visibly deformed.
+      camera.draw(opaque, vp.width, vp.height);
     } catch (err) {
       return err ?? new Error("camera draw failed");
     }
