@@ -16,6 +16,7 @@ import { describe, expect, test } from "bun:test";
 import {
   firstSelectable,
   nextSelectable,
+  paintMenu,
   type MenuItem,
 } from "../src/lib/webxr/menu-layer";
 
@@ -96,5 +97,120 @@ describe("firstSelectable — where the highlight starts", () => {
     const none = [item("dance", false)];
     expect(firstSelectable(none)).toBe(0);
     expect(none[firstSelectable(none)].verified).toBe(false);
+  });
+});
+
+// --- a 2D context that records what was asked of it -------------------------
+//
+// Same approach as camera-layer.test.ts stubs WebGL, and honest about the same
+// limit: this covers WHAT gets drawn, not whether it is legible through a lens.
+// The uncovered half needs a headset.
+
+type Call2D = { fn: string; args: unknown[] };
+
+function stub2d() {
+  const calls: Call2D[] = [];
+  const rec =
+    (fn: string, ret: unknown = undefined) =>
+    (...args: unknown[]) => {
+      calls.push({ fn, args });
+      return ret;
+    };
+  const ctx: Record<string, unknown> = {
+    clearRect: rec("clearRect"),
+    fillRect: rec("fillRect"),
+    strokeRect: rec("strokeRect"),
+    fillText: rec("fillText"),
+    beginPath: rec("beginPath"),
+    moveTo: rec("moveTo"),
+    lineTo: rec("lineTo"),
+    stroke: rec("stroke"),
+    measureText: rec("measureText", { width: 80 }),
+    // Assigned, not called — recorded via the object so assertions can read
+    // the last value set.
+    font: "",
+    fillStyle: "",
+    strokeStyle: "",
+    lineWidth: 0,
+    textBaseline: "",
+  };
+  const texts = () =>
+    calls.filter((c) => c.fn === "fillText").map((c) => String(c.args[0]));
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, calls, texts };
+}
+
+describe("paintMenu — what the operator is shown", () => {
+  test("draws every item's label", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, null);
+    for (const it of REAL) {
+      expect(texts().some((t) => t.startsWith(it.label))).toBe(true);
+    }
+  });
+
+  test("an unverified item is struck through and labelled", () => {
+    const { ctx, calls, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, null);
+    // `dance` is the only unverified entry, so exactly one strikethrough.
+    expect(calls.filter((c) => c.fn === "stroke").length).toBe(1);
+    expect(texts()).toContain("sin probar en real");
+  });
+
+  test("an all-verified list draws no strikethrough at all", () => {
+    const { ctx, calls, texts } = stub2d();
+    const allOk = REAL.map((i) => ({ ...i, verified: true }));
+    paintMenu(ctx, allOk, 0, null, null);
+    expect(calls.filter((c) => c.fn === "stroke").length).toBe(0);
+    expect(texts()).not.toContain("sin probar en real");
+  });
+
+  test("every item is struck through when the catalogue could not be read", () => {
+    // +page.svelte maps `catalogueFailed` to all-unverified. This is what the
+    // operator then sees: six inert entries, not six confident ones.
+    const { ctx, calls } = stub2d();
+    const none = REAL.map((i) => ({ ...i, verified: false }));
+    paintMenu(ctx, none, 0, null, null);
+    expect(calls.filter((c) => c.fn === "stroke").length).toBe(none.length);
+  });
+
+  test("the busy item is marked, and only that one", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, "hug");
+    expect(texts().some((t) => t === "hug …")).toBe(true);
+    expect(texts().some((t) => t === "wave")).toBe(true);
+  });
+
+  test("the status line is drawn when there is one", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(
+      ctx,
+      REAL,
+      0,
+      { text: "Enviado (sin confirmar)", kind: "warn" },
+      null,
+    );
+    expect(texts()).toContain("Enviado (sin confirmar)");
+  });
+
+  test("a long status is truncated rather than drawn off the panel", () => {
+    const { ctx, texts } = stub2d();
+    const long = "x".repeat(200);
+    paintMenu(ctx, REAL, 0, { text: long, kind: "error" }, null);
+    const drawn = texts().find((t) => t.startsWith("xxx")) ?? "";
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn.length).toBeLessThan(long.length);
+  });
+
+  test("an empty list does not throw", () => {
+    const { ctx } = stub2d();
+    expect(() => paintMenu(ctx, [], 0, null, null)).not.toThrow();
+  });
+
+  test("a selection index past the end does not throw", () => {
+    // `setItems` re-homes the selection, but the painter must not depend on
+    // that having happened — it is called from the render loop.
+    const { ctx } = stub2d();
+    expect(() => paintMenu(ctx, REAL, 99, null, null)).not.toThrow();
+    expect(() => paintMenu(ctx, REAL, -1, null, null)).not.toThrow();
   });
 });
