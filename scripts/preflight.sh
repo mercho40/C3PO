@@ -208,8 +208,23 @@ else
                 live_ok=1
                 ;;
             *'"live"'*)
-                warn "but it says live: false — the server is up, the D435i is not producing"
-                note "this is the camera itself, not the tunnel and not the web app"
+                # `frames` separates two different faults that both read as
+                # live:false. The web client already distinguishes them; this
+                # was collapsing both into "the D435i is not producing", which
+                # is wrong — and misleadingly so — whenever frames HAVE arrived.
+                if echo "$status_body" | grep -qE '"frames":[[:space:]]*0'; then
+                    warn "live: false, and it has produced NOTHING since it started"
+                    note "the server is up and the D435i is not delivering — the camera"
+                    note "itself, not the tunnel and not the web app. Check the cable and"
+                    note "that nothing else has the device open."
+                else
+                    warn "live: false, but frames HAVE arrived and then stopped"
+                    note "so the camera works and the detector is up — its ticks are"
+                    note "failing or running slower than the 1 s staleness threshold."
+                    note "The vision container is pinned to a single core; a tick that"
+                    note "overruns leaves the feed stale by construction, permanently."
+                    note "Restarting it is the quick answer:  perception_up perception"
+                fi
                 note "$status_body"
                 ;;
             *)
