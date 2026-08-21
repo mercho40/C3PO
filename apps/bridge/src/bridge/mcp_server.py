@@ -59,6 +59,13 @@ BRIDGE_TRANSPORT = os.environ.get("BRIDGE_TRANSPORT", "stdio")
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8000"))
 
+# How much longer than the byte-derived estimate `say(wait_for_completion=True)`
+# will wait for `play_state` to drop. Playback runs slightly past the estimate
+# (measured 1->0 gaps of 0.52/2.10/3.07 s against sends of 0.5/2.0/3.0 s), and
+# the firmware is a shared service that can simply not answer — so the wait is
+# bounded and a timeout is reported, never raised.
+PLAYBACK_WAIT_MARGIN_S = 2.0
+
 # Initialize DDS up-front when not in stub mode. We do this at import time so
 # the subscriber is alive and accumulating LowState messages before the first
 # tool call lands.
@@ -1129,6 +1136,19 @@ async def say(
             )
         ),
     ] = "spanish",
+    wait_for_completion: Annotated[
+        bool,
+        Field(
+            description=(
+                "Return only once the robot has actually STOPPED talking, "
+                "rather than as soon as the audio has been handed to the "
+                "firmware. Off by default, which keeps this tool fast. Turn it "
+                "on when the next thing you do would talk over this — chaining "
+                "two utterances, or listening for a reply, since the robot's "
+                "own microphone hears its own speaker."
+            )
+        ),
+    ] = False,
 ) -> dict:
     """Speak text aloud through the robot's own speaker (voice service, TTS).
 
@@ -1251,17 +1271,45 @@ async def say(
                 "stub": False,
             }
 
+        # PlayStream acks on RECEIPT, not on completion — the vendor's own
+        # example fires it and sleeps a fixed 3 s. `speech_seconds` below is
+        # computed from the bytes sent, which used to be the only answer
+        # available.
+        #
+        # It is no longer. `rt/audio_msg` carries `play_state`, measured on this
+        # robot to track our own PlayStream to within ~100 ms, and it is the
+        # real completion signal. The module that reads it existed the whole
+        # time and was subscribed by nobody (see main()).
+        #
+        # The timeout is the byte estimate plus a margin, and not a constant: a
+        # long sentence must be allowed to finish, and a firmware that never
+        # drops play_state must not wedge this call forever. `False` back from
+        # the wait means "it did not end in time", which is reported rather than
+        # raised — the speech was still sent.
+        playback_confirmed: bool | None = None
+        if wait_for_completion and code == 0:
+            try:
+                from bridge.sdk.audio_msg import get_audio_msg_link
+
+                link = get_audio_msg_link()
+                playback_confirmed = await asyncio.to_thread(
+                    link.wait_for_playback_end, seconds + PLAYBACK_WAIT_MARGIN_S
+                )
+            except Exception:
+                log.exception("say.wait_for_completion_failed")
+                playback_confirmed = None
+
         return {
             "status": "ok" if code == 0 else "failed",
             "spoken": text if code == 0 else None,
             "language": language,
             "rpc_code": code,
             "rpc_data": data,
-            # PlayStream acks on RECEIPT, not on completion — the vendor's own
-            # example fires it and sleeps a fixed 3 s. So this is computed from
-            # the bytes sent and is the only honest answer to "is it still
-            # talking?". Nothing here waits for it.
             "speech_seconds": round(seconds, 2),
+            # None when we did not wait, True when playback was observed to
+            # end, False when it did not within the timeout. Three states,
+            # because "we didn't look" and "it didn't stop" are different facts.
+            "playback_confirmed": playback_confirmed,
             "stream_id": stream_id,
             "via": "piper+playstream",
             "error": None if code == 0 else f"rpc_error_code_{code}",
@@ -2440,6 +2488,24 @@ def main() -> None:
                 log.info("mic_listener.disabled", reason=why)
         except Exception:
             log.exception("mic_listener.start_failed")
+
+        # `rt/audio_msg` — the completion signal for our own speech.
+        #
+        # This module was written, measured and tested, and then called by
+        # nothing: `get_audio_msg_link()` had zero call sites in the whole
+        # source tree, so the one topic that can say "the robot has stopped
+        # talking" was never subscribed. Found by
+        # `tests/test_singletons_are_started.py`, which exists because this is
+        # the fifth time a finished component here was wired to nothing.
+        #
+        # Cheap and passive: one DDS subscriber on a topic the firmware already
+        # publishes. It claims no device and commands nothing.
+        try:
+            from bridge.sdk.audio_msg import get_audio_msg_link
+
+            get_audio_msg_link().start()
+        except Exception:
+            log.exception("audio_msg.start_failed")
 
         # THE HEAD CAMERA, at boot, and only on real hardware.
         #
