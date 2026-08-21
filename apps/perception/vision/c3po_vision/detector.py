@@ -389,6 +389,39 @@ class TensorRTDetector:
         import numpy as np
         import pycuda.autoinit  # noqa: F401  (import side effect: CUDA context)
         import pycuda.driver as cuda
+
+        # `np.bool` BEFORE tensorrt, because whether it exists is not stable.
+        #
+        # JetPack 5.1.1 ships TensorRT 8.5.2.2, whose `nptype()` builds a dtype
+        # table containing a literal `np.bool` (`tensorrt/__init__.py:166`).
+        # numpy expired that alias in 1.24, and this image pins numpy at exactly
+        # 1.24.4 — deliberately, with an assertion, because cv2's ABI needs it.
+        #
+        # Observed on the robot 2026-08-22, SAME image, SAME container, two
+        # consecutive starts:
+        #
+        #   first start   AttributeError: module 'numpy' has no attribute 'bool'
+        #                 at trt.nptype(...), exit 139, and because TensorRT had
+        #                 already allocated, the visible tail was CUDA
+        #                 deallocation errors — which read as a GPU or engine
+        #                 fault and are neither.
+        #   second start  ran fine, and has been detecting since.
+        #
+        # The difference is the engine: the first start BUILDS it, the second
+        # loads it from cache, and those two paths import a different set of
+        # modules before reaching here. So whether `np.bool` resolves depends on
+        # whether something else in the process happened to define it first —
+        # which makes this a startup coin-flip, and a coin-flip that costs the
+        # whole detector whenever it lands wrong. A cold cache is exactly when
+        # it lands wrong: first run after a rebuild or a new device.
+        #
+        # Defining it removes the dependence on import order, and it is what the
+        # table wants: `np.bool` WAS `bool`, and that entry maps TRT's BOOL to
+        # the builtin. The numpy pin is left alone — cv2 depends on it, and
+        # moving it to please TensorRT trades a caught error for an ABI mismatch.
+        if not hasattr(np, "bool"):
+            np.bool = bool  # type: ignore[attr-defined]
+
         import tensorrt as trt
 
         self._np = np
