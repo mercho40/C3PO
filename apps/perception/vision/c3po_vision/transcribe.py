@@ -147,3 +147,83 @@ def status() -> dict[str, Any]:
         "model": os.path.basename(WHISPER_MODEL),
         "language": WHISPER_LANG,
     }
+
+
+# --- standalone server ------------------------------------------------------
+#
+# TRANSCRIPTION MUST NOT REQUIRE THE CAMERA. The `/transcribe` route is served
+# by the detector's HTTP server, and the detector opens the RealSense — so
+# serving speech-to-text would claim a sensor away from the co-tenant for no
+# reason. Speech needs the GPU, not the camera.
+#
+# This entry point serves ONLY /transcribe and /transcribe/status, opens no
+# device, and holds nothing:
+#
+#     docker run --runtime nvidia ... python3 -m c3po_vision.transcribe
+#
+# It binds loopback by default. The bridge is the only client, both run
+# --network host on the same Jetson, and this endpoint accepts a POST body —
+# it has no business being reachable from the school Wi-Fi.
+
+def serve(host: str = "127.0.0.1", port: int = 8082) -> None:
+    import json as _json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+        server_version = "c3po-stt"
+
+        def log_message(self, fmt: str, *args: Any) -> None:
+            pass          # one line per utterance is the detector's job, not ours
+
+        def _json(self, code: int, payload: dict) -> None:
+            body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            if self.path.rstrip("/") in ("/transcribe/status", "/status"):
+                return self._json(200, status())
+            self.send_error(404, "not a c3po stt endpoint")
+
+        def do_POST(self) -> None:
+            if self.path.rstrip("/") != "/transcribe":
+                self.send_error(404, "not a c3po stt endpoint")
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self.send_error(400, "bad Content-Length")
+                return
+            # 120 s of audio is far past any utterance and still only ~3.8 MB.
+            # The body is read into memory, so it needs a bound.
+            if length <= 0 or length > 120 * BYTES_PER_SECOND:
+                self.send_error(400, "expected 1..120s of 16kHz mono 16-bit PCM")
+                return
+            pcm = self.rfile.read(length)
+            if len(pcm) != length:
+                self.send_error(400, "short read")
+                return
+            try:
+                return self._json(200, transcribe(pcm))
+            except Exception as exc:  # noqa: BLE001 - reported, never raised at a client
+                # 503, not 500: "no model installed" is a state the caller can
+                # act on, and the bridge degrades to its segmenter rather than
+                # losing the utterance.
+                return self._json(503, {"error": str(exc)[:300]})
+
+    ok, why = available()
+    # Plain concatenation, not a nested f-string: this image is Python 3.8 and
+    # nested quotes inside an f-string are a 3.12 feature.
+    state = "ready" if ok else "DEGRADED - " + why
+    print("c3po stt: " + state, flush=True)
+    print(f"c3po stt: listening on http://{host}:{port}/transcribe", flush=True)
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    serve(os.environ.get("C3PO_STT_HOST", "127.0.0.1"),
+          int(os.environ.get("C3PO_STT_PORT", "8082")))

@@ -13,6 +13,7 @@
 #
 #   perception_up <stage>
 #     fake        world model on synthetic input      NO SENSORS — gemm keeps running
+#     stt         GPU speech-to-text only             NO SENSORS — GPU only, no camera
 #     odometry    livox + FAST-LIO + TF + scan        claims the Livox
 #     perception  + detector + world model            claims the Livox AND the RealSense
 #     nav2        + Nav2, lifecycle NOT autostarted   claims both
@@ -22,8 +23,8 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$here/_common.sh"
 
 stage="${1:-}"
-case "$stage" in fake|nav2-fake|odometry|perception|nav2) ;; *)
-    err "usage: perception_up {fake|nav2-fake|odometry|perception|nav2}"; exit 2 ;; esac
+case "$stage" in fake|nav2-fake|stt|odometry|perception|nav2) ;; *)
+    err "usage: perception_up {fake|nav2-fake|stt|odometry|perception|nav2}"; exit 2 ;; esac
 
 # Say what this stage takes BEFORE taking it. "claims shared sensors" is not
 # specific enough to act on: whether the Livox alone or the Livox and the
@@ -33,6 +34,10 @@ say "perception_up: stage '$stage'"
 case "$stage" in
     fake)
         info "sensors claimed: NONE — the Livox and the RealSense stay with gemm" ;;
+    stt)
+        info "sensors claimed: NONE — GPU only. Speech-to-text needs the GPU, not"
+        info "the camera, so this opens no device and gemm keeps both sensors."
+        info "Serves POST /transcribe on 127.0.0.1:8082 for the bridge." ;;
     nav2-fake)
         info "sensors claimed: NONE — the Livox and the RealSense stay with gemm"
         info "Nav2 on SYNTHETIC odom/scan: the lifecycle, the planner, the controller"
@@ -57,6 +62,12 @@ case "$stage" in
 esac
 
 needs_lidar=0; needs_camera=0
+# `stt` is the one stage that runs NO ROS at all: it wants the GPU and nothing
+# else, so it skips the nav container entirely and starts the vision image in
+# speech-only mode. Keeping it out of the nav path is what lets it coexist with
+# the co-tenant holding both sensors.
+needs_nav=1; needs_stt=0
+[ "$stage" = "stt" ] && { needs_nav=0; needs_stt=1; }
 # `fake` and `nav2-fake` are deliberately absent: they claim nothing. That is
 # the entire point of nav2-fake — Stage 4 was specified as sensor-free, and for
 # a while the only nav2 stage stopped gemm and took both sensors, which would
@@ -103,6 +114,7 @@ nav_digest="$(_docker image inspect "$PERCEPTION_NAV_IMAGE" \
 #                       matters more than failure. (cgroup v1 + cgroupfs driver
 #                       on this host, so these apply.)
 # no --privileged     : this host also runs the process that can walk the legs.
+if [ "$needs_nav" = 1 ]; then
 _docker create --name c3po-perception-nav \
     --restart no --network host --ipc host \
     --cpuset-cpus "0-4" --memory 8g \
@@ -115,6 +127,31 @@ _docker create --name c3po-perception-nav \
     "$PERCEPTION_NAV_IMAGE" \
     ros2 launch c3po_perception "$launch_file" $launch_args >/dev/null
 ok "created c3po-perception-nav (no GPU, runc)"
+fi
+
+if [ "$needs_stt" = 1 ]; then
+    # GPU, NO CAMERA, NO ROS. --runtime nvidia for the CUDA whisper build; no
+    # device-cgroup rules and no /dev bind, because speech-to-text has no
+    # business holding a camera the other team is using.
+    #
+    # Loopback-only: the bridge is the sole client and both run --network host
+    # on this Jetson. An endpoint that accepts a POST body should not be
+    # reachable from the school Wi-Fi.
+    _docker rm -f c3po-perception-stt >/dev/null 2>&1 || true
+    _docker create --name c3po-perception-stt \
+        --restart no --runtime nvidia --network host \
+        --cpuset-cpus "5-6" --memory 4g \
+        -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=all \
+        -e C3PO_STT_HOST=127.0.0.1 -e C3PO_STT_PORT=8082 \
+        -v "$HOME/.c3po/models:/opt/c3po/models:ro" \
+        -v "$PERCEPTION_LOG_DIR:/logs" \
+        --label c3po.stage="$stage" \
+        "$PERCEPTION_VISION_IMAGE" \
+        python3 -m c3po_vision.transcribe >/dev/null
+    ok "created c3po-perception-stt (GPU, no camera)"
+    _docker start c3po-perception-stt >/dev/null
+    ok "started c3po-perception-stt — POST /transcribe on 127.0.0.1:8082"
+fi
 
 if [ "$needs_camera" = 1 ]; then
     # --runtime nvidia is REQUIRED and is NOT the default on this daemon
