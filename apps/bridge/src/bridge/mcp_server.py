@@ -38,9 +38,25 @@ import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 
-from bridge import watchdog
-from bridge.skill_meta import meta as skill_meta
-from bridge.watchdog import get_watchdog
+from bridge.env_file import load_env_file
+
+# CONFIG BEFORE ANYTHING READS IT. This has to run above the `os.environ` reads
+# below, which is why it is here rather than in `main()` — SIM_MODE decides at
+# import time whether DDS is initialised at all.
+#
+# The bridge loads its own `.env` so that starting it does not require a shell
+# wrapper to `set -a; . ./.env` first. That wrapper was the main reason
+# `run_c3po` had to exist, and with it gone a unit file can name the interpreter
+# directly. Anything already in the environment wins — see `bridge/env_file.py`,
+# which also explains why systemd's own `EnvironmentFile=` cannot be used on
+# this file.
+load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+
+# These three must follow load_env_file above; ruff's E402 is silenced per
+# import rather than for the file, so a genuinely misplaced import still fails.
+from bridge import watchdog  # noqa: E402
+from bridge.skill_meta import meta as skill_meta  # noqa: E402
+from bridge.watchdog import get_watchdog  # noqa: E402
 
 log = structlog.get_logger(__name__)
 

@@ -17,9 +17,23 @@ environment variable for anything that spawns a real second interpreter.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from bridge import estop
+# THE DEVELOPER'S .env MUST NOT DECIDE WHAT THE SUITE TESTS. Same principle as
+# the run directory below, and it became load-bearing when the bridge started
+# loading `apps/bridge/.env` itself (bridge/env_file.py) so that systemd could
+# start it without a shell wrapper. That file is real config on every machine —
+# it says `SIM_MODE=isaac` on this one — and `SIM_MODE` is read at import time
+# to decide whether to open DDS at all. Without this line the suite would try
+# to reach a simulator on one laptop, a robot on another, and stub on CI.
+#
+# Set rather than defaulted, because the file would win a `setdefault`. The
+# environment beats the file by design, so this is the supported way to pin it.
+os.environ["SIM_MODE"] = os.environ.get("C3PO_TEST_SIM_MODE", "stub")
+
+from bridge import estop  # noqa: E402 - must follow the SIM_MODE pin above
 
 
 @pytest.fixture(autouse=True)
