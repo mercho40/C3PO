@@ -225,7 +225,18 @@ export class CameraLayer {
     const alpha = (opaque ? 1.0 : 0.85) * (this.#live ? 1.0 : 0.45);
     gl.uniform1f(this.#alphaLoc, alpha);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // Separate, because the straight `blendFunc` applies SRC_ALPHA to the
+    // alpha channel as well — so the framebuffer alpha came out as the square
+    // of what was asked for. A stale feed meant to sit at 0.45 landed at 0.20
+    // and was nearly invisible under passthrough, which is the opposite of
+    // "dimmed rather than hidden": losing the view mid-motion is worse than an
+    // obviously old one.
+    gl.blendFuncSeparate(
+      gl.SRC_ALPHA,
+      gl.ONE_MINUS_SRC_ALPHA,
+      gl.ONE,
+      gl.ONE_MINUS_SRC_ALPHA,
+    );
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.disable(gl.BLEND);
   }

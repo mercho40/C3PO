@@ -480,7 +480,24 @@
 
   // --- VR head-yaw ---------------------------------------------------
 
+  //: Guards `enterVr` itself. The session object has its own re-entrancy
+  //: guard, but it is PER INSTANCE and this function builds a new instance on
+  //: every call — so two taps made two sessions and the guard never fired.
+  //: `vrActive` is no use either: it is set after several awaits, including
+  //: one that blocks on the headset's own consent prompt.
+  let enteringVr = false;
+
   async function enterVr() {
+    if (enteringVr) return;
+    enteringVr = true;
+    try {
+      await startVrSession();
+    } finally {
+      enteringVr = false;
+    }
+  }
+
+  async function startVrSession() {
     vrError = null;
     if (!overlayRoot) return;
     // The headset shares the page's ONE camera connection rather than opening
@@ -641,6 +658,10 @@
     teleop?.close();
     teleop = null;
     teleopState = "closed";
+    // Cleared too: the status line renders on `teleopDetail` being truthy, so
+    // a leftover stall or "session already active" message kept showing after
+    // a deliberate disconnect, as though it were current.
+    teleopDetail = "";
     teleopStatus = null;
     // `close()` sets its own `closed` flag BEFORE the socket's close event
     // fires, so `onState("closed")` never reaches us — which means the branch

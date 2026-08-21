@@ -48,6 +48,7 @@ function stubGl() {
     BLEND: "BLEND",
     SRC_ALPHA: "SRC_ALPHA",
     ONE_MINUS_SRC_ALPHA: "1-SRC_ALPHA",
+    ONE: "ONE",
     createShader: rec("createShader", {}),
     shaderSource: rec("shaderSource"),
     compileShader: rec("compileShader"),
@@ -74,6 +75,7 @@ function stubGl() {
     uniform1f: rec("uniform1f"),
     enable: rec("enable"),
     blendFunc: rec("blendFunc"),
+    blendFuncSeparate: rec("blendFuncSeparate"),
     drawArrays: rec("drawArrays"),
     disable: rec("disable"),
     deleteTexture: rec("deleteTexture"),
@@ -319,5 +321,27 @@ describe("reconnection — the failure the source recovers from", () => {
       layer.setStreamUrl("http://x/stream.mjpg"); // same URL, but after dispose
       expect(made.length).toBe(2);
     });
+  });
+});
+
+test("alpha is blended separately, or a dimmed feed goes nearly invisible", () => {
+  // The straight `blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)` applies SRC_ALPHA
+  // to the alpha channel too, so the framebuffer alpha comes out squared. The
+  // stale opacity of 0.45 landed at 0.20 under passthrough — the opposite of
+  // "dimmed rather than hidden", which exists because losing the view
+  // mid-motion is worse than an obviously old one.
+  withFakeImage((made) => {
+    const { gl, calls } = stubGl();
+    const layer = new CameraLayer(gl);
+    layer.setStreamUrl("http://x/stream.mjpg");
+    made[0].arrive();
+    layer.draw(false);
+
+    const separate = calls.filter((c) => c.fn === "blendFuncSeparate");
+    const straight = calls.filter((c) => c.fn === "blendFunc");
+    expect(separate.length).toBeGreaterThan(0);
+    expect(straight.length).toBe(0);
+    // The alpha SOURCE factor must be ONE, not SRC_ALPHA — that is the fix.
+    expect(separate[0].args[2]).toBe("ONE");
   });
 });
