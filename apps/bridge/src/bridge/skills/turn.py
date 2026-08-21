@@ -51,18 +51,25 @@ async def run(
     from bridge.sdk.state import get_sampler
 
     task = get_registry().create("turn")
+
+    # Checked before the sampler is built, because building one initialises
+    # DDS — and a skill that is about to refuse has no business opening a
+    # connection to the robot in order to say no. It also means this still
+    # answers correctly on a machine whose DDS stack is not up, which is
+    # exactly the situation someone is in when they are working out why
+    # nothing moves.
+    conflict = teleop_conflict()
+    if conflict is not None:
+        task.status = "failed"
+        task.phase = "teleop_active"
+        task.error = conflict
+        task.ended_at = time.time()
+        log.warning("turn.teleop_active", task_id=task.task_id)
+        return task.to_dict()
+
     sampler = get_sampler()
 
     try:
-        conflict = teleop_conflict()
-        if conflict is not None:
-            task.status = "failed"
-            task.phase = "teleop_active"
-            task.error = conflict
-            task.ended_at = time.time()
-            log.warning("turn.teleop_active", task_id=task.task_id)
-            return task.to_dict()
-
         initial = sampler.get_state()
         pose = initial.get("pose")
         if pose is None:
