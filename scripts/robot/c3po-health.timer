@@ -1,0 +1,19 @@
+# Check every 2 minutes. Not every 10 seconds: the failure this catches is a
+# container that died and stays dead, and a tight loop would turn a crash-loop
+# into a restart-storm that hides the crash.
+
+[Unit]
+Description=Run the C3PO health check periodically
+Documentation=file:///home/unitree/c3po/docs/OPERATIONS.md
+
+[Timer]
+# Late enough after boot that docker and the bridge have had a chance to settle;
+# otherwise the first run "repairs" things that were merely still starting.
+OnBootSec=3min
+OnUnitActiveSec=2min
+# Spread across the interval so a fleet does not check in lockstep.
+RandomizedDelaySec=15s
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

@@ -70,6 +70,15 @@ async def run(
     sampler = get_sampler()
 
     try:
+        conflict = teleop_conflict()
+        if conflict is not None:
+            task.status = "failed"
+            task.phase = "teleop_active"
+            task.error = conflict
+            task.ended_at = time.time()
+            log.warning("turn.teleop_active", task_id=task.task_id)
+            return task.to_dict()
+
         initial = sampler.get_state()
         pose = initial.get("pose")
         if pose is None:
