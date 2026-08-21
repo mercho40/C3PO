@@ -67,10 +67,24 @@ class Runner:
     def run_script(self, path: str, env: Optional[Dict[str, str]] = None) -> int:
         merged = dict(os.environ)
         merged.update(env or {})
+        # Flush before handing the terminal to a child: our buffered lines would
+        # otherwise land after everything the child writes.
+        sys.stdout.flush()
+        sys.stderr.flush()
         return subprocess.call([path], env=merged)
 
 
 # --- output -----------------------------------------------------------------
+
+# LINE-BUFFERED, because this is a progress report and the order is the message.
+# Python block-buffers stdout when it is a pipe — which is every `ssh c3po
+# 'perception_up ...'` — while stderr stays unbuffered. The first live run
+# printed take_camera's four-line refusal ABOVE the header explaining what stage
+# was even starting, so the reason arrived before the thing it was a reason for.
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except AttributeError:  # pragma: no cover - python < 3.7
+    pass
 
 _BOLD, _DIM, _RED, _GREEN, _YELLOW, _RESET = "", "", "", "", "", ""
 if sys.stdout.isatty():
