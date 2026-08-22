@@ -15,7 +15,7 @@ apps/
   bridge/       Python 3.12 sidecar (uv) — MCP server, Unitree SDK, DDS
   perception/   ROS 2 perception + navigation containers for the robot's Jetson
 docs/           Architecture, decisions, operations, robot reference
-scripts/robot/  Onboard stack controls (run_c3po, stop_c3po, perception_up, …)
+scripts/robot/  Onboard implementation; one operator CLI: `c3po`
 packages/       Reserved for shared TS packages
 ```
 
@@ -28,6 +28,7 @@ packages/       Reserved for shared TS packages
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md)         | Deploying and operating — topology, stack controls, addressing        |
 | [`docs/ROBOT-API.md`](docs/ROBOT-API.md)           | The G1's reverse-engineered control API — services, api_ids, FSM      |
 | [`docs/ROBOT-HARDWARE.md`](docs/ROBOT-HARDWARE.md) | What the physical robot presents — network, peripherals, cohabitation |
+| [`docs/MONDAY-RUNBOOK.md`](docs/MONDAY-RUNBOOK.md) | Ordered first hardware window — gates, pass criteria, rollbacks       |
 | `apps/*/README.md`                                 | Developing each app                                                   |
 
 ## Quickstart

@@ -91,28 +91,29 @@ must agree with the physical robot, and NOTHING will tell you if it does not.
     `z_m` is harmless; a 10
     degree error in `pitch_deg` puts a 4 m detection about 0.7 m off in range.
 """
+from __future__ import annotations
 
 import math
 from dataclasses import dataclass
 from statistics import median
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Sequence
 
 __all__ = [
-    "Intrinsics",
+    "DEFAULT_CAMERA_EXTRINSIC",
+    "MAX_VALID_DEPTH_M",
+    "MIN_VALID_DEPTH_M",
     "CameraExtrinsic",
     "Grounded",
-    "DEFAULT_CAMERA_EXTRINSIC",
-    "MIN_VALID_DEPTH_M",
-    "MAX_VALID_DEPTH_M",
-    "norm180",
-    "clamp_box",
-    "inner_region",
-    "sample_depths_m",
-    "median_depth_m",
-    "deproject_pixel_to_camera",
+    "Intrinsics",
     "camera_to_base",
-    "range_bearing_from_base",
+    "clamp_box",
+    "deproject_pixel_to_camera",
     "ground_box",
+    "inner_region",
+    "median_depth_m",
+    "norm180",
+    "range_bearing_from_base",
+    "sample_depths_m",
     "to_observation",
 ]
 
@@ -213,7 +214,7 @@ def norm180(deg: float) -> float:
 
 def clamp_box(
     box: Sequence[float], width: int, height: int
-) -> Optional[Tuple[int, int, int, int]]:
+) -> tuple[int, int, int, int] | None:
     """Clip a (x0, y0, x1, y1) box to the image; None if nothing is left.
 
     A detector run on a letterboxed input routinely emits boxes that hang off
@@ -225,18 +226,18 @@ def clamp_box(
         x0, x1 = x1, x0
     if y1 < y0:
         y0, y1 = y1, y0
-    ix0 = max(0, min(int(math.floor(x0)), width))
-    iy0 = max(0, min(int(math.floor(y0)), height))
-    ix1 = max(0, min(int(math.ceil(x1)), width))
-    iy1 = max(0, min(int(math.ceil(y1)), height))
+    ix0 = max(0, min(math.floor(x0), width))
+    iy0 = max(0, min(math.floor(y0), height))
+    ix1 = max(0, min(math.ceil(x1), width))
+    iy1 = max(0, min(math.ceil(y1), height))
     if ix1 <= ix0 or iy1 <= iy0:
         return None
     return ix0, iy0, ix1, iy1
 
 
 def inner_region(
-    box: Tuple[int, int, int, int], fraction: float = 0.5
-) -> Tuple[int, int, int, int]:
+    box: tuple[int, int, int, int], fraction: float = 0.5
+) -> tuple[int, int, int, int]:
     """The central `fraction` of the box in each dimension, min 1 px each way.
 
     fraction=0.5 keeps the middle 50% of the width and of the height — a
@@ -247,8 +248,8 @@ def inner_region(
     f = max(0.05, min(1.0, float(fraction)))
     w = x1 - x0
     h = y1 - y0
-    dx = int(round(w * (1.0 - f) / 2.0))
-    dy = int(round(h * (1.0 - f) / 2.0))
+    dx = round(w * (1.0 - f) / 2.0)
+    dy = round(h * (1.0 - f) / 2.0)
     ix0, ix1 = x0 + dx, x1 - dx
     iy0, iy1 = y0 + dy, y1 - dy
     if ix1 <= ix0:
@@ -262,18 +263,18 @@ def _stride_for(span: int, target: int) -> int:
     """Stride that keeps at most ~`target` samples along one axis."""
     if span <= target or target <= 0:
         return 1
-    return int(math.ceil(span / float(target)))
+    return math.ceil(span / float(target))
 
 
 def sample_depths_m(
     depth: Any,
-    region: Tuple[int, int, int, int],
+    region: tuple[int, int, int, int],
     *,
     depth_scale: float = 0.001,
     min_depth_m: float = MIN_VALID_DEPTH_M,
     max_depth_m: float = MAX_VALID_DEPTH_M,
     max_samples: int = 1024,
-) -> List[float]:
+) -> list[float]:
     """Valid depths, in METRES, over `region`, subsampled on a stride.
 
     `depth` is anything indexable as depth[row][col] — a numpy 2-D array, a
@@ -290,11 +291,11 @@ def sample_depths_m(
     return rather than an average of nothing.
     """
     x0, y0, x1, y1 = region
-    side = max(1, int(math.isqrt(max(1, int(max_samples)))))
+    side = max(1, math.isqrt(max(1, int(max_samples))))
     sx = _stride_for(x1 - x0, side)
     sy = _stride_for(y1 - y0, side)
 
-    out: List[float] = []
+    out: list[float] = []
     for v in range(y0, y1, sy):
         row = depth[v]
         for u in range(x0, x1, sx):
@@ -320,7 +321,7 @@ def median_depth_m(
     min_depth_m: float = MIN_VALID_DEPTH_M,
     max_depth_m: float = MAX_VALID_DEPTH_M,
     max_samples: int = 1024,
-) -> Tuple[Optional[float], int]:
+) -> tuple[float | None, int]:
     """Robust depth for one 2-D box. Returns (metres | None, sample count).
 
     None means "this detection has no usable range". Propagate that as a
@@ -348,7 +349,7 @@ def median_depth_m(
 
 def deproject_pixel_to_camera(
     u: float, v: float, z_m: float, intr: Intrinsics
-) -> Tuple[float, float, float]:
+) -> tuple[float, float, float]:
     """Pinhole deprojection into the CAMERA OPTICAL frame (+x right, +y DOWN, +z fwd).
 
     z_m is depth along the optical axis (what the depth image stores), not the
@@ -363,9 +364,9 @@ def deproject_pixel_to_camera(
 
 
 def camera_to_base(
-    point_optical: Tuple[float, float, float],
+    point_optical: tuple[float, float, float],
     extr: CameraExtrinsic = DEFAULT_CAMERA_EXTRINSIC,
-) -> Tuple[float, float, float]:
+) -> tuple[float, float, float]:
     """Camera optical frame -> base_link. The fixed mount, applied as a constant.
 
     Two steps, kept separate so each is readable:
@@ -411,7 +412,7 @@ def camera_to_base(
 
 def range_bearing_from_base(
     x_m: float, y_m: float, z_m: float
-) -> Tuple[float, float, float, float]:
+) -> tuple[float, float, float, float]:
     """base_link xyz -> (range_m, bearing_deg, elevation_deg, slant_m).
 
     bearing_deg = degrees(atan2(y, x)). NO NEGATION: in base_link +y is already
@@ -438,7 +439,7 @@ def ground_box(
     min_depth_m: float = MIN_VALID_DEPTH_M,
     max_depth_m: float = MAX_VALID_DEPTH_M,
     max_samples: int = 1024,
-) -> Optional[Grounded]:
+) -> Grounded | None:
     """The whole 2-D box -> egocentric pipeline, in one pure call.
 
     Returns None when the box has no usable depth. That is a normal outcome
@@ -494,7 +495,7 @@ def ground_box(
 
 
 def to_observation(
-    label: str, g: Grounded, confidence: Optional[float] = None, age_s: float = 0.0
+    label: str, g: Grounded, confidence: float | None = None, age_s: float = 0.0
 ) -> dict:
     """One wire object, shaped EXACTLY like `world_model.Observation.to_dict()`.
 

@@ -168,7 +168,7 @@ class WorldModelPublisher(Node):
             payload = json.loads(msg.data)
             if int(payload.get("v", 0)) != 1:
                 raise ValueError(f"unsupported objects schema v={payload.get('v')}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - reject any malformed detector payload
             self._notes.append(f"Detector payload rejected: {exc}")
             return
         self._objects_seen = time.time()

@@ -38,9 +38,9 @@ topic descriptor, and stringified annotations break that. Keep concrete types.
 
 from dataclasses import dataclass
 
-import cyclonedds.idl as idl
 import cyclonedds.idl.annotations as annotate
-import cyclonedds.idl.types as types  # noqa: F401  (kept: any added field needs it)
+from cyclonedds import idl
+from cyclonedds.idl import types  # noqa: F401  (kept: any added field needs it)
 
 
 @dataclass

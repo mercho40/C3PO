@@ -53,7 +53,7 @@ alive depends on who currently owns `/dev/video4` — the vendor's `videohub_pc4
 (read over its RPC, no device claim) or perception's vision container (owns the
 device, and the object detector comes with it). They are mutually exclusive
 because a V4L2 node has one owner, and the owner changes whenever somebody runs
-`take_camera`. **The bridge picks**: `:8001/camera` serves the vendor feed when
+`c3po camera take`. **The bridge picks**: `:8001/camera` serves the vendor feed when
 it is live and relays the container's when it is not, so the console's URL does
 not change when the camera changes hands. Measurements and the trade:
 `docs/ROBOT-HARDWARE.md` §6.6; the selection itself:
@@ -380,7 +380,7 @@ There is **no runtime interlock with the `gemm` Nav2 stack** cohabiting the
 robot (`docs/ROBOT-HARDWARE.md`). Its `cmd_vel_to_loco` bridge is off by
 default but one launch argument from live, and two independent controllers
 commanding the same legs is the obvious way to break this robot. The start-up
-path is guarded — `run_c3po` refuses to start while another motion commander
+path is guarded — `c3po start` refuses to start while another motion commander
 is alive (see `scripts/robot/_common.sh` for the pattern list and rationale) —
 but nothing technical prevents the other stack from starting _after_ ours is
 up. That gap is an open operational item (`docs/OPERATIONS.md`).

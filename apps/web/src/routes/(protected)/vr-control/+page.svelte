@@ -885,7 +885,7 @@
     if (status === 502)
       return {
         kind: "error",
-        text: "El puente no responde — ¿está corriendo run_c3po?",
+        text: "El puente no responde — ¿está activo c3po-bridge.service?",
       };
     return { kind: "error", text: `Falló (HTTP ${status})` };
   }
@@ -1233,8 +1233,8 @@
         <strong>La cámara ni siquiera se intentó.</strong> El puente no reportó
         <code>SIM_MODE=real</code>, así que esta página nunca abrió el stream —
         no es un problema de la cámara ni del túnel. Suele ser que falta
-        <code>-L 8001</code> en el túnel, que <code>run_c3po</code> no está
-        corriendo, o que <code>apps/bridge/.env</code> sigue en
+        <code>-L 8001</code> en el túnel, que <code>c3po-bridge.service</code> no
+        está activo, o que <code>apps/bridge/.env</code> sigue en
         <code>stub</code>. Corré <code>./scripts/preflight.sh</code>.
       </p>
     {:else if vrActive && !xrCameraEverHadFrame}

@@ -63,7 +63,7 @@ import sys
 import threading
 import time
 from collections import namedtuple
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable
 
 # The multipart boundary. Arbitrary, but it must not appear in JPEG payloads —
 # it does not, since every part carries an explicit Content-Length and the
@@ -100,7 +100,7 @@ def _log(event: str, **fields: Any) -> None:
     sys.stderr.flush()
 
 
-def encode_jpeg(frame: Any, quality: int, scale: float) -> Tuple[bytes, int, int]:
+def encode_jpeg(frame: Any, quality: int, scale: float) -> tuple[bytes, int, int]:
     """A colour frame -> JPEG bytes, (width, height) of what was encoded.
 
     Accepts either the detector's numpy BGR array (HxWx3 uint8, the pyrealsense2
@@ -185,11 +185,11 @@ class _Latest:
             self.closed = True
             self._cv.notify_all()
 
-    def snapshot(self) -> Tuple[int, Any, float]:
+    def snapshot(self) -> tuple[int, Any, float]:
         with self._cv:
             return self._seq, self._frame, self._stamp
 
-    def wait_for_newer(self, seq: int, deadline: float) -> Tuple[int, Any, float]:
+    def wait_for_newer(self, seq: int, deadline: float) -> tuple[int, Any, float]:
         """Block until a frame newer than `seq` exists, or the deadline passes.
 
         Returns the frame with seq 0 on timeout, which the caller reads as "the
@@ -218,7 +218,7 @@ class _Latest:
             self._encoded_dims = (w, h)
         return data
 
-    def status(self, now: float) -> Dict[str, Any]:
+    def status(self, now: float) -> dict[str, Any]:
         with self._cv:
             seq, stamp = self._seq, self._stamp
             dims, encoded = self._dims, self._encoded_dims
@@ -260,7 +260,7 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
             # lines; failures still surface through the handlers below.
             pass
 
-        def _headers(self, ctype: str, extra: Optional[Dict[str, str]] = None) -> None:
+        def _headers(self, ctype: str, extra: dict[str, str] | None = None) -> None:
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -378,9 +378,9 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                     data = latest.jpeg(seq, frame, quality, scale)
                     self.wfile.write(
                         (
-                            "--{}\r\nContent-Type: image/jpeg\r\n"
-                            "Content-Length: {}\r\n\r\n"
-                        ).format(BOUNDARY, len(data)).encode("ascii")
+                            f"--{BOUNDARY}\r\nContent-Type: image/jpeg\r\n"
+                            f"Content-Length: {len(data)}\r\n\r\n"
+                        ).encode("ascii")
                     )
                     self.wfile.write(data)
                     self.wfile.write(b"\r\n")
@@ -448,13 +448,13 @@ class FrameStream:
             self.running = True
             _log(
                 "ready",
-                url="http://{}:{}/stream.mjpg".format(self.host, self.port),
+                url=f"http://{self.host}:{self.port}/stream.mjpg",
                 hz=round(1.0 / self._min_interval, 1) if self._min_interval else "tick",
                 quality=self.quality,
                 scale=self.scale,
                 bind="loopback" if self.host in ("127.0.0.1", "localhost") else self.host,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - optional video must not stop detection
             _log(
                 "start.failed",
                 host=self.host,
@@ -464,7 +464,7 @@ class FrameStream:
             )
             self.running = False
 
-    def offer(self, frame: Any, stamp: Optional[float] = None) -> None:
+    def offer(self, frame: Any, stamp: float | None = None) -> None:
         """Hand over a colour frame from a tick that SUCCEEDED. Never raises."""
         if not self.running or frame is None:
             return
@@ -474,10 +474,10 @@ class FrameStream:
         self._next_at = now + self._min_interval
         try:
             self._latest.offer(frame, now)
-        except Exception as exc:  # a video bug must not stop the detector
+        except Exception as exc:  # noqa: BLE001 - video bugs must not stop detection
             _log("offer.failed", error=repr(exc))
 
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> dict[str, Any]:
         return self._latest.status(time.time())
 
     def close(self) -> None:
@@ -488,7 +488,7 @@ class FrameStream:
         try:
             self._server.shutdown()
             self._server.server_close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - best-effort optional server shutdown
             pass
         _log("stopped", frames=self._latest.offered)
 
@@ -516,7 +516,7 @@ def test_pattern(width: int, height: int, phase: int) -> RawFrame:
     return RawFrame(width=width, height=height, rgb=rolled * height)
 
 
-def from_env(getenv: Callable[[str, str], str]) -> Optional["FrameStream"]:
+def from_env(getenv: Callable[[str, str], str]) -> FrameStream | None:
     """Build a FrameStream from C3PO_VISION_STREAM* env, or None if disabled.
 
     Takes `getenv` rather than reading os.environ so the Stage 0 suite can drive

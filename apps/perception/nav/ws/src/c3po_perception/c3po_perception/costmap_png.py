@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import struct
 import zlib
-from typing import Iterable, List, Sequence
+from typing import Iterable, Sequence
 
 # Palette indices. Order is the wire format — the PLTE chunk below is written in
 # exactly this order, and the browser only ever sees indices.
@@ -102,7 +102,7 @@ def occupancy_to_index(value: int) -> int:
     return IDX_RAMP_LO + min(step, span)
 
 
-def occupancy_to_rows(data: Sequence[int], width: int, height: int) -> List[bytes]:
+def occupancy_to_rows(data: Sequence[int], width: int, height: int) -> list[bytes]:
     """Grid cells -> PNG scanlines, TOP-DOWN (see the module docstring).
 
     Raises on a length mismatch rather than padding: a short `data` means the
@@ -115,7 +115,7 @@ def occupancy_to_rows(data: Sequence[int], width: int, height: int) -> List[byte
         raise ValueError(
             f"costmap data is {len(data)} cells, but {width}x{height} needs {width * height}"
         )
-    rows: List[bytes] = []
+    rows: list[bytes] = []
     for y in range(height - 1, -1, -1):          # bottom-up source -> top-down PNG
         start = y * width
         rows.append(bytes(occupancy_to_index(v) for v in data[start:start + width]))

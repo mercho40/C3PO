@@ -22,7 +22,8 @@ if [ -z "$containers" ]; then
 fi
 
 # 1. Release the robot.
-if bridge_running || _docker ps --filter "name=^c3po-perception" -q 2>/dev/null | grep -q .; then
+if bridge_running || [ -n "$(bridge_process_pids)" ] \
+   || _docker ps --filter "name=^c3po-perception" -q 2>/dev/null | grep -q .; then
     info "c3po is running — stopping it to release the sensors"
     "$here/stop_c3po"
 fi

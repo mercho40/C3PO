@@ -19,15 +19,11 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 say "Starting VR teleop"
 
-# Before refusing on safety grounds, make sure the refusal is TRUE. A pidfile
-# that lost a race with systemd is not a missing e-stop, and refusing over one
-# is how an operator learns to work around this check.
-reconcile_bridge_pidfile >/dev/null 2>&1 || true
-
-if ! bridge_running; then
-    err "the bridge is not running — refusing to start the teleop stream"
+if ! bridge_running \
+   || ! curl -fsS --max-time 2 http://127.0.0.1:8001/telemetry/gate >/dev/null 2>&1; then
+    err "the bridge is not running and answering — refusing to start the teleop stream"
     err "it can command the legs, and stop_everything is served by the bridge."
-    err "start it first:  run_c3po"
+    err "start it first:  c3po start"
     exit 1
 fi
 
@@ -97,7 +93,7 @@ if [ "$sim_mode" != "real" ]; then
     # tunnel, or a wrong FSM, and it is none of them.
     err "SIM_MODE=$sim_mode — NOT 'real'. Nothing you do will move this robot."
     err "Velocity goes to rt/run_command/cmd, which real firmware ignores."
-    err "Fix apps/bridge/.env, then stop_c3po && run_c3po && run_teleop."
+    err "Fix apps/bridge/.env, then run: c3po restart && c3po teleop start."
 else
     ok "SIM_MODE=real"
 fi

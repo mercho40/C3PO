@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# One operator entrypoint for the onboard stack. Implementation scripts remain
+# beside this file so systemd and tests can call narrow operations directly.
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  c3po install
+  c3po start | stop | restart | status | logs
+  c3po preflight
+  c3po perception up <stage> | stop | build [target] | measure <label> [seconds]
+  c3po gemm start | stop
+  c3po teleop start | stop
+  c3po camera take
+
+Perception stages: fake, odometry, perception, nav2, nav2-fake, stt
+Starting the bridge never starts perception and never arms motion.
+EOF
+}
+
+die_usage() { printf 'c3po: %s\n\n' "$1" >&2; usage >&2; exit 2; }
+require_no_args() { local label="$1"; shift; [ "$#" -eq 0 ] || die_usage "$label takes no arguments"; }
+
+command="${1:-}"
+[ -n "$command" ] || { usage; exit 0; }
+shift
+
+case "$command" in
+    install)   require_no_args install "$@"; exec "$here/install_stack.sh" ;;
+    start)     require_no_args start "$@"; exec "$here/run_c3po" ;;
+    stop)      require_no_args stop "$@"; exec "$here/stop_c3po" ;;
+    restart)
+        require_no_args restart "$@"
+        # shellcheck source=_common.sh
+        . "$here/_common.sh"
+        main_pid="$(bridge_main_pid || true)"
+        if [ -n "$main_pid" ]; then
+            strays="$(bridge_process_pids | grep -vx "$main_pid" || true)"
+        else
+            strays="$(bridge_process_pids)"
+        fi
+        if [ -n "$strays" ]; then
+            err "bridge process exists outside c3po-bridge.service: $(echo "$strays" | tr '\n' ' ')"
+            exit 1
+        fi
+
+        sudo systemctl restart c3po-bridge.service
+        for _ in $(seq 1 30); do
+            state="$(systemctl is-active c3po-bridge.service 2>/dev/null || true)"
+            if [ "$state" = "active" ] && ready_pid="$(bridge_http_ready 8001)"; then
+                strays="$(bridge_process_pids | grep -vx "$ready_pid" || true)"
+                if [ -z "$strays" ] && [ "$(bridge_main_pid || true)" = "$ready_pid" ] \
+                   && process_listens_ipv4_loopback_port "$ready_pid" 8001; then
+                    printf 'bridge restarted under systemd (pid %s) and answers on 127.0.0.1:8001\n' "$ready_pid"
+                    exit 0
+                fi
+            fi
+            case "$state" in failed|inactive) break ;; esac
+            sleep 0.5
+        done
+        printf 'c3po: systemd bridge did not become ready; run: c3po logs\n' >&2
+        exit 1
+        ;;
+    status)
+        [ "$#" -eq 0 ] || die_usage "status takes no arguments"
+        exec "$here/c3po_health"
+        ;;
+    logs)
+        [ "$#" -eq 0 ] || die_usage "logs takes no arguments"
+        exec journalctl -u c3po-bridge.service -f
+        ;;
+    preflight) require_no_args preflight "$@"; exec "$here/c3po_preflight" ;;
+    perception)
+        sub="${1:-}"; [ -n "$sub" ] || die_usage "perception needs a subcommand"; shift
+        case "$sub" in
+            up)      [ "$#" -ge 1 ] || die_usage "perception up needs a stage"; exec "$here/perception_up" "$@" ;;
+            stop)    require_no_args "perception stop" "$@"; exec "$here/stop_perception" ;;
+            build)
+                [ "$#" -gt 0 ] || set -- all
+                exec "$here/build_perception" "$@"
+                ;;
+            measure) [ "$#" -ge 1 ] || die_usage "perception measure needs a label"; exec "$here/measure.sh" "$@" ;;
+            *)       die_usage "unknown perception subcommand: $sub" ;;
+        esac
+        ;;
+    gemm)
+        sub="${1:-}"; shift || true
+        case "$sub" in
+            start) require_no_args "gemm start" "$@"; exec "$here/run_gemm" ;;
+            stop)  require_no_args "gemm stop" "$@"; exec "$here/stop_gemm" ;;
+            *)     die_usage "gemm needs start or stop" ;;
+        esac
+        ;;
+    teleop)
+        sub="${1:-}"; shift || true
+        case "$sub" in
+            start) require_no_args "teleop start" "$@"; exec "$here/run_teleop" ;;
+            stop)  require_no_args "teleop stop" "$@"; exec "$here/stop_teleop" ;;
+            *)     die_usage "teleop needs start or stop" ;;
+        esac
+        ;;
+    camera)
+        sub="${1:-}"; shift || true
+        [ "$sub" = "take" ] || die_usage "camera supports only: take"
+        require_no_args "camera take" "$@"
+        exec "$here/take_camera"
+        ;;
+    help|-h|--help) usage ;;
+    *) die_usage "unknown command: $command" ;;
+esac

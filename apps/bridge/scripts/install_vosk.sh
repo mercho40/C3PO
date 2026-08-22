@@ -3,7 +3,7 @@
 #
 #     ssh c3po 'bash ~/c3po/apps/bridge/scripts/install_vosk.sh'
 #
-# The vosk PACKAGE comes from `uv sync --extra voice` (run_c3po does this) —
+# The vosk PACKAGE comes from `uv sync --extra voice` (`bridge_sync` does this) —
 # this script only places the MODEL, which is not on PyPI.
 #
 # FETCHING IT FROM THE ROBOT IS THE SLOW PATH. Egress here measured ~7 KB/s to

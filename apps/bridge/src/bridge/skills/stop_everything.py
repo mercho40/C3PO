@@ -21,8 +21,9 @@ does afterwards.
 **The blocking RPCs then run off the event loop, and this used to be wrong.**
 This function was fully synchronous, justified by "with stdio MCP, no
 concurrent tools can run anyway". That justification expired: onboard the G1
-the bridge serves streamable-HTTP in a single process (`run_c3po` sets
-`BRIDGE_TRANSPORT=http`), where concurrent requests are exactly what happens.
+the bridge serves streamable-HTTP in one systemd-owned process
+(`c3po-bridge.service` pins `BRIDGE_TRANSPORT=http`), where concurrent requests
+are exactly what happens.
 Meanwhile the Damp fallback below can retry 3x against a 10 s client timeout,
 so a degraded link — the case the retry exists for — could wedge the whole
 event loop for ~30 s. During that window a second stop press and every

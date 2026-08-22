@@ -16,48 +16,46 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 say "Stopping VR teleop"
 
 stopped=0
-for pair in "teleop stream:$TELEOP_PID:stray_teleop_pids"; do
-    label="${pair%%:*}"; rest="${pair#*:}"
-    pidfile="${rest%%:*}"; strayfn="${rest##*:}"
+label="teleop stream"
+pidfile="$TELEOP_PID"
 
-    if pid="$(sidecar_pid "$pidfile" 2>/dev/null)"; then
-        info "stopping $label (pid $pid)"
-        # SIGTERM first: the server's own handler is what sends the stop
-        # command and ramps the arm weight down. SIGKILL would skip both.
-        #
-        # 8 s, not 5. The handler's own budget is SHUTDOWN_BUDGET_S (5 s in
-        # teleop/server.py), which covers a zero-velocity command that waits
-        # for an ack and then a 2 s arm_sdk weight ramp. At 5 s here the
-        # escalation landed *during* that ramp — killing the graceful shutdown
-        # precisely in the case it was written for, and leaving the arms
-        # blended at a part-way weight. Whatever these two numbers are, this
-        # one must be the larger.
-        kill "$pid" 2>/dev/null || true
-        for _ in $(seq 1 40); do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.2
-        done
-        if kill -0 "$pid" 2>/dev/null; then
-            warn "$label did not exit on SIGTERM — killing"
-            kill -9 "$pid" 2>/dev/null || true
-        fi
-        rm -f "$pidfile"
-        stopped=1
+if pid="$(sidecar_pid "$pidfile" 2>/dev/null)"; then
+    info "stopping $label (pid $pid)"
+    # SIGTERM first: the server's own handler is what sends the stop
+    # command and ramps the arm weight down. SIGKILL would skip both.
+    #
+    # 8 s, not 5. The handler's own budget is SHUTDOWN_BUDGET_S (5 s in
+    # teleop/server.py), which covers a zero-velocity command that waits
+    # for an ack and then a 2 s arm_sdk weight ramp. At 5 s here the
+    # escalation landed *during* that ramp — killing the graceful shutdown
+    # precisely in the case it was written for, and leaving the arms
+    # blended at a part-way weight. Whatever these two numbers are, this
+    # one must be the larger.
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 40); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        warn "$label did not exit on SIGTERM — killing"
+        kill -9 "$pid" 2>/dev/null || true
     fi
+    rm -f "$pidfile"
+    stopped=1
+fi
 
-    # A process outside our pidfile still holds DDS and can still write
-    # setpoints, so "no pidfile" is not "nothing running".
-    strays="$($strayfn)"
-    if [ -n "$strays" ]; then
-        warn "$label running outside our pidfile — stopping (pid: $(echo "$strays" | tr '\n' ' '))"
-        # shellcheck disable=SC2086
-        kill $strays 2>/dev/null || true
-        stopped=1
-    fi
-done
+# A process outside our pidfile still holds DDS and can still write setpoints,
+# so "no pidfile" is not "nothing running".
+strays="$(stray_teleop_pids)"
+if [ -n "$strays" ]; then
+    warn "$label running outside our pidfile — stopping (pid: $(echo "$strays" | tr '\n' ' '))"
+    # shellcheck disable=SC2086
+    kill $strays 2>/dev/null || true
+    stopped=1
+fi
 
 if [ "$stopped" = "1" ]; then
-    ok "VR teleop stopped. The bridge is untouched — stop_c3po if you want that too."
+    ok "VR teleop stopped. The bridge is untouched — use 'c3po stop' if you want that too."
 else
     info "nothing was running"
 fi

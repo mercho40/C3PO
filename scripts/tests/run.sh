@@ -12,8 +12,8 @@
 #   * `take_camera` reported "nothing has it" while the co-tenant pulled 15 fps
 #     off the sensor, because its copy of the holder check could not see a
 #     process that opens the device without naming it.
-#   * `install_robot_scripts.sh`'s new checker flagged four scripts that were on
-#     its own list, because `case` does no word splitting across newlines.
+#   * the old PATH installer maintained a second command inventory that drifted
+#     from the directory it was meant to expose.
 #   * A `die` message with backticks in it was EXECUTED by bash.
 #
 # Every one of those is a pure-text bug, findable in milliseconds on a laptop,
@@ -89,6 +89,76 @@ done < <(find "$repo/scripts" -type f \( -name '*.sh' -o ! -name '*.*' \) \
          -exec grep -lE '^#!/usr/bin/env bash|^#!/bin/bash' {} + | sort)
 
 # ---------------------------------------------------------------------------
+# bridge socket ownership
+# ---------------------------------------------------------------------------
+echo "== bridge socket ownership =="
+
+# shellcheck source=../robot/_common.sh
+C3PO_DIR="$repo" source "$repo/scripts/robot/_common.sh"
+
+# Readiness must belong to systemd's MainPID on the exact IPv4 loopback address,
+# not merely to whichever process or interface happens to own the port.
+proc_fixture="$(mktemp -d)"
+mkdir -p "$proc_fixture/net" "$proc_fixture/4321/fd" \
+    "$proc_fixture/9876/fd" "$proc_fixture/2468/fd"
+printf '%s\n' \
+    '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode' \
+    '   0: 0100007F:1F41 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 7654321' \
+    '   1: 00000000:1F41 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 2222222' \
+    > "$proc_fixture/net/tcp"
+ln -s 'socket:[7654321]' "$proc_fixture/4321/fd/7"
+ln -s 'socket:[9999999]' "$proc_fixture/9876/fd/8"
+ln -s 'socket:[2222222]' "$proc_fixture/2468/fd/9"
+if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_loopback_port 4321 8001; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1)); failed_names+=("MainPID owns its loopback listening socket")
+fi
+if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_loopback_port 9876 8001; then
+    fail=$((fail + 1)); failed_names+=("a different process cannot satisfy bridge readiness")
+else
+    pass=$((pass + 1))
+fi
+if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_loopback_port 4321 8000; then
+    fail=$((fail + 1)); failed_names+=("the MainPID must own the configured port")
+else
+    pass=$((pass + 1))
+fi
+if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_loopback_port 2468 8001; then
+    fail=$((fail + 1)); failed_names+=("a non-loopback listener cannot satisfy readiness")
+else
+    pass=$((pass + 1))
+fi
+rm -rf "$proc_fixture"
+
+# The combined probe checks ownership on both sides of HTTP. Model a bridge that
+# loses its socket during curl; a successful HTTP response must not rescue it.
+if (
+    bridge_main_pid() { printf '4321'; }
+    bridge_running() { return 0; }
+    curl() { return 0; }
+    ownership_calls=0
+    process_listens_ipv4_loopback_port() {
+        ownership_calls=$((ownership_calls + 1))
+        [ "$ownership_calls" -eq 1 ]
+    }
+    bridge_http_ready 8001 >/dev/null
+); then
+    fail=$((fail + 1)); failed_names+=("readiness is rechecked after HTTP")
+else
+    pass=$((pass + 1))
+fi
+
+got="$(
+    bridge_main_pid() { printf '4321'; }
+    bridge_running() { return 0; }
+    curl() { return 0; }
+    process_listens_ipv4_loopback_port() { return 0; }
+    bridge_http_ready 8001
+)"
+check "a stable owned HTTP listener returns its MainPID" "4321" "$got"
+
+# ---------------------------------------------------------------------------
 # who holds the camera
 # ---------------------------------------------------------------------------
 #
@@ -96,10 +166,6 @@ done < <(find "$repo/scripts" -type f \( -name '*.sh' -o ! -name '*.*' \) \
 # is pure — it reads a process table on stdin — precisely so it can be tested
 # against a fixture instead of against a robot.
 echo "== camera holder detection =="
-
-# shellcheck source=../robot/_common.sh
-C3PO_DIR="$repo" source "$repo/scripts/robot/_common.sh"
-
 TABLE_VIDEOHUB='   1868 /unitree/module/video_hub_pc4/videohub_pc4_chest /dev/video10
    2233 /unitree/module/video_hub_pc4/videohub_pc4 /dev/video4
    3001 /usr/lib/systemd/systemd --user'
@@ -171,30 +237,117 @@ check "gemm's node is classified as gemm"  "gemm"     "$(classify "$TABLE_GEMM")
 check "an idle machine classifies as none" "none"     "$(classify "$TABLE_IDLE")"
 
 # ---------------------------------------------------------------------------
-# the PATH install list
+# the one operator CLI
+# ---------------------------------------------------------------------------
+echo "== c3po CLI =="
+out="$(bash "$repo/scripts/robot/c3po" --help 2>&1)"
+check_contains "the CLI exposes stack lifecycle" "c3po start | stop | restart | status" "$out"
+check_contains "the CLI exposes explicit perception stages" "c3po perception up <stage>" "$out"
+check_contains "the CLI exposes the deliberate camera takeover" "c3po camera take" "$out"
+
+if out="$(bash "$repo/scripts/robot/c3po" start unexpected 2>&1)"; then
+    fail=$((fail + 1)); failed_names+=("the CLI rejects ignored lifecycle arguments")
+else
+    check_contains "the CLI rejects ignored lifecycle arguments" \
+        "start takes no arguments" "$out"
+fi
+if out="$(bash "$repo/scripts/robot/c3po" perception stop unexpected 2>&1)"; then
+    fail=$((fail + 1)); failed_names+=("perception stop rejects ignored arguments")
+else
+    check_contains "perception stop rejects ignored arguments" \
+        "perception stop takes no arguments" "$out"
+fi
+
+cli_source="$(cat "$repo/scripts/robot/c3po")"
+check_contains "camera take dispatches to the guarded implementation" \
+    'exec "$here/take_camera"' "$cli_source"
+check_contains "perception remains an explicit subcommand" \
+    'exec "$here/perception_up"' "$cli_source"
+check_not_contains "status exposes no automatic repair path" \
+    '--repair' "$cli_source"
+check_contains "restart requires an active systemd unit" \
+    'if [ "$state" = "active" ] && ready_pid=' "$cli_source"
+check_contains "restart rejects a second bridge process" \
+    'bridge_process_pids | grep -vx "$ready_pid"' "$cli_source"
+check_contains "restart ties HTTP readiness to a stable MainPID socket" \
+    'bridge_http_ready 8001' "$cli_source"
+
+start_source="$(cat "$repo/scripts/robot/run_c3po")"
+check_contains "start ties HTTP readiness to a stable MainPID socket" \
+    'bridge_http_ready 8001' "$start_source"
+common_source="$(cat "$repo/scripts/robot/_common.sh")"
+check_contains "socket ownership is restricted to IPv4 loopback" \
+    'local_address="0100007F:$(printf' "$common_source"
+check_contains "socket ownership is rechecked after HTTP" \
+    'process_listens_ipv4_loopback_port "$after" "$port"' "$common_source"
+
+# ---------------------------------------------------------------------------
+# install and safety invariants that must remain visible in source
+# ---------------------------------------------------------------------------
+
+echo "== stack hardening invariants =="
+install_stack_source="$(cat "$repo/scripts/robot/install_stack.sh")"
+check_contains "install_stack stages logrotate config as root" \
+    'sudo install -o root -g root -m 0644 "$here/c3po-logs.logrotate" "$stage/c3po.logrotate"' \
+    "$install_stack_source"
+check_contains "install_stack installs one operator command" \
+    'ln -sf "$here/c3po" "$bin_dir/c3po"' "$install_stack_source"
+check_not_contains "install_stack never symlinks a user-owned logrotate config" \
+    'ln -sf "$here/c3po-logs.logrotate"' "$install_stack_source"
+check_contains "the bridge unit is staged as a root-owned copy" \
+    'sudo install -o root -g root -m 0644 "$here/$unit" "$stage/$unit"' "$install_stack_source"
+check_contains "legacy bridge symlinks are atomically replaced" \
+    'sudo mv -f "/etc/systemd/system/.$unit.c3po-new" "/etc/systemd/system/$unit"' "$install_stack_source"
+check_contains "automatic perception is removed during migration" \
+    "'/etc/systemd/system/c3po-perception@.service'" "$install_stack_source"
+check_contains "the repair timer is disabled during migration" \
+    'sudo systemctl disable --now c3po-health.timer' "$install_stack_source"
+check_contains "an in-flight legacy repair is stopped too" \
+    'sudo systemctl stop c3po-health.service' "$install_stack_source"
+check_contains "migration refuses an activating perception unit" \
+    '$3 == "active" || $3 == "activating" || $3 == "deactivating" || $3 == "reloading"' \
+    "$install_stack_source"
+check_not_contains "PID 1 never follows unit symlinks into the writable checkout" \
+    'sudo ln -sf "$here/$unit"' "$install_stack_source"
+
+bridge_unit_source="$(cat "$repo/scripts/robot/c3po-bridge.service")"
+check_contains "systemd directly supervises the bridge" "Type=exec" "$bridge_unit_source"
+check_contains "the bridge daemon stays on loopback" "Environment=BRIDGE_HOST=127.0.0.1" "$bridge_unit_source"
+check_not_contains "the bridge has no pidfile" "PIDFile=" "$bridge_unit_source"
+check_not_contains "the bridge unit does not call run_c3po" "ExecStart=/home/unitree/c3po/scripts/robot/run_c3po" "$bridge_unit_source"
+
+stop_stack_source="$(cat "$repo/scripts/robot/stop_c3po")"
+check_contains "stack stop cancels even an activating bridge unit" \
+    'sudo systemctl stop c3po-bridge.service' "$stop_stack_source"
+
+stop_perception_source="$(cat "$repo/scripts/robot/stop_perception")"
+check_contains "operator perception stop deactivates the owning unit" \
+    "systemctl list-units --all --plain --no-legend 'c3po-perception@*.service'" \
+    "$stop_perception_source"
+check_contains "perception unit shutdown is delegated to systemd" \
+    'sudo systemctl stop $units' "$stop_perception_source"
+
+health_source="$(cat "$repo/scripts/robot/c3po_health")"
+check_contains "health resolves the checkout independently of HOME" \
+    'C3PO_DIR="${C3PO_DIR:-$(cd "$here/../.." && pwd)}"' "$health_source"
+health_py_source="$(cat "$repo/apps/bridge/src/bridge/health.py")"
+check_not_contains "health contains no systemd repair action" \
+    'try-restart' "$health_py_source"
+sudoers_source="$(cat "$repo/scripts/robot/c3po.sudoers")"
+check_not_contains "sudoers grants no perception lifecycle command" \
+    'c3po-perception@' "$sudoers_source"
+
+commander_source="$(cat "$repo/scripts/robot/_common.sh")"
+check_contains "unitree_slam is treated as a locomotion commander" \
+    'brainco_hand_server|unitree_slam' "$commander_source"
+
+# ---------------------------------------------------------------------------
+# ShellCheck, when it is available
 # ---------------------------------------------------------------------------
 #
-# This checker shipped broken and reported four scripts that were on its list.
-echo "== install_robot_scripts =="
-tmpbin="$(mktemp -d)"
-out="$(BIN_DIR="$tmpbin" SKIP_LOGROTATE=1 bash "$repo/scripts/robot/install_robot_scripts.sh" 2>&1)"
-check_not_contains "a clean checkout produces no unlisted-script NOTE" "NOTE:" "$out"
-check_contains "take_camera is linked onto PATH" "take_camera" "$out"
-
-# ...and it must still fire, or it is decoration.
-touch "$repo/scripts/robot/zz_test_unlisted"
-out="$(BIN_DIR="$tmpbin" SKIP_LOGROTATE=1 bash "$repo/scripts/robot/install_robot_scripts.sh" 2>&1)"
-rm -f "$repo/scripts/robot/zz_test_unlisted"
-check_contains "an unlisted script IS reported" "zz_test_unlisted" "$out"
-rm -rf "$tmpbin"
-
-# ---------------------------------------------------------------------------
-# shellcheck, when it is available
-# ---------------------------------------------------------------------------
-#
-# Not a hard requirement: it is not installed on the robot and this suite has to
-# run there. Skipped loudly rather than silently, so "0 findings" is never
-# confused with "never ran".
+# Optional for a direct run on the robot, where it is not installed. Package/CI
+# runs set C3PO_REQUIRE_SHELLCHECK=1 so a missing analyzer is a failure rather
+# than a deceptively green skipped gate.
 echo "== shellcheck =="
 if command -v shellcheck >/dev/null 2>&1; then
     while IFS= read -r script; do
@@ -207,6 +360,9 @@ if command -v shellcheck >/dev/null 2>&1; then
         fi
     done < <(find "$repo/scripts" -type f \( -name '*.sh' -o ! -name '*.*' \) \
              -exec grep -lE '^#!/usr/bin/env bash|^#!/bin/bash' {} + | sort)
+elif [ "${C3PO_REQUIRE_SHELLCHECK:-0}" = "1" ]; then
+    fail=$((fail + 1)); failed_names+=("shellcheck is required but not installed")
+    printf '  ✗ shellcheck is required but not installed\n' >&2
 else
     printf '  – skipped: shellcheck is not installed (brew install shellcheck)\n'
 fi

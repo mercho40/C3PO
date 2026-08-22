@@ -535,9 +535,9 @@ def _local_section() -> Section:
 
 def _tunnel_section() -> Section:
     spec = (
-        (8767, "teleop stream", True, "run_teleop"),
-        (8001, "bridge MCP", True, "run_c3po"),
-        (8081, "camera MJPEG (only if PUBLIC_ROBOT_CAM_URL says 8081)", False, "perception_up perception"),
+        (8767, "teleop stream", True, "c3po teleop start"),
+        (8001, "bridge MCP", True, "c3po start"),
+        (8081, "camera MJPEG (only if PUBLIC_ROBOT_CAM_URL says 8081)", False, "c3po perception up perception"),
     )
     findings = []
     for port, label, fatal, starter in spec:

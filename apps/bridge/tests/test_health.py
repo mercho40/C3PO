@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 
-from bridge.health import assess, render, repairs_for
+from bridge import health
+from bridge.health import assess, render
 
 ARMED = json.dumps({"enabled": True, "link": {"started": True, "domain_id": 42}})
 CLOSED = json.dumps(
@@ -18,7 +19,6 @@ CLOSED = json.dumps(
 
 BASE = dict(
     bridge_pid=1234,
-    enabled_stage=None,
     perception_containers=[],
     gemm_containers=[],
 )
@@ -92,6 +92,16 @@ def test_a_dead_bridge_is_a_problem():
     assert "bridge" in problem_names(report)
 
 
+def test_bridge_pid_comes_from_systemd_not_a_second_pidfile(monkeypatch):
+    monkeypatch.setattr(health, "_run", lambda argv: "4321\n")
+    assert health._service_main_pid("c3po-bridge.service") == 4321
+
+
+def test_an_inactive_systemd_unit_has_no_bridge_pid(monkeypatch):
+    monkeypatch.setattr(health, "_run", lambda argv: "0\n")
+    assert health._service_main_pid("c3po-bridge.service") is None
+
+
 def test_an_unstarted_domain_link_is_a_problem():
     """The failure that presented as three unrelated symptoms and no error."""
     report = assess(gate_json='{"enabled": false, "link": {"started": false}}', **BASE)
@@ -101,44 +111,25 @@ def test_an_unstarted_domain_link_is_a_problem():
 # --- perception -------------------------------------------------------------
 
 
-def test_an_enabled_unit_with_no_containers_is_a_problem():
-    args = dict(BASE, enabled_stage="nav2", perception_containers=[])
-    report = assess(gate_json=ARMED, **args)
-    assert "perception (nav2)" in problem_names(report)
-
-
-def test_containers_without_an_enabled_unit_are_normal():
-    """`perception_up` by hand is the ordinary way to open a sensor window."""
-    args = dict(BASE, enabled_stage=None, perception_containers=["c3po-perception-nav"])
+def test_running_perception_containers_are_reported_without_inventing_a_unit():
+    args = dict(
+        BASE,
+        perception_containers=["c3po-perception-nav", "c3po-perception-stt"],
+    )
     report = assess(gate_json=ARMED, **args)
     assert problem_names(report) == []
-    assert "by hand" in detail_for(report, "perception")
+    assert "c3po-perception-nav" in detail_for(report, "perception")
+    assert "c3po-perception-stt" in detail_for(report, "perception")
 
 
-def test_nothing_running_and_nothing_enabled_is_not_a_fault():
+def test_perception_off_is_not_a_fault():
     report = assess(gate_json=ARMED, **BASE)
     assert problem_names(report) == []
+    assert "off" in detail_for(report, "perception")
 
 
-# --- repair -----------------------------------------------------------------
-
-
-def test_repair_targets_only_what_is_actually_broken():
-    args = dict(BASE, enabled_stage="nav2", perception_containers=[])
-    args["bridge_pid"] = None
-    report = assess(gate_json=None, **args)
-    assert repairs_for(report) == ["c3po-bridge", "c3po-perception@nav2"]
-
-
-def test_a_healthy_stack_has_nothing_to_repair():
-    assert repairs_for(assess(gate_json=ARMED, **BASE)) == []
-
-
-def test_an_armed_gate_is_never_something_to_repair():
-    """It is a fact to report, not a fault to fix — and 'repairing' it would
-    mean restarting the bridge out from under a robot that is being driven."""
-    report = assess(gate_json=ARMED, **BASE)
-    assert repairs_for(report) == []
+def test_status_rejects_the_removed_repair_flag():
+    assert health.main(["--repair"]) == 2
 
 
 # --- rendering --------------------------------------------------------------

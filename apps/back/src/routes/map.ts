@@ -30,18 +30,7 @@
 
 import { Elysia } from "elysia";
 
-/**
- * The bridge's telemetry origin. `BRIDGE_URL` points at the MCP endpoint
- * (`…/mcp`); the telemetry routes are siblings of it, so derive rather than
- * introducing a second env var that can drift out of step with the first.
- */
-function telemetryUrl(path: string): string {
-  const bridgeUrl = process.env.BRIDGE_URL ?? "http://127.0.0.1:8000/mcp";
-  const base = new URL(bridgeUrl);
-  base.pathname = path;
-  base.search = "";
-  return base.toString();
-}
+import { bridgeSiblingUrl } from "../bridge/url";
 
 /** Placement metadata the bridge attaches, so the console can georeference the image. */
 const FORWARDED_HEADERS = [
@@ -60,7 +49,7 @@ export const mapRoutes = new Elysia().get(
   async ({ status }) => {
     let upstream: Response;
     try {
-      upstream = await fetch(telemetryUrl("/telemetry/costmap.png"), {
+      upstream = await fetch(bridgeSiblingUrl("/telemetry/costmap.png"), {
         // Short: at 1 Hz a slow map is a stale map, and the console would
         // rather be told "no map" than block a poll cycle waiting for one.
         signal: AbortSignal.timeout(3000),

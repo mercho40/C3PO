@@ -73,7 +73,7 @@ DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
 # (see apps/back/src/bridge/client.ts). stdio stays untouched either way.
 BRIDGE_TRANSPORT = os.environ.get("BRIDGE_TRANSPORT", "stdio")
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
-BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8000"))
+BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8001"))
 
 # How much longer than the byte-derived estimate `say(wait_for_completion=True)`
 # will wait for `play_state` to drop. Playback runs slightly past the estimate

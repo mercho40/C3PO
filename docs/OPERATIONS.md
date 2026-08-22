@@ -41,8 +41,8 @@ flowchart TB
 | `apps/web`        | Vercel                    | git push (see `apps/web/README.md`)                                |
 | `apps/back`       | Ubuntu box on the LAN     | `bun build --compile` → one self-contained binary + systemd (§5)   |
 | Postgres          | Neon (managed, sa-east-1) | `drizzle-kit migrate` on deploy (§7)                               |
-| `apps/bridge`     | G1 Jetson                 | `~/c3po` checkout; `git pull && stop_c3po && run_c3po`; boot unit  |
-| `apps/perception` | G1 Jetson                 | `build_perception`, then `perception_up <stage>` — never automatic |
+| `apps/bridge`     | G1 Jetson                 | `~/c3po` checkout; `git pull && c3po restart`; systemd             |
+| `apps/perception` | G1 Jetson                 | `c3po perception build`, then `c3po perception up <stage>`         |
 
 Neon is the live DB only; local dev runs against a Homebrew Postgres — setup in
 `apps/back/README.md`.
@@ -72,7 +72,7 @@ The port map, in one place:
 | `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp`; 8000 is held by `gemm-ai.service`                        |
 | `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                                  |
 | `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback                |
-| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera`'s real-robot feed; only up with `perception_up perception`/`nav2` |
+| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`               |
 | Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge — the same feed **without** owning `/dev/video4`       |
 | Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                                 |
 | G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                               |
@@ -119,79 +119,62 @@ stack itself is described in `docs/ROBOT-HARDWARE.md`.
 
 ### The durable install
 
-`./scripts/robot/install_stack.sh` (needs sudo, run on the robot) installs the whole stack
-as systemd units, symlinked from the checkout so `git pull` updates them and only a
-`daemon-reload` is needed:
+There is one installer and one operator command:
 
-| Unit                              | What it is                                                                                                                              |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `c3po-bridge.service`             | The bridge. **Enabled** — it owns `stop_everything`, so it should always be up                                                          |
-| `c3po-perception@<stage>.service` | Templated: the STAGE is the instance name (`c3po-perception@nav2-fake`). Calls `perception_up` rather than duplicating the docker flags |
-| `c3po-health.timer`               | Every 2 min: restarts a dead bridge, or a perception unit whose containers vanished                                                     |
+```bash
+./scripts/robot/c3po install
+c3po status
+```
 
-**What it deliberately does NOT do**, and each of these is a decision rather than an
-omission:
+The installer links only `c3po` onto `~/.local/bin`, validates and copies one root-owned
+systemd unit (never a symlink into the writable checkout), and installs root-owned
+logrotate/sudoers policies. It starts nothing. Re-run `c3po install` after pulling a unit
+change.
 
-- **No sensor-claiming stage is enabled at boot.** `nav2` and `perception` take the Livox
-  _and_ the RealSense from the other team; enabling either would take them again on every
-  power cycle, including reboots nobody intended. Only `nav2-fake` — which claims nothing —
-  is safe to enable. Start the sensor stages by hand inside an agreed window.
-- **Nav2's lifecycle is not autostarted.** `autostart: false` is a safety decision: container
-  start must never be the same event as "the robot is ready to be driven".
-- **Nothing installed can arm the gate.** A watchdog that can start motion is not a watchdog.
+| Unit                  | What it owns                                                    |
+| --------------------- | --------------------------------------------------------------- |
+| `c3po-bridge.service` | The bridge directly (`Type=exec`); no wrapper, nohup or pidfile |
 
-**Boot does not require the network.** `run_c3po` syncs dependencies only when `uv.lock`'s
-_hash_ has changed (not its mtime — `git pull` rewrites those), and a failed sync with a
-usable venv left over is a loud warning rather than a refusal to start. A robot that cannot
-be stopped is a far worse failure than one running yesterday's dependencies.
+There is deliberately no perception unit and no repair timer. Every perception stage,
+including sensor-free ones, is a foreground `c3po perception up <stage>` decision. Boot may
+make `stop_everything` available; it cannot claim a sensor, start Nav2, or arm motion.
 
-**Before letting a planner drive:** `c3po_preflight`. It checks the things `c3po_health`
-does not — whether anything else can command the legs, whether the LiDAR is real or
-synthetic, whether the gate is already armed — and refuses to print a reassuring summary
-when any of them is unknown. It reports that the velocity clamps are **unmeasured** every
-single time, because they are.
+**Boot does not require the network.** `bridge_sync`, the unit's `ExecStartPre`, syncs only
+when `uv.lock`'s hash changes. A failed sync with a usable venv is a loud warning rather
+than a boot refusal; a first install with no interpreter still fails.
 
-### Stack controls
+### One operator CLI
 
-`scripts/robot/`. `./scripts/robot/install_robot_scripts.sh` symlinks the stack controls
-onto PATH — including `c3po_health`, `c3po_preflight` and `stop_perception`, which are
-meant to be typed by bare name by somebody standing next to the robot. `build_perception`
-and `measure.sh` are linked too; what each command _guarantees_ — the mechanics are in the
-scripts' own headers:
+The implementation remains split into narrow scripts because systemd and tests call those
+operations independently, but operators use one surface:
 
-| Command                 | Guarantees                                                                                                                                                                                                                  |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run_c3po`              | Stops `gemm` first (unless `C3PO_NO_TAKEOVER=1`); refuses if another commander or an untracked bridge is alive; syncs deps + re-applies the `postsync.sh` patch; starts the bridge and waits for its port, not just its pid |
-| `stop_c3po`             | SIGTERM→SIGKILL the bridge _and its whole process tree_, then verifies no bridge survived; stops both perception containers                                                                                                 |
-| `run_gemm`              | Stops our stack first, then starts their containers                                                                                                                                                                         |
-| `stop_perception`       | Stops **only** the perception containers, leaving the bridge and its closed gate up — "perception is down" must never be the reason the robot is safe                                                                       |
-| `c3po_health`           | Is the stack up? Reports the bridge, whether it _answers_, the domain-42 link, the perception stage and the co-tenant. `--repair` restarts dead units and nothing else                                                      |
-| `c3po_preflight`        | Is it safe to let Nav2 drive? Blocks on a down bridge, another commander, an offline LiDAR or a **synthetic** perception stage. Changes nothing, arms nothing                                                               |
-| `stop_gemm`             | `docker stop` (not `down`) so a docker-daemon restart does not resurrect them — though the container has been observed returning anyway (§9); warns about a `cmd_vel_to_loco` surviving outside docker                      |
-| `perception_up <stage>` | States which shared sensors the stage claims _before_ claiming them; `fake` claims none                                                                                                                                     |
+| Command                              | Guarantee                                                                                       |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `c3po start`                         | Stops `gemm`, rejects other commanders, then proves systemd's MainPID owns the ready HTTP socket |
+| `c3po stop`                          | Stops perception, then lets systemd stop/reap the bridge cgroup                                 |
+| `c3po status`                        | Read-only report of bridge HTTP/gate, perception containers and co-tenant state                  |
+| `c3po preflight`                     | Read-only safety gate before Nav2 is armed                                                      |
+| `c3po perception up <stage>`         | Explicitly starts one stage and states which shared sensors it claims                           |
+| `c3po perception stop`               | Releases perception containers while leaving the bridge available                              |
+| `c3po perception build|measure ...`  | Builds images or runs the bounded compute harness                                               |
+| `c3po gemm start|stop`               | Hands ownership to/from the co-tenant                                                           |
+| `c3po teleop start|stop`             | Manages the per-session VR sidecar                                                              |
+| `c3po camera take`                   | Performs the explicit vendor-camera takeover                                                    |
+| `c3po logs`                          | Follows `c3po-bridge.service` in journald                                                       |
 
-Starting either stack stops the other — forced by sensor ownership, not policy; doing it
-in the scripts turns a confusing mid-startup `EBUSY` into an explicit "gemm was stopped
-for you".
+Starting either stack stops the other. Perception is never started by `c3po start` or a
+bridge boot path. The systemd unit starts no sensor and does not need a takeover flag.
 
-`C3PO_NO_TAKEOVER=1` means exactly one thing: start the bridge **without** stopping
-`gemm`. It exists for the boot unit — a machine powering on is not a person asking to
-own the robot.
+Bridge logs live in journald. Build/perception trace files are bounded by the installed
+logrotate policy; Docker output is bounded per C3PO container with
+`max-size=32m,max-file=3` without changing the shared daemon.
 
-**⚠️ `stop_gemm` does not stop `gemm-ai.service`.** It filters running _containers_, and
-`gemm-ai` is a systemd unit. That service is a voice/vision assistant — verified to
-issue no motion commands, so the one-commander invariant holds — but it binds
-`0.0.0.0:8000`, which is why our bridge listens on 8001. If it must go:
-`sudo systemctl stop gemm-ai` — coordinate first, it is theirs. Details in
-`docs/ROBOT-HARDWARE.md`.
+**⚠️ `c3po gemm stop` does not stop `gemm-ai.service`.** It is a separate systemd
+voice/vision service, verified not to issue motion commands, and owns port 8000. Coordinate
+before stopping it. The bridge therefore stays on loopback port 8001.
 
-**⚠️ Stopping the bridge removes `stop_everything`.** The physical e-stop and the
-firmware's 1 s `SET_VELOCITY` deadman still apply — they always do — but do not
-`stop_c3po` while the robot is mid-task expecting to be cancellable.
-
-Perception is **never** started by `run_c3po` or any boot path. Claiming the RealSense
-and the Livox is a different conversation with the other team than "the bridge is mine",
-so it is one explicit command: `perception_up <stage>`.
+**⚠️ `c3po stop` removes `stop_everything`.** Do not stop the stack mid-task expecting a
+software cancellation path; the physical e-stop and firmware velocity deadman remain.
 
 ---
 
@@ -244,42 +227,37 @@ A git checkout at `~/c3po`; Python and `uv` under `~/.local`; CycloneDDS prebuil
 box (paths in `apps/bridge/.env.example`). Deploy:
 
 ```bash
-ssh c3po 'bash -lc "cd ~/c3po && git pull && stop_c3po && run_c3po"'
+ssh c3po 'bash -lc "cd ~/c3po && git pull && ./scripts/robot/c3po install && c3po restart"'
 ```
 
-`run_c3po` runs `uv sync` and re-applies `scripts/postsync.sh` itself — a dependency
-change needs no manual step. Config lives in `apps/bridge/.env` (not in git; template and
-per-host values in `apps/bridge/.env.example`).
+Re-running the installer is intentional: unit and root-owned config changes are applied
+and validated in the same operation. `c3po restart` restarts only the bridge; perception
+containers are untouched. `bridge_sync` handles dependency changes and re-applies the SDK
+patch before the service starts. Config remains in `apps/bridge/.env`.
 
-- **⚠️ A pull is a `stop_everything` outage.** The deploy line implies
-  `stop_c3po` → `run_c3po` — a window with no `stop_everything` (§4). Do it with the
-  robot in damp/zero_torque, never mid-task.
-- **Transport trap.** The bridge's own default transport is **stdio** — correct when an
-  MCP client spawns it as a child over pipes, fatal as a daemon: stdin is `/dev/null`,
-  it reads EOF and exits before ever reaching the robot, presenting as a failed start
-  with an empty log. `run_c3po` supplies `BRIDGE_TRANSPORT=http` /
-  `BRIDGE_HOST=127.0.0.1` / `BRIDGE_PORT=8001` as defaults; `.env` only overrides.
+- **⚠️ Restart is a brief `stop_everything` outage.** Deploy only with the robot stopped
+  and the physical e-stop available.
+- **Transport trap.** The bridge defaults to stdio for child-process MCP use. The systemd
+  unit pins daemon mode to HTTP on `127.0.0.1:8001`, so an `.env` edit cannot accidentally
+  expose its unauthenticated motion surface to the LAN.
 - **Loopback is deliberate.** The bridge can command the legs and has no authentication
   of its own, so it must never bind to the school LAN. Reach it through an SSH tunnel
   with `ControlMaster=no` (a forward on a shared master evaporates when the master idles
   out) — the exact command and the never-spawn-a-second-bridge rule are in
   `apps/bridge/README.md`.
-- **Non-interactive SSH PATH trap.** `~/.local/bin` is added by `~/.profile`, which a
-  plain `ssh c3po 'run_c3po'` never sources — `uv` and the stack controls are not found.
-  Use `bash -lc`, or absolute paths. The boot unit sets an explicit `PATH` for the same
-  reason.
-- **Boot unit.** `scripts/robot/c3po-bridge.service`, installed by
-  `scripts/robot/install_boot_unit.sh`, enabled on the robot. It starts the bridge with
-  `C3PO_NO_TAKEOVER=1` — a reboot brings the bridge (and `stop_everything`) up without
-  stealing the robot from the colleague's stack, and it never initiates motion.
-- **⚠️ Symlink trap.** `/etc/systemd/system/c3po-bridge.service` is a **symlink into the
-  checkout** — that is what lets `git pull` update the unit — so deleting the file from
-  the repo dangles the unit, and the next boot has no bridge and therefore no
-  `stop_everything`. If the unit is ever genuinely retired:
-  `sudo systemctl disable --now c3po-bridge` on the robot **first**, then remove the
-  file — never the other way round.
+- **Non-interactive SSH PATH trap.** `~/.local/bin` comes from `~/.profile`; use
+  `ssh c3po 'bash -lc "c3po status"'` or the script's absolute path. The unit has an
+  explicit `PATH` and does not depend on a login shell.
+- **Boot unit.** `c3po install` installs and enables `c3po-bridge.service`. The unit
+  directly supervises the interpreter, claims no sensor, and issues no motion command.
+- **Root boundary.** Unit files are copied root-owned into `/etc/systemd/system`; PID 1
+  never follows a symlink into the user-writable checkout. A pull does not update a loaded
+  unit until `c3po install` validates, copies and reloads it.
 
-Rollback: the bridge is a git checkout — `git checkout <sha> && run_c3po`.
+Rollback uses the root-owned `/var/lib/c3po/previous-c3po-bridge.service` backup created
+before each install. Restore the checkout and that unit, then restore only the old user PATH
+commands—never run the old full-stack installer, because it would revive the retired
+perception unit and repair timer. Exact commands are in `MONDAY-RUNBOOK.md`.
 
 ### When the robot ignores everything
 
@@ -331,14 +309,14 @@ accepted — that last one is easy to miss. ⚠️ Not yet tested with a real he
 ### The VR teleop stream on the Jetson 🔧
 
 One more process now runs beside the bridge, for `/vr-control`. It is not under
-`run_c3po` or the boot unit — it is started by hand, per session, because it exists to
+the bridge unit — `c3po teleop start` starts it per session because it exists to
 serve a person who is currently wearing a headset. The camera comes from
-`apps/perception`'s vision container (`perception_up perception`, port 8081), which is the
+`apps/perception`'s vision container (`c3po perception up perception`, port 8081), which is the
 process that owns the D435i.
 
 | Process                | Start        | Port | What it is                                                      |
 | ---------------------- | ------------ | ---- | --------------------------------------------------------------- |
-| `bridge.teleop.server` | `run_teleop` | 8767 | Head yaw + both wrists + finger closure from the headset, 30 Hz |
+| `bridge.teleop.server` | `c3po teleop start` | 8767 | Head yaw + both wrists + finger closure from the headset, 30 Hz |
 
 The port numbering is not arbitrary and the constraint is tight — everything else on this
 Jetson is already spoken for: **8000** `gemm-ai.service`, **8001** our bridge, **8081** perception's
@@ -383,8 +361,8 @@ the firmware's own `duration` deadman.
 
 ### `apps/perception` → G1 Jetson
 
-Built with `scripts/robot/build_perception`, run with `perception_up <stage>` — and
-never by `run_c3po` or a boot path (§4). Architecture, stages, and thresholds:
+Built with `c3po perception build`, run with `c3po perception up <stage>` — and
+never by `c3po start` or a boot path (§4). Architecture, stages, and thresholds:
 `apps/perception/README.md`.
 
 ---
@@ -423,9 +401,9 @@ first destructive migration is cheaper than after. Local-dev workarounds live in
 
 ## 8. CI / CD
 
-CI (`.github/workflows/ci.yml`) runs type-check across all workspaces plus the bridge's
-pytest. `apps/perception`'s pytest suites are **not** in CI yet, even though its Stage 0
-cites them as the verification step. There is **no CD**: web is automatic on Vercel;
+CI (`.github/workflows/ci.yml`) runs TypeScript/Svelte type-checks, back and web unit
+tests, the perception harness's Ruff + pytest gates, and the bridge's Ruff + mypy + pytest
+gates. There is **no CD**: web is automatic on Vercel;
 `back` would need a runner that can reach the LAN box (self-hosted, or a manual
 `make deploy`); the bridge deploy is the one-liner in §5.
 
@@ -436,36 +414,29 @@ cites them as the verification step. There is **no CD**: web is automatic on Ver
 Plain facts, not a roadmap. Each stays here until fixed.
 
 - **Written and never run on hardware.** These are not suspected broken — they
-  are untested, which is a different claim and a weaker one. Several can be
-  checked in a single bring-up, so they are listed together:
+  are untested, which is a different claim and a weaker one. Run them in the
+  fail-closed order in [`MONDAY-RUNBOOK.md`](MONDAY-RUNBOOK.md); the inventory is:
 
   | What                                                    | How to check it                                                                                                         |
   | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-  | The camera relay (`:8001/camera` picking the live feed) | `take_camera`, then `curl :8001/camera/status` — `source` should flip from `videohub` to `vision` with no config change |
-  | `build_perception` (now a shim over `bringup/build.py`) | `build_perception vision --dry-run`, then a real `vision` build                                                         |
-  | `measure.sh`'s sampling loop (its parsing is tested)    | `measure.sh idle 90` — the verdict table should fill in, not read UNKNOWN                                               |
+  | The camera relay (`:8001/camera` picking the live feed) | `c3po camera take`, then `curl :8001/camera/status` — `source` flips without a config change                            |
+  | Perception build shim over `bringup/build.py`           | `c3po perception build vision --dry-run`, then a real `vision` build                                                     |
+  | Compute sampling loop (its parsing is tested)           | `c3po perception measure idle 90` — the verdict table should fill in, not read UNKNOWN                                  |
   | The `np.bool` fix in the detector                       | a build with a COLD engine cache; it is confirmed on a warm one                                                         |
-  | The `Type=exec` bridge unit                             | its own entry below                                                                                                     |
+  | Simplified installer + `Type=exec` bridge unit          | install, restart, gate check, and prove perception remains untouched                                                    |
   | The voice loop end to end                               | start it from the dashboard and say something to the robot                                                              |
 
   The last one is the only one that can move the robot, and it should be done
   with somebody's hand near the e-stop: the loop's whole job is turning
   overheard speech into tool calls.
 
-- **The bridge unit's `Type=exec` cutover is prepared and NOT installed.**
-  `scripts/robot/c3po-bridge-exec.service` replaces the hand-rolled pidfile,
-  `nohup`, SIGTERM→SIGKILL escalation and process-tree kill in
-  `run_c3po`/`stop_c3po` with what systemd already does — and removes the
-  documented race where both write `~/.c3po/run/bridge.pid`, systemd waits for a
-  pid that no longer exists, and `run_teleop` then refuses to start on the
-  grounds that there is no e-stop. There is one. It became possible once the
-  bridge started loading its own `.env` (`bridge/env_file.py`), which was the
-  only thing `run_c3po` did that a unit could not.
-
-  It is not live because it has never been started on the robot, and if it is
-  wrong the bridge does not come up — which is the process that owns
-  `stop_everything`. The cutover, its verification and its rollback are written
-  at the bottom of that file; it is a two-minute swap with somebody present.
+- **The simplified installer and `Type=exec` bridge unit are written but not yet
+  applied on the robot.** The repository now has one canonical bridge unit, no
+  pidfile lifecycle, one installer, and one operator CLI. Monday's first gate is
+  to run `./scripts/robot/c3po install`, verify the bridge and closed gate, prove a bridge
+  restart leaves perception untouched, and roll the checkout back if any check
+  fails. Until that supervised install happens, the robot may still have the old
+  symlinked unit loaded in systemd.
 
 - **`back` → bridge under Bun: FIXED, on localhost at least.** This was recorded as a hard
   blocker — the MCP SDK's `StreamableHTTPClientTransport` failing under Bun 1.4.0 with
@@ -483,12 +454,6 @@ Plain facts, not a roadmap. Each stays here until fixed.
   the tunnel's stream handling is not a factor and the fallback (plain request/response
   POSTs instead of the SDK transport) is not needed. The blocker is fully closed.
 
-- **`BRIDGE_URL` default is wrong on both host and port** (`apps/back/.env.example`):
-  the real target is an SSH tunnel to `g1-orin.local:8001`, not `127.0.0.1:8000`. The
-  8000 default is also baked into code — `apps/back/src/bridge/client.ts` (`BRIDGE_URL`
-  fallback) and the bridge's own `mcp_server.py` (`BRIDGE_PORT`) — while the robot
-  deployment runs on 8001 (§2; `run_c3po` supplies it). The mismatch stands until fixed
-  in code.
 - **The planned `back` target host is unreachable.** `perrobot` (10.40.5.4) does not
   answer ping from the dev machine — a different VLAN, the same constraint that blocks
   sim→Mac DDS (§1). Deploying `back` needs that resolved or a different host.
@@ -496,20 +461,16 @@ Plain facts, not a roadmap. Each stays here until fixed.
   refuse (§4), but that is a backstop, not a substitute for the two teams agreeing who
   drives.
 - **`gemm-bringup` comes back after an explicit stop.** Observed 2026-08-15: the
-  container (`restart=unless-stopped`) was up again on its own after `run_c3po`'s
+  container (`restart=unless-stopped`) was up again on its own after `c3po start`'s
   explicit `docker stop` (§4) — "stopped" is not a permanent state. Verify with
   `docker ps` before counting on the sensors or the one-commander invariant.
-- **The one-commander check has blind spots.** `OTHER_COMMANDER_PATTERNS` in
-  `scripts/robot/_common.sh` covers `cmd_vel_to_loco|xr_teleoperate|brainco_hand_server`
-  but not `unitree_slam` — its 1102 pose navigation closes its own PID velocity loop
-  (`docs/ROBOT-API.md`) — or the returning gemm container's `gemm_robot_server`
-  (audited: no `SetFsmId`/`SetVelocity`/`LocoClient`/`cmd_vel`/7101/7105 references, so
-  no leg risk today; re-check if their backend grows). `warn_if_other_commander` should
-  extend to both.
-- **`bridge.log` is never rotated** — append-only structlog (path defined in
-  `scripts/robot/_common.sh`). Add a logrotate entry before it matters, and make it
-  cover the two perception container log streams and the CycloneDDS trace file
-  perception adds, not just `bridge.log`.
+- **The one-commander check is signature-based.** `OTHER_COMMANDER_PATTERNS` in
+  `scripts/robot/_common.sh` covers the known leg/arm/hand commanders, including
+  `unitree_slam` (its 1102 pose navigation closes its own velocity loop). The returning
+  gemm container's `gemm_robot_server` is deliberately excluded after an audit found no
+  `SetFsmId`/`SetVelocity`/`LocoClient`/`cmd_vel`/7101/7105 references. Re-audit and add it
+  before accepting any new motion feature in that backend; process-name detection cannot
+  discover a new commander by itself.
 - **Bridge WS `:7077` token is unenforced** — the WS transport is design, not built;
   once it leaves loopback the token is the only thing between the LAN and a humanoid's
   motion API (`docs/ARCHITECTURE.md`).

@@ -1,85 +1,124 @@
 #!/usr/bin/env bash
-# Install the whole C3PO stack as systemd units. Run ON the robot, needs sudo.
-#
-#     ./scripts/robot/install_stack.sh
-#
-# Replaces the manual bring-up — `run_c3po` in one terminal, `perception_up` in
-# another, a `ros2 service call` to activate Nav2, an ssh tunnel somewhere else —
-# with units that survive a reboot and a dropped SSH session.
-#
-# WHAT THIS DOES *NOT* DO, DELIBERATELY:
-#
-#   * It does not enable a sensor-claiming perception stage. `nav2` and
-#     `perception` take the Livox AND the RealSense from the other team, and
-#     enabling either at boot would take them again on every power cycle,
-#     including reboots nobody intended. Enable those by hand, inside an agreed
-#     window. Only `nav2-fake` — which claims nothing — is offered here.
-#
-#   * It does not autostart Nav2's lifecycle. `autostart: false` in
-#     nav2_params.yaml is a safety decision, not an oversight: container start
-#     must never be the same event as "the robot is ready to be driven".
-#
-#   * It does not arm anything. Nothing installed here can open the cmd_vel
-#     gate; that stays a deliberate, expiring, logged action.
-#
-# Symlinks rather than copies, matching install_boot_unit.sh: `git pull` then
-# updates the units and only a daemon-reload is needed.
+# The one robot installer. It installs one operator CLI and one systemd unit:
+# the bridge. Perception remains foreground-only and can never start at boot.
 
 set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+root="/home/unitree/c3po/scripts/robot"
+bin_dir="${BIN_DIR:-$HOME/.local/bin}"
 
-if [ "$here" != "/home/unitree/c3po/scripts/robot" ]; then
-    echo "install_stack: checkout is at $here, but the units hardcode" >&2
-    echo "  /home/unitree/c3po — systemd cannot expand \$HOME. Edit them first." >&2
+if [ "$here" != "$root" ]; then
+    echo "install_stack: checkout is at $here, but the unit hardcodes $root" >&2
+    echo "move the checkout to /home/unitree/c3po or edit the unit first" >&2
     exit 1
 fi
 
-UNITS="c3po-bridge.service c3po-perception@.service c3po-health.service c3po-health.timer"
-
-for unit in $UNITS; do
-    [ -f "$here/$unit" ] || { echo "install_stack: missing $here/$unit" >&2; exit 1; }
+unit="c3po-bridge.service"
+implementations="c3po run_c3po stop_c3po run_gemm stop_gemm perception_up
+    stop_perception build_perception measure.sh run_teleop stop_teleop
+    c3po_health c3po_preflight take_camera bridge_sync _common.sh"
+for file in $implementations; do
+    [ -x "$here/$file" ] || {
+        echo "install_stack: missing or non-executable $here/$file" >&2
+        exit 1
+    }
+    bash -n "$here/$file"
+done
+for file in "$unit" c3po-logs.logrotate c3po.sudoers; do
+    [ -f "$here/$file" ] || {
+        echo "install_stack: missing $here/$file" >&2
+        exit 1
+    }
+done
+for command in logrotate visudo systemd-analyze; do
+    command -v "$command" >/dev/null 2>&1 || {
+        echo "install_stack: $command is not installed" >&2
+        exit 1
+    }
 done
 
-echo "==> linking units into /etc/systemd/system"
-for unit in $UNITS; do
-    sudo ln -sf "$here/$unit" "/etc/systemd/system/$unit"
-    echo "    $unit"
+# Validate every privileged artifact before changing live systemd state. Staging
+# under /run also means PID 1 never parses a unit from the writable checkout.
+stage="$(sudo mktemp -d /run/c3po-install.XXXXXX)"
+cleanup() { sudo rm -rf "$stage"; }
+trap cleanup EXIT
+sudo install -o root -g root -m 0644 "$here/$unit" "$stage/$unit"
+sudo install -o root -g root -m 0644 "$here/c3po-logs.logrotate" "$stage/c3po.logrotate"
+sudo install -o root -g root -m 0440 "$here/c3po.sudoers" "$stage/c3po.sudoers"
+sudo systemd-analyze verify "$stage/$unit" >/dev/null
+sudo logrotate --debug "$stage/c3po.logrotate" >/dev/null
+sudo visudo -cf "$stage/c3po.sudoers" >/dev/null
+
+# Preserve exactly the currently loaded bridge unit for a one-unit rollback.
+# -L dereferences the legacy checkout symlink; the backup itself is root-owned.
+sudo install -d -o root -g root -m 0755 /var/lib/c3po
+if sudo test -e "/etc/systemd/system/$unit"; then
+    sudo cp -L "/etc/systemd/system/$unit" "/var/lib/c3po/previous-$unit"
+    sudo chown root:root "/var/lib/c3po/previous-$unit"
+    sudo chmod 0644 "/var/lib/c3po/previous-$unit"
+fi
+
+# Retire the old automatic perception/repair layer. Stop the timer and any
+# already-triggered repair job, then refuse to remove a live perception unit:
+# releasing its containers remains an explicit operator decision.
+health_timer_state="$(systemctl show --property=LoadState --value c3po-health.timer 2>/dev/null || true)"
+if [ "$health_timer_state" = "loaded" ]; then
+    sudo systemctl disable --now c3po-health.timer >/dev/null
+fi
+health_service_state="$(systemctl show --property=LoadState --value c3po-health.service 2>/dev/null || true)"
+if [ "$health_service_state" = "loaded" ]; then
+    sudo systemctl stop c3po-health.service
+fi
+legacy_live="$(systemctl list-units --all --plain --no-legend 'c3po-perception@*.service' 2>/dev/null \
+    | awk '$3 == "active" || $3 == "activating" || $3 == "deactivating" || $3 == "reloading" { print $1 }')"
+if [ -n "$legacy_live" ]; then
+    echo "install_stack: legacy perception unit still live: $legacy_live" >&2
+    echo "run ./scripts/robot/stop_perception, then install again" >&2
+    exit 1
+fi
+legacy_enabled="$(systemctl list-unit-files --state=enabled --no-legend 'c3po-perception@*.service' 2>/dev/null \
+    | awk '{print $1}')"
+if [ -n "$legacy_enabled" ]; then
+    # shellcheck disable=SC2086 # one or more exact unit names from systemctl
+    sudo systemctl disable $legacy_enabled >/dev/null
+fi
+
+# Commit the prevalidated files. The staged-then-mv unit replacement removes a
+# legacy symlink rather than following it back into the writable checkout.
+sudo install -o root -g root -m 0644 "$stage/$unit" "/etc/systemd/system/.$unit.c3po-new"
+sudo mv -f "/etc/systemd/system/.$unit.c3po-new" "/etc/systemd/system/$unit"
+sudo install -o root -g root -m 0644 "$stage/c3po.logrotate" /etc/logrotate.d/c3po
+sudo install -o root -g root -m 0440 "$stage/c3po.sudoers" /etc/sudoers.d/c3po
+sudo rm -f /etc/sudoers.d/c3po-camera \
+    /etc/systemd/system/c3po-health.service \
+    /etc/systemd/system/c3po-health.timer \
+    '/etc/systemd/system/c3po-perception@.service'
+
+# One command on PATH. Remove only legacy symlinks that point into this checkout.
+mkdir -p "$bin_dir"
+ln -sf "$here/c3po" "$bin_dir/c3po"
+echo "  linked $bin_dir/c3po"
+legacy="run_c3po stop_c3po run_gemm stop_gemm perception_up stop_perception build_perception measure.sh run_teleop stop_teleop c3po_health c3po_preflight take_camera"
+for name in $legacy; do
+    link="$bin_dir/$name"
+    if [ -L "$link" ] && [ "$(readlink -f "$link")" = "$here/$name" ]; then
+        rm "$link"
+        echo "  removed legacy PATH link $link"
+    fi
 done
 
 sudo systemctl daemon-reload
-
-echo "==> enabling the bridge (it owns stop_everything — it should always be up)"
-sudo systemctl enable c3po-bridge.service
-
-echo "==> enabling the health timer"
-sudo systemctl enable c3po-health.timer
-
-# logrotate: the bridge logs every tool call, and this robot has been left
-# running for days. Without this the log grows until somebody notices.
-if [ -f "$here/c3po-logs.logrotate" ]; then
-    echo "==> installing logrotate config"
-    sudo ln -sf "$here/c3po-logs.logrotate" /etc/logrotate.d/c3po
-fi
+sudo systemctl enable c3po-bridge.service >/dev/null
 
 cat <<'EOF'
 
-==> installed. Nothing has been started or armed.
+Installed. Nothing was started, no sensor was claimed, and motion is not armed.
 
-Start the bridge now:            sudo systemctl start c3po-bridge
-Persistent sensor-free stack:    sudo systemctl enable --now c3po-perception@nav2-fake
-Check the whole stack:           c3po_health
+  c3po start                         # take ownership and ensure bridge is up
+  c3po status                        # read-only health
+  c3po perception up nav2-fake      # explicit synthetic stage; not persistent
+  c3po preflight                     # required before any supervised arm
 
-For a sensor window (claims the Livox AND the RealSense from gemm — agree it
-first, and hand them back after):
-
-    sudo systemctl start c3po-perception@nav2
-    ...
-    sudo systemctl stop  c3po-perception@nav2
-
-Nav2 still comes up UNCONFIGURED and the cmd_vel gate is still closed. Making
-the robot drivable remains two deliberate steps, and that is the design:
-
-    ros2 service call /lifecycle_manager_navigation/manage_nodes \
-        nav2_msgs/srv/ManageLifecycleNodes "{command: 0}"
-    arm_navigation(reason="...", seconds=30)      # via MCP, supervised
+Perception has no boot unit or repair timer. Every stage remains an explicit
+operator action. Nav2 lifecycle and the bridge motion gate remain closed.
 EOF

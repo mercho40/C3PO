@@ -84,6 +84,10 @@
         "vite": "^7.3.1",
       },
     },
+    "packages/robot-scripts": {
+      "name": "@repo/robot-scripts",
+      "version": "0.1.0",
+    },
   },
   "overrides": {
     "@sinclair/typebox": "0.34.49",
@@ -228,6 +232,8 @@
     "@repo/bridge": ["@repo/bridge@workspace:apps/bridge"],
 
     "@repo/perception": ["@repo/perception@workspace:apps/perception"],
+
+    "@repo/robot-scripts": ["@repo/robot-scripts@workspace:packages/robot-scripts"],
 
     "@repo/web": ["@repo/web@workspace:apps/web"],
 

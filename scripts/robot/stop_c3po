@@ -1,97 +1,32 @@
 #!/usr/bin/env bash
-# Stop our stack: the bridge, then both perception containers.
-#
-# Note what this costs: the bridge owns `stop_everything` and the task
-# registry, so with it down nothing on the robot can be halted through our
-# tooling. The physical e-stop and the firmware's 1 s SET_VELOCITY deadman
-# still apply — they always do — but do not stop the bridge while the robot is
-# mid-task expecting to be able to cancel it.
+# Stop the complete C3PO stack. systemd owns bridge process termination;
+# stop_perception owns the Docker containers. No pidfile or process-tree walk.
 
 set -euo pipefail
-# `readlink -f` — see the note in run_c3po; this is invoked through a symlink
-# on PATH, so BASH_SOURCE[0] is the link, not this file.
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=_common.sh
 . "$here/_common.sh"
 
-say "Stopping c3po stack"
+say "Stopping C3PO"
 
-if pid="$(bridge_pid)"; then
-    # Capture the tree before signalling: once uv exits, the mapping from the
-    # recorded pid to the interpreter underneath it is gone, and an orphaned
-    # bridge still holds DDS and can still command the legs.
-    tree="$(bridge_tree_pids "$pid")"
+# Stop proposed velocity first while the bridge and its deadman still exist.
+"$here/stop_perception"
 
-    # SIGTERM first: the bridge's skills observe cancellation between loop
-    # iterations and run their own stop sequence, so a graceful shutdown lets a
-    # walking robot ramp to zero instead of being abandoned mid-stride.
-    kill -TERM "$pid" 2>/dev/null || true
-    for _ in $(seq 1 30); do
-        bridge_running || break
-        sleep 0.2
-    done
-    if bridge_running; then
-        warn "bridge ignored SIGTERM after 6s — sending SIGKILL"
-        # The whole tree, not just $pid: killing uv alone reparents the bridge
-        # to init, where bridge_running can no longer see it.
-        for p in $tree; do kill -KILL "$p" 2>/dev/null || true; done
-        sleep 0.5
-    fi
-    if bridge_running; then
-        err "bridge still alive (pid $pid)"
-        exit 1
-    fi
-    ok "bridge stopped (pid $pid)"
-    rm -f "$BRIDGE_PID"
-else
-    info "bridge not running"
-    rm -f "$BRIDGE_PID" 2>/dev/null || true
-fi
+# Stop unconditionally. `is-active` is false while ExecStartPre is still
+# activating, and skipping the stop in that state lets the queued start finish
+# after this command has claimed the stack is down.
+bridge_state="$(systemctl is-active c3po-bridge.service 2>/dev/null || true)"
+sudo systemctl stop c3po-bridge.service
+case "$bridge_state" in
+    active|activating|deactivating|reloading) ok "bridge service stopped (was $bridge_state)" ;;
+    *) info "bridge service was already $bridge_state" ;;
+esac
 
-# The pidfile going away is not proof the robot has no commander. Check for a
-# bridge that outlived it before telling the operator the stack is down.
-leftover="$(stray_bridge_pids)"
+leftover="$(bridge_process_pids)"
 if [ -n "$leftover" ]; then
-    err "a bridge process survived (pid: $(echo "$leftover" | tr '\n' ' '))"
-    err "it can still command the robot. kill it:  kill $(echo "$leftover" | tr '\n' ' ')"
+    err "bridge process survived outside systemd: $(echo "$leftover" | tr '\n' ' ')"
+    err "it can still command the robot; inspect before killing it"
     exit 1
 fi
 
-# Perception. Stopping is always safe and always right here: it releases the
-# sensors and removes the only thing that can emit /cmd_vel. `docker stop`, not
-# `rm`: the exited containers keep their logs and their c3po.image label, which
-# is what you want to read after something went wrong.
-#
-# Loop over the PREFIX. There are two containers, and the old code detected with
-# a prefix filter and stopped an exact name.
-#
-# NOTE ON ORDER: the bridge is already down by this point, so a still-running
-# Nav2 would be publishing /cmd_vel into a domain nobody is forwarding from.
-# That is safe today — the bridge is the only thing that can actuate — but it
-# means "perception is up" must never be read as "the robot is under control".
-running="$(perception_running_containers)"
-if [ -n "$running" ]; then
-    held=0; perception_holds_sensors && held=1
-    stage="$(perception_stage)"
-    for c in $running; do
-        _docker stop -t 20 "$c" >/dev/null 2>&1 || true
-    done
-    still="$(perception_running_containers)"
-    if [ -n "$still" ]; then
-        err "these ignored SIGTERM after 20s — killing: $still"
-        for c in $still; do _docker kill "$c" >/dev/null 2>&1 || true; done
-        sleep 1
-    fi
-    still="$(perception_running_containers)"
-    if [ -n "$still" ]; then
-        err "still up: $still — they can still publish /cmd_vel"
-        err "  docker rm -f $still"
-        exit 1
-    fi
-    ok "stopped perception (stage=$stage)"
-    [ "$held" -eq 1 ] && ok "sensors released (RealSense, Livox)"
-else
-    info "perception not running"
-fi
-
-ok "c3po stack down"
+ok "C3PO stack down"

@@ -77,7 +77,7 @@ uv run python -m bridge.mcp_server
 
 This is not optional polish. The default transport is **stdio**, which is right when an MCP client spawns the bridge as a child and talks over pipes — but a daemon's stdin is `/dev/null`, so on stdio it reads EOF and exits immediately, before it ever reaches the robot. The symptom is a process that "fails to start" with almost nothing in the log.
 
-Onboard the G1 you do not run this by hand: `run_c3po` supplies these defaults and manages the rest of the stack — see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md). Keep the daemon bound to loopback: it can command the robot's legs and has no auth of its own (rationale in `.env.example`).
+Onboard the G1 you do not run this by hand: `c3po start` delegates the process lifecycle to `c3po-bridge.service` — see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md). The unit pins the daemon to loopback because it can command the robot's legs and has no auth of its own (rationale in `.env.example`).
 
 ### Driving the real robot from Claude Code
 
@@ -90,7 +90,7 @@ The onboard daemon binds loopback, so `c3po-bridge` reaches it through an SSH tu
 ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po
 ```
 
-(`c3po` is a Host alias in `~/.ssh/config` — hosts and addressing live in `docs/ROBOT-HARDWARE.md`.) Start the bridge onboard (`run_c3po`), then reconnect MCP in Claude Code. Without the tunnel, `c3po-bridge` simply fails to connect.
+(`c3po` is a Host alias in `~/.ssh/config` — hosts and addressing live in `docs/ROBOT-HARDWARE.md`.) Start the bridge onboard (`c3po start`), then reconnect MCP in Claude Code. Without the tunnel, `c3po-bridge` simply fails to connect.
 
 **Why not spawn it over SSH instead**, which would need no tunnel:
 
@@ -102,7 +102,7 @@ ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po
 }
 ```
 
-That starts a _second_ bridge process on the robot alongside the one `run_c3po` manages — two processes able to command the legs through the same API, the exact condition the stack scripts' stray-commander checks exist to prevent (one-commander invariant: `docs/OPERATIONS.md`). One bridge, reached over a tunnel, keeps the actuation chokepoint singular.
+That starts a _second_ bridge process beside `c3po-bridge.service` — two processes able to command the legs through the same API, the exact condition `c3po start` refuses (one-commander invariant: `docs/OPERATIONS.md`). One systemd-owned bridge, reached over a tunnel, keeps the actuation chokepoint singular.
 
 ### The teleop stream (Quest arm mirroring)
 

@@ -3,7 +3,7 @@
  *
  * The bridge (`apps/bridge`) is a FastMCP server. Launched with
  * `BRIDGE_TRANSPORT=http` it serves the streamable-http transport at
- * `BRIDGE_URL` (default `http://127.0.0.1:8000/mcp`). This module holds the
+ * `BRIDGE_URL` (default `http://127.0.0.1:8001/mcp`). This module holds the
  * single MCP session the backend reuses across requests, turning the bridge's
  * ~20 tools (`get_state`, `walk_to`, `say`, …) into callable functions for the
  * route layer.
@@ -16,7 +16,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const BRIDGE_URL = process.env.BRIDGE_URL ?? "http://127.0.0.1:8000/mcp";
+import { bridgeUrl } from "./url";
+
+const BRIDGE_URL = bridgeUrl();
 
 /** The bridge could not be reached / the session could not be established. */
 export class BridgeUnavailableError extends Error {

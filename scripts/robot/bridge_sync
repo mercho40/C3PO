@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sync the bridge's dependencies, offline-safe. Used as ExecStartPre by the
-# Type=exec unit (c3po-bridge-exec.service), and safe to run by hand.
+# Type=exec unit (c3po-bridge.service), and safe to run by hand.
 #
 # HASH-GATED, because boot must not depend on the network. If uv.lock has not
 # changed since the last successful sync, this does nothing at all — which is
@@ -28,11 +28,14 @@ fi
 
 info "syncing bridge dependencies (voice + stt extras)"
 if uv sync --quiet --extra voice --extra stt; then
+    # postsync re-applies the unitree_sdk2py patch. It must succeed after EVERY
+    # sync, or the SDK imports a module the package does not ship. Stamp only
+    # after the patch so a failed patch cannot be skipped on the next start.
+    if ! ./scripts/postsync.sh; then
+        err "dependency sync succeeded but the Unitree SDK patch failed"
+        exit 1
+    fi
     printf '%s' "$hash" > "$stamp" 2>/dev/null || true
-    # postsync re-applies the unitree_sdk2py patch. It must run after EVERY
-    # sync, or the SDK reverts to the unpatched upstream and the bridge imports
-    # a version that cannot reach this robot.
-    ./scripts/postsync.sh
     exit 0
 fi
 

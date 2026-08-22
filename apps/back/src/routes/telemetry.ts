@@ -20,13 +20,7 @@
 
 import { Elysia } from "elysia";
 
-function telemetryUrl(path: string): string {
-  const bridgeUrl = process.env.BRIDGE_URL ?? "http://127.0.0.1:8000/mcp";
-  const base = new URL(bridgeUrl);
-  base.pathname = path;
-  base.search = "";
-  return base.toString();
-}
+import { bridgeSiblingUrl } from "../bridge/url";
 
 /**
  * Proxy one JSON telemetry route.
@@ -43,7 +37,7 @@ async function proxyJson(
 ): Promise<unknown> {
   let upstream: Response;
   try {
-    upstream = await fetch(telemetryUrl(path), {
+    upstream = await fetch(bridgeSiblingUrl(path), {
       // Short on purpose: this is polled, and a slow answer is a stale answer.
       // The console would rather be told nothing arrived than block a cycle.
       signal: AbortSignal.timeout(3000),

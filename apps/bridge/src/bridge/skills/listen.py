@@ -455,11 +455,9 @@ def upgrade_whisperer_if_possible(current: Any) -> Any:
 
     WHY THIS IS NOT JUST "RESTART THE BRIDGE". `build_whisperer` runs once, when
     the listener thread starts, so the backend is decided at bridge boot and
-    never revisited. That made upgrading a circular errand on this robot: the
-    GPU transcriber lives in a perception container, and restarting the bridge
-    runs `stop_c3po`, which stops perception. Start STT then restart the bridge
-    and you have stopped STT; start STT after and the bridge never notices. The
-    only way through was an ordering nobody should have to know.
+    never revisited. The GPU transcriber is an independently managed perception
+    container and may appear or be replaced at any point; restarting core robot
+    infrastructure to discover it is unnecessary disruption.
 
     It is also the honest shape for the thing itself. The vision container is
     started, stopped and replaced by hand many times in a session, and each time

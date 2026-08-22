@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Shared helpers for the robot stack controls (run_c3po / stop_c3po /
-# run_gemm / stop_gemm). Sourced, never executed directly.
+# shellcheck disable=SC2034 # exported-by-sourcing constants are used by callers
+# Shared sensor, process and safety helpers behind the `c3po` operator CLI.
+# Sourced by narrow implementation scripts; never executed directly.
 #
 # Why these exist: the G1 carries two independent stacks — ours and a
 # colleague's `gemm` workspace — and some of what they need cannot be shared.
@@ -22,10 +23,8 @@ C3PO_DIR="${C3PO_DIR:-$HOME/c3po}"
 BRIDGE_DIR="$C3PO_DIR/apps/bridge"
 RUN_DIR="${C3PO_RUN_DIR:-$HOME/.c3po/run}"
 LOG_DIR="${C3PO_LOG_DIR:-$HOME/.c3po/logs}"
-BRIDGE_PID="$RUN_DIR/bridge.pid"
-BRIDGE_LOG="$LOG_DIR/bridge.log"
 
-# The VR teleop stream. Not managed by run_c3po or the boot unit: it exists to
+# The VR teleop stream. Not managed by the bridge unit: it exists to
 # serve a person who is currently wearing a headset, so it is per-session,
 # started by hand, and stopped when that person takes it off.
 TELEOP_PID="$RUN_DIR/teleop.pid"
@@ -116,81 +115,76 @@ perception_holds_sensors() {
 }
 
 # --- bridge ----------------------------------------------------------------
+# systemd is the sole lifecycle owner. Process discovery remains only to detect
+# a bridge somebody launched by hand outside the unit.
 
-bridge_pid() {
-    [ -f "$BRIDGE_PID" ] || return 1
+bridge_running() {
+    systemctl is-active --quiet c3po-bridge.service 2>/dev/null
+}
+
+bridge_main_pid() {
     local pid
-    pid="$(cat "$BRIDGE_PID" 2>/dev/null || true)"
-    [ -n "$pid" ] || return 1
-    # A stale pidfile after an unclean shutdown must not read as "running".
-    kill -0 "$pid" 2>/dev/null || return 1
+    pid="$(systemctl show --property=MainPID --value c3po-bridge.service 2>/dev/null || true)"
+    [ -n "$pid" ] && [ "$pid" != "0" ] || return 1
     printf '%s' "$pid"
 }
 
-# Every live bridge, whoever started it. `bridge_pid` only knows the one named
-# in the pidfile, and on 2026-08-20 that was exactly the problem: a bridge was
-# running and serving while the pidfile named a different, dead process.
-running_bridge_pids() {
+bridge_process_pids() {
     pgrep -f 'bridge\.mcp_server' 2>/dev/null || true
 }
 
-# Reconcile the pidfile with reality, and say so when they disagree.
-#
-# `run_c3po` and the systemd unit BOTH start a bridge and BOTH write this
-# pidfile, with no awareness of each other. Run one by hand while the unit owns
-# the service and they race: the manual instance cannot bind 8001 and dies, but
-# not before overwriting the pidfile with its own pid. systemd is Type=forking
-# with PIDFile=, so it then waits for a process that no longer exists and sits
-# in `activating` until TimeoutStartSec — while `bridge_running` reports false
-# and `run_teleop` refuses to start, on the grounds that there is no e-stop.
-#
-# There IS an e-stop. That is what makes this worth fixing rather than
-# documenting: a bookkeeping error that presents as a safety refusal teaches
-# operators to bypass safety refusals.
-#
-# Returns 0 if a usable bridge exists (correcting the pidfile if needed).
-reconcile_bridge_pidfile() {
-    bridge_pid >/dev/null 2>&1 && return 0
+# Prove that a TCP listener belongs to a specific process, rather than trusting
+# an HTTP response from whatever happened to win the port. Match the exact IPv4
+# loopback address curl uses: accepting 0.0.0.0, another interface, or IPv6 here
+# would let one process satisfy ownership while another answers 127.0.0.1.
+# Linux exposes the socket inode without root through /proc/net/tcp and the same
+# inode through /proc/<pid>/fd. C3PO_PROC_ROOT makes the parser testable.
+process_listens_ipv4_loopback_port() {
+    local pid="$1" port="$2" proc_root="${C3PO_PROC_ROOT:-/proc}"
+    local local_address listeners fd target inode listener
 
-    local live
-    live="$(running_bridge_pids | head -1)"
-    [ -n "$live" ] || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$port" in ''|*[!0-9]*) return 1 ;; esac
+    [ -d "$proc_root/$pid/fd" ] || return 1
+    local_address="0100007F:$(printf '%04X' "$port")"
+    listeners="$(awk -v local_address="$local_address" \
+        '$4 == "0A" && toupper($2) == local_address { print $10 }' \
+        "$proc_root/net/tcp" 2>/dev/null || true)"
+    [ -n "$listeners" ] || return 1
 
-    warn "the pidfile names a dead process, but a bridge IS running (pid $live)."
-    warn "that happens when run_c3po and the systemd unit race for this file."
-    mkdir -p "$(dirname "$BRIDGE_PID")"
-    printf '%s' "$live" > "$BRIDGE_PID"
-    ok "pidfile corrected to $live"
-    return 0
-}
-
-bridge_running() { bridge_pid >/dev/null 2>&1; }
-
-# `uv run` execs nothing — it forks the interpreter as a child and waits. So
-# the pid we record is uv's, and the bridge itself is one level down. SIGTERM
-# propagates, but a SIGKILL aimed at the recorded pid alone would reap uv and
-# leave the bridge orphaned: still holding DDS, still able to command the legs,
-# and now invisible to `bridge_running`. Always signal the whole tree.
-descendant_pids() {
-    local parent="$1" child
-    for child in $(pgrep -P "$parent" 2>/dev/null || true); do
-        descendant_pids "$child"
-        printf '%s\n' "$child"
+    for fd in "$proc_root/$pid/fd"/*; do
+        [ -e "$fd" ] || [ -L "$fd" ] || continue
+        target="$(readlink "$fd" 2>/dev/null || true)"
+        case "$target" in
+            socket:\[*\])
+                inode="${target#socket:\[}"
+                inode="${inode%\]}"
+                for listener in $listeners; do
+                    [ "$inode" = "$listener" ] && return 0
+                done
+                ;;
+        esac
     done
+    return 1
 }
 
-bridge_tree_pids() {
-    local pid="$1"
-    descendant_pids "$pid"
-    printf '%s\n' "$pid"
-}
+# Tie the HTTP response to one stable systemd MainPID. Ownership is checked both
+# before and after curl so a dying bridge cannot hand the port to an unrelated
+# process during the probe and still be reported ready.
+bridge_http_ready() {
+    local port="${1:-8001}" before after
 
-# Any live bridge at all. Only ask this once you believe ours is stopped —
-# both callers do — in which case whatever comes back is an orphan from an
-# unclean stop or a second copy started by hand. Either one means something
-# can command the legs that our pidfile cannot stop.
-stray_bridge_pids() {
-    pgrep -f 'bridge\.mcp_server' 2>/dev/null || true
+    before="$(bridge_main_pid || true)"
+    [ -n "$before" ] || return 1
+    bridge_running || return 1
+    process_listens_ipv4_loopback_port "$before" "$port" || return 1
+    curl -fsS --max-time 1 "http://127.0.0.1:${port}/telemetry/gate" >/dev/null 2>&1 \
+        || return 1
+    after="$(bridge_main_pid || true)"
+    [ "$before" = "$after" ] || return 1
+    bridge_running || return 1
+    process_listens_ipv4_loopback_port "$after" "$port" || return 1
+    printf '%s' "$after"
 }
 
 # Same shape as bridge_pid, for a sidecar named by its pidfile.
@@ -223,7 +217,7 @@ stray_teleop_pids() {
 # hand as we discover new ways to drive this robot.
 #
 # Override for a stack we haven't met yet:
-#   OTHER_COMMANDER_PATTERNS='cmd_vel_to_loco|my_new_thing' run_c3po
+#   OTHER_COMMANDER_PATTERNS='cmd_vel_to_loco|my_new_thing' c3po start
 # `unitree_slam` earns its place for a non-obvious reason: its 1102 pose
 # navigation closes its own velocity loop, so it is a locomotion commander even
 # though nothing in its name says so (`docs/ROBOT-HARDWARE.md`).

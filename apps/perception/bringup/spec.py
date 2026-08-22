@@ -50,6 +50,14 @@ class Container:
     #: When the budget is blown the OOM killer takes perception, not the MCP
     #: server. Failure DIRECTION matters more than failure.
     memory: str = ""
+    #: Bound container stdout/stderr at creation time. Rotating Docker's JSON
+    #: files behind the daemon corrupts `docker logs`, and changing daemon.json
+    #: would also change the co-tenant's containers. Per-container limits keep
+    #: our failure domain ours.
+    log_driver: str = "json-file"
+    log_options: Dict[str, str] = field(
+        default_factory=lambda: {"max-file": "3", "max-size": "32m"}
+    )
     env: Dict[str, str] = field(default_factory=dict)
     volumes: Sequence[str] = ()
     #: 81 = video4linux, 189 = usb_device. The pyrealsense2 wheel is a V4L2
@@ -74,6 +82,10 @@ class Container:
             args += ["--cpuset-cpus", self.cpuset]
         if self.memory:
             args += ["--memory", self.memory]
+        if self.log_driver:
+            args += ["--log-driver", self.log_driver]
+        for key in sorted(self.log_options):
+            args += ["--log-opt", f"{key}={self.log_options[key]}"]
         for key in sorted(self.env):
             args += ["-e", f"{key}={self.env[key]}"]
         for rule in self.device_cgroup_rules:

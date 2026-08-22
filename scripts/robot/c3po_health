@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Is the stack healthy?  c3po_health [--repair]
+# Internal read-only shim for `c3po status`.
 #
 # A shim. The report lives in apps/bridge/src/bridge/health.py, with tests —
 # because the shell version decided whether the MOTION GATE WAS ARMED by
@@ -12,9 +12,9 @@
 # sync is exactly when somebody types this.
 
 set -uo pipefail
-here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
-C3PO_DIR="${C3PO_DIR:-$HOME/c3po}"
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+C3PO_DIR="${C3PO_DIR:-$(cd "$here/../.." && pwd)}"
 export PYTHONPATH="$C3PO_DIR/apps/bridge/src${PYTHONPATH:+:$PYTHONPATH}"
 
 exec python3 -m bridge.health "$@"

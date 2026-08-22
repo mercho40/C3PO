@@ -118,15 +118,15 @@ robot's network.
 
 ## Never auto-started
 
-Perception is **never** started by `run_c3po`, by the boot unit, or by any other
+Perception is **never** started by `c3po start`, by the bridge unit, or by any other
 automatic path. The sensors are shared with the other team (see
 `docs/ROBOT-HARDWARE.md`), and claiming the Livox and the RealSense is a
 different conversation from "the bridge is mine". A machine powering on is not
 somebody asking for the sensors — hence `--restart no` on both containers
 (gemm's `unless-stopped` is exactly the pattern this avoids), Nav2's lifecycle
 `autostart: false`, and the bridge's cmd_vel gate defaulting closed. Starting
-perception is one explicit command: `perception_up <stage>`. There is no flag,
-no environment variable and no opt-in that makes `run_c3po` do it — an opt-in
+perception is one explicit command: `c3po perception up <stage>`. There is no flag,
+no environment variable and no opt-in that makes `c3po start` do it — an opt-in
 var is one systemd `Environment=` line away from being an automatic path, so
 "no unless a flag is set" is not the guarantee this section claims.
 
@@ -137,17 +137,14 @@ Both images build **on the robot** — its docker is the Ubuntu archive package
 from a laptop:
 
 ```bash
-# These three are NOT symlinked onto PATH (only the four stack controls are) —
-# invoke them by path from the checkout:
-ssh c3po '~/c3po/scripts/robot/build_perception all'      # vision image + TRT engine + nav image + bench
-ssh c3po '~/c3po/scripts/robot/perception_up <stage>'     # create + start containers, gate on the topic
-ssh c3po '~/c3po/scripts/robot/measure.sh <label> [sec]'  # compute-budget harness, thresholds printed first
-stop_c3po                            # on PATH onboard; also stops perception and verifies release
+ssh c3po 'bash -lc "c3po perception build all"'                # images + engine + bench
+ssh c3po 'bash -lc "c3po perception up <stage>"'               # create + start containers
+ssh c3po 'bash -lc "c3po perception measure <label> [sec]"'    # compute-budget harness
+c3po stop                                                       # complete stack shutdown
 ```
 
-`build_perception` wraps the export/build/benchmark sequence and carries the
-per-step timings, disk guards and assertions in its own comments.
-`perception_up`'s stages, and what each claims:
+The build implementation carries per-step timings, disk guards and assertions.
+`c3po perception up` stages, and what each claims:
 
 | stage        | runs                                   | sensors claimed               |
 | ------------ | -------------------------------------- | ----------------------------- |
@@ -156,7 +153,7 @@ per-step timings, disk guards and assertions in its own comments.
 | `perception` | + detector + world model               | Livox + RealSense             |
 | `nav2`       | + Nav2 (lifecycle **not** autostarted) | Livox + RealSense             |
 
-Stages that claim sensors stop gemm first; `perception_up` says exactly what it
+Stages that claim sensors stop gemm first; `c3po perception up` says exactly what it
 is taking before it takes it, and rolls back (containers removed, sensors freed)
 if `/c3po/world_summary` does not appear.
 
@@ -239,7 +236,7 @@ that is one command.
   side so a one-sided bump fails loudly.
 
 - **Stage 3 — the crossing end-to-end on synthetic data** (no sensors).
-  `perception_up fake` + `run_c3po`, then `describe_surroundings` from a Claude
+  `c3po perception up fake` + `c3po start`, then `describe_surroundings` from a Claude
   Code session. This is where "absent is not empty" is proven across a process
   boundary, a container boundary and a DDS domain: kill the synthetic publisher
   and the summary must flip to `detector: offline` with a plain-language note,
@@ -288,7 +285,7 @@ nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
   vendor transform's direction is ambiguous as stated, so validate against a
   real cloud rather than trusting either number.
 - **Stage 7 — live perception, robot stationary then hand-walked** (~60 min
-  window). `perception_up perception && run_c3po`, with `measure.sh` sampling.
+  window). `c3po perception up perception && c3po start`, with `c3po perception measure` sampling.
   Pass/fail thresholds (memory, CPU, thermal, EMC, topic-rate floors) are fixed
   in `scripts/robot/measure.sh` and printed before every run — edit them only
   with the reason written down. Functional gates: `describe_surroundings` names
@@ -309,7 +306,7 @@ nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
   0.17 m gantry-loaded on 2026-08-15 (`docs/ROBOT-API.md` §5.4); it has never
   run free-standing. Rollback: `stop_everything` (unilateral, needs nothing
   from the containers; its disarm-the-gate step is part of the `arm_navigation`
-  prerequisite above — verify it before the window), then `stop_c3po`.
+  prerequisite above — verify it before the window), then `c3po stop`.
 
 ## Decisions that still need a human
 
@@ -410,8 +407,8 @@ The bridge-side counterparts live in `apps/bridge/src/bridge/`: `sdk/ros_idl.py`
 (hand-written `Twist_`/`Vector3_` — the typename strings and field order are the
 load-bearing part), `sdk/perception_link.py` (the domain-42 link and cmd_vel
 gate) and `world_model.py` (`from_report()`, the D7 contract). Operational
-scripts live in `scripts/robot/`: `perception_up`, `build_perception`,
-`measure.sh`, plus the perception-aware `run_c3po`/`stop_c3po`/`_common.sh`.
+operators use the `c3po perception ...` CLI; its narrow implementations and shared
+sensor/commander checks remain in `scripts/robot/` for systemd and tests.
 
 ## Spanish transcription runs here, on the GPU
 

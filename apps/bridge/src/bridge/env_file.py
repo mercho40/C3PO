@@ -1,9 +1,8 @@
 """Load `.env` the way a shell does, so the launcher does not have to.
 
-WHY THE APP OWNS THIS. `run_c3po` exists largely to `set -a; . ./.env` before
-starting the bridge, and that single responsibility is what forces the launcher
-to be a shell script at all. Move it in here and the unit file can name the
-interpreter directly, with no wrapper, no pidfile and no `nohup` — see
+WHY THE APP OWNS THIS. The old launcher existed largely to `set -a; . ./.env`
+before starting the bridge. Keeping config loading here lets the unit name the
+interpreter directly, with no wrapper, pidfile or `nohup` — see
 `docs/OPERATIONS.md`.
 
 WHY NOT systemd's `EnvironmentFile=`, WHICH IS THE OBVIOUS ANSWER. Because it
