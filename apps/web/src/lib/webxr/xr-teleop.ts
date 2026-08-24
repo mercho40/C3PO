@@ -29,6 +29,7 @@ import { CameraLayer } from "./camera-layer";
 import {
   MenuLayer,
   type MenuItem,
+  type MenuAlert,
   type MenuStatus,
   type Readiness,
 } from "./menu-layer";
@@ -541,6 +542,11 @@ export class XrTeleopSession {
   /** Why the robot can or cannot act — drawn where the operator is looking. */
   setMenuReadiness(readiness: Readiness | null): void {
     this.#menu?.setReadiness(readiness);
+  }
+
+  /** A latch currently stopping motion, and the gesture that clears it. */
+  setMenuAlert(alert: MenuAlert): void {
+    this.#menu?.setAlert(alert);
   }
 
   /** Move the highlight to the next VERIFIED item. */

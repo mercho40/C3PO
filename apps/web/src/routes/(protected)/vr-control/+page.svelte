@@ -48,7 +48,7 @@
     checkXrSupport,
     type HandSample,
   } from "$lib/webxr/xr-teleop";
-  import { readinessFor } from "$lib/webxr/menu-layer";
+  import { alertFor, readinessFor } from "$lib/webxr/menu-layer";
   import {
     buildFrame,
     connectTeleop,
@@ -1015,6 +1015,23 @@
     // is itself guarded against repaints for an unchanged value, because this
     // ticks with every state poll.
     vr?.setMenuReadiness(readiness);
+  });
+
+  //: The two latches that stop motion while everything else looks healthy.
+  //:
+  //: `deadman_tripped` is the one that bit on 2026-08-24: it fires at 8 s of
+  //: continuous motion — a limit a TAPPED button never reached and a HELD
+  //: thumbstick reaches every time — so walking stopped dead seven times in
+  //: one session and read as "the walking is a bit buggy". The status carrying
+  //: it already arrived twice a second, on the page, behind a headset.
+  const menuAlert = $derived(
+    alertFor(
+      teleopStatus?.deadman_tripped === true,
+      teleopStatus?.stopped_by_estop === true,
+    ),
+  );
+  $effect(() => {
+    vr?.setMenuAlert(menuAlert);
   });
 
   //: An outcome now carries its own words, because the interesting failures are

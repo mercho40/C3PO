@@ -14,6 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  alertFor,
   firstSelectable,
   nextSelectable,
   paintMenu,
@@ -149,29 +150,45 @@ describe("paintMenu — what the operator is shown", () => {
     }
   });
 
+  /**
+   * Strikethroughs, counted as a DELTA against an all-verified baseline.
+   *
+   * Counting raw `stroke()` calls was a proxy, and it broke the moment the
+   * panel grew a footer divider — a layout change silently invalidating an
+   * assertion about the safety gate is exactly the wrong sensitivity to have.
+   * The baseline absorbs whatever chrome the panel draws.
+   */
+  function strikeCount(items: readonly MenuItem[]): number {
+    const strokesFor = (list: readonly MenuItem[]) => {
+      const { ctx, calls } = stub2d();
+      paintMenu(ctx, list, 0, null, null);
+      return calls.filter((c) => c.fn === "stroke").length;
+    };
+    const baseline = strokesFor(items.map((i) => ({ ...i, verified: true })));
+    return strokesFor(items) - baseline;
+  }
+
   test("an unverified item is struck through and labelled", () => {
-    const { ctx, calls, texts } = stub2d();
+    const { ctx, texts } = stub2d();
     paintMenu(ctx, REAL, 0, null, null);
     // `dance` is the only unverified entry, so exactly one strikethrough.
-    expect(calls.filter((c) => c.fn === "stroke").length).toBe(1);
+    expect(strikeCount(REAL)).toBe(1);
     expect(texts()).toContain("sin probar en real");
   });
 
   test("an all-verified list draws no strikethrough at all", () => {
-    const { ctx, calls, texts } = stub2d();
+    const { ctx, texts } = stub2d();
     const allOk = REAL.map((i) => ({ ...i, verified: true }));
     paintMenu(ctx, allOk, 0, null, null);
-    expect(calls.filter((c) => c.fn === "stroke").length).toBe(0);
+    expect(strikeCount(allOk)).toBe(0);
     expect(texts()).not.toContain("sin probar en real");
   });
 
   test("every item is struck through when the catalogue could not be read", () => {
     // +page.svelte maps `catalogueFailed` to all-unverified. This is what the
     // operator then sees: six inert entries, not six confident ones.
-    const { ctx, calls } = stub2d();
     const none = REAL.map((i) => ({ ...i, verified: false }));
-    paintMenu(ctx, none, 0, null, null);
-    expect(calls.filter((c) => c.fn === "stroke").length).toBe(none.length);
+    expect(strikeCount(none)).toBe(none.length);
   });
 
   test("the busy item is marked, and only that one", () => {
@@ -306,5 +323,63 @@ describe("readinessFor — why nothing is happening", () => {
     const { ctx, texts } = stub2d();
     paintMenu(ctx, REAL, 0, null, null, readinessFor("zero_torque", true, []));
     expect(texts().some((t) => t.includes("damp"))).toBe(true);
+  });
+});
+
+describe("alertFor — the latch that stopped you, and how to clear it", () => {
+  /**
+   * From 2026-08-24: seven `teleop.deadman.tripped held_s=8.0` in one session,
+   * experienced as "the walking is a bit buggy". The 8 s continuous-motion
+   * limit was written when walking meant TAPPING a DOM button, which never
+   * reached it. A held thumbstick reaches it every time.
+   */
+
+  test("nothing latched is no alert at all", () => {
+    expect(alertFor(false, false)).toBe(null);
+  });
+
+  test("the hold latch says to release and push again", () => {
+    const a = alertFor(true, false)!;
+    expect(a.text).toContain("8");
+    expect(a.hint).toContain("soltá");
+    expect(a.hint).toContain("volvé");
+  });
+
+  test("an e-stop OUTRANKS the hold latch", () => {
+    // Their release gestures are opposites: you clear a hold latch by pushing
+    // AGAIN, and an e-stop by letting go and waiting. Showing the hold hint
+    // during an e-stop would have the operator pushing into a stop.
+    const both = alertFor(true, true)!;
+    expect(both.text).toContain("PARADA");
+    expect(both.hint).not.toContain("volvé a empujar");
+    expect(both.hint).toContain("esperá");
+  });
+
+  test("an e-stop alone reads as an e-stop", () => {
+    const a = alertFor(false, true)!;
+    expect(a.text).toContain("PARADA");
+  });
+
+  test("the alert band is drawn on the panel when latched", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, null, null, alertFor(true, false));
+    expect(texts().some((t) => t.includes("8"))).toBe(true);
+    expect(texts().some((t) => t.includes("soltá"))).toBe(true);
+  });
+
+  test("no alert band when nothing is latched", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, null, null, null);
+    expect(texts().some((t) => t.includes("soltá"))).toBe(false);
+  });
+
+  test("the list still renders with the band pushing it down", () => {
+    // The band steals 64px. Every gesture must still be drawn, or a latched
+    // robot also loses its menu.
+    const { ctx, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, null, null, alertFor(true, false));
+    for (const it of REAL) {
+      expect(texts().some((t) => t.startsWith(it.label))).toBe(true);
+    }
   });
 });

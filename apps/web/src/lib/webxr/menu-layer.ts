@@ -51,6 +51,37 @@ export type MenuStatus = { text: string; kind: "ok" | "warn" | "error" } | null;
 export type Readiness = { text: string; ok: boolean };
 
 /**
+ * A latch that is currently stopping motion, and the gesture that clears it.
+ *
+ * Both of these are ALREADY on the page — `teleopStatus.deadman_tripped` and
+ * `.stopped_by_estop` arrive twice a second — and neither ever reached the
+ * headset. The hold latch is the one that matters in practice: it fires at 8 s
+ * of continuous motion, which a tapped DOM button never reached and a held
+ * thumbstick reaches every time, so walking stops dead and the operator has no
+ * way to know a release-and-push is all it wants.
+ */
+export type MenuAlert = { text: string; hint: string } | null;
+
+export function alertFor(
+  deadmanTripped: boolean,
+  stoppedByEstop: boolean,
+): MenuAlert {
+  // e-stop first: it outranks, and its release gesture is the opposite of the
+  // hold latch's — you clear a stop by letting go and WAITING, not by pushing
+  // again. Showing the wrong one would have the operator fighting it.
+  if (stoppedByEstop) {
+    return {
+      text: "PARADA DE EMERGENCIA",
+      hint: "soltá todo y esperá un segundo",
+    };
+  }
+  if (deadmanTripped) {
+    return { text: "LÍMITE DE 8 s", hint: "soltá y volvé a empujar" };
+  }
+  return null;
+}
+
+/**
  * What the robot's posture means for the things a headset can ask of it.
  *
  * THIS EXISTS BECAUSE OF A REAL SESSION, 2026-08-21. The operator put the
@@ -109,8 +140,11 @@ export function readinessFor(
   return { text: `Postura ${posture} — 501 para operar`, ok: false };
 }
 
-const W = 512;
-const H = 320;
+// Bigger than it started. The first session could read it but called the
+// gestures hard to see, and a panel drawn at a comfortable angular size is
+// cheaper to read than one the operator leans toward.
+const W = 640;
+const H = 430;
 
 const VERT = `
 attribute vec2 a_pos;
@@ -161,88 +195,127 @@ export function paintMenu(
   status: MenuStatus,
   busy: string | null,
   readiness: Readiness | null = null,
+  alert: MenuAlert = null,
 ): void {
   ctx.clearRect(0, 0, W, H);
 
   // Dark, mostly-opaque panel. Under passthrough it sits over the room; in VR
   // it sits over the camera, and either way the text has to survive whatever
   // is behind it.
-  ctx.fillStyle = "rgba(12, 14, 18, 0.86)";
+  ctx.fillStyle = "rgba(10, 12, 16, 0.90)";
   ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = "rgba(255,255,255,0.18)";
+  ctx.strokeStyle = "rgba(255,255,255,0.20)";
   ctx.lineWidth = 2;
   ctx.strokeRect(1, 1, W - 2, H - 2);
 
   ctx.textBaseline = "middle";
-  ctx.font = "600 20px system-ui, -apple-system, sans-serif";
-  ctx.fillStyle = "rgba(255,255,255,0.62)";
-  ctx.fillText("Gestos", 22, 30);
 
-  ctx.font = "400 15px system-ui, -apple-system, sans-serif";
-  ctx.fillStyle = "rgba(255,255,255,0.38)";
-  ctx.fillText("A · siguiente     gatillo · ejecutar", 22, 56);
+  // --- header: title left, readiness right -------------------------------
+  ctx.font = "600 26px system-ui, -apple-system, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.fillText("Gestos", 26, 36);
 
-  // The readiness banner, top-right and impossible to miss. Drawn even when
-  // everything is fine: an operator who only ever sees this line when
-  // something is wrong has no reason to believe it when it is absent.
   if (readiness) {
-    ctx.font = "600 14px system-ui, -apple-system, sans-serif";
+    ctx.font = "600 17px system-ui, -apple-system, sans-serif";
     const w = ctx.measureText(readiness.text).width;
     ctx.fillStyle = readiness.ok
-      ? "rgba(80, 200, 130, 0.22)"
-      : "rgba(255, 110, 110, 0.26)";
-    ctx.fillRect(W - w - 34, 14, w + 20, 30);
+      ? "rgba(80, 200, 130, 0.26)"
+      : "rgba(255, 150, 90, 0.26)";
+    ctx.fillRect(W - w - 42, 18, w + 24, 36);
     ctx.fillStyle = readiness.ok
-      ? "rgba(150, 245, 190, 0.98)"
-      : "rgba(255, 190, 190, 0.98)";
-    ctx.fillText(readiness.text, W - w - 24, 30);
+      ? "rgba(160, 250, 200, 0.99)"
+      : "rgba(255, 205, 160, 0.99)";
+    ctx.fillText(readiness.text, W - w - 30, 36);
   }
 
-  const top = 84;
-  const rowH = 34;
+  // --- alert band: only when a latch is actually stopping motion ----------
+  //
+  // Full width and loud, because this is the difference between "the robot is
+  // broken" and "let go and push again". It cost a session before it existed.
+  let top = 78;
+  if (alert) {
+    ctx.fillStyle = "rgba(255, 90, 90, 0.30)";
+    ctx.fillRect(14, top, W - 28, 52);
+    ctx.strokeStyle = "rgba(255, 130, 130, 0.75)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(14, top, W - 28, 52);
+    ctx.font = "700 20px system-ui, -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(255, 215, 215, 0.99)";
+    ctx.fillText(alert.text, 28, top + 18);
+    ctx.font = "500 16px system-ui, -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(255, 190, 190, 0.92)";
+    ctx.fillText(alert.hint, 28, top + 38);
+    top += 64;
+  }
+
+  // --- the list ------------------------------------------------------------
+  const rowH = 40;
   items.forEach((item, i) => {
     const y = top + i * rowH + rowH / 2;
     const isSel = i === selected;
     if (isSel) {
       ctx.fillStyle = item.verified
-        ? "rgba(90, 170, 255, 0.28)"
+        ? "rgba(90, 170, 255, 0.32)"
         : "rgba(255, 120, 120, 0.20)";
-      ctx.fillRect(12, top + i * rowH + 2, W - 24, rowH - 4);
+      ctx.fillRect(14, top + i * rowH + 3, W - 28, rowH - 6);
+      // A caret as well as a fill: the fill alone is a colour difference, and
+      // colour alone is the one cue a headset's optics and an operator's eyes
+      // both degrade at the edge of the field.
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.font = "700 20px system-ui, -apple-system, sans-serif";
+      ctx.fillText("\u25B8", 24, y);
     }
-    ctx.font = "500 18px system-ui, -apple-system, sans-serif";
+    ctx.font = "500 21px system-ui, -apple-system, sans-serif";
     ctx.fillStyle = item.verified
-      ? "rgba(255,255,255,0.95)"
-      : "rgba(255,255,255,0.38)";
-    const label = busy === item.name ? `${item.label} …` : item.label;
-    ctx.fillText(label, 26, y);
+      ? "rgba(255,255,255,0.97)"
+      : "rgba(255,255,255,0.40)";
+    const label = busy === item.name ? item.label + " \u2026" : item.label;
+    ctx.fillText(label, 48, y);
 
     if (!item.verified) {
       // Struck through, not hidden. A capability the operator knows exists and
       // cannot find reads as a broken page; one they can see and cannot use
       // reads as a decision, which is what it is.
       const w = ctx.measureText(label).width;
-      ctx.strokeStyle = "rgba(255,255,255,0.30)";
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(26, y);
-      ctx.lineTo(26 + w, y);
+      ctx.moveTo(48, y);
+      ctx.lineTo(48 + w, y);
       ctx.stroke();
 
-      ctx.font = "400 13px system-ui, -apple-system, sans-serif";
-      ctx.fillStyle = "rgba(255,150,150,0.75)";
-      ctx.fillText("sin probar en real", W - 150, y);
+      ctx.font = "500 14px system-ui, -apple-system, sans-serif";
+      ctx.fillStyle = "rgba(255,150,150,0.85)";
+      ctx.fillText("sin probar en real", W - 176, y);
     }
   });
 
+  // --- footer: controls, then the last outcome ---------------------------
+  const footY = H - 52;
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(14, footY - 12);
+  ctx.lineTo(W - 14, footY - 12);
+  ctx.stroke();
+
+  ctx.font = "500 16px system-ui, -apple-system, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.fillText(
+    "A  siguiente     gatillo  ejecutar     joystick  caminar",
+    26,
+    footY + 4,
+  );
+
   if (status) {
-    ctx.font = "500 15px system-ui, -apple-system, sans-serif";
+    ctx.font = "600 16px system-ui, -apple-system, sans-serif";
     ctx.fillStyle =
       status.kind === "ok"
-        ? "rgba(130, 230, 160, 0.95)"
+        ? "rgba(140, 240, 175, 0.99)"
         : status.kind === "warn"
-          ? "rgba(245, 205, 120, 0.95)"
-          : "rgba(255, 140, 140, 0.95)";
-    ctx.fillText(status.text.slice(0, 46), 22, H - 26);
+          ? "rgba(250, 215, 130, 0.99)"
+          : "rgba(255, 150, 150, 0.99)";
+    ctx.fillText(status.text.slice(0, 52), 26, footY + 28);
   }
 }
 
@@ -290,6 +363,7 @@ export class MenuLayer {
   #status: MenuStatus = null;
   #busy: string | null = null;
   #readiness: Readiness | null = null;
+  #alert: MenuAlert = null;
 
   constructor(gl: WebGLRenderingContext) {
     this.#gl = gl;
@@ -325,6 +399,13 @@ export class MenuLayer {
 
   setBusy(name: string | null): void {
     this.#busy = name;
+    this.#dirty = true;
+  }
+
+  setAlert(alert: MenuAlert): void {
+    const prev = this.#alert;
+    if (prev?.text === alert?.text && prev?.hint === alert?.hint) return;
+    this.#alert = alert;
     this.#dirty = true;
   }
 
@@ -414,6 +495,7 @@ export class MenuLayer {
         this.#status,
         this.#busy,
         this.#readiness,
+        this.#alert,
       );
       this.#dirty = false;
       gl.bindTexture(gl.TEXTURE_2D, this.#texture);
@@ -443,7 +525,7 @@ export class MenuLayer {
     // assumes a square viewport, which is wrong but close — and wrong in
     // proportion rather than wrong by the inverse, which is what writing
     // `sx * (W / H)` here would do: a panel 2.5x too tall on a 1.6:1 canvas.
-    const sx = 0.34;
+    const sx = 0.4;
     const vpAspect =
       vpWidth && vpHeight && vpWidth > 0 && vpHeight > 0
         ? vpWidth / vpHeight
