@@ -219,6 +219,45 @@ def test_no_stop_file_is_clear():
     assert estop_finding(stop_at=None, ack_at=None).level == OK
 
 
+# --- whose stop, though -----------------------------------------------------
+#
+# The sentinel is per-machine: estop.py puts it at $HOME/.c3po/run on whatever
+# host is running. For real hardware the bridge runs ONBOARD, so the sentinel
+# that latches teleop is the robot's — and preflight runs on the operator's Mac
+# and reads the Mac's. Both directions of that mislead, and the second is the
+# dangerous one.
+
+
+def test_a_standing_stop_says_which_machine_it_read():
+    """Otherwise a months-old local sim stop reads as a live safety state on the
+    robot. This Mac carried one from 2026-08-20 for days."""
+    finding = estop_finding(
+        stop_at=200.0, ack_at=100.0, when="16:50:57 on 20 Aug", run_dir="/Users/x/.c3po/run"
+    )
+    assert finding.level == WARN
+    assert "THIS MACHINE" in finding.text
+    notes = " ".join(finding.notes)
+    assert "/Users/x/.c3po/run" in notes
+    # And it must point at where the authoritative one lives.
+    assert "onboard" in notes.lower()
+    assert "ssh c3po" in notes
+
+
+def test_a_clear_result_admits_it_cannot_see_the_robots():
+    """The dangerous direction: a REAL standing stop onboard is invisible from
+    here, and a bare 'no stop outstanding' would be read as covering it."""
+    finding = estop_finding(stop_at=None, ack_at=None)
+    assert finding.level == OK
+    assert "this machine" in finding.text
+    assert "cannot see" in " ".join(finding.notes).lower()
+
+
+def test_run_dir_is_optional_so_existing_callers_still_work():
+    finding = estop_finding(stop_at=200.0, ack_at=100.0)
+    assert finding.level == WARN
+    assert "THIS MACHINE" in finding.text
+
+
 # --- the verdict ------------------------------------------------------------
 
 

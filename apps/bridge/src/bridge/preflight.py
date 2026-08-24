@@ -375,22 +375,58 @@ def headset_findings(
 # --- a standing stop --------------------------------------------------------
 
 
-def estop_finding(stop_at: Optional[float], ack_at: Optional[float], when: str = "") -> Finding:
+def estop_finding(
+    stop_at: Optional[float],
+    ack_at: Optional[float],
+    when: str = "",
+    run_dir: str = "",
+) -> Finding:
     """A stop deliberately outlives the session it was pressed in.
 
     So an outstanding one is a WARNING with an explanation, never a failure:
     it is working as designed, and somebody who reads it as a fault will go
     looking for a broken robot.
+
+    WHOSE STOP, THOUGH. The sentinel is per-machine by construction — `estop.py`
+    puts it at `$HOME/.c3po/run` on whatever host is running. For real hardware
+    the bridge runs ONBOARD, because DDS only exists on the robot's internal
+    LAN, so the sentinel that actually latches teleop is the ROBOT's. Preflight
+    runs on the operator's Mac and reads the Mac's.
+
+    Both directions of that are wrong, and the second is the dangerous one:
+
+      * a months-old local sim stop reads as a live safety state on the robot
+        (this Mac carried one from 2026-08-20 for days);
+      * a real standing stop ONBOARD is invisible from here and reports as
+        "no stop outstanding".
+
+    So both branches name the machine. Reading the robot's over SSH was
+    considered and rejected: a check that can hang on the network is not what
+    you want in the thing you run before a headset goes on. It points at the
+    one-line command instead.
     """
+    where = " ({})".format(run_dir) if run_dir else ""
     if not stop_at or (ack_at or 0) >= stop_at:
-        return Finding(OK, "no stop outstanding")
+        return Finding(
+            OK,
+            "no stop outstanding on this machine",
+            ["the onboard bridge keeps its own — this check cannot see it"],
+        )
     notes = [
         "this is not broken — a stop deliberately outlives the session it was pressed in.",
         "It clears itself once you connect: hold the dead-man RELEASED for one full second.",
     ]
     if when:
         notes.append("Pressed at: {}".format(when))
-    return Finding(WARN, "an emergency stop is recorded and has not been cleared", notes)
+    notes.append("Read from THIS machine{}".format(where))
+    notes.append("The onboard bridge keeps its OWN sentinel, and that one is what")
+    notes.append("latches teleop on real hardware. Check it with:")
+    notes.append("    ssh c3po 'ls -l ~/.c3po/run/'")
+    return Finding(
+        WARN,
+        "an emergency stop is recorded on THIS MACHINE and has not been cleared",
+        notes,
+    )
 
 
 # --- the verdict ------------------------------------------------------------
@@ -595,7 +631,7 @@ def _estop_section() -> Section:
     )
     return Section(
         "5. Is a stop still standing?",
-        [estop_finding(stop_at, mtime("stop_acknowledged"), when)],
+        [estop_finding(stop_at, mtime("stop_acknowledged"), when, run_dir)],
     )
 
 
