@@ -147,6 +147,37 @@ STAND_HEIGHT = 0.78
 STALE_FRAME_S = 0.4
 MAX_CONTINUOUS_MOTION_S = 8.0
 
+# What counts as the operator still being there.
+#
+# The duration latch above exists for one case its own docstring names: "a
+# wedged client that is still faithfully sending enabled:true while nobody is
+# wearing the headset". It was written when walking meant TAPPING a button,
+# which never held for 8 s — so it was expected never to fire in normal use.
+#
+# A thumbstick broke that assumption. Held to cross a room it reaches 8 s every
+# time, and on 2026-08-24 it tripped seven times in one session; the operator
+# reported it as "the walking is a bit buggy", which is exactly what a safety
+# latch nobody can see looks like from inside a headset.
+#
+# So the window is refreshed by EVIDENCE THAT SOMEONE IS WEARING THE THING,
+# rather than by a longer number. A worn headset is never still: an operator
+# breathes, sways and looks around, and a few degrees of yaw or a few
+# centimetres of translation accumulate in seconds. A wedged client repeating
+# its last frame produces exactly zero of both, forever — so the case the latch
+# was written for still trips at 8 s, unchanged, and the case it was never
+# meant to catch stops being caught.
+#
+# Thresholds are deliberately above sensor noise and well below normal human
+# micro-movement. A headset resting on a table drifts far less than this.
+LIVENESS_YAW_RAD = 0.05  # ~2.9 degrees
+LIVENESS_POS_M = 0.03  # 3 cm
+
+# A ceiling that liveness cannot refresh. Motion stays BOUNDED whatever the
+# head is doing — an operator who is present but not paying attention, thumb
+# parked on a stick, is a real thing in a shared lab. Two minutes is far past
+# any deliberate manoeuvre in this room and far short of a runaway.
+MAX_MOTION_HARD_CEILING_S = 120.0
+
 # The dispatch loop's own rate. Independent of the frame rate: the headset may
 # deliver 30 or 120 frames a second, and `SetVelocity` wants a steady re-issue
 # well inside its 1 s firmware duration either way.
@@ -230,6 +261,12 @@ class TeleopSession:
         self._calibration_samples: list[float] = []
         self.calibrated = False
         self.motion_started_at: float | None = None
+        #: A second motion clock that head movement cannot refresh, so motion
+        #: is bounded even while somebody is demonstrably wearing the headset.
+        self.motion_hard_started_at: float | None = None
+        #: Head pose the liveness test compares against, or None before the
+        #: first commanding frame of a motion window.
+        self._liveness_ref: tuple[float, float, float, float] | None = None
         self.deadman_tripped = False
         self.moving = False
         self.arm_error: str | None = None
@@ -408,6 +445,32 @@ class TeleopSession:
             return False
         return self.frame is not None and self.frame.enabled
 
+    def _head_moved(self) -> bool:
+        """Whether the head has moved enough since the reference to count as a
+        person being present, updating the reference when it has.
+
+        This is the whole liveness test. It reads the frame's own head pose —
+        the one field a wedged client cannot fake by repeating, because
+        repeating is precisely what produces no movement.
+        """
+        frame = self.frame
+        if frame is None:
+            return False
+        hx, hy, hz = frame.head_position
+        pose = (frame.head_yaw, hx, hy, hz)
+        ref = self._liveness_ref
+        if ref is None:
+            self._liveness_ref = pose
+            return False
+        # Wrapped: a yaw crossing +/-pi is a small movement, and reading it as
+        # ~2pi would refresh the window on a wrap rather than on a person.
+        dyaw = abs((pose[0] - ref[0] + math.pi) % (2.0 * math.pi) - math.pi)
+        dpos = math.dist(pose[1:], ref[1:])
+        if dyaw >= LIVENESS_YAW_RAD or dpos >= LIVENESS_POS_M:
+            self._liveness_ref = pose
+            return True
+        return False
+
     def update_hold_latch(self, now: float, commanding: bool) -> None:
         """Trip the duration latch, and re-arm it once the operator lets go.
 
@@ -415,17 +478,46 @@ class TeleopSession:
         the operator who genuinely wants to keep turning simply releases and
         presses again, while a wedged client that never releases stays
         latched.
+
+        The window is ALSO refreshed by head movement — see LIVENESS_YAW_RAD.
+        A held thumbstick is normal use and reaches 8 s every time; a wedged
+        client sending a frozen pose reaches it too and must still be caught.
+        Head movement is what separates them, and `motion_hard_started_at` is a
+        second clock that liveness cannot touch, so motion stays bounded even
+        for an operator who is present but not paying attention.
         """
         if not commanding:
             self.motion_started_at = None
+            self.motion_hard_started_at = None
+            self._liveness_ref = None
             if self.frame is not None and not self.frame.enabled:
                 self.deadman_tripped = False
             return
         if self.motion_started_at is None:
             self.motion_started_at = now
-        elif now - self.motion_started_at > MAX_CONTINUOUS_MOTION_S:
+            self.motion_hard_started_at = now
+            self._liveness_ref = None
+            self._head_moved()  # seed the reference from this frame
+            return
+        if self.motion_hard_started_at is None:
+            self.motion_hard_started_at = now
+        held_hard = now - self.motion_hard_started_at
+        if held_hard > MAX_MOTION_HARD_CEILING_S:
             if not self.deadman_tripped:
-                log.warning("teleop.deadman.tripped", held_s=round(now - self.motion_started_at, 1))
+                log.warning("teleop.deadman.tripped", held_s=round(held_hard, 1), reason="hard_ceiling")
+            self.deadman_tripped = True
+            return
+        if self._head_moved():
+            # Somebody is wearing it. Start the window again from here.
+            self.motion_started_at = now
+            return
+        if now - self.motion_started_at > MAX_CONTINUOUS_MOTION_S:
+            if not self.deadman_tripped:
+                log.warning(
+                    "teleop.deadman.tripped",
+                    held_s=round(now - self.motion_started_at, 1),
+                    reason="head_still",
+                )
             self.deadman_tripped = True
 
     def status(self) -> dict[str, Any]:
