@@ -47,5 +47,16 @@ line-length = 100
 # have to run on JetPack 5's python 3.8.
 target-version = "py38"
 
+[tool.ruff.lint.per-file-ignores]
+# `bringup` runs on the ROBOT's system interpreter — 3.8 — to start the
+# containers, so it cannot depend on the venv having been synced. UP006/UP045
+# want `list[str]` and `X | None`, which ruff considers safe here only because
+# of `from __future__ import annotations`. That makes them legal in annotations
+# and still wrong anywhere an annotation is evaluated at runtime, which is a
+# distinction nobody should have to re-derive while editing a bring-up script.
+# typing.List/Optional are unambiguous at the floor this file targets.
+"bringup/*.py" = ["UP006", "UP045"]
+"tests/test_bringup_*.py" = ["UP006", "UP045"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

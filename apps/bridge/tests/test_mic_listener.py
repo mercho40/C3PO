@@ -57,7 +57,13 @@ class FakeWhisper:
         return f"whisper text ({len(pcm)}B)"
 
 
-def make(frames, whisper=True, **kw):
+def make(frames, whisper=True, min_seconds=0.0, monkeypatch=None, **kw):
+    """`min_seconds=0` by default so the buffering tests are not silently
+    skipping Whisper because these fake frames are a few bytes long. The routing
+    threshold gets its own test below, where it is the subject rather than a
+    hidden precondition."""
+    import bridge.skills.listen as mod
+    mod.WHISPER_MIN_SECONDS = min_seconds
     det, trans, whis = FakeDetector(), FakeTranscriber(), FakeWhisper() if whisper else None
     lis = MicListener(source=lambda: iter(frames), build=lambda: (det, trans, whis), **kw)
     return lis, det, trans, whis
@@ -273,3 +279,169 @@ def test_missing_arecord_is_not_a_crash(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", boom)
     assert listen_mod.alsa_capture_devices() == []
+
+
+# --- whisper routing by utterance length ------------------------------------
+#
+# Measured on the robot, warm: Whisper is 10-18x slower than the segmenter AND
+# worse on short clips -- "Para." came back as "!Bien!". Short utterances are
+# what commands to a robot look like, so routing everything through it makes the
+# common case both slower and less correct.
+
+def test_short_utterances_keep_the_segmenter_text():
+    """Below the threshold, Whisper must not even be called: it would cost
+    seconds to return a worse answer."""
+    lis, _, _, whis = make([b"aa", b"."], min_seconds=10.0)
+    lis.start()
+    items = drain(lis)
+    assert items[0]["text"] == "vosk text"
+    assert whis.calls == [], "whisper was called on a short utterance"
+
+
+def test_long_utterances_go_to_whisper():
+    lis, _, _, whis = make([b"a" * 40000, b"."], min_seconds=1.0)
+    lis.start()
+    items = drain(lis)
+    assert whis.calls, "whisper was not called on a long utterance"
+    assert "whisper text" in items[0]["text"]
+
+
+def test_the_buffer_is_cleared_even_when_whisper_is_skipped():
+    """The skip must not leak audio into the NEXT utterance -- otherwise a run
+    of short utterances silently accumulates until it crosses the threshold and
+    one of them is transcribed with all the others' audio in front of it."""
+    lis, _, _, whis = make([b"aa", b".", b"bb", b"."], min_seconds=10.0)
+    lis.start()
+    drain(lis)
+    assert whis.calls == []
+    assert lis.diagnostics()["utterances"] == 2
+
+
+# --- which whisper backend gets used ----------------------------------------
+#
+# The local path CANNOT use the GPU on this machine: the ctranslate2 aarch64
+# wheel is compiled without CUDA. So remote-first is not a preference, it is the
+# only way the GPU is reachable at all — and a regression to local-first would
+# silently cost 10x latency with everything still "working".
+
+def test_the_gpu_container_is_preferred_when_available(monkeypatch):
+    import bridge.skills.listen as mod
+    monkeypatch.setattr(mod, "remote_whisper_status",
+                        lambda: {"available": True, "model": "ggml-base.bin"})
+    assert isinstance(mod.build_whisperer(), mod.RemoteWhisper)
+
+
+def test_it_falls_back_to_local_cpu_when_the_container_is_down(monkeypatch):
+    import bridge.skills.listen as mod
+
+    class FakeLocal:
+        pass
+
+    monkeypatch.setattr(mod, "remote_whisper_status",
+                        lambda: {"available": False, "reason": "unreachable"})
+    monkeypatch.setattr(mod, "WhisperTranscriber", lambda: FakeLocal())
+    assert isinstance(mod.build_whisperer(), FakeLocal)
+
+
+def test_neither_available_returns_none_rather_than_raising(monkeypatch):
+    """The caller then keeps the segmenter's text. Losing Whisper must cost
+    transcript QUALITY, never the utterance itself."""
+    import bridge.skills.listen as mod
+    monkeypatch.setattr(mod, "remote_whisper_status", lambda: {"available": False})
+
+    def boom():
+        raise mod.ListenUnavailable("no model")
+
+    monkeypatch.setattr(mod, "WhisperTranscriber", boom)
+    assert mod.build_whisperer() is None
+
+
+def test_a_dead_container_yields_empty_text_not_an_exception(monkeypatch):
+    """RemoteWhisper must never raise into the listening loop — an unreachable
+    container would otherwise kill the thread that also carries the stop phrase."""
+    import bridge.skills.listen as mod
+    r = mod.RemoteWhisper(host="127.0.0.1", port=1)   # nothing listens there
+    assert r.transcribe(b"\x00\x00" * 1000) == ""
+    assert r.transcribe(b"") == ""
+
+
+# --- upgrading off the CPU fallback -----------------------------------------
+#
+# The backend used to be chosen once at bridge boot and never revisited, which
+# made the GPU upgrade a circular errand: the GPU transcriber lives in a
+# perception container, and restarting the bridge to re-pick stops perception.
+
+
+def test_the_cpu_fallback_upgrades_once_the_gpu_server_appears(monkeypatch):
+    import bridge.skills.listen as mod
+
+    monkeypatch.setattr(mod, "remote_whisper_status", lambda: {"available": True, "model": "ggml-base.bin"})
+
+    # A class, not a lambda: `upgrade_whisperer_if_possible` does an isinstance
+    # check against this name, so a stub that is not a type tests nothing.
+    class Remote:
+        pass
+
+    monkeypatch.setattr(mod, "RemoteWhisper", Remote)
+
+    assert isinstance(mod.upgrade_whisperer_if_possible(FakeWhisper()), Remote)
+
+
+def test_it_stays_on_the_fallback_while_the_gpu_server_is_absent(monkeypatch):
+    import bridge.skills.listen as mod
+
+    monkeypatch.setattr(
+        mod, "remote_whisper_status", lambda: {"available": False, "reason": "refused"}
+    )
+    cpu = FakeWhisper()
+    assert mod.upgrade_whisperer_if_possible(cpu) is cpu
+
+
+def test_an_already_remote_backend_is_not_re_probed(monkeypatch):
+    """The probe is an HTTP call on the audio thread. Never pay for it twice."""
+    import bridge.skills.listen as mod
+
+    probes = []
+    monkeypatch.setattr(mod, "remote_whisper_status", lambda: probes.append(1) or {"available": True})
+    remote = mod.RemoteWhisper()
+    assert mod.upgrade_whisperer_if_possible(remote) is remote
+    assert probes == []
+
+
+def test_the_listener_upgrades_without_anyone_speaking(monkeypatch):
+    """A quiet room must reach the GPU on its own.
+
+    Observed on the robot: the STT container is normally started AFTER the
+    bridge, and the probe used to run only after an utterance was transcribed.
+    So in a silent room the upgrade never fired, and the first person to speak
+    paid the CPU path to buy an upgrade for the second.
+    """
+    import bridge.skills.listen as mod
+
+    monkeypatch.setattr(mod, "REMOTE_RECHECK_S", 0.0)
+
+    class Upgraded:
+        def transcribe(self, pcm: bytes) -> str:
+            return "GPU TEXT"
+
+    monkeypatch.setattr(mod, "remote_whisper_status", lambda: {"available": True, "model": "m"})
+    monkeypatch.setattr(mod, "RemoteWhisper", Upgraded)
+
+    # A source that yields nothing and then blocks briefly: no frames, no
+    # transcripts, nothing for an audio-driven probe to hook into. The timer
+    # thread is the only thing that can upgrade here, which is the whole point.
+    def silent_then_speak():
+        time.sleep(0.15)
+        yield b"aa"
+        yield b"."
+
+    import bridge.skills.listen as listen_mod
+
+    det, trans, whis = FakeDetector(), FakeTranscriber(), FakeWhisper()
+    listen_mod.WHISPER_MIN_SECONDS = 0.0
+    lis = MicListener(source=silent_then_speak, build=lambda: (det, trans, whis))
+    lis.start()
+    items = drain(lis)
+
+    texts = [i["text"] for i in items if i["kind"] == "speech"]
+    assert texts == ["GPU TEXT"], texts

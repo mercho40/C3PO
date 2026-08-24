@@ -1,0 +1,32 @@
+# Let the stack release the head camera without a human at a terminal.
+#
+# WHY THIS EXISTS. `/dev/video4` is single-owner and Unitree's `videohub_pc4`
+# holds it from boot. Freeing it for the detector means stopping master_service
+# and reaping the children it leaves behind — both root actions. Without this,
+# `take_camera` can only run where sudo can prompt, so any unattended bring-up
+# (`perception_up nav2` over ssh, a systemd unit, a scripted demo) ends with
+# "the detector will stay offline" and a note telling somebody to go and type it
+# by hand. That is not a safety property, it is a missing permission dressed as
+# one.
+#
+# Priming the sudo timestamp first does NOT work here: this build keys the
+# timestamp to the parent pid, so a grandchild — which is exactly what
+# take_camera is when perception_up runs it — gets a fresh, unprimed check.
+#
+# NARROW ON PURPOSE. Two exact commands, no wildcards in the program path, no
+# shell. It cannot start anything, cannot touch the motion API, and cannot be
+# used to stop an arbitrary unit: `systemctl stop` is pinned to the one unit
+# name. Everything that can actually move the robot still goes through the
+# bridge and its closed gate.
+#
+# The reverse — `systemctl start master_service` — is deliberately NOT here.
+# Giving the camera back is not urgent, is not scripted, and a human doing it
+# deliberately is the right shape for the one direction that takes a sensor away
+# from the other team's running app.
+unitree ALL=(root) NOPASSWD: /usr/bin/systemctl stop master_service
+# `-x` matches the executable NAME exactly, so this cannot reach
+# videohub_pc4_chest (a different camera, /dev/video10) and cannot be widened by
+# argument. Written to match take_camera byte for byte: sudoers globs its
+# arguments, so a pattern with brackets in it would authorise something other
+# than what is run.
+unitree ALL=(root) NOPASSWD: /usr/bin/pkill -9 -x videohub_pc4

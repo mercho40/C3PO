@@ -73,6 +73,7 @@ The port map, in one place:
 | `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                                  |
 | `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback                |
 | Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera`'s real-robot feed; only up with `perception_up perception`/`nav2` |
+| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge — the same feed **without** owning `/dev/video4`       |
 | Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                                 |
 | G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                               |
 
@@ -448,6 +449,38 @@ cites them as the verification step. There is **no CD**: web is automatic on Ver
 
 Plain facts, not a roadmap. Each stays here until fixed.
 
+- **Written and never run on hardware.** These are not suspected broken — they
+  are untested, which is a different claim and a weaker one. Several can be
+  checked in a single bring-up, so they are listed together:
+
+  | What                                                    | How to check it                                                                                                         |
+  | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+  | The camera relay (`:8001/camera` picking the live feed) | `take_camera`, then `curl :8001/camera/status` — `source` should flip from `videohub` to `vision` with no config change |
+  | `build_perception` (now a shim over `bringup/build.py`) | `build_perception vision --dry-run`, then a real `vision` build                                                         |
+  | `measure.sh`'s sampling loop (its parsing is tested)    | `measure.sh idle 90` — the verdict table should fill in, not read UNKNOWN                                               |
+  | The `np.bool` fix in the detector                       | a build with a COLD engine cache; it is confirmed on a warm one                                                         |
+  | The `Type=exec` bridge unit                             | its own entry below                                                                                                     |
+  | The voice loop end to end                               | start it from the dashboard and say something to the robot                                                              |
+
+  The last one is the only one that can move the robot, and it should be done
+  with somebody's hand near the e-stop: the loop's whole job is turning
+  overheard speech into tool calls.
+
+- **The bridge unit's `Type=exec` cutover is prepared and NOT installed.**
+  `scripts/robot/c3po-bridge-exec.service` replaces the hand-rolled pidfile,
+  `nohup`, SIGTERM→SIGKILL escalation and process-tree kill in
+  `run_c3po`/`stop_c3po` with what systemd already does — and removes the
+  documented race where both write `~/.c3po/run/bridge.pid`, systemd waits for a
+  pid that no longer exists, and `run_teleop` then refuses to start on the
+  grounds that there is no e-stop. There is one. It became possible once the
+  bridge started loading its own `.env` (`bridge/env_file.py`), which was the
+  only thing `run_c3po` did that a unit could not.
+
+  It is not live because it has never been started on the robot, and if it is
+  wrong the bridge does not come up — which is the process that owns
+  `stop_everything`. The cutover, its verification and its rollback are written
+  at the bottom of that file; it is a two-minute swap with somebody present.
+
 - **`back` → bridge under Bun: FIXED, on localhost at least.** This was recorded as a hard
   blocker — the MCP SDK's `StreamableHTTPClientTransport` failing under Bun 1.4.0 with
   _"The socket connection was closed unexpectedly"_ while the same code under Node listed
@@ -458,11 +491,11 @@ Plain facts, not a roadmap. Each stays here until fixed.
   re-test rather than a changelog read. **Record the dependency version next time a
   library bug is filed here.**
 
-  ⚠️ **Verified against localhost, NOT through the SSH tunnel** — and the tunnel is the
-  condition the original failure was observed under, on a long-lived stream. Re-run the
-  same check against `g1-orin.local:8001` through `ssh -L` before treating the robot path
-  as proven. If it fails only there, the fault is the tunnel's stream handling, not Bun's,
-  and the fallback is plain request/response POSTs rather than the SDK transport.
+  **Now verified through the SSH tunnel too, 2026-08-22** — the condition the original
+  failure was observed under. `apps/back`'s `bridge/client.ts` over `ssh -L
+8001:127.0.0.1:8001` to the real robot: **33 tools listed**, `get_state` returned. So
+  the tunnel's stream handling is not a factor and the fallback (plain request/response
+  POSTs instead of the SDK transport) is not needed. The blocker is fully closed.
 
 - **`BRIDGE_URL` default is wrong on both host and port** (`apps/back/.env.example`):
   the real target is an SSH tunnel to `g1-orin.local:8001`, not `127.0.0.1:8000`. The

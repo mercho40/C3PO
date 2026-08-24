@@ -499,6 +499,7 @@ def test_setup_cfg_puts_console_scripts_where_ros2_looks():
 def test_every_console_script_names_a_real_module_attribute():
     """`ros2 run` failing on a typo'd entry point is a runtime-only error too."""
     import ast
+
     from conftest import NAV_PKG
 
     setup_py = (NAV_PKG / "setup.py").read_text()
@@ -517,3 +518,25 @@ def test_every_console_script_names_a_real_module_attribute():
         tree = ast.parse(module_file.read_text())
         names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
         assert func in names, f"{target}: {module_file.name} has no `{func}`"
+
+
+def test_scan_is_subscribed_with_sensor_data_qos():
+    """A bare depth means RELIABLE, and the real scan publisher is BEST_EFFORT.
+
+    THE FAKE CANNOT CATCH THIS. `nav2-fake`'s synthetic scan comes from
+    `ros2 topic pub`, which defaults to RELIABLE and matches a RELIABLE
+    subscriber — so the stack passed every fake run while the real
+    `pointcloud_to_laserscan` would never have delivered a single message. It
+    surfaced only at first light on the Livox, as two nodes each politely
+    blaming the other for incompatible QoS.
+
+    Asserted on the source because the fault is a QoS profile, which no
+    behavioural test without a live DDS graph can observe.
+    """
+    from conftest import NAV_PKG
+
+    src = (NAV_PKG / "c3po_perception" / "world_model_publisher.py").read_text()
+    sub = src.split('LaserScan, "/scan"', 1)[-1].split(")", 1)[0]
+    assert "qos_profile_sensor_data" in sub, (
+        "/scan must be subscribed with sensor-data QoS — a bare depth is "
+        "RELIABLE and will silently receive nothing from the real driver")

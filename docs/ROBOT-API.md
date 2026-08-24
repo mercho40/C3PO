@@ -1872,16 +1872,16 @@ simulation and matches anything). **[src]**
 
 ### Sensors, input, audio
 
-| Topic                                                           | Type                                                                  | Rate   | Evidence                                                                                                       |
-| --------------------------------------------------------------- | --------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------- |
-| `rt/utlidar/cloud_livox_mid360`                                 | `sensor_msgs::msg::dds_::PointCloud2_`                                | 10 Hz  | **[live]** (bags) — gated on the `lidar_driver` service                                                        |
-| `rt/utlidar/imu_livox_mid360`                                   | `sensor_msgs::msg::dds_::Imu_`                                        | 200 Hz | **[live]** — type **not** shipped in Python                                                                    |
-| `rt/unitree/slam_mapping/points` / `…/odom`                     | `PointCloud2_` / `Odometry_`                                          | 10 Hz  | **[src]** vendor SLAM output                                                                                   |
-| `rt/unitree/slam_relocation/points` / `…/odom` / `…/global_map` | `PointCloud2_` / `Odometry_` / `PointCloud2_`                         | —      | **[web]** — `global_map` is _"only sent once after start relocation"_                                          |
-| `rt/frontvideostream`                                           | `unitree_go::msg::dds_::Go2FrontVideoData_`                           | —      | **[src]** — the head `videohub_pc4` binary does create this writer                                             |
-| `rt/wirelesscontroller`                                         | `unitree_go::msg::dds_::WirelessController_`                          | —      | **[src]**, Go2 example only; absent from all 45 official G1 pages — use `LowState_.wireless_remote[40]` (§9.5) |
-| `rt/audio_msg`                                                  | `std_msgs::msg::dds_::String_` (JSON `text` / `play_state`)           | —      | **[src]**                                                                                                      |
-| mic PCM                                                         | **not DDS** — UDP multicast `239.168.123.161:5555`, 16 kHz mono s16le | —      | **[src]**                                                                                                      |
+| Topic                                                           | Type                                                                  | Rate   | Evidence                                                                                                                                        |
+| --------------------------------------------------------------- | --------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rt/utlidar/cloud_livox_mid360`                                 | `sensor_msgs::msg::dds_::PointCloud2_`                                | 10 Hz  | **[live]** (bags) — gated on the `lidar_driver` service                                                                                         |
+| `rt/utlidar/imu_livox_mid360`                                   | `sensor_msgs::msg::dds_::Imu_`                                        | 200 Hz | **[live]** — type **not** shipped in Python                                                                                                     |
+| `rt/unitree/slam_mapping/points` / `…/odom`                     | `PointCloud2_` / `Odometry_`                                          | 10 Hz  | **[src]** vendor SLAM output                                                                                                                    |
+| `rt/unitree/slam_relocation/points` / `…/odom` / `…/global_map` | `PointCloud2_` / `Odometry_` / `PointCloud2_`                         | —      | **[web]** — `global_map` is _"only sent once after start relocation"_                                                                           |
+| `rt/frontvideostream`                                           | `unitree_go::msg::dds_::Go2FrontVideoData_`                           | —      | **[live] SILENT** — writer exists, carried nothing in 10 s (2026-08-21). Frames come from the `videohub` RPC instead — `ROBOT-HARDWARE.md` §6.6 |
+| `rt/wirelesscontroller`                                         | `unitree_go::msg::dds_::WirelessController_`                          | —      | **[src]**, Go2 example only; absent from all 45 official G1 pages — use `LowState_.wireless_remote[40]` (§9.5)                                  |
+| `rt/audio_msg`                                                  | `std_msgs::msg::dds_::String_` (JSON `text` / `play_state`)           | —      | **[src]**                                                                                                                                       |
+| mic PCM                                                         | **not DDS** — UDP multicast `239.168.123.161:5555`, 16 kHz mono s16le | —      | **[src]**                                                                                                                                       |
 
 Sim-only, Isaac on domain 1: `rt/sim_state`, `rt/sim_state_cmd`, `rt/run_command/cmd`,
 `rt/reset_pose/cmd`, `rt/dex1/{left,right}/{state,cmd}`.
@@ -1929,7 +1929,7 @@ Publisher-side QoS recorded in the bags for `/lf/lowstate`, `/lf/bmsstate`,
 VOLATILE**, infinite deadline/lifespan/liveliness. **[live]** Depth 1 is the part that
 matters: there is no history to catch up on, so a slow subscriber silently drops samples.
 Our reader depth of 10 is legal but buys nothing. (The colleague's prose calls the
-`utlidar` topics BEST_EFFORT while their own bag metadata records RELIABLE — trust the
+`utlidar` topics BEST_EFFORT while their own bag metadata records RELIABLE. **Settled 2026-08-21: the publishers are RELIABLE** (`ROBOT-HARDWARE.md` §4.5). Historically — trust the
 metadata, but verify.)
 
 ⚠️ **Our CycloneDDS config is never actually applied — the vendor SDK overrides it.**

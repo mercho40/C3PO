@@ -50,7 +50,13 @@ import time
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
@@ -105,7 +111,32 @@ class WorldModelPublisher(Node):
 
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
         self.create_subscription(String, "/c3po/objects", self._on_objects, 10)
-        self.create_subscription(LaserScan, "/scan", self._on_scan, 10)
+        # SENSOR-DATA QoS ON /scan, AND `10` HERE WAS A REAL BUG.
+        #
+        # A bare depth means the default profile, which is RELIABLE.
+        # `pointcloud_to_laserscan` publishes BEST_EFFORT — the ROS convention
+        # for sensor streams — so the two never matched and NOT ONE SCAN
+        # ARRIVED. Both nodes said so and each blamed the other:
+        #
+        #   pointcloud_to_laserscan: "requesting incompatible QoS. No messages
+        #                             will be sent to it."
+        #   world_model_publisher:   "offering incompatible QoS. No messages
+        #                             will be received from it."
+        #
+        # The world model then reported free space as unavailable while the
+        # LiDAR was working perfectly.
+        #
+        # `nav2-fake` MASKED THIS for weeks: the synthetic scan comes from
+        # `ros2 topic pub`, which defaults to RELIABLE and matched. It only
+        # appeared at first light on the real driver — the kind of fault a fake
+        # cannot reproduce, because the fake is not wrong in the same way the
+        # real thing is right.
+        #
+        # BEST_EFFORT is also strictly more compatible: a BEST_EFFORT
+        # subscriber matches a RELIABLE publisher too (requested <= offered),
+        # so this works against both the real driver and the fake.
+        self.create_subscription(
+            LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
 
         self._pose = None
         self._pose_stamp = 0.0

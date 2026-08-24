@@ -1,0 +1,141 @@
+# FAST-LIO against the VENDOR REPUBLISH, not our own Livox driver.
+#
+# WHY. Our livox_ros_driver2 does not get the sensor while the vendor
+# `lidar_driver` service holds it: the command channel connects, the host config
+# push appears to succeed, and the points keep going to the control board
+# (ROBOT-HARDWARE.md §4.3, measured 2026-08-21). The republish is the route that
+# works, and being ordinary pub/sub it costs the co-tenant nothing.
+#
+# THREE FIELDS DIFFER FROM THE DRIVER CONFIG, AND EACH ONE MATTERS:
+#
+#   lid_topic / imu_topic  the bridged names. domain_bridge carries them from
+#                          domain 0 onto 42 under the SAME names.
+#
+#   lidar_type: 2          The republish is a sensor_msgs/PointCloud2 with
+#                          `ring` (uint16) and `time` (float32) -- the velodyne
+#                          layout, which FAST-LIO reads natively. lidar_type 1
+#                          expects livox CustomMsg, which this is NOT: with 1
+#                          the callback never fires and the node sits silent
+#                          with no error, exactly as it did on first light.
+#
+#   timestamp_unit: 3      NANOSECONDS. Measured, not guessed: the `time` field
+#                          runs to ~9.75e6 on a 10 Hz scan whose header stamp
+#                          tracks wall clock, and nanoseconds is the only unit
+#                          that makes a ~100 ms span out of that. Velodyne
+#                          convention is seconds, so this is NOT the obvious
+#                          value and the obvious value is wrong.
+#
+#                          Getting it wrong does not merely degrade
+#                          undistortion — it stalls FAST-LIO completely. At
+#                          unit 1 (ms) it read the scan as spanning ~9750
+#                          SECONDS, then waited for IMU that far ahead, which
+#                          never came: subscriptions healthy, data arriving,
+#                          zero output, and not one log line saying why.
+#
+# Everything else -- extrinsics, blind, scan_rate -- is inherited unchanged from
+# the driver config; the sensor and its mounting have not moved.
+
+# FAST-LIO2 — Unitree G1, Livox Mid-360 mounted UPSIDE DOWN.
+#
+# Consumed by hku-mars/FAST_LIO @ branch ROS2 (package fast_lio, executable
+# fastlio_mapping). The `/**: ros__parameters:` wrapper is required — the ROS 2
+# port reads these as node parameters, unlike the ROS 1 original's flat YAML.
+#
+# READ THIS BEFORE CHANGING extrinsic_R OR extrinsic_T.
+#
+# The upside-down mount is corrected NOWHERE in this file and NOWHERE in the
+# driver. Both the cloud and the IMU stay in the sensor's native (inverted)
+# frame, so their RELATIVE geometry is exactly what the datasheet says — hence
+# identity rotation and the stock translation. FAST-LIO does not gravity-align:
+# init_state.grav is an ESTIMATED STATE (S2 manifold, own covariance) while
+# init_state.rot is left at identity, so the filter is internally consistent
+# with an arbitrarily-oriented IMU. What comes out is a `camera_init` frame
+# whose +z points at the floor, and the launch file's static
+# `odom -> camera_init` (roll = pi, z = lidar height) fixes that once, for
+# every consumer.
+#
+# The alternative — roll:180 in the driver plus an IMU relay — needs
+# extrinsic_R identity with extrinsic_T [-0.011, +0.02329, -0.04412], and
+# getting that flip wrong is a ~10 cm lever-arm error (|t - t'| = 0.0998 m),
+# which on a humanoid couples step-frequency angular rate into apparent linear
+# acceleration. We avoid the whole question.
+/**:
+  ros__parameters:
+    feature_extract_enable: false      # FAST-LIO2 runs scan-to-map on raw points
+    point_filter_num: 3
+    max_iteration: 3
+    filter_size_surf: 0.5
+    filter_size_map: 0.5
+    # BOUNDS THE MAP. ikd-Tree grows with mapped area and is the only unbounded
+    # allocation in this container. 1000 m is upstream's default and is far too
+    # generous indoors; 200 m keeps a long session inside the memory budget.
+    cube_side_length: 200.0
+    runtime_pos_log_enable: false
+    map_file_path: "/opt/c3po/maps/current.pcd"
+
+    common:
+      # livox_ros_driver2 publishes CustomMsg on `livox/lidar` when
+      # xfer_format=1. FAST-LIO REQUIRES CustomMsg: only it carries per-point
+      # offset_time, which is what the motion undistortion uses. With
+      # PointCloud2 (xfer_format=0) the livox callback never fires and the node
+      # sits silent with no error.
+      lid_topic: "/utlidar/cloud_livox_mid360"
+      imu_topic: "/utlidar/imu_livox_mid360"
+      # Both streams come off the same sensor packet timestamp — hardware
+      # synchronised. time_sync_en is a workaround for genuinely unsynchronised
+      # rigs and degrades a synchronised one.
+      time_sync_en: false
+      time_offset_lidar_to_imu: 0.0
+
+    preprocess:
+      lidar_type: 2          # VELODYNE-style PointCloud2: ring + time
+      scan_line: 4
+      # The Mid-360 sits high on the G1 and sees the robot's own shoulders and
+      # arms. 0.5 m is upstream's value; raise it if self-returns appear in the
+      # map. Self-returns are stationary in the body frame and will fight the
+      # scan-to-map registration, so they are not merely cosmetic. UNMEASURED.
+      blind: 0.5
+      timestamp_unit: 3      # NANOSECONDS - measured, see the header note
+      scan_rate: 10          # must equal the driver's publish_freq
+
+    mapping:
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.0001
+      b_gyr_cov: 0.0001
+      fov_degree: 360.0
+      # Mid-360 is 40 m @ 10% reflectivity. Upstream's 100.0 just buys ikd-Tree
+      # work on points that are noise indoors.
+      det_range: 40.0
+
+      # OFF on purpose. Online extrinsic estimation is helpful on a rigid
+      # vehicle; a walking humanoid injects a periodic excitation that the
+      # filter can happily absorb into the extrinsic instead of the trajectory.
+      # Turn it on only as a diagnostic, never as a fix.
+      extrinsic_est_en: false
+
+      # Datasheet: the Mid-360's IMU chip sits at (11.0, 23.29, -44.12) mm in
+      # the point-cloud frame, so the LiDAR origin expressed in the IMU frame is
+      # the negation, in metres. Unchanged, because neither stream is rotated.
+      extrinsic_T: [-0.011, -0.02329, 0.04412]
+      extrinsic_R: [1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0]
+
+    publish:
+      path_en: false
+      effect_map_en: false
+      map_en: false                # /Laser_map is the largest payload; off
+      scan_publish_en: true
+      dense_publish_en: false      # downsampled scans are enough for costmaps
+      # Load-bearing: publishes /cloud_registered_body in the `body` frame,
+      # which is what pointcloud_to_laserscan consumes. Without it there is no
+      # deskewed body-frame cloud and the costmap has no source.
+      scan_bodyframe_pub_en: true
+
+    pcd_save:
+      # Must stay false. interval:-1 accumulates every frame into one in-memory
+      # cloud; on a 15 GB unified-memory Jetson shared with a TRT engine that is
+      # an OOM with a long fuse.
+      pcd_save_en: false
+      interval: -1

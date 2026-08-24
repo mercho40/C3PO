@@ -1,0 +1,218 @@
+"""The bring-up SEQUENCE, with docker replaced by a recorder.
+
+What gets removed, what gets created, in what order, and what is refused — all
+of it on a laptop. This is the half that used to be unobservable: the shell
+version could only be checked by running it on the robot and watching what the
+other team lost.
+"""
+
+from __future__ import annotations
+
+from typing import List, Sequence, Tuple
+
+import pytest
+
+from bringup.cli import bring_up
+from bringup.spec import NAV, STT, VISION
+
+
+class FakeRunner:
+    """Records every docker call; answers queries from a scripted world."""
+
+    def __init__(self, existing=(), running=(), gemm=(), topic_ready=True, http_ready=True):
+        self.calls: List[List[str]] = []
+        self.scripts: List[Tuple[str, dict]] = []
+        self.slept = 0.0
+        self.dirs: List[str] = []
+        self._existing = list(existing)
+        self._running = list(running)
+        self._gemm = list(gemm)
+        self._topic_ready = topic_ready
+        self._http_ready = http_ready
+
+    def docker(self, args: Sequence[str], capture: bool = True) -> Tuple[int, str]:
+        args = list(args)
+        self.calls.append(args)
+        if args[:1] == ["ps"]:
+            name_filter = args[args.index("--filter") + 1] if "--filter" in args else ""
+            if "gemm" in name_filter:
+                return 0, "\n".join(self._gemm)
+            pool = self._existing if "-a" in args else self._running
+            return 0, "\n".join(pool)
+        if args[:2] == ["image", "inspect"]:
+            return 0, "sha256:deadbeef"
+        if args[:1] == ["create"]:
+            name = args[args.index("--name") + 1]
+            self._existing.append(name)
+            return 0, ""
+        if args[:1] == ["start"]:
+            self._running.append(args[1])
+            return 0, ""
+        if args[:1] == ["rm"]:
+            target = args[-1]
+            self._existing = [c for c in self._existing if c != target]
+            self._running = [c for c in self._running if c != target]
+            return 0, ""
+        if args[:1] == ["exec"]:
+            return (0 if self._topic_ready else 1), ""
+        return 0, ""
+
+    def http_ok(self, url: str, timeout: float = 3.0) -> bool:
+        return self._http_ready
+
+    def sleep(self, seconds: float) -> None:
+        self.slept += seconds
+
+    def makedirs(self, path: str) -> None:
+        self.dirs.append(path)
+
+    def run_script(self, path, env=None):
+        self.scripts.append((path, dict(env or {})))
+        return 0
+
+
+ENV = {"HOME": "/home/unitree", "C3PO_DIR": "/home/unitree/c3po"}
+
+
+def created(runner: FakeRunner) -> List[str]:
+    return [c[c.index("--name") + 1] for c in runner.calls if c[:1] == ["create"]]
+
+
+def removed(runner: FakeRunner) -> List[str]:
+    return [c[-1] for c in runner.calls if c[:1] == ["rm"]]
+
+
+# --- composition ------------------------------------------------------------
+
+
+def test_starting_stt_does_not_remove_a_running_nav2():
+    """The bug: the two stages designed to coexist could not.
+
+    The failure was quiet in the worst direction — the bridge silently fell back
+    to CPU whisper, three times slower, and said so only in a log line written
+    at that moment.
+    """
+    runner = FakeRunner(existing=[NAV, VISION], running=[NAV, VISION])
+    assert bring_up("stt", runner, env=ENV) == 0
+    assert NAV not in removed(runner)
+    assert VISION not in removed(runner)
+    assert created(runner) == [STT]
+
+
+def test_starting_nav2_does_not_remove_a_running_stt():
+    runner = FakeRunner(existing=[STT], running=[STT])
+    assert bring_up("nav2", runner, env=ENV) == 0
+    assert STT not in removed(runner)
+    assert set(created(runner)) == {NAV, VISION}
+
+
+def test_a_stage_replaces_its_own_stale_containers():
+    runner = FakeRunner(existing=[NAV, VISION], running=[])
+    bring_up("nav2", runner, env=ENV)
+    assert set(removed(runner)) == {NAV, VISION}
+
+
+# --- arbitration ------------------------------------------------------------
+
+
+def test_a_sensor_free_stage_never_touches_gemm():
+    """nav2-fake exists to be the sensor-free one; for a while it took both."""
+    runner = FakeRunner(gemm=["gemm-bringup"])
+    bring_up("nav2-fake", runner, env=ENV, scripts_dir="/s")
+    assert runner.scripts == []
+
+
+def test_stt_never_touches_gemm_either():
+    runner = FakeRunner(gemm=["gemm-bringup"])
+    bring_up("stt", runner, env=ENV, scripts_dir="/s")
+    assert runner.scripts == []
+
+
+def test_a_camera_stage_stops_gemm_and_then_takes_the_camera():
+    """stop_gemm frees gemm's holders and deliberately not Unitree's.
+
+    A stage that announced a camera claim and stopped there is how this
+    reported success with the device still held.
+    """
+    runner = FakeRunner(gemm=["gemm-bringup"])
+    bring_up("nav2", runner, env=ENV, scripts_dir="/s")
+    ran = [path for path, _ in runner.scripts]
+    assert ran == ["/s/stop_gemm", "/s/take_camera"]
+
+
+def test_taking_the_camera_is_confirmed_because_the_stage_was_chosen():
+    runner = FakeRunner()
+    bring_up("nav2", runner, env=ENV, scripts_dir="/s")
+    _, env = next(s for s in runner.scripts if s[0].endswith("take_camera"))
+    assert env["C3PO_TAKE_CAMERA_YES"] == "1"
+
+
+def test_the_lidar_driver_override_makes_an_otherwise_free_stage_claim():
+    runner = FakeRunner(gemm=["gemm-bringup"])
+    bring_up("odometry", runner, env=dict(ENV, C3PO_LIDAR_SOURCE="driver"), scripts_dir="/s")
+    assert "/s/stop_gemm" in [path for path, _ in runner.scripts]
+
+
+# --- readiness --------------------------------------------------------------
+
+
+def test_stt_readiness_is_its_own_endpoint_not_a_ros_topic():
+    runner = FakeRunner(http_ready=True)
+    assert bring_up("stt", runner, env=ENV) == 0
+    assert not any(c[:1] == ["exec"] for c in runner.calls)
+
+
+def test_a_stt_container_that_never_answers_is_left_up_to_inspect():
+    """Rolling it back would delete the logs that say why."""
+    runner = FakeRunner(http_ready=False)
+    assert bring_up("stt", runner, env=ENV) == 1
+    assert removed(runner) == []
+
+
+def test_a_nav_stack_that_never_publishes_is_rolled_back():
+    runner = FakeRunner(topic_ready=False)
+    assert bring_up("nav2", runner, env=ENV) == 1
+    assert set(removed(runner)) >= {NAV, VISION}
+
+
+def test_a_dead_camera_does_not_fail_a_nav_bring_up():
+    """Somebody running the nav stack does not care about 8081.
+
+    They are told, and the bring-up still succeeds.
+    """
+    runner = FakeRunner(topic_ready=True, http_ready=False)
+    assert bring_up("nav2", runner, env=ENV) == 0
+
+
+# --- refusals and dry runs --------------------------------------------------
+
+
+def test_an_unknown_stage_is_refused_before_anything_runs():
+    runner = FakeRunner()
+    assert bring_up("nonsense", runner, env=ENV) == 2
+    assert runner.calls == []
+
+
+def test_dry_run_touches_nothing(capsys):
+    runner = FakeRunner(existing=[NAV], gemm=["gemm-bringup"])
+    assert bring_up("nav2", runner, env=ENV, scripts_dir="/s", dry_run=True) == 0
+    assert not any(c[:1] in (["create"], ["start"], ["rm"]) for c in runner.calls)
+    assert runner.scripts == []
+    out = capsys.readouterr().out
+    assert "docker create --name " + NAV in out
+
+
+@pytest.mark.parametrize("stage", ["fake", "nav2-fake", "stt", "odometry", "perception", "nav2"])
+def test_every_stage_dry_runs_without_touching_the_machine(stage):
+    """Not a single docker call, including the read-only ones.
+
+    Asserting only that nothing is created/started/removed was too weak: the
+    first version still ran `docker ps` to see whether gemm was up, so
+    `--dry-run` blew up with a traceback on any machine without docker — which
+    is precisely the machine it exists to be useful on.
+    """
+    runner = FakeRunner()
+    assert bring_up(stage, runner, env=ENV, scripts_dir="/s", dry_run=True) == 0
+    assert runner.calls == []
+    assert runner.scripts == []
+    assert runner.dirs == []

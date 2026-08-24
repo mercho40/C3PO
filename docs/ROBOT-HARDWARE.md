@@ -157,8 +157,8 @@ State as of the 2026-08-13/14 survey, with 2026-08-15 recon updates folded in.
 | Device                   | Attaches via                                                                                        | Address / node                                                                  | Held by, at snapshot                   | Health                                            |
 | ------------------------ | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------- |
 | Livox Mid-360 LiDAR      | Ethernet, robot internal LAN — **also republished on DDS**, §4.5                                    | `192.168.123.120`, `0c:9a:e6:87:5c:4a`                                          | **not the Jetson** — some other host   | alive, 2.5 ms RTT; not streaming to us            |
-| Intel RealSense D435i    | USB 3.0 hub `2-2`, port 3 → `2-2.3`, `8086:0b3a`                                                    | `/dev/video0–5`, IIO accel+gyro                                                 | `teleimager.image_server` (video4)     | healthy; **depth and IR unclaimed**               |
-| G1 "head camera"         | **is the D435i colour node** — see §6                                                               | `/dev/video4`                                                                   | nobody (`master_service` stopped)      | stopped, recoverable                              |
+| Intel RealSense D435i    | USB 3.0 hub `2-2`, port 3 → `2-2.3`, `8086:0b3a`                                                    | `/dev/video0–5`, IIO accel+gyro                                                 | **contended — §6.6**                   | healthy; **depth and IR unclaimed**               |
+| G1 "head camera"         | **is the D435i colour node** — see §6                                                               | `/dev/video4`                                                                   | `videohub_pc4`, when nobody took it    | live; readable **without** the device — §6.6      |
 | G1 chest camera          | would be `/dev/video10`                                                                             | —                                                                               | nobody                                 | **absent** — no such device electrically          |
 | Hands                    | RS485 behind FTDI FT4232H `0403:6011`; a Dex3 pair would be served from the **control board**, §7.2 | `/dev/ttyUSB0–3`                                                                | `brainco_hand_server` (ttyUSB1)        | one right hand answering; identity **[?]** — §7.3 |
 | Mic array (4 mics)       | control board, **not** the Jetson                                                                   | UDP mcast `239.168.123.161:5555`                                                | `gemm-ai.service` joined the group     | joined but **silent at rest** — §8.2              |
@@ -354,6 +354,33 @@ documented dependency (Lidar Driver ≥ 1.0.0.5), toggled with no vendor SDK via
 and the `ServiceList` probe live in `docs/ROBOT-API.md` §8). The gemm client for it is
 `gemm_bringup/tools/g1_service.py`. **[src]**
 
+**MEASURED 2026-08-21, and it changes the recommendation.** A subscriber in our own
+`humble` container, on domain 0 with CycloneDDS pinned to `eth0`: **[live]**
+
+```
+/utlidar/cloud_livox_mid360   sensor_msgs/msg/PointCloud2   9.71 Hz   20064 pts   point_step 22
+    x y z intensity (float32) | ring (uint16) | time (float32, offset 18)
+/utlidar/imu_livox_mid360     sensor_msgs/msg/Imu
+publisher QoS (both):  RELIABLE, KEEP_LAST(1), VOLATILE
+```
+
+Three things follow, and together they make Route 1 far more attractive than it looked:
+
+1. **The cloud carries PER-POINT `time`, plus `ring`.** That is the velodyne layout, which
+   FAST-LIO reads natively as `lid_type: 2` — so the CustomMsg requirement that appeared to
+   rule this route out does not apply. No custom preprocessor. (`time_unit` still has to be
+   matched to the field's units; check before trusting the odometry.)
+2. **The IMU is a standard `sensor_msgs/msg/Imu`.** The "unitree*sdk2py ships no `Imu*`"
+   blocker is real but irrelevant here: it binds the _bridge_, which has no ROS. A ROS 2
+   node gets the type for free.
+3. **The publishers are RELIABLE.** The contradiction below is settled in favour of the bag
+   metadata; the prose was wrong. A BEST_EFFORT subscriber still matches (requested weaker
+   than offered), which is why a default-QoS probe sees data when the service is on.
+
+Two caveats that stay: `KEEP_LAST(1)` means a slow subscriber silently DROPS rather than
+queues, and the topics are on **domain 0** — reaching them from our domain-42 containers is
+the real cost of this route, not the message format.
+
 **QoS trap, and it already burned the gemm team once:** their 2026-08-07 conclusion that
 "these topics do not exist in any DDS domain" was wrong — it came from probing with a
 default-QoS subscriber while the service was switched **off**. Their note claims the
@@ -362,6 +389,25 @@ fluyendo"_) **[src]** — except the bag metadata \_they_ produced records those
 **RELIABLE**, KEEP_LAST depth 1, VOLATILE. **[live]** The prose and the metadata contradict
 each other; trust the metadata, but verify before relying on either. Depth-1 KEEP_LAST also
 means a slow subscriber silently drops rather than queues.
+
+**⚠️ ROUTE 2 DID NOT ACTUALLY WORK, measured 2026-08-21.** First light on the real sensor:
+`livox_ros_driver2` reported `Init lds lidar success!` and found the device
+(`GetFreeIndex key:livox_lidar_2021370048`), the LiDAR answered ping at 1.8 ms — and
+**`/livox/lidar` published nothing at all.** Meanwhile `rt/utlidar/cloud_livox_mid360` was
+still delivering 59 frames in 6 s. The sensor never redirected; it kept streaming to the
+control board, whose `lidar_driver` service was running the whole time. **[live]**
+
+So the "it steals the stream" warning below overstates what one driver can do while the
+vendor service holds the sensor: the command channel connects, the config push appears to
+succeed, and the point data keeps going somewhere else. That is the exact silent-failure
+shape the launch file warns about for a wrong `host_net_info` — except the address was
+correct (`192.168.123.164`, verified against eth0).
+
+**This makes Route 1 the route that works, not merely the polite one.** It is already
+delivering 10 Hz clouds with per-point `time` and a standard `Imu`, to any number of
+subscribers, with no flash writes and no fight (§4.5). Taking Route 2 would first require
+switching the vendor `lidar_driver` off via `ServiceSwitch` — a shared-service change that
+takes LiDAR from the co-tenant, rather than the local decision it was assumed to be.
 
 **Route 2 — run our own `livox_ros_driver2` (what the perception stack does).** The
 operative perception design (`apps/perception/README.md`) runs the driver in the nav
@@ -735,9 +781,9 @@ a request/response snapshot, never as a continuous stream. **[src]**
 defines `VIDEO_SERVICE_NAME = "videohub"`, `VIDEO_API_VERSION = "1.0.0.1"`,
 `VIDEO_API_ID_GETIMAGESAMPLE = 1001`, and `VideoClient.GetImageSample()` calls
 `_CallBinary(1001, [])`. The service name maps exactly onto the binary's
-`rt/api/videohub/request|response`, so this Go2-labelled client **should** address the G1
-head videohub unchanged; a chest client would need service name `videohub_chest`. Untested
-— the service is stopped and an RPC is a write. **[src]**
+`rt/api/videohub/request|response`, so this Go2-labelled client addresses the G1 head
+videohub unchanged; a chest client would need service name `videohub_chest`. **Confirmed
+live 2026-08-21 — see §6.6.** **[src]** + **[live]**
 
 One mismatch to expect: the shipped `Go2FrontVideoData_` IDL is
 `{time_frame: uint64, video720p, video360p, video180p}`, but the G1 pipeline has **no 180p
@@ -767,6 +813,51 @@ Side effect worth knowing: `/unitree/etc/master_service/cmd/am-init` is
 `master_service` — while it is dead, that has not been applied. **[src]**
 
 ---
+
+### 6.6 The head camera without the device — measured
+
+**`GetImageSample` works, and it is how we read the head camera now.** Measured on this
+robot, 2026-08-21, while `videohub_pc4` kept `/dev/video4` open: **[live]**
+
+```
+ok=30 failed=0
+latency  min=6ms  median=20ms  max=33ms
+size     175-176 KB per frame     SOF0: 1920x1080
+throughput back-to-back: 49.69 Hz
+```
+
+That matches §6.4's read of the pipeline exactly — the 1080p JPEG appsink, served on
+request. `bridge/sdk/videohub.py` polls it and `apps/bridge` serves the result at
+`:8001/camera/{stream.mjpg,frame.jpg,status}`.
+
+**`rt/frontvideostream` is a red herring.** The writer exists (§6.4) but carried **nothing
+in 10 s** with the service running and healthy — so the continuous DDS stream is not the
+way in, and a consumer waiting on that topic waits forever with no error. The
+request/reply path is. **[live]**
+
+**This is the LiDAR answer applied to the camera** (§4.5, `docs/DECISIONS.md`): consume
+the vendor's own republish instead of claiming the sensor, and every consumer can have it
+at once. It costs the thing a JPEG cannot carry — **there is no depth here**, so the
+detector, which ranges a box by reading aligned depth under it and drops a detection whose
+depth will not resolve, still needs the device.
+
+**The two routes are mutually exclusive, and that decides a run before it starts:**
+
+| `videohub_pc4` | `:8001/camera` | our detector | who typically causes it           |
+| -------------- | -------------- | ------------ | --------------------------------- |
+| alive          | **works**      | cannot start | nobody has taken the camera       |
+| killed         | dark, says why | **works**    | `take_camera`, or gemm's bring-up |
+
+`scripts/robot/take_camera` is the one place that performs the swap, because stopping
+`master_service` is a change to a shared robot and not a bring-up step: it also carries the
+chest camera and the OTA pipe, and the colleague who first needed it could not confirm to
+100% that it leaves arm and balance control alone. `stop_gemm` therefore reports this
+holder and does not kill it — it stops **gemm's** things, and `videohub_pc4` is Unitree's.
+
+**A third route exists while the other team is up.** Their `realsense2_camera` node owns
+the device and publishes `/camera/camera/color/image_raw/compressed` (640x480 @15, JPEG
+q70) on ROS — an ordinary multi-consumer topic. It is the only route that works when they
+hold the camera, and it is downstream of a stack they can switch off. Not wired.
 
 ## 7. Hands — **two BrainCo**, settled by inspection
 
@@ -1191,7 +1282,27 @@ they have very different consequences:
   been found: `vui_service` exposes `START_PLAY`/`STOP_PLAY`/`GET_VOLUME`/`SET_VOLUME` and
   **no ASR or capture function at all** (§8.3), so if a trigger exists it is not there.
 
-**ANSWERED 2026-08-21: THE FEED IS GATED ON THE REMOTE'S WAKE-UP MODE.** Holding
+**⚠️ THE ANSWER BELOW IS INCOMPLETE — the feed has since been observed
+free-running with no remote at all.** Later the same day, after several reboots:
+**157 packets / 25.1 s of audio over a 25 s window (1.00x realtime), with
+`btn=0x0000` and `wireless_remote` reporting the R3 not transmitting.** Nobody
+was holding anything. **[live]**
+
+So "gated on wake-up mode" is not the whole rule. Three candidate explanations,
+none confirmed: L1+L2 **latches** rather than being held (this was flagged as
+untested and is the simplest fit); something in the co-tenant's stack — whose
+container roster changed that day — holds the mode open; or the vendor assistant
+opens it for its own reasons.
+
+**What to rely on: measure, do not assume.** `listen` reports `audio_flowing`
+from observed packets rather than inferring from which source is configured,
+precisely because the same feed has now been seen both gated and free-running
+within a day. Treat the button as a way to OPEN the feed, not as proof it is
+shut.
+
+The original finding, which stands as far as it goes:
+
+**GATED ON THE REMOTE'S WAKE-UP MODE.** Holding
 **L1+L2** opens it; releasing closes it. Two runs, both with the join verified: 212 packets
 / 33.9 s of audio in a 45 s window, then 262 packets / 41.9 s while a person spoke Spanish
 into it, transcribed live. At rest, across every earlier probe, exactly zero. **[live]**
@@ -1611,8 +1722,7 @@ these are the hardware ones.
    power-cycling after running our driver and re-testing which host receives point data.
 4. **Sign of `/livox/imu` linear_acceleration.z with the robot static** — the
    inverted-mount gravity trap (§4.8) — and whether acceleration is in g or m/s².
-5. **RELIABLE or BEST_EFFORT on the `utlidar` topics?** Bag metadata and gemm's prose
-   contradict each other (§4.5); a default subscriber sees nothing if the prose is right.
+5. ~~**RELIABLE or BEST_EFFORT on the `utlidar` topics?**~~ **ANSWERED 2026-08-21: RELIABLE**, KEEP_LAST(1), VOLATILE — read straight off the publisher with `ros2 topic info --verbose` from our own humble container (§4.5). The bag metadata was right; the prose was wrong.
 6. **The real `base_link → lidar_link` translation.** gemm's default `z = 1.0` is marked
    "APROXIMADA". Unitree gives `(−0.0, 0.0, −0.47618)` with an "inverted" placement — but
    the z sign is wrong for a head mount as literally stated, so validate against a real

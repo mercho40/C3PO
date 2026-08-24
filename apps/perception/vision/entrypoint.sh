@@ -32,6 +32,21 @@ if ! python3 -c "import tensorrt" 2>/dev/null; then
     exit 1
 fi
 
+# SPEECH-ONLY MODE SKIPS THE DETECTOR'S ENGINE ENTIRELY.
+#
+# whisper.cpp talks to CUDA directly and needs no TensorRT plan. Without this,
+# `perception_up stt` rebuilt the YOLO engine on every start — two to five
+# minutes of GPU work for a model it never loads — and the readiness gate timed
+# out waiting for an HTTP server that had not been exec'd yet.
+#
+# The tensorrt import check above still runs, deliberately: it is the earliest
+# clear signal that --runtime nvidia was forgotten, and that mistake breaks
+# whisper's CUDA backend exactly as surely as it breaks the detector.
+if [ "${C3PO_STT_ONLY:-0}" = "1" ]; then
+    echo "c3po vision: STT-ONLY — skipping the TensorRT engine (whisper uses CUDA directly)"
+    exec "$@"
+fi
+
 ENGINE="${C3PO_ENGINE:-/opt/c3po/engines/yolo11n.fp16.plan}"
 ONNX="${C3PO_ONNX:-/opt/c3po/models/yolo11n.onnx}"
 

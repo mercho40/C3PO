@@ -63,7 +63,13 @@ PERCEPTION_LINK_PY = BRIDGE_SRC / "bridge" / "sdk" / "perception_link.py"
 # wrong place entirely.
 NAV_SRC = NAV_PKG
 
-for _p in (VISION_SRC, BRIDGE_SRC, NAV_SRC):
+# `bringup` is the odd one out and deliberately so: unlike the two trees above
+# it does NOT run inside a container, it runs on the robot's own interpreter to
+# START those containers. It is stdlib-only and 3.8-valid for that reason, so
+# putting it on the path costs the suite nothing.
+BRINGUP_SRC = REPO_ROOT / "apps" / "perception"
+
+for _p in (VISION_SRC, BRIDGE_SRC, NAV_SRC, BRINGUP_SRC):
     _s = str(_p)
     if _s not in sys.path:
         sys.path.insert(0, _s)

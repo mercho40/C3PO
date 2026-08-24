@@ -1,0 +1,50 @@
+# Bring the vendor's LiDAR republish from domain 0 onto domain 42.
+#
+# WHY THIS FILE EXISTS. Our own livox driver cannot take the sensor while the
+# vendor `lidar_driver` service holds it — measured 2026-08-21: the driver
+# reports success and publishes nothing while rt/utlidar/* keeps flowing at
+# 10 Hz (ROBOT-HARDWARE.md §4.3). The republish is the route that works, and it
+# is multi-consumer, so using it costs the co-tenant nothing.
+#
+# NAMED TOPICS ONLY, AND THAT IS THE POINT. This bridge is one-way and carries
+# exactly two topics. It must never become a general 0<->42 conduit: domain 42
+# exists so our TF, costmaps and velocity commands cannot appear on the wire the
+# control board and the co-tenant share, and a wildcard here would quietly undo
+# that.
+name: c3po_lidar_bridge
+from_domain: 0
+to_domain: 42
+
+topics:
+  # ~10 Hz, 20064 points, x/y/z/intensity + ring(uint16) + time(float32).
+  # That is the velodyne layout, which FAST-LIO reads natively as lid_type 2 —
+  # no CustomMsg and no custom preprocessor needed.
+  /utlidar/cloud_livox_mid360:
+    type: sensor_msgs/msg/PointCloud2
+    # RELIABLE, AND THIS WAS THE SECOND QoS TRAP OF THE DAY.
+    #
+    # best_effort was tried first, reasoning that a dropped frame beats
+    # head-of-line blocking on a busy Jetson. It republished happily and
+    # FAST-LIO received nothing: FAST-LIO subscribes with the rclcpp default,
+    # which is RELIABLE, and a BEST_EFFORT publisher does not satisfy it. The
+    # bridge said so and, as ever, blamed the subscriber.
+    #
+    # The upstream publisher IS reliable (measured off the publisher, §4.5), so
+    # matching it costs nothing and keeps the default-QoS consumer working. The
+    # shallow depth is what bounds queuing instead.
+    qos:
+      reliability: reliable
+      history: keep_last
+      depth: 5
+
+  # ~200 Hz. FAST-LIO needs IMU as much as points — without it there is no
+  # IESKF and no motion undistortion.
+  /utlidar/imu_livox_mid360:
+    type: sensor_msgs/msg/Imu
+    # Reliable for the same reason as the cloud: FAST-LIO's subscriber is
+    # RELIABLE by default and would otherwise receive no IMU at all — which is
+    # not a degraded IESKF, it is no IESKF.
+    qos:
+      reliability: reliable
+      history: keep_last
+      depth: 50

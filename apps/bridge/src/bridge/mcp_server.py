@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import time
 import uuid
 from typing import Annotated, Literal
 
@@ -37,9 +38,25 @@ import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 
-from bridge import watchdog
-from bridge.skill_meta import meta as skill_meta
-from bridge.watchdog import get_watchdog
+from bridge.env_file import load_env_file
+
+# CONFIG BEFORE ANYTHING READS IT. This has to run above the `os.environ` reads
+# below, which is why it is here rather than in `main()` — SIM_MODE decides at
+# import time whether DDS is initialised at all.
+#
+# The bridge loads its own `.env` so that starting it does not require a shell
+# wrapper to `set -a; . ./.env` first. That wrapper was the main reason
+# `run_c3po` had to exist, and with it gone a unit file can name the interpreter
+# directly. Anything already in the environment wins — see `bridge/env_file.py`,
+# which also explains why systemd's own `EnvironmentFile=` cannot be used on
+# this file.
+load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+
+# These three must follow load_env_file above; ruff's E402 is silenced per
+# import rather than for the file, so a genuinely misplaced import still fails.
+from bridge import watchdog  # noqa: E402
+from bridge.skill_meta import meta as skill_meta  # noqa: E402
+from bridge.watchdog import get_watchdog  # noqa: E402
 
 log = structlog.get_logger(__name__)
 
@@ -57,6 +74,13 @@ DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
 BRIDGE_TRANSPORT = os.environ.get("BRIDGE_TRANSPORT", "stdio")
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8000"))
+
+# How much longer than the byte-derived estimate `say(wait_for_completion=True)`
+# will wait for `play_state` to drop. Playback runs slightly past the estimate
+# (measured 1->0 gaps of 0.52/2.10/3.07 s against sends of 0.5/2.0/3.0 s), and
+# the firmware is a shared service that can simply not answer — so the wait is
+# bounded and a timeout is reported, never raised.
+PLAYBACK_WAIT_MARGIN_S = 2.0
 
 # Initialize DDS up-front when not in stub mode. We do this at import time so
 # the subscriber is alive and accumulating LowState messages before the first
@@ -1128,6 +1152,19 @@ async def say(
             )
         ),
     ] = "spanish",
+    wait_for_completion: Annotated[
+        bool,
+        Field(
+            description=(
+                "Return only once the robot has actually STOPPED talking, "
+                "rather than as soon as the audio has been handed to the "
+                "firmware. Off by default, which keeps this tool fast. Turn it "
+                "on when the next thing you do would talk over this — chaining "
+                "two utterances, or listening for a reply, since the robot's "
+                "own microphone hears its own speaker."
+            )
+        ),
+    ] = False,
 ) -> dict:
     """Speak text aloud through the robot's own speaker (voice service, TTS).
 
@@ -1250,17 +1287,45 @@ async def say(
                 "stub": False,
             }
 
+        # PlayStream acks on RECEIPT, not on completion — the vendor's own
+        # example fires it and sleeps a fixed 3 s. `speech_seconds` below is
+        # computed from the bytes sent, which used to be the only answer
+        # available.
+        #
+        # It is no longer. `rt/audio_msg` carries `play_state`, measured on this
+        # robot to track our own PlayStream to within ~100 ms, and it is the
+        # real completion signal. The module that reads it existed the whole
+        # time and was subscribed by nobody (see main()).
+        #
+        # The timeout is the byte estimate plus a margin, and not a constant: a
+        # long sentence must be allowed to finish, and a firmware that never
+        # drops play_state must not wedge this call forever. `False` back from
+        # the wait means "it did not end in time", which is reported rather than
+        # raised — the speech was still sent.
+        playback_confirmed: bool | None = None
+        if wait_for_completion and code == 0:
+            try:
+                from bridge.sdk.audio_msg import get_audio_msg_link
+
+                link = get_audio_msg_link()
+                playback_confirmed = await asyncio.to_thread(
+                    link.wait_for_playback_end, seconds + PLAYBACK_WAIT_MARGIN_S
+                )
+            except Exception:
+                log.exception("say.wait_for_completion_failed")
+                playback_confirmed = None
+
         return {
             "status": "ok" if code == 0 else "failed",
             "spoken": text if code == 0 else None,
             "language": language,
             "rpc_code": code,
             "rpc_data": data,
-            # PlayStream acks on RECEIPT, not on completion — the vendor's own
-            # example fires it and sleeps a fixed 3 s. So this is computed from
-            # the bytes sent and is the only honest answer to "is it still
-            # talking?". Nothing here waits for it.
             "speech_seconds": round(seconds, 2),
+            # None when we did not wait, True when playback was observed to
+            # end, False when it did not within the timeout. Three states,
+            # because "we didn't look" and "it didn't stop" are different facts.
+            "playback_confirmed": playback_confirmed,
             "stream_id": stream_id,
             "via": "piper+playstream",
             "error": None if code == 0 else f"rpc_error_code_{code}",
@@ -1564,15 +1629,21 @@ async def listen(
         # Whether the robot is listening continuously or only while a button is
         # held. The agent needs this to interpret silence: with always_on true,
         # an empty result really does mean nobody spoke.
+        # CONFIGURED vs OBSERVED, and the agent needs the second one.
+        # `audio_flowing` is measured — audio arrived in the last few seconds.
+        # `always_listening` only says the SOURCE is a type that cannot gate,
+        # and the robot's own multicast feed has been seen both gated and
+        # free-running on the same day, so it is not a reliable guide.
+        "audio_flowing": diag.get("audio_flowing", False),
         "always_listening": source["always_on"],
         "audio_source": source["source"],
         "note": (
-            None
-            if diag["mic_ever_open"] or source["always_on"]
-            else "The microphone has never opened. The robot's own mic is "
-            "push-to-talk — it hears nothing unless somebody holds L1+L2 on "
-            "the remote. This is NOT silence in the room. For continuous "
-            "listening a USB microphone has to be plugged into the Jetson."
+            None if diag.get("audio_flowing") or diag["mic_ever_open"] or source["always_on"]
+            else "No audio has arrived. The robot's own microphone has been seen "
+            "BOTH gated on the remote's L1+L2 wake-up mode and free-running with "
+            "no remote at all, so silence here is not proof of either. It does "
+            "mean nothing was recorded — do not read it as a quiet room. Holding "
+            "L1+L2 is the known way to open the feed."
         ),
         "env": SIM_MODE,
         "stub": False,
@@ -2180,6 +2251,251 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
         return JSONResponse({"error": "voice telemetry unavailable"}, status_code=503)
 
 
+# ---------------------------------------------------------------------------
+# The head camera, over the bridge's own HTTP surface
+# ---------------------------------------------------------------------------
+#
+# WHY THE BRIDGE SERVES THIS AND NOT THE VISION CONTAINER. The container's
+# MJPEG server (`c3po_vision.stream`) is fed by the detector, and the detector
+# cannot start unless it owns `/dev/video4`. This feed exists for exactly the
+# case where it does NOT own it — `videohub_pc4` has the device — so putting it
+# in the vision container would put it in the one process guaranteed to be dead
+# whenever it is needed. The bridge is already a host process, already on DDS
+# domain 0 over eth0, and already serving read-only telemetry here.
+#
+# WHY NOT PORT 8081. That port belongs to the vision container, and two servers
+# racing for one bind is a coin-flip failure with a confusing symptom. Riding
+# 8001 costs nothing extra: the tunnel that reaches this bridge is already open
+# (`-L 8001:127.0.0.1:8001`), so unlike `:8081` this needs no second forward.
+# The console picks a feed with one variable, because `endpoint()` in
+# `apps/web/src/lib/robot/mjpeg-camera.ts` is a plain base + path join:
+#
+#     PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera   <- this, no -L 8081
+#     PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8081          <- the detector's
+#
+# The paths and the `/status` field names are identical to the vision
+# container's on purpose: one client in the console, two possible servers, no
+# branch anywhere in the browser.
+#
+# READ-ONLY, AND STRUCTURALLY SO — like the costmap, gate and surroundings
+# routes above. It reads a buffer a polling thread filled from a vendor RPC
+# whose only verb is "give me a picture". Nothing here can arm the gate,
+# publish, or reach anything that actuates.
+
+# How often the streaming generator looks for a new frame. Well under the
+# camera's own period so the poll adds no meaningful latency, and it is a sleep
+# rather than a condition wait because blocking a thread inside an async
+# generator would stall every other route on the event loop.
+_CAMERA_WAKE_S = 0.02
+
+
+def _camera_unavailable():  # noqa: ANN202 - starlette types
+    """The 503 body for "there is no camera here", or None if there is one."""
+    from starlette.responses import JSONResponse
+
+    if SIM_MODE != "real":
+        return JSONResponse(
+            {
+                "error": "the head camera is real-hardware only",
+                "sim_mode": SIM_MODE,
+                "hint": (
+                    "this feed reads the G1's videohub RPC; the sim's cameras are "
+                    "teleimager WebRTC servers on 60001-60003 (apps/web/README.md)"
+                ),
+            },
+            status_code=503,
+        )
+    return None
+
+
+@mcp.custom_route("/camera/status", methods=["GET"])
+async def camera_status(request):  # noqa: ANN001, ANN201 - starlette types
+    """Whether the picture is live, and if not, why — in one object.
+
+    `live` is the whole point: an `<img>` cannot tell the console the difference
+    between a feed and a photograph of one. `frames` is monotonic so a client
+    can catch a stall that both ends of an age comparison straddle, and `hint`
+    carries the ordinary cause of a dark feed — somebody took the device — so
+    nobody goes hunting for broken hardware.
+    """
+    from starlette.responses import JSONResponse
+
+    unavailable = _camera_unavailable()
+    if unavailable is not None:
+        return unavailable
+
+    from bridge.sdk import camera_relay
+    from bridge.sdk.videohub import get_camera
+
+    videohub = get_camera().status()
+    vision = camera_relay.upstream_status()
+    source = camera_relay.choose_source(videohub, vision)
+    return JSONResponse(
+        camera_relay.merged_status(videohub, vision, source),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@mcp.custom_route("/camera/frame.jpg", methods=["GET"])
+async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
+    """The newest frame as one JPEG, for a poll or a screenshot.
+
+    503 rather than a placeholder when nothing has arrived: "no picture yet" and
+    "a picture of an empty room" are different facts, and the whole reason this
+    module exists is that an operator could not tell them apart.
+    """
+    from starlette.responses import JSONResponse, Response
+
+    unavailable = _camera_unavailable()
+    if unavailable is not None:
+        return unavailable
+
+    from bridge.sdk import camera_relay
+    from bridge.sdk.videohub import get_camera
+
+    camera = get_camera()
+    videohub = camera.status()
+    vision = camera_relay.upstream_status()
+    source = camera_relay.choose_source(videohub, vision)
+
+    if source == "videohub":
+        _seq, jpeg, _stamp = camera.snapshot()
+        if jpeg is not None:
+            return Response(
+                content=jpeg,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store", "Content-Length": str(len(jpeg))},
+            )
+
+    if source == "vision":
+        try:
+            body = await asyncio.to_thread(_relay_bytes, camera_relay.vision_url("frame.jpg"))
+        except Exception:
+            log.exception("camera.relay_frame_failed")
+        else:
+            return Response(content=body, media_type="image/jpeg",
+                            headers={"Cache-Control": "no-store"})
+
+    status = camera_relay.merged_status(videohub, vision, source)
+    return JSONResponse(
+        {"error": "no frame yet", "hint": status.get("hint"), "status": status},
+        status_code=503,
+    )
+
+
+async def _relay_stream(url: str):
+    """Pipe an upstream MJPEG response straight through to the client.
+
+    Reads in a thread: `urllib` is blocking, and blocking the event loop here
+    would stall every other route — `stop_everything` among them, which is the
+    one that must never wait behind a video frame.
+    """
+    import urllib.request
+
+    try:
+        resp = await asyncio.to_thread(urllib.request.urlopen, url, None, 10.0)
+    except Exception:
+        log.exception("camera.relay_open_failed", url=url)
+        return
+    try:
+        while True:
+            chunk = await asyncio.to_thread(resp.read, 8192)
+            if not chunk:
+                return
+            yield chunk
+    except Exception:
+        # The operator closed the tab, or the upstream went away mid-stream.
+        # Ending the response IS how MJPEG says "no longer live".
+        return
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+
+
+def _relay_bytes(url: str, timeout: float = 5.0) -> bytes:
+    """Fetch a whole body. Blocking on purpose — callers use asyncio.to_thread."""
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return bytes(resp.read())
+
+
+@mcp.custom_route("/camera/stream.mjpg", methods=["GET"])
+async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
+    """MJPEG — what the console's `<img>` and the VR camera layer render.
+
+    ENDING THE RESPONSE IS THE MESSAGE. multipart/x-mixed-replace has no
+    in-band way to say "this is no longer live", so going quiet would leave the
+    browser showing its last frame at full brightness forever. Closing once no
+    new frame has arrived for `STALE_AFTER_S` is the signal, and it is the same
+    contract `c3po_vision.stream` already has with the same client.
+    """
+    from starlette.responses import JSONResponse, StreamingResponse
+
+    unavailable = _camera_unavailable()
+    if unavailable is not None:
+        return unavailable
+
+    from bridge.sdk import camera_relay
+    from bridge.sdk.videohub import STALE_AFTER_S, get_camera
+
+    camera = get_camera()
+    videohub = camera.status()
+    vision = camera_relay.upstream_status()
+    source = camera_relay.choose_source(videohub, vision)
+
+    if source is None:
+        # Refuse before opening the response. A stream that opens and
+        # immediately closes is indistinguishable at the client from a network
+        # fault; a 503 with a reason is not.
+        status = camera_relay.merged_status(videohub, vision, source)
+        return JSONResponse(
+            {"error": "no frame yet", "hint": status.get("hint"), "status": status},
+            status_code=503,
+        )
+
+    if source == "vision":
+        # RELAY, byte for byte. The vision container already emits the same
+        # multipart format with the same boundary, so re-framing it here would
+        # be re-encoding a stream we have no reason to touch — and would put a
+        # JPEG decode per frame on the bridge, which owns stop_everything.
+        media_type, headers = camera_relay.relay_headers("stream")
+        return StreamingResponse(
+            _relay_stream(camera_relay.vision_url("stream.mjpg")),
+            media_type=media_type,
+            headers=headers,
+        )
+
+    boundary = "c3poframe"
+
+    async def frames():
+        last_seq = 0
+        last_new = time.monotonic()
+        while True:
+            current, data, _ = camera.snapshot()
+            if current != last_seq and data is not None:
+                last_seq = current
+                last_new = time.monotonic()
+                yield (
+                    "--{}\r\nContent-Type: image/jpeg\r\n"
+                    "Content-Length: {}\r\n\r\n".format(boundary, len(data)).encode("ascii")
+                    + data
+                    + b"\r\n"
+                )
+            elif time.monotonic() - last_new > STALE_AFTER_S:
+                return
+            await asyncio.sleep(_CAMERA_WAKE_S)
+
+    return StreamingResponse(
+        frames(),
+        media_type="multipart/x-mixed-replace; boundary=" + boundary,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+
 def main() -> None:
     """Run the MCP server.
 
@@ -2266,6 +2582,49 @@ def main() -> None:
                 log.info("mic_listener.disabled", reason=why)
         except Exception:
             log.exception("mic_listener.start_failed")
+
+        # `rt/audio_msg` — the completion signal for our own speech.
+        #
+        # This module was written, measured and tested, and then called by
+        # nothing: `get_audio_msg_link()` had zero call sites in the whole
+        # source tree, so the one topic that can say "the robot has stopped
+        # talking" was never subscribed. Found by
+        # `tests/test_singletons_are_started.py`, which exists because this is
+        # the fifth time a finished component here was wired to nothing.
+        #
+        # Cheap and passive: one DDS subscriber on a topic the firmware already
+        # publishes. It claims no device and commands nothing.
+        try:
+            from bridge.sdk.audio_msg import get_audio_msg_link
+
+            get_audio_msg_link().start()
+        except Exception:
+            log.exception("audio_msg.start_failed")
+
+        # THE HEAD CAMERA, at boot, and only on real hardware.
+        #
+        # Started here rather than on the first `/camera/*` request for the same
+        # reason the mic is: the operator who opens the console wants a picture
+        # now, and a feed that only begins filling when somebody asks is a feed
+        # that is always a beat behind. It is one 175 KB JPEG every 100 ms into
+        # a single buffer, and it costs nothing while nobody is watching.
+        #
+        # This does NOT touch the camera device. It reads the vendor's videohub
+        # RPC, which works precisely because `videohub_pc4` still owns
+        # /dev/video4 — see bridge/sdk/videohub.py. If somebody has taken the
+        # device for the detector, this stays dark and says so; that is an
+        # ordinary state, not a failure, and it must not be loud.
+        #
+        # Real only, not isaac: `videohub_pc4` is a service on the physical
+        # robot's Jetson. In the sim the cameras are teleimager WebRTC servers
+        # and a different page speaks to them.
+        if SIM_MODE == "real":
+            try:
+                from bridge.sdk.videohub import get_camera
+
+                get_camera().start()
+            except Exception:
+                log.exception("videohub.camera.start_failed")
 
     if BRIDGE_TRANSPORT in ("http", "streamable-http"):
         log.info(

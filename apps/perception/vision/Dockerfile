@@ -160,6 +160,86 @@ RUN python3 -c "import numpy; assert numpy.__version__ == '1.24.4', 'numpy is ' 
  && python3 -c "import pyrealsense2, cyclonedds, sys; print('pyrealsense2 + cyclonedds import under python', sys.version.split()[0])" \
  && python3 -c "import PIL; assert PIL.__version__ == '10.4.0', 'Pillow is ' + PIL.__version__ + ', not the pinned 10.4.0'; from PIL import features; assert features.check('jpg'), 'Pillow built without JPEG support — the wheel was not used and the operator video would fail at the first encode, at runtime, on the robot'; print('Pillow', PIL.__version__, 'jpeg ok')"
 
+# --- whisper.cpp, built WITH CUDA -------------------------------------------
+#
+# Spanish transcription runs here rather than in the bridge, and the reason is
+# not preference. The PyPI ctranslate2 aarch64 wheel is compiled WITHOUT CUDA
+# ("This CTranslate2 package was not compiled with CUDA support"), so
+# faster-whisper on the bridge could never reach a GPU at all — it ran on eight
+# CPU cores shared with the co-tenant's SLAM, at 3.5-6.6 s for a short
+# utterance. This image already holds CUDA 11.4, and the GPU idles at ~0-5%.
+#
+# whisper.cpp AND NOT faster-whisper, because this image is Python 3.8 (JetPack
+# 5's TensorRT bindings hard-depend `python3 << 3.9`) and faster-whisper needs
+# 3.9+. A C++ CLI makes the interpreter version irrelevant — the same reasoning
+# that made Piper a binary rather than a package.
+#
+# GGML_CUDA=1 is the whole point of building from source instead of downloading
+# a release: the prebuilt binaries are CPU-only. CMAKE_CUDA_ARCHITECTURES=87 is
+# Orin (sm_87) — "native" would work on this machine and silently produce a
+# binary that runs nowhere else, which is a bad property for an image.
+ARG WHISPER_CPP_REF=v1.7.4
+# TWO PLATFORM TRAPS, BOTH HIT ON THE FIRST BUILD:
+#
+#  1. Ubuntu 20.04 ships CMake 3.16.3 and ggml-cuda requires >= 3.18, so the
+#     configure step dies with "CMake 3.18 or higher is required". apt cannot
+#     fix this on focal; the pip wheel is the least invasive newer CMake and
+#     touches nothing outside this image.
+#  2. ggml's -DGGML_NATIVE auto-detection emits
+#     `-mcpu=native+nodotprod+noi8mm+nosve`, which this GCC rejects outright
+#     ("unknown value ... for '-mcpu'"). Turning NATIVE off and naming the
+#     architecture explicitly is also the right call for an IMAGE: `native`
+#     bakes in whatever core built it, which is not a property you want in
+#     something meant to be reproducible.
+#
+# armv8.2-a+fp16+dotprod is the Orin NX's Cortex-A78AE.
+RUN apt-get update && apt-get install -y --no-install-recommends git build-essential python3-pip \
+ && pip3 install --no-cache-dir "cmake>=3.22" \
+ && export PATH=/usr/local/bin:$PATH \
+ && cmake --version \
+ && git clone --depth 1 -b ${WHISPER_CPP_REF} https://github.com/ggerganov/whisper.cpp /tmp/whisper \
+ && cmake -S /tmp/whisper -B /tmp/whisper/build \
+      -DGGML_CUDA=1 \
+      -DCMAKE_CUDA_ARCHITECTURES=87 \
+      -DGGML_NATIVE=OFF \
+      -DGGML_CPU_ARM_ARCH=armv8.2-a+fp16+dotprod \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DWHISPER_BUILD_TESTS=OFF \
+      -DWHISPER_BUILD_EXAMPLES=ON \
+ && cmake --build /tmp/whisper/build -j3 --target whisper-cli \
+ && mkdir -p /opt/c3po/whisper \
+ && cp /tmp/whisper/build/bin/whisper-cli /opt/c3po/whisper/ \
+ # `find`, not a `**` glob: bash does not expand ** recursively without
+ # globstar, so the first attempt silently copied only the CUDA backend and
+ # left libggml-base/libggml/libggml-cpu behind. The binary then loaded, and
+ # died at runtime on "libggml-base.so => not found".
+ && find /tmp/whisper/build -name 'libggml*.so*' -exec cp -a {} /opt/c3po/whisper/ \; \
+ && find /tmp/whisper/build -name 'libwhisper.so*' -exec cp -a {} /opt/c3po/whisper/ \; \
+ # ldconfig needs the directory ON THE SEARCH PATH, not as an argument —
+ # `ldconfig <dir>` scans it but writes nothing durable, which is why
+ # whisper-cli still reported "libwhisper.so.1 => not found".
+ && echo /opt/c3po/whisper > /etc/ld.so.conf.d/c3po-whisper.conf \
+ && ldconfig \
+ # EXISTS is not enough, and this is the assertion that matters. whisper.cpp
+ # falls back to a CPU build SILENTLY when CUDA is not found at configure time —
+ # which is the exact failure that sent transcription to the CPU in the first
+ # place (the ctranslate2 wheel did the same thing). A binary that runs fine and
+ # is ten times too slow would otherwise ship, and only show up as latency.
+ # Linking libcudart is the cheap proof that -DGGML_CUDA=1 actually took.
+ && test -x /opt/c3po/whisper/whisper-cli \
+ # CUDA lives in libggml-cuda.so, NOT in the CLI — checking the binary for
+ # libcudart passes on a CPU-only build and proves nothing. This is the
+ # assertion that actually catches a silent fallback.
+ && (ldd /opt/c3po/whisper/libggml-cuda.so 2>/dev/null | grep -q libcudart \
+     || (echo "FATAL: libggml-cuda.so missing or not linked against CUDA — GGML_CUDA fell back to CPU" && false)) \
+ # And every library must RESOLVE. The first build shipped a binary whose
+ # loader could not find libwhisper.so.1, which fails only when someone
+ # finally runs it.
+ && (ldd /opt/c3po/whisper/whisper-cli | grep "not found" \
+     && (echo "FATAL: whisper-cli has unresolved libraries (see above)" && false) || true) \
+ && rm -rf /tmp/whisper \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY c3po_vision /opt/c3po/c3po_vision
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

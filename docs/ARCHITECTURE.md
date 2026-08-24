@@ -41,13 +41,24 @@ A fifth component sits beside the bridge rather than above or below it:
 the LiDAR/camera and hand the bridge a world summary (§8). It observes and
 proposes; the bridge alone actuates.
 
-**Video is the one thing the console fetches directly**, from the camera server
-(the sim's teleimager, or perception's vision container on the real robot)
-rather than through `apps/back`. Proxying ~1.5 Mbit/s of frames through the
-control plane to re-authenticate a picture the operator is already authorised to
-see would buy nothing; the feed is reached over the same SSH tunnel as the
-bridge, or not at all. Everything that _commands_ the robot still goes console →
-control plane → bridge, and that is the invariant the layer table is about.
+**Video is the one thing the console fetches directly**, rather than through
+`apps/back`. Proxying ~1.5 Mbit/s of frames through the control plane to
+re-authenticate a picture the operator is already authorised to see would buy
+nothing; the feed is reached over the same SSH tunnel as the bridge, or not at
+all. Everything that _commands_ the robot still goes console → control plane →
+bridge, and that is the invariant the layer table is about.
+
+On the real robot there are **two** servers for the one camera, and which is
+alive depends on who currently owns `/dev/video4` — the vendor's `videohub_pc4`
+(read over its RPC, no device claim) or perception's vision container (owns the
+device, and the object detector comes with it). They are mutually exclusive
+because a V4L2 node has one owner, and the owner changes whenever somebody runs
+`take_camera`. **The bridge picks**: `:8001/camera` serves the vendor feed when
+it is live and relays the container's when it is not, so the console's URL does
+not change when the camera changes hands. Measurements and the trade:
+`docs/ROBOT-HARDWARE.md` §6.6; the selection itself:
+`apps/bridge/src/bridge/sdk/camera_relay.py`. The sim is unaffected — its
+cameras are teleimager WebRTC servers and a different page speaks to them.
 
 The boundary that matters most is **bridge ↔ robot**: we send _high-level
 setpoints_ ("walk at 0.4 m/s", "enter damp") and the G1's own controller
@@ -208,6 +219,36 @@ the pose parsers), so `walk_to` and `turn` contain no target-specific code at
 all. The velocity caps and gains are fitted to the sim walk policy and will
 not transfer to hardware unmeasured — see `apps/bridge/README.md` and
 `docs/ROBOT-API.md`.
+
+### 4.1 The same path, entered by speech
+
+A tool call is not the only way in. The **voice loop** (`apps/back/src/voice/
+loop.ts`) polls the bridge's `listen`, hands each utterance to the same agent
+runtime the chat box uses, and the agent's tool calls then take the path above
+unchanged. Nothing about the motion path is voice-specific, which is the point:
+speech is an input to the agent, not a second controller.
+
+Three properties are deliberate and easy to lose:
+
+- **It is explicitly started and never ambient.** A robot that reasons about
+  every overheard sentence is a privacy problem and a bill, so the loop runs
+  only while an operator has switched it on — `POST /voice/start`, or the
+  control on the console's dashboard. The name of whoever started it goes in
+  the log.
+- **It reasons where the credentials are.** Decision D6.2's split: the agent
+  runs in `apps/back`, the robot holds no cloud keys, and the loop is therefore
+  allowed to be slow because nothing on it is on the path that stops the robot.
+  The spoken stop phrase is the exception and runs **in the bridge**, in the
+  same process that owns `stop_everything`, so it works even if this loop is
+  dead, hung or mid-deploy.
+- **One loop per process.** Two would poll the same non-consuming telemetry and
+  then both consume it, so each would see half the utterances — a robot that
+  answers every other sentence.
+
+The robot's own microphone hears its own speaker, so anything that listens
+directly after speaking needs to know when the speaking stopped: `say` takes
+`wait_for_completion`, backed by the `rt/audio_msg` `play_state` signal rather
+than an estimate (`docs/ROBOT-API.md` §7.1).
 
 ## 5. Transport and the sim/real seams
 
