@@ -241,6 +241,14 @@ class Transcriber:
         text = json.loads(self._rec.FinalResult()).get("text", "").strip()
         return text or None
 
+    def reset(self) -> None:
+        """Discard an in-progress decode, used when the robot starts speaking.
+
+        Without this reset, Vosk can carry the first half of room speech across
+        our playback-suppression window and emit one combined final afterwards.
+        """
+        self._rec.Reset()
+
 
 def transcribe_pcm(pcm: bytes, frame_bytes: int = FRAME_BYTES) -> list[str]:
     """Transcribe a complete buffer. The offline entry point, mirroring
@@ -752,6 +760,7 @@ class MicListener:
         max_keep: int = 32,
         source: Callable[[], Iterator[bytes]] | None = None,
         build: Callable[[], tuple[Any, Any, Any]] | None = None,
+        playback_active: Callable[[], bool] | None = None,
     ) -> None:
         """`source` and `build` exist so this is testable off the robot.
 
@@ -770,7 +779,10 @@ class MicListener:
         self._max_keep = max_keep
         self._source = source or (lambda: default_source())
         self._build = build
+        self._playback_active = playback_active or self._robot_is_speaking
         self._lock = threading.Lock()
+        self._changed = threading.Condition(self._lock)
+        self._sequence = 0
         self._thread: threading.Thread | None = None
         self._stop_evt = threading.Event()
 
@@ -782,6 +794,18 @@ class MicListener:
         self._utterances = 0
         self._last_audio_at: float | None = None
         self._error: str | None = None
+
+    @staticmethod
+    def _robot_is_speaking() -> bool:
+        """Use the firmware's measured playback state, not a duration guess."""
+        try:
+            from bridge.sdk.audio_msg import get_audio_msg_link
+
+            return get_audio_msg_link().is_playing()
+        except Exception:
+            # Playback telemetry is an enhancement to listening, not a reason to
+            # make the microphone thread fail closed forever.
+            return False
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -835,6 +859,7 @@ class MicListener:
             ).start()
 
         utterance = bytearray()
+        suppressing_playback = False
         for frame in self._source():
             if self._stop_evt.is_set():
                 break
@@ -852,6 +877,29 @@ class MicListener:
                         self._on_stop(hit)
                     except Exception:
                         log.exception("mic_listener.on_stop_failed")
+
+            # The multicast mic hears the robot's own speaker. Feeding that back
+            # to the voice loop creates a recursive conversation: answer -> hear
+            # answer -> answer the answer. `rt/audio_msg` gives us the firmware's
+            # real playback state, so suppress ordinary transcription while it is
+            # active. Keep the independent stop detector above alive: a person
+            # shouting the emergency phrase must still be heard over playback.
+            if self._playback_active():
+                utterance.clear()
+                if not suppressing_playback:
+                    reset = getattr(transcriber, "reset", None)
+                    if reset is not None:
+                        reset()
+                    log.info("mic_listener.playback_suppressed")
+                suppressing_playback = True
+                continue
+            if suppressing_playback:
+                # Start the post-playback utterance with a clean decoder too; the
+                # playback-state edge and audio packets are not synchronized.
+                reset = getattr(transcriber, "reset", None)
+                if reset is not None:
+                    reset()
+                suppressing_playback = False
 
             current = self._whisperer
             if current is not None:
@@ -888,8 +936,14 @@ class MicListener:
                 return
 
     def _record(self, text: str, kind: str) -> None:
-        item = {"text": text, "kind": kind, "at": time.monotonic()}
-        with self._lock:
+        with self._changed:
+            self._sequence += 1
+            item = {
+                "text": text,
+                "kind": kind,
+                "at": time.monotonic(),
+                "_seq": self._sequence,
+            }
             if kind == "speech":
                 self._utterances += 1
             self._pending.append(item)
@@ -898,22 +952,64 @@ class MicListener:
             # able to grow this without limit while somebody talks at the robot.
             if len(self._pending) > self._max_keep:
                 del self._pending[: -self._max_keep]
+            self._changed.notify_all()
 
     # -- reading -------------------------------------------------------------
+
+    @staticmethod
+    def _readable(item: dict[str, Any], now: float, *, sequenced: bool = False) -> dict[str, Any]:
+        readable = {key: value for key, value in item.items() if key != "_seq"}
+        readable["age_s"] = round(now - item["at"], 2)
+        if sequenced:
+            readable["seq"] = item["_seq"]
+        return readable
+
+    def sequence(self) -> int:
+        """The latest recorded sequence, for starting a non-consuming wait."""
+        with self._lock:
+            return self._sequence
+
+    def wait_for_next(
+        self, after_sequence: int, timeout: float | None = None
+    ) -> dict[str, Any] | None:
+        """Wait for the oldest retained item newer than ``after_sequence``.
+
+        Unlike :meth:`poll`, this never consumes an item. Multiple HTTP clients
+        can therefore follow the same stream while the agent retains exclusive
+        consuming semantics. History remains bounded by ``max_keep``; a lagging
+        client resumes at the oldest item still retained.
+        """
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._changed:
+            while True:
+                item = next(
+                    (candidate for candidate in self._history if candidate["_seq"] > after_sequence),
+                    None,
+                )
+                if item is not None:
+                    return self._readable(item, time.monotonic(), sequenced=True)
+
+                if deadline is None:
+                    self._changed.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._changed.wait(remaining)
 
     def poll(self) -> list[dict[str, Any]]:
         """Everything heard since the last poll. Returns immediately, always."""
         now = time.monotonic()
         with self._lock:
             items, self._pending = self._pending, []
-        return [{**i, "age_s": round(now - i["at"], 2)} for i in items]
+        return [self._readable(i, now) for i in items]
 
     def recent(self, seconds: float = 30.0) -> list[dict[str, Any]]:
         """Recent history WITHOUT consuming it — for a second look at context."""
         now = time.monotonic()
         with self._lock:
             items = [i for i in self._history if now - i["at"] <= seconds]
-        return [{**i, "age_s": round(now - i["at"], 2)} for i in items]
+        return [self._readable(i, now) for i in items]
 
     def diagnostics(self) -> dict[str, Any]:
         now = time.monotonic()

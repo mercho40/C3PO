@@ -120,9 +120,40 @@ const SYSTEM_PREAMBLE = [
   "Keep operator-facing replies concise: say what you did and what happened.",
 ].join("\n");
 
+export type AgentMode = "operator" | "voice";
+
+export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
+  // The voice host owns both ends of the audio channel. Giving these tools to
+  // the model permits duplicate speech and competing reads from one buffer.
+  return mode === "voice" ? new Set(["listen", "say"]) : new Set();
+}
+
+const VOICE_PREAMBLE = [
+  "Voice session: you are having a spoken conversation, not interpreting every",
+  "utterance as a robot command. Respond naturally in concise conversational",
+  "Spanish and preserve context from earlier turns.",
+  "",
+  "Use robot tools only when the speaker clearly asks you to inspect, move,",
+  "gesture, or perform another physical task. Questions, greetings, comments,",
+  "and follow-ups normally need no tool. Never infer a motion request merely",
+  "because motion tools are available.",
+  "",
+  "For a clear low- or medium-danger request, call the matching tool in this same",
+  "turn; do not merely say that you will do it. Copy numbers, directions, names,",
+  "and distances exactly from the transcript into tool arguments. Do not invent",
+  "missing arguments. Ask one short clarifying question when physical intent or a",
+  "required argument is ambiguous, and ask the speaker to repeat speech that is",
+  "garbled or incoherent instead of guessing. After a tool call, describe only",
+  "the result the tool actually returned.",
+  "",
+  "Return the exact words you want spoken as your final text. Do not call `say`",
+  "or `listen`; the voice-session host owns listening and speaks your final text",
+  "exactly once. Do not describe tool-call mechanics to the speaker.",
+].join("\n");
+
 /** A compact catalogue appended to the system prompt so the model knows scope.
  * Exported for testing — pure string generation once the catalogue is in hand. */
-export async function buildSystemPrompt(): Promise<string> {
+export async function buildSystemPrompt(mode: AgentMode = "operator"): Promise<string> {
   const lines = (await listSkills()).map((s) => {
     const where =
       s.works.sim && s.works.real
@@ -134,7 +165,8 @@ export async function buildSystemPrompt(): Promise<string> {
             : "unavailable";
     return `- ${s.name} [${s.classification}/${s.status}/${where}/danger:${s.dangerLevel}] — ${s.description}`;
   });
-  return `${SYSTEM_PREAMBLE}\n\nAvailable skills:\n${lines.join("\n")}`;
+  const modePrompt = mode === "voice" ? `\n\n${VOICE_PREAMBLE}` : "";
+  return `${SYSTEM_PREAMBLE}${modePrompt}\n\nAvailable skills:\n${lines.join("\n")}`;
 }
 
 /**
@@ -146,9 +178,13 @@ export async function buildSystemPrompt(): Promise<string> {
  * still records the call if the stream is aborted mid-turn — which is exactly
  * when you most want to know what the robot was told to do.
  */
-async function buildTools(chatId: string | null): Promise<ToolSet> {
+async function buildTools(
+  chatId: string | null,
+  excluded: ReadonlySet<string> = new Set(),
+): Promise<ToolSet> {
   const tools: ToolSet = {};
   for (const skill of await listSkills()) {
+    if (excluded.has(skill.name)) continue;
     tools[skill.name] = tool({
       description: skill.description,
       // Already plain JSON Schema off the bridge — nothing to convert.
@@ -208,7 +244,7 @@ async function buildTools(chatId: string | null): Promise<ToolSet> {
  */
 export async function runAgentChat(
   messages: UIMessage[],
-  opts: { chatId?: string | null } = {},
+  opts: { chatId?: string | null; mode?: AgentMode } = {},
 ) {
   if (!API_KEY) {
     throw new Error(
@@ -218,9 +254,11 @@ export async function runAgentChat(
 
   // Both hit the bridge for the catalogue, so fetch them together rather than
   // paying two sequential round-trips before the first token.
+  const mode = opts.mode ?? "operator";
+  const excludedTools = agentToolExclusions(mode);
   const [system, tools] = await Promise.all([
-    buildSystemPrompt(),
-    buildTools(opts.chatId ?? null),
+    buildSystemPrompt(mode),
+    buildTools(opts.chatId ?? null, excludedTools),
   ]);
 
   return streamText({

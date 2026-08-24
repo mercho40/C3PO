@@ -2210,6 +2210,63 @@ async def surroundings_json(request):  # noqa: ANN001, ANN201 - starlette types
         return JSONResponse({"error": "could not build a snapshot"}, status_code=503)
 
 
+_VOICE_KEEPALIVE_S = 15.0
+_VOICE_DISCONNECT_POLL_S = 0.5
+
+
+async def _voice_event_body(request, listener):  # noqa: ANN001, ANN201 - starlette types
+    """Yield non-consuming voice events until the HTTP client disconnects."""
+    import json
+
+    sequence = listener.sequence()
+    keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
+    try:
+        while True:
+            if await request.is_disconnected():
+                return
+
+            wait_s = min(
+                _VOICE_DISCONNECT_POLL_S,
+                max(0.0, keepalive_at - time.monotonic()),
+            )
+            item = await asyncio.to_thread(listener.wait_for_next, sequence, wait_s)
+
+            # Starlette cancels the generator on most disconnects, but checking
+            # explicitly also handles ASGI servers that only expose the state via
+            # receive(), and avoids writing one last event to a closed socket.
+            if await request.is_disconnected():
+                return
+            if item is not None:
+                sequence = item["seq"]
+                yield f"data: {json.dumps(item, separators=(',', ':'))}\n\n".encode()
+                keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
+            elif time.monotonic() >= keepalive_at:
+                yield b": keepalive\n\n"
+                keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
+    except asyncio.CancelledError:
+        # Client disconnects normally cancel StreamingResponse's producer task.
+        # There is no upstream resource to close; ending the generator is enough.
+        return
+
+
+@mcp.custom_route("/telemetry/voice/events", methods=["GET"])
+async def voice_events(request):  # noqa: ANN001, ANN201 - starlette types
+    """Live speech/stop items as SSE without consuming the agent's poll queue."""
+    from starlette.responses import StreamingResponse
+
+    from bridge.skills.listen import get_mic_listener
+
+    return StreamingResponse(
+        _voice_event_body(request, get_mic_listener()),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @mcp.custom_route("/telemetry/voice", methods=["GET"])
 async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
     """What the robot has heard recently, and whether it can hear at all.

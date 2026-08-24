@@ -2,8 +2,8 @@
  * Talking to `back` about the voice loop. No runes — see the note below.
  *
  *   GET  /voice/status  ->  is it running, and what has it done
- *   POST /voice/start   ->  heard speech starts reaching the agent
- *   POST /voice/stop    ->  the robot keeps listening; nothing acts
+ *   POST /voice/start   ->  begin a spoken conversation session
+ *   POST /voice/stop    ->  the robot keeps listening; no turns are processed
  *
  * WHY THIS IS SPLIT FROM `voice-loop.svelte.ts`. A `.svelte.ts` module cannot be
  * loaded by `bun test` — runes are a compiler feature, so `$state` is simply not
@@ -26,6 +26,18 @@ export type VoiceLoopState = {
   alwaysListening: boolean;
   lastError: string | null;
   lastHeard: string | null;
+  conversation?: {
+    phase: "idle" | "streaming" | "speaking";
+    lastTurn: {
+      modelFirstDeltaMs: number | null;
+      firstSentenceMs: number | null;
+      firstSpeechMs: number | null;
+      completionMs: number;
+      totalMs: number;
+      speechCalls: number;
+      characters: number;
+    } | null;
+  };
 };
 
 /** Either the loop's state, or why there isn't one — never both, never neither. */

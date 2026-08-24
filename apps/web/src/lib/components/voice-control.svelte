@@ -1,11 +1,10 @@
 <!--
   The voice loop's switch.
 
-  STARTING THIS IS NOT A TOGGLE, IT IS A DECISION. While it runs, anything said
-  near the robot is transcribed and handed to an agent that can call every
-  bridge tool — so this is the control that turns overheard speech into robot
-  motion. The button says what it does rather than "on/off", and the consequence
-  is on screen next to it, not in a tooltip.
+  This starts a spoken conversation. The agent answers ordinary dialogue and
+  only uses robot tools when the speaker clearly requests a physical task.
+  Nearby speech can still reach the microphone, so the session remains an
+  explicit operator decision rather than an ambient default.
 
   "RUNNING" IS NOT "HEARING". With a push-to-talk microphone, silence usually
   means nobody held the button, not that nobody spoke. A loop running over a mic
@@ -34,11 +33,11 @@
 <Card.Root>
   <Card.Header>
     <Card.Title class="flex items-center justify-between gap-2">
-      <span>Voice loop</span>
+      <span>Voice conversation</span>
       {#if voice.running}
-        <Badge variant="default">acting on speech</Badge>
+        <Badge variant="default">conversation active</Badge>
       {:else}
-        <Badge variant="secondary">not running</Badge>
+        <Badge variant="secondary">conversation off</Badge>
       {/if}
     </Card.Title>
   </Card.Header>
@@ -50,14 +49,14 @@
 
     {#if voice.running}
       <p class="text-sm text-amber-600 dark:text-amber-500">
-        Everything said near the robot is being transcribed and handed to the
-        agent, which can call any bridge tool. Stop it before talking about the
-        robot rather than to it.
+        The robot will answer naturally and remember this conversation. It uses
+        robot tools only when you clearly request a physical task. End the session
+        before talking about the robot rather than to it.
       </p>
     {:else}
       <p class="text-sm text-muted-foreground">
-        The robot is listening either way — this decides whether what it hears
-        becomes what it does.
+        Start a voice session to talk with the robot. Ordinary conversation gets
+        a spoken reply; clear task requests may use robot tools.
       </p>
     {/if}
 
@@ -81,7 +80,7 @@
           <dd class="tabular-nums">{voice.state.utterancesHeard}</dd>
         </div>
         <div>
-          <dt class="text-muted-foreground">Agent runs</dt>
+          <dt class="text-muted-foreground">Turns</dt>
           <dd class="tabular-nums">{voice.state.agentRuns}</dd>
         </div>
         <div>
@@ -94,6 +93,20 @@
         <p class="text-sm">
           <span class="text-muted-foreground">Last heard:</span>
           {voice.state.lastHeard}
+        </p>
+      {/if}
+
+      {#if voice.state.conversation?.phase !== "idle"}
+        <p class="text-sm text-muted-foreground">
+          {voice.state.conversation?.phase === "streaming" ? "Thinking…" : "Speaking…"}
+        </p>
+      {:else if voice.state.conversation?.lastTurn}
+        <p class="text-xs text-muted-foreground">
+          First speech:
+          {voice.state.conversation.lastTurn.firstSpeechMs === null
+            ? "—"
+            : `${Math.round(voice.state.conversation.lastTurn.firstSpeechMs)} ms`}
+          · total {Math.round(voice.state.conversation.lastTurn.totalMs)} ms
         </p>
       {/if}
 
@@ -111,11 +124,11 @@
           disabled={voice.busy}
           onclick={() => voice.stopLoop()}
         >
-          Stop acting on speech
+          End voice conversation
         </Button>
       {:else}
         <Button disabled={voice.busy} onclick={() => voice.startLoop()}>
-          Let the robot act on what it hears
+          Start voice conversation
         </Button>
       {/if}
     </div>

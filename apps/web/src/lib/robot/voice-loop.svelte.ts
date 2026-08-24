@@ -7,10 +7,10 @@
  * holds reactive fields, a poll timer, and a guard against double-firing the
  * button that hands a robot its microphone.
  *
- * STARTING IT IS NOT A TOGGLE, IT IS A DECISION. While it runs, anything said
- * near the robot is transcribed and handed to an agent that can call every
- * bridge tool. `apps/back/src/voice/loop.ts` makes the same argument for why it
- * is explicitly started and never ambient.
+ * STARTING IT IS NOT A TOGGLE, IT IS A DECISION. While it runs, speech near the
+ * robot becomes a conversational turn; clear physical requests may call robot
+ * tools. `apps/back/src/voice/loop.ts` makes the same argument for why it is
+ * explicitly started and never ambient.
  */
 
 import {

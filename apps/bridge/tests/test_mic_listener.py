@@ -14,8 +14,10 @@ themselves needing the robot.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
 import time
-
 
 from bridge.skills.listen import ListenUnavailable, MicListener
 
@@ -39,6 +41,7 @@ class FakeTranscriber:
 
     def __init__(self) -> None:
         self.fed = 0
+        self.resets = 0
 
     def feed(self, frame: bytes) -> str | None:
         self.fed += 1
@@ -46,6 +49,9 @@ class FakeTranscriber:
 
     def flush(self) -> str | None:
         return None
+
+    def reset(self) -> None:
+        self.resets += 1
 
 
 class FakeWhisper:
@@ -127,6 +133,80 @@ def test_recent_does_not_consume():
     assert lis.recent(60) and lis.recent(60), "recent() must be re-readable"
 
 
+def test_wait_for_next_is_thread_safe_sequenced_and_does_not_consume_poll():
+    lis, *_ = make([])
+    before = lis.sequence()
+    timer = threading.Timer(0.02, lis._record, args=("hello", "speech"))
+    timer.start()
+    try:
+        event = lis.wait_for_next(before, timeout=1.0)
+    finally:
+        timer.join()
+
+    assert event is not None
+    assert event["seq"] == before + 1
+    assert event["kind"] == "speech"
+    assert lis.poll()[0]["text"] == "hello"
+    assert lis.poll() == []
+    # Waiting reads bounded history, not the consuming poll queue.
+    assert lis.wait_for_next(before, timeout=0)["seq"] == event["seq"]
+
+
+def test_a_lagging_waiter_resumes_at_the_oldest_retained_sequence():
+    lis, *_ = make([], max_keep=2)
+    lis._record("one", "speech")
+    lis._record("two", "speech")
+    lis._record("three", "stop")
+
+    event = lis.wait_for_next(0, timeout=0)
+    assert event is not None
+    assert event["seq"] == 2
+    assert event["text"] == "two"
+    assert len(lis.recent(60)) == 2
+    assert len(lis.poll()) == 2
+
+
+async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeypatch):
+    from bridge import mcp_server
+    from bridge.skills import listen as listen_mod
+
+    class Request:
+        disconnected = False
+
+        async def is_disconnected(self):
+            return self.disconnected
+
+    lis, *_ = make([])
+    request = Request()
+    monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
+    response = await mcp_server.voice_events(request)
+    assert response.media_type == "text/event-stream"
+    assert response.headers["x-accel-buffering"] == "no"
+    body = response.body_iterator
+    next_chunk = asyncio.create_task(anext(body))
+    await asyncio.sleep(0.02)
+    lis._record("spoken", "speech")
+    payload = json.loads((await next_chunk).decode().removeprefix("data: "))
+    assert payload["kind"] == "speech"
+    assert payload["text"] == "spoken"
+    assert lis.poll()[0]["text"] == "spoken"
+    await body.aclose()
+
+    monkeypatch.setattr(mcp_server, "_VOICE_KEEPALIVE_S", 0.0)
+    keepalive_body = mcp_server._voice_event_body(request, lis)
+    assert await anext(keepalive_body) == b": keepalive\n\n"
+    await keepalive_body.aclose()
+
+    request.disconnected = True
+    disconnected_body = mcp_server._voice_event_body(request, lis)
+    try:
+        await anext(disconnected_body)
+    except StopAsyncIteration:
+        pass
+    else:
+        raise AssertionError("SSE body did not stop after client disconnect")
+
+
 def test_a_never_polling_agent_cannot_grow_the_queue_without_bound():
     frames = [b"x", b"."] * 50
     lis, *_ = make(frames, max_keep=8)
@@ -143,6 +223,35 @@ def test_the_stop_phrase_is_reported_and_resets_the_detector():
     items = drain(lis)
     assert any(i["kind"] == "stop" for i in items)
     assert det.resets == 1
+
+
+def test_robot_playback_is_not_transcribed_back_into_the_voice_loop():
+    lis, _, trans, whis = make(
+        [b"the robot", b"."], playback_active=lambda: True
+    )
+    lis.start()
+    assert drain(lis) == []
+    assert trans.resets == 1
+    assert whis.calls == []
+
+
+def test_stop_phrase_still_fires_during_robot_playback():
+    lis, det, _, _ = make([b"\xff"], playback_active=lambda: True)
+    lis.start()
+    items = drain(lis)
+    assert [i["kind"] for i in items] == ["stop"]
+    assert det.resets == 1
+
+
+def test_decoder_starts_clean_after_robot_playback():
+    states = iter([False, True, False])
+    lis, _, trans, _ = make(
+        [b"before", b"speaker", b"."], playback_active=lambda: next(states)
+    )
+    lis.start()
+    items = drain(lis)
+    assert [i["kind"] for i in items] == ["speech"]
+    assert trans.resets == 2
 
 
 def test_the_stop_callback_fires_and_a_raising_one_does_not_kill_the_thread():
