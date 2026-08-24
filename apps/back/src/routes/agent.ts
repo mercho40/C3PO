@@ -64,6 +64,9 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
           title: titleFromParts(latest.parts ?? []),
         });
         if (!owned) return status(403);
+        // Voice transcripts are deliberately read-only in typed chat. Without
+        // this server-side check a caller could bypass the UI and merge channels.
+        if (owned.channel !== "text") return status(409);
         chatId = owned.id;
 
         if (latest.role === "user") {

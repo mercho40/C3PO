@@ -6,6 +6,7 @@
     "test": "bun test",
     "build": "bun build --compile --minify --target bun --outfile server src/index.ts",
     "dev": "bun run --watch src/index.ts",
+    "dev:robot": "BRIDGE_URL=http://${C3PO_ROBOT_HOST:-g1-orin.local}:8001/mcp bun run --watch src/index.ts",
     "start": "./server",
     "db:generate": "bunx drizzle-kit generate",
     "db:migrate": "bunx drizzle-kit migrate",
@@ -22,9 +23,11 @@
     "better-auth": "^1.5.5",
     "drizzle-orm": "^0.45.1",
     "elysia": "^1.4.28",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "bun-types": "latest",
     "drizzle-kit": "^0.31.10",
     "postgres": "^3.4.9",

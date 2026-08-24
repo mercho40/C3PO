@@ -23,6 +23,7 @@ C3PO_DIR="${C3PO_DIR:-$HOME/c3po}"
 BRIDGE_DIR="$C3PO_DIR/apps/bridge"
 RUN_DIR="${C3PO_RUN_DIR:-$HOME/.c3po/run}"
 LOG_DIR="${C3PO_LOG_DIR:-$HOME/.c3po/logs}"
+BRIDGE_BIND_HOST="${C3PO_BRIDGE_BIND_HOST:-0.0.0.0}"
 
 # The VR teleop stream. Not managed by the bridge unit: it exists to
 # serve a person who is currently wearing a headset, so it is per-session,
@@ -134,19 +135,24 @@ bridge_process_pids() {
 }
 
 # Prove that a TCP listener belongs to a specific process, rather than trusting
-# an HTTP response from whatever happened to win the port. Match the exact IPv4
-# loopback address curl uses: accepting 0.0.0.0, another interface, or IPv6 here
-# would let one process satisfy ownership while another answers 127.0.0.1.
+# an HTTP response from whatever happened to win the port. Match the configured
+# IPv4 bind exactly. The deployed service deliberately uses 0.0.0.0 for direct
+# LAN access; tests pass loopback explicitly when exercising that case.
 # Linux exposes the socket inode without root through /proc/net/tcp and the same
 # inode through /proc/<pid>/fd. C3PO_PROC_ROOT makes the parser testable.
-process_listens_ipv4_loopback_port() {
-    local pid="$1" port="$2" proc_root="${C3PO_PROC_ROOT:-/proc}"
-    local local_address listeners fd target inode listener
+process_listens_ipv4_port() {
+    local pid="$1" port="$2" host="${3:-$BRIDGE_BIND_HOST}" proc_root="${C3PO_PROC_ROOT:-/proc}"
+    local address_hex local_address listeners fd target inode listener
 
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
     case "$port" in ''|*[!0-9]*) return 1 ;; esac
+    case "$host" in
+        0.0.0.0)   address_hex="00000000" ;;
+        127.0.0.1) address_hex="0100007F" ;;
+        *) return 1 ;;
+    esac
     [ -d "$proc_root/$pid/fd" ] || return 1
-    local_address="0100007F:$(printf '%04X' "$port")"
+    local_address="$address_hex:$(printf '%04X' "$port")"
     listeners="$(awk -v local_address="$local_address" \
         '$4 == "0A" && toupper($2) == local_address { print $10 }' \
         "$proc_root/net/tcp" 2>/dev/null || true)"
@@ -177,13 +183,13 @@ bridge_http_ready() {
     before="$(bridge_main_pid || true)"
     [ -n "$before" ] || return 1
     bridge_running || return 1
-    process_listens_ipv4_loopback_port "$before" "$port" || return 1
+    process_listens_ipv4_port "$before" "$port" || return 1
     curl -fsS --max-time 1 "http://127.0.0.1:${port}/telemetry/gate" >/dev/null 2>&1 \
         || return 1
     after="$(bridge_main_pid || true)"
     [ "$before" = "$after" ] || return 1
     bridge_running || return 1
-    process_listens_ipv4_loopback_port "$after" "$port" || return 1
+    process_listens_ipv4_port "$after" "$port" || return 1
     printf '%s' "$after"
 }
 
@@ -217,7 +223,7 @@ stray_teleop_pids() {
 # hand as we discover new ways to drive this robot.
 #
 # Override for a stack we haven't met yet:
-#   OTHER_COMMANDER_PATTERNS='cmd_vel_to_loco|my_new_thing' c3po start
+#   OTHER_COMMANDER_PATTERNS='cmd_vel_to_loco|my_new_thing' c3po up
 # `unitree_slam` earns its place for a non-obvious reason: its 1102 pose
 # navigation closes its own velocity loop, so it is a locomotion commander even
 # though nothing in its name says so (`docs/ROBOT-HARDWARE.md`).

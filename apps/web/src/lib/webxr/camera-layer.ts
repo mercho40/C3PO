@@ -117,7 +117,7 @@ export class CameraLayer {
    * ignored, and a changed one swaps the element. Cutting the old `src` first
    * matters — that is what closes the previous HTTP request, and without it a
    * session that reconnects a few times ends up holding several open MJPEG
-   * streams at once, each still costing bandwidth through the SSH tunnel.
+   * streams at once, each still costing bandwidth over the robot's Wi-Fi.
    *
    * `crossOrigin = "anonymous"` is required: WebGL refuses to sample a texture
    * from an image the page cannot read back, and without it every upload

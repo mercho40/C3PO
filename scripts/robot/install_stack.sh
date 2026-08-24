@@ -114,11 +114,14 @@ cat <<'EOF'
 
 Installed. Nothing was started, no sensor was claimed, and motion is not armed.
 
-  c3po start                         # take ownership and ensure bridge is up
+  c3po up                            # bridge + camera perception + world model
+  c3po up core                       # bridge only; claims no sensors
+  c3po up nav2-fake                  # complete synthetic stack
+  c3po down                          # stop teleop, perception, then bridge
   c3po status                        # read-only health
-  c3po perception up nav2-fake      # explicit synthetic stage; not persistent
   c3po preflight                     # required before any supervised arm
 
 Perception has no boot unit or repair timer. Every stage remains an explicit
-operator action. Nav2 lifecycle and the bridge motion gate remain closed.
+operator action through an `up` profile. Nav2 lifecycle and the bridge motion
+gate remain closed.
 EOF

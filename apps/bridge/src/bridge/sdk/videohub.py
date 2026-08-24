@@ -85,7 +85,7 @@ STALE_AFTER_S = 1.0
 
 # Poll rate. The RPC sustains ~50 Hz back-to-back; we take a fraction of that
 # because this is an operator's view of one camera, not a video service, and
-# every frame is a 175 KB JPEG crossing an SSH tunnel. `C3PO_CAMERA_HZ` moves it.
+# every frame is a 175 KB JPEG crossing Wi-Fi. `C3PO_CAMERA_HZ` moves it.
 DEFAULT_HZ = 10.0
 
 # How long a single GetImageSample may block before we treat it as failed. The

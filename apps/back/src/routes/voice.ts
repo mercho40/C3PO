@@ -27,10 +27,12 @@ import { createIdGenerator } from "ai";
 
 import { runAgentChat } from "@back/agent/runtime";
 import { callTool } from "@back/bridge/client";
+import { deleteChat, ensureChat } from "@back/db/chats";
 import { betterAuth } from "@back/lib/auth-plugin";
 import { VoiceConversation } from "@back/voice/conversation";
 import { bridgeVoiceEvents, bridgeVoiceStatus } from "@back/voice/events";
 import { VoiceLoop } from "@back/voice/loop";
+import { RealtimeVoiceSession } from "@back/voice/realtime";
 
 const newId = createIdGenerator();
 
@@ -68,9 +70,32 @@ async function runAgentOnUtterance(utterance: string): Promise<void> {
 }
 
 let loop: VoiceLoop | null = null;
+const realtime = new RealtimeVoiceSession();
+const useRealtime = () => process.env.VOICE_ENGINE === "realtime";
 
 function voiceStatus() {
-  return { ...getLoop().snapshot(), conversation: conversation.state() };
+  if (useRealtime()) {
+    const state = realtime.snapshot();
+    const { ownerId: _ownerId, ...publicState } = state;
+    return {
+      ...publicState,
+      engine: "openai-realtime" as const,
+      // Compatibility fields keep the existing dashboard readable while the
+      // richer Realtime state is additive.
+      utterancesHeard: state.utterancesHeard,
+      agentRuns: state.agentRuns,
+      stopsTriggered: 0,
+      micEverOpen: state.micEverOpen,
+      alwaysListening: false,
+      conversation: { phase: state.phase === "speaking" ? "speaking" : "idle", lastTurn: null },
+    };
+  }
+  return {
+    ...getLoop().snapshot(),
+    engine: "legacy" as const,
+    chatId: null,
+    conversation: conversation.state(),
+  };
 }
 
 function getLoop(): VoiceLoop {
@@ -90,12 +115,38 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
   .use(betterAuth)
   .post(
     "/start",
-    ({ user }) => {
+    async ({ user, session, status }) => {
+      console.log(`[voice] conversation start requested by ${user.id}`);
+      if (useRealtime()) {
+        const active = realtime.snapshot();
+        if (active.running && active.ownerId !== user.id) return status(409, voiceStatus());
+        if (!active.running) {
+          const chatId = crypto.randomUUID();
+          const owned = await ensureChat({
+            id: chatId,
+            userId: user.id,
+            organizationId: session.activeOrganizationId ?? null,
+            title: `Conversación de voz · ${new Date().toLocaleString("es-AR")}`,
+            channel: "voice",
+          });
+          if (!owned) return status(409, { error: "chat_id_conflict" });
+          try {
+            await realtime.start({ chatId, ownerId: user.id });
+          } catch (error) {
+            await deleteChat(chatId, user.id).catch(() => false);
+            return status(503, {
+              error: error instanceof Error ? error.message : String(error),
+              ...voiceStatus(),
+            });
+          }
+        }
+        return voiceStatus();
+      }
+
       const l = getLoop();
       // A stopped -> running transition begins a fresh conversation. Repeated
       // start requests are idempotent and must not erase an active dialogue.
       if (!l.snapshot().running) conversation.reset();
-      console.log(`[voice] conversation start requested by ${user.id}`);
       l.start();
       return voiceStatus();
     },
@@ -110,10 +161,15 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
   )
   .post(
     "/stop",
-    async ({ user }) => {
-      const l = getLoop();
+    async ({ user, status }) => {
       console.log(`[voice] stop requested by ${user.id}`);
-      await l.stop();
+      if (useRealtime()) {
+        const active = realtime.snapshot();
+        if (active.running && active.ownerId !== user.id) return status(409, voiceStatus());
+        await realtime.stop();
+      } else {
+        await getLoop().stop();
+      }
       return voiceStatus();
     },
     {

@@ -17,13 +17,14 @@ Group=unitree
 WorkingDirectory=/home/unitree/c3po/apps/bridge
 
 # systemd does not source ~/.profile. The bridge loads apps/bridge/.env itself;
-# these three values define the safe daemon transport and cannot accidentally
-# fall back to stdio or a LAN bind.
+# these three values define the daemon transport and cannot accidentally fall
+# back to stdio. The LAN bind is deliberate: see docs/OPERATIONS.md.
 Environment=HOME=/home/unitree
 Environment=PATH=/home/unitree/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=BRIDGE_TRANSPORT=http
-Environment=BRIDGE_HOST=127.0.0.1
+Environment=BRIDGE_HOST=0.0.0.0
 Environment=BRIDGE_PORT=8001
+Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
 
 # Hash-gated and offline-safe. It exits successfully with an existing venv when
 # the network is unavailable, but fails a first install that has no interpreter.

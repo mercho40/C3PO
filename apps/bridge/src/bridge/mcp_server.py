@@ -21,8 +21,8 @@ Run:
 
 Registered in `.mcp.json` as `c3po-sim` — a spawned child process speaking
 stdio, the default transport. The `c3po-bridge` entry in `.mcp.json` is a
-different thing: the daemon running onboard the Jetson, reached over HTTP
-(port 8001 via the SSH tunnel) — i.e. the REAL robot.
+different thing: the daemon running onboard the Jetson, reached directly over
+LAN HTTP on port 8001 — i.e. the REAL robot.
 """
 
 from __future__ import annotations
@@ -74,6 +74,11 @@ DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
 BRIDGE_TRANSPORT = os.environ.get("BRIDGE_TRANSPORT", "stdio")
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8001"))
+BRIDGE_CORS_ORIGINS = tuple(
+    origin.strip()
+    for origin in os.environ.get("BRIDGE_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+)
 
 # How much longer than the byte-derived estimate `say(wait_for_completion=True)`
 # will wait for `play_state` to drop. Playback runs slightly past the estimate
@@ -1638,7 +1643,8 @@ async def listen(
         "always_listening": source["always_on"],
         "audio_source": source["source"],
         "note": (
-            None if diag.get("audio_flowing") or diag["mic_ever_open"] or source["always_on"]
+            None
+            if diag.get("audio_flowing") or diag["mic_ever_open"] or source["always_on"]
             else "No audio has arrived. The robot's own microphone has been seen "
             "BOTH gated on the remote's L1+L2 wake-up mode and free-running with "
             "no remote at all, so silence here is not proof of either. It does "
@@ -2078,8 +2084,8 @@ def list_active_tasks(
 # READ-ONLY, AND STRUCTURALLY SO. This route reads a cached payload the link
 # already received. It cannot arm the gate, cannot publish, and cannot reach
 # anything that actuates — the whole cmd_vel path is untouched by it. The bridge
-# still binds loopback with no auth of its own, so this is reached the same way
-# everything else is: through the SSH tunnel, not from the school LAN.
+# has no auth of its own and the onboard unit exposes it directly on the school
+# LAN, alongside the MCP and camera routes.
 
 
 @mcp.custom_route("/telemetry/costmap.png", methods=["GET"])
@@ -2267,6 +2273,99 @@ async def voice_events(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
+async def _voice_pcm_body(request, listener):  # noqa: ANN001, ANN201 - starlette types
+    """Stream the listener's live 16 kHz PCM without blocking the MCP event loop."""
+    import threading
+
+    stop = threading.Event()
+    frames = listener.audio_frames(stop)
+    waiting_for_frame = False
+    try:
+        while not await request.is_disconnected():
+            try:
+                waiting_for_frame = True
+                frame = await asyncio.to_thread(next, frames)
+                waiting_for_frame = False
+            except StopIteration:
+                return
+            if await request.is_disconnected():
+                return
+            yield frame
+    except asyncio.CancelledError:
+        return
+    finally:
+        stop.set()
+        # `to_thread` cancellation does not stop its worker. Closing a generator
+        # while that worker is inside `next()` raises "generator already executing";
+        # the stop event lets it unwind itself on the next 500 ms queue timeout.
+        if not waiting_for_frame:
+            frames.close()
+        # Disarm session-scoped auto-stop while leaving the always-on detector
+        # and transcript listener running.
+        listener.set_on_stop(None)
+
+
+@mcp.custom_route("/telemetry/voice/audio/input", methods=["GET"])
+async def voice_audio_input(request):  # noqa: ANN001, ANN201 - starlette types
+    """Live 16 kHz mono PCM for the trusted backend's OpenAI Realtime socket."""
+    from starlette.responses import StreamingResponse
+
+    from bridge.skills.listen import get_mic_listener
+
+    listener = get_mic_listener()
+    event_loop = asyncio.get_running_loop()
+
+    def stop_locally(_phrase: str) -> None:
+        # The detector runs in its own thread. Schedule onto the bridge's event
+        # loop; no network or model round-trip sits between the phrase and stop.
+        asyncio.run_coroutine_threadsafe(stop_everything(), event_loop)
+
+    listener.start(on_stop=stop_locally)
+    return StreamingResponse(
+        _voice_pcm_body(request, listener),
+        media_type="audio/pcm;rate=16000;channels=1",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@mcp.custom_route("/telemetry/voice/audio/output", methods=["POST", "DELETE"])
+async def voice_audio_output(request):  # noqa: ANN001, ANN201 - starlette types
+    """Play one 16 kHz PCM chunk, or stop C3PO-owned playback on DELETE."""
+    from starlette.responses import JSONResponse
+
+    if SIM_MODE != "real":
+        return JSONResponse({"status": "ok", "stub": True, "env": SIM_MODE})
+
+    from bridge.sdk import g1_rpc
+
+    if request.method == "DELETE":
+        code, data = await asyncio.to_thread(g1_rpc.stop_play)
+        return JSONResponse(
+            {"status": "ok" if code == 0 else "failed", "rpc_code": code, "rpc_data": data}
+        )
+
+    stream_id = request.query_params.get("stream_id", "").strip()
+    if not stream_id or len(stream_id) > 100:
+        return JSONResponse({"error": "invalid_stream_id"}, status_code=400)
+    pcm = await request.body()
+    if not pcm or len(pcm) > 512_000 or len(pcm) % 2:
+        return JSONResponse({"error": "invalid_pcm"}, status_code=400)
+
+    code, data = await asyncio.to_thread(g1_rpc.play_pcm, pcm, stream_id)
+    return JSONResponse(
+        {
+            "status": "ok" if code == 0 else "failed",
+            "rpc_code": code,
+            "rpc_data": data,
+            "bytes": len(pcm),
+        }
+    )
+
+
 @mcp.custom_route("/telemetry/voice", methods=["GET"])
 async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
     """What the robot has heard recently, and whether it can hear at all.
@@ -2322,13 +2421,13 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
 #
 # WHY NOT PORT 8081. That port belongs to the vision container, and two servers
 # racing for one bind is a coin-flip failure with a confusing symptom. Riding
-# 8001 costs nothing extra: the tunnel that reaches this bridge is already open
-# (`-L 8001:127.0.0.1:8001`), so unlike `:8081` this needs no second forward.
+# 8001 costs nothing extra: the bridge is already directly reachable there,
+# and unlike `:8081` this needs no second exposed service.
 # The console picks a feed with one variable, because `endpoint()` in
 # `apps/web/src/lib/robot/mjpeg-camera.ts` is a plain base + path join:
 #
-#     PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera   <- this, no -L 8081
-#     PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8081          <- the detector's
+#     PUBLIC_ROBOT_CAM_URL=http://g1-orin.local:8001/camera <- relay/picker
+#     PUBLIC_ROBOT_CAM_URL=http://g1-orin.local:8081        <- detector only
 #
 # The paths and the `/status` field names are identical to the vision
 # container's on purpose: one client in the console, two possible servers, no
@@ -2430,8 +2529,9 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
         except Exception:
             log.exception("camera.relay_frame_failed")
         else:
-            return Response(content=body, media_type="image/jpeg",
-                            headers={"Cache-Control": "no-store"})
+            return Response(
+                content=body, media_type="image/jpeg", headers={"Cache-Control": "no-store"}
+            )
 
     status = camera_relay.merged_status(videohub, vision, source)
     return JSONResponse(
@@ -2536,8 +2636,9 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
                 last_seq = current
                 last_new = time.monotonic()
                 yield (
-                    "--{}\r\nContent-Type: image/jpeg\r\n"
-                    "Content-Length: {}\r\n\r\n".format(boundary, len(data)).encode("ascii")
+                    "--{}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n".format(
+                        boundary, len(data)
+                    ).encode("ascii")
                     + data
                     + b"\r\n"
                 )
@@ -2551,6 +2652,28 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
         headers={"Cache-Control": "no-store"},
     )
 
+
+async def _run_streamable_http() -> None:
+    """Run FastMCP with narrowly scoped browser origins for direct camera access."""
+    import uvicorn
+    from starlette.middleware.cors import CORSMiddleware
+    from starlette.types import ASGIApp
+
+    app: ASGIApp = mcp.streamable_http_app()
+    if BRIDGE_CORS_ORIGINS:
+        app = CORSMiddleware(
+            app,
+            allow_origins=list(BRIDGE_CORS_ORIGINS),
+            allow_methods=["GET"],
+            allow_headers=["*"],
+        )
+    config = uvicorn.Config(
+        app,
+        host=BRIDGE_HOST,
+        port=BRIDGE_PORT,
+        log_level=mcp.settings.log_level.lower(),
+    )
+    await uvicorn.Server(config).serve()
 
 
 def main() -> None:
@@ -2691,7 +2814,7 @@ def main() -> None:
             host=BRIDGE_HOST,
             port=BRIDGE_PORT,
         )
-        mcp.run(transport="streamable-http")
+        asyncio.run(_run_streamable_http())
     else:
         log.info("c3po-bridge.start", sim_mode=SIM_MODE, transport="stdio")
         mcp.run()  # default transport is stdio

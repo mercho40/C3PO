@@ -19,6 +19,11 @@
 /** The loop's own snapshot. Mirrors `VoiceLoopState` in apps/back. */
 export type VoiceLoopState = {
   running: boolean;
+  engine?: "legacy" | "openai-realtime";
+  phase?: "idle" | "connecting" | "listening" | "speaking" | "error";
+  chatId?: string | null;
+  lastReply?: string | null;
+  toolCalls?: number;
   utterancesHeard: number;
   agentRuns: number;
   stopsTriggered: number;

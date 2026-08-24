@@ -1,4 +1,4 @@
-"""Preflight's judgements, without a robot, a headset or a tunnel.
+"""Preflight's judgements, without a robot or headset.
 
 Every one of these was previously only checkable by standing in front of the
 hardware with the thing already broken — which is the worst moment to discover
@@ -19,10 +19,10 @@ from bridge.preflight import (
     camera_findings,
     camera_url_from_env,
     classify_probe,
+    direct_service_finding,
     estop_finding,
     headset_findings,
     port_of,
-    tunnel_finding,
     verdict,
 )
 
@@ -35,28 +35,23 @@ def text_of(findings):
     return " | ".join(f.text + " " + " ".join(f.notes) for f in findings)
 
 
-# --- the tunnel distinction -------------------------------------------------
+# --- direct service reachability --------------------------------------------
 
 
 def test_a_successful_probe_is_alive():
     assert classify_probe(0, "") == "alive"
 
 
-def test_a_refusal_means_the_tunnel_is_not_up():
+def test_a_refusal_means_the_service_is_not_reachable():
     assert classify_probe(7, "curl: (7) Failed to connect to 127.0.0.1 port 8001") == "nothing"
 
 
-def test_an_empty_reply_means_the_tunnel_works_and_the_robot_does_not():
-    """The distinction the whole check exists for.
-
-    `ssh -L` binds its listener at setup time, so connect() succeeds whenever
-    ssh is alive — which is how a forgotten run_teleop earns a green tick.
-    """
+def test_an_empty_reply_is_distinct_from_a_refused_connection():
     assert classify_probe(52, "curl: (52) Empty reply from server") == "empty"
     assert classify_probe(56, "Recv failure: Connection reset by peer") == "empty"
 
 
-def test_a_timeout_is_a_wedged_tunnel_not_a_missing_one():
+def test_a_timeout_is_distinct_from_a_missing_service():
     assert classify_probe(28, "curl: (28) Operation timed out") == "timeout"
 
 
@@ -65,14 +60,18 @@ def test_an_http_level_complaint_still_means_something_answered():
 
 
 def test_an_empty_reply_on_a_fatal_port_fails_and_names_the_starter():
-    finding = tunnel_finding(8767, "teleop stream", True, "run_teleop", "empty")
+    finding = direct_service_finding(
+        "g1-orin.local", 8767, "teleop stream", True, "c3po up teleop", "empty"
+    )
     assert finding.level == BAD
-    assert "run_teleop" in " ".join(finding.notes)
-    assert "do NOT go looking at the tunnel" in " ".join(finding.notes)
+    assert "c3po up teleop" in " ".join(finding.notes)
 
 
 def test_the_same_state_is_only_a_warning_on_a_non_fatal_port():
-    assert tunnel_finding(8081, "camera", False, "perception_up", "empty").level == WARN
+    finding = direct_service_finding(
+        "g1-orin.local", 8081, "camera", False, "c3po up operator", "empty"
+    )
+    assert finding.level == WARN
 
 
 # --- reading the web app's config -------------------------------------------
@@ -262,7 +261,7 @@ def test_a_server_listening_on_only_one_address_family_is_found():
 
 def test_when_nothing_answers_the_first_diagnosis_is_kept():
     """refused / reset / timeout are different problems; flattening them would
-    lose the distinction the tunnel section is built on."""
+    lose the distinction the network section is built on."""
     from bridge.preflight import best_state
 
     assert best_state(["empty", "nothing"]) == "empty"

@@ -5,12 +5,10 @@
  * page: teleop is a 30 Hz stream of expiring setpoints, not a sequence of
  * tasks. Routing it through Eden/Elysia and MCP would put a JSON-RPC
  * round-trip, a task-registry entry and a progress notification in the path of
- * every frame. Same reasoning, and the same "reach it over an SSH tunnel"
- * deployment posture, as the camera relay on 8766.
+ * every frame. The onboard launcher exposes it directly on the robot LAN.
  *
  * The consequence to be honest about: this socket has no authentication of its
- * own, and neither does the relay. Both are loopback-bound on the Jetson and
- * expected to be tunnelled. Do not expose either to a network you do not own.
+ * own. Treat the LAN as part of the robot's control boundary.
  *
  * Two policies live here rather than in the WebXR module or in the page:
  *

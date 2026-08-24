@@ -21,13 +21,9 @@
 //
 // REACHABILITY
 // ------------
-// The stream binds the Jetson's loopback by default, so `PUBLIC_ROBOT_CAM_URL`
-// normally points at a local port forwarded over the same SSH tunnel that
-// carries the bridge:
-//   ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 c3po
-// That is also why this is plain HTTP with no certificate dance: the transport
-// is already an encrypted tunnel, and a self-signed cert per port is the thing
-// that makes the sim's cameras annoying to bring up.
+// The onboard bridge exposes this directly at g1-orin.local:8001. It is plain
+// HTTP, so it works from the local HTTP dev console; an HTTPS-hosted console
+// needs an HTTPS/WSS gateway before browsers will accept the mixed content.
 
 export type RobotCamState =
   | "connecting"
@@ -181,14 +177,14 @@ export function connectRobotCamera(
     } catch (err) {
       if (closed) return;
       // Unreachable means the stream is gone too — whatever comes back later
-      // needs a fresh connection, not the one that died with the tunnel.
+      // needs a fresh connection, not the one that died with the network path.
       streamDead = true;
       callbacks.onStatus(null);
       // Unreachable is the common case here and it has one likely cause worth
-      // naming: the SSH tunnel is not up, or perception is not running.
+      // naming: the robot is off-LAN/unreachable, or perception is not running.
       setState(
         "error",
-        err instanceof TypeError ? "tunnel" : (err as Error).message,
+        err instanceof TypeError ? "network" : (err as Error).message,
       );
     }
   }

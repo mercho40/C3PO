@@ -44,8 +44,8 @@ proposes; the bridge alone actuates.
 **Video is the one thing the console fetches directly**, rather than through
 `apps/back`. Proxying ~1.5 Mbit/s of frames through the control plane to
 re-authenticate a picture the operator is already authorised to see would buy
-nothing; the feed is reached over the same SSH tunnel as the bridge, or not at
-all. Everything that _commands_ the robot still goes console → control plane →
+nothing; the browser reaches the bridge's camera relay directly over the robot
+LAN. Everything that _commands_ the robot still goes console → control plane →
 bridge, and that is the invariant the layer table is about.
 
 On the real robot there are **two** servers for the one camera, and which is
@@ -101,7 +101,7 @@ flowchart LR
   CTRL["G1 control board<br/>(internal wired LAN)"]
 
   CC -.->|"MCP stdio (spawned child)"| BRIDGE_S
-  CC -.->|"MCP over HTTP, SSH tunnel"| BRIDGE_R
+  CC -.->|"MCP over HTTP (Wi-Fi)"| BRIDGE_R
   BACK -->|"MCP over HTTP (Wi-Fi)"| BRIDGE_R
   BRIDGE_S <==>|"DDS unicast peer"| SIM
   BRIDGE_R <==>|"DDS, eth0 pinned"| CTRL
@@ -111,8 +111,8 @@ flowchart LR
 - **`SIM_MODE=isaac`** — the bridge runs on the Mac and reaches the simulator
   over LAN DDS (unicast peer config; see `apps/bridge/README.md`).
 - **`SIM_MODE=real`** — the bridge runs onboard the Jetson as a streamable-HTTP
-  MCP daemon, bound to loopback because it can command the legs and has no
-  authentication of its own; it is reached over an SSH tunnel. Ports,
+  MCP daemon, bound to the robot LAN. It can command the legs and has no
+  authentication of its own, so this is a trusted-network deployment. Ports,
   addressing and the daemon lifecycle: `docs/OPERATIONS.md`.
 
 `apps/back`, Postgres and `apps/web` stay off-robot in **both** cases. The
@@ -133,7 +133,7 @@ wired/USB-attached to the Jetson (`docs/OPERATIONS.md`).
 flowchart TD
   HUMAN["Remote supervisor<br/>(web console)"] --> BACKD["apps/back<br/>internal agent + invoke routes"]
   LLM["External LLM<br/>(Claude Code / Desktop, MCP)"] --> REG
-  VOICE["Co-located human<br/>(voice — designed, not built)"] -.-> BACKD
+  VOICE["Co-located human<br/>(voice — legacy or OpenAI Realtime)"] --> BACKD
   BACKD --> REG["Skill registry<br/>(bridge-owned)"]
   REG --> BRIDGE["apps/bridge"] --> ROBOT["G1 / Isaac Sim"]
 ```
@@ -155,8 +155,11 @@ agent required removing nothing, and both can run forever:
    the next turn, and the console consumes the run as a token/tool-call
    stream. Provider and gateway facts: `apps/back/.env.example`; the
    provider-choice rationale: `docs/DECISIONS.md` D5.
-3. **Voice** (co-located human, wake word → internal agent) is designed but
-   not built — `docs/DECISIONS.md` D6.
+3. **Voice** (co-located human) is live behind an explicit dashboard switch.
+   `VOICE_ENGINE=legacy` uses local transcription + the text agent + Piper;
+   `VOICE_ENGINE=realtime` keeps the OpenAI key and session in `back`, streams
+   PCM to/from the bridge, persists final transcripts, and dispatches function
+   calls through the same bridge registry.
 
 An earlier design had `apps/back` also _serving_ MCP to external clients
 (Claude Desktop through the control plane, with tokens and auditing). That
@@ -222,11 +225,13 @@ not transfer to hardware unmeasured — see `apps/bridge/README.md` and
 
 ### 4.1 The same path, entered by speech
 
-A tool call is not the only way in. The **voice loop** (`apps/back/src/voice/
-loop.ts`) polls the bridge's `listen`, hands each utterance to the same agent
-runtime the chat box uses, and the agent's tool calls then take the path above
-unchanged. Nothing about the motion path is voice-specific, which is the point:
-speech is an input to the agent, not a second controller.
+A tool call is not the only way in. Two selectable voice engines share the
+same control boundary. The **legacy loop** (`apps/back/src/voice/loop.ts`) reads
+the bridge transcript and hands each utterance to the text agent. The **Realtime
+session** (`apps/back/src/voice/realtime.ts`) streams the listener's 16 kHz PCM
+through `back` to OpenAI, returns generated PCM to the robot speaker, and executes
+Realtime function calls through the same bridge MCP client. Speech is an input
+to the agent, never a second motion controller.
 
 Three properties are deliberate and easy to lose:
 
@@ -235,15 +240,16 @@ Three properties are deliberate and easy to lose:
   only while an operator has switched it on — `POST /voice/start`, or the
   control on the console's dashboard. The name of whoever started it goes in
   the log.
-- **It reasons where the credentials are.** Decision D6.2's split: the agent
-  runs in `apps/back`, the robot holds no cloud keys, and the loop is therefore
-  allowed to be slow because nothing on it is on the path that stops the robot.
-  The spoken stop phrase is the exception and runs **in the bridge**, in the
-  same process that owns `stop_everything`, so it works even if this loop is
-  dead, hung or mid-deploy.
-- **One loop per process.** Two would poll the same non-consuming telemetry and
-  then both consume it, so each would see half the utterances — a robot that
-  answers every other sentence.
+- **It reasons where the credentials are.** `apps/back` owns the cloud key,
+  Realtime WebSocket, authenticated operator and durable chat id. The bridge
+  exposes raw PCM only on its loopback-bound trusted transport; neither robot nor
+  browser receives the key. During a Realtime PCM subscription, its existing
+  stop detector is armed with a bridge-local callback to `stop_everything`, so
+  the spoken stop does not wait for OpenAI or `back`.
+- **One session per backend.** A second operator receives a conflict instead of
+  attaching to or duplicating the active microphone stream. The resulting chat
+  is operator-owned, marked `channel=voice`, and read-only in typed chat so the
+  two input channels are never merged implicitly.
 
 The robot's own microphone hears its own speaker, so anything that listens
 directly after speaking needs to know when the speaking stopped: `say` takes
@@ -380,7 +386,7 @@ There is **no runtime interlock with the `gemm` Nav2 stack** cohabiting the
 robot (`docs/ROBOT-HARDWARE.md`). Its `cmd_vel_to_loco` bridge is off by
 default but one launch argument from live, and two independent controllers
 commanding the same legs is the obvious way to break this robot. The start-up
-path is guarded — `c3po start` refuses to start while another motion commander
+path is guarded — `c3po up` refuses to start while another motion commander
 is alive (see `scripts/robot/_common.sh` for the pattern list and rationale) —
 but nothing technical prevents the other stack from starting _after_ ours is
 up. That gap is an open operational item (`docs/OPERATIONS.md`).

@@ -23,7 +23,7 @@ if ! bridge_running \
    || ! curl -fsS --max-time 2 http://127.0.0.1:8001/telemetry/gate >/dev/null 2>&1; then
     err "the bridge is not running and answering — refusing to start the teleop stream"
     err "it can command the legs, and stop_everything is served by the bridge."
-    err "start it first:  c3po start"
+    err "start it first:  c3po up core"
     exit 1
 fi
 
@@ -54,6 +54,9 @@ start_sidecar() {
         . ./.env
         set +a
         export PATH="$HOME/.local/bin:$PATH"
+        # Direct LAN access is the onboard policy. The Python module itself
+        # still defaults to loopback for ad-hoc developer runs.
+        export TELEOP_HOST="${TELEOP_HOST:-0.0.0.0}"
         # `< /dev/null` matters as much as the nohup, and for a different
         # reason. nohup stops SIGHUP killing the process; the stdin redirect
         # stops `ssh c3po run_teleop` from hanging. A backgrounded child that
@@ -79,7 +82,7 @@ fi
 
 # The camera is NOT started here. `apps/perception`'s vision container owns the
 # D435i and serves it on 8081; bring it up with `perception_up perception`.
-info "camera: run \`perception_up perception\` if you want a picture (port 8081)"
+info "camera: use \`c3po up operator\` if you want perception and a picture (port 8081)"
 
 # Show the operator what the robot will and will not do, rather than making
 # them read four env vars across two files to find out why the arms are inert.
@@ -93,7 +96,7 @@ if [ "$sim_mode" != "real" ]; then
     # tunnel, or a wrong FSM, and it is none of them.
     err "SIM_MODE=$sim_mode — NOT 'real'. Nothing you do will move this robot."
     err "Velocity goes to rt/run_command/cmd, which real firmware ignores."
-    err "Fix apps/bridge/.env, then run: c3po restart && c3po teleop start."
+    err "Fix apps/bridge/.env, then run: c3po restart && c3po up teleop."
 else
     ok "SIM_MODE=real"
 fi
@@ -110,15 +113,15 @@ case "$hand_enabled" in
     *)             info "fingers disabled. The hands are two BrainCo ([0,1], and NO firmware deadman — a closed hand stays closed until something opens it)" ;;
 esac
 
-say "Reach it from your laptop"
-cat <<'TUNNEL'
-  ssh -N -o ControlMaster=no \
-      -L 8001:127.0.0.1:8001 \
-      -L 8081:127.0.0.1:8081 \
-      -L 8767:127.0.0.1:8767 c3po
+say "Reach it directly"
+cat <<'DIRECT'
+  bridge:  http://g1-orin.local:8001/mcp
+  camera:  http://g1-orin.local:8001/camera
+  teleop:  ws://g1-orin.local:8767
 
-  then open /vr-control in the Quest's browser.
-TUNNEL
+  The Quest's WebXR secure-context path still needs HTTPS/WSS or the existing
+  adb reverse setup; ordinary desktop development needs no SSH tunnel.
+DIRECT
 
 warn "while a headset session is open, do NOT drive the robot from anywhere else."
 warn "nothing at the DDS layer will stop you; the setpoints just interleave."

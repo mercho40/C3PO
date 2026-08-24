@@ -26,7 +26,7 @@
   // made it a permanently dead panel on hardware.
   //
   // PUBLIC_ROBOT_CAM_URL is what picks: set it (normally to a port forwarded
-  // over the same SSH tunnel as the bridge) and the console shows the robot.
+  // directly over the LAN) and the console shows the robot.
   // The robot wins over the sim when both are configured — an operator looking
   // at a console attached to a physical robot must not be shown a simulation.
   let robotBase = $state("");
@@ -244,13 +244,12 @@
                    picture on screen is real, it is just old. -->
               El contenedor de visión responde pero dejó de entregar cuadros ({robot.detail}).
               Lo que se ve es el último cuadro, no la escena actual.
-            {:else if robot.detail === "tunnel"}
-              No se puede alcanzar {robotBase}. Revisá el túnel SSH (<code
-                class="font-mono text-2xs"
-                >ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L
-                8081:127.0.0.1:8081 c3po</code
-              >) y que <code class="font-mono text-2xs">perception_up</code> esté
-              corriendo con la cámara.
+            {:else if robot.detail === "network"}
+              No se puede alcanzar {robotBase}. Verificá que esta máquina y el
+              robot estén en la misma red, que
+              <code class="font-mono text-2xs">g1-orin.local</code>
+              resuelva, y que <code class="font-mono text-2xs">c3po up</code>
+              esté activo.
             {:else}
               {robotBase} respondió con un error: {robot.detail}
             {/if}

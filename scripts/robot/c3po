@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One operator entrypoint for the onboard stack. Implementation scripts remain
-# beside this file so systemd and tests can call narrow operations directly.
+# One operator entrypoint for the onboard stack. `up` composes the narrow,
+# independently testable implementations into named operating profiles.
 
 set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -9,15 +9,18 @@ usage() {
     cat <<'EOF'
 Usage:
   c3po install
-  c3po start | stop | restart | status | logs
+  c3po up [operator|core|teleop|<perception-stage>]
+  c3po down | restart | status | logs
   c3po preflight
   c3po perception up <stage> | stop | build [target] | measure <label> [seconds]
   c3po gemm start | stop
   c3po teleop start | stop
   c3po camera take
 
+Default profile: operator (bridge + camera perception + world model).
+Compatibility aliases: start = up core, stop = down.
 Perception stages: fake, odometry, perception, nav2, nav2-fake, stt
-Starting the bridge never starts perception and never arms motion.
+No profile arms Nav2 or bypasses preflight/motion gates.
 EOF
 }
 
@@ -30,6 +33,33 @@ shift
 
 case "$command" in
     install)   require_no_args install "$@"; exec "$here/install_stack.sh" ;;
+    up)
+        profile="${1:-operator}"
+        [ "$#" -le 1 ] || die_usage "up takes at most one profile"
+        case "$profile" in
+            core)
+                exec "$here/run_c3po"
+                ;;
+            operator|perception)
+                "$here/run_c3po"
+                "$here/perception_up" perception
+                ;;
+            fake|odometry|nav2|nav2-fake|stt)
+                "$here/run_c3po"
+                "$here/perception_up" "$profile"
+                ;;
+            teleop)
+                "$here/run_c3po"
+                "$here/perception_up" perception
+                "$here/run_teleop"
+                ;;
+            *) die_usage "unknown up profile: $profile" ;;
+        esac
+        printf '\nProfile %s is up.\n' "$profile"
+        exec "$here/c3po_health"
+        ;;
+    down)      require_no_args down "$@"; exec "$here/stop_c3po" ;;
+    # Compatibility aliases for existing runbooks and muscle memory.
     start)     require_no_args start "$@"; exec "$here/run_c3po" ;;
     stop)      require_no_args stop "$@"; exec "$here/stop_c3po" ;;
     restart)
@@ -53,8 +83,8 @@ case "$command" in
             if [ "$state" = "active" ] && ready_pid="$(bridge_http_ready 8001)"; then
                 strays="$(bridge_process_pids | grep -vx "$ready_pid" || true)"
                 if [ -z "$strays" ] && [ "$(bridge_main_pid || true)" = "$ready_pid" ] \
-                   && process_listens_ipv4_loopback_port "$ready_pid" 8001; then
-                    printf 'bridge restarted under systemd (pid %s) and answers on 127.0.0.1:8001\n' "$ready_pid"
+                   && process_listens_ipv4_port "$ready_pid" 8001; then
+                    printf 'bridge restarted under systemd (pid %s) and answers on port 8001\n' "$ready_pid"
                     exit 0
                 fi
             fi

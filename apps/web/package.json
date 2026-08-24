@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev --port 3001",
+    "dev:robot": "PUBLIC_ROBOT_CAM_URL=http://${C3PO_ROBOT_HOST:-g1-orin.local}:8001/camera PUBLIC_TELEOP_HOST=${C3PO_ROBOT_HOST:-g1-orin.local} vite dev --port 3001",
     "build": "vite build",
     "preview": "vite preview",
     "test": "bun test",

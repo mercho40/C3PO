@@ -166,6 +166,47 @@ def test_a_lagging_waiter_resumes_at_the_oldest_retained_sequence():
     assert len(lis.poll()) == 2
 
 
+async def test_voice_pcm_body_streams_raw_audio_and_stops_on_disconnect():
+    from bridge import mcp_server
+
+    class Request:
+        disconnected = False
+
+        async def is_disconnected(self):
+            return self.disconnected
+
+    lis, *_ = make([])
+    request = Request()
+    body = mcp_server._voice_pcm_body(request, lis)
+    next_chunk = asyncio.create_task(anext(body))
+    await asyncio.sleep(0.02)
+    lis._publish_audio(b"pcm")
+    assert await next_chunk == b"pcm"
+
+    request.disconnected = True
+    await body.aclose()
+
+
+async def test_voice_pcm_cancellation_does_not_close_a_generator_running_in_a_worker():
+    from bridge import mcp_server
+
+    class Request:
+        async def is_disconnected(self):
+            return False
+
+    lis, *_ = make([])
+    body = mcp_server._voice_pcm_body(Request(), lis)
+    pending = asyncio.create_task(anext(body))
+    await asyncio.sleep(0.02)
+    pending.cancel()
+    try:
+        await pending
+    except (asyncio.CancelledError, StopAsyncIteration):
+        pass
+    await asyncio.sleep(0.55)
+    assert len(lis._audio_subscribers) == 0
+
+
 async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeypatch):
     from bridge import mcp_server
     from bridge.skills import listen as listen_mod
@@ -233,6 +274,40 @@ def test_robot_playback_is_not_transcribed_back_into_the_voice_loop():
     assert drain(lis) == []
     assert trans.resets == 1
     assert whis.calls == []
+
+
+def test_raw_audio_subscriber_gets_live_pcm_without_consuming_transcripts():
+    stop = threading.Event()
+    lis, *_ = make([b"first", b"second", b"."])
+    frames = lis.audio_frames(stop)
+    received: list[bytes] = []
+    reader = threading.Thread(target=lambda: received.extend([next(frames), next(frames)]))
+    reader.start()
+    time.sleep(0.02)  # let the generator register its bounded queue
+    lis.start()
+    reader.join(timeout=1)
+    stop.set()
+    frames.close()
+
+    assert received == [b"first", b"second"]
+    assert any(item["kind"] == "speech" for item in drain(lis))
+
+
+def test_raw_audio_is_suppressed_during_robot_playback():
+    stop = threading.Event()
+    lis, *_ = make([b"speaker"], playback_active=lambda: True)
+    frames = lis.audio_frames(stop)
+    received: list[bytes | None] = []
+    reader = threading.Thread(target=lambda: received.append(next(frames, None)))
+    reader.start()
+    time.sleep(0.02)
+    lis.start()
+    time.sleep(0.05)
+    stop.set()
+    reader.join(timeout=1)
+    frames.close()
+    assert not reader.is_alive()
+    assert received == [None]
 
 
 def test_stop_phrase_still_fires_during_robot_playback():
