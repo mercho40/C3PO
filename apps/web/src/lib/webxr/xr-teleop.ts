@@ -633,8 +633,27 @@ export class XrTeleopSession {
     // VR stays as a fallback for a headset without passthrough. There the
     // overlay may still not composite, which is why `start()` reports the mode
     // it got and the page warns.
+    //
+    // 2026-08-24: THAT REASONING IS NOW OBSOLETE, so the preference is
+    // reversed. The controls are no longer DOM — `menu-layer.ts` paints the
+    // gesture list, the readiness banner and the latch alerts into the XR
+    // layer itself, in WebGL. `immersive-vr` therefore no longer means "no
+    // controls"; it means the compositor shows nothing except what we draw.
+    //
+    // Which is what the operator asked for, twice, in the words "modo
+    // environment" and "everything that is not the camera is black". Under
+    // passthrough the black clear this module does in VR is deliberately not
+    // applied — painting the room black to show a camera OF that room is the
+    // wrong trade — so an AR session can never be a surround, however the
+    // camera quad is drawn. The mode was the reason the surround never
+    // appeared, not the clear colour.
+    //
+    // What that costs: in AR the operator could see the actual robot beside
+    // the rendering of it, which for same-room teleop is genuinely useful. AR
+    // stays as the fallback, and `mode` is still reported so the page can say
+    // which one it got.
     const requested: XRSessionMode[] = (await checkXrSupport()).immersiveAr
-      ? ["immersive-ar", "immersive-vr"]
+      ? ["immersive-vr", "immersive-ar"]
       : ["immersive-vr"];
 
     let session: XRSession | null = null;

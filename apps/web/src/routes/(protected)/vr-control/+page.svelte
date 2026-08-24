@@ -1008,7 +1008,15 @@
   //: zero_torque. `canGesture` above already knew. It was on the page, behind
   //: a headset, which is the same as nowhere.
   const readiness = $derived(
-    readinessFor(live.state?.posture, live.online, live.state?.faults),
+    readinessFor(
+      live.state?.posture,
+      live.online,
+      live.state?.faults,
+      // `bridgeHolds`, not `streaming`: a socket that is open but stalled is
+      // not commanding anything, and the operator needs to know that as much
+      // as they need to know about one that was never opened.
+      bridgeHolds,
+    ),
   );
   $effect(() => {
     // Reads `readiness` so the effect re-runs when it changes; `setReadiness`

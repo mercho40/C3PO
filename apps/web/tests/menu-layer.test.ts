@@ -383,3 +383,48 @@ describe("alertFor — the latch that stopped you, and how to clear it", () => {
     }
   });
 });
+
+describe("readinessFor — a bridge that was never connected", () => {
+  /**
+   * The state that stopped the 2026-08-24 session and that nothing reported.
+   * `list_active_tasks` said `active_count: 0`: no teleop session had ever been
+   * registered, so head yaw and the thumbstick had nowhere to go. The alert
+   * band stayed blank, correctly — `alertFor` reports LATCHES, and "there is no
+   * socket" is the absence of the thing a latch lives in, not a latch.
+   */
+
+  test("an unconnected bridge is reported even with a perfect posture", () => {
+    const r = readinessFor("walk_waist", true, [], false);
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain("Puente");
+  });
+
+  test("it outranks posture, so a ready robot never reads Listo without a socket", () => {
+    // The single most misleading thing this banner could say.
+    for (const p of ["walk", "walk_waist", "run"]) {
+      expect(readinessFor(p, true, [], false).ok).toBe(false);
+    }
+  });
+
+  test("but battery and link still outrank it", () => {
+    // Ordering matters: a flat battery is not fixed by connecting a socket.
+    expect(
+      readinessFor("walk", true, ["low_battery_9pct"], false).text,
+    ).toContain("9");
+    expect(readinessFor("walk", false, [], false).text).toContain("conexión");
+  });
+
+  test("connected plus a walk program is the only Listo", () => {
+    expect(readinessFor("walk_waist", true, [], true).ok).toBe(true);
+  });
+
+  test("the parameter defaults true, so existing callers are unchanged", () => {
+    // A page that cannot tell must not claim the bridge is down.
+    expect(readinessFor("walk_waist", true, []).ok).toBe(true);
+  });
+
+  test("posture problems still show when the bridge IS connected", () => {
+    const r = readinessFor("zero_torque", true, [], true);
+    expect(r.text).toContain("damp");
+  });
+});

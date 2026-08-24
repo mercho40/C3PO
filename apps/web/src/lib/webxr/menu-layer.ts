@@ -105,6 +105,20 @@ export function readinessFor(
   posture: string | null | undefined,
   online: boolean,
   faults: readonly string[] | null | undefined,
+  /**
+   * Whether the teleop socket is open and the bridge is reading from it.
+   *
+   * The state that stopped the 2026-08-24 session and that NOTHING reported.
+   * `list_active_tasks` said `active_count: 0` — no session had ever been
+   * registered — so head yaw and the thumbstick had nowhere to go. The panel
+   * showed no alert, correctly: `alertFor` reports LATCHES, and "there is no
+   * socket" is not a latch, it is the absence of the thing a latch would live
+   * in.
+   *
+   * Defaults true so callers that do not know stay unchanged. A page that
+   * cannot tell should not claim the bridge is down.
+   */
+  bridgeConnected: boolean = true,
 ): Readiness {
   // A low battery is worth saying over everything else: it is the one state
   // that gets WORSE while the operator reads the message, and the one whose
@@ -116,6 +130,12 @@ export function readinessFor(
   }
   if (!online) {
     return { text: "Sin conexión con el robot", ok: false };
+  }
+  // Before posture. A perfectly-posed robot with no socket to command it
+  // through is still a robot that will not move, and saying "Listo" there is
+  // the single most misleading thing this banner could do.
+  if (!bridgeConnected) {
+    return { text: "Puente sin conectar — no comanda", ok: false };
   }
   if (!posture || posture === "unknown" || posture === "no_data_yet") {
     // The signature of a stripped motion controller: the FSM getters answer
@@ -532,7 +552,18 @@ export class MenuLayer {
         : 1;
     const sy = sx * (H / W) * vpAspect;
     gl.uniform2f(this.#scaleLoc, sx, sy);
-    gl.uniform2f(this.#offsetLoc, 0, -1 + sy + 0.08);
+    // TOP-RIGHT, not bottom-centre.
+    //
+    // Bottom-centre put it under the camera quad, in the part of the field an
+    // operator uses to watch where the robot is walking — so it competed with
+    // the view instead of annexing unused space, and reading it meant looking
+    // away from the thing being driven. Asked for directly on 2026-08-24:
+    // "should be to the right and up".
+    //
+    // The margins are in clip space, so they hold at any eye aspect: the panel
+    // is inset by its own half-size plus a small gap from each edge.
+    const margin = 0.04;
+    gl.uniform2f(this.#offsetLoc, 1 - sx - margin, 1 - sy - margin);
     gl.uniform1f(this.#alphaLoc, 1.0);
 
     gl.enable(gl.BLEND);
