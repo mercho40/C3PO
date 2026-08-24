@@ -74,6 +74,11 @@
     {/if}
 
     {#if voice.state}
+      {#if voice.state.engine === "openai-realtime"}
+        <p class="text-xs text-muted-foreground">
+          OpenAI Realtime · speech-to-speech · transcript saved automatically
+        </p>
+      {/if}
       <dl class="grid grid-cols-3 gap-2 text-sm">
         <div>
           <dt class="text-muted-foreground">Heard</dt>
@@ -110,6 +115,13 @@
         </p>
       {/if}
 
+      {#if voice.state.lastReply}
+        <p class="text-sm">
+          <span class="text-muted-foreground">Last reply:</span>
+          {voice.state.lastReply}
+        </p>
+      {/if}
+
       {#if voice.state.lastError}
         <p class="text-sm text-destructive">{voice.state.lastError}</p>
       {/if}
@@ -129,6 +141,11 @@
       {:else}
         <Button disabled={voice.busy} onclick={() => voice.startLoop()}>
           Start voice conversation
+        </Button>
+      {/if}
+      {#if voice.state?.chatId}
+        <Button variant="outline" href={`/chat?id=${voice.state.chatId}`}>
+          Open transcript
         </Button>
       {/if}
     </div>

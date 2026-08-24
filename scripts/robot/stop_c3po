@@ -9,7 +9,11 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 say "Stopping C3PO"
 
-# Stop proposed velocity first while the bridge and its deadman still exist.
+# Teleop is itself a motion commander. Stop it while the bridge-hosted
+# stop_everything path is still reachable, before removing any other layer.
+"$here/stop_teleop"
+
+# Stop proposed Nav2 velocity while the bridge and its deadman still exist.
 "$here/stop_perception"
 
 # Stop unconditionally. `is-active` is false while ExecStartPre is still

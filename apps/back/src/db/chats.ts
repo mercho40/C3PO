@@ -54,16 +54,17 @@ export async function ensureChat(opts: {
   userId: string;
   organizationId?: string | null;
   title?: string | null;
-}): Promise<{ id: string; created: boolean } | null> {
+  channel?: "text" | "voice";
+}): Promise<{ id: string; created: boolean; channel: "text" | "voice" } | null> {
   const existing = await db.query.chat.findFirst({
     where: eq(chat.id, opts.id),
-    columns: { id: true, userId: true },
+    columns: { id: true, userId: true, channel: true },
   });
 
   if (existing) {
     // Someone else's chat (or an id collision) — refuse rather than write into it.
     return existing.userId === opts.userId
-      ? { id: existing.id, created: false }
+      ? { id: existing.id, created: false, channel: existing.channel }
       : null;
   }
 
@@ -72,8 +73,9 @@ export async function ensureChat(opts: {
     userId: opts.userId,
     organizationId: opts.organizationId ?? null,
     title: opts.title ?? null,
+    channel: opts.channel ?? "text",
   });
-  return { id: opts.id, created: true };
+  return { id: opts.id, created: true, channel: opts.channel ?? "text" };
 }
 
 /**
@@ -171,6 +173,7 @@ export async function listChats(userId: string, limit = 50) {
     .select({
       id: chat.id,
       title: chat.title,
+      channel: chat.channel,
       createdAt: chat.createdAt,
       updatedAt: chat.updatedAt,
     })
@@ -184,7 +187,7 @@ export async function listChats(userId: string, limit = 50) {
 export async function getChatWithMessages(id: string, userId: string) {
   const row = await db.query.chat.findFirst({
     where: and(eq(chat.id, id), eq(chat.userId, userId)),
-    columns: { id: true, title: true, createdAt: true, updatedAt: true },
+    columns: { id: true, title: true, channel: true, createdAt: true, updatedAt: true },
   });
   if (!row) return null;
 

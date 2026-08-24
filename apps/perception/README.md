@@ -118,17 +118,16 @@ robot's network.
 
 ## Never auto-started
 
-Perception is **never** started by `c3po start`, by the bridge unit, or by any other
+Perception is **never** started by the bridge unit, at boot, or by any other
 automatic path. The sensors are shared with the other team (see
 `docs/ROBOT-HARDWARE.md`), and claiming the Livox and the RealSense is a
 different conversation from "the bridge is mine". A machine powering on is not
 somebody asking for the sensors — hence `--restart no` on both containers
 (gemm's `unless-stopped` is exactly the pattern this avoids), Nav2's lifecycle
 `autostart: false`, and the bridge's cmd_vel gate defaulting closed. Starting
-perception is one explicit command: `c3po perception up <stage>`. There is no flag,
-no environment variable and no opt-in that makes `c3po start` do it — an opt-in
-var is one systemd `Environment=` line away from being an automatic path, so
-"no unless a flag is set" is not the guarantee this section claims.
+perception is one explicit command: `c3po up <stage>` (or the default
+`c3po up`, which selects the `operator` profile). These are foreground operator
+decisions, not environment flags that can leak into a systemd boot path.
 
 ## Build and run
 
@@ -138,13 +137,15 @@ from a laptop:
 
 ```bash
 ssh c3po 'bash -lc "c3po perception build all"'                # images + engine + bench
-ssh c3po 'bash -lc "c3po perception up <stage>"'               # create + start containers
+ssh c3po 'bash -lc "c3po up <stage>"'                          # bridge + selected stage
 ssh c3po 'bash -lc "c3po perception measure <label> [sec]"'    # compute-budget harness
-c3po stop                                                       # complete stack shutdown
+c3po down                                                       # complete stack shutdown
 ```
 
 The build implementation carries per-step timings, disk guards and assertions.
-`c3po perception up` stages, and what each claims:
+`c3po up <stage>` accepts every perception stage below. The granular
+`c3po perception up <stage>` command remains available when the bridge is
+intentionally managed separately:
 
 | stage        | runs                                   | sensors claimed               |
 | ------------ | -------------------------------------- | ----------------------------- |
@@ -236,7 +237,7 @@ that is one command.
   side so a one-sided bump fails loudly.
 
 - **Stage 3 — the crossing end-to-end on synthetic data** (no sensors).
-  `c3po perception up fake` + `c3po start`, then `describe_surroundings` from a Claude
+  `c3po up fake`, then `describe_surroundings` from a Claude
   Code session. This is where "absent is not empty" is proven across a process
   boundary, a container boundary and a DDS domain: kill the synthetic publisher
   and the summary must flip to `detector: offline` with a plain-language note,
@@ -285,7 +286,7 @@ nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
   vendor transform's direction is ambiguous as stated, so validate against a
   real cloud rather than trusting either number.
 - **Stage 7 — live perception, robot stationary then hand-walked** (~60 min
-  window). `c3po perception up perception && c3po start`, with `c3po perception measure` sampling.
+  window). `c3po up operator`, with `c3po perception measure` sampling.
   Pass/fail thresholds (memory, CPU, thermal, EMC, topic-rate floors) are fixed
   in `scripts/robot/measure.sh` and printed before every run — edit them only
   with the reason written down. Functional gates: `describe_surroundings` names
@@ -306,7 +307,7 @@ nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
   0.17 m gantry-loaded on 2026-08-15 (`docs/ROBOT-API.md` §5.4); it has never
   run free-standing. Rollback: `stop_everything` (unilateral, needs nothing
   from the containers; its disarm-the-gate step is part of the `arm_navigation`
-  prerequisite above — verify it before the window), then `c3po stop`.
+  prerequisite above — verify it before the window), then `c3po down`.
 
 ## Decisions that still need a human
 

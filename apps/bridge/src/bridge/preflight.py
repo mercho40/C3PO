@@ -56,26 +56,16 @@ class Section:
         self.findings = list(findings)
 
 
-# --- the distinction this whole file exists for -----------------------------
+# --- network probes ---------------------------------------------------------
 
 
 def classify_probe(rc: int, stderr: str) -> str:
-    """What a `curl` to a forwarded port actually means.
+    """Classify a real HTTP exchange, not merely whether TCP accepted.
 
-    `ssh -L` binds its local listener at SETUP time, before it knows anything
-    about the far end. So a plain connect() SUCCEEDS whenever the ssh process is
-    alive, whatever is or is not running on the robot — which makes `nc -z`
-    useless here, and actively harmful: it is how a forgotten `run_teleop` earns
-    a green tick.
-
-    Forcing a byte through the channel is what tells them apart. ssh opens the
-    channel, finds nothing listening, and drops the already-accepted local
-    socket — so the client sees a reset or an empty reply, never a refusal.
-
-        nothing  no listener at all — the tunnel is not up
-        empty    tunnel is up, nothing is listening on the robot
-        timeout  the tunnel is wedged
-        alive    something answered
+    nothing  no listener or no route to the robot
+    empty    a listener accepted and closed without replying
+    timeout  the robot or service is wedged
+    alive    something answered at HTTP level
     """
     if rc == 0:
         return "alive"
@@ -112,38 +102,31 @@ def best_state(states: Sequence[str]) -> str:
     return "alive" if "alive" in states else states[0]
 
 
-TUNNEL_HINT = [
-    "ssh -N -o ControlMaster=no \\",
-    "    -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 \\",
-    "    -L 8767:127.0.0.1:8767 c3po",
-    "ControlMaster=no matters: a forward on a shared master evaporates",
-    "when the master idles out, mid-session, with no obvious cause.",
-]
-
-
-def tunnel_finding(port: int, label: str, fatal: bool, starter: str, state: str) -> Finding:
+def direct_service_finding(
+    host: str, port: int, label: str, fatal: bool, starter: str, state: str
+) -> Finding:
     if state == "alive":
-        return Finding(OK, "{}  {} — answering".format(port, label))
+        return Finding(OK, "{}:{}  {} — answering directly".format(host, port, label))
     if state == "empty":
         level = BAD if fatal else WARN
         return Finding(
             level,
-            "{}  {} — the tunnel works, nothing is running on the robot".format(port, label),
-            [
-                "on the robot:  {}".format(starter),
-                "the forward is fine — do NOT go looking at the tunnel for this one",
-            ],
+            "{}:{}  {} — accepted a connection but did not answer".format(host, port, label),
+            ["on the robot:  {}".format(starter)],
         )
     if state == "timeout":
         return Finding(
             BAD,
-            "{}  {} — timed out (the tunnel is wedged)".format(port, label),
-            ["kill the ssh process and open it again"],
+            "{}:{}  {} — timed out".format(host, port, label),
+            ["check that this machine and the robot are on the same LAN"],
         )
     return Finding(
         BAD if fatal else WARN,
-        "{}  {} — not forwarded".format(port, label),
-        list(TUNNEL_HINT),
+        "{}:{}  {} — unreachable".format(host, port, label),
+        [
+            "check that {} resolves and both machines are on the same LAN".format(host),
+            "on the robot:  {}".format(starter),
+        ],
     )
 
 
@@ -197,7 +180,7 @@ def camera_findings(
                 "PUBLIC_ROBOT_CAM_URL is not set in apps/web/.env",
                 [
                     "the page will not open the stream at all without it. Add:",
-                    "  PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera",
+                    "  PUBLIC_ROBOT_CAM_URL=http://g1-orin.local:8001/camera",
                     "(the bridge picks whichever feed is live and relays it, so this",
                     " one URL works whether or not the detector owns the camera)",
                 ],
@@ -211,12 +194,8 @@ def camera_findings(
         out.append(
             Finding(
                 BAD,
-                "nothing is forwarding {}".format(url),
-                [
-                    "the SSH tunnel is missing -L {}. A tunnel problem, not a robot one.".format(
-                        port
-                    )
-                ],
+                "cannot reach {}".format(url),
+                ["check mDNS/Wi-Fi and that the robot service is running on port {}".format(port)],
             )
         )
         return out
@@ -229,14 +208,16 @@ def camera_findings(
         out.append(
             Finding(
                 BAD,
-                "the tunnel reaches the robot, and nothing is listening on {} there".format(port),
+                "the robot accepted the connection on {} but the service did not answer".format(
+                    port
+                ),
                 [who, "This is the failure that looked like a camera fault last time. It is not."],
             )
         )
         return out
     if status_state == "timeout":
         out.append(
-            Finding(BAD, "{} timed out".format(url), ["the tunnel is wedged. Reopen it."])
+            Finding(BAD, "{} timed out".format(url), ["check the robot service and Wi-Fi link"])
         )
         return out
 
@@ -286,10 +267,12 @@ def camera_findings(
         else:
             notes += [
                 "the server is up and the D435i is not delivering — the camera",
-                "itself, not the tunnel and not the web app. Check the cable and",
+                "itself, not the network path and not the web app. Check the cable and",
                 "that nothing else has the device open.",
             ]
-        out.append(Finding(WARN, "live: false, and it has produced NOTHING since it started", notes))
+        out.append(
+            Finding(WARN, "live: false, and it has produced NOTHING since it started", notes)
+        )
     else:
         out.append(
             Finding(
@@ -333,9 +316,7 @@ def adb_devices(listing: str) -> Tuple[List[str], List[str]]:
 HEADSET_PORTS = (3000, 3001, 8081, 8767)
 
 
-def headset_findings(
-    adb_present: bool, listing: str, reverse_listing: str
-) -> List[Finding]:
+def headset_findings(adb_present: bool, listing: str, reverse_listing: str) -> List[Finding]:
     if not adb_present:
         return [
             Finding(BAD, "adb is not installed", ["brew install --cask android-platform-tools"])
@@ -412,9 +393,7 @@ def verdict(sections: Sequence[Section]) -> Tuple[int, int, str]:
         failed,
         warned,
         "{} thing(s) will stop you. Fix those before the headset goes on — "
-        "from inside it they all look the same, and you cannot debug from in there.".format(
-            failed
-        ),
+        "from inside it they all look the same, and you cannot debug from in there.".format(failed),
     )
 
 
@@ -505,8 +484,12 @@ def _run(argv: Sequence[str]) -> Tuple[bool, str]:
 def _local_section() -> Section:
     findings: List[Finding] = []
     for port, label in ((3000, "apps/back"), (3001, "apps/web")):
-        state = best_state([_probe("http://{}:{}/".format(h, port), timeout=3)[0]
-                            for h in ("localhost", "127.0.0.1")])
+        state = best_state(
+            [
+                _probe("http://{}:{}/".format(h, port), timeout=3)[0]
+                for h in ("localhost", "127.0.0.1")
+            ]
+        )
         if state == "nothing":
             findings.append(
                 Finding(
@@ -518,8 +501,12 @@ def _local_section() -> Section:
         else:
             findings.append(Finding(OK, "{}  {}".format(port, label)))
 
-    state = best_state([_probe("http://{}:3000/health".format(h), timeout=3)[0]
-                        for h in ("localhost", "127.0.0.1")])
+    state = best_state(
+        [
+            _probe("http://{}:3000/health".format(h), timeout=3)[0]
+            for h in ("localhost", "127.0.0.1")
+        ]
+    )
     if state == "alive":
         findings.append(Finding(OK, "the API answers /health"))
     else:
@@ -533,17 +520,19 @@ def _local_section() -> Section:
     return Section("1. This machine", findings)
 
 
-def _tunnel_section() -> Section:
+def _robot_section() -> Section:
+    import os
+
+    host = os.environ.get("C3PO_ROBOT_HOST", "g1-orin.local")
     spec = (
-        (8767, "teleop stream", True, "c3po teleop start"),
-        (8001, "bridge MCP", True, "c3po start"),
-        (8081, "camera MJPEG (only if PUBLIC_ROBOT_CAM_URL says 8081)", False, "c3po perception up perception"),
+        (8767, "teleop stream", True, "c3po up teleop"),
+        (8001, "bridge MCP/camera", True, "c3po up core"),
     )
     findings = []
     for port, label, fatal, starter in spec:
-        state, _ = _probe("http://127.0.0.1:{}/".format(port), timeout=4)
-        findings.append(tunnel_finding(port, label, fatal, starter, state))
-    return Section("2. The tunnel to the robot", findings)
+        state, _ = _probe("http://{}:{}/".format(host, port), timeout=4)
+        findings.append(direct_service_finding(host, port, label, fatal, starter, state))
+    return Section("2. Direct robot services", findings)
 
 
 def _camera_section(repo_root: str) -> Section:
@@ -590,9 +579,7 @@ def _estop_section() -> Section:
             return None
 
     stop_at = mtime("stop_everything")
-    when = (
-        time.strftime("%H:%M:%S on %d %b", time.localtime(stop_at)) if stop_at else ""
-    )
+    when = time.strftime("%H:%M:%S on %d %b", time.localtime(stop_at)) if stop_at else ""
     return Section(
         "5. Is a stop still standing?",
         [estop_finding(stop_at, mtime("stop_acknowledged"), when)],
@@ -609,7 +596,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     sections = [_local_section()]
     if not quick:
-        sections.append(_tunnel_section())
+        sections.append(_robot_section())
         sections.append(_camera_section(repo_root))
     sections.append(_headset_section())
     sections.append(_estop_section())

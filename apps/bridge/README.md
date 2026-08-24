@@ -54,9 +54,9 @@ The repo's `.mcp.json` defines two bridge entries, and the distinction is a safe
 | Server        | Tools                 | Target                                                                                                          |
 | ------------- | --------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `c3po-sim`    | `mcp__c3po-sim__*`    | **Isaac Sim.** Spawned locally by Claude Code (`uv run … bridge.mcp_server`, `SIM_MODE=isaac`)                  |
-| `c3po-bridge` | `mcp__c3po-bridge__*` | **The real G1.** `type: http` → `http://127.0.0.1:8001/mcp` — the onboard daemon, reached through an SSH tunnel |
+| `c3po-bridge` | `mcp__c3po-bridge__*` | **The real G1.** `type: http` → `http://g1-orin.local:8001/mcp` — the onboard daemon over the LAN |
 
-`c3po-sim` can never reach the real robot no matter what you set: it runs on the Mac, and the control board publishes DDS only on the robot's internal wired LAN (see `docs/ROBOT-HARDWARE.md`). Conversely, `mcp__c3po-bridge__*` tools command real hardware whenever the tunnel is up.
+`c3po-sim` can never reach the real robot no matter what you set: it runs on the Mac, and the control board publishes DDS only on the robot's internal wired LAN (see `docs/ROBOT-HARDWARE.md`). Conversely, `mcp__c3po-bridge__*` tools command real hardware whenever the robot is reachable on the LAN.
 
 ### As an MCP child over stdio (sim / local dev)
 
@@ -71,26 +71,19 @@ uv run python -m bridge.mcp_server
 `apps/back` and the `c3po-bridge` MCP entry connect over **streamable-http**, so a daemon has to be told to serve that transport:
 
 ```bash
-BRIDGE_TRANSPORT=http BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=8001 \
+BRIDGE_TRANSPORT=http BRIDGE_HOST=0.0.0.0 BRIDGE_PORT=8001 \
 uv run python -m bridge.mcp_server
 ```
 
 This is not optional polish. The default transport is **stdio**, which is right when an MCP client spawns the bridge as a child and talks over pipes — but a daemon's stdin is `/dev/null`, so on stdio it reads EOF and exits immediately, before it ever reaches the robot. The symptom is a process that "fails to start" with almost nothing in the log.
 
-Onboard the G1 you do not run this by hand: `c3po start` delegates the process lifecycle to `c3po-bridge.service` — see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md). The unit pins the daemon to loopback because it can command the robot's legs and has no auth of its own (rationale in `.env.example`).
+Onboard the G1 you do not run this by hand: `c3po up core` delegates the process lifecycle to `c3po-bridge.service` — see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md). The unit deliberately binds the daemon to the LAN; it can command the robot's legs and has no auth of its own.
 
 ### Driving the real robot from Claude Code
 
-The onboard daemon binds loopback, so `c3po-bridge` reaches it through an SSH tunnel:
-
-```bash
-# Keep this running in its own terminal. ControlMaster=no matters — a forward
-# opened on the shared ControlMaster connection evaporates when the master
-# idles out, and the MCP client then fails with no obvious cause.
-ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po
-```
-
-(`c3po` is a Host alias in `~/.ssh/config` — hosts and addressing live in `docs/ROBOT-HARDWARE.md`.) Start the bridge onboard (`c3po start`), then reconnect MCP in Claude Code. Without the tunnel, `c3po-bridge` simply fails to connect.
+Start the bridge onboard with `c3po up core`, then point the MCP client directly
+at `http://g1-orin.local:8001/mcp`. The repository's local `.mcp.json` already
+uses that URL. The mDNS name matters because the robot's DHCP address moves.
 
 **Why not spawn it over SSH instead**, which would need no tunnel:
 
@@ -102,7 +95,7 @@ ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po
 }
 ```
 
-That starts a _second_ bridge process beside `c3po-bridge.service` — two processes able to command the legs through the same API, the exact condition `c3po start` refuses (one-commander invariant: `docs/OPERATIONS.md`). One systemd-owned bridge, reached over a tunnel, keeps the actuation chokepoint singular.
+That starts a _second_ bridge process beside `c3po-bridge.service` — two processes able to command the legs through the same API, the exact condition `c3po up` refuses (one-commander invariant: `docs/OPERATIONS.md`). Keep one systemd-owned bridge and reach it directly.
 
 ### The teleop stream (Quest arm mirroring)
 
@@ -116,8 +109,8 @@ It carries head yaw, both wrists and finger closure from the headset at ~30 Hz
 and is the only commander of locomotion while a session is open. Deliberately
 not MCP: a stream of expiring setpoints is a different shape from a task, and
 routing it through JSON-RPC would put a round-trip and a task-registry entry in
-front of every frame. Loopback-bound with no auth of its own — tunnel it, same
-as 8001.
+front of every frame. The onboard launcher binds it to the LAN with no auth of
+its own. The Python module retains a loopback default for ad-hoc developer runs.
 
 **Both hardware paths are off by default**, and stay off until a person has
 verified what the documentation cannot tell us:

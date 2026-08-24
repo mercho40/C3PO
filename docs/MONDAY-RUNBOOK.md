@@ -202,7 +202,7 @@ Never run the arm check while walking.
 ## 8. End the window deliberately
 
 ```bash
-c3po stop
+c3po down
 sudo systemctl start master_service
 c3po status
 docker ps

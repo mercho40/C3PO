@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import socket
 import threading
 import time
@@ -788,6 +789,10 @@ class MicListener:
 
         self._pending: list[dict[str, Any]] = []
         self._history: deque[dict[str, Any]] = deque(maxlen=max_keep)
+        # Raw PCM subscribers power the Realtime API without opening a second
+        # ALSA device or competing for the multicast source. Queues are bounded:
+        # fresh voice audio is useful; seconds-old audio after a slow network is not.
+        self._audio_subscribers: set[queue.Queue[bytes]] = set()
         self._on_stop: Callable[[str], None] | None = None
 
         self._frames = 0
@@ -809,10 +814,17 @@ class MicListener:
 
     # -- lifecycle -----------------------------------------------------------
 
+    def set_on_stop(self, on_stop: Callable[[str], None] | None) -> None:
+        """Arm/disarm session-scoped stop action without restarting the listener."""
+        self._on_stop = on_stop
+
     def start(self, on_stop: Callable[[str], None] | None = None) -> None:
+        # A Realtime audio subscriber may arrive after the boot-started listener.
+        # Updating the callback even when the thread is already alive lets that
+        # explicit session arm bridge-local spoken stop without restarting audio.
+        self.set_on_stop(on_stop)
         if self._thread is not None and self._thread.is_alive():
             return
-        self._on_stop = on_stop
         self._stop_evt.clear()
         self._thread = threading.Thread(target=self._run, name="mic-listener", daemon=True)
         self._thread.start()
@@ -901,6 +913,8 @@ class MicListener:
                     reset()
                 suppressing_playback = False
 
+            self._publish_audio(frame)
+
             current = self._whisperer
             if current is not None:
                 utterance.extend(frame)
@@ -955,6 +969,39 @@ class MicListener:
             self._changed.notify_all()
 
     # -- reading -------------------------------------------------------------
+
+    def _publish_audio(self, frame: bytes) -> None:
+        with self._lock:
+            subscribers = tuple(self._audio_subscribers)
+        for subscriber in subscribers:
+            try:
+                subscriber.put_nowait(frame)
+            except queue.Full:
+                # Drop the oldest frame and keep the live edge. Backpressure must
+                # never grow memory or make the stop detector wait on OpenAI.
+                try:
+                    subscriber.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    subscriber.put_nowait(frame)
+                except queue.Full:
+                    pass
+
+    def audio_frames(self, stop: threading.Event, max_frames: int = 64) -> Iterator[bytes]:
+        """Yield non-playback 16 kHz PCM to one bounded, removable subscriber."""
+        subscriber: queue.Queue[bytes] = queue.Queue(maxsize=max_frames)
+        with self._lock:
+            self._audio_subscribers.add(subscriber)
+        try:
+            while not stop.is_set():
+                try:
+                    yield subscriber.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+        finally:
+            with self._lock:
+                self._audio_subscribers.discard(subscriber)
 
     @staticmethod
     def _readable(item: dict[str, Any], now: float, *, sequenced: bool = False) -> dict[str, Any]:

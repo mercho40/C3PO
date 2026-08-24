@@ -36,6 +36,7 @@ export const load: PageServerLoad = async ({ fetch, request, url }) => {
       ? {
           id: selected.id,
           title: selected.title,
+          channel: selected.channel,
           messages: selected.messages.map((m) => ({
             id: m.id,
             role: m.role,

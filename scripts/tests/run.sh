@@ -96,7 +96,7 @@ echo "== bridge socket ownership =="
 # shellcheck source=../robot/_common.sh
 C3PO_DIR="$repo" source "$repo/scripts/robot/_common.sh"
 
-# Readiness must belong to systemd's MainPID on the exact IPv4 loopback address,
+# Readiness must belong to systemd's MainPID on the configured IPv4 address,
 # not merely to whichever process or interface happens to own the port.
 proc_fixture="$(mktemp -d)"
 mkdir -p "$proc_fixture/net" "$proc_fixture/4321/fd" \
@@ -109,25 +109,25 @@ printf '%s\n' \
 ln -s 'socket:[7654321]' "$proc_fixture/4321/fd/7"
 ln -s 'socket:[9999999]' "$proc_fixture/9876/fd/8"
 ln -s 'socket:[2222222]' "$proc_fixture/2468/fd/9"
-if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_loopback_port 4321 8001; then
+if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_port 4321 8001 127.0.0.1; then
     pass=$((pass + 1))
 else
-    fail=$((fail + 1)); failed_names+=("MainPID owns its loopback listening socket")
+    fail=$((fail + 1)); failed_names+=("MainPID owns its configured listening socket")
 fi
-if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_loopback_port 9876 8001; then
+if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_port 9876 8001 127.0.0.1; then
     fail=$((fail + 1)); failed_names+=("a different process cannot satisfy bridge readiness")
 else
     pass=$((pass + 1))
 fi
-if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_loopback_port 4321 8000; then
+if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_port 4321 8000 127.0.0.1; then
     fail=$((fail + 1)); failed_names+=("the MainPID must own the configured port")
 else
     pass=$((pass + 1))
 fi
-if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_loopback_port 2468 8001; then
-    fail=$((fail + 1)); failed_names+=("a non-loopback listener cannot satisfy readiness")
-else
+if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_port 2468 8001; then
     pass=$((pass + 1))
+else
+    fail=$((fail + 1)); failed_names+=("the deployed wildcard listener satisfies readiness")
 fi
 rm -rf "$proc_fixture"
 
@@ -138,7 +138,7 @@ if (
     bridge_running() { return 0; }
     curl() { return 0; }
     ownership_calls=0
-    process_listens_ipv4_loopback_port() {
+    process_listens_ipv4_port() {
         ownership_calls=$((ownership_calls + 1))
         [ "$ownership_calls" -eq 1 ]
     }
@@ -153,7 +153,7 @@ got="$(
     bridge_main_pid() { printf '4321'; }
     bridge_running() { return 0; }
     curl() { return 0; }
-    process_listens_ipv4_loopback_port() { return 0; }
+    process_listens_ipv4_port() { return 0; }
     bridge_http_ready 8001
 )"
 check "a stable owned HTTP listener returns its MainPID" "4321" "$got"
@@ -241,9 +241,17 @@ check "an idle machine classifies as none" "none"     "$(classify "$TABLE_IDLE")
 # ---------------------------------------------------------------------------
 echo "== c3po CLI =="
 out="$(bash "$repo/scripts/robot/c3po" --help 2>&1)"
-check_contains "the CLI exposes stack lifecycle" "c3po start | stop | restart | status" "$out"
+check_contains "the CLI exposes integrated profiles" "c3po up [operator|core|teleop|<perception-stage>]" "$out"
+check_contains "the CLI exposes complete shutdown" "c3po down | restart | status | logs" "$out"
 check_contains "the CLI exposes explicit perception stages" "c3po perception up <stage>" "$out"
 check_contains "the CLI exposes the deliberate camera takeover" "c3po camera take" "$out"
+
+if out="$(bash "$repo/scripts/robot/c3po" up unknown 2>&1)"; then
+    fail=$((fail + 1)); failed_names+=("the CLI rejects unknown integrated profiles")
+else
+    check_contains "the CLI rejects unknown integrated profiles" \
+        "unknown up profile: unknown" "$out"
+fi
 
 if out="$(bash "$repo/scripts/robot/c3po" start unexpected 2>&1)"; then
     fail=$((fail + 1)); failed_names+=("the CLI rejects ignored lifecycle arguments")
@@ -276,10 +284,10 @@ start_source="$(cat "$repo/scripts/robot/run_c3po")"
 check_contains "start ties HTTP readiness to a stable MainPID socket" \
     'bridge_http_ready 8001' "$start_source"
 common_source="$(cat "$repo/scripts/robot/_common.sh")"
-check_contains "socket ownership is restricted to IPv4 loopback" \
-    'local_address="0100007F:$(printf' "$common_source"
+check_contains "socket ownership uses the explicit deployed LAN bind" \
+    '0.0.0.0)   address_hex="00000000"' "$common_source"
 check_contains "socket ownership is rechecked after HTTP" \
-    'process_listens_ipv4_loopback_port "$after" "$port"' "$common_source"
+    'process_listens_ipv4_port "$after" "$port"' "$common_source"
 
 # ---------------------------------------------------------------------------
 # install and safety invariants that must remain visible in source
@@ -312,11 +320,16 @@ check_not_contains "PID 1 never follows unit symlinks into the writable checkout
 
 bridge_unit_source="$(cat "$repo/scripts/robot/c3po-bridge.service")"
 check_contains "systemd directly supervises the bridge" "Type=exec" "$bridge_unit_source"
-check_contains "the bridge daemon stays on loopback" "Environment=BRIDGE_HOST=127.0.0.1" "$bridge_unit_source"
+check_contains "the bridge daemon binds to the robot LAN" "Environment=BRIDGE_HOST=0.0.0.0" "$bridge_unit_source"
+check_contains "the bridge permits the local web dev origins" \
+    "Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001" \
+    "$bridge_unit_source"
 check_not_contains "the bridge has no pidfile" "PIDFile=" "$bridge_unit_source"
 check_not_contains "the bridge unit does not call run_c3po" "ExecStart=/home/unitree/c3po/scripts/robot/run_c3po" "$bridge_unit_source"
 
 stop_stack_source="$(cat "$repo/scripts/robot/stop_c3po")"
+check_contains "stack stop removes teleop before the bridge" \
+    '"$here/stop_teleop"' "$stop_stack_source"
 check_contains "stack stop cancels even an activating bridge unit" \
     'sudo systemctl stop c3po-bridge.service' "$stop_stack_source"
 
