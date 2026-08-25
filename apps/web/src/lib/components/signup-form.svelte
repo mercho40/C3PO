@@ -1,21 +1,35 @@
 <script lang="ts">
+  import { page } from "$app/state";
+  import { Loader2, TriangleAlert } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
-  import * as Card from "$lib/components/ui/card/index.js";
-  import * as Field from "$lib/components/ui/field/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
+  import { Separator } from "$lib/components/ui/separator/index.js";
+  import SocialAuthButtons from "./social-auth-buttons.svelte";
   import { authClient } from "$lib/auth-client";
 
+  const id = $props.id();
+
   let name = $state("");
-  let email = $state("");
+  // Pre-filled when the landing page's email capture hands off here (it has
+  // no waitlist backend of its own -- signup IS the real flow).
+  let email = $state(page.url.searchParams.get("email") ?? "");
   let password = $state("");
   let confirmPassword = $state("");
   let loading = $state(false);
   let error = $state("");
 
+  // Checked as you type rather than only on submit, so the mismatch is visible
+  // before the button is pressed — but held back until the field has content.
+  const mismatch = $derived(
+    confirmPassword.length > 0 && password !== confirmPassword,
+  );
+  const tooShort = $derived(password.length > 0 && password.length < 8);
+
   async function handleSubmit(e: Event) {
     e.preventDefault();
     if (password !== confirmPassword) {
-      error = "Passwords do not match";
+      error = "Las contraseñas no coinciden.";
       return;
     }
     loading = true;
@@ -35,99 +49,107 @@
   }
 </script>
 
-<Card.Root class="mx-auto w-full max-w-sm">
-  <Card.Header>
-    <Card.Title>Create an account</Card.Title>
-    <Card.Description
-      >Enter your information below to create your account</Card.Description
+<form onsubmit={handleSubmit} class="flex flex-col gap-4">
+  <div class="flex flex-col gap-2">
+    <Label for="name-{id}" class="text-xs text-ink-dim">Nombre</Label>
+    <Input
+      id="name-{id}"
+      type="text"
+      autocomplete="name"
+      placeholder="Ada Lovelace"
+      required
+      disabled={loading}
+      bind:value={name}
+      class="h-10 border-hairline-strong bg-wash text-sm text-ink placeholder:text-ink-mute"
+    />
+  </div>
+
+  <div class="flex flex-col gap-2">
+    <Label for="email-{id}" class="text-xs text-ink-dim">Email</Label>
+    <Input
+      id="email-{id}"
+      type="email"
+      autocomplete="email"
+      placeholder="operador@ejemplo.com"
+      required
+      disabled={loading}
+      bind:value={email}
+      class="h-10 border-hairline-strong bg-wash text-sm text-ink placeholder:text-ink-mute"
+    />
+  </div>
+
+  <div class="flex flex-col gap-2">
+    <Label for="password-{id}" class="text-xs text-ink-dim">Contraseña</Label>
+    <Input
+      id="password-{id}"
+      type="password"
+      autocomplete="new-password"
+      minlength={8}
+      required
+      disabled={loading}
+      bind:value={password}
+      aria-describedby="password-hint-{id}"
+      class="h-10 border-hairline-strong bg-wash text-sm text-ink"
+    />
+    <span
+      id="password-hint-{id}"
+      class="text-2xs {tooShort ? 'text-warn' : 'text-ink-mute'}"
     >
-  </Card.Header>
-  <Card.Content>
-    <form onsubmit={handleSubmit}>
-      <Field.Group>
-        <Field.Field>
-          <Field.Label for="name">Full Name</Field.Label>
-          <Input
-            id="name"
-            type="text"
-            placeholder="John Doe"
-            required
-            bind:value={name}
-          />
-        </Field.Field>
-        <Field.Field>
-          <Field.Label for="email">Email</Field.Label>
-          <Input
-            id="email"
-            type="email"
-            placeholder="m@example.com"
-            required
-            bind:value={email}
-          />
-        </Field.Field>
-        <Field.Field>
-          <Field.Label for="password">Password</Field.Label>
-          <Input id="password" type="password" required bind:value={password} />
-          <Field.Description
-            >Must be at least 8 characters long.</Field.Description
-          >
-        </Field.Field>
-        <Field.Field>
-          <Field.Label for="confirm-password">Confirm Password</Field.Label>
-          <Input
-            id="confirm-password"
-            type="password"
-            required
-            bind:value={confirmPassword}
-          />
-        </Field.Field>
-        {#if error}
-          <p class="text-sm text-red-500">{error}</p>
-        {/if}
-        <Field.Group>
-          <Field.Field>
-            <Button type="submit" class="w-full" disabled={loading}>
-              {loading ? "Creating account..." : "Create Account"}
-            </Button>
-            <Button
-              variant="outline"
-              class="w-full"
-              type="button"
-              onclick={() => authClient.signIn.social({ provider: "google" })}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                <path
-                  d="M12.48 10.92v3.28h7.84c-.24 1.84-.853 3.187-1.787 4.133-1.147 1.147-2.933 2.4-6.053 2.4-4.827 0-8.6-3.893-8.6-8.72s3.773-8.72 8.6-8.72c2.6 0 4.507 1.027 5.907 2.347l2.307-2.307C18.747 1.44 16.133 0 12.48 0 5.867 0 .307 5.387.307 12s5.56 12 12.173 12c3.573 0 6.267-1.173 8.373-3.36 2.16-2.16 2.84-5.213 2.84-7.667 0-.76-.053-1.467-.173-2.053H12.48z"
-                  fill="currentColor"
-                />
-              </svg>
-              Sign up with Google
-            </Button>
-            <Button
-              variant="outline"
-              class="w-full"
-              type="button"
-              onclick={() => authClient.signIn.social({ provider: "github" })}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              >
-                <path
-                  d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"
-                />
-              </svg>
-              Sign up with GitHub
-            </Button>
-            <Field.Description class="px-6 text-center">
-              Already have an account? <a href="/login" class="underline"
-                >Sign in</a
-              >
-            </Field.Description>
-          </Field.Field>
-        </Field.Group>
-      </Field.Group>
-    </form>
-  </Card.Content>
-</Card.Root>
+      Mínimo 8 caracteres.
+    </span>
+  </div>
+
+  <div class="flex flex-col gap-2">
+    <Label for="confirm-{id}" class="text-xs text-ink-dim">
+      Confirmar contraseña
+    </Label>
+    <Input
+      id="confirm-{id}"
+      type="password"
+      autocomplete="new-password"
+      required
+      disabled={loading}
+      bind:value={confirmPassword}
+      aria-invalid={mismatch}
+      class="h-10 border-hairline-strong bg-wash text-sm text-ink {mismatch
+        ? 'border-danger/50'
+        : ''}"
+    />
+    {#if mismatch}
+      <span class="text-2xs text-danger-soft"
+        >Las contraseñas no coinciden.</span
+      >
+    {/if}
+  </div>
+
+  {#if error}
+    <p
+      class="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/[0.06] px-3 py-2 text-xs text-danger-soft"
+      role="alert"
+    >
+      <TriangleAlert class="mt-px size-3.5 shrink-0" />
+      {error}
+    </p>
+  {/if}
+
+  <Button
+    type="submit"
+    disabled={loading || mismatch}
+    class="h-10 w-full gap-2 cta text-sm font-medium"
+  >
+    {#if loading}
+      <Loader2 class="size-4 animate-spin" />
+      Creando cuenta…
+    {:else}
+      Crear cuenta
+    {/if}
+  </Button>
+
+  <div class="flex items-center gap-3 py-1">
+    <Separator class="flex-1 bg-hairline" />
+    <span class="eyebrow">o</span>
+    <Separator class="flex-1 bg-hairline" />
+  </div>
+
+  <SocialAuthButtons disabled={loading} />
+</form>

@@ -1,0 +1,23 @@
+# Logs written as ordinary files by perception/build tooling. Installed as a
+# root-owned copy by install_stack.sh. Bridge logs live in journald and are
+# bounded by the OS journal policy; use `c3po logs` to follow them.
+#
+# Docker container stdout/stderr is also excluded: each C3PO container uses the
+# json-file driver with max-size=32m,max-file=3. Rotating Docker's files behind
+# the daemon would corrupt `docker logs`.
+
+/home/unitree/.c3po/logs/build/*.log
+/home/unitree/.c3po/logs/perception/*.log
+{
+    su unitree unitree
+    daily
+    rotate 7
+    maxsize 64M
+    missingok
+    notifempty
+    compress
+    delaycompress
+
+    # Cyclone opens its trace output once and cannot be told to reopen it.
+    copytruncate
+}

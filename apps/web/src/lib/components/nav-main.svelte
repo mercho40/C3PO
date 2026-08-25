@@ -15,9 +15,13 @@
 </script>
 
 <Sidebar.Group>
-  <Sidebar.GroupLabel
-    class="font-mono text-[9px] tracking-[0.22em] text-sidebar-foreground/55 uppercase"
-  >
+  <!-- `eyebrow` and nothing else. This carried `font-mono`, which made the two
+       sidebar kickers the only eyebrows in the app set in Plex Mono while the
+       other twelve were Archivo — same label role, two families, both visible
+       in one frame. The explicit `text-ink-mute` beats GroupLabel's own
+       `text-sidebar-foreground/70` base class, which tailwind-merge cannot see
+       conflicts with a custom utility. -->
+  <Sidebar.GroupLabel class="eyebrow text-ink-mute">
     {label}
   </Sidebar.GroupLabel>
   <Sidebar.Menu>
@@ -36,7 +40,7 @@
           </Sidebar.MenuButton>
           {#if item.badge}
             <Sidebar.MenuBadge
-              class="top-1.5 border border-sidebar-border text-[9px] font-medium tracking-wider text-sidebar-foreground/55 uppercase"
+              class="top-1.5 rounded-full border border-sidebar-border px-1.5 text-2xs font-medium tracking-wider text-sidebar-foreground/60 uppercase"
             >
               {item.badge}
             </Sidebar.MenuBadge>
@@ -56,7 +60,7 @@
           {#if active}
             <!-- Straight cyan rail — an absolute bar avoids the button's rounded-corner curve. -->
             <span
-              class="pointer-events-none absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-[#9ae5f8] shadow-[0_0_10px_rgba(126,229,255,0.65)] group-data-[collapsible=icon]:hidden"
+              class="pointer-events-none absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-cyan shadow-[0_0_10px_rgba(126,229,255,0.65)] group-data-[collapsible=icon]:hidden"
             ></span>
           {/if}
         </Sidebar.MenuItem>

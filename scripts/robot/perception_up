@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Bring up perception. The logic lives in apps/perception/bringup/ — this is a
+# shim, and deliberately the only shell left in the path.
+#
+# It remains a narrow internal file because systemd's ExecStart and the `c3po`
+# CLI both delegate here. Everything below the exec is Python with tests
+# (apps/perception/tests/test_bringup_{spec,cli}.py), because the 381 lines this
+# replaced could only be exercised by running them on the robot and watching
+# what the other team lost.
+#
+# SYSTEM python3, NOT the bridge's venv. Bringing perception up must not depend
+# on `uv sync` having worked — the bringup package is stdlib-only and 3.8-valid
+# for exactly this reason.
+#
+#   perception_up <stage> [--dry-run]
+#     fake        world model on synthetic input   NO SENSORS
+#     nav2-fake   Nav2 on synthetic odom/scan      NO SENSORS
+#     stt         GPU speech-to-text only          NO SENSORS — composes with the rest
+#     odometry    FAST-LIO + TF + scan             NO SENSORS (vendor LiDAR republish)
+#     perception  + detector + world model         claims the RealSense
+#     nav2        + Nav2, lifecycle NOT autostarted claims the RealSense
+#
+#   --dry-run prints the exact docker argv and touches nothing.
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+C3PO_DIR="${C3PO_DIR:-$HOME/c3po}"
+export C3PO_DIR
+# Where stop_gemm and take_camera live, so the bring-up can call them without
+# guessing at a layout.
+export C3PO_SCRIPTS_DIR="$here"
+
+# `bringup` is not installed anywhere — apps/perception is explicitly NOT a
+# python package (see its pyproject). The path is set here rather than by a
+# .pth or a pip install so that a `git pull` is the whole update story.
+export PYTHONPATH="$C3PO_DIR/apps/perception${PYTHONPATH:+:$PYTHONPATH}"
+
+exec python3 -m bringup.cli "$@"

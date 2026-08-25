@@ -3,9 +3,10 @@
   "version": "1.0.50",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "bun test",
     "build": "bun build --compile --minify --target bun --outfile server src/index.ts",
     "dev": "bun run --watch src/index.ts",
+    "dev:robot": "BRIDGE_URL=http://${C3PO_ROBOT_HOST:-g1-orin.local}:8001/mcp bun run --watch src/index.ts",
     "start": "./server",
     "db:generate": "bunx drizzle-kit generate",
     "db:migrate": "bunx drizzle-kit migrate",
@@ -13,17 +14,20 @@
     "check-types": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.85",
+    "@ai-sdk/openai-compatible": "^3.0.31",
     "@elysiajs/cors": "^1.4.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@sinclair/typebox": "^0.34.49",
-    "ai": "^6.0.209",
+    "ai": "^7.0.67",
+    "ajv": "^8.20.0",
     "better-auth": "^1.5.5",
     "drizzle-orm": "^0.45.1",
     "elysia": "^1.4.28",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "bun-types": "latest",
     "drizzle-kit": "^0.31.10",
     "postgres": "^3.4.9",

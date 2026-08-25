@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Hand the robot back to the colleague's `gemm` stack.
+#
+# Stops ours first, for the same reason run_c3po stops theirs: the RealSense
+# and Livox have one owner each, and starting their drivers while ours hold
+# the devices fails on EBUSY partway through startup.
+
+set -euo pipefail
+# `readlink -f` — see the note in run_c3po; this is invoked through a symlink
+# on PATH, so BASH_SOURCE[0] is the link, not this file.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+say "Starting gemm stack"
+
+containers="$(gemm_containers)"
+if [ -z "$containers" ]; then
+    err "no containers matching '${GEMM_PREFIX}*' on this host"
+    err "is this the robot? set GEMM_PREFIX if they were renamed"
+    exit 1
+fi
+
+# 1. Release the robot.
+if bridge_running || [ -n "$(bridge_process_pids)" ] \
+   || _docker ps --filter "name=^c3po-perception" -q 2>/dev/null | grep -q .; then
+    info "c3po is running — stopping it to release the sensors"
+    "$here/stop_c3po"
+fi
+
+# 2. Start theirs.
+failed=0
+while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if _docker start "$name" >/dev/null 2>&1; then
+        ok "started $name"
+    else
+        err "failed to start $name"
+        failed=1
+    fi
+done <<< "$containers"
+
+sleep 2
+running="$(gemm_running)"
+if [ -z "$running" ]; then
+    err "nothing came up — check: docker logs ${GEMM_PREFIX}-bringup"
+    exit 1
+fi
+
+say "gemm stack up"
+info "running: $(echo "$running" | tr '\n' ' ')"
+
+# Their cmd_vel_to_loco ships disabled and should stay that way while we also
+# talk to the robot. Say so plainly rather than assuming everyone remembers.
+if [ -n "$(other_commander_pids)" ]; then
+    warn "cmd_vel_to_loco is running — it commands the robot directly"
+    warn "our bridge uses the same API; do not run both"
+fi
+
+[ "$failed" -eq 0 ] || exit 1

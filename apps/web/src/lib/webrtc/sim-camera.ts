@@ -76,7 +76,8 @@ export function connectSimCamera(
     };
     conn.onconnectionstatechange = () => {
       if (closed || conn !== pc) return;
-      if (conn.connectionState === "failed") callbacks.onState("error", "conexión perdida");
+      if (conn.connectionState === "failed")
+        callbacks.onState("error", "conexión perdida");
     };
 
     try {

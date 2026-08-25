@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Stop the colleague's `gemm` stack, releasing the RealSense and the Livox.
+#
+# Uses `docker stop`, not `down`/`rm`: the containers keep their state and
+# `run_gemm` brings them straight back. Their restart policy is
+# `unless-stopped`, so an explicit stop also survives a docker daemon restart —
+# they will not quietly come back while we hold the sensors.
+
+set -euo pipefail
+# `readlink -f` — see the note in run_c3po; this is invoked through a symlink
+# on PATH, so BASH_SOURCE[0] is the link, not this file.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+say "Stopping gemm stack"
+
+running="$(gemm_running)"
+if [ -z "$running" ]; then
+    info "nothing running (prefix '${GEMM_PREFIX}')"
+else
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        if _docker stop "$name" >/dev/null 2>&1; then
+            ok "stopped $name"
+        else
+            err "failed to stop $name"
+        fi
+    done <<< "$running"
+fi
+
+# The container being down is not the whole story: cmd_vel_to_loco could have
+# been launched by hand outside docker, and it is the one process that can
+# fight us for the robot's control API.
+leftover="$(other_commander_pids)"
+if [ -n "$leftover" ]; then
+    warn "cmd_vel_to_loco still running outside docker (pid: $(echo "$leftover" | tr '\n' ' '))"
+    warn "kill it before driving the robot — it commands the same API our bridge does"
+fi
+
+still="$(gemm_running)"
+if [ -n "$still" ]; then
+    err "still running: $(echo "$still" | tr '\n' ' ')"
+    exit 1
+fi
+
+ok "gemm's CONTAINERS stopped (Livox released)"
+
+# Deliberately not "sensors released". This function stops docker containers,
+# and the D435i's colour node is not always held by one.
+#
+# ---------------------------------------------------------------------------
+# /dev/video4 — WHO HOLDS IT IS A QUESTION, NOT AN ASSUMPTION
+# ---------------------------------------------------------------------------
+#
+# There are two different processes that take the D435i's colour capture node,
+# they belong to different people, and the difference decides what this script
+# is allowed to do about it:
+#
+#   teleimager.image_server   gemm's, under `_image_service_watchdog.sh`.
+#                             Stopping gemm's things is this script's entire
+#                             job, so it stops this one too.
+#
+#   videohub_pc4              UNITREE'S, under `master_service` (init.d).
+#                             Not gemm's. A script named `stop_gemm` has no
+#                             business killing a vendor service on a robot two
+#                             teams share, so it reports and does not act.
+#
+# That second line is the correction. This block used to end with a bare
+#
+#     ok "/dev/video4 is free (teleimager not running)"
+#
+# which is a green tick derived from the WRONG PROCESS. Measured on the robot,
+# 2026-08-21: teleimager was not running, this printed that line — and
+# `videohub_pc4` held the device the whole time, so the vision container died
+# on `xioctl(VIDIOC_S_FMT) failed, errno=16 Device or resource busy` a moment
+# later. That is the exact "every layer said it worked" failure the camera
+# checks in `perception_up` were written to end, reintroduced one process over.
+#
+# So the claim is now OBSERVED rather than inferred: look for a holder and
+# report what is actually there. And when there is none, it says "no holder in
+# the process table" and points at `fuser` — not "the camera is free", because
+# this check cannot prove a negative and should not sound like it can.
+#
+# WHY WE DO NOT KILL videohub_pc4 HERE. Two reasons, either sufficient:
+#
+#   1. The other team's own README, from when they hit this: they believe
+#      stopping master_service leaves arm and balance control alone, "pero no
+#      lo pude confirmar al 100%". On a robot we are about to walk, an
+#      unconfirmed belief is not a clearance. It is also OTA and the official
+#      app's camera, on a machine somebody else is using.
+#
+#   2. It would break the feed we now depend on. The bridge reads the head
+#      camera through the vendor's videohub RPC precisely BECAUSE
+#      videohub_pc4 holds the device (bridge/sdk/videohub.py). Killing it does
+#      not free a camera so much as move it: the detector gains depth, the
+#      operator's picture goes dark. That is a trade somebody chooses.
+#
+# `take_camera` is where that choice lives, with the way back printed.
+
+# WHO HAS IT, WITHOUT NEEDING ROOT. `fuser` is the authority but it only sees a
+# root process's fd as root, and sudo on this robot is interactive — a probe
+# that prompts for a password in the middle of a bring-up is a probe nobody
+# runs. The process table answers the same question for free.
+#
+# `video_device_holders` lives in _common.sh because this check existed three
+# times, written from scratch each time, and the copies did not agree — see the
+# note there. It is covered by scripts/tests/run.sh.
+
+# gemm's own image server. Ours to stop, and the ordering is the whole trick:
+# watchdog first, or it restarts the server within seconds.
+#
+# Opt out with C3PO_KEEP_TELEIMAGER=1 — for a session that wants gemm's image
+# service left alone and does not need our own camera.
+if [ "${C3PO_KEEP_TELEIMAGER:-0}" = "1" ]; then
+    if pgrep -f "[t]eleimager" >/dev/null 2>&1; then
+        warn "teleimager left running (C3PO_KEEP_TELEIMAGER=1) — it holds /dev/video4,"
+        warn "  so our vision container will fail with 'Device or resource busy'"
+    fi
+elif pgrep -f "[t]eleimager" >/dev/null 2>&1; then
+    warn "teleimager holds /dev/video4 (the D435i colour node) — stopping it"
+    pkill -f "[_]image_service_watchdog.sh" 2>/dev/null || true
+    sleep 0.5
+    pkill -f "[t]eleimager" 2>/dev/null || true
+
+    gone=0
+    for _ in $(seq 1 10); do
+        pgrep -f "[t]eleimager" >/dev/null 2>&1 || { gone=1; break; }
+        sleep 0.5
+    done
+
+    if [ "$gone" = "1" ]; then
+        ok "teleimager stopped"
+        info "  run_gemm brings it back with the rest of gemm's stack"
+    else
+        err "teleimager is still alive after SIGTERM:"
+        pgrep -af "[t]eleimager" 2>/dev/null | sed 's/^/      /' >&2 || true
+        err "  something is restarting it — find the supervisor before forcing it"
+    fi
+fi
+
+# Now the only claim that matters, and it is observed rather than inferred.
+holders="$(video_device_holders)"
+
+if [ -z "$holders" ]; then
+    ok "/dev/video4 has no holder in the process table"
+    info "  confirm before blaming the hardware:  sudo fuser -v /dev/video4"
+    exit 0
+fi
+
+warn "/dev/video4 is STILL HELD:"
+echo "$holders" | sed 's/^/      /'
+
+if echo "$holders" | grep -q "videohub"; then
+    info "  that is videohub_pc4 — Unitree's, under master_service, not gemm's,"
+    info "  so this script reports it rather than killing it. Two ways forward,"
+    info "  and they are mutually exclusive:"
+    info "    * LEAVE IT: the bridge already serves this camera WITHOUT the device,"
+    info "      at http://127.0.0.1:8001/camera/stream.mjpg (colour only, no depth)."
+    info "    * TAKE IT: 'take_camera' stops master_service so the detector can open"
+    info "      the RealSense and range what it sees. The operator feed goes dark."
+elif echo "$holders" | grep -q "realsense2_camera"; then
+    err "  that is gemm's realsense2_camera node — the OTHER TEAM has the camera."
+    err "  It comes up with 'gemm-bringup' (enable_camera:=true is their default),"
+    err "  so stopping their containers above should have released it. If it is"
+    err "  still here, their stack came back or was started outside docker."
+else
+    err "  the vision container will fail with 'Device or resource busy'"
+fi

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stop the complete C3PO stack. systemd owns bridge process termination;
+# stop_perception owns the Docker containers. No pidfile or process-tree walk.
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+say "Stopping C3PO"
+
+# Teleop is itself a motion commander. Stop it while the bridge-hosted
+# stop_everything path is still reachable, before removing any other layer.
+"$here/stop_teleop"
+
+# Stop proposed Nav2 velocity while the bridge and its deadman still exist.
+"$here/stop_perception"
+
+# Stop unconditionally. `is-active` is false while ExecStartPre is still
+# activating, and skipping the stop in that state lets the queued start finish
+# after this command has claimed the stack is down.
+bridge_state="$(systemctl is-active c3po-bridge.service 2>/dev/null || true)"
+sudo systemctl stop c3po-bridge.service
+case "$bridge_state" in
+    active|activating|deactivating|reloading) ok "bridge service stopped (was $bridge_state)" ;;
+    *) info "bridge service was already $bridge_state" ;;
+esac
+
+leftover="$(bridge_process_pids)"
+if [ -n "$leftover" ]; then
+    err "bridge process survived outside systemd: $(echo "$leftover" | tr '\n' ' ')"
+    err "it can still command the robot; inspect before killing it"
+    exit 1
+fi
+
+ok "C3PO stack down"

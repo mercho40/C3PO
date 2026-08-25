@@ -7,8 +7,10 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
+    "dev:robot": "turbo run dev:robot",
     "format": "prettier --write \"**/*.{ts,tsx,svelte,json,md}\"",
     "check-types": "turbo run check-types",
+    "test": "turbo run test",
     "start": "turbo run start"
   },
   "devDependencies": {

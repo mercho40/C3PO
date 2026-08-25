@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Sync the bridge's dependencies, offline-safe. Used as ExecStartPre by the
+# Type=exec unit (c3po-bridge.service), and safe to run by hand.
+#
+# HASH-GATED, because boot must not depend on the network. If uv.lock has not
+# changed since the last successful sync, this does nothing at all — which is
+# what makes a reboot with no Wi-Fi still produce a working bridge.
+#
+# A failed sync with a usable venv is a WARNING, not a failure: stale
+# dependencies are better than no bridge, and no bridge means no
+# stop_everything. Only a failed sync with no venv at all is fatal.
+
+set -uo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+. "$here/_common.sh"
+
+cd "$BRIDGE_DIR" || { err "no bridge at $BRIDGE_DIR"; exit 1; }
+export PATH="$HOME/.local/bin:$PATH"
+
+stamp="$BRIDGE_DIR/.venv/.c3po-lock-stamp"
+hash="$(sha256sum uv.lock 2>/dev/null | cut -d' ' -f1 || true)"
+
+if [ -x "$BRIDGE_DIR/.venv/bin/python" ] && [ -n "$hash" ] \
+   && [ "$hash" = "$(cat "$stamp" 2>/dev/null || true)" ]; then
+    info "dependencies unchanged since last sync — skipping (boot stays offline-safe)"
+    exit 0
+fi
+
+info "syncing bridge dependencies (voice + stt extras)"
+if uv sync --quiet --extra voice --extra stt; then
+    # postsync re-applies the unitree_sdk2py patch. It must succeed after EVERY
+    # sync, or the SDK imports a module the package does not ship. Stamp only
+    # after the patch so a failed patch cannot be skipped on the next start.
+    if ! ./scripts/postsync.sh; then
+        err "dependency sync succeeded but the Unitree SDK patch failed"
+        exit 1
+    fi
+    printf '%s' "$hash" > "$stamp" 2>/dev/null || true
+    exit 0
+fi
+
+if [ -x "$BRIDGE_DIR/.venv/bin/python" ]; then
+    warn "uv sync FAILED — starting with the existing venv"
+    warn "dependencies may be stale; re-run once the network is back"
+    exit 0
+fi
+
+err "uv sync failed and there is no usable venv — the bridge cannot start"
+exit 1

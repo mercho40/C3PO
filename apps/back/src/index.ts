@@ -1,30 +1,23 @@
 import { Elysia } from "elysia";
-import { auth } from "@back/lib/auth";
+import { betterAuth } from "@back/lib/auth-plugin";
 import { cors } from "@elysiajs/cors";
 import { skillsRoutes } from "@back/routes/skills";
 import { tasksRoutes } from "@back/routes/tasks";
 import { stateRoutes } from "@back/routes/state";
+import { mapRoutes } from "@back/routes/map";
+import { telemetryRoutes } from "@back/routes/telemetry";
 import { agentRoutes } from "@back/routes/agent";
+import { chatsRoutes } from "@back/routes/chats";
+import { voiceRoutes } from "@back/routes/voice";
+import { reconcileAdmins } from "@back/lib/admin-bootstrap";
 
-// user middleware (compute user and session and pass to routes)
-const betterAuth = new Elysia({ name: "better-auth" })
-  .mount(auth.handler)
-  .macro({
-    auth: {
-      async resolve({ status, request: { headers } }) {
-        const session = await auth.api.getSession({
-          headers,
-        });
-
-        if (!session) return status(401);
-
-        return {
-          user: session.user,
-          session: session.session,
-        };
-      },
-    },
-  });
+// Before listening: make sure the accounts that are supposed to be able to
+// drive the robot actually can. Awaited so the first request after boot sees
+// the reconciled roles, and never fatal — a database that is not up yet must
+// not stop the server from starting.
+await reconcileAdmins().catch((error: unknown) => {
+  console.warn("[admin] could not reconcile admin roles:", error);
+});
 
 const app = new Elysia()
   .use(betterAuth)
@@ -37,10 +30,18 @@ const app = new Elysia()
     }),
   )
   .get("/health", () => ({ status: "ok", timestamp: Date.now() }))
-  // Everything below can read or move the robot (or spend Anthropic tokens
+  // Everything below can read or move the robot (or use the shared TIC AI key
   // via /agent) — require a session. /health stays open for monitoring.
   .guard({ auth: true }, (app) =>
-    app.use(skillsRoutes).use(tasksRoutes).use(stateRoutes).use(agentRoutes),
+    app
+      .use(skillsRoutes)
+      .use(tasksRoutes)
+      .use(stateRoutes)
+      .use(mapRoutes)
+      .use(telemetryRoutes)
+      .use(agentRoutes)
+      .use(chatsRoutes)
+      .use(voiceRoutes),
   )
   .listen(Number(process.env.PORT) || 3000);
 

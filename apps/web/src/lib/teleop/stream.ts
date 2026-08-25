@@ -1,0 +1,319 @@
+/**
+ * Client for the bridge's teleop stream (`bridge/teleop/server.py`, port 8767).
+ *
+ * Why this bypasses `apps/back` entirely, unlike every other control on the
+ * page: teleop is a 30 Hz stream of expiring setpoints, not a sequence of
+ * tasks. Routing it through Eden/Elysia and MCP would put a JSON-RPC
+ * round-trip, a task-registry entry and a progress notification in the path of
+ * every frame. The onboard launcher exposes it directly on the robot LAN.
+ *
+ * The consequence to be honest about: this socket has no authentication of its
+ * own. Treat the LAN as part of the robot's control boundary.
+ *
+ * Two policies live here rather than in the WebXR module or in the page:
+ *
+ * 1. **Decimation.** WebXR fires at 72-120 Hz. The bridge dispatches at 20 Hz
+ *    and the arm loop runs at 50. Sending every XR frame would be 3-6x the
+ *    traffic for setpoints that are discarded on arrival, so the sender runs
+ *    on a fixed interval and PULLS the current payload rather than being
+ *    pushed one to remember.
+ *
+ *    That direction matters more than it looks. An earlier version held the
+ *    last payload it was given and resent it every tick, which meant any state
+ *    that stopped updating kept being transmitted as if it were current: lose
+ *    hand tracking, or end the XR session, with the operator's head turned,
+ *    and the last big yaw kept going out 30 times a second and the robot kept
+ *    rotating. Pulling makes staleness impossible to hold onto — the provider
+ *    is re-consulted on every single send, so "the headset stopped talking"
+ *    and "the headset says zero" cannot look the same.
+ * 2. **Send even when idle.** A frame still goes out while the operator holds
+ *    nothing, carrying `enabled: false`. That is what makes the bridge's
+ *    staleness dead-man mean something: silence has to be reserved for "the
+ *    client is gone", so it cannot also mean "the client is fine and idle".
+ */
+
+export type TeleopState =
+  | "connecting"
+  | "open"
+  //: OPEN, but nothing is coming back. See STATUS_TIMEOUT_MS.
+  | "stalled"
+  | "closed"
+  | "error";
+
+export type TeleopStatus = {
+  frames_received: number;
+  frames_rejected: number;
+  calibrated: boolean;
+  arm_length_m: number;
+  deadman_tripped: boolean;
+  /** Latched by `stop_everything`. Clears only when the operator lets go. */
+  stopped_by_estop: boolean;
+  task_id: string;
+  moving: boolean;
+  hands: string;
+  arm: {
+    engaged: boolean;
+    weight: number;
+    enabled_by_env: boolean;
+    sim_mode: string;
+  };
+  arm_error: string | null;
+};
+
+export type TeleopFramePayload = {
+  enabled: boolean;
+  walk: number;
+  arms: boolean;
+  head: { yaw: number; pos: [number, number, number] };
+  hands: {
+    left?: { tracked: boolean; pos?: number[]; quat?: number[]; grip?: number };
+    right?: {
+      tracked: boolean;
+      pos?: number[];
+      quat?: number[];
+      grip?: number;
+    };
+  };
+};
+
+export type TeleopHandle = {
+  close: () => void;
+};
+
+export type TeleopCallbacks = {
+  /**
+   * Called on every send to build the frame. Must be cheap and must return
+   * CURRENT state — anything it reads that may have gone stale has to be
+   * checked here, not cached by the caller.
+   */
+  getFrame: () => TeleopFramePayload;
+  onState: (state: TeleopState, detail?: string) => void;
+  onStatus?: (status: TeleopStatus) => void;
+};
+
+export const PROTOCOL_VERSION = 1;
+const SEND_INTERVAL_MS = 33; // ~30 Hz
+
+/** The payload for "operator is holding nothing", used before the first update. */
+export function idlePayload(): TeleopFramePayload {
+  return {
+    enabled: false,
+    walk: 0,
+    arms: false,
+    head: { yaw: 0, pos: [0, 1.6, 0] },
+    hands: {},
+  };
+}
+
+/** Everything `buildFrame` needs. Passed in so the policy stays pure. */
+export type TeleopInput = {
+  now: number;
+  /** Whether an XR session is currently live. */
+  vrActive: boolean;
+  /** `Date.now()` of the last accepted XR pose sample, or 0 if none. */
+  lastSampleAt: number;
+  staleAfterMs: number;
+  yawErrorRadians: number;
+  yawDeadzoneRadians: number;
+  headPosition: [number, number, number];
+  left: HandSample | null;
+  right: HandSample | null;
+  walking: "forward" | "back" | null;
+  armsRequested: boolean;
+};
+
+/** A wrist as `$lib/webxr/xr-teleop.ts` reports it. */
+export type HandSample = {
+  position: [number, number, number];
+  orientation: [number, number, number, number];
+  grip: number;
+};
+
+function handPayload(hand: HandSample | null) {
+  if (!hand) return { tracked: false };
+  return {
+    tracked: true,
+    pos: hand.position,
+    quat: hand.orientation,
+    grip: hand.grip,
+  };
+}
+
+/**
+ * Decide what to transmit, given everything the page currently knows.
+ *
+ * Pure, and separated from the page for one reason: this is where a real bug
+ * lived and it needs tests. Headset-derived state is only usable if a session
+ * is live AND a sample arrived recently — either condition alone is the stale
+ * case. When it is not fresh, this reports zeroes and untracked hands rather
+ * than the last values seen, so "the headset stopped talking" and "the headset
+ * says zero" are indistinguishable to the robot, which is the safe reading.
+ *
+ * `enabled` is the dead-man: a walk button held, or the head turned past the
+ * deadzone. Mirroring the arms alone does not count — the operator's hands are
+ * busy being tracked and cannot also be pressing something.
+ */
+export function buildFrame(input: TeleopInput): TeleopFramePayload {
+  const fresh =
+    input.vrActive && input.now - input.lastSampleAt < input.staleAfterMs;
+  const yaw = fresh ? input.yawErrorRadians : 0;
+  const turning = Math.abs(yaw) > input.yawDeadzoneRadians;
+  const arms = input.armsRequested && fresh;
+
+  return {
+    enabled: input.walking !== null || turning || arms,
+    walk: input.walking === "forward" ? 1 : input.walking === "back" ? -1 : 0,
+    arms,
+    head: { yaw, pos: fresh ? input.headPosition : [0, 1.6, 0] },
+    hands: fresh
+      ? { left: handPayload(input.left), right: handPayload(input.right) }
+      : { left: { tracked: false }, right: { tracked: false } },
+  };
+}
+
+//: How long the bridge may go without saying anything before the link is
+//: reported as stalled.
+//:
+//: A WebSocket in readyState OPEN is not a working link. TCP will hold a
+//: connection open through a process that has stopped reading, a laptop that
+//: went to sleep, a Wi-Fi handover — and the page went on saying "Conectado"
+//: through all of it, while `bufferedAmount` climbed past the cap and every
+//: send was skipped. The operator sees a green label and a robot that does not
+//: move, which is the worst combination available: it points at the robot.
+//:
+//: The bridge already sends status about twice a second, so silence is a
+//: signal we get for free. Six missed in a row is not a hiccup.
+const STATUS_TIMEOUT_MS = 3000;
+
+export function connectTeleop(
+  url: string,
+  callbacks: TeleopCallbacks,
+): TeleopHandle {
+  let socket: WebSocket | null = null;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let seq = 0;
+  let closed = false;
+  let lastStatusAt = 0;
+  let stalled = false;
+
+  callbacks.onState("connecting");
+  try {
+    socket = new WebSocket(url);
+  } catch (err) {
+    callbacks.onState(
+      "error",
+      err instanceof Error ? err.message : String(err),
+    );
+    return { close: () => {} };
+  }
+
+  socket.addEventListener("open", () => {
+    callbacks.onState("open");
+    lastStatusAt = Date.now();
+    timer = setInterval(() => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+      // Liveness, before anything else: a link that is not carrying our frames
+      // must not keep reporting itself as connected.
+      const silentFor = Date.now() - lastStatusAt;
+      if (silentFor > STATUS_TIMEOUT_MS) {
+        if (!stalled) {
+          stalled = true;
+          callbacks.onState(
+            "stalled",
+            `El puente no responde hace ${Math.round(silentFor / 1000)} s.`,
+          );
+        }
+      } else if (stalled) {
+        stalled = false;
+        callbacks.onState("open");
+      }
+
+      // `bufferedAmount` guards the one failure mode a fixed-rate sender has:
+      // if the link stalls, queued frames pile up and every one of them is
+      // already stale by the time it arrives. Skipping a tick lets the socket
+      // drain and keeps what does arrive current.
+      if (socket.bufferedAmount > 4096) return;
+      // Pulled, never remembered. See the note at the top of this file.
+      let payload: TeleopFramePayload;
+      try {
+        payload = callbacks.getFrame();
+      } catch {
+        // A throwing provider must not be read as "keep doing what you were
+        // doing". Idle is the only safe interpretation.
+        payload = idlePayload();
+      }
+      socket.send(
+        JSON.stringify({
+          v: PROTOCOL_VERSION,
+          seq: seq++,
+          t: Math.round(performance.now()),
+          ...payload,
+        }),
+      );
+    }, SEND_INTERVAL_MS);
+  });
+
+  socket.addEventListener("message", (event) => {
+    if (typeof event.data !== "string") return;
+    try {
+      const parsed = JSON.parse(event.data);
+      if (parsed?.type === "status") {
+        // Any status at all is proof the bridge is reading and writing this
+        // socket, which is the whole point of the stall check above.
+        lastStatusAt = Date.now();
+        callbacks.onStatus?.(parsed as TeleopStatus);
+      }
+    } catch {
+      // Status is decorative. A malformed one must not disturb the sender.
+    }
+  });
+
+  socket.addEventListener("error", () => {
+    if (!closed)
+      callbacks.onState(
+        "error",
+        "No se pudo conectar con el puente de teleoperación.",
+      );
+  });
+
+  socket.addEventListener("close", (event) => {
+    if (timer) clearInterval(timer);
+    timer = null;
+    if (closed) return;
+    // 1013 "try again later" is the bridge refusing a second operator. Worth
+    // saying plainly: silently retrying would fight the session that has it.
+    callbacks.onState(
+      "closed",
+      event.code === 1013
+        ? "Ya hay una sesión de teleoperación activa."
+        : event.reason || "",
+    );
+  });
+
+  return {
+    close: () => {
+      closed = true;
+      if (timer) clearInterval(timer);
+      timer = null;
+      // Best effort: tell the bridge we are letting go before the socket
+      // drops, so it stops on a frame rather than on a staleness timeout.
+      if (socket?.readyState === WebSocket.OPEN) {
+        try {
+          socket.send(
+            JSON.stringify({
+              v: PROTOCOL_VERSION,
+              seq: seq++,
+              t: 0,
+              ...idlePayload(),
+            }),
+          );
+        } catch {
+          // The close below is what actually matters.
+        }
+      }
+      socket?.close();
+      socket = null;
+    },
+  };
+}

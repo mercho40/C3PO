@@ -3,7 +3,7 @@
  *
  * The bridge (`apps/bridge`) is a FastMCP server. Launched with
  * `BRIDGE_TRANSPORT=http` it serves the streamable-http transport at
- * `BRIDGE_URL` (default `http://127.0.0.1:8000/mcp`). This module holds the
+ * `BRIDGE_URL` (default `http://127.0.0.1:8001/mcp`). This module holds the
  * single MCP session the backend reuses across requests, turning the bridge's
  * ~20 tools (`get_state`, `walk_to`, `say`, …) into callable functions for the
  * route layer.
@@ -16,7 +16,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const BRIDGE_URL = process.env.BRIDGE_URL ?? "http://127.0.0.1:8000/mcp";
+import { bridgeUrl } from "./url";
+
+const BRIDGE_URL = bridgeUrl();
 
 /** The bridge could not be reached / the session could not be established. */
 export class BridgeUnavailableError extends Error {
@@ -104,4 +106,37 @@ export async function callTool(
     }
   }
   return result.content ?? null;
+}
+
+/**
+ * List the bridge's tools, with their JSON Schema and `_meta`.
+ *
+ * This is now how `apps/back` learns what the robot can do. It used to be a
+ * hand-written TypeScript catalogue that duplicated the bridge's — and the two
+ * drifted, repeatedly and silently, in ways that reached the LLM: a `voice`
+ * parameter the bridge did not accept, defaulted parameters marked required so
+ * the model had to invent timeouts, and a description telling the agent speech
+ * was a stub after it had been implemented.
+ */
+export async function listTools(): Promise<
+  Array<{
+    name: string;
+    description?: string;
+    inputSchema: unknown;
+    _meta?: unknown;
+  }>
+> {
+  const client = await getClient();
+  try {
+    const result = await client.listTools();
+    return result.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+      _meta: (t as { _meta?: unknown })._meta,
+    }));
+  } catch (err) {
+    clientPromise = null; // connection likely broke — force reconnect next time
+    throw new BridgeUnavailableError(err);
+  }
 }

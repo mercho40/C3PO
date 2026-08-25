@@ -34,15 +34,71 @@ def test_real_mode_sends_set_velocity_rpc(monkeypatch):
 
     monkeypatch.setattr(g1_rpc, "call_set_velocity", fake_call_set_velocity)
 
-    _locomotion.send_velocity(0.4, -0.1, 0.2, height=0.78)
+    # Values chosen inside the real-hardware envelope so this test covers
+    # dispatch shape only -- clamping is asserted separately below. (It used
+    # to pass 0.4 vx, which now clamps to 0.3 and would conflate the two.)
+    _locomotion.send_velocity(0.2, -0.1, 0.2, height=0.78)
 
-    assert seen["vx"] == 0.4
+    assert seen["vx"] == 0.2
     assert seen["vy"] == -0.1
     assert seen["omega"] == 0.2
     # The firmware-side deadman. If this ever reads 864000, the robot keeps
     # walking after the bridge dies.
     assert seen["duration"] == _locomotion.VELOCITY_DURATION_S
     assert seen["duration"] <= 2.0
+
+
+def test_real_mode_clamps_to_hardware_vetted_caps(monkeypatch):
+    """walk_to/turn size setpoints against sim caps; real dispatch must not.
+
+    The sim caps (MAX_FWD_VEL=1.0, MAX_YAW_VEL=1.57) are 3-5x the only speeds
+    ever measured on this physical robot, and both controllers saturate them
+    on any target more than about a metre away. This clamp is what stands
+    between "real-mode odom got wired" and "a humanoid was commanded to 1 m/s
+    on an unmeasured path", so it is pinned here rather than left to review.
+    """
+    from bridge.skills.walk_velocity import MAX_LINEAR_VEL, MAX_YAW_VEL
+
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    seen: dict = {}
+    monkeypatch.setattr(
+        g1_rpc,
+        "call_set_velocity",
+        lambda vx, vy, omega, duration: seen.update(vx=vx, vy=vy, omega=omega) or (0, ""),
+    )
+
+    # Ask for the sim caps, which is exactly what a saturated controller does.
+    _locomotion.send_velocity(
+        _locomotion.MAX_FWD_VEL, _locomotion.MAX_LAT_VEL, _locomotion.MAX_YAW_VEL, height=0.78
+    )
+    assert seen["vx"] == MAX_LINEAR_VEL
+    assert seen["vy"] == MAX_LINEAR_VEL
+    assert seen["omega"] == MAX_YAW_VEL
+
+    # ...and in the negative direction, where MAX_BACK_VEL is the sim cap.
+    _locomotion.send_velocity(
+        _locomotion.MAX_BACK_VEL, -_locomotion.MAX_LAT_VEL, -_locomotion.MAX_YAW_VEL, height=0.78
+    )
+    assert seen["vx"] == -MAX_LINEAR_VEL
+    assert seen["vy"] == -MAX_LINEAR_VEL
+    assert seen["omega"] == -MAX_YAW_VEL
+
+
+def test_sim_mode_is_not_clamped_to_the_real_caps(monkeypatch):
+    # The sim caps are tuned and exercised against Isaac Sim; tightening them
+    # there would change validated sim behaviour for no safety gain.
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "isaac")
+    written: list = []
+
+    class FakePublisher:
+        def Write(self, msg):
+            written.append(msg.data)
+
+    monkeypatch.setattr(_locomotion, "_get_publisher", lambda: FakePublisher())
+
+    _locomotion.send_velocity(_locomotion.MAX_FWD_VEL, 0.0, 0.0, height=0.78)
+
+    assert json.loads(written[0].replace("'", '"'))[0] == _locomotion.MAX_FWD_VEL
 
 
 def test_real_mode_never_touches_the_sim_publisher(monkeypatch):
@@ -94,9 +150,7 @@ def test_stop_motion_sync_zeroes_velocity_on_real(monkeypatch):
     # stop_everything's safety fallback runs through here.
     monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
     calls: list = []
-    monkeypatch.setattr(
-        g1_rpc, "call_set_velocity", lambda *a: (calls.append(a), (0, ""))[1]
-    )
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (calls.append(a), (0, ""))[1])
 
     _locomotion.stop_motion_sync(height=0.78, duration_s=0.05)
 

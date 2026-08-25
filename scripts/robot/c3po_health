@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Internal read-only shim for `c3po status`.
+#
+# A shim. The report lives in apps/bridge/src/bridge/health.py, with tests —
+# because the shell version decided whether the MOTION GATE WAS ARMED by
+# substring-matching JSON, and got it wrong for any body with a space after the
+# colon. It printed "closed (default)" for an armed gate, in green, to somebody
+# checking whether it was safe to stand near the robot.
+#
+# SYSTEM python3, and the module is stdlib-only and 3.8-valid, because a health
+# check has to work when the thing it checks does not: a venv that failed to
+# sync is exactly when somebody types this.
+
+set -uo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+C3PO_DIR="${C3PO_DIR:-$(cd "$here/../.." && pwd)}"
+export PYTHONPATH="$C3PO_DIR/apps/bridge/src${PYTHONPATH:+:$PYTHONPATH}"
+
+exec python3 -m bridge.health "$@"

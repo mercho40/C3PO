@@ -1,10 +1,20 @@
 import { getCookieCache } from "better-auth/cookies";
+import { BETTER_AUTH_SECRET } from "$env/static/private";
 import { authClient } from "$lib/auth-client";
 import type { Handle } from "@sveltejs/kit";
 
 export const handle: Handle = async ({ event, resolve }) => {
   // Fast path: Better Auth's signed cookie cache (5-min TTL) — no backend call.
-  let session = await getCookieCache(event.request);
+  //
+  // The secret is passed explicitly rather than left to `process.env`. Vite
+  // does not copy `.env` into `process.env`, so a library reading it directly
+  // sees nothing under Node — this worked only while the dev script forced
+  // Bun's runtime, which auto-loads `.env`, and broke the moment that flag was
+  // removed. `$env/static/private` is resolved at build time and behaves the
+  // same under every runtime and in production.
+  let session = await getCookieCache(event.request, {
+    secret: BETTER_AUTH_SECRET,
+  });
   let refreshedCookies: string[] = [];
 
   const cookieHeader = event.request.headers.get("cookie") ?? "";

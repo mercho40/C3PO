@@ -1,0 +1,50 @@
+# C3PO bridge on the G1 Jetson.
+#
+# One process, one supervisor: systemd starts the Python interpreter directly.
+# There is no pidfile, nohup wrapper, or second lifecycle owner to race it.
+# Starting this unit claims no sensor and commands no motion.
+
+[Unit]
+Description=C3PO bridge — MCP server for the G1 (does not claim sensors at boot)
+Documentation=file:///home/unitree/c3po/docs/OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=unitree
+Group=unitree
+WorkingDirectory=/home/unitree/c3po/apps/bridge
+
+# systemd does not source ~/.profile. The bridge loads apps/bridge/.env itself;
+# these three values define the daemon transport and cannot accidentally fall
+# back to stdio. The LAN bind is deliberate: see docs/OPERATIONS.md.
+Environment=HOME=/home/unitree
+Environment=PATH=/home/unitree/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=BRIDGE_TRANSPORT=http
+Environment=BRIDGE_HOST=0.0.0.0
+Environment=BRIDGE_PORT=8001
+Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
+
+# Hash-gated and offline-safe. It exits successfully with an existing venv when
+# the network is unavailable, but fails a first install that has no interpreter.
+ExecStartPre=/home/unitree/c3po/scripts/robot/bridge_sync
+# /usr/bin/env is stable at install time; ExecStartPre creates/updates the venv.
+# env immediately execs the interpreter, so Python remains systemd's MainPID.
+ExecStart=/usr/bin/env /home/unitree/c3po/apps/bridge/.venv/bin/python -m bridge.mcp_server
+
+# systemd owns and reaps the complete process tree. Perception containers belong
+# to docker.service and are managed only by explicit CLI commands; restarting
+# the bridge must not silently stop them or take shared sensors.
+KillMode=control-group
+TimeoutStartSec=600
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=10
+
+# Logs live in the journal: `c3po logs` or `journalctl -u c3po-bridge`.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

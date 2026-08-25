@@ -58,6 +58,17 @@ LOOP_PERIOD_S = 1.0 / LOOP_HZ
 PROGRESS_NOTIFY_DELTA = 0.05  # only emit MCP progress when delta >= 5%
 
 # Velocity caps (m/s, m/s, m/s, rad/s) — match the keyboard teleop example.
+#
+# These are Isaac-Sim-tuned, and 3-5x higher than the only numbers anyone has
+# vetted against this physical robot (walk_velocity.py's 0.3 / 0.3, which
+# come from xr_teleoperate's own controller-button safety cap). They stay as
+# the *sim* caps because they are tuned and exercised there — but they are no
+# longer what reaches real hardware: `send_velocity` re-clamps to the
+# hardware-vetted set below whenever SIM_MODE == "real".
+#
+# Previously these were the only clamp on either target, which meant wiring
+# real-mode odom silently gave walk_to/turn permission to command 1.0 m/s and
+# ~90 deg/s at a humanoid, on a path where nothing had ever been measured.
 MAX_FWD_VEL = 1.0
 MAX_BACK_VEL = -0.6
 MAX_LAT_VEL = 0.5
@@ -93,6 +104,24 @@ def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> None:
     if SIM_MODE == "real":
         from bridge.sdk import g1_rpc
 
+        # Re-clamp to the hardware-vetted envelope at the dispatch point, not
+        # at each caller's own computation. walk_to/turn size their setpoints
+        # against the sim caps above (MAX_FWD_VEL=1.0, MAX_YAW_VEL=1.57), and
+        # their proportional controllers saturate those on any target more
+        # than a metre or so away -- so without this, reaching real hardware
+        # means commanding 3-5x the only speeds ever measured on this robot.
+        # Clamping here covers every current and future caller by
+        # construction; the controllers still converge, just more slowly.
+        # Imported from walk_velocity so there is exactly one definition of
+        # "safe on this hardware" (local import mirrors g1_rpc above and
+        # keeps this module free of an import-order dependency).
+        from bridge.skills.walk_velocity import MAX_LINEAR_VEL
+        from bridge.skills.walk_velocity import MAX_YAW_VEL as REAL_MAX_YAW_VEL
+
+        vx = max(-MAX_LINEAR_VEL, min(MAX_LINEAR_VEL, vx))
+        vy = max(-MAX_LINEAR_VEL, min(MAX_LINEAR_VEL, vy))
+        vyaw = max(-REAL_MAX_YAW_VEL, min(REAL_MAX_YAW_VEL, vyaw))
+
         code, _ = g1_rpc.call_set_velocity(vx, vy, vyaw, VELOCITY_DURATION_S)
         if code != 0:
             # Deliberately not raising: this is called at 50 Hz inside a control
@@ -109,18 +138,48 @@ def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> None:
     _get_publisher().Write(String_(data=payload))
 
 
+async def send_velocity_async(vx: float, vy: float, vyaw: float, height: float) -> None:
+    """`send_velocity`, but without blocking the event loop on real hardware.
+
+    On real, `send_velocity` makes a synchronous DDS RPC that waits for an ack
+    with SPORT_TIMEOUT_S (10 s) of headroom. Called bare from inside walk_to /
+    turn's 50 Hz `async` control loop, a slow ack stalls the entire loop with
+    no yield point — which means the `cancel_task` that would stop the walk
+    cannot be delivered, precisely while the robot keeps moving. `g1_rpc`'s own
+    docstring flags this hazard.
+
+    Awaiting it off-thread keeps the ack semantics exactly as they are (this is
+    NOT the unverified `_CallNoReply` change that docstring also floats) while
+    letting the loop stay responsive: a slow robot now slows the control rate
+    instead of freezing the process that has to stop it.
+
+    Sim publishes are non-blocking, so they stay inline — no thread churn for a
+    path that never needed it.
+    """
+    if SIM_MODE == "real":
+        await asyncio.to_thread(send_velocity, vx, vy, vyaw, height)
+    else:
+        send_velocity(vx, vy, vyaw, height)
+
+
 async def stop_motion(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> None:
-    """Send zero-velocity commands for `duration_s` so the robot rests cleanly."""
-    deadline = time.time() + duration_s
-    while time.time() < deadline:
-        send_velocity(0, 0, 0, height)
+    """Send zero-velocity commands for `duration_s` so the robot rests cleanly.
+
+    Monotonic clock: a wall clock stepping FORWARD mid-burst (which is what an
+    NTP correction does on a machine that booted without an RTC — the robot
+    onboard, every time) ends the burst early, and this burst is what actually
+    stops the robot. A short one is a robot still carrying velocity.
+    """
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
+        await send_velocity_async(0, 0, 0, height)
         await asyncio.sleep(LOOP_PERIOD_S)
 
 
 def stop_motion_sync(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> None:
     """Blocking variant of stop_motion for sync skills (e.g. stop_everything)."""
-    deadline = time.time() + duration_s
-    while time.time() < deadline:
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
         send_velocity(0, 0, 0, height)
         time.sleep(LOOP_PERIOD_S)
 
@@ -142,3 +201,32 @@ async def maybe_report_progress(
     except Exception as exc:
         log.debug("locomotion.progress.failed", task_id=task.task_id, error=str(exc))
     return task.progress
+
+
+def teleop_conflict() -> str | None:
+    """Why this skill must not command velocity right now, or None.
+
+    `rt/run_command/cmd` has no arbitration. Two processes writing velocity at
+    20-50 Hz give a robot that obeys whichever message landed last, alternating
+    tens of times a second, with neither writer able to tell. Both writers exist
+    and are reachable at once: this process runs walk_to / turn / walk_velocity,
+    and the teleop stream runs the headset.
+
+    The collision is ordinary, not exotic — the operator walks the robot across
+    a room while the agent, asked in the chat panel to "go to the door", starts
+    a walk_to. Both requests are legitimate. Only one can be obeyed.
+
+    The person in the headset wins. They are in the room with the robot, they
+    can see what it is about to hit, and they did not ask a language model for
+    permission to move. An agent's plan can wait.
+    """
+    from bridge.estop import teleop_is_driving
+
+    if not teleop_is_driving():
+        return None
+    return (
+        "a teleoperation session is driving the robot right now. Two commanders on "
+        "rt/run_command/cmd means the robot obeys whichever message landed last, so this "
+        "skill will not add itself as a second one. Ask the operator to disconnect the "
+        "headset stream, or wait for them to finish."
+    )

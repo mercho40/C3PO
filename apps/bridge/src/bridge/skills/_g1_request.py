@@ -16,20 +16,23 @@ Today:
   request topic, so for `SIM_MODE=isaac` we log the intended dispatch and
   return `status=completed phase=logged_only`. Honest stub — no false
   motion claims.
-- For `SIM_MODE=real`, we'd publish a `unitree_api::msg::dds_::Request_`
-  on the resolved topic. That path waits for the Transport layer (Phase
-  16 in spec); we raise `NotImplementedError` so we don't silently no-op
-  against real hardware.
+- For `SIM_MODE=real`, we dispatch a live RPC via `bridge.sdk.g1_rpc`
+  (`call_sport_api`/`call_arm`) on the resolved topic — this actually
+  moves the robot. No client-side FSM precondition check runs here: the
+  transition-rule data in `g1_protocol.py` is reference material, not a
+  gate — a client-side rule built on partly-unverified sources could refuse
+  a transition the firmware would have accepted, turning a bridge bug into
+  a false "the robot can't do that". The firmware already rejects illegal
+  transitions itself and says so (error 7302, "Invalid fsm id"), which is
+  the answer we actually want.
 - For `SIM_MODE=stub`, we return a clean stub result.
-
-When the Transport layer lands, this file is the only place to change.
 """
 
 from __future__ import annotations
 
 import os
 import time
-from typing import Any, Literal
+from typing import Any
 
 import structlog
 
@@ -37,6 +40,44 @@ from bridge.sdk import g1_protocol
 from bridge.skills.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
+
+#: How long to wait for a posture change to actually land before reporting that
+#: it did not. Measured on hardware: damp -> prepare and prepare -> 501 both
+#: settle within ~7 s, so this is generous rather than tight — the cost of
+#: waiting is a slower skill, the cost of not waiting is reporting success for
+#: something that never happened.
+FSM_SETTLE_TIMEOUT_S = 9.0
+
+
+async def _await_fsm(target: int, timeout_s: float) -> int | None:
+    """Poll the FSM until it reaches `target`, or the timeout expires.
+
+    Returns whatever the FSM ended up as — including None when the poller has
+    nothing, which is itself the answer that no controller is loaded.
+    """
+    import asyncio
+
+    from bridge.sdk.state import get_sampler
+
+    deadline = time.time() + timeout_s
+    latest: int | None = None
+    while time.time() < deadline:
+        try:
+            latest = get_sampler().get_arm_state().get("fsm_id")
+        except Exception as exc:
+            # Verification is diagnostic, never load-bearing. If the state
+            # sampler cannot be read — no DDS participant, a test harness, a
+            # bridge whose subscriptions have died — the dispatch already
+            # succeeded and must not be reported as a failure because the
+            # CHECK failed. Return None, which the caller reads as
+            # "unverified" rather than "did not transition".
+            log.debug("g1_request.fsm_check_unavailable", error=str(exc))
+            return None
+        if latest == target:
+            return latest
+        await asyncio.sleep(0.25)
+    return latest
+
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
 
@@ -120,8 +161,17 @@ async def run_g1_request(
 
         from bridge.sdk import g1_rpc
 
-        call = g1_rpc.call_sport if request.topic_kind == "sport_request" else g1_rpc.call_arm
-        code, data = await asyncio.to_thread(call, request.data)
+        # Dispatch on the api_id the catalogue names, not on a per-service
+        # constant: the sport service carries 7101 (posture), 7102 (balance
+        # mode) and 7105 (velocity), so assuming 7101 here would turn
+        # `balance_stand` into a posture change with the balance value as its
+        # mode index.
+        if request.topic_kind == "sport_request":
+            code, data = await asyncio.to_thread(
+                g1_rpc.call_sport_api, request.api_id, request.data
+            )
+        else:
+            code, data = await asyncio.to_thread(g1_rpc.call_arm, request.data)
 
         task.status = "completed" if code == 0 else "failed"
         task.phase = "dispatched" if code == 0 else "rpc_error"
@@ -133,6 +183,41 @@ async def run_g1_request(
             "rpc_code": code,
             "rpc_data": data,
         }
+
+        # An ack is not a transition, and on this firmware the difference is
+        # invisible. `SetFsmId` answers rpc_code 0 and does NOTHING in at least
+        # two situations we hit on 2026-08-20: asking for FSM 4 while in 501
+        # (the transition is not permitted from a walk program), and asking for
+        # anything at all while no motion controller is loaded. Both reported
+        # "completed", which sent us looking at cables and DDS config.
+        #
+        # So when the request names a target FSM, check whether the robot got
+        # there and say so. `status` stays "completed" — the RPC genuinely
+        # succeeded, and callers that only look at status keep working — but
+        # `phase` and `transitioned` carry the truth for anyone who reads them.
+        if code == 0 and request.api_id == g1_protocol.API_ID_G1_STATE:
+            reached = await _await_fsm(int(request.data), FSM_SETTLE_TIMEOUT_S)
+            task.result["fsm_target"] = int(request.data)
+            task.result["fsm_after"] = reached
+            # None means we could not read the FSM at all, which is NOT the
+            # same as "it did not move" — claiming the latter on missing
+            # evidence is exactly the overreach this block exists to prevent.
+            task.result["transitioned"] = None if reached is None else reached == int(request.data)
+            if reached is not None and reached != int(request.data):
+                task.phase = "acked_no_transition"
+                task.result["note"] = (
+                    f"the sport service acked (code 0) but the robot is in FSM {reached}, "
+                    f"not {request.data}. This firmware acks impossible transitions: "
+                    "check that a motion controller is loaded "
+                    "(scripts/select_motion_mode.py --check-only), and note that some "
+                    "transitions are refused from a walk program — damp first."
+                )
+                log.warning(
+                    "g1_request.acked_no_transition",
+                    skill_name=skill_name,
+                    requested=int(request.data),
+                    actual=reached,
+                )
         if code != 0:
             task.error = f"rpc_error_code_{code}"
         task.ended_at = time.time()
@@ -145,19 +230,3 @@ async def run_g1_request(
         task.ended_at = time.time()
         log.exception("g1_request.failed", task_id=task.task_id, skill_name=skill_name)
         return task.to_dict()
-
-
-# Lookup helpers exposed for the catalogue / introspection.
-
-PostureSkillName = Literal["damp", "zero_torque", "prepare", "sit_g1", "lie_up", "squat"]
-GestureSkillName = Literal["wave", "point_at", "shake_hand", "hug", "clap", "release_arm"]
-
-
-def skill_works_in(skill_name: g1_protocol.SkillName, sim_mode: str) -> bool:
-    """True if this skill can actually produce motion in the given mode."""
-    if sim_mode == "stub":
-        return False
-    request = g1_protocol.SKILL_REQUESTS[skill_name]
-    topics = g1_protocol.topics_for(sim_mode)
-    target = topics.sport_request if request.topic_kind == "sport_request" else topics.arm_request
-    return target is not None

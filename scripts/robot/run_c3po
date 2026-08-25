@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Take ownership from the co-tenant and ensure the systemd-managed bridge is up.
+# Perception stays separate: this command claims no camera or LiDAR.
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+say "Starting C3PO"
+
+[ -d "$BRIDGE_DIR" ] || { err "bridge not found at $BRIDGE_DIR"; exit 1; }
+[ -f "$BRIDGE_DIR/.env" ] || {
+    err "no $BRIDGE_DIR/.env — refusing to start in an unknown target mode"
+    exit 1
+}
+
+# Fail structural checks before taking the co-tenant down. A missing unit or a
+# manually launched bridge cannot be repaired by stopping gemm.
+load_state="$(systemctl show --property=LoadState --value c3po-bridge.service 2>/dev/null || true)"
+[ "$load_state" = "loaded" ] || {
+    err "c3po-bridge.service is not loaded — run: ./scripts/robot/c3po install"
+    exit 1
+}
+
+# Refuse a manually launched bridge whether the unit is active or not. Direct
+# supervision removes the pidfile race only if systemd is the sole owner.
+if bridge_running; then
+    main_pid="$(bridge_main_pid)"
+    strays="$(bridge_process_pids | grep -vx "$main_pid" || true)"
+else
+    strays="$(bridge_process_pids)"
+fi
+if [ -n "$strays" ]; then
+    err "a bridge process exists outside c3po-bridge.service: $(echo "$strays" | tr '\n' ' ')"
+    err "stop it before using the systemd-managed bridge"
+    exit 1
+fi
+
+# Interactive start means take ownership. Booting the bridge service itself does
+# not: the unit starts no sensors and issues no motion command.
+if [ -n "$(gemm_running)" ]; then
+    info "gemm is running — stopping it before C3PO can become the commander"
+    "$here/stop_gemm"
+fi
+warn_if_other_commander || exit 1
+
+if ! bridge_running; then
+    sudo systemctl start c3po-bridge.service
+fi
+
+ready=0
+for _ in $(seq 1 30); do
+    if ready_pid="$(bridge_http_ready 8001)"; then
+        ready=1
+        break
+    fi
+    bridge_running || break
+    sleep 0.5
+done
+
+if [ "$ready" -ne 1 ]; then
+    err "c3po-bridge.service did not become ready on 127.0.0.1:8001"
+    err "inspect it with: journalctl -u c3po-bridge -n 50 --no-pager"
+    exit 1
+fi
+
+ok "bridge active (pid $ready_pid), stop_everything reachable"
+info "perception remains off unless explicitly started: c3po perception up <stage>"

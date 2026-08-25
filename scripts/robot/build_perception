@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Build the perception images.  build_perception {all|vision|engine|nav|bench} [--dry-run]
+#
+# A shim. The guardrails live in apps/perception/bringup/build.py, with tests,
+# because they are the point of this command: each build is tens of minutes on
+# eight cores shared with another team, so refusing early and for a stated
+# reason is worth more here than anywhere else in the stack.
+#
+# SYSTEM python3, stdlib only, 3.8-valid — same reason as perception_up: this
+# has to work before, and independently of, any venv.
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+C3PO_DIR="${C3PO_DIR:-$HOME/c3po}"
+export C3PO_DIR
+export C3PO_SCRIPTS_DIR="$here"
+export PYTHONPATH="$C3PO_DIR/apps/perception${PYTHONPATH:+:$PYTHONPATH}"
+
+# The classic builder is not a preference: this daemon has no buildx, and the
+# Dockerfiles are checked for BuildKit-only syntax before every build.
+export DOCKER_BUILDKIT=0
+
+exec python3 -m bringup.build "$@"

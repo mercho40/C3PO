@@ -10,13 +10,38 @@ dependencies = [
     "python-dotenv>=1",
     "cyclonedds==0.10.2",
     "unitree-sdk2py",
+    "websockets>=17.0.1",
 ]
+
+# NOT a hard dependency, and the reason is the Mac. vosk publishes wheels for
+# linux aarch64/x86_64/armv7l and win_amd64 — and NONE for macOS — so listing it
+# above would make `uv sync` on the dev machine try to build libvosk from source
+# and fail. It is needed only where the microphone is, which is the robot.
+#
+#     uv sync --extra voice        # on the Jetson
+#
+# `skills/listen.py::available()` reports its absence with the fix attached, and
+# the tests that need it skip rather than fail, so a Mac checkout stays green.
+[project.optional-dependencies]
+# The spoken stop. Small, CPU-only, and it lives in the bridge because D6.2 puts
+# the stop phrase in the same process as stop_everything.
+voice = ["vosk>=0.3.45"]
+
+# Transcription. SEPARATE FROM `voice` ON PURPOSE: faster-whisper drags in
+# ctranslate2 and a few hundred MB of runtime, and D6.2 is explicit that ML deps
+# stay out of the process that owns the stop. Splitting the extras means the
+# bridge can install `voice` alone and a future voice process installs `stt`,
+# without that separation having to be built before it is needed.
+#
+#     uv sync --extra voice --extra stt      # both, on the Jetson today
+stt = ["faster-whisper>=1.1.0"]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "ruff>=0.7",
+    "mypy>=1.13",
 ]
 
 [build-system]
@@ -26,6 +51,13 @@ build-backend = "uv_build"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+# unitree_sdk2py / cyclonedds ship no type stubs -- without this every
+# import of them is a hard error, drowning out real findings elsewhere.
+ignore_missing_imports = true
+check_untyped_defs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

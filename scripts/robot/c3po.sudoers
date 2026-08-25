@@ -1,0 +1,6 @@
+# Narrow privileges needed to release Unitree's vendor head-camera process.
+#
+# No shell, editable script or wildcard unit is authorised. Starting the vendor
+# service again remains a deliberate human/root action.
+unitree ALL=(root) NOPASSWD: /usr/bin/systemctl stop master_service
+unitree ALL=(root) NOPASSWD: /usr/bin/pkill -9 -x videohub_pc4

@@ -1,6 +1,18 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "@fontsource-variable/geist";
+
+/* Two families, both self-hosted — no Google Fonts <link>, because this console
+   is routinely opened on the robot's own LAN with no route to the internet, and
+   a render-blocking stylesheet that times out is a console that boots blank.
+
+   Archivo carries a width axis (62–125%), so one file covers both roles: the
+   body text at normal width and the stamped, extended display cuts used for the
+   robot's name and its posture. IBM Plex Mono is the system's own voice — every
+   FSM token, DDS topic and coordinate in this app is machine vocabulary, and it
+   should look like it. */
+@import "@fontsource-variable/archivo/wdth.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
 
 /* Single permanently-dark theme — no light mode, no runtime switching. The
    `dark` variant is kept always-on so shadcn components' dark-mode overrides
@@ -9,159 +21,358 @@
 @custom-variant dark (&);
 
 :root {
-	/* C3PO operator console — navy base, cyan/periwinkle accent. The one and
-	   only theme: these map shadcn component tokens onto the console palette so
-	   <Button>/<Badge>/<DropdownMenu>/<Tooltip>/<Progress> inherit the look. */
-	color-scheme: dark;
-	--background: #06090f;
-	--foreground: #eaf1ff;
-	--card: #0c1220;
-	--card-foreground: #eaf1ff;
-	--popover: #121828;
-	--popover-foreground: #eaf1ff;
-	--primary: #9ae5f8;
-	--primary-foreground: #06121c;
-	--secondary: #141b2e;
-	--secondary-foreground: #c6dcff;
-	--muted: #121828;
-	--muted-foreground: #8a96ad;
-	--accent: rgba(159, 197, 255, 0.12);
-	--accent-foreground: #c6dcff;
-	--destructive: #ff4d6a;
-	--border: rgba(180, 210, 255, 0.1);
-	--input: rgba(180, 210, 255, 0.12);
-	--ring: #7ee5ff;
-	--chart-1: oklch(0.809 0.105 251.813);
-	--chart-2: oklch(0.623 0.214 259.815);
-	--chart-3: oklch(0.546 0.245 262.881);
-	--chart-4: oklch(0.488 0.243 264.376);
-	--chart-5: oklch(0.424 0.199 265.638);
-	--radius: 0.625rem;
-	--sidebar: #05070d;
-	--sidebar-foreground: #c6dcff;
-	--sidebar-primary: #9ae5f8;
-	--sidebar-primary-foreground: #06121c;
-	--sidebar-accent: rgba(159, 197, 255, 0.12);
-	--sidebar-accent-foreground: #c6dcff;
-	--sidebar-border: rgba(180, 210, 255, 0.08);
-	--sidebar-ring: #7ee5ff;
+  /* ---------------------------------------------------------------------
+	   Raw palette. The only place a literal colour is allowed to appear.
+	   Everything below — and every component — refers to these by name, so a
+	   palette change is a one-file edit rather than a grep across the app.
+	   --------------------------------------------------------------------- */
+  --c3-void: #06090f; /* app canvas */
+  --c3-abyss: #05070d; /* sidebar, the darkest surface */
+  --c3-trench: #04070d; /* map/camera canvases, darker than any panel */
+  --c3-panel: #0c1220; /* panel, top of the gradient */
+  --c3-panel-lift: #121828; /* panel, bottom of the gradient — also popovers */
+  --c3-slate: #141b2e; /* secondary surface */
+
+  --c3-ink: #eaf1ff; /* primary text */
+  --c3-ink-dim: #c6dcff; /* secondary text, prose */
+  --c3-ink-mute: #93a1b8; /* labels, captions — 7.1:1 on --c3-panel */
+
+  --c3-cyan: #9ae5f8; /* brand accent */
+  --c3-cyan-hot: #7ee5ff; /* focus rings, glows */
+  --c3-peri: #9fc5ff; /* periwinkle — secondary accent, data */
+  --c3-blue: #4a7dd1; /* deep accent, gradient tails */
+  --c3-abyss-ink: #06121c; /* text on cyan/periwinkle fills */
+
+  --c3-ok: #5ee7a1;
+  --c3-warn: #f5b643;
+  --c3-danger: #ff4d6a;
+  --c3-danger-soft: #ff8aa0; /* danger text — legible on dark, unlike the fill */
+
+  /* Tints derived from the accents. Named by intent so a component never has
+	   to guess which alpha step is "the" border or "the" hover fill. */
+  --c3-hairline: rgba(180, 210, 255, 0.09);
+  --c3-hairline-strong: rgba(180, 210, 255, 0.16);
+  --c3-wash: rgba(180, 210, 255, 0.02); /* inset tiles inside a panel */
+  --c3-wash-hover: rgba(180, 210, 255, 0.05);
+  --c3-accent-wash: rgba(159, 197, 255, 0.1);
+  --c3-accent-edge: rgba(159, 197, 255, 0.28);
+
+  --c3-glow-cyan: 0 0 24px rgba(126, 229, 255, 0.5);
+  --c3-glow-soft: 0 8px 28px -10px rgba(126, 229, 255, 0.55);
+
+  /* ---------------------------------------------------------------------
+	   shadcn contract. Mapping the palette onto these is what makes
+	   <Button>/<Badge>/<DropdownMenu>/<Tooltip>/<Progress> inherit the console
+	   look without per-usage class overrides.
+	   --------------------------------------------------------------------- */
+  color-scheme: dark;
+  --background: var(--c3-void);
+  --foreground: var(--c3-ink);
+  --card: var(--c3-panel);
+  --card-foreground: var(--c3-ink);
+  --popover: var(--c3-panel-lift);
+  --popover-foreground: var(--c3-ink);
+  --primary: var(--c3-cyan);
+  --primary-foreground: var(--c3-abyss-ink);
+  --secondary: var(--c3-slate);
+  --secondary-foreground: var(--c3-ink-dim);
+  --muted: var(--c3-panel-lift);
+  --muted-foreground: var(--c3-ink-mute);
+  --accent: var(--c3-accent-wash);
+  --accent-foreground: var(--c3-ink-dim);
+  --destructive: var(--c3-danger);
+  --border: var(--c3-hairline);
+  --input: var(--c3-hairline-strong);
+  --ring: var(--c3-cyan-hot);
+  --chart-1: oklch(0.809 0.105 251.813);
+  --chart-2: oklch(0.623 0.214 259.815);
+  --chart-3: oklch(0.546 0.245 262.881);
+  --chart-4: oklch(0.488 0.243 264.376);
+  --chart-5: oklch(0.424 0.199 265.638);
+  --radius: 0.625rem;
+  --sidebar: var(--c3-abyss);
+  --sidebar-foreground: var(--c3-ink-dim);
+  --sidebar-primary: var(--c3-cyan);
+  --sidebar-primary-foreground: var(--c3-abyss-ink);
+  --sidebar-accent: var(--c3-accent-wash);
+  --sidebar-accent-foreground: var(--c3-ink-dim);
+  --sidebar-border: var(--c3-hairline);
+  --sidebar-ring: var(--c3-cyan-hot);
 }
 
 @theme inline {
-	--font-sans: 'Geist Variable', sans-serif;
-	--font-display: 'Inter', 'Geist Variable', sans-serif;
-	--font-heading: 'Space Grotesk', 'Geist Variable', sans-serif;
-	--font-mono: 'JetBrains Mono', ui-monospace, monospace;
-	--color-sidebar-ring: var(--sidebar-ring);
-	--color-sidebar-border: var(--sidebar-border);
-	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-	--color-sidebar-accent: var(--sidebar-accent);
-	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-	--color-sidebar-primary: var(--sidebar-primary);
-	--color-sidebar-foreground: var(--sidebar-foreground);
-	--color-sidebar: var(--sidebar);
-	--color-chart-5: var(--chart-5);
-	--color-chart-4: var(--chart-4);
-	--color-chart-3: var(--chart-3);
-	--color-chart-2: var(--chart-2);
-	--color-chart-1: var(--chart-1);
-	--color-ring: var(--ring);
-	--color-input: var(--input);
-	--color-border: var(--border);
-	--color-destructive: var(--destructive);
-	--color-accent-foreground: var(--accent-foreground);
-	--color-accent: var(--accent);
-	--color-muted-foreground: var(--muted-foreground);
-	--color-muted: var(--muted);
-	--color-secondary-foreground: var(--secondary-foreground);
-	--color-secondary: var(--secondary);
-	--color-primary-foreground: var(--primary-foreground);
-	--color-primary: var(--primary);
-	--color-popover-foreground: var(--popover-foreground);
-	--color-popover: var(--popover);
-	--color-card-foreground: var(--card-foreground);
-	--color-card: var(--card);
-	--color-foreground: var(--foreground);
-	--color-background: var(--background);
-	--radius-sm: calc(var(--radius) * 0.6);
-	--radius-md: calc(var(--radius) * 0.8);
-	--radius-lg: var(--radius);
-	--radius-xl: calc(var(--radius) * 1.4);
-	--radius-2xl: calc(var(--radius) * 1.8);
-	--radius-3xl: calc(var(--radius) * 2.2);
-	--radius-4xl: calc(var(--radius) * 2.6);
+  --font-sans: "Archivo Variable", system-ui, sans-serif;
+  --font-display: "Archivo Variable", system-ui, sans-serif;
+  /* shadcn's dialog/sheet/popover titles reach for `font-heading`; it resolves
+	   to the same family so those surfaces stay in the console's voice. */
+  --font-heading: "Archivo Variable", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* One step below Tailwind's `xs`, and the floor for this UI. The console
+	   used to reach for 9px and 10px labels; those are unreadable on a wall
+	   display and fail every legibility check, so the scale simply stops here. */
+  --text-2xs: 0.6875rem; /* 11px */
+  --text-2xs--line-height: 1rem;
+
+  /* Console palette, exposed as utilities: text-ink-mute, border-hairline,
+	   bg-panel, text-ok, ring-cyan-hot, … */
+  --color-ink: var(--c3-ink);
+  --color-ink-dim: var(--c3-ink-dim);
+  --color-ink-mute: var(--c3-ink-mute);
+  --color-cyan: var(--c3-cyan);
+  --color-cyan-hot: var(--c3-cyan-hot);
+  --color-peri: var(--c3-peri);
+  --color-deep-blue: var(--c3-blue);
+  --color-ok: var(--c3-ok);
+  --color-warn: var(--c3-warn);
+  --color-danger: var(--c3-danger);
+  --color-danger-soft: var(--c3-danger-soft);
+  --color-panel: var(--c3-panel);
+  --color-panel-lift: var(--c3-panel-lift);
+  --color-trench: var(--c3-trench);
+  --color-abyss: var(--c3-abyss);
+  --color-hairline: var(--c3-hairline);
+  --color-hairline-strong: var(--c3-hairline-strong);
+  --color-wash: var(--c3-wash);
+  --color-wash-hover: var(--c3-wash-hover);
+  --color-accent-edge: var(--c3-accent-edge);
+
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
 @layer base {
-	* {
-		@apply border-border outline-ring/50;
-	}
-	body {
-		@apply bg-background text-foreground;
-	}
-	html {
-		@apply font-sans;
-	}
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
 }
 
 @custom-variant data-open {
-	&:where([data-state="open"]), &:where([data-open]:not([data-open="false"])) {
-		@slot;
-	}
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
 }
 
 @custom-variant data-closed {
-	&:where([data-state="closed"]), &:where([data-closed]:not([data-closed="false"])) {
-		@slot;
-	}
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
 }
 
 @custom-variant data-checked {
-	&:where([data-state="checked"]), &:where([data-checked]:not([data-checked="false"])) {
-		@slot;
-	}
+  &:where([data-state="checked"]),
+  &:where([data-checked]:not([data-checked="false"])) {
+    @slot;
+  }
 }
 
 @custom-variant data-unchecked {
-	&:where([data-state="unchecked"]), &:where([data-unchecked]:not([data-unchecked="false"])) {
-		@slot;
-	}
+  &:where([data-state="unchecked"]),
+  &:where([data-unchecked]:not([data-unchecked="false"])) {
+    @slot;
+  }
 }
 
 @custom-variant data-selected {
-	&:where([data-selected]) {
-		@slot;
-	}
+  &:where([data-selected]) {
+    @slot;
+  }
 }
 
 @custom-variant data-disabled {
-	&:where([data-disabled="true"]), &:where([data-disabled]:not([data-disabled="false"])) {
-		@slot;
-	}
+  &:where([data-disabled="true"]),
+  &:where([data-disabled]:not([data-disabled="false"])) {
+    @slot;
+  }
 }
 
 @custom-variant data-active {
-	&:where([data-state="active"]), &:where([data-active]:not([data-active="false"])) {
-		@slot;
-	}
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) {
+    @slot;
+  }
 }
 
 @custom-variant data-horizontal {
-	&:where([data-orientation="horizontal"]) {
-		@slot;
-	}
+  &:where([data-orientation="horizontal"]) {
+    @slot;
+  }
 }
 
 @custom-variant data-vertical {
-	&:where([data-orientation="vertical"]) {
-		@slot;
-	}
+  &:where([data-orientation="vertical"]) {
+    @slot;
+  }
 }
 
 @utility no-scrollbar {
-	-ms-overflow-style: none;
-	scrollbar-width: none;
-	&::-webkit-scrollbar {
-		display: none;
-	}
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Console surfaces.
+
+   `panel` is the console's one card treatment — it was previously spelled out
+   as `rounded-[14px] border border-[rgba(180,210,255,0.08)] bg-gradient-to-b
+   from-[#0c1220] to-[#121828]` at ten different call sites, which meant the
+   look could (and did) drift between pages. Padding is deliberately left out:
+   panels wrap everything from a 6-unit dashboard card to a flush-bleed map, so
+   the caller owns spacing.
+   --------------------------------------------------------------------------- */
+@utility panel {
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--c3-hairline);
+  background-color: var(--c3-panel);
+}
+
+/* Exactly one panel per screen gets the lift — the one carrying the answer to
+   "what is the robot doing right now". When every panel had this gradient (it
+   used to), the grid read as ten things of equal importance and the eye had
+   nowhere to land first. */
+@utility panel-hero {
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--c3-hairline-strong);
+  background-image: linear-gradient(
+    to bottom,
+    var(--c3-panel-lift),
+    var(--c3-panel) 60%
+  );
+}
+
+/* An inset region *inside* a panel — stat tiles, readouts, embedded forms.
+   Flat rather than gradient so it reads as recessed against its parent. */
+@utility tile {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--c3-hairline);
+  background-color: var(--c3-wash);
+}
+
+@utility tile-interactive {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--c3-hairline);
+  background-color: var(--c3-wash);
+  transition-property: color, background-color, border-color;
+  transition-duration: 150ms;
+  &:hover {
+    border-color: var(--c3-accent-edge);
+    background-color: var(--c3-wash-hover);
+  }
+}
+
+/* Section kicker: the small tracked-out uppercase label above a panel's
+   content. One definition so tracking and weight stay identical everywhere. */
+@utility eyebrow {
+  font-size: var(--text-2xs);
+  line-height: var(--text-2xs--line-height);
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--c3-ink-mute);
+}
+
+/* Numeric readouts — telemetry, coordinates, ids. Mono, so digits don't jitter
+   as values tick. */
+@utility readout {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--text-2xs--line-height);
+  letter-spacing: 0.04em;
+  color: var(--c3-ink-mute);
+}
+
+@utility glow-cyan {
+  filter: drop-shadow(0 0 10px rgba(126, 229, 255, 0.45));
+}
+
+/* ---------------------------------------------------------------------------
+   Display type.
+
+   Archivo's width axis is the whole reason this family was chosen: extended and
+   heavy, it reads like the silkscreen on a piece of equipment, which is exactly
+   what this console is attached to. That makes it loud, so it is rationed —
+   `stamp` belongs to the robot's name, its posture, and the page title. Nothing
+   else in the app is allowed to use it.
+   --------------------------------------------------------------------------- */
+@utility stamp {
+  font-family: var(--font-display);
+  font-variation-settings:
+    "wdth" 118,
+    "wght" 700;
+  letter-spacing: -0.01em;
+  text-transform: uppercase;
+}
+
+/* The same voice one step quieter — section headings that need presence without
+   competing with the posture readout. */
+@utility stamp-quiet {
+  font-family: var(--font-display);
+  font-variation-settings:
+    "wdth" 112,
+    "wght" 600;
+  letter-spacing: 0.01em;
+}
+
+/* The console's one filled call-to-action — the sign-in button, the chat send
+   button. Pale periwinkle on dark, so it reads as the brightest thing on the
+   screen without shouting. */
+@utility cta {
+  background-image: linear-gradient(
+    to bottom,
+    var(--c3-ink-dim),
+    var(--c3-peri)
+  );
+  color: var(--c3-abyss-ink);
+  box-shadow: var(--c3-glow-soft);
+  transition: filter 150ms;
+  &:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
 }

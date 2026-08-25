@@ -2,6 +2,7 @@
   import type { ComponentProps } from "svelte";
   import {
     Activity,
+    Gamepad2,
     HeartPulse,
     Map,
     MessageSquare,
@@ -13,19 +14,25 @@
   import NavMain from "./nav-main.svelte";
   import NavUser from "./nav-user.svelte";
 
-  let { ref = $bindable(null), ...restProps }: ComponentProps<typeof Sidebar.Root> = $props();
+  let {
+    ref = $bindable(null),
+    ...restProps
+  }: ComponentProps<typeof Sidebar.Root> = $props();
 
   const navMain = [
     { title: "Inicio", href: "/dashboard", icon: Activity },
     { title: "Mapa en vivo", href: "/live-map", icon: Map },
     { title: "Cámaras", href: "/live-camera", icon: Video },
     { title: "Chat", href: "/chat", icon: MessageSquare },
+    { title: "Control VR", href: "/vr-control", icon: Gamepad2 },
     // Not built yet — shown but disabled so they don't 404.
     { title: "Control por voz", icon: Mic, disabled: true, badge: "Pronto" },
     { title: "Salud", icon: HeartPulse, disabled: true, badge: "Pronto" },
   ];
 
-  const navSystem = [{ title: "Configuración", icon: Settings, disabled: true, badge: "Pronto" }];
+  const navSystem = [
+    { title: "Configuración", icon: Settings, disabled: true, badge: "Pronto" },
+  ];
 </script>
 
 <Sidebar.Root bind:ref collapsible="icon" {...restProps}>
@@ -41,12 +48,16 @@
                 <img
                   src="/logo.svg"
                   alt=""
-                  class="size-5 object-contain drop-shadow-[0_0_8px_rgba(126,229,255,0.55)]"
+                  class="size-5 object-contain glow-cyan"
                 />
               </div>
               <div class="grid flex-1 text-start text-sm leading-tight">
-                <span class="truncate font-semibold tracking-tight text-[#eaf1ff]">C3PO</span>
-                <span class="truncate text-xs text-sidebar-foreground/55">Consola de operador</span>
+                <span class="truncate font-semibold tracking-tight text-ink"
+                  >C3PO</span
+                >
+                <span class="truncate text-xs text-sidebar-foreground/60"
+                  >Consola de operador</span
+                >
               </div>
             </a>
           {/snippet}

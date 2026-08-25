@@ -6,6 +6,16 @@ Ubuntu and the real G1 on its Jetson — only ROBOT_HOST changes.
 
 Sets CYCLONEDDS_URI before any DDS code touches the environment, then calls
 ChannelFactoryInitialize from unitree_sdk2py to wire the SDK.
+
+TODO: the XML below is currently a NO-OP. ChannelFactoryInitialize creates the
+domain with the SDK's own inline config, and a domain created with an inline
+config ignores CYCLONEDDS_URI (verified empirically 2026-08-19 on cyclonedds
+0.10.2). So neither the unicast peer nor the interface pin takes effect; the
+bridge runs autodetermine + default multicast. Fix (supervised window only):
+pass the interface through to ChannelFactoryInitialize, scope <Domain id="any">
+to id="0", and make the unicast workaround SIM_MODE-conditional so it cannot
+hide same-segment publishers onboard. See docs/ROBOT-API.md (known divergences)
+and apps/perception/README.md (decisions list).
 """
 
 from __future__ import annotations

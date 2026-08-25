@@ -26,7 +26,8 @@ from bridge.skills._locomotion import (
     LOOP_PERIOD_S,
     MAX_YAW_VEL,
     maybe_report_progress,
-    send_velocity,
+    teleop_conflict,
+    send_velocity_async,
     stop_motion,
 )
 from bridge.skills.task_runtime import get_registry
@@ -50,9 +51,34 @@ async def run(
     from bridge.sdk.state import get_sampler
 
     task = get_registry().create("turn")
+
+    # Checked before the sampler is built, because building one initialises
+    # DDS — and a skill that is about to refuse has no business opening a
+    # connection to the robot in order to say no. It also means this still
+    # answers correctly on a machine whose DDS stack is not up, which is
+    # exactly the situation someone is in when they are working out why
+    # nothing moves.
+    conflict = teleop_conflict()
+    if conflict is not None:
+        task.status = "failed"
+        task.phase = "teleop_active"
+        task.error = conflict
+        task.ended_at = time.time()
+        log.warning("turn.teleop_active", task_id=task.task_id)
+        return task.to_dict()
+
     sampler = get_sampler()
 
     try:
+        conflict = teleop_conflict()
+        if conflict is not None:
+            task.status = "failed"
+            task.phase = "teleop_active"
+            task.error = conflict
+            task.ended_at = time.time()
+            log.warning("turn.teleop_active", task_id=task.task_id)
+            return task.to_dict()
+
         initial = sampler.get_state()
         pose = initial.get("pose")
         if pose is None:
@@ -113,7 +139,7 @@ async def run(
             )
 
             vyaw = max(-MAX_YAW_VEL, min(MAX_YAW_VEL, KP_YAW * err))
-            send_velocity(0.0, 0.0, vyaw, height)
+            await send_velocity_async(0.0, 0.0, vyaw, height)
             await asyncio.sleep(LOOP_PERIOD_S)
 
         task.phase = "stopping"
@@ -154,6 +180,21 @@ async def run(
             duration_s=round(task.ended_at - task.started_at, 2),
         )
         return task.to_dict()
+
+    except asyncio.CancelledError:
+        # See walk_to's matching branch: CancelledError is a BaseException, so
+        # `except Exception` misses it, the stop sequence is skipped, and the
+        # task stays "running" forever in a registry that only reaps finished
+        # ones.
+        task.status = "cancelled"
+        task.phase = "cancelled"
+        task.ended_at = time.time()
+        log.info("turn.cancelled", task_id=task.task_id)
+        try:
+            await asyncio.shield(asyncio.ensure_future(stop_motion(height)))
+        except (Exception, asyncio.CancelledError):
+            pass
+        raise  # never swallow cancellation
 
     except Exception as exc:
         task.status = "failed"

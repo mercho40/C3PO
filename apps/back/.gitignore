@@ -14,4 +14,10 @@ server
 *.log
 
 # Drizzle
-meta/
+#
+# `migrations/meta/` is deliberately NOT ignored. It holds drizzle-kit's journal
+# and per-migration schema snapshots, which are how `generate` computes an
+# incremental diff. With it ignored, a fresh clone has no state and every
+# `drizzle-kit generate` emits a full-schema 0000 that collides with the
+# migrations already applied — which is exactly what happened here on
+# 2026-08-11. Commit it like any other source of truth.

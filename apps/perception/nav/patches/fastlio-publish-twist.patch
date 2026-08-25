@@ -1,0 +1,88 @@
+Subject: [PATCH] fast_lio: publish the IESKF state velocity in nav_msgs/Odometry.twist
+
+Applied by ../Dockerfile with `patch -p1 --forward` inside src/fast_lio, and
+asserted immediately afterwards with `grep -q 'twist.twist.linear'
+src/laserMapping.cpp` — a patch that silently fails to apply is exactly how you
+ship a build that succeeds and a Nav2 that believes the robot never moves.
+
+WHY THIS EXISTS
+FAST-LIO2's publish_odometry() sets pose and pose.covariance and never touches
+twist (grep 'twist' in the stock ROS2 laserMapping.cpp: 0 hits). Nav2's
+controller_server reads the robot's ACTUAL velocity from exactly that field
+(nav_2d_utils::OdomSubscriber), so left at zero DWB samples a velocity space
+anchored at standstill on every cycle.
+
+WHY NOT DIFFERENTIATE THE POSE
+nav_msgs/Odometry.twist is specified in child_frame_id.  Differencing world
+poses yields a WORLD-frame velocity; written unrotated into a child_frame_id
+field it is correct only when the robot faces +x and is swapped/sign-flipped at
+90/180 degrees of yaw.  That is a silent, heading-dependent sign bug that reads
+as "the controller is unstable".  Differentiating 10 Hz poses on a biped and
+then low-passing away the bandwidth is also the wrong signal to begin with.
+
+WHAT THIS DOES INSTEAD
+Publishes the filter's own IESKF state velocity — state_point.vel, already
+IMU-fused at 200 Hz — rotated out of the world frame into the body frame with
+state_point.rot.conjugate().  Angular velocity comes from the last IMU sample of
+the current measurement group minus the estimated gyro bias; the gyro is already
+in the body frame, so it needs no rotation.
+
+WHERE IT GOES, AND WHY THAT IS NOT ARBITRARY
+The insertion is ABOVE `pubOdomAftMapped->publish(odomAftMapped)`. Upstream
+publishes the message and only then fills pose.covariance, so anything written
+after that call lands in the NEXT message rather than this one. (That is an
+upstream bug in its own right — the published covariance is always one cycle
+stale — but it is not ours to fix here.)
+
+SYMBOLS THIS RELIES ON, ALL VERIFIED AGAINST THE PINNED BRANCH
+  state_ikfom state_point   laserMapping.cpp:135
+  MeasureGroup Measures     laserMapping.cpp:133
+  ((SO3, rot)) ((vect3, vel)) ((vect3, bg))   include/use-ikfom.hpp:14,17,18
+  deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu   include/common_lib.h:63
+
+MAINTENANCE NOTE: this hunk was GENERATED against hku-mars/FAST_LIO branch ROS2
+(FASTLIO_REF in ../Dockerfile), not hand-written — an earlier hand-written
+version was rejected because upstream's signature is `SharedPtr pubOdomAftMapped`
+rather than `SharedPtr &`, and the function had moved from 618 to 628. Upstream
+is not tagged and laserMapping.cpp does move. If `patch --forward` rejects this,
+regenerate it against the pinned checkout rather than dropping the change — the
+build assertion exists to make that a loud failure, not to be worked around.
+
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -631,6 +631,35 @@
+     odomAftMapped.child_frame_id = "body";
+     odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
+     set_posestamp(odomAftMapped.pose);
++
++    // C3PO: fill twist, which upstream leaves at zero (grep 'twist' in the
++    // stock file: 0 hits). Nav2's controller_server reads the robot's ACTUAL
++    // velocity from this field via nav_2d_utils::OdomSubscriber, so left at
++    // zero DWB samples a velocity space anchored at standstill every cycle.
++    //
++    // Odometry.twist is specified in child_frame_id ("body"), so the world-
++    // frame IESKF state velocity is rotated INTO the body frame - hence the
++    // conjugate. Do NOT replace this with a pose derivative: differencing
++    // world poses gives a world-frame velocity, and writing that unrotated
++    // into a child_frame_id field is correct only when the robot faces +x and
++    // is swapped/sign-flipped at 90/180 degrees of yaw.
++    //
++    // This MUST stay above the publish() below. Upstream publishes before it
++    // fills pose.covariance, so anything written after that call lands in the
++    // NEXT message, not this one.
++    V3D vel_body(state_point.rot.conjugate() * state_point.vel);
++    odomAftMapped.twist.twist.linear.x = vel_body(0);
++    odomAftMapped.twist.twist.linear.y = vel_body(1);
++    odomAftMapped.twist.twist.linear.z = vel_body(2);
++    // The gyro is already a body-frame rate; only the estimated bias comes off.
++    if (!Measures.imu.empty())
++    {
++        const auto &gyr = Measures.imu.back()->angular_velocity;
++        odomAftMapped.twist.twist.angular.x = gyr.x - state_point.bg(0);
++        odomAftMapped.twist.twist.angular.y = gyr.y - state_point.bg(1);
++        odomAftMapped.twist.twist.angular.z = gyr.z - state_point.bg(2);
++    }
++
+     pubOdomAftMapped->publish(odomAftMapped);
+     auto P = kf.get_P();
+     for (int i = 0; i < 6; i ++)

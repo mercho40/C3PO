@@ -1,133 +1,225 @@
 /**
  * /skills routes — catalogue + invoke + dry-run.
  *
- * GET /skills and GET /skills/:name return the catalogue. POST
- * /skills/:name/invoke validates the body against the skill's TypeBox schema
- * and dispatches to the bridge over MCP (`../bridge/client`). POST
- * /skills/:name/dry-run validates the same way and returns a simulated preview
- * (skill metadata + the would-be invocation) WITHOUT touching the bridge —
- * dispatching for real would move the robot. Confirmation flow per SCRUM-32.
+ * GET /skills and GET /skills/:name return the catalogue, derived live from
+ * the bridge's MCP `listTools()` (see `../skills/catalogue.ts`) rather than
+ * duplicated here. POST /skills/:name/invoke validates the body against the
+ * bridge's own JSON Schema (Ajv, via `../skills/validate.ts` — TypeBox can't
+ * check a plain JSON Schema it didn't author) and dispatches to the bridge
+ * over MCP (`../bridge/client`). POST /skills/:name/dry-run validates the
+ * same way and returns a simulated preview (skill metadata + the would-be
+ * invocation) WITHOUT touching the bridge — dispatching for real would move
+ * the robot. Confirmation flow per SCRUM-32.
+ *
+ * /invoke is a raw low-level control surface (no LLM reasoning in the loop,
+ * unlike /agent) restricted to admins: any session could otherwise dispatch
+ * real robot motion directly over HTTP with zero safety reasoning applied.
+ * Same "tighten before multi-tenant use" gap `/agent` already documents —
+ * here it's more direct, so it's enforced now rather than deferred.
+ *
+ * Exception: `classification: "safety"` skills (today, only stop_everything)
+ * skip the admin check. That's the dashboard's PARAR button's only direct
+ * /invoke call, used by any operator — an e-stop is the one action that
+ * should never get *more* friction than usual, not less accessible than a
+ * skill that can actually put the robot in motion.
+ *
+ * Auth: this plugin guards ALL of its own routes with a single local
+ * `.guard({ auth: true }, ...)` below, and `index.ts` mounts it *outside*
+ * its own outer guard. Reason: `/invoke` needs `user` typed, which requires
+ * the `auth` macro's resolver to run within this plugin's own scope — if
+ * this plugin were also nested inside index.ts's outer guard (like tasks/
+ * state/agent are), the session would resolve twice per request (verified:
+ * two separate `auth.api.getSession()` calls, doubling DB/session-store
+ * load on the one route that actually moves the robot). Every other guarded
+ * route doesn't need typed `user`, so the outer guard alone is still right
+ * for them.
  */
 
 import { Elysia, t } from "elysia";
-import { Value } from "@sinclair/typebox/value";
 
-import { getSkill, listSkills } from "../skills";
+import { getCatalogue, getSkill } from "../skills";
+import { validateArgs } from "../skills/validate";
 import {
   callTool,
   BridgeUnavailableError,
   BridgeToolError,
 } from "../bridge/client";
+import { betterAuth } from "@back/lib/auth-plugin";
+
+//: Skills that must dispatch even when the catalogue cannot be read.
+//:
+//: Deliberately a hardcoded name and not a heuristic: this list exists to keep
+//: the e-stop working when the thing that normally answers "is this a safety
+//: skill?" is exactly what has failed. It is checked against the catalogue's
+//: own classification whenever the catalogue IS available, so the two cannot
+//: drift silently — see the test.
+export const SAFETY_SKILLS = new Set(["stop_everything"]);
 
 export const skillsRoutes = new Elysia({ prefix: "/skills" })
-  .get(
-    "/",
-    () => ({
-      count: listSkills().length,
-      skills: listSkills(),
-    }),
-    {
-      detail: {
-        summary: "List the full skill catalogue.",
-        tags: ["skills"],
-      },
-    },
-  )
-  .get(
-    "/:name",
-    ({ params: { name }, status }) => {
-      const skill = getSkill(name);
-      if (!skill) return status(404, { error: "skill_not_found", name });
-      return skill;
-    },
-    {
-      params: t.Object({ name: t.String() }),
-      detail: {
-        summary: "Get a single skill definition.",
-        tags: ["skills"],
-      },
-    },
-  )
-  .post(
-    "/:name/invoke",
-    async ({ params: { name }, body, status }) => {
-      const skill = getSkill(name);
-      if (!skill) return status(404, { error: "skill_not_found", name });
+  .use(betterAuth)
+  .guard({ auth: true }, (app) =>
+    app
+      .get(
+        "/",
+        async () => {
+          // `source` and `age_seconds` ride the envelope so a consumer can
+          // tell a live catalogue from a cached one. The bridge is on
+          // Wi-Fi, on DHCP, and gets power-cycled; pretending otherwise
+          // would just move the surprise.
+          const snap = await getCatalogue();
+          return {
+            count: snap.skills.length,
+            source: snap.source,
+            age_seconds: snap.ageSeconds,
+            ...(snap.error ? { bridge_error: snap.error } : {}),
+            skills: snap.skills,
+          };
+        },
+        {
+          detail: {
+            summary: "List the full skill catalogue.",
+            tags: ["skills"],
+          },
+        },
+      )
+      .get(
+        "/:name",
+        async ({ params: { name }, status }) => {
+          const skill = await getSkill(name);
+          if (!skill) return status(404, { error: "skill_not_found", name });
+          return skill;
+        },
+        {
+          params: t.Object({ name: t.String() }),
+          detail: {
+            summary: "Get a single skill definition.",
+            tags: ["skills"],
+          },
+        },
+      )
+      .post(
+        "/:name/invoke",
+        async ({ params: { name }, body, status, user }) => {
+          const skill = await getSkill(name);
+          const knownSafety = SAFETY_SKILLS.has(name);
 
-      // Schema validation (SCRUM-57, layer 1): fill declared defaults, then
-      // check the body against the skill's TypeBox params before dispatch.
-      const args = Value.Default(skill.parameters, {
-        ...(body as Record<string, unknown>),
-      }) as Record<string, unknown>;
-      if (!Value.Check(skill.parameters, args)) {
-        return status(422, {
-          error: "invalid_params",
-          name,
-          issues: [...Value.Errors(skill.parameters, args)].map((e) => ({
-            path: e.path,
-            message: e.message,
-          })),
-        });
-      }
+          // A missing catalogue entry is a 404 for everything EXCEPT a skill
+          // we already know is a stop.
+          //
+          // `getSkill` reads the catalogue, which is fetched from the bridge
+          // and cached. On a cold start with the bridge unreachable there is
+          // nothing cached, so the catalogue is empty and every lookup misses
+          // — including `stop_everything`. The dashboard's PARAR button then
+          // answered `skill_not_found`, which reads as a bug in the button
+          // rather than as "the bridge is unreachable", and is the single
+          // worst moment to hand somebody a misleading error.
+          //
+          // The stop does not need the catalogue. It needs to be dispatched.
+          // So a known safety skill skips the lookup and goes straight to the
+          // bridge, where it either works or fails with a transport error that
+          // says what is actually wrong.
+          if (!skill && !knownSafety) {
+            return status(404, { error: "skill_not_found", name });
+          }
 
-      try {
-        return await callTool(name, args);
-      } catch (err) {
-        if (err instanceof BridgeUnavailableError)
-          return status(502, { error: "bridge_unavailable", name });
-        if (err instanceof BridgeToolError)
-          return status(502, { error: "tool_error", name, detail: err.detail });
-        return status(502, { error: "bridge_error", name });
-      }
-    },
-    {
-      params: t.Object({ name: t.String() }),
-      body: t.Record(t.String(), t.Any()),
-      detail: {
-        summary: "Invoke a skill on the bridge (typed, validated dispatch).",
-        tags: ["skills"],
-      },
-    },
-  )
-  .post(
-    "/:name/dry-run",
-    ({ params: { name }, body, status }) => {
-      const skill = getSkill(name);
-      if (!skill) return status(404, { error: "skill_not_found", name });
+          // Admin-only, except safety-classified skills (see file docstring)
+          // — this bypasses the agent's reasoning loop entirely and
+          // dispatches straight to the bridge. `knownSafety` covers the
+          // catalogue being unavailable: an e-stop must not become
+          // admin-gated because a fetch failed.
+          const isSafety = skill
+            ? skill.classification === "safety"
+            : knownSafety;
+          if (!isSafety && user.role !== "admin") {
+            return status(403, {
+              error: "admin_required",
+              message:
+                "Direct skill invocation is restricted to admins. Use /agent to drive the robot through the reasoning agent instead.",
+            });
+          }
 
-      const args = Value.Default(skill.parameters, {
-        ...(body as Record<string, unknown>),
-      }) as Record<string, unknown>;
-      if (!Value.Check(skill.parameters, args)) {
-        return status(422, {
-          error: "invalid_params",
-          name,
-          issues: [...Value.Errors(skill.parameters, args)].map((e) => ({
-            path: e.path,
-            message: e.message,
-          })),
-        });
-      }
+          // Schema validation (SCRUM-57, layer 1): fill the bridge's
+          // declared defaults, then check the body before dispatch. The schema
+          // is plain JSON Schema from the bridge now, so this goes through Ajv
+          // — TypeBox throws on a schema that lacks its own [Kind] symbol.
+          // No catalogue entry means no schema to validate against. That only
+          // happens on the known-safety path above, where the arguments are
+          // empty and the right answer is to dispatch rather than to refuse.
+          let args: Record<string, unknown> = {};
+          if (skill) {
+            const validated = validateArgs(
+              skill.parameters,
+              body as Record<string, unknown>,
+            );
+            if (!validated.ok) {
+              return status(422, {
+                error: "invalid_params",
+                name,
+                issues: validated.issues,
+              });
+            }
+            args = validated.value;
+          }
 
-      // Simulated preview — never dispatches to the bridge.
-      return {
-        dry_run: true,
-        skill: name,
-        would_invoke: { name, params: args },
-        danger_level: skill.dangerLevel,
-        expected_duration_seconds: skill.expectedDurationSeconds,
-        cancellable: skill.cancellable,
-        preconditions: skill.preconditions ?? [],
-        works: skill.works,
-        note: `Simulated. POST /skills/${name}/invoke to execute.`,
-      };
-    },
-    {
-      params: t.Object({ name: t.String() }),
-      body: t.Record(t.String(), t.Any()),
-      detail: {
-        summary: "Dry-run a skill — validated preview, no bridge dispatch.",
-        tags: ["skills"],
-      },
-    },
+          try {
+            return await callTool(name, args);
+          } catch (err) {
+            if (err instanceof BridgeUnavailableError)
+              return status(502, { error: "bridge_unavailable", name });
+            if (err instanceof BridgeToolError)
+              return status(502, {
+                error: "tool_error",
+                name,
+                detail: err.detail,
+              });
+            return status(502, { error: "bridge_error", name });
+          }
+        },
+        {
+          params: t.Object({ name: t.String() }),
+          body: t.Record(t.String(), t.Any()),
+          detail: {
+            summary:
+              "Invoke a skill on the bridge (typed, validated dispatch). Admin-only.",
+            tags: ["skills"],
+          },
+        },
+      )
+      .post(
+        "/:name/dry-run",
+        async ({ params: { name }, body, status }) => {
+          const skill = await getSkill(name);
+          if (!skill) return status(404, { error: "skill_not_found", name });
+
+          const {
+            ok,
+            value: args,
+            issues,
+          } = validateArgs(skill.parameters, body as Record<string, unknown>);
+          if (!ok) {
+            return status(422, { error: "invalid_params", name, issues });
+          }
+
+          // Simulated preview — never dispatches to the bridge.
+          return {
+            dry_run: true,
+            skill: name,
+            would_invoke: { name, params: args },
+            danger_level: skill.dangerLevel,
+            expected_duration_seconds: skill.expectedDurationSeconds,
+            cancellable: skill.cancellable,
+            preconditions: skill.preconditions ?? [],
+            works: skill.works,
+            note: `Simulated. POST /skills/${name}/invoke to execute.`,
+          };
+        },
+        {
+          params: t.Object({ name: t.String() }),
+          body: t.Record(t.String(), t.Any()),
+          detail: {
+            summary: "Dry-run a skill — validated preview, no bridge dispatch.",
+            tags: ["skills"],
+          },
+        },
+      ),
   );

@@ -1,0 +1,62 @@
+# apps/perception is NOT an installable python package, and this file does not
+# try to make it one. Its two source trees are COPIED into container images and
+# run under interpreters this machine does not have:
+#
+#   vision/c3po_vision   python 3.8   (l4t-jetpack:r35.3.1 — JetPack 5's
+#                                      python3-libnvinfer hard-depends
+#                                      `python3 (>= 3.8), python3 (<< 3.9)`)
+#   nav/ws/src/...       python 3.10  (ros:humble-ros-base-jammy, via colcon)
+#
+# What this file DOES declare is the Stage 0 test harness: the subset of the
+# above that is pure enough to run on the Mac with no robot, no DDS, no camera,
+# no CUDA and no ROS. Keeping that subset runnable is a design constraint, not
+# a convenience — every dependency added here is a laptop somebody cannot run
+# the suite on. There is deliberately no cyclonedds, no numpy, no rclpy and no
+# pyrealsense2 below; `tests/conftest.py` explains what it puts on sys.path and
+# why, and `tests/test_report_shape.py` explains why it reads the ROS node as
+# source instead of importing it.
+#
+# Mirrors apps/bridge/pyproject.toml in shape. It differs in exactly two ways,
+# both because of the above: `package = false` (nothing here is built or
+# installed), and no runtime `dependencies` at all.
+
+[project]
+name = "c3po-perception"
+version = "0.1.0"
+description = "C3PO perception: nav + vision container sources, and the tests that run without them."
+# The harness interpreter, not the containers'. `uv run pytest` uses this;
+# anything imported from vision/ must nonetheless stay 3.8-valid, which
+# `from __future__ import annotations` is what buys.
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.7",
+]
+
+[tool.uv]
+# No build backend and nothing to install: the sources ship by COPY in a
+# Dockerfile, and the tests reach them via sys.path in tests/conftest.py.
+package = false
+
+[tool.ruff]
+line-length = 100
+# The floor across both containers, so ruff flags 3.9+ syntax in files that
+# have to run on JetPack 5's python 3.8.
+target-version = "py38"
+
+[tool.ruff.lint.per-file-ignores]
+# `bringup` runs on the ROBOT's system interpreter — 3.8 — to start the
+# containers, so it cannot depend on the venv having been synced. UP006/UP045
+# want `list[str]` and `X | None`, which ruff considers safe here only because
+# of `from __future__ import annotations`. That makes them legal in annotations
+# and still wrong anywhere an annotation is evaluated at runtime, which is a
+# distinction nobody should have to re-derive while editing a bring-up script.
+# typing.List/Optional are unambiguous at the floor this file targets.
+"bringup/*.py" = ["UP006", "UP045"]
+"tests/test_bringup_*.py" = ["UP006", "UP045"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
