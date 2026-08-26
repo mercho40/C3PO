@@ -395,11 +395,97 @@ the firmware's own `duration` deadman.
 
 ⚠️ **The teleop stream has never run against the robot.**
 
+#### What still needs confirming with the headset on
+
+Written and tested off-robot, never worn. Each line is a thing an operator can
+only verify from inside a session, and each has a specific way of being wrong
+that looks fine from outside.
+
+| Confirm                 | Wrong looks like                                                         |
+| ----------------------- | ------------------------------------------------------------------------ |
+| Black surround in VR    | the picture floating in the compositor's own background, not a lit frame |
+| Panel top-right         | anywhere else — bottom-centre competes with where the robot is walking   |
+| Readiness banner        | blank while the robot refuses gestures, walk and head-turn all at once   |
+| Lidar radar bottom-left | an empty dial with no reason on it, or dots on the wrong side            |
+| Thumbstick walk         | one impulse then nothing — that was the 8 s latch, now liveness-gated    |
+| 8 s alert band          | walking stops dead with nothing on screen naming the latch               |
+
+The radar has one reading worth checking deliberately: **stand something to the
+robot's left and confirm the dot appears on the LEFT of the dial.** REP-103 puts
++yaw counterclockwise, the radar is heading-up, and a sign flip there is the one
+bug that looks entirely plausible — dots, rings, a robot in the middle — while
+telling someone the wall on their left is on their right.
+
 ### `apps/perception` → G1 Jetson
 
 Built with `scripts/robot/build_perception`, run with `perception_up <stage>` — and
 never by `run_c3po` or a boot path (§4). Architecture, stages, and thresholds:
 `apps/perception/README.md`.
+
+### Stage 3 + Stage 4, start to finish 🔧
+
+Both are **sensor-free**: they leave the Livox and the RealSense with gemm, so
+neither needs a window negotiated with the other team. This is the sequence, in
+the order that keeps each check interpretable.
+
+```bash
+~/c3po/scripts/robot/perception_up fake
+C3PO_NO_TAKEOVER=1 ~/c3po/scripts/robot/run_c3po   # NO_TAKEOVER: gemm stays up
+~/c3po/scripts/robot/c3po_health
+```
+
+`c3po_health` is the whole Stage 3 crossing in one line:
+
+```
+lidar ring    8/120 bearings in base_footprint
+```
+
+Eight, because the fake scan is eight bearings 45° apart — verified off-robot by
+`apps/perception/tests/test_fake_scan_ring_contract.py`, so a different number
+here is a real finding rather than a surprise. `base_footprint` matters too: the
+headset refuses any other frame rather than silently rotating the room.
+
+Then the two kills, **one at a time**, so it is clear which flipped what:
+
+```bash
+docker exec c3po-perception-nav pkill -f '/c3po/objects'   # detector offline
+docker exec c3po-perception-nav pkill -f '/scan'           # lidar offline
+```
+
+Match on the **topic alone**. `pkill -f 'topic pub /c3po/objects'` looks right
+and never matches — `-r 4` sits between the two words — so it exits 1 in
+silence, nothing dies, and "absent is not empty" appears to be broken while
+being fine. Already cost one session.
+
+| after killing   | what must happen                                                      |
+| --------------- | --------------------------------------------------------------------- |
+| `/c3po/objects` | summary flips to `detector: offline` with a note, `objects: []`       |
+| `/scan`         | `/telemetry/scan` keeps the last ring, `age_s` climbing, then `stale` |
+
+The second is the first real exercise of `SCAN_STALE_AFTER_S`. A **blanked**
+ring is a bug: an old ring dimmed and labelled is correct, an empty dial is the
+one thing this display must never say by accident.
+
+Stage 4 adds Nav2 over the same synthetic sources, brought up **unconfigured**:
+
+```bash
+~/c3po/scripts/robot/perception_up nav2-fake
+docker exec c3po-perception-nav ros2 service call \
+  /lifecycle_manager_navigation/manage_nodes \
+  nav2_msgs/srv/ManageLifecycleNodes "{command: 0}"
+curl -s 127.0.0.1:8001/telemetry/gate
+```
+
+Send one goal **with the gate closed**. The reading that matters is the
+conjunction, and either half alone is misleading:
+
+```
+cmd_vel_received        climbing   Nav2 is planning and publishing
+dropped_while_disabled  climbing   every one of them was refused
+last_sent               null       nothing ever reached the robot
+```
+
+A SIGILL here means MPPI got installed by accident.
 
 ---
 
