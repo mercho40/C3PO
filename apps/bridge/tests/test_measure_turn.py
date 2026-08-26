@@ -96,3 +96,91 @@ class TestVerdict:
     def test_a_run_outside_tolerance_is_counted_by_magnitude_not_sign(self):
         # Overshoot and undershoot are both failures to stop where promised.
         assert "0 inside" in verdict([{"residual_deg": -9.0}], 3.0)
+
+
+class TestItCallsToolsThatActuallyExist:
+    """The script's tool names and argument names, against the server's own.
+
+    Verified live once, against a stub bridge on 2026-08-25: `turn` declares
+    delta_yaw_radians / timeout_s / tolerance_degrees, and the exact call this
+    script makes returns status ok. This keeps that true.
+
+    Worth pinning because of WHERE the failure would land. A renamed argument
+    is an MCP error at the moment the operator has already confirmed, is
+    standing next to the robot, and is watching it instead of the terminal —
+    the one place in this project where a typo costs more than a rerun.
+    """
+
+    @staticmethod
+    def _tool_calls():
+        """(tool_name, {arg names}) for every `call(session, "x", {...})`."""
+        import ast
+
+        src = (
+            Path(__file__).resolve().parents[1] / "scripts" / "measure_turn.py"
+        ).read_text()
+        out = []
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Name) and fn.id == "call"):
+                continue
+            if len(node.args) < 3 or not isinstance(node.args[1], ast.Constant):
+                continue
+            name = node.args[1].value
+            keys = set()
+            if isinstance(node.args[2], ast.Dict):
+                keys = {
+                    k.value
+                    for k in node.args[2].keys
+                    if isinstance(k, ast.Constant)
+                }
+            out.append((name, keys))
+        return out
+
+    @staticmethod
+    def _declared_params(tool: str):
+        """The parameter names of an `async def <tool>(...)` in mcp_server."""
+        import ast
+
+        src = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "bridge"
+            / "mcp_server.py"
+        ).read_text()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name == tool:
+                a = node.args
+                return {
+                    arg.arg
+                    for arg in list(a.args) + list(a.kwonlyargs)
+                    if arg.arg not in ("ctx", "self")
+                }
+        return None
+
+    def test_the_scan_found_the_calls(self):
+        calls = self._tool_calls()
+        assert calls, "no call(session, ...) found — the AST scan has drifted"
+        assert any(name == "turn" for name, _ in calls)
+        assert any(name == "get_state" for name, _ in calls)
+
+    def test_every_tool_it_calls_exists_on_the_server(self):
+        for name, _ in self._tool_calls():
+            assert self._declared_params(name) is not None, (
+                "measure_turn calls the tool {!r}, which mcp_server does not "
+                "define. This fails at the moment the operator has already "
+                "confirmed and is watching the robot.".format(name)
+            )
+
+    def test_every_argument_it_sends_is_one_the_tool_accepts(self):
+        for name, keys in self._tool_calls():
+            declared = self._declared_params(name)
+            assert declared is not None
+            unknown = sorted(keys - declared)
+            assert not unknown, (
+                "measure_turn sends {} to {!r}, which accepts {}.".format(
+                    unknown, name, sorted(declared)
+                )
+            )
