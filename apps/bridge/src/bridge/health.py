@@ -91,12 +91,29 @@ def assess(
     """Pure. Probe results in, a report out."""
     checks: List[Check] = []
 
+    gate = _parse(gate_json)
+
+    # A PIDFILE IS NOT THE ONLY WAY TO BE ALIVE, and believing otherwise made
+    # this report call a working bridge DOWN on 2026-08-27 while it was serving
+    # requests. The unit has had two shapes: `Type=forking` via run_c3po, which
+    # writes ~/.c3po/run/bridge.pid, and `Type=exec` starting the interpreter
+    # directly, which writes nothing. Under the second, the pidfile is whatever
+    # a previous forking run happened to leave behind — three days stale, in
+    # the case that caught this.
+    #
+    # So the pidfile is used when it is TRUSTWORTHY (it names a live process)
+    # and otherwise the answer comes from the bridge itself: a parsed reply on
+    # /telemetry/gate is proof of life that no lifecycle bookkeeping can argue
+    # with. Saying DOWN for a process that just answered is the same class of
+    # error as this module's original sin — a confident wrong reading of the
+    # one field somebody checks before trusting the stack.
     if bridge_pid:
         checks.append(Check("bridge", "running (pid {})".format(bridge_pid)))
+    elif gate is not None:
+        checks.append(Check("bridge", "running (answering, no pidfile)"))
     else:
         checks.append(Check("bridge", "DOWN", problem=True))
 
-    gate = _parse(gate_json)
     if gate is None:
         checks.append(Check("bridge http", "NOT ANSWERING on :{}".format(port), problem=True))
     else:

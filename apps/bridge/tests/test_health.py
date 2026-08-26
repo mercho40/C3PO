@@ -311,3 +311,47 @@ def test_a_broken_ring_is_never_repaired_by_restarting_the_bridge():
     base["perception_containers"] = ["c3po-perception-nav"]
     report = assess(gate_json=ARMED, **base)
     assert "c3po-bridge" not in repairs_for(report)
+
+
+# --- liveness detection -----------------------------------------------------
+#
+# Caught on the robot 2026-08-27: c3po_health printed "bridge DOWN" while the
+# bridge was answering /telemetry/scan and /telemetry/gate. The unit had been
+# switched to Type=exec, which writes no pidfile, so the only pidfile on disk
+# was a three-day-old leftover naming a dead process.
+
+
+def test_a_bridge_that_answers_is_running_even_with_no_pidfile():
+    """Proof of life beats lifecycle bookkeeping.
+
+    Type=exec starts the interpreter directly and writes nothing. Reporting
+    DOWN for a process that just returned a gate reading is the same class of
+    error as this module's original sin.
+    """
+    report = assess(gate_json=ARMED, **dict(BASE, bridge_pid=None))
+    assert "bridge" not in problem_names(report)
+    assert "answering" in detail_for(report, "bridge")
+
+
+def test_a_live_pidfile_is_still_preferred_when_present():
+    report = assess(gate_json=ARMED, **dict(BASE, bridge_pid=4242))
+    assert "pid 4242" in detail_for(report, "bridge")
+
+
+def test_no_pidfile_and_no_answer_is_still_DOWN():
+    """The one case that must stay a problem.
+
+    Nothing on the port and nothing in the pidfile is a dead bridge, and a
+    dead bridge means no stop_everything — which is the reason this check
+    exists at all.
+    """
+    report = assess(gate_json=None, **dict(BASE, bridge_pid=None))
+    assert "bridge" in problem_names(report)
+    assert "DOWN" in detail_for(report, "bridge")
+
+
+def test_a_stale_pidfile_does_not_resurrect_a_dead_bridge():
+    """`_read_pid` returns None for a pid that is not alive, so this is the
+    same input as "no pidfile" — asserted so the two paths cannot drift."""
+    report = assess(gate_json=None, **dict(BASE, bridge_pid=None))
+    assert "DOWN" in detail_for(report, "bridge")
