@@ -1151,26 +1151,49 @@ async def gesture(
             ),
         ),
     ],
+    auto_release: Annotated[
+        bool,
+        Field(
+            description=(
+                "True (default): after the gesture completes, hold the pose "
+                "hold_s seconds and then send release_arm (99) automatically, "
+                "so the arm is never left latched under motor load. False: "
+                "leave the latch standing — you then OWN sending release_arm."
+            ),
+        ),
+    ] = True,
+    hold_s: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            le=15.0,
+            description="Seconds to hold the final pose before the automatic release.",
+        ),
+    ] = 2.0,
 ) -> dict:
     """Perform any preset arm gesture from the robot's own action catalogue — the arms move.
 
     The full table the G1's firmware reports via GetActionList (23 preset
     actions), not just the handful with dedicated tools. Same verified RPC
     path as `wave` (arm service, api_id=7106); the call blocks until the
-    motion completes (the service acks on completion, up to ~15 s).
+    motion completes (the service acks on completion, up to ~15 s), then
+    holds and auto-releases per the parameters above.
 
     Gating is per action: `turn_back_wave` needs a walk program (FSM 500/501);
     six actions need a 29/27-DoF body, which this robot is. A sustained
-    gesture LATCHES the arm afterwards — a different follow-up gesture fails
-    with 7401 until you run `gesture("release_arm")` (or the release_arm
-    tool). Refused while move_arm/teleop holds the arms (rt/arm_sdk
-    contention, error 7400).
+    gesture LATCHES the arm holding its final pose — the auto-release exists
+    because a latched arm left standing is servos under load with nothing
+    scheduled to let go (learned live 2026-08-27). Refused while
+    move_arm/teleop holds the arms (rt/arm_sdk contention, error 7400).
 
     Isaac Sim: logged only (sim doesn't subscribe to `rt/api/arm/request`).
     """
     from bridge.skills.gesture import run as run_gesture
 
-    return {**await run_gesture(name, ctx), "env": SIM_MODE}
+    return {
+        **await run_gesture(name, ctx, auto_release=auto_release, hold_s=hold_s),
+        "env": SIM_MODE,
+    }
 
 
 # ---------------------------------------------------------------------------

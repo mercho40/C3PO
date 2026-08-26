@@ -26,6 +26,13 @@ Two contention rules this must respect (docs/ROBOT-API.md §6.4):
 - A sustained gesture LATCHES the arm on completion: the next different id is
   refused with 7401 until RELEASE_ARM (99) — exposed here as `release_arm`,
   and as its own tool — or the same id repeats.
+
+Because of that latch, `run` RELEASES BY DEFAULT: after a successful gesture
+it holds the final pose briefly (`hold_s`) and then sends 99 itself. Learned
+on hardware 2026-08-27: `heart_both_hands` was dispatched, the follow-up
+release never landed (the robot power-cycled mid-session), and the arms were
+left actively holding the pose under motor load with nothing scheduled to let
+go. A latched arm must never depend on a second tool call arriving.
 """
 
 from __future__ import annotations
@@ -72,13 +79,32 @@ def _arm_sdk_engaged() -> bool:
         return False
 
 
-async def run(name: str, ctx: Any | None = None) -> dict[str, Any]:
+#: How long a successful gesture's final pose is held before the automatic
+#: release, and the cap on what a caller may ask for. The cap matters more
+#: than the default: an unbounded hold is exactly the latched-arm hazard the
+#: auto-release exists to close.
+DEFAULT_HOLD_S = 2.0
+MAX_HOLD_S = 15.0
+
+
+async def run(
+    name: str,
+    ctx: Any | None = None,
+    auto_release: bool = True,
+    hold_s: float = DEFAULT_HOLD_S,
+) -> dict[str, Any]:
     """Dispatch one preset gesture by firmware name. Returns the task dict.
 
     Mirrors `_g1_request.run_g1_request`'s three-way SIM_MODE branch — stub /
     logged-only sim / real dispatch — with the catalogue lookup and the
     rt/arm_sdk contention check in front.
+
+    On a successful real dispatch (and unless the gesture IS release_arm),
+    the final pose is held for `hold_s` and then RELEASE_ARM (99) is sent
+    automatically. `auto_release=False` opts out and leaves the latch to the
+    caller — who then owns sending the release.
     """
+    hold_s = max(0.0, min(MAX_HOLD_S, float(hold_s)))
     normalized = name.strip().lower()
     gesture = GESTURE_CATALOGUE.get(normalized)
 
@@ -194,6 +220,37 @@ async def run(name: str, ctx: Any | None = None) -> dict[str, Any]:
                     "7401: the arm is latched holding the previous action — "
                     "send release_arm (id 99) or repeat the same gesture."
                 )
+
+        # The auto-release. Only after a SUCCESSFUL non-release gesture: a
+        # failed dispatch latched nothing new, and releasing after somebody
+        # else's failure would be this task exceeding its own footprint.
+        if code == 0 and auto_release and gesture != g1_protocol.Gesture.RELEASE_ARM:
+            if hold_s > 0:
+                task.phase = "holding_pose"
+                await asyncio.sleep(hold_s)
+            release_code, _ = await asyncio.to_thread(
+                g1_rpc.call_arm, int(g1_protocol.Gesture.RELEASE_ARM)
+            )
+            task.phase = "released" if release_code == 0 else "release_failed"
+            task.result["held_s"] = hold_s
+            task.result["release_rpc_code"] = release_code
+            if release_code != 0:
+                # The gesture itself succeeded, so status stays completed —
+                # but a standing latch is exactly what must not pass silently.
+                task.result["note"] = (
+                    f"the gesture ran but the automatic release answered rpc "
+                    f"{release_code}; the arm may still be latched holding the "
+                    "pose — send gesture('release_arm')."
+                )
+                log.warning(
+                    "gesture.auto_release_failed", name=normalized, rpc_code=release_code
+                )
+        elif code == 0 and not auto_release and gesture != g1_protocol.Gesture.RELEASE_ARM:
+            task.result["note"] = (
+                "auto_release=False: the arm is latched holding this pose "
+                "until gesture('release_arm') is sent."
+            )
+
         task.ended_at = time.time()
         return task.to_dict()
 

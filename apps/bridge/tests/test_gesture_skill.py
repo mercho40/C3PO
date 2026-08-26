@@ -44,16 +44,79 @@ async def test_stub_mode_is_honest_and_carries_gating(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_real_mode_dispatches_the_catalogue_id(monkeypatch):
+async def test_real_mode_dispatches_then_auto_releases(monkeypatch):
+    """The default path: gesture, hold, release_arm — the latch never stands.
+
+    Learned on hardware 2026-08-27: heart_both_hands was dispatched, the
+    follow-up release never arrived (robot power-cycled mid-session), and the
+    arms were left actively holding the pose under motor load."""
     monkeypatch.setattr(gesture, "SIM_MODE", "real")
     sent: list[int] = []
     monkeypatch.setattr(g1_rpc, "call_arm", lambda g: sent.append(g) or (0, ""))
 
-    result = await gesture.run("high_five")
+    result = await gesture.run("high_five", hold_s=0.0)
 
-    assert sent == [int(g1_protocol.Gesture.HIGH_FIVE)]
+    assert sent == [
+        int(g1_protocol.Gesture.HIGH_FIVE),
+        int(g1_protocol.Gesture.RELEASE_ARM),
+    ]
     assert result["status"] == "completed"
+    assert result["phase"] == "released"
+    assert result["result"]["release_rpc_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_release_false_leaves_the_latch_and_says_so(monkeypatch):
+    monkeypatch.setattr(gesture, "SIM_MODE", "real")
+    sent: list[int] = []
+    monkeypatch.setattr(g1_rpc, "call_arm", lambda g: sent.append(g) or (0, ""))
+
+    result = await gesture.run("heart_both_hands", auto_release=False)
+
+    assert sent == [int(g1_protocol.Gesture.HEART_BOTH_HANDS)]
     assert result["phase"] == "dispatched"
+    assert "latched" in result["result"]["note"]
+
+
+@pytest.mark.asyncio
+async def test_release_arm_itself_is_not_double_released(monkeypatch):
+    monkeypatch.setattr(gesture, "SIM_MODE", "real")
+    sent: list[int] = []
+    monkeypatch.setattr(g1_rpc, "call_arm", lambda g: sent.append(g) or (0, ""))
+
+    result = await gesture.run("release_arm", hold_s=0.0)
+
+    assert sent == [int(g1_protocol.Gesture.RELEASE_ARM)]
+    assert result["phase"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_failed_auto_release_is_reported_loudly(monkeypatch):
+    """A gesture that ran but could not release is a standing latch — the
+    result must say so instead of reading as a clean success."""
+    monkeypatch.setattr(gesture, "SIM_MODE", "real")
+    codes = iter([(0, ""), (7401, None)])
+    monkeypatch.setattr(g1_rpc, "call_arm", lambda g: next(codes))
+
+    result = await gesture.run("hug", hold_s=0.0)
+
+    assert result["status"] == "completed"  # the gesture itself did run
+    assert result["phase"] == "release_failed"
+    assert "latched" in result["result"]["note"]
+
+
+@pytest.mark.asyncio
+async def test_failed_gesture_does_not_auto_release(monkeypatch):
+    """A refused dispatch latched nothing new; sending 99 after somebody
+    else's failure would exceed this task's own footprint."""
+    monkeypatch.setattr(gesture, "SIM_MODE", "real")
+    sent: list[int] = []
+    monkeypatch.setattr(g1_rpc, "call_arm", lambda g: sent.append(g) or (7404, None))
+
+    result = await gesture.run("turn_back_wave", hold_s=0.0)
+
+    assert sent == [int(g1_protocol.Gesture.TURN_BACK_WAVE)]
+    assert result["status"] == "failed"
 
 
 @pytest.mark.asyncio
