@@ -57,6 +57,17 @@ DEFAULT_URL = "http://127.0.0.1:8001/mcp"
 #: does not turn with my head" and three other symptoms on 2026-08-21.
 WALK_POSTURES = ("walk", "walk_waist", "run")
 
+#: Yaw movement below this between two samples counts as stopped, in degrees.
+#: Coarser than the tolerance being measured on purpose: this decides when the
+#: BODY has finished, not whether the skill was accurate.
+SETTLE_EPS_DEG = 0.15
+
+#: Gap between settle samples, and the cap on waiting. The cap matters — a
+#: robot that never stops must not hang the measurement in front of somebody
+#: holding an e-stop.
+SETTLE_INTERVAL_S = 0.5
+SETTLE_MAX_S = 12.0
+
 
 class Aborted(Exception):
     """Operator declined a stage, or a precondition failed."""
@@ -93,6 +104,41 @@ def wrap_pi(radians: float) -> float:
     ruled out and send someone chasing it a second time.
     """
     return (radians + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def settled(previous: float, current: float, eps_deg: float = SETTLE_EPS_DEG) -> bool:
+    """Has the body stopped moving between two yaw samples?
+
+    Wrapped, because a settle that straddles +/-pi would otherwise read as a
+    full rotation and never converge — the same trap `wrap_pi` exists for.
+    """
+    return abs(math.degrees(wrap_pi(current - previous))) < eps_deg
+
+
+async def settle_yaw(read_yaw, sleep) -> tuple:
+    """Wait for the rotation to actually stop. Returns (yaw, seconds waited).
+
+    THE FIXED 1.5 s SLEEP THIS REPLACES PRODUCED A WRONG NUMBER, measured on
+    the robot 2026-08-26. `turn` gave up at a 3.76 deg residual and the body
+    coasted a further ~3.7 deg after it stopped commanding, landing within
+    0.002 deg of the target. Sampling at a constant 1.5 s caught the robot
+    mid-coast and recorded the skill as missing a target it actually hit.
+
+    The firmware forgets a setpoint after 1 s and a walking humanoid does not
+    stop dead, so how long settling takes is a property of the body and the
+    speed it was doing — not a constant anybody can pick correctly in advance.
+    So: poll until it stops, and cap it.
+    """
+    waited = 0.0
+    previous = await read_yaw()
+    while waited < SETTLE_MAX_S:
+        await sleep(SETTLE_INTERVAL_S)
+        waited += SETTLE_INTERVAL_S
+        current = await read_yaw()
+        if settled(previous, current):
+            return current, waited
+        previous = current
+    return previous, waited
 
 
 def confirm(prompt: str) -> None:
@@ -178,8 +224,14 @@ async def one_run(session: ClientSession, degrees: float, timeout_s: float) -> d
     # Settle before reading: the firmware forgets a setpoint after 1 s, and
     # sampling while the body is still coasting measures the coast, not the
     # stop. The stopping behaviour is the thing under test.
-    await asyncio.sleep(1.5)
-    after = yaw_of(await call(session, "get_state", {}))
+    async def _read_yaw() -> float:
+        return yaw_of(await call(session, "get_state", {}))
+
+    after, settle_s = await settle_yaw(_read_yaw, asyncio.sleep)
+    if settle_s >= SETTLE_MAX_S:
+        print(f"    ! still moving after {settle_s:.1f}s — the number below may be mid-coast")
+    else:
+        print(f"    settled in {settle_s:.1f}s")
 
     achieved = wrap_pi(after - before)
     commanded = math.radians(degrees)
@@ -201,7 +253,15 @@ async def one_run(session: ClientSession, degrees: float, timeout_s: float) -> d
         "residual_deg": round(math.degrees(residual), 2),
         "ratio": round(ratio, 2) if math.isfinite(ratio) else None,
         "elapsed_s": round(elapsed, 1),
+        "settle_s": round(settle_s, 1),
         "status": result.get("status"),
+        # The skill's OWN verdict, which is not the same question as whether
+        # the residual is small. On 2026-08-26 it reported reached=false /
+        # phase=timeout for a rotation that settled on target: it ran out of
+        # time rather than deciding it had arrived, and "converges and then
+        # stops" is the property works_real would be asserting.
+        "reached": (result.get("result") or {}).get("reached"),
+        "phase": (result.get("result") or {}).get("phase") or result.get("phase"),
     }
 
 
@@ -215,10 +275,31 @@ def verdict(runs: list, tolerance_deg: float) -> str:
     """
     if not runs:
         return "NOTHING MEASURED — works_real stays False."
-    converged = [r for r in runs if abs(r["residual_deg"]) <= tolerance_deg]
+
+    # TWO CONDITIONS, AND THE SECOND IS THE ONE THAT MATTERS.
+    #
+    # A small residual only says the body ended up near the target. It does not
+    # say the SKILL decided it had arrived — and that decision is the entire
+    # untested part. On 2026-08-26 a rotation reported reached=false /
+    # phase=timeout and then coasted to within 0.002 deg of its target: the
+    # body succeeded and the loop did not. Counting that as convergence would
+    # flip works_real on the strength of momentum.
+    def converged_run(r):
+        if abs(r["residual_deg"]) > tolerance_deg:
+            return False
+        return r.get("reached") is not False
+
+    converged = [r for r in runs if converged_run(r)]
+    timed_out = [r for r in runs if r.get("reached") is False]
     lines = [
-        f"{len(runs)} run(s), {len(converged)} inside {tolerance_deg}° tolerance.",
+        f"{len(runs)} run(s), {len(converged)} converged inside {tolerance_deg}°.",
     ]
+    if timed_out:
+        lines.append(
+            f"{len(timed_out)} run(s) reported reached=false — the skill ran out of "
+            "time rather than deciding it had arrived. Raise --timeout-s and "
+            "re-measure; a body that drifts onto target is not a loop that stops."
+        )
     if len(converged) == len(runs) and len(runs) >= 2:
         lines.append(
             "The loop converged and stopped every time it was watched. That is "

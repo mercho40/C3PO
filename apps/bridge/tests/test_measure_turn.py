@@ -15,7 +15,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from measure_turn import Aborted, verdict, wrap_pi, yaw_of  # noqa: E402
+from measure_turn import (  # noqa: E402
+    Aborted,
+    settle_yaw,
+    settled,
+    verdict,
+    wrap_pi,
+    yaw_of,
+)
 
 
 class TestWrapPi:
@@ -95,7 +102,7 @@ class TestVerdict:
 
     def test_a_run_outside_tolerance_is_counted_by_magnitude_not_sign(self):
         # Overshoot and undershoot are both failures to stop where promised.
-        assert "0 inside" in verdict([{"residual_deg": -9.0}], 3.0)
+        assert "0 converged" in verdict([{"residual_deg": -9.0}], 3.0)
 
 
 class TestItCallsToolsThatActuallyExist:
@@ -184,3 +191,84 @@ class TestItCallsToolsThatActuallyExist:
                     unknown, name, sorted(declared)
                 )
             )
+
+
+class TestSettling:
+    """Measured on the robot 2026-08-26, and it changed the number.
+
+    `turn` gave up at a 3.76 deg residual; the body then coasted ~3.7 deg after
+    the commanding stopped and landed within 0.002 deg of the target. The old
+    fixed 1.5 s sleep sampled mid-coast and recorded the skill as missing a
+    target it had actually hit.
+    """
+
+    def test_a_settle_across_pi_is_not_read_as_a_full_rotation(self):
+        # The same trap wrap_pi exists for. Unwrapped, this pair reads as
+        # ~360 deg of movement and the settle would never converge — it would
+        # burn the whole cap on a robot standing perfectly still.
+        assert settled(math.radians(179.95), math.radians(-179.95)) is True
+
+    def test_movement_is_not_mistaken_for_stillness(self):
+        assert settled(0.0, math.radians(2.0)) is False
+
+    @staticmethod
+    def _run(readings):
+        """Drive settle_yaw off a scripted list of yaw samples."""
+        import asyncio
+
+        seq = list(readings)
+
+        async def read_yaw():
+            return seq.pop(0) if len(seq) > 1 else seq[0]
+
+        async def sleep(_seconds):
+            return None
+
+        return asyncio.run(settle_yaw(read_yaw, sleep))
+
+    def test_it_waits_for_the_coast_to_finish(self):
+        # Still moving for three samples, then stopped.
+        yaw, waited = self._run(
+            [math.radians(d) for d in (0.0, 2.0, 3.5, 4.0, 4.0, 4.0)]
+        )
+        assert math.degrees(yaw) == pytest.approx(4.0, abs=0.01)
+        assert waited > 0
+
+    def test_it_gives_up_rather_than_hanging_in_front_of_an_operator(self):
+        """A robot that never stops must not block the measurement forever.
+
+        Somebody is standing next to it holding an e-stop.
+        """
+        from measure_turn import SETTLE_MAX_S
+
+        forever = [math.radians(i * 5.0) for i in range(200)]
+        _yaw, waited = self._run(forever)
+        assert waited >= SETTLE_MAX_S
+
+
+class TestVerdictUsesTheSkillsOwnAnswer:
+    """A small residual is not the same claim as a loop that converged."""
+
+    def test_a_timeout_that_drifts_onto_target_is_not_convergence(self):
+        # Exactly the 2026-08-26 run: residual well inside tolerance, and the
+        # skill itself said reached=false because it ran out of time. Counting
+        # it would flip works_real on the strength of momentum.
+        out = verdict([{"residual_deg": 1.0, "reached": False}], 3.0)
+        assert "flip it" not in out
+        assert "reached=false" in out
+
+    def test_it_says_what_to_change(self):
+        out = verdict([{"residual_deg": 1.0, "reached": False}], 3.0)
+        assert "--timeout-s" in out
+
+    def test_clean_runs_still_license_the_flag(self):
+        out = verdict(
+            [{"residual_deg": 1.0, "reached": True}, {"residual_deg": -2.0, "reached": True}],
+            3.0,
+        )
+        assert "flip it" in out
+
+    def test_a_run_with_no_reached_field_is_judged_on_residual_alone(self):
+        """Older records, and stub runs, carry no `reached`. Don't fail them."""
+        out = verdict([{"residual_deg": 1.0}, {"residual_deg": 0.5}], 3.0)
+        assert "flip it" in out
