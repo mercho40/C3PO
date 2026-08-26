@@ -372,29 +372,77 @@ function measureGrip(frame: XRFrame, hand: XRHand, space: XRSpace): number {
  * Returns the error if drawing threw, so the caller can drop the camera
  * without losing the head pose it is in the middle of sampling.
  */
+export type XrLayer = {
+  draw(vpWidth?: number, vpHeight?: number): void;
+};
+
+/**
+ * Which layers threw this frame. `null` per layer means it drew.
+ *
+ * ONE OBJECT INSTEAD OF ONE ERROR, because the layers must fail
+ * independently. See `drawPerEye`.
+ */
+export type LayerFailures = {
+  camera: unknown | null;
+  menu: unknown | null;
+  scan: unknown | null;
+};
+
 export function drawPerEye(
   gl: WebGLRenderingContext,
   layer: XRWebGLLayer,
   pose: XRViewerPose,
-  camera: { draw(opaque: boolean, vpWidth?: number, vpHeight?: number): void },
+  /**
+   * Null when no camera is configured at all. The panels still draw — see the
+   * failure-isolation note below; a headset with no picture is exactly when
+   * an operator most needs to be told why.
+   */
+  camera: {
+    draw(opaque: boolean, vpWidth?: number, vpHeight?: number): void;
+  } | null,
   opaque: boolean,
   /**
    * Drawn after the camera, into the same viewport, so it sits over the
    * picture rather than under it. Optional: sessions without a menu pass
    * nothing and this is a no-op.
    */
-  menu?: { draw(vpWidth?: number, vpHeight?: number): void } | null,
+  menu?: XrLayer | null,
   /**
    * The lidar radar, drawn in the opposite corner from the menu. Optional for
    * the same reason: a session without perception passes nothing.
    */
-  scan?: { draw(vpWidth?: number, vpHeight?: number): void } | null,
-): unknown | null {
+  scan?: XrLayer | null,
+): LayerFailures {
+  // EACH LAYER GETS ITS OWN try, AND THIS IS THE POINT.
+  //
+  // One try around all three meant a camera shader failure took the menu and
+  // the radar with it — and the caller, which nulls `#camera` on a failure,
+  // then stopped calling this at all because the whole block was gated on the
+  // camera existing. So the single most likely GL failure silently removed
+  // the readiness banner that says why the robot will not move and the radar
+  // that says what is behind it, at the exact moment the operator lost the
+  // picture and needed both. Three layers, three failures, three decisions.
+  const failures: LayerFailures = { camera: null, menu: null, scan: null };
+
+  const attempt = (
+    key: keyof LayerFailures,
+    draw: () => void,
+    what: string,
+  ): void => {
+    // Already broken this frame: do not call it again for the second eye.
+    if (failures[key]) return;
+    try {
+      draw();
+    } catch (err) {
+      failures[key] = err ?? new Error(`${what} draw failed`);
+    }
+  };
+
   for (const view of pose.views) {
     const vp = layer.getViewport(view);
     if (!vp) continue;
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
-    try {
+    if (camera) {
       // The camera IS the view in VR; in passthrough it is a heads-up layer
       // over the room, so it does not paint over what the operator can see.
       //
@@ -402,14 +450,16 @@ export function drawPerEye(
       // aspect-fitted to it. Setting the viewport alone stretches the frame to
       // the eye's shape, which is how the first real session got a picture
       // that was live, correct, and visibly deformed.
-      camera.draw(opaque, vp.width, vp.height);
-      menu?.draw(vp.width, vp.height);
-      scan?.draw(vp.width, vp.height);
-    } catch (err) {
-      return err ?? new Error("camera draw failed");
+      attempt(
+        "camera",
+        () => camera.draw(opaque, vp.width, vp.height),
+        "camera",
+      );
     }
+    if (menu) attempt("menu", () => menu.draw(vp.width, vp.height), "menu");
+    if (scan) attempt("scan", () => scan.draw(vp.width, vp.height), "scan");
   }
-  return null;
+  return failures;
 }
 
 /** What an overlay root looked like before the session took it over. */
@@ -723,10 +773,14 @@ export class XrTeleopSession {
       const layer = new XRWebGLLayer(session, gl);
       await session.updateRenderState({ baseLayer: layer });
 
+      // The panels are NOT conditional on a camera. A session started with no
+      // stream configured used to get an entirely blank headset — no picture,
+      // and also no readiness banner explaining that, and no radar. The camera
+      // is the thing that might be absent; the reasons it is absent are not.
+      this.#menu = new MenuLayer(gl);
+      this.#scan = new ScanLayer(gl);
       if (this.#options.camera) {
         this.#camera = new CameraLayer(gl);
-        this.#menu = new MenuLayer(gl);
-        this.#scan = new ScanLayer(gl);
         // The URL arrives via setCameraStream(), possibly before this point —
         // apply whatever the page last told us so a reconnect that happened
         // during startup is not lost.
@@ -813,8 +867,8 @@ export class XrTeleopSession {
         // staleness timeout (not this module) decides when that should stop
         // the robot; a single missed frame at 72-120Hz isn't it.
 
-        if (this.#camera) {
-          const failure = drawPerEye(
+        if (this.#camera || this.#menu || this.#scan) {
+          const failed = drawPerEye(
             gl,
             layer,
             pose,
@@ -823,16 +877,31 @@ export class XrTeleopSession {
             this.#menu,
             this.#scan,
           );
-          if (failure) {
-            // Shader compile or link failure throws out of draw(), and this
-            // callback is what samples head pose. Letting it escape kills
-            // steering silently for the rest of the session while the robot
-            // stays safe but unresponsive. Drop the picture, keep the pose.
+          // Shader compile or link failure throws out of draw(), and this
+          // callback is what samples head pose. Letting it escape kills
+          // steering silently for the rest of the session while the robot
+          // stays safe but unresponsive. Drop the layer, keep the pose — and
+          // drop ONLY the layer that threw.
+          if (failed.camera) {
             this.#cameraBroken = true;
             this.#camera = null;
             console.error(
               "[xr] camera layer disabled after draw failure",
-              failure,
+              failed.camera,
+            );
+          }
+          if (failed.menu) {
+            this.#menu = null;
+            console.error(
+              "[xr] menu layer disabled after draw failure",
+              failed.menu,
+            );
+          }
+          if (failed.scan) {
+            this.#scan = null;
+            console.error(
+              "[xr] scan layer disabled after draw failure",
+              failed.scan,
             );
           }
         }

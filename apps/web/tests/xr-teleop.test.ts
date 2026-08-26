@@ -257,7 +257,7 @@ describe("drawPerEye — why the camera was invisible", () => {
 
   test("sets the viewport for each eye, from the layer", () => {
     const h = harness(["left", "right"], [LEFT, RIGHT]);
-    expect(drawPerEye(h.gl, h.layer, h.pose, h.camera, true)).toBeNull();
+    expect(drawPerEye(h.gl, h.layer, h.pose, h.camera, true).camera).toBeNull();
 
     expect(h.viewportCalls).toEqual([
       [0, 0, 2064, 2208],
@@ -306,13 +306,117 @@ describe("drawPerEye — why the camera was invisible", () => {
       },
     };
 
-    expect(drawPerEye(gl, layer, pose, camera, true)).toBe(boom);
+    expect(drawPerEye(gl, layer, pose, camera, true).camera).toBe(boom);
   });
 
   test("no views is not an error — tracking can be mid-recovery", () => {
     const h = harness([], []);
-    expect(drawPerEye(h.gl, h.layer, h.pose, h.camera, true)).toBeNull();
+    const failed = drawPerEye(h.gl, h.layer, h.pose, h.camera, true);
+    expect(failed.camera).toBeNull();
     expect(h.draws.length).toBe(0);
+  });
+});
+
+/**
+ * The layers fail INDEPENDENTLY, and this is a safety property rather than a
+ * tidiness one.
+ *
+ * A single try around all three, plus a caller that nulls `#camera` on failure
+ * and gates the whole draw block on `#camera` existing, meant one camera
+ * shader failure removed the readiness banner ("the robot is limp, do damp →
+ * prepare → 501") and the lidar radar ("there is a wall 40 cm behind you") as
+ * collateral. That is the exact moment an operator wearing a headset has lost
+ * the picture and needs both of those more than they needed the picture.
+ */
+describe("drawPerEye — one broken layer does not take the others down", () => {
+  const LEFT_VP = { x: 0, y: 0, width: 2064, height: 2208 };
+
+  function eyes() {
+    const gl = { viewport: () => {} } as unknown as WebGLRenderingContext;
+    const layer = { getViewport: () => LEFT_VP } as unknown as XRWebGLLayer;
+    const pose = { views: ["left", "right"] } as unknown as XRViewerPose;
+    return { gl, layer, pose };
+  }
+
+  const thrower = (err: unknown) => ({
+    draw: () => {
+      throw err;
+    },
+  });
+
+  test("a dead camera still leaves the menu and the radar drawing", () => {
+    const { gl, layer, pose } = eyes();
+    const boom = new Error("camera shader");
+    const menuDraws: number[] = [];
+    const scanDraws: number[] = [];
+    const failed = drawPerEye(
+      gl,
+      layer,
+      pose,
+      thrower(boom) as unknown as {
+        draw(opaque: boolean, w?: number, h?: number): void;
+      },
+      true,
+      { draw: () => menuDraws.push(1) },
+      { draw: () => scanDraws.push(1) },
+    );
+    expect(failed.camera).toBe(boom);
+    expect(failed.menu).toBeNull();
+    expect(failed.scan).toBeNull();
+    expect(menuDraws.length).toBe(2);
+    expect(scanDraws.length).toBe(2);
+  });
+
+  test("a dead radar does not cost the operator the picture", () => {
+    const { gl, layer, pose } = eyes();
+    const boom = new Error("scan shader");
+    const camDraws: boolean[] = [];
+    const failed = drawPerEye(
+      gl,
+      layer,
+      pose,
+      { draw: (opaque: boolean) => camDraws.push(opaque) },
+      true,
+      null,
+      thrower(boom),
+    );
+    expect(failed.scan).toBe(boom);
+    expect(failed.camera).toBeNull();
+    expect(camDraws.length).toBe(2);
+  });
+
+  test("a broken layer is not retried for the second eye", () => {
+    // Two eyes at 72-120 Hz means a re-thrown shader error several thousand
+    // times a minute into the frame callback that samples head pose.
+    const { gl, layer, pose } = eyes();
+    let attempts = 0;
+    drawPerEye(
+      gl,
+      layer,
+      pose,
+      null,
+      true,
+      {
+        draw: () => {
+          attempts += 1;
+          throw new Error("menu shader");
+        },
+      },
+      null,
+    );
+    expect(attempts).toBe(1);
+  });
+
+  test("no camera at all still draws the panels", () => {
+    // A session with no stream configured used to be an entirely blank
+    // headset: no picture, and nothing saying why.
+    const { gl, layer, pose } = eyes();
+    const menuDraws: number[] = [];
+    const failed = drawPerEye(gl, layer, pose, null, true, {
+      draw: () => menuDraws.push(1),
+    });
+    expect(menuDraws.length).toBe(2);
+    expect(failed.camera).toBeNull();
   });
 });
 
