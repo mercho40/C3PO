@@ -33,6 +33,7 @@ import {
   type MenuStatus,
   type Readiness,
 } from "./menu-layer";
+import { ScanLayer, type ScanRing } from "./scan-layer";
 
 export type HandSample = {
   /** Wrist position in the reference space, metres. */
@@ -383,6 +384,11 @@ export function drawPerEye(
    * nothing and this is a no-op.
    */
   menu?: { draw(vpWidth?: number, vpHeight?: number): void } | null,
+  /**
+   * The lidar radar, drawn in the opposite corner from the menu. Optional for
+   * the same reason: a session without perception passes nothing.
+   */
+  scan?: { draw(vpWidth?: number, vpHeight?: number): void } | null,
 ): unknown | null {
   for (const view of pose.views) {
     const vp = layer.getViewport(view);
@@ -398,6 +404,7 @@ export function drawPerEye(
       // that was live, correct, and visibly deformed.
       camera.draw(opaque, vp.width, vp.height);
       menu?.draw(vp.width, vp.height);
+      scan?.draw(vp.width, vp.height);
     } catch (err) {
       return err ?? new Error("camera draw failed");
     }
@@ -464,6 +471,7 @@ export class XrTeleopSession {
   #options: XrTeleopOptions;
   #camera: CameraLayer | null = null;
   #menu: MenuLayer | null = null;
+  #scan: ScanLayer | null = null;
   #pendingStreamUrl = "";
   #pendingLive = true;
   #cameraBroken = false;
@@ -547,6 +555,23 @@ export class XrTeleopSession {
   /** A latch currently stopping motion, and the gesture that clears it. */
   setMenuAlert(alert: MenuAlert): void {
     this.#menu?.setAlert(alert);
+  }
+
+  /**
+   * The lidar ring, or null when none is arriving.
+   *
+   * `reason` is what the panel says INSTEAD of drawing an empty dial. "No
+   * scan" has several causes an operator in a headset cannot tell apart, and
+   * a clear-looking circle is the worst possible way to report any of them.
+   */
+  setScanRing(ring: ScanRing | null, reason?: string | null): void {
+    this.#scan?.setRing(ring, reason);
+  }
+
+  /** Whether the radar is drawn at all — off in passthrough, where the
+   * operator can simply look around the room themselves. */
+  setScanVisible(visible: boolean): void {
+    this.#scan?.setVisible(visible);
   }
 
   /** Move the highlight to the next VERIFIED item. */
@@ -701,6 +726,7 @@ export class XrTeleopSession {
       if (this.#options.camera) {
         this.#camera = new CameraLayer(gl);
         this.#menu = new MenuLayer(gl);
+        this.#scan = new ScanLayer(gl);
         // The URL arrives via setCameraStream(), possibly before this point —
         // apply whatever the page last told us so a reconnect that happened
         // during startup is not lost.
@@ -753,6 +779,8 @@ export class XrTeleopSession {
         this.#camera = null;
         this.#menu?.dispose();
         this.#menu = null;
+        this.#scan?.dispose();
+        this.#scan = null;
         this.#callbacks.onEnd?.();
       });
 
@@ -793,6 +821,7 @@ export class XrTeleopSession {
             this.#camera,
             this.#mode !== "immersive-ar",
             this.#menu,
+            this.#scan,
           );
           if (failure) {
             // Shader compile or link failure throws out of draw(), and this

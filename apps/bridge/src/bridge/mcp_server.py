@@ -2186,6 +2186,54 @@ async def gate_status(request):  # noqa: ANN001, ANN201 - starlette types
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
+@mcp.custom_route("/telemetry/scan", methods=["GET"])
+async def scan_json(request):  # noqa: ANN001, ANN201 - starlette types
+    """The lidar ring: ~120 bearings of centimetres, for the headset surround.
+
+    503 WITH A REASON when there is none. "No ring" has three very different
+    causes — the nav container is not running, the Mid-360 is unplugged, or the
+    lidar is up and this bridge is on the wrong domain — and an operator in a
+    headset can diagnose none of them from an empty circle. The counters go out
+    with the error for the same reason `/telemetry/gate` sends `link`: a quiet
+    topic and a quiet DOMAIN look identical from the outside.
+
+    THE AGE GOES OUT WITH THE RING, ALWAYS. `stale` is computed here rather
+    than left to the renderer so that every consumer draws the same line in the
+    same place, but the payload is still sent when stale — a renderer that grey
+    out an old ring is more useful than one that blinks it out of existence,
+    and both need the flag. What must never happen is an old ring shown as
+    current: that is an obstacle that has moved and did not.
+
+    Read-only and structurally so, like the costmap, gate and surroundings
+    routes: it reads received samples and can actuate nothing.
+    """
+    from starlette.responses import JSONResponse
+
+    from bridge.sdk.perception_link import SCAN_STALE_AFTER_S, get_link
+
+    link = get_link()
+    payload, age = link.latest_scan()
+    if payload is None:
+        return JSONResponse(
+            {
+                "error": "no scan received",
+                "hint": (
+                    "the ring comes from the nav container's world_model_publisher, "
+                    "which publishes nothing while the lidar is offline — check "
+                    "`ros2 topic hz /scan` inside it before suspecting this bridge"
+                ),
+                "status": link.scan_status(),
+            },
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    body = dict(payload)
+    body["age_s"] = None if age is None else round(age, 3)
+    body["stale"] = bool(age is not None and age > SCAN_STALE_AFTER_S)
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
 @mcp.custom_route("/telemetry/surroundings", methods=["GET"])
 async def surroundings_json(request):  # noqa: ANN001, ANN201 - starlette types
     """The D7 snapshot the agent sees, for the operator console.

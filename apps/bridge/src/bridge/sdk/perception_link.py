@@ -72,6 +72,20 @@ SUPPORTED_REPORT_VERSIONS = frozenset({1})
 # operator plans against a picture of somewhere the robot has left.
 COSTMAP_STALE_AFTER_S = 5.0
 
+# The lidar ring: /scan folded into ~120 bearings of centimetres by the nav
+# container (c3po_perception.scan_ring), so the headset can show what is behind
+# an operator looking through a 69-degree camera. Read-only telemetry on the
+# same footing as the costmap — it reaches nothing that can actuate.
+SCAN_TOPIC = "rt/c3po/scan"
+
+# Tighter than the costmap's, and deliberately so. `world_model_publisher`
+# emits this on the same 4 Hz timer as the world summary and publishes NOTHING
+# while the lidar is offline, so a second of silence already means something is
+# wrong. It is also drawn AROUND the operator: a stale map is a picture of
+# somewhere the robot has left, but a stale ring is an obstacle that has moved
+# and did not, which is the reading that walks someone into a table.
+SCAN_STALE_AFTER_S = 1.5
+
 REPORT_OFFLINE_AFTER_S = 2.0  # perception publishes at 4 Hz; 8 missed ticks
 
 # Our own staleness deadman, and it sits ABOVE the firmware's 1 s SET_VELOCITY
@@ -205,6 +219,8 @@ class PerceptionLink:
         self._cmd_vel_reader: Any = None
         self._costmap_topic: Any = None
         self._costmap_reader: Any = None
+        self._scan_topic: Any = None
+        self._scan_reader: Any = None
 
         # --- world summary
         self._report: dict[str, Any] | None = None
@@ -213,6 +229,10 @@ class PerceptionLink:
         self._costmap_at: float | None = None
         self.costmaps_received = 0
         self.costmaps_rejected = 0
+        self._scan: dict[str, Any] | None = None
+        self._scan_at: float | None = None
+        self.scans_received = 0
+        self.scans_rejected = 0
         self.reports_received = 0
         self.reports_rejected = 0
 
@@ -274,6 +294,9 @@ class PerceptionLink:
         self._costmap_topic = Topic(self._participant, COSTMAP_TOPIC, String_)
         self._costmap_reader = DataReader(self._participant, self._costmap_topic, qos=None)
 
+        self._scan_topic = Topic(self._participant, SCAN_TOPIC, String_)
+        self._scan_reader = DataReader(self._participant, self._scan_topic, qos=None)
+
         self._started = True
         self._reader_thread = threading.Thread(
             target=self._read_loop, name="perception-readers", daemon=True
@@ -287,7 +310,7 @@ class PerceptionLink:
         log.info(
             "perception.link.ready",
             domain_id=self._domain_id,
-            topics=[WORLD_SUMMARY_TOPIC, CMD_VEL_TOPIC, COSTMAP_TOPIC],
+            topics=[WORLD_SUMMARY_TOPIC, CMD_VEL_TOPIC, COSTMAP_TOPIC, SCAN_TOPIC],
             gate="closed",
         )
 
@@ -531,6 +554,9 @@ class PerceptionLink:
                 if self._costmap_reader is not None:
                     for sample in self._costmap_reader.take(1):
                         self._ingest_costmap(sample.data)
+                if self._scan_reader is not None:
+                    for sample in self._scan_reader.take(1):
+                        self._ingest_scan(sample.data)
             except Exception:
                 log.exception("perception.read_loop.failed")
 
@@ -590,6 +616,71 @@ class PerceptionLink:
             "width": None if payload is None else payload.get("width"),
             "height": None if payload is None else payload.get("height"),
             "resolution_m": None if payload is None else payload.get("resolution_m"),
+        }
+
+    # -- lidar ring ----------------------------------------------------------
+
+    def _ingest_scan(self, data: str) -> bool:
+        """Parse one scan ring. Pure telemetry — it can move nothing.
+
+        A PASS-THROUGH, like the costmap: the bearings are held as the parsed
+        dict and handed to the browser unchanged. The bridge deliberately does
+        not re-project, re-bucket or rotate them. `scan_ring.decimate` already
+        made the one judgement call that matters (minimum per bucket, not mean)
+        and doing any of it twice would give the operator and the agent two
+        subtly different pictures of the same room.
+
+        `r_cm` is validated as a LIST and nothing more. Its entries are
+        `int | None` by construction on the publisher's side, and checking 120
+        of them at 4 Hz to protect a renderer that already has to handle
+        `null` buys nothing. What is worth rejecting is a payload that is not
+        the right SHAPE, because that is the one a renderer cannot survive.
+        """
+        try:
+            payload = json.loads(data)
+            if not isinstance(payload, dict):
+                raise ValueError(f"scan is {type(payload).__name__}, not an object")
+            if int(payload.get("v", 0)) != 1:
+                raise ValueError(f"unsupported scan schema v={payload.get('v')}")
+            if not isinstance(payload.get("r_cm"), list):
+                raise ValueError("scan carries no r_cm list")
+        except Exception as exc:
+            self.scans_rejected += 1
+            log.warning("perception.scan.unparseable", error=str(exc))
+            return False
+
+        with self._lock:
+            self._scan = payload
+            self._scan_at = self._clock()
+        self.scans_received += 1
+        return True
+
+    def latest_scan(self) -> tuple[dict[str, Any] | None, float | None]:
+        """The newest ring and its age in seconds, or (None, None).
+
+        The age comes back WITH the payload and is not optional to the caller:
+        unlike the costmap, an old ring must not simply be drawn. See
+        SCAN_STALE_AFTER_S — the decision about what to do with a stale ring
+        belongs to whoever is drawing it, but they cannot make it without the
+        age, so this never hands out one without the other.
+        """
+        with self._lock:
+            payload, at = self._scan, self._scan_at
+        if payload is None or at is None:
+            return None, None
+        return payload, max(0.0, self._clock() - at)
+
+    def scan_status(self) -> dict[str, Any]:
+        payload, age = self.latest_scan()
+        r_cm = (payload or {}).get("r_cm")
+        return {
+            "present": payload is not None,
+            "age_s": None if age is None else round(age, 2),
+            "stale": bool(age is not None and age > SCAN_STALE_AFTER_S),
+            "received": self.scans_received,
+            "rejected": self.scans_rejected,
+            "buckets": len(r_cm) if isinstance(r_cm, list) else None,
+            "frame": None if payload is None else payload.get("frame"),
         }
 
     # -- introspection -------------------------------------------------------

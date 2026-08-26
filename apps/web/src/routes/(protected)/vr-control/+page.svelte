@@ -49,6 +49,7 @@
     type HandSample,
   } from "$lib/webxr/xr-teleop";
   import { alertFor, readinessFor } from "$lib/webxr/menu-layer";
+  import { ScanFeed } from "$lib/robot/scan.svelte";
   import {
     buildFrame,
     connectTeleop,
@@ -690,6 +691,10 @@
           // outlived the session and the component, writing $state on a
           // destroyed page for as long as the tab lived.
           stopReadouts();
+          // Same reasoning as `stopReadouts`: the radar is polled for a panel
+          // that no longer exists, and a 4 Hz fetch outliving the session is
+          // the same leak in a different timer.
+          scanFeed.stop();
           if (!loopShouldRun()) {
             stopLoop();
             void sendVelocity(0, 0, 0.5);
@@ -720,6 +725,10 @@
         })),
       );
       session.setMenuVisible(true);
+      // Off in passthrough: an operator who can see the actual room does not
+      // need a drawing of it, and the corner is better spent on the room.
+      session.setScanVisible(session.mode !== "immersive-ar");
+      scanFeed.start();
       xrMode = session.mode;
       vrActive = true;
       ensureReadouts();
@@ -922,6 +931,7 @@
     walking = null;
     armsRequested = false;
     vr?.stop();
+    scanFeed.stop();
     // Closing the stream sends one last released frame, so the bridge stops on
     // a frame rather than waiting out its staleness timeout.
     teleop?.close();
@@ -1040,6 +1050,22 @@
   );
   $effect(() => {
     vr?.setMenuAlert(menuAlert);
+  });
+
+  //: The lidar radar, bottom-left of each eye.
+  //:
+  //: POLLED ONLY WHILE A SESSION IS OPEN. The ring exists for the operator
+  //: whose view of the room is a 69-degree camera on a black surround; on the
+  //: desktop console the map already shows the same obstacles with more
+  //: context. Polling it from a page nobody is wearing would put 4 requests a
+  //: second through the SSH tunnel for a panel that is not drawn.
+  const scanFeed = new ScanFeed();
+  $effect(() => {
+    // `scanFeed.reason` is read as well as the ring so this re-runs when the
+    // only thing that changed is WHY there is nothing — an operator staring
+    // at an empty dial needs the reason to update even though the (absent)
+    // ring did not.
+    vr?.setScanRing(scanFeed.ring, scanFeed.reason);
   });
 
   //: An outcome now carries its own words, because the interesting failures are

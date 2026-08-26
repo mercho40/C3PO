@@ -83,6 +83,17 @@ export const telemetryRoutes = new Elysia()
     },
   )
   .get(
+    "/telemetry/scan",
+    ({ status }) => proxyJson("/telemetry/scan", status),
+    {
+      detail: {
+        summary:
+          "The lidar ring — ~120 bearings of centimetres, with its age and a stale flag.",
+        tags: ["telemetry"],
+      },
+    },
+  )
+  .get(
     "/telemetry/voice",
     ({ status }) => proxyJson("/telemetry/voice", status),
     {
