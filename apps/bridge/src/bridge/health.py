@@ -30,6 +30,12 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 __all__ = ["Check", "Report", "assess", "render"]
 
+#: Stages that launch `world_model_publisher`, and therefore owe a /c3po/scan.
+#: `nav2-fake` and `nav2` get one by including fake.launch.py / perception.
+#: launch.py; `odometry` and `stt` legitimately publish none. Keep in step with
+#: apps/perception/bringup/spec.py — test_health asserts the names still exist.
+RING_STAGES = ("fake", "nav2-fake", "nav2", "perception")
+
 
 class Check:
     """One line of the report."""
@@ -76,6 +82,7 @@ def assess(
     *,
     bridge_pid: Optional[int],
     gate_json: Optional[str],
+    scan_json: Optional[str],
     enabled_stage: Optional[str],
     perception_containers: Sequence[str],
     gemm_containers: Sequence[str],
@@ -120,7 +127,86 @@ def assess(
                 )
             )
 
-    running = [c for c in perception_containers if c]
+    # --- the lidar ring -----------------------------------------------------
+    #
+    # WHY IT IS HERE AND NOT ONLY IN THE HEADSET. The ring is drawn to an
+    # operator whose eyes are covered, so "is it arriving" is a question they
+    # cannot answer from inside the session — the empty dial says why, but only
+    # for the causes a browser can see. This is the reading from the robot's
+    # own side, in the command somebody already types.
+    #
+    # A MISSING RING IS ONLY A FAULT WHEN A RING WAS PROMISED. Just two of the
+    # six stages launch `world_model_publisher`, which is what derives
+    # /c3po/scan: `fake` directly and `perception` via nav2.launch.py's
+    # sources:=real (so `fake`, `nav2-fake` and `nav2` all have one). `stt`
+    # opens no sensor at all and `odometry` runs FAST-LIO with no world model —
+    # calling either of those broken would put a red line on a correctly
+    # running stack, and this file already argues, about the enabled-unit
+    # check, that doing so trains people to ignore the report.
+    #
+    # So the three states are kept apart:
+    #
+    #   a ring-publishing stage, no ring   a real fault — something IS running
+    #                                      and the ring is not reaching here
+    #   nav up, stage not known            a NOTE. `perception_up` by hand
+    #                                      enables no unit, which is exactly how
+    #                                      Stage 3 is run, so we cannot tell
+    #                                      `fake` from `odometry` and must not
+    #                                      guess
+    #   nothing running                    expected, every day
+    running_now = [c for c in perception_containers if c]
+    nav_up = any("-nav" in c for c in running_now)
+    scan = _parse(scan_json)
+    raw = scan.get("r_cm") if scan else None
+    # A 503 body is valid JSON, so `_parse` returns a dict for it. Without this
+    # the hint payload reads as a ring with zero bearings — "the room is
+    # clear", which is the single most dangerous thing this display can say and
+    # the reason the whole feature refuses to draw an unexplained empty dial.
+    ring = raw if isinstance(raw, list) else None
+
+    if scan is None or ring is None:
+        if enabled_stage in RING_STAGES:
+            checks.append(
+                Check(
+                    "lidar ring",
+                    "NO SCAN on stage {} — check `ros2 topic hz /scan`".format(
+                        enabled_stage
+                    ),
+                    problem=True,
+                )
+            )
+        elif nav_up:
+            checks.append(
+                Check(
+                    "lidar ring",
+                    "none (nav is up; expected on {})".format("/".join(RING_STAGES)),
+                )
+            )
+        else:
+            checks.append(Check("lidar ring", "none (no perception stage running)"))
+    else:
+        # `is True`, for the same reason the gate uses it: a string "false" is
+        # truthy, and this decides whether an operator is being shown the room
+        # or a memory of it.
+        stale = scan.get("stale") is True
+        seen = sum(1 for v in ring if v is not None)
+        where = scan.get("frame") or "?"
+        if stale:
+            checks.append(
+                Check(
+                    "lidar ring",
+                    "STALE ({}s old) — the headset is showing a memory".format(
+                        scan.get("age_s")
+                    ),
+                    problem=True,
+                )
+            )
+        else:
+            checks.append(
+                Check("lidar ring", "{}/{} bearings in {}".format(seen, len(ring), where))
+            )
+
+    running = running_now
     if enabled_stage:
         if running:
             checks.append(
@@ -203,6 +289,11 @@ def probe_and_assess(
     return assess(
         bridge_pid=read_pid(),
         gate_json=http_get("http://127.0.0.1:{}/telemetry/gate".format(port)),
+        # 503 with a hint is the normal answer when nothing is publishing, and
+        # `_parse` turns any non-JSON into None — so a hint body reads as "no
+        # ring", which is exactly right. The 503's own reason is for the
+        # console, which has room to print it.
+        scan_json=http_get("http://127.0.0.1:{}/telemetry/scan".format(port)),
         enabled_stage=stage,
         perception_containers=docker_ps("^c3po-perception"),
         gemm_containers=docker_ps("^gemm"),
