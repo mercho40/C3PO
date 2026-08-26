@@ -283,7 +283,9 @@ async def walk_to(
         cancellable=True,
         expected_duration_s=12.0,
         works_sim=True,
-        works_real=False,
+        # Measured on the robot 2026-08-26 — see the docstring for the numbers
+        # and for what this claim does NOT cover.
+        works_real=True,
         preconditions=["robot_upright", "no_active_turn_task"],
         typical_failure_modes=["timeout", "no_pose"],
     )
@@ -330,25 +332,38 @@ async def turn(
     progress via `ctx.report_progress`. Cancellable via `cancel_task` or
     `stop_everything`.
 
-    **The yaw sign is no longer the blocker.** `works_real` was set False on
-    2026-08-15 because "turn's yaw sign convention is still unverified and may
-    rotate the wrong way". That is now settled: on 2026-08-20 a commanded
-    positive yaw rotated the robot counterclockwise, measured three times off
-    `rt/odommodestate` (+5.26, +5.77 and again in a full run), through the same
-    `send_velocity` path this skill uses. Positive really is left.
+    **WATCHED ON HARDWARE 2026-08-26.** `works_real` was False through two
+    separate objections and both are now discharged. The yaw sign was settled
+    on 2026-08-20 (positive is counterclockwise, measured three times off
+    `rt/odommodestate`). The closed loop — this skill reading pose, computing
+    an error and deciding when to stop — was measured on the robot with an
+    operator watching, feet on the ground and the gantry slack, via
+    `scripts/measure_turn.py`:
 
-    It stays False anyway, and deliberately. `works_real` means *a human has
-    watched this skill run* — and nobody has watched `turn`. What was verified
-    is the sign convention it shares with the teleop stream, not this skill's
-    own closed loop: it reads pose, computes an error, and decides when to
-    stop, and none of that has executed on hardware. Flipping the flag on
-    evidence about a shared component would be exactly the kind of claim the
-    flag exists to prevent.
+        commanded  achieved  residual  ratio  reached  elapsed
+          +40.0     +37.48     2.52    1.07    true     4.9 s
+          +40.0     +36.67     3.33    1.09    true     4.0 s
 
-    What it needs is one supervised run: a small delta (30-45 degrees) with
-    room to rotate, watching whether it converges and stops inside tolerance.
-    Expect it to be slow — measured yaw under-travels command by ~2.2x on this
-    body, so allow generous timeouts.
+    Both converged, both stopped on their own, and the operator confirmed each
+    rotation was smooth. That is what this flag asserts.
+
+    WHAT THE CLAIM DOES NOT COVER, recorded so nobody reads more into it:
+
+    * ACCURACY IS ABOUT +/-3.5 DEGREES on a 40 degree command, not the 3 degree
+      tolerance. `tolerance_radians` is when the loop stops STEERING; the
+      firmware then holds the last velocity for up to a second and the body
+      coasts past that point. `reached` and `final_yaw_error_radians` are
+      therefore sampled at different instants and can disagree — run 2 above
+      decided it had arrived and settled 3.41 degrees out. Neither number is
+      wrong; they answer different questions.
+    * THE STOP FIRES ON A SINGLE UNFILTERED POSE SAMPLE. Leg odometry is noisy,
+      so one reading dipping inside tolerance ends the loop. Requiring N
+      consecutive in-tolerance samples would tighten this, and is the obvious
+      next improvement.
+    * Under-travel measured **1.08x**, not the ~2.2x this docstring previously
+      predicted. That figure was stale; timeouts do not need to be generous.
+      Both runs converged in under 5 seconds. An earlier 20 s timeout was a
+      wedged bridge RPC channel, not a slow loop.
     """
     log.info(
         "turn.called",

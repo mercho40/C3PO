@@ -347,18 +347,26 @@ def test_untested_motion_is_not_advertised_as_working(tools):
       walk_to                  — moved 0.17 m and stopped inside tolerance
       wave (26)                — 7.3 s, arm service acked on completion
       say                      — audible speech, confirmed by the operator
+      turn                     — +40° twice, reached in 4.9 s and 4.0 s
 
     Still unverified, and each for its own reason.
     """
     never_run_on_hardware = {
         # Accepted with rpc code 0 and no observed effect, twice.
         "balance_stand",
-        # Yaw sign convention is unverified — it may rotate the wrong way.
-        "turn",
         # Accepted from damp with code 0 and NO transition (2026-08-15),
         # contradicting Unitree's own example, which bring-ups through it.
         "squat",
     }
+    # `turn` GRADUATED 2026-08-26 and is deliberately no longer listed here.
+    # Two supervised runs, operator watching, feet down and the gantry slack:
+    # +40° commanded, +37.48 / +36.67 achieved, reached=true both times, in
+    # 4.9 s and 4.0 s. Its entry above ALSO carried a stale reason — the yaw
+    # sign was settled on 2026-08-20, six days before anyone watched the loop.
+    #
+    # This test is what caught the flip and demanded evidence in the commit,
+    # which is exactly its job, so the graduation is recorded rather than
+    # quietly deleted. See turn's docstring for what the claim does not cover.
     for name in never_run_on_hardware:
         works = tools[name].meta["c3po"]["works"]
         assert works["real"] is False, (
