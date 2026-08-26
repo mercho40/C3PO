@@ -457,6 +457,12 @@ and never matches — `-r 4` sits between the two words — so it exits 1 in
 silence, nothing dies, and "absent is not empty" appears to be broken while
 being fine. Already cost one session.
 
+And `pkill -f` matches **the command line running it**, including your own. A
+helper script killed over SSH with `pkill -f my_helper.sh` takes the SSH
+session with it, because the pattern appears in that session's own `bash -c`.
+Confirmed the hard way on 2026-08-26. Match something narrower than the whole
+invocation, or use the recorded pid.
+
 | after killing   | what must happen                                                      |
 | --------------- | --------------------------------------------------------------------- |
 | `/c3po/objects` | summary flips to `detector: offline` with a note, `objects: []`       |
