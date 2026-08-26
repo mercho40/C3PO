@@ -383,6 +383,11 @@ class SyntheticSource:
 # and tensorrt are function-local imports throughout this module, on purpose —
 # it stays importable on a machine with neither installed, which is what lets
 # the tests run off the Jetson.
+#
+# This is half the fix. It removes the dependence at the one call site we own;
+# TensorRTDetector.__init__ also defines `np.bool` before importing tensorrt,
+# for the call sites inside the bindings that we do not own. Both are needed —
+# see the comment there.
 _TRT_TO_NUMPY: Optional[Dict[Any, Any]] = None
 
 
@@ -448,35 +453,22 @@ class TensorRTDetector:
         import pycuda.autoinit  # noqa: F401  (import side effect: CUDA context)
         import pycuda.driver as cuda
 
-        # `np.bool` BEFORE tensorrt, because whether it exists is not stable.
+        # The BELT to `_np_dtype`'s braces. Both exist on purpose; neither is
+        # dead code, and deleting either one re-opens a bug that cost us the
+        # camera twice. See the comment above `_np_dtype` for the bug itself.
         #
-        # JetPack 5.1.1 ships TensorRT 8.5.2.2, whose `nptype()` builds a dtype
-        # table containing a literal `np.bool` (`tensorrt/__init__.py:166`).
-        # numpy expired that alias in 1.24, and this image pins numpy at exactly
-        # 1.24.4 — deliberately, with an assertion, because cv2's ABI needs it.
+        # `_np_dtype` covers the ONE call site we own. This covers the ones we
+        # do not: anything inside the TensorRT bindings that reaches for
+        # `np.bool` on a numpy that no longer has it. It has to run BEFORE
+        # `import tensorrt`, because whether the alias resolves depends on
+        # import order — which is why the same image, same container, failed on
+        # a cold engine cache and ran fine on a warm one (robot, 2026-08-22):
+        # the build path and the load path import a different set of modules
+        # before reaching here. A startup coin-flip that costs the detector.
         #
-        # Observed on the robot 2026-08-22, SAME image, SAME container, two
-        # consecutive starts:
-        #
-        #   first start   AttributeError: module 'numpy' has no attribute 'bool'
-        #                 at trt.nptype(...), exit 139, and because TensorRT had
-        #                 already allocated, the visible tail was CUDA
-        #                 deallocation errors — which read as a GPU or engine
-        #                 fault and are neither.
-        #   second start  ran fine, and has been detecting since.
-        #
-        # The difference is the engine: the first start BUILDS it, the second
-        # loads it from cache, and those two paths import a different set of
-        # modules before reaching here. So whether `np.bool` resolves depends on
-        # whether something else in the process happened to define it first —
-        # which makes this a startup coin-flip, and a coin-flip that costs the
-        # whole detector whenever it lands wrong. A cold cache is exactly when
-        # it lands wrong: first run after a rebuild or a new device.
-        #
-        # Defining it removes the dependence on import order, and it is what the
-        # table wants: `np.bool` WAS `bool`, and that entry maps TRT's BOOL to
-        # the builtin. The numpy pin is left alone — cv2 depends on it, and
-        # moving it to please TensorRT trades a caught error for an ABI mismatch.
+        # This is what the table wants anyway: `np.bool` WAS `bool`. The numpy
+        # pin stays where it is — cv2 depends on 1.24.4, and moving it to please
+        # TensorRT trades a caught error for an ABI mismatch.
         if not hasattr(np, "bool"):
             np.bool = bool  # type: ignore[attr-defined]
 
