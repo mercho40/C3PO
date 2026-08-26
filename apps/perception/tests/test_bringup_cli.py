@@ -19,7 +19,15 @@ from bringup.spec import NAV, STT, VISION
 class FakeRunner:
     """Records every docker call; answers queries from a scripted world."""
 
-    def __init__(self, existing=(), running=(), gemm=(), topic_ready=True, http_ready=True):
+    def __init__(
+        self,
+        existing=(),
+        running=(),
+        gemm=(),
+        topic_ready=True,
+        http_ready=True,
+        logs=None,
+    ):
         self.calls: List[List[str]] = []
         self.scripts: List[Tuple[str, dict]] = []
         self.slept = 0.0
@@ -29,6 +37,7 @@ class FakeRunner:
         self._gemm = list(gemm)
         self._topic_ready = topic_ready
         self._http_ready = http_ready
+        self._logs = dict(logs or {})
 
     def docker(self, args: Sequence[str], capture: bool = True) -> Tuple[int, str]:
         args = list(args)
@@ -55,6 +64,8 @@ class FakeRunner:
             return 0, ""
         if args[:1] == ["exec"]:
             return (0 if self._topic_ready else 1), ""
+        if args[:1] == ["logs"]:
+            return 0, self._logs.get(args[-1], "")
         return 0, ""
 
     def http_ok(self, url: str, timeout: float = 3.0) -> bool:
@@ -173,6 +184,62 @@ def test_a_nav_stack_that_never_publishes_is_rolled_back():
     runner = FakeRunner(topic_ready=False)
     assert bring_up("nav2", runner, env=ENV) == 1
     assert set(removed(runner)) >= {NAV, VISION}
+
+
+def test_the_logs_are_printed_before_the_rollback_destroys_them(capsys):
+    """Release the sensors, but keep the evidence.
+
+    On 2026-08-26 `nav2-fake` reported "no world summary" and rolled back while
+    every synthetic publisher was at message #200+ and world_model_publisher,
+    planner_server and the lifecycle manager were all alive. `docker logs` had
+    already been deleted by the time anyone looked, so the first failure said
+    nothing at all and the run had to be repeated inside a polling loop just to
+    catch the output.
+    """
+    runner = FakeRunner(topic_ready=False, logs={NAV: "boom: could not start\nsecond line"})
+    assert bring_up("nav2", runner, env=ENV) == 1
+    captured = capsys.readouterr()  # ONE call: a second returns only new output
+    printed = captured.out + captured.err
+    assert "boom: could not start" in printed, "the tail must reach the operator"
+    # And it must still be removed: nav2 holds the Livox and the RealSense away
+    # from gemm, so a failed bring-up that leaves containers up takes the other
+    # team's sensors hostage.
+    assert NAV in removed(runner)
+
+
+def test_the_logs_are_read_before_the_container_is_removed(capsys):
+    """Order matters, and it is not observable from the output alone."""
+    runner = FakeRunner(topic_ready=False, logs={NAV: "something"})
+    bring_up("nav2", runner, env=ENV)
+    kinds = [c[0] for c in runner.calls if c[:1] in (["logs"], ["rm"])]
+    assert "logs" in kinds and "rm" in kinds
+    assert kinds.index("logs") < kinds.index("rm"), (
+        "logs were read after the container was destroyed, which is the bug"
+    )
+
+
+def test_the_probe_timeout_tolerates_a_loaded_box():
+    """The measured number, pinned.
+
+    2.25 s at load 10 against a 3 s ceiling; over 3 s at load 15 — which is
+    just what the box reads while the other team runs SLAM. The ceiling has to
+    clear that by enough that a busy robot is not a failed bring-up.
+    """
+    from bringup.cli import PROBE_TIMEOUT_S
+
+    assert PROBE_TIMEOUT_S >= 10
+
+
+def test_the_failure_message_states_the_real_worst_case():
+    """It used to say "after 90s" for a loop that could take six minutes.
+
+    Somebody timing the failure against that number concludes the machine is
+    wedged and starts killing things.
+    """
+    from bringup.cli import PROBE_INTERVAL_S, PROBE_TIMEOUT_S, READY_ATTEMPTS
+
+    worst = READY_ATTEMPTS * (PROBE_TIMEOUT_S + PROBE_INTERVAL_S)
+    assert worst <= 360, "a bring-up must not be able to hang longer than the old one"
 
 
 def test_a_dead_camera_does_not_fail_a_nav_bring_up():
