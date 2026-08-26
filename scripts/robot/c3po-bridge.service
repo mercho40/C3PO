@@ -1,66 +1,50 @@
-# Boot unit for the C3PO bridge on the G1 Jetson.
+# C3PO bridge on the G1 Jetson.
 #
-# Install with `./scripts/robot/install_boot_unit.sh` (it symlinks this file,
-# so `git pull` updates the unit).
-#
-# Why this exists: the bridge previously only ran while someone had typed
-# run_c3po, so every reboot silently left the robot with no MCP server — and
-# therefore no `stop_everything`. That happened for real on 2026-08-14.
-#
-# Two properties this unit must keep:
-#
-#   1. It must NOT take the robot from the colleague's `gemm` stack. A machine
-#      powering on is not a person asking to own the robot. C3PO_NO_TAKEOVER=1
-#      starts the bridge without stopping their containers and without starting
-#      perception. Interactive `run_c3po` still means "take the robot".
-#
-#   2. It must never initiate motion. It doesn't: the bridge only ever moves
-#      the robot in response to a tool call, and starting it commands nothing.
+# One process, one supervisor: systemd starts the Python interpreter directly.
+# There is no pidfile, nohup wrapper, or second lifecycle owner to race it.
+# Starting this unit claims no sensor and commands no motion.
 
 [Unit]
-Description=C3PO bridge — MCP server for the G1 (does not claim the robot at boot)
+Description=C3PO bridge — MCP server for the G1 (does not claim sensors at boot)
 Documentation=file:///home/unitree/c3po/docs/OPERATIONS.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=forking
+Type=exec
 User=unitree
 Group=unitree
 WorkingDirectory=/home/unitree/c3po/apps/bridge
-PIDFile=/home/unitree/.c3po/run/bridge.pid
 
-# `uv` lives in ~/.local/bin, which Ubuntu adds from ~/.profile — a file
-# systemd never sources. Without this the unit dies on "uv: command not found".
-# See docs/OPERATIONS.md §5.
+# systemd does not source ~/.profile. The bridge loads apps/bridge/.env itself;
+# these three values define the daemon transport and cannot accidentally fall
+# back to stdio. The LAN bind is deliberate: see docs/OPERATIONS.md.
 Environment=HOME=/home/unitree
 Environment=PATH=/home/unitree/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=C3PO_NO_TAKEOVER=1
+Environment=BRIDGE_TRANSPORT=http
+Environment=BRIDGE_HOST=0.0.0.0
+Environment=BRIDGE_PORT=8001
+Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
 
-ExecStart=/home/unitree/c3po/scripts/robot/run_c3po
+# Hash-gated and offline-safe. It exits successfully with an existing venv when
+# the network is unavailable, but fails a first install that has no interpreter.
+ExecStartPre=/home/unitree/c3po/scripts/robot/bridge_sync
+# /usr/bin/env is stable at install time; ExecStartPre creates/updates the venv.
+# env immediately execs the interpreter, so Python remains systemd's MainPID.
+ExecStart=/usr/bin/env /home/unitree/c3po/apps/bridge/.venv/bin/python -m bridge.mcp_server
 
-# NO ExecStop, DELIBERATELY. `stop_c3po` takes the whole STACK down — bridge and
-# every perception container — which is right for an operator typing it and
-# wrong for this unit, whose job is one process.
-#
-# The cost of having it here was concrete and hit twice in one session:
-# `systemctl restart c3po-bridge`, done to pick up a code change, silently
-# stopped nav2 and the GPU speech server too. The second time it looked like the
-# transcriber had failed to upgrade — the bridge was correctly reporting no GPU
-# server, because the restart had just deleted it.
-#
-# Without ExecStop, systemd stops the main process named by PIDFile and reaps
-# what is left of its cgroup. Docker containers are not in this unit's cgroup —
-# they belong to docker.service — so perception is untouched, which is the whole
-# point. Perception has its own unit (`c3po-perception@.service`) and its own
-# operator command; the two lifecycles are separate and should look it.
-
-# run_c3po syncs dependencies before starting, which on a cold uv cache can
-# take minutes. The default 90s would kill it mid-sync.
+# systemd owns and reaps the complete process tree. Perception containers belong
+# to docker.service and are managed only by explicit CLI commands; restarting
+# the bridge must not silently stop them or take shared sensors.
+KillMode=control-group
 TimeoutStartSec=600
-
+TimeoutStopSec=20
 Restart=on-failure
 RestartSec=10
+
+# Logs live in the journal: `c3po logs` or `journalctl -u c3po-bridge`.
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
