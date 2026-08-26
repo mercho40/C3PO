@@ -186,6 +186,19 @@ class ArmSdkDriver:
     def weight(self) -> float:
         return self._weight
 
+    @property
+    def current_angles(self) -> tuple[float, ...]:
+        """The pose the loop is commanding right now — wiring frame, 14 values,
+        left then right. What `move_arm` polls to know the slew has settled."""
+        return tuple(self._current)
+
+    @property
+    def target_angles(self) -> tuple[float, ...]:
+        """The pose being slewed toward — wiring frame, 14 values. On engage
+        both start at the measured pose, so this doubles as "where the arm is"
+        for callers that only want to change some joints."""
+        return tuple(self._target)
+
     def clear_failure(self) -> None:
         """Allow engaging again after a publish-loop failure.
 

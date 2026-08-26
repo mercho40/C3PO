@@ -179,3 +179,63 @@ async def test_cancellation_is_signalled_before_any_blocking_rpc(monkeypatch):
         # will finish this one -- it has no coroutine behind it.
         task.status = "cancelled"
         task.ended_at = time.time()
+
+
+@pytest.mark.asyncio
+async def test_stop_releases_the_arm_sdk_and_relaxes_the_hands(monkeypatch):
+    """move_arm(hold=True) leaves a 50 Hz loop holding a pose with no task
+    alive to cancel, and a BrainCo grip has no firmware dead-man. The e-stop
+    is the release path of last resort for both — pin that it actually asks."""
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
+
+    from bridge.teleop import arm_sdk, hands
+
+    class FakeArmDriver:
+        engaged = True
+
+        def __init__(self):
+            self.release_requested = False
+
+        def request_release(self):
+            self.release_requested = True
+
+    class FakeHandDriver(hands.HandDriver):
+        name = "brainco"
+        sides = ("right",)
+
+        def __init__(self):
+            self.sent = []
+
+        def send(self, side, grip):
+            self.sent.append((side, grip))
+
+    arm_driver = FakeArmDriver()
+    hand_driver = FakeHandDriver()
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: arm_driver)
+    monkeypatch.setattr(hands, "get_driver", lambda: hand_driver)
+
+    result = await stop_everything.run()
+
+    assert arm_driver.release_requested
+    assert result["arm_sdk_release_requested"] is True
+    assert hand_driver.sent == [("right", 0.0)]
+    assert result["hands_relaxed"] is True
+
+
+@pytest.mark.asyncio
+async def test_stop_survives_a_broken_teleop_stack(monkeypatch):
+    """A failure in the arm/hand release must never break the e-stop itself."""
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
+
+    from bridge.teleop import arm_sdk, hands
+
+    def explode():
+        raise RuntimeError("teleop is broken")
+
+    monkeypatch.setattr(arm_sdk, "get_driver", explode)
+    monkeypatch.setattr(hands, "get_driver", explode)
+
+    result = await stop_everything.run()
+
+    assert result["arm_sdk_release_requested"] is False
+    assert result["hands_relaxed"] is False

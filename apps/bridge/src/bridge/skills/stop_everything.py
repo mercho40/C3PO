@@ -100,6 +100,25 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     except Exception:
         log.exception("stop_everything.gate_close_failed")
 
+    # LET GO OF THE ARMS, synchronously. If move_arm (or anything else in this
+    # process) has the rt/arm_sdk driver engaged, its 50 Hz loop is actively
+    # holding a pose — cancelling the task alone starts a ramp-down, but only
+    # if the task is still alive to notice. request_release() asks the loop
+    # itself, which works even when the task that engaged it is long gone
+    # (hold=True is exactly that case). Non-blocking by design: the ramp
+    # completes in the driver's own loop while the rest of the stop proceeds.
+    # Wrapped, never fatal — a broken teleop import must not break the e-stop.
+    arm_sdk_release_requested = False
+    try:
+        from bridge.teleop.arm_sdk import get_driver as _get_arm_driver
+
+        driver = _get_arm_driver()
+        if driver.engaged:
+            driver.request_release()
+            arm_sdk_release_requested = True
+    except Exception:
+        log.exception("stop_everything.arm_sdk_release_failed")
+
     registry = get_registry()
     active = registry.list_active()
     cancelled_ids: list[str] = []
@@ -112,6 +131,22 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
         cancelled_count=len(cancelled_ids),
         cancelled_task_ids=cancelled_ids,
     )
+
+    # OPEN THE HANDS. A BrainCo has no firmware dead-man (teleop/hands.py) — a
+    # grip commanded via set_hand outlives every task and both bursts below,
+    # so the stop is the release path of last resort the hands module demands.
+    # Off-thread (it publishes DDS) and never fatal, same as the arms above.
+    # NullHandDriver makes this a no-op wherever hands are unconfigured.
+    hands_relaxed = False
+    try:
+        from bridge.teleop.hands import get_driver as _get_hand_driver
+
+        hand_driver = _get_hand_driver()
+        if hand_driver.sides:
+            await asyncio.to_thread(hand_driver.relax)
+            hands_relaxed = True
+    except Exception:
+        log.exception("stop_everything.hand_relax_failed")
 
     # Off-thread from here down. Every cancel_event above is already set, so
     # the skills are stopping themselves whatever happens next; what this buys
@@ -168,6 +203,8 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
         "cancelled_task_ids": cancelled_ids,
         "cancelled_count": len(cancelled_ids),
         "stop_burst_duration_s": round(duration, 3),
+        "arm_sdk_release_requested": arm_sdk_release_requested,
+        "hands_relaxed": hands_relaxed,
         "real_damp_fallback_rpc_code": real_damp_rpc_code,
         "real_damp_fallback_attempts": real_damp_attempts,
         "real_damp_fallback_succeeded": (real_damp_rpc_code == 0) if SIM_MODE == "real" else None,

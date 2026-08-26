@@ -190,9 +190,12 @@ src/bridge/
     walk_to.py, turn.py cancellable locomotion tasks
     landmarks.py        remember/recall/list named poses
     task_runtime.py     Task records + registry, cooperative cancellation
-    stop_everything.py  cancel-all + zero-velocity burst (+ damp on real hardware)
+    stop_everything.py  cancel-all + arm/hand release + zero-velocity burst (+ damp on real)
     walk_velocity.py    open-loop velocity, real hardware only — no pose needed
     dance.py            choreographed gesture sequence via call_arm()
+    gesture.py          any preset action from the firmware's own 23-entry catalogue, by name
+    arm_pose.py         move_arm — free-form joint posing via teleop's rt/arm_sdk driver
+    hand.py             set_hand/open_hands — BrainCo grip scalar, no firmware dead-man
   teleop/               continuous teleoperation — a 30-60Hz control stream, not a task.
                         Own WebSocket ingest (8767), own process.
     protocol.py         wire frame -> validated dataclass; rejects NaN and non-unit quaternions

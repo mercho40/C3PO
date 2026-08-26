@@ -63,6 +63,12 @@ EXPECTED_TOOLS = {
     "clap",
     "release_arm",
     "dance",
+    "gesture",
+    # custom arm + hand control
+    "move_arm",
+    "release_arm_control",
+    "set_hand",
+    "open_hands",
     # world model
     "remember_landmark",
     "recall_landmark",
@@ -156,6 +162,11 @@ def test_motion_tools_say_what_they_do_to_a_real_robot(tools):
         "zero_torque",
         "walk_to",
         "turn",
+        # The free-form movers: a gesture plays a whole-arm animation, move_arm
+        # drives raw joints, set_hand closes real fingers with no dead-man.
+        "gesture",
+        "move_arm",
+        "set_hand",
     }
     for name in movers:
         desc = (tools[name].description or "").lower()
@@ -358,6 +369,14 @@ def test_untested_motion_is_not_advertised_as_working(tools):
         # Accepted from damp with code 0 and NO transition (2026-08-15),
         # contradicting Unitree's own example, which bring-ups through it.
         "squat",
+        # rt/arm_sdk joint control has never run live, and the wrist/left-arm
+        # signs are unverified (bridge/teleop/arm_sdk.py enablement note).
+        "move_arm",
+        "release_arm_control",
+        # BrainCo grip: never live-tested, and which end of [0,1] is "open"
+        # is unconfirmed until TELEOP_BRAINCO_OPEN_AT is settled by watching.
+        "set_hand",
+        "open_hands",
     }
     for name in never_run_on_hardware:
         works = tools[name].meta["c3po"]["works"]
