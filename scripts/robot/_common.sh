@@ -131,7 +131,7 @@ bridge_pid() {
 # in the pidfile, and on 2026-08-20 that was exactly the problem: a bridge was
 # running and serving while the pidfile named a different, dead process.
 running_bridge_pids() {
-    pgrep -f 'bridge\.mcp_server' 2>/dev/null || true
+    _pids_matching 'bridge\.mcp_server'
 }
 
 # Reconcile the pidfile with reality, and say so when they disagree.
@@ -190,7 +190,7 @@ bridge_tree_pids() {
 # unclean stop or a second copy started by hand. Either one means something
 # can command the legs that our pidfile cannot stop.
 stray_bridge_pids() {
-    pgrep -f 'bridge\.mcp_server' 2>/dev/null || true
+    _pids_matching 'bridge\.mcp_server'
 }
 
 # Same shape as bridge_pid, for a sidecar named by its pidfile.
@@ -204,7 +204,7 @@ sidecar_pid() {
 }
 
 stray_teleop_pids() {
-    pgrep -f 'bridge\.teleop\.server' 2>/dev/null || true
+    _pids_matching 'bridge\.teleop\.server'
 }
 
 
@@ -242,12 +242,26 @@ _is_self_or_ancestor() {
     return 1
 }
 
-other_commander_pids() {
+# EVERY process lookup in this file goes through here. A bare `pgrep -f` finds
+# the shell that is asking — `ssh robot '...pgrep -f bridge.mcp_server...'`
+# reports its own `bash -c`. That is not hypothetical in either direction:
+#
+#   * run_c3po refused to start on 2026-08-26, reporting "a bridge process
+#     exists outside c3po-bridge.service" for an ssh command line;
+#   * stop_c3po reports the same match as a "leftover" bridge, which invites
+#     somebody to kill their own session.
+#
+# Defined after `_is_self_or_ancestor`; bash resolves both at call time.
+_pids_matching() {
     local pid
-    for pid in $(pgrep -f "$OTHER_COMMANDER_PATTERNS" 2>/dev/null || true); do
+    for pid in $(pgrep -f "$1" 2>/dev/null || true); do
         _is_self_or_ancestor "$pid" && continue
         printf '%s\n' "$pid"
     done
+}
+
+other_commander_pids() {
+    _pids_matching "$OTHER_COMMANDER_PATTERNS"
 }
 
 warn_if_other_commander() {
