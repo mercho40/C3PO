@@ -545,25 +545,28 @@ export class MenuLayer {
     // assumes a square viewport, which is wrong but close — and wrong in
     // proportion rather than wrong by the inverse, which is what writing
     // `sx * (W / H)` here would do: a panel 2.5x too tall on a 1.6:1 canvas.
-    const sx = 0.4;
+    const sx = 0.44;
     const vpAspect =
       vpWidth && vpHeight && vpWidth > 0 && vpHeight > 0
         ? vpWidth / vpHeight
         : 1;
     const sy = sx * (H / W) * vpAspect;
     gl.uniform2f(this.#scaleLoc, sx, sy);
-    // TOP-RIGHT, not bottom-centre.
+    // CENTRED HORIZONTALLY, a little above the middle.
     //
-    // Bottom-centre put it under the camera quad, in the part of the field an
-    // operator uses to watch where the robot is walking — so it competed with
-    // the view instead of annexing unused space, and reading it meant looking
-    // away from the thing being driven. Asked for directly on 2026-08-24:
-    // "should be to the right and up".
+    // It has now been in three places. Bottom-centre competed with the view of
+    // where the robot was walking. Top-right annexed unused space and was
+    // asked for directly — and then, worn, turned out to be unreadable: a
+    // Quest renders well past its comfortable viewing cone, so a panel pinned
+    // to clip-space x ~ 0.96 sits in the vignetted periphery. The operator's
+    // words on 2026-08-27 were "it should be in the middle, because you cannot
+    // see it perfectly".
     //
-    // The margins are in clip space, so they hold at any eye aspect: the panel
-    // is inset by its own half-size plus a small gap from each edge.
-    const margin = 0.04;
-    gl.uniform2f(this.#offsetLoc, 1 - sx - margin, 1 - sy - margin);
+    // So: centred on x, lifted on y. The lift keeps the lower field clear for
+    // watching the robot's feet, which is what bottom-centre got wrong, while
+    // staying inside the cone that top-right got wrong. The readiness banner
+    // and the alert band live in here, and both are useless unreadable.
+    gl.uniform2f(this.#offsetLoc, 0, 0.32);
     gl.uniform1f(this.#alphaLoc, 1.0);
 
     gl.enable(gl.BLEND);

@@ -443,15 +443,24 @@ export class ScanLayer {
     // so keeping it square on screen needs the same viewport-aspect correction
     // the menu documents — scaling to clip space without it is what made the
     // first camera quad visibly deformed.
-    const sx = 0.22;
+    const sx = 0.2;
     const vpAspect =
       vpWidth && vpHeight && vpWidth > 0 && vpHeight > 0
         ? vpWidth / vpHeight
         : 1;
     const sy = sx * (H / W) * vpAspect;
-    const margin = 0.04;
+    // LOWER-LEFT OF CENTRE, not the bottom-left corner.
+    //
+    // The corner placement was invisible in the headset — reported
+    // 2026-08-27, "I cannot see the radar and the points". Nothing was broken:
+    // at clip-space x ~ -0.96 it was rendering into the vignetted edge of the
+    // eye, outside the cone the optics actually show. The same mistake as the
+    // panel's top-right, one corner further out.
+    //
+    // Kept off-centre so it does not sit over the camera picture, and kept
+    // below the panel so the two never overlap at any viewport aspect.
     gl.uniform2f(this.#scaleLoc, sx, sy);
-    gl.uniform2f(this.#offsetLoc, -1 + sx + margin, -1 + sy + margin);
+    gl.uniform2f(this.#offsetLoc, -0.42, -0.44);
     gl.uniform1f(this.#alphaLoc, 1.0);
 
     gl.enable(gl.BLEND);
