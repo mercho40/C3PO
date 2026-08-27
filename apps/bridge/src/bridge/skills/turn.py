@@ -36,6 +36,20 @@ log = structlog.get_logger(__name__)
 
 DEFAULT_TOLERANCE_RAD = math.radians(3)  # ~3°
 
+#: Consecutive in-tolerance samples, with no yaw commanded, before declaring
+#: arrival.
+#:
+#: MEASURED 2026-08-26. The loop reported `reached` and the body settled 3.41°
+#: from target on a 3° tolerance. `reached` was decided from ONE pose sample,
+#: and leg odometry is noisy: a single reading dipping inside the band ended
+#: the loop while the robot was really outside it.
+#:
+#: Confirming over several samples with the yaw command at ZERO asks the
+#: question this skill actually claims to answer — not "was it briefly inside
+#: the band" but "is it inside the band and no longer moving". That is what
+#: works_real asserts for `turn`, so it is worth the samples.
+STOP_CONFIRM_SAMPLES = 3
+
 
 async def run(
     delta_yaw_radians: float,
@@ -112,6 +126,7 @@ async def run(
         last_reported = 0.0
         reached = False
         cancelled = False
+        in_tolerance = 0
 
         while time.time() < deadline:
             if task.cancel_event.is_set():
@@ -127,8 +142,21 @@ async def run(
             yaw = float(pose["yaw_radians_world"])
             err = math.atan2(math.sin(target_yaw - yaw), math.cos(target_yaw - yaw))
             if abs(err) <= tolerance_radians:
-                reached = True
-                break
+                # Inside the band: stop steering and confirm it holds. Commanding
+                # zero rather than simply not commanding is deliberate — the
+                # firmware keeps the last setpoint for up to a second, so
+                # falling silent here would let the body coast through the band
+                # and out the other side while we congratulated ourselves.
+                in_tolerance += 1
+                if in_tolerance >= STOP_CONFIRM_SAMPLES:
+                    reached = True
+                    break
+                await send_velocity_async(0.0, 0.0, 0.0, height)
+                await asyncio.sleep(LOOP_PERIOD_S)
+                continue
+
+            # Left the band again — a single sample proved nothing.
+            in_tolerance = 0
 
             task.progress = max(0.0, min(0.999, 1.0 - abs(err) / delta_magnitude))
             last_reported = await maybe_report_progress(

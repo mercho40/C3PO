@@ -105,3 +105,95 @@ async def test_turn_cancellation_stops_promptly(monkeypatch):
 
     assert result["status"] == "cancelled"
     assert result["phase"] == "cancelled"
+
+
+# --- the stopping condition -------------------------------------------------
+#
+# MEASURED ON THE ROBOT 2026-08-26. `turn` reported reached=true and the body
+# settled 3.41 deg from target on a 3 deg tolerance. `reached` was decided from
+# a SINGLE pose sample, and leg odometry is noisy — one reading dipping inside
+# the band ended the loop while the robot was really outside it.
+#
+# This is the property works_real asserts for `turn`, so it is the property
+# most worth pinning.
+
+
+@pytest.mark.asyncio
+async def test_one_noisy_sample_inside_the_band_does_not_stop_the_turn(monkeypatch):
+    """A spike is not an arrival.
+
+    Two samples far away, ONE reading that lands exactly on target, then far
+    away forever. Before the confirm window this returned reached=true on the
+    spike and stopped the robot 90 degrees short.
+    """
+    poses = [_pose(0.0), _pose(0.0), _pose(math.radians(90))] + [_pose(0.0)] * 400
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _FakeSampler(poses))
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=0.6)
+
+    assert result["result"]["reached"] is False, (
+        "a single in-tolerance sample was treated as arrival"
+    )
+    assert result["phase"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_the_band_must_hold_for_the_confirm_window(monkeypatch):
+    """Sustained agreement does stop it — the fix must not prevent stopping."""
+    poses = [_pose(0.0), _pose(0.0)] + [_pose(math.radians(90))] * 6
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _FakeSampler(poses))
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=5.0)
+
+    assert result["result"]["reached"] is True
+    assert result["phase"] == "reached"
+
+
+@pytest.mark.asyncio
+async def test_leaving_the_band_resets_the_confirmation(monkeypatch):
+    """Two inside, one outside, then sustained inside.
+
+    The count must restart rather than accumulate across an excursion — two
+    separate near-misses are not the same evidence as holding still.
+    """
+    poses = (
+        [_pose(0.0)]
+        + [_pose(math.radians(90))] * 2      # two inside
+        + [_pose(0.0)]                        # excursion: resets
+        + [_pose(math.radians(90))] * 6       # sustained inside
+    )
+    sampler = _FakeSampler(poses)
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=5.0)
+
+    assert result["result"]["reached"] is True
+    # It cannot have stopped before the excursion; that would mean two samples
+    # were enough and the reset never happened.
+    assert sampler._i > 4
+
+
+@pytest.mark.asyncio
+async def test_the_confirm_window_commands_zero_yaw(monkeypatch):
+    """While confirming, it must actively command a stop.
+
+    Falling silent would be wrong in a way that is invisible here and obvious
+    on hardware: the firmware holds the last setpoint for up to a second, so a
+    silent confirm window lets the body coast through the band and out the
+    other side while the loop congratulates itself.
+    """
+    sent: list[float] = []
+
+    async def recording_send(vx, vy, vyaw, height=0.78):
+        sent.append(vyaw)
+
+    monkeypatch.setattr(turn, "send_velocity_async", recording_send)
+    poses = [_pose(0.0)] + [_pose(math.radians(90))] * 6
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _FakeSampler(poses))
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=5.0)
+
+    assert result["result"]["reached"] is True
+    assert sent, "nothing was commanded at all"
+    # The steering commands come first, then the confirm window's zeros.
+    assert sent[-1] == 0.0, f"confirm window did not command a stop: {sent[-3:]}"
