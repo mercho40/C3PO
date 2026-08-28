@@ -162,9 +162,14 @@ jobs:
         working-directory: apps/bridge
         run: ./scripts/postsync.sh
 
+      # `scripts` included as of 2026-08-27. Everything in there was already
+      # clean, so this costs nothing today — and those are the files somebody
+      # runs while STANDING NEXT TO A HUMANOID holding an e-stop
+      # (`vr_smoke_test.py`, `measure_turn.py`, `headset_check.py`). An
+      # unbound name in one of those surfaces at the worst possible moment.
       - name: ruff
         working-directory: apps/bridge
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests scripts
 
       - name: mypy
         working-directory: apps/bridge

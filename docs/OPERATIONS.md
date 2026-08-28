@@ -361,6 +361,40 @@ camera layer draws a **SIN IMAGEN** card naming the reason, the same way the
 radar dial always says why it is empty. A black field is an assertion that
 everything is fine, and it was wrong every time it appeared.
 
+### Closing out the headset session — `headset_check.py` 🔧
+
+Everything the headset does is currently **unverified**: immersive mode, the
+panel position, the readiness banner, joystick walking, the 8-second alert
+band, the lidar radar, the camera picture, and the per-eye stereo fix. Eight
+changes across four days, none of them worn.
+
+```bash
+scripts/quest_setup.sh                                     # forward the ports
+ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po     # another terminal
+cd apps/bridge && uv run python scripts/headset_check.py
+```
+
+It prompts for each one with what to look for, and prints a report that can be
+pasted into the commit that flips a claim from unverified to verified.
+
+**The part that is not a checklist:** every visual check that depends on data
+asks the bridge FIRST, and a NO with no data behind it is recorded **BLOCKED**,
+never FAIL.
+
+That distinction is the entire point. "I cannot see the radar" and "I cannot
+see the camera" were reported three times between 21 and 27 August and the
+cause was different every time — a clip-space placement outside the lens cone,
+a QoS mismatch that meant no ring was ever published, and a port the headset
+never had forwarded. **Two of those three were not rendering bugs**, and from
+inside the headset all three looked identical. A FAIL from this script means
+"the data was there and the headset did not show it", which is worth acting on.
+A BLOCKED means go and start something.
+
+Nothing in it commands the robot — every probe is a GET against a read-only
+telemetry route. The two checks that involve motion ask the operator to drive,
+because a script that walks a humanoid while somebody's eyes are covered is not
+a thing this repo is going to grow.
+
 ### The VR teleop stream on the Jetson 🔧
 
 One more process now runs beside the bridge, for `/vr-control`. It is not under
