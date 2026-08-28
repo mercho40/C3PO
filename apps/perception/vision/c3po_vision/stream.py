@@ -59,6 +59,7 @@ numpy are therefore imported inside the encoder, never at module scope.
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import threading
 import time
@@ -77,6 +78,40 @@ BOUNDARY = "c3poframe"
 # consecutive failures, so a truly dead D435i ends the connection well before
 # the container exits.
 STALE_AFTER_S = 1.0
+
+#: Socket timeout on a client connection. THE FIX FOR A STREAM THAT REPORTS
+#: HEALTHY AND SENDS NOTHING.
+#:
+#: Observed on the robot 2026-08-29: `clients` climbed 0 -> 12 -> 14 across an
+#: evening of page reloads and never came down, and at 14 the stream accepted
+#: connections and delivered ZERO BYTES IN FIVE SECONDS while `/status` still
+#: said `live: true`. The headset showed SIN IMAGEN while every check said the
+#: camera was fine.
+#:
+#: The accounting was never wrong. `_stream` increments on entry and
+#: decrements in a `finally`, and catches BrokenPipeError — but a browser that
+#: navigates away without closing cleanly leaves a HALF-OPEN connection, and a
+#: write to one of those does not raise. It BLOCKS, until the OS gives up
+#: minutes later. So the `finally` never runs, the thread never exits, and the
+#: count only ever goes up.
+#:
+#: This container is pinned to a single core (`--cpuset-cpus 5` in
+#: `perception_up`), so a dozen threads parked in `write()` are not free: they
+#: contend with the JPEG encoder on the one CPU the detector also needs.
+#:
+#: Five seconds is far longer than a loopback write to a live peer and far
+#: shorter than the kernel's default. It applies to reads too, which is
+#: harmless: HTTP/1.0 means one request per connection, and the only sizeable
+#: read is `/transcribe`'s PCM upload on loopback.
+CLIENT_TIMEOUT_S = 5.0
+
+#: Concurrent MJPEG clients. Beyond this, refuse and SAY SO.
+#:
+#: Defence in depth behind the timeout. Even with dead peers now cleaned up, a
+#: cap turns "the stream mysteriously stopped serving" into a 503 that names
+#: the reason — and this feed has exactly one legitimate consumer at a time
+#: (the console, or the headset), so four is already generous.
+MAX_STREAM_CLIENTS = 4
 
 # How long a blocked MJPEG writer waits on the condition before re-checking
 # whether the server is shutting down. Only affects `docker stop` latency.
@@ -232,6 +267,15 @@ class _Latest:
             "frame_age_s": age,
             "frames": offered,
             "clients": clients,
+            # SATURATION IS A STATE THE CONSOLE MUST BE ABLE TO SEE.
+            #
+            # On 2026-08-29 this endpoint reported `live: true` with 14 clients
+            # while serving zero bytes, and there was no field that said so —
+            # so every check said the camera was healthy while the headset
+            # showed nothing. `clients` alone did not help: nobody knows what
+            # number is too many. These two say it outright.
+            "clients_max": MAX_STREAM_CLIENTS,
+            "at_capacity": clients >= MAX_STREAM_CLIENTS,
             # What the camera produces, and what actually goes down the wire —
             # they differ whenever C3PO_VISION_STREAM_SCALE is not 1.0, and a
             # console that shows the first while sending the second is lying
@@ -253,6 +297,15 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
         # goes stale, which is what a browser <img> wants anyway.
         protocol_version = "HTTP/1.0"
         server_version = "c3po-vision"
+
+        def setup(self) -> None:
+            # The one line that stops a vanished browser parking a thread in
+            # `write()` forever. See CLIENT_TIMEOUT_S.
+            super().setup()
+            try:
+                self.connection.settimeout(CLIENT_TIMEOUT_S)
+            except OSError:  # pragma: no cover - a socket that is already gone
+                pass
 
         def log_message(self, fmt: str, *args: Any) -> None:
             # BaseHTTPRequestHandler logs every request to stderr in Apache
@@ -361,9 +414,23 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
             self.wfile.write(data)
 
         def _stream(self) -> None:
-            self._headers("multipart/x-mixed-replace; boundary=" + BOUNDARY)
+            # CLAIM THE SLOT BEFORE SENDING ANY HEADERS. Sending 200 and the
+            # multipart content-type and THEN discovering we cannot serve is
+            # the failure this endpoint already had: a socket that opens,
+            # announces a picture, and delivers nothing. A 503 before the
+            # headers is a refusal the client can read.
             with latest._cv:
-                latest.clients += 1
+                at_capacity = latest.clients >= MAX_STREAM_CLIENTS
+                if not at_capacity:
+                    latest.clients += 1
+            if at_capacity:
+                self.send_error(
+                    503,
+                    f"too many stream clients (max {MAX_STREAM_CLIENTS})",
+                )
+                return
+
+            self._headers("multipart/x-mixed-replace; boundary=" + BOUNDARY)
             try:
                 seq = 0
                 while True:
@@ -384,8 +451,13 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                     )
                     self.wfile.write(data)
                     self.wfile.write(b"\r\n")
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # the operator closed the tab; not an error
+            except (BrokenPipeError, ConnectionResetError, socket.timeout):
+                # The operator closed the tab, or walked away and left a
+                # half-open socket. `socket.timeout` is the one that was
+                # missing: without the timeout above it never arrived, and
+                # without catching it here it would escape as an unhandled
+                # error instead of being the ordinary end of a stream.
+                pass
             finally:
                 with latest._cv:
                     latest.clients -= 1

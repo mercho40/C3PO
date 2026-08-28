@@ -168,3 +168,74 @@ def test_offer_ignores_a_missing_frame():
     fs.running = True
     fs.offer(None)
     assert fs.status()["frames"] == 0
+
+
+# --- the stream that reported healthy and served nothing --------------------
+#
+# Observed on the robot, 2026-08-29: `clients` climbed 0 -> 12 -> 14 over an
+# evening of page reloads and never came down. At 14 the endpoint accepted
+# connections and delivered ZERO BYTES IN FIVE SECONDS while `/status` still
+# said `live: true`, so the headset showed SIN IMAGEN while every check
+# available said the camera was fine.
+#
+# The count was never wrong. A browser that navigates away without closing
+# leaves a HALF-OPEN socket, and a write to one of those does not raise — it
+# blocks until the OS gives up minutes later. So the handler's `finally` never
+# ran. On a container pinned to one core those parked threads also contend
+# with the JPEG encoder.
+
+
+def test_a_client_socket_gets_a_timeout():
+    """The one line that stops a vanished browser parking a thread forever."""
+    assert stream.CLIENT_TIMEOUT_S > 0
+    # Long enough that a live loopback peer is never cut off mid-frame, short
+    # enough to beat the kernel's default by minutes.
+    assert 1.0 <= stream.CLIENT_TIMEOUT_S <= 30.0
+
+
+def test_socket_timeout_is_treated_as_a_closed_stream_not_an_error():
+    """`socket.timeout` is what the new timeout actually raises.
+
+    Catching only BrokenPipeError/ConnectionResetError was correct for a peer
+    that closes politely and useless for one that vanishes — and once the
+    timeout exists, an uncaught one would turn the ordinary end of a stream
+    into a traceback.
+    """
+    import inspect
+
+    source = inspect.getsource(stream._handler_class)
+    assert "socket.timeout" in source
+
+
+def test_there_is_a_cap_and_it_is_small():
+    # This feed has one legitimate consumer at a time — the console, or the
+    # headset. A cap turns "it mysteriously stopped serving" into a 503 that
+    # names the reason.
+    assert 1 <= stream.MAX_STREAM_CLIENTS <= 8
+
+
+def test_status_says_when_it_is_saturated():
+    """`clients` alone did not help: nobody knows what number is too many."""
+    latest = stream._Latest()
+    st = latest.status(time.time())
+    assert st["clients_max"] == stream.MAX_STREAM_CLIENTS
+    assert st["at_capacity"] is False
+
+    latest.clients = stream.MAX_STREAM_CLIENTS
+    st = latest.status(time.time())
+    assert st["at_capacity"] is True
+
+
+def test_at_capacity_is_reported_even_while_the_feed_is_live():
+    """The exact 2026-08-29 shape: live frames, and nobody can be served.
+
+    A status that says `live: true` and nothing else is what sent us looking
+    at the renderer, the tunnel and the CORS headers for an hour.
+    """
+    latest = stream._Latest()
+    latest.offer(stream.RawFrame(width=2, height=1, rgb=b"\xff\x00\x00\x00\xff\x00"), time.time())
+    latest.clients = stream.MAX_STREAM_CLIENTS
+
+    st = latest.status(time.time())
+    assert st["live"] is True
+    assert st["at_capacity"] is True
