@@ -164,7 +164,19 @@ def summarize_scan(body: Optional[dict], status: Optional[int]) -> ProbeResult:
     if status == 503:
         hint = body.get("hint") or body.get("error") or "no reason given"
         return ProbeResult(False, f"bridge has no ring: {hint}")
-    ranges = body.get("ranges_cm") or body.get("ranges") or []
+    # `r_cm` IS THE FIELD, AND THIS LOOKED FOR TWO NAMES THAT DO NOT EXIST.
+    #
+    # The first version read `ranges_cm` / `ranges`, invented from reading
+    # `scan_ring.py` rather than from a reply. `/telemetry/scan` sends `r_cm`,
+    # which `apps/web`'s `ScanRing` type has always had right. So a healthy
+    # 105-bearing ring came back as "present but EMPTY", and the radar check
+    # was recorded BLOCKED — this script committing, about itself, the exact
+    # confusion it was written to end.
+    #
+    # It survived because the payloads captured from the robot on 2026-08-28
+    # were the 503 "no scan received" case; the success case was never looked
+    # at until the lidar was actually running on 2026-08-29.
+    ranges = body.get("r_cm") or body.get("ranges_cm") or body.get("ranges") or []
     filled = sum(1 for r in ranges if r)
     frame = body.get("frame") or "?"
     stale = " STALE" if body.get("stale") else ""

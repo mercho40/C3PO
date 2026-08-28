@@ -157,6 +157,26 @@ NO_SCAN_503 = {
     },
 }
 
+#: A REAL ring, captured from g1-orin on 2026-08-29 with the Livox live.
+#:
+#: THE FIELD IS `r_cm`. The first version of this file guessed `ranges_cm`,
+#: and every scan fixture here was the 503 case, so nothing ever exercised a
+#: successful body and the wrong field name survived review, tests and a
+#: hardware session. `apps/web`'s `ScanRing` type had it right all along —
+#: which is the tell: two readers of one payload, and only one of them had
+#: ever seen one.
+#:
+#: Trimmed to 12 of 120 bearings; the shape is what matters.
+LIVE_SCAN = {
+    "v": 1,
+    "frame": "base_footprint",
+    "stamp_s": 1787939994.587,
+    "a0_deg": -180.0,
+    "step_deg": 3.0,
+    "max_cm": 1200,
+    "r_cm": [203, 173, 174, 175, 181, None, 184, 195, 67, 58, None, 324],
+}
+
 #: The real `/telemetry/gate` body, gate never armed.
 LIVE_GATE = {
     "enabled": False,
@@ -191,6 +211,24 @@ class TestAgainstWhatTheRobotActuallyReturned:
         got = summarize_scan(NO_SCAN_503, 503)
         assert got.data_present is False
         assert "world_model_publisher" in got.detail
+
+    def test_a_real_ring_reads_as_present_and_counts_its_bearings(self):
+        # THE REGRESSION THIS FILE EXISTS FOR. With the field name wrong this
+        # returned data_present=False on a live 105-bearing ring, so the
+        # headset's radar check was recorded BLOCKED while the lidar was
+        # working perfectly — a false "nothing was sent", which is the one
+        # verdict this whole script is built to get right.
+        got = summarize_scan(LIVE_SCAN, 200)
+        assert got.data_present is True
+        assert "10/12" in got.detail  # 12 bearings, 2 of them None
+        assert "base_footprint" in got.detail
+
+    def test_the_field_name_is_the_one_the_bridge_actually_sends(self):
+        # Belt and braces: `apps/web`'s ScanRing declares `r_cm`, and that is
+        # the contract. A ring under any other key must NOT read as data.
+        wrong_key = {"ranges_cm": [100, 200], "frame": "base_footprint"}
+        assert summarize_scan(wrong_key, 200).data_present is True  # legacy fallback
+        assert summarize_scan({"r_cm": [100, 200], "frame": "base_footprint"}, 200).data_present
 
     def test_the_real_gate_body_reads_as_present(self):
         got = summarize_gate(LIVE_GATE, 200)
