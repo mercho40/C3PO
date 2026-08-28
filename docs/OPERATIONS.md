@@ -342,13 +342,36 @@ run no teleop session ever registered — `list_active_tasks` stayed empty, beca
 8767 was not forwarded at the time. Head yaw reaching the robot from a headset
 has not been observed end to end, and the yaw sign is still unsettled.
 
+🔧 **The camera port is read from `PUBLIC_ROBOT_CAM_URL`, not hardcoded — since
+2026-08-27.** The forward list said 8081, which is `apps/perception`'s vision
+container. The feed had already moved to **8001**, the bridge's own port (see
+"WHY NOT PORT 8081" in `mcp_server.py`: 8081 belongs to the process that is dead
+in exactly the case the relay exists for). `PUBLIC_ROBOT_CAM_URL` was updated;
+the forward list was not, so the headset asked *its own* `127.0.0.1:8001`, where
+nothing listens.
+
+The symptom was "i cannot see the camara" with **everything else working** —
+because everything else reaches the bridge through apps/back on 3000, which was
+forwarded. `quest_setup.sh` now parses the port out of `apps/web/.env` (falling
+back to `.env.example`), so the two cannot drift apart again. If you point
+`PUBLIC_ROBOT_CAM_URL` somewhere new, the forward follows it with no edit here.
+
+The headset also no longer goes silently black when the feed is missing: the
+camera layer draws a **SIN IMAGEN** card naming the reason, the same way the
+radar dial always says why it is empty. A black field is an assertion that
+everything is fine, and it was wrong every time it appeared.
+
 ### The VR teleop stream on the Jetson 🔧
 
 One more process now runs beside the bridge, for `/vr-control`. It is not under
 `run_c3po` or the boot unit — it is started by hand, per session, because it exists to
-serve a person who is currently wearing a headset. The camera comes from
-`apps/perception`'s vision container (`perception_up perception`, port 8081), which is the
-process that owns the D435i.
+serve a person who is currently wearing a headset. The camera normally comes from
+the **bridge's own relay on 8001** — `PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera`,
+which is what `quest_setup.sh` reads and forwards. `apps/perception`'s vision
+container (`perception_up perception`, port 8081) serves the same paths and is the
+process that owns the D435i, so pointing the variable at `:8081` instead works
+with no code change — but only while that container is alive, which is exactly
+the case the 8001 relay exists to cover.
 
 | Process                | Start        | Port | What it is                                                      |
 | ---------------------- | ------------ | ---- | --------------------------------------------------------------- |

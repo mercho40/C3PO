@@ -49,13 +49,54 @@ warn() { printf '  %s!%s %s\n' "$_yellow" "$_reset" "$1"; }
 err()  { printf '  %s✗%s %s\n' "$_red" "$_reset" "$1" >&2; }
 say()  { printf '\n%s%s%s\n' "$_bold" "$1" "$_reset"; }
 
+# THE CAMERA PORT IS READ, NOT HARDCODED, AND THAT IS THE WHOLE POINT.
+#
+# It was hardcoded to 8081, and on 2026-08-27 an operator wearing the headset
+# reported "i cannot see the camara" while everything else worked. Nothing was
+# broken. The feed had MOVED: `apps/bridge` now serves it on 8001 (see the
+# "WHY NOT PORT 8081" note in `mcp_server.py` — 8081 belongs to the vision
+# container, which is dead in exactly the case this feed exists for), and
+# `PUBLIC_ROBOT_CAM_URL` was updated to match. This list was not.
+#
+# So the console asked the headset's own `127.0.0.1:8001`, where nothing is
+# listening, the <img> errored, and `CameraLayer.draw` returned before drawing
+# anything — silently, because a camera with no frame is indistinguishable
+# from a camera that has not connected yet. Everything else reaches the bridge
+# through apps/back on 3000, which IS forwarded, which is exactly why movement
+# worked and only the picture was missing.
+#
+# Two places had to agree and one of them moved. Reading the port the console
+# will actually ask for means they cannot disagree again.
+_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cam_port=""
+cam_from=""
+# `.env` first, `.env.example` as the fallback: `.env` is gitignored, so a
+# fresh clone has none, and silently forwarding nothing would reproduce the
+# very symptom this reads the file to prevent. Forwarding the documented
+# default instead is safe — if it is the wrong port, the listening check below
+# says so out loud, which is the whole contract of this script.
+for _env in "$_repo/apps/web/.env" "$_repo/apps/web/.env.example"; do
+    [ -f "$_env" ] || continue
+    cam_url=$(sed -n 's/^[[:space:]]*PUBLIC_ROBOT_CAM_URL[[:space:]]*=[[:space:]]*//p' \
+        "$_env" | tail -n 1 | tr -d '"'\''[:space:]')
+    # host:port from the URL, and only if the port is digits. No port means
+    # the scheme default, which nothing here tunnels — leave it empty and say
+    # so rather than forwarding a guess.
+    cam_port=$(printf '%s' "$cam_url" | sed -n 's#^[a-zA-Z]*://[^/:]*:\([0-9][0-9]*\).*#\1#p')
+    if [ -n "$cam_port" ]; then cam_from="${_env##*/}"; break; fi
+done
+
 # port:what-it-is:fatal
 PORTS=(
     "3001:web console (vite):yes"
     "3000:apps/back API:yes"
     "8767:teleop stream (tunnel to robot):yes"
-    "8081:camera MJPEG (tunnel to robot):no"
 )
+if [ -n "$cam_port" ]; then
+    PORTS+=("$cam_port:camera MJPEG (PUBLIC_ROBOT_CAM_URL in $cam_from):no")
+else
+    warn "no port in PUBLIC_ROBOT_CAM_URL — the headset will have no picture"
+fi
 
 say "1. adb"
 if ! command -v adb >/dev/null 2>&1; then
@@ -96,8 +137,12 @@ for entry in "${PORTS[@]}"; do
     # promises to prevent, and it was committing it. Forcing a byte through
     # the channel is what tells them apart.
     listening=0
+    # The camera port comes from PUBLIC_ROBOT_CAM_URL and is tunnelled like
+    # 8767, so it needs the forced-byte probe rather than `nc -z`. Naming it
+    # by variable keeps this branch correct when the feed moves again, which
+    # is precisely what caught us out when it moved from 8081 to 8001.
     case "$port" in
-        8081|8767)
+        8767|"${cam_port:-__none__}")
             # Capture first, match second. Under `set -o pipefail` (line 31) a
             # `curl | grep` pipeline reports CURL's status, not grep's — and the
             # curl that proves the tunnel is empty exits 52/56 by definition. So
@@ -151,8 +196,10 @@ if [ "$fatal" = "1" ]; then
     echo "     bun run dev                                  # 3000 + 3001"
     echo "     ssh -N -o ControlMaster=no \\"
     echo "         -L 8001:127.0.0.1:8001 \\"
-    echo "         -L 8081:127.0.0.1:8081 \\"
-    echo "         -L 8767:127.0.0.1:8767 c3po              # 8767 + 8081"
+    echo "         -L 8767:127.0.0.1:8767 c3po              # 8767 + the camera"
+    echo
+    echo "     the camera rides 8001 with the bridge — PUBLIC_ROBOT_CAM_URL"
+    echo "     in apps/web/.env is what decides, and this script follows it."
     exit 1
 fi
 
