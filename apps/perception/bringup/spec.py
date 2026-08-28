@@ -164,6 +164,34 @@ STAGES: Dict[str, Stage] = {
             "   multi-consumer topic; the Livox stays with whoever holds it)",
         ),
     ),
+    # THE REAL LIDAR RING WITHOUT GIVING UP A CAMERA.
+    #
+    # Added 2026-08-29 after a headset session where the only way to get a real
+    # radar was `perception`, which starts the vision container, which takes
+    # the RealSense — so the operator had to choose between the lidar and the
+    # head camera. That choice was never necessary.
+    #
+    # `perception.launch.py` is `odometry.launch.py` + `world_model_publisher`,
+    # and neither touches a camera: the LiDAR arrives on the vendor's republish
+    # and the launch file declares nothing but lidar_height_m, mount_yaw_deg,
+    # twist_source and world_model_hz. The RealSense claim comes entirely from
+    # the SECOND CONTAINER the `perception` stage adds alongside it. Drop that
+    # container and the claim goes with it.
+    #
+    # The detector is then offline, and the world model says so — `absent is
+    # not empty`, reported as `detector_online: false` with a note rather than
+    # as a clear scene. That is an honest degradation, not a broken stage.
+    "lidar": Stage(
+        name="lidar",
+        containers=(NAV,),
+        launch_file="perception.launch.py",
+        summary=(
+            _NO_SENSORS,
+            "the LiDAR ring and the world model, with NO detector: this is the",
+            "  stage for a headset radar while the head camera stays on :8001",
+            "objects are reported as OFFLINE, never as an empty scene",
+        ),
+    ),
     "perception": Stage(
         name="perception",
         containers=(NAV, VISION),

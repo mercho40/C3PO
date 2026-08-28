@@ -17,6 +17,8 @@
 #     nav2-fake   Nav2 on synthetic odom/scan      NO SENSORS
 #     stt         GPU speech-to-text only          NO SENSORS — composes with the rest
 #     odometry    FAST-LIO + TF + scan             NO SENSORS (vendor LiDAR republish)
+#     lidar       + world model, NO detector       NO SENSORS — headset radar
+#                                                  while the head camera stays
 #     perception  + detector + world model         claims the RealSense
 #     nav2        + Nav2, lifecycle NOT autostarted claims the RealSense
 #

@@ -205,3 +205,48 @@ def test_every_stage_labels_its_containers_with_the_stage():
     for name in STAGES:
         for container in build(name):
             assert container.labels.get("c3po.stage") == name
+
+
+# --- the lidar ring without giving up a camera ------------------------------
+#
+# Added after a headset session where the only stage producing a real radar was
+# `perception`, which starts the vision container, which takes the RealSense —
+# so the operator had to choose between the lidar and the head camera. The
+# ring comes from `world_model_publisher`, which needs no camera at all.
+
+
+def test_the_lidar_stage_claims_nothing():
+    """The entire point. If this ever claims the camera it has no reason to exist."""
+    assert STAGES["lidar"].claims_camera is False
+
+
+def test_the_lidar_stage_runs_the_world_model_and_only_the_nav_container():
+    # `world_model_publisher` is what publishes /c3po/scan — the ring the
+    # headset draws. It lives in perception.launch.py, which is
+    # odometry.launch.py plus the world model, and neither touches a device.
+    stage = STAGES["lidar"]
+    assert stage.launch_file == "perception.launch.py"
+    containers = build("lidar")
+    assert len(containers) == 1, "a second container is what takes the camera"
+    assert containers[0].labels.get("c3po.stage") == "lidar"
+
+
+def test_it_runs_the_same_launch_file_as_perception():
+    """Same ring, same world model — the difference is only the container set.
+
+    If these ever diverge, `lidar` has quietly become a different stage and
+    the radar it produces is no longer the one `perception` was verified with.
+    """
+    assert STAGES["lidar"].launch_file == STAGES["perception"].launch_file
+
+
+def test_it_says_the_detector_will_be_offline():
+    """An honest degradation, stated up front.
+
+    Objects report OFFLINE rather than as an empty scene — 'absent is not
+    empty'. An operator who is not told will read a clear radar as a clear
+    room.
+    """
+    text = " ".join(STAGES["lidar"].summary).lower()
+    assert "detector" in text
+    assert "offline" in text
