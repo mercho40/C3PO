@@ -398,6 +398,27 @@ never implemented — which is why `/camera/status` answered 200 with no
 `access-control-allow-origin` and the headset's camera could not have loaded.
 The bridge now reads it, applied to `/camera/*` only.
 
+✅ **The header plumbing is verified ON THE ROBOT** (2026-08-28), without
+disturbing the running stack: this branch was checked out into a throwaway
+worktree and started in `SIM_MODE=stub` on loopback:8009, which creates no DDS
+participant (`mcp_server.py`'s `if SIM_MODE != "stub"` guard), claims no
+sensor and commands nothing. Results:
+
+| request                         | response                                                              |
+| ------------------------------- | --------------------------------------------------------------------- |
+| `Origin: http://localhost:3001` | `access-control-allow-origin: http://localhost:3001` + `vary: Origin` |
+| `Origin: https://evil.example`  | no CORS header                                                        |
+| no `Origin` (apps/back, curl)   | no CORS header — correct, CORS is browser-only                        |
+
+The 503 (stub mode has no camera) **carries the header**, which was the point:
+the console can read the _reason_. `Vary` is not needed on the no-CORS replies
+because every camera response is `Cache-Control: no-store`, so nothing caches
+them. The process was killed by pid and the worktree removed; the robot's
+checkout stayed on `152e3a6`.
+
+What remains unverified is the picture in the headset, which needs the bridge
+restarted onto this branch.
+
 ⚠️ **Forwarding 8001 also forwards `/mcp`, and that is a known trade.** 8001 is
 the bridge, which serves the tool surface that can walk the robot with no
 authentication of its own, on the same port as `/camera/*`. This is the thing

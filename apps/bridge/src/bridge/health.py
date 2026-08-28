@@ -87,8 +87,13 @@ def assess(
     perception_containers: Sequence[str],
     gemm_containers: Sequence[str],
     port: int = 8001,
+    bind_hosts: Sequence[str] = (),
 ) -> Report:
-    """Pure. Probe results in, a report out."""
+    """Pure. Probe results in, a report out.
+
+    `bind_hosts` are the addresses the bridge is actually listening on, read
+    from the socket rather than from configuration — see `_bind_hosts`.
+    """
     checks: List[Check] = []
 
     gate = _parse(gate_json)
@@ -113,6 +118,36 @@ def assess(
         checks.append(Check("bridge", "running (answering, no pidfile)"))
     else:
         checks.append(Check("bridge", "DOWN", problem=True))
+
+    # WHERE IT IS LISTENING, NOT WHERE THE CONFIG SAYS IT SHOULD BE.
+    #
+    # Read from the socket because the four places that describe this port do
+    # not agree. `apps/bridge/.env.example` says 127.0.0.1, the code default is
+    # 127.0.0.1, `docs/OPERATIONS.md` and `apps/back/src/routes/telemetry.ts`
+    # both say loopback — and `scripts/robot/c3po-bridge.service` sets
+    # BRIDGE_HOST=0.0.0.0, which is what was actually running when this was
+    # checked on 2026-08-28.
+    #
+    # A wildcard bind is reported as a PROBLEM because of what is behind it:
+    # `/mcp` is the tool surface that can walk the robot and has no
+    # authentication of its own, so on a shared school LAN this is a machine
+    # anybody can drive. That may still be a deliberate trade — reaching the
+    # bridge without a tunnel is genuinely more convenient — but it should be
+    # a trade somebody re-makes on purpose, not one a health check stays quiet
+    # about.
+    wildcards = [h for h in bind_hosts if h in ("0.0.0.0", "::", "*")]
+    if wildcards:
+        checks.append(
+            Check(
+                "bridge bind",
+                "{} — reachable from the LAN, and /mcp has no auth".format(
+                    ", ".join(wildcards)
+                ),
+                problem=True,
+            )
+        )
+    elif bind_hosts:
+        checks.append(Check("bridge bind", "{} (loopback)".format(", ".join(bind_hosts))))
 
     if gate is None:
         checks.append(Check("bridge http", "NOT ANSWERING on :{}".format(port), problem=True))
@@ -297,6 +332,7 @@ def probe_and_assess(
     list_units: Callable[[], Sequence[str]],
     docker_ps: Callable[[str], Sequence[str]],
     port: int = 8001,
+    list_binds: Optional[Callable[[int], Sequence[str]]] = None,
 ) -> Report:
     """Run the probes, then assess. The only place the two are joined."""
     stage: Optional[str] = None
@@ -315,6 +351,7 @@ def probe_and_assess(
         perception_containers=docker_ps("^c3po-perception"),
         gemm_containers=docker_ps("^gemm"),
         port=port,
+        bind_hosts=list_binds(port) if list_binds else (),
     )
 
 
@@ -364,6 +401,29 @@ def _run(argv: Sequence[str]) -> str:
     return out.stdout.decode("utf-8", "replace") if out.stdout else ""
 
 
+def _bind_hosts(port: int) -> Sequence[str]:
+    """Addresses the bridge is listening on, from `ss`. Empty if it cannot ask.
+
+    The socket, not the configuration — this exists precisely because the two
+    disagree. Empty means unknown, and `assess` reports nothing rather than
+    guessing loopback: a silent pass would be the same wrong-and-confident
+    answer this module was written to stop giving.
+    """
+    out = _run(["ss", "-ltnH"])
+    hosts = []
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        local = fields[3]
+        host, _, listening = local.rpartition(":")
+        if listening != str(port):
+            continue
+        # `ss` renders IPv6 as [::]:8001 and "any" as 0.0.0.0 or *.
+        hosts.append(host.strip("[]") or "*")
+    return hosts
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import os
     import sys
@@ -391,6 +451,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if name.strip()
         ],
         port=port,
+        list_binds=_bind_hosts,
     )
 
     print(render(report, colour=sys.stdout.isatty()))

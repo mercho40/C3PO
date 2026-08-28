@@ -355,3 +355,52 @@ def test_a_stale_pidfile_does_not_resurrect_a_dead_bridge():
     same input as "no pidfile" — asserted so the two paths cannot drift."""
     report = assess(gate_json=None, **dict(BASE, bridge_pid=None))
     assert "DOWN" in detail_for(report, "bridge")
+
+
+# --- where it is listening --------------------------------------------------
+#
+# Four places describe this port and they do not agree: `.env.example` and the
+# code default say 127.0.0.1, `docs/OPERATIONS.md` and apps/back's
+# `telemetry.ts` say loopback, and `scripts/robot/c3po-bridge.service` sets
+# BRIDGE_HOST=0.0.0.0 — which is what `ss -ltnp` found actually running on the
+# robot on 2026-08-28. So the report reads the SOCKET, not any of the four.
+
+
+def check_names(report):
+    return [c.name for c in report.checks]
+
+
+def test_a_wildcard_bind_is_a_problem_and_says_why():
+    # `/mcp` can walk the robot and has no auth of its own. On a shared school
+    # LAN a wildcard bind means anybody on the Wi-Fi can drive it.
+    report = assess(gate_json=CLOSED, bind_hosts=["0.0.0.0"], **BASE)
+    detail = detail_for(report, "bridge bind")
+    assert "0.0.0.0" in detail
+    assert "no auth" in detail
+    assert "bridge bind" in problem_names(report)
+
+
+def test_ipv6_any_counts_too():
+    report = assess(gate_json=CLOSED, bind_hosts=["::"], **BASE)
+    assert "bridge bind" in problem_names(report)
+
+
+def test_loopback_is_reported_and_is_not_a_problem():
+    report = assess(gate_json=CLOSED, bind_hosts=["127.0.0.1"], **BASE)
+    assert "loopback" in detail_for(report, "bridge bind")
+    assert "bridge bind" not in problem_names(report)
+
+
+def test_an_unknown_bind_says_nothing_rather_than_guessing():
+    # `ss` missing, or output this could not parse. Empty is NOT evidence of
+    # loopback, and reporting a clean bind from no information would be the
+    # confident-wrong answer this module exists to avoid.
+    report = assess(gate_json=CLOSED, bind_hosts=[], **BASE)
+    assert "bridge bind" not in check_names(report)
+
+
+def test_a_wildcard_alongside_loopback_still_reports_the_wildcard():
+    # Dual-stack machines list both. The permissive one is the one that counts.
+    report = assess(gate_json=CLOSED, bind_hosts=["127.0.0.1", "0.0.0.0"], **BASE)
+    assert "bridge bind" in problem_names(report)
+    assert "0.0.0.0" in detail_for(report, "bridge bind")
