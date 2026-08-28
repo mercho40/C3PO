@@ -590,7 +590,13 @@ async def stop_everything() -> dict:
         expected_duration_s=1.0,
         works_sim=False,
         works_real=True,
-        preconditions=["fsm_state_in_{preparation,walk,walk_waist,run,squat,zero_torque}"],
+        # `squat_up`, NOT `squat`. The `squat` SKILL sends SQUAT_UP (706) —
+        # deliberately, see its docstring — so the robot reports `squat_up`,
+        # and mode 2 (`squat`) is an index this bridge never sends. Naming it
+        # here described a state nothing can produce, which is the sort of
+        # thing free text in a metadata dict gets away with until somebody
+        # wires it up. `test_fsm_preconditions.py` now checks it.
+        preconditions=["fsm_state_in_{preparation,walk,walk_waist,run,squat_up,zero_torque}"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
 )
