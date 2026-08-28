@@ -58,5 +58,54 @@ target-version = "py38"
 "bringup/*.py" = ["UP006", "UP045"]
 "tests/test_bringup_*.py" = ["UP006", "UP045"]
 
+# `vision/` IS THE SAME CASE AS `bringup/`, and was left out of it.
+#
+# These sources are COPIED into l4t-jetpack:r35.3.1, whose interpreter is
+# pinned to python 3.8 by TensorRT's own packaging. The reasoning above applies
+# verbatim: `typing.List` / `Optional[X]` are correct and unambiguous at that
+# floor, in annotations AND anywhere an annotation is evaluated at runtime,
+# which `ros_idl.py` documents that cyclonedds does to build a topic
+# descriptor. Taking UP006/UP045/FA100's advice here would be taking a step
+# TOWARD the failure the floor exists to prevent.
+#
+# This was 67 of the 101 findings that kept `bun run --filter @repo/perception
+# lint` from ever being run in CI — a gate configured, never enforced, and
+# reporting mostly noise the first time anyone looked at it.
+"vision/*.py" = ["UP006", "UP045", "FA100"]
+
+# RUF046: "value being cast to int is already an integer". True of the Python
+# types ruff can see, and NOT true of what arrives at runtime.
+#
+# `grounding.py` is handed boxes from the detector and depths from a numpy
+# array. `round(np.float64(2.5))` returns np.float64, not int — numpy scalars
+# implement `__round__` returning their own type. So `int(round(...))` is the
+# cast that makes a pixel index an index, and dropping it seeds an array
+# subscript with a float that fails somewhere else entirely, on the robot,
+# inside a container.
+#
+# `math.isqrt` genuinely does always return int and its redundant cast was
+# removed; these are the ones that carry weight.
+"vision/c3po_vision/grounding.py" = ["UP006", "UP045", "FA100", "RUF046"]
+
+# `import cyclonedds.idl as idl` reads as a deliberate mirror of the wire
+# module layout in a file whose docstring warns that this dataclass is
+# introspected to build a DDS topic descriptor. PLR0402's rewrite is
+# semantically identical and buys nothing, and this file cannot be exercised
+# off the robot — cyclonedds is not installed on a laptop and never will be.
+# Not worth a change nobody can run.
+"vision/c3po_vision/ros_idl.py" = ["UP006", "UP045", "FA100", "PLR0402"]
+
+# `nav/` runs on python 3.10 (ros:humble-ros-base-jammy), so `list[str]` would
+# actually be legal there — UP006 is not wrong about that tree, it is just
+# advice pointing the opposite way from the rest of the repo.
+#
+# Declined on purpose: `costmap_png.py` is stdlib-only and is imported by the
+# Stage 0 suite on a laptop, which is exactly the kind of module that gets
+# copied or shared into the vision tree later. One typing style across both
+# containers, pinned at the LOWER floor, means that move is a copy rather than
+# a rewrite — and means nobody has to remember which directory they are in to
+# know which syntax is safe.
+"nav/**/*.py" = ["UP006", "UP045", "FA100"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

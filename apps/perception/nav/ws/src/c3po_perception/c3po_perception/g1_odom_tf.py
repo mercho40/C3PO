@@ -109,9 +109,9 @@ class G1OdomTf(Node):
 
         if self.twist_source != "fastlio":
             self.get_logger().warning(
-                "twist_source=%s — Nav2 will be fed a differentiated velocity. "
-                "This is the degraded path; verify the FAST-LIO patch instead."
-                % self.twist_source)
+                f"twist_source={self.twist_source} — Nav2 will be fed a "
+                "differentiated velocity. This is the degraded path; verify "
+                "the FAST-LIO patch instead.")
 
     def _publish_static(self) -> None:
         """The mount correction, published once.

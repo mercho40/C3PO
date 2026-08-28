@@ -79,6 +79,9 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+# Stdlib-only at module scope (Pillow and numpy are lazy inside it), so this
+# import keeps the "importable on a Mac" property the docstring above claims.
+from c3po_vision import stream as stream_mod
 from c3po_vision.grounding import (
     DEFAULT_CAMERA_EXTRINSIC,
     MAX_VALID_DEPTH_M,
@@ -88,9 +91,6 @@ from c3po_vision.grounding import (
     ground_box,
     to_observation,
 )
-# Stdlib-only at module scope (Pillow and numpy are lazy inside it), so this
-# import keeps the "importable on a Mac" property the docstring above claims.
-from c3po_vision import stream as stream_mod
 
 # --------------------------------------------------------------------------
 # Wire contract
@@ -205,7 +205,10 @@ def load_labels(path: str) -> List[str]:
         if not names:
             raise ValueError("labels file is empty")
         return names
-    except Exception as exc:
+    # BLIND EXCEPT, DELIBERATE: any failure to read the labels file — missing,
+    # unreadable, empty, wrong encoding — has the one same answer, and it is
+    # not to take the detector down. The log names the consequence.
+    except Exception as exc:  # noqa: BLE001
         log("labels.missing", path=path, error=repr(exc),
             consequence="objects will be reported as class_<index>")
         return []
@@ -289,9 +292,13 @@ class RealSenseSource:
 
     def close(self) -> None:
         if self._pipeline is not None:
+            # Shutdown path. A RealSense pipeline that will not stop cleanly
+            # has nothing left to tell us — the process is going away either
+            # way, and raising here would mask whatever we were shutting down
+            # FOR. Silence is correct exactly once, and this is the place.
             try:
                 self._pipeline.stop()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
 
 
@@ -958,7 +965,12 @@ def run() -> int:
             objects, omitted = ground_all(
                 detections, depth, source.intrinsics, extrinsic, labels, source.depth_scale
             )
-        except Exception as exc:
+        # BLIND EXCEPT, DELIBERATE: the whole point. A tick can fail in CUDA, in TensorRT,
+        # in pyrealsense2 or in numpy, and the correct response to every one of
+        # them is identical — do not publish, count it, keep the loop alive.
+        # Narrowing this would let an unlisted exception kill the detector,
+        # which is the one outcome the branch below exists to prevent.
+        except Exception as exc:  # noqa: BLE001
             # NO PUBLISH ON A FAILED TICK. See the module docstring: an empty
             # object list means "I looked and the room is clear", and this
             # branch is precisely the case where we did not look. Silence is

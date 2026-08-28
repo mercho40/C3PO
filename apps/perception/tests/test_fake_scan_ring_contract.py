@@ -27,9 +27,8 @@ from __future__ import annotations
 import ast
 import re
 
-from conftest import NAV_PKG
-
 from c3po_perception import scan_ring
+from conftest import NAV_PKG
 
 FAKE_LAUNCH = NAV_PKG / "launch" / "fake.launch.py"
 
@@ -38,7 +37,7 @@ def _fake_scan() -> dict:
     """The LaserScan fields `sources:=fake` really publishes."""
     src = FAKE_LAUNCH.read_text()
 
-    ranges_match = re.search(r"^FAKE_SCAN_RANGES = (\[[^\]]*\])", src, re.M)
+    ranges_match = re.search(r"^FAKE_SCAN_RANGES = (\[[^\]]*\])", src, re.MULTILINE)
     assert ranges_match, "FAKE_SCAN_RANGES is no longer a list literal"
     ranges = ast.literal_eval(ranges_match.group(1))
 

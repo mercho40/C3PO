@@ -82,7 +82,7 @@ def test_the_filter_and_its_helper_still_exist():
     src = COMMON_SH.read_text()
     assert f"{FILTER_FN}()" in src, f"{FILTER_FN} is gone; the lookups are unguarded"
     assert "_is_self_or_ancestor()" in src, "the ancestor walk is gone"
-    assert f"_is_self_or_ancestor" in src.split(f"{FILTER_FN}()", 1)[1][:400], (
+    assert "_is_self_or_ancestor" in src.split(f"{FILTER_FN}()", 1)[1][:400], (
         f"{FILTER_FN} no longer calls _is_self_or_ancestor — it is a plain "
         "pgrep wrapper now, which is the bug with extra steps."
     )

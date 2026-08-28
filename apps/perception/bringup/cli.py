@@ -347,9 +347,7 @@ def _await_ready(stage: Stage, runner: Runner, env: Dict[str, str]) -> int:
                 (
                     "source /opt/ros/humble/setup.bash;"
                     " source /opt/c3po/ws/install/setup.bash;"
-                    " timeout {} ros2 topic echo --once /c3po/world_summary".format(
-                        PROBE_TIMEOUT_S
-                    )
+                    f" timeout {PROBE_TIMEOUT_S} ros2 topic echo --once /c3po/world_summary"
                 ),
             ]
         )
@@ -365,9 +363,7 @@ def _await_ready(stage: Stage, runner: Runner, env: Dict[str, str]) -> int:
     # sleep — up to six minutes, reported as ninety seconds. Somebody timing
     # the failure against that number concludes the machine is wedged.
     err(
-        "no world summary after {} attempts (up to {}s) — rolling back".format(
-            READY_ATTEMPTS, READY_ATTEMPTS * (PROBE_TIMEOUT_S + PROBE_INTERVAL_S)
-        )
+        f"no world summary after {READY_ATTEMPTS} attempts (up to {READY_ATTEMPTS * (PROBE_TIMEOUT_S + PROBE_INTERVAL_S)}s) — rolling back"
     )
     _dump_logs_before_rollback(runner)
     for name in existing_containers(runner):

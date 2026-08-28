@@ -98,21 +98,21 @@ from statistics import median
 from typing import Any, List, Optional, Sequence, Tuple
 
 __all__ = [
-    "Intrinsics",
+    "DEFAULT_CAMERA_EXTRINSIC",
+    "MAX_VALID_DEPTH_M",
+    "MIN_VALID_DEPTH_M",
     "CameraExtrinsic",
     "Grounded",
-    "DEFAULT_CAMERA_EXTRINSIC",
-    "MIN_VALID_DEPTH_M",
-    "MAX_VALID_DEPTH_M",
-    "norm180",
-    "clamp_box",
-    "inner_region",
-    "sample_depths_m",
-    "median_depth_m",
-    "deproject_pixel_to_camera",
+    "Intrinsics",
     "camera_to_base",
-    "range_bearing_from_base",
+    "clamp_box",
+    "deproject_pixel_to_camera",
     "ground_box",
+    "inner_region",
+    "median_depth_m",
+    "norm180",
+    "range_bearing_from_base",
+    "sample_depths_m",
     "to_observation",
 ]
 
@@ -290,7 +290,7 @@ def sample_depths_m(
     return rather than an average of nothing.
     """
     x0, y0, x1, y1 = region
-    side = max(1, int(math.isqrt(max(1, int(max_samples)))))
+    side = max(1, math.isqrt(max(1, int(max_samples))))
     sx = _stride_for(x1 - x0, side)
     sy = _stride_for(y1 - y0, side)
 

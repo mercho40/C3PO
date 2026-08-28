@@ -378,9 +378,9 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                     data = latest.jpeg(seq, frame, quality, scale)
                     self.wfile.write(
                         (
-                            "--{}\r\nContent-Type: image/jpeg\r\n"
-                            "Content-Length: {}\r\n\r\n"
-                        ).format(BOUNDARY, len(data)).encode("ascii")
+                            f"--{BOUNDARY}\r\nContent-Type: image/jpeg\r\n"
+                            f"Content-Length: {len(data)}\r\n\r\n"
+                        ).encode("ascii")
                     )
                     self.wfile.write(data)
                     self.wfile.write(b"\r\n")
@@ -448,13 +448,17 @@ class FrameStream:
             self.running = True
             _log(
                 "ready",
-                url="http://{}:{}/stream.mjpg".format(self.host, self.port),
+                url=f"http://{self.host}:{self.port}/stream.mjpg",
                 hz=round(1.0 / self._min_interval, 1) if self._min_interval else "tick",
                 quality=self.quality,
                 scale=self.scale,
                 bind="loopback" if self.host in ("127.0.0.1", "localhost") else self.host,
             )
-        except Exception as exc:
+        # BLIND EXCEPT, DELIBERATE: the operator's video is the LEAST important thing this
+        # container does. A port already bound, a permission error, a socket
+        # the kernel will not give us — none of them justify taking the
+        # detector and the world model down with them, and the log says so.
+        except Exception as exc:  # noqa: BLE001
             _log(
                 "start.failed",
                 host=self.host,
@@ -474,7 +478,7 @@ class FrameStream:
         self._next_at = now + self._min_interval
         try:
             self._latest.offer(frame, now)
-        except Exception as exc:  # a video bug must not stop the detector
+        except Exception as exc:  # noqa: BLE001 — a video bug must not stop the detector
             _log("offer.failed", error=repr(exc))
 
     def status(self) -> Dict[str, Any]:
@@ -485,10 +489,14 @@ class FrameStream:
             return
         self.running = False
         self._latest.close()
+        # Shutdown path, same reasoning as the detector's RealSense close():
+        # the process is going away, and an error raised while tearing down the
+        # video server would replace whatever we were actually shutting down
+        # for. `stopped` still gets logged below either way.
         try:
             self._server.shutdown()
             self._server.server_close()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass
         _log("stopped", frames=self._latest.offered)
 
@@ -516,7 +524,7 @@ def test_pattern(width: int, height: int, phase: int) -> RawFrame:
     return RawFrame(width=width, height=height, rgb=rolled * height)
 
 
-def from_env(getenv: Callable[[str, str], str]) -> Optional["FrameStream"]:
+def from_env(getenv: Callable[[str, str], str]) -> Optional[FrameStream]:
     """Build a FrameStream from C3PO_VISION_STREAM* env, or None if disabled.
 
     Takes `getenv` rather than reading os.environ so the Stage 0 suite can drive

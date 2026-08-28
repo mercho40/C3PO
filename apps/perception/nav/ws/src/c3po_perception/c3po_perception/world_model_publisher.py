@@ -178,7 +178,14 @@ class WorldModelPublisher(Node):
             payload = json.loads(msg.data)
             if int(payload.get("v", 0)) != 1:
                 raise ValueError(f"unsupported objects schema v={payload.get('v')}")
-        except Exception as exc:
+        # BLIND EXCEPT, DELIBERATE: this is the trust boundary. The payload crossed domain
+        # 42 from another container and may be malformed in any way at all —
+        # bad JSON, wrong schema version, a field of the wrong type. Every one
+        # of those means the same thing to this node, and the docstring above
+        # is explicit that the answer is a NOTE, never a silent drop and never
+        # an empty scene. A narrower catch here would turn a bad payload into a
+        # dead node, which reads to the operator as "there is nothing around".
+        except Exception as exc:  # noqa: BLE001
             self._notes.append(f"Detector payload rejected: {exc}")
             return
         self._objects_seen = time.time()

@@ -15,12 +15,11 @@ import struct
 import zlib
 
 import pytest
-
 from c3po_perception.costmap_png import (
     IDX_FREE,
+    IDX_LETHAL,
     IDX_RAMP_HI,
     IDX_RAMP_LO,
-    IDX_LETHAL,
     IDX_UNKNOWN,
     LETHAL_THRESHOLD,
     PALETTE,
@@ -44,7 +43,7 @@ def test_no_occupancy_value_collides_with_unknown():
     false negative as a detector reporting `objects: []` while offline, which is
     the rule D7 spends most of its text on.
     """
-    collisions = [v for v in range(0, 101) if occupancy_to_index(v) == IDX_UNKNOWN]
+    collisions = [v for v in range(101) if occupancy_to_index(v) == IDX_UNKNOWN]
     assert collisions == [], f"occupancy values rendering as UNKNOWN: {collisions}"
 
 
