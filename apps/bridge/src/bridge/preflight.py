@@ -188,8 +188,13 @@ def camera_findings(
     status_state: str,
     status_body: str,
     stream_has_frames: Optional[bool],
+    cors_ok: Optional[bool] = None,
 ) -> List[Finding]:
-    """What /status and the stream body mean, together."""
+    """What /status, the stream body and the CORS header mean, together.
+
+    `cors_ok` is the question this section used to be missing, and its absence
+    is why the last line below used to be wrong. None means we could not ask.
+    """
     if not url:
         return [
             Finding(
@@ -258,9 +263,44 @@ def camera_findings(
                 Finding(
                     OK,
                     "real frame data is arriving — the whole chain to this Mac works",
-                    ["if the headset still shows nothing after this, it is the renderer"],
+                    # THIS HINT USED TO SAY "if the headset still shows nothing
+                    # after this, it is the renderer", AND THAT WAS WRONG. On
+                    # 2026-08-28 the chain worked to the Mac — videohub live at
+                    # 1920x1080, frames flowing — and the headset would still
+                    # have been black, because the bridge sent no CORS header
+                    # and the WebGL layer's `crossOrigin="anonymous"` image
+                    # cannot load without one. A confident wrong pointer at the
+                    # renderer is how the last two of these cost a day each.
+                    ["frames are not the whole story — see the CORS line below"],
                 )
             )
+            if cors_ok is False:
+                out.append(
+                    Finding(
+                        BAD,
+                        "frames arrive, but the reply is not readable by the console",
+                        [
+                            "no Access-Control-Allow-Origin for " + CONSOLE_ORIGIN + ".",
+                            "The on-page panel will still show a picture — a plain <img>",
+                            "needs no CORS. THE HEADSET WILL NOT: its WebGL layer sets",
+                            "crossOrigin=anonymous, because WebGL refuses to sample a",
+                            "texture the page cannot read back, and without the header",
+                            "the image never loads at all.",
+                            "",
+                            "This is a DEPLOY problem, not a camera or renderer one:",
+                            "the bridge on the robot is running a build from before",
+                            "BRIDGE_CORS_ORIGINS was implemented. Update and restart it:",
+                            "  ssh c3po 'cd ~/c3po && git pull && sudo systemctl restart c3po-bridge'",
+                        ],
+                    )
+                )
+            elif cors_ok:
+                out.append(
+                    Finding(
+                        OK,
+                        "and the console is allowed to read it — the headset can load it",
+                    )
+                )
         else:
             out.append(
                 Finding(
@@ -509,6 +549,41 @@ def _probe(url: str, timeout: int = 5) -> Tuple[str, str]:
     return classify_probe(rc, stderr), body
 
 
+#: The origin the console is served from, and therefore the one the headset
+#: uses: `quest_setup.sh` forwards 3001 and the Quest browser loads
+#: `http://localhost:3001/vr-control`.
+CONSOLE_ORIGIN = "http://localhost:3001"
+
+
+def _camera_allows_console(url: str, origin: str = CONSOLE_ORIGIN) -> Optional[bool]:
+    """Does `/status` come back readable by the console? None if we could not ask.
+
+    Sends a real `Origin` and looks for `Access-Control-Allow-Origin` coming
+    back, because that is exactly what the browser will do and exactly what it
+    will refuse over. See `camera_findings` for why this is a separate question
+    from whether frames are arriving.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "curl", "-sS", "--max-time", "6",
+                "-o", "/dev/null", "-D", "-",
+                "-H", "Origin: " + origin,
+                url,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return b"access-control-allow-origin" in (proc.stdout or b"").lower()
+
+
 def _stream_has_frames(url: str, boundary: str = "c3poframe") -> bool:
     """A boundary marker in the body. See `camera_findings`."""
     import subprocess
@@ -599,11 +674,17 @@ def _camera_section(repo_root: str) -> Section:
 
     state, body = _probe(url.rstrip("/") + "/status", timeout=5)
     has_frames: Optional[bool] = None
+    cors_ok: Optional[bool] = None
     status = _parse_json(body) if state == "alive" else None
     if status is not None and status.get("live") is True:
         has_frames = _stream_has_frames(url.rstrip("/") + "/stream.mjpg")
+        # Asked only when there is a picture to be readable. A CORS complaint
+        # about a feed that is not running would be noise on top of the real
+        # finding.
+        cors_ok = _camera_allows_console(url.rstrip("/") + "/status")
     return Section(
-        "3. The camera, end to end", camera_findings(url, source, state, body, has_frames)
+        "3. The camera, end to end",
+        camera_findings(url, source, state, body, has_frames, cors_ok),
     )
 
 

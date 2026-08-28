@@ -125,6 +125,53 @@ def test_live_with_real_frame_data_is_the_whole_chain_working():
     assert "whole chain" in text_of(findings)
 
 
+def test_frames_arriving_is_no_longer_reported_as_proof_the_rest_is_fine():
+    """The hint this replaced pointed at the renderer, and was wrong.
+
+    It used to say "if the headset still shows nothing after this, it is the
+    renderer". On 2026-08-28 the chain worked all the way to the Mac —
+    videohub live at 1920x1080, frames flowing — and the headset would still
+    have been black, because the bridge sent no CORS header. Two of these have
+    now cost a day each by confidently pointing at the renderer.
+    """
+    text = text_of(camera_findings("http://x:8001/camera", "env", "alive", LIVE, True))
+    assert "it is the renderer" not in text
+
+
+def test_frames_arriving_without_cors_is_a_failure_and_names_the_deploy():
+    # The exact 2026-08-28 state: a live feed the console cannot read.
+    findings = camera_findings(
+        "http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=False
+    )
+    text = text_of(findings)
+    assert BAD in levels(findings)
+    # It must say WHY the on-page panel looks fine while the headset does not,
+    # because "but the camera works on the page" is what stops the search.
+    assert "crossOrigin" in text
+    assert "DEPLOY problem" in text
+    assert "systemctl restart c3po-bridge" in text
+
+
+def test_frames_plus_cors_is_the_clean_pass():
+    findings = camera_findings(
+        "http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=True
+    )
+    assert BAD not in levels(findings)
+    assert "the headset can load it" in text_of(findings)
+
+
+def test_an_unaskable_cors_probe_neither_passes_nor_fails_it():
+    # `None` means curl could not run or the request failed outright. That is
+    # not evidence either way, and inventing a verdict from it would be the
+    # same mistake as calling a missing ring a rendering bug.
+    findings = camera_findings(
+        "http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=None
+    )
+    text = text_of(findings)
+    assert BAD not in levels(findings)
+    assert "Access-Control-Allow-Origin" not in text
+
+
 def test_live_without_frame_data_is_a_failure_not_a_pass():
     """A 200 proves the socket opened. The multipart headers are sent before
     any frame exists, so only body content proves a picture."""

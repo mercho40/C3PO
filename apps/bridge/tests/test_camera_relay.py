@@ -224,7 +224,20 @@ class TestTheCorsHeaderAndItsBoundary:
         assert "X-Scribbled-On" not in second
         assert "X-Scribbled-On" not in camera_relay.CAMERA_BASE_HEADERS
 
-    def test_cors_is_not_applied_anywhere_outside_the_camera_relay(self):
+    #: Modules allowed to mention the header, and why.
+    #:
+    #: The rule is about SENDING it. `preflight.py` only ever LOOKS for it — it
+    #: curls `/camera/status` with an `Origin` and reports whether the console
+    #: would be allowed to read the reply, which is a diagnosis, not a grant.
+    #: That check exists precisely because this header was missing on the robot
+    #: and the headset went black; excluding the thing that detects the problem
+    #: from the rule about causing it is the distinction worth drawing.
+    MAY_MENTION = {
+        "camera_relay.py",  # the one definition
+        "preflight.py",  # detects its absence, never sets it
+    }
+
+    def test_cors_is_not_sent_anywhere_outside_the_camera_relay(self):
         """The line that keeps `/mcp` off-limits to a browser.
 
         Read as source rather than by exercising routes: the claim is that no
@@ -236,8 +249,8 @@ class TestTheCorsHeaderAndItsBoundary:
         package = pathlib.Path(camera_relay.__file__).parent.parent
         offenders = []
         for path in sorted(package.rglob("*.py")):
-            if path.name == "camera_relay.py":
-                continue  # the one definition
+            if path.name in self.MAY_MENTION:
+                continue
             for number, line in enumerate(path.read_text().splitlines(), 1):
                 if "Access-Control-Allow-Origin" not in line:
                     continue
@@ -245,8 +258,10 @@ class TestTheCorsHeaderAndItsBoundary:
                     continue  # prose explaining the rule is not the rule
                 offenders.append(f"{path.name}:{number}")
         assert not offenders, (
-            "Access-Control-Allow-Origin appears outside camera_relay.py: "
-            f"{offenders}. This bridge serves /mcp — an unauthenticated tool "
-            "surface that can walk the robot — on the same port, so CORS must "
-            "stay scoped to the read-only camera routes."
+            "Access-Control-Allow-Origin appears in "
+            f"{offenders}, which is not in MAY_MENTION. This bridge serves "
+            "/mcp — an unauthenticated tool surface that can walk the robot — "
+            "on the same port, so CORS must stay scoped to the read-only "
+            "camera routes. If the new use only DETECTS the header rather "
+            "than sending it, add it to MAY_MENTION with the reason."
         )

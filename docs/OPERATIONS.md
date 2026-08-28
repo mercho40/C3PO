@@ -418,6 +418,38 @@ console. Then the 8001 forward and the CORS grant both go away. It needs a
 streaming MJPEG proxy — a new shape for that service, since the existing
 proxies are request/response — which is why it was not done blind.
 
+### Deploying this branch to the robot, then closing it out 🔧
+
+The robot's checkout was on `152e3a6` as of 2026-08-28 — it does not have the
+HUD placement fix, the stereo fix, the camera CORS fix, or anything else from
+the last two days. Nothing in the headset can be judged until it does.
+
+```bash
+# 1. Robot free? Nobody else driving? (OPERATIONS §4 — one commander.)
+ssh c3po 'cd ~/c3po && git pull && sudo systemctl restart c3po-bridge'
+ssh c3po 'systemctl is-active c3po-bridge'
+
+# 2. Prove the fix landed, from the Mac, before the headset goes on:
+ssh c3po 'curl -sD- -o /dev/null -H "Origin: http://localhost:3001" \
+    http://127.0.0.1:8001/camera/status | grep -i access-control'
+#    expect:  access-control-allow-origin: http://localhost:3001
+#    nothing => the restart did not take the new code. Stop here.
+
+# 3. Then the headset.
+scripts/quest_setup.sh
+cd apps/bridge && uv run python scripts/headset_check.py
+```
+
+`c3po-bridge.service` says "does not claim sensors at boot", so the restart in
+step 1 does not take the camera or the LiDAR from anyone — but it is still a
+restart of a shared machine's service, so ask first.
+
+Step 2 is not optional and is the lesson of 2026-08-27/28: the port fix and the
+CORS fix are two separate causes of one identical black view, and testing the
+second while running a build that has neither is how you conclude a correct fix
+did not work. `preflight` now runs this check itself and says so in plain
+language when frames arrive but the console cannot read them.
+
 ### Closing out the headset session — `headset_check.py` 🔧
 
 Everything the headset does is currently **unverified**: immersive mode, the
