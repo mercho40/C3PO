@@ -288,10 +288,17 @@ export class CameraLayer {
    * have left the headset black anyway, failing at the CORS check instead of
    * the connection.
    *
-   * The bridge now sends it, scoped to `/camera/*` only —
-   * `camera_relay.CAMERA_HEADERS`, with `test_camera_relay.py` holding the
-   * scope, because `/mcp` is on the same port and must never be readable by a
-   * page.
+   * The bridge now sends it, scoped to `/camera/*` only, and scoped again by
+   * ORIGIN: `camera_relay.camera_headers()` echoes the request's origin when
+   * it appears in `BRIDGE_CORS_ORIGINS`, and sends nothing otherwise. That
+   * variable was already set in the deployed systemd unit
+   * (`http://localhost:3001,http://127.0.0.1:3001`) and read by no code —
+   * somebody had decided the policy and it was never implemented, which is
+   * the other half of why this was broken. `http://localhost:3001` is where
+   * the Quest browser loads the console, so the headset is covered.
+   *
+   * `test_camera_relay.py` holds both scopes, because `/mcp` is on the same
+   * port and must never be readable by a page.
    */
   setStreamUrl(streamUrl: string): void {
     if (streamUrl === this.#url) return;

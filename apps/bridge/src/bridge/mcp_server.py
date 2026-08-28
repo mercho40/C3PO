@@ -2358,11 +2358,19 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
 _CAMERA_WAKE_S = 0.02
 
 
-def _camera_unavailable():  # noqa: ANN202 - starlette types
+def _origin_of(request) -> str | None:  # noqa: ANN001 - starlette types
+    """The request's `Origin`, or None. Browsers send it; native clients do not."""
+    try:
+        return request.headers.get("origin")
+    except Exception:  # noqa: BLE001 — a request without headers is still a request
+        return None
+
+
+def _camera_unavailable(origin: str | None = None):  # noqa: ANN202 - starlette types
     """The 503 body for "there is no camera here", or None if there is one."""
     from starlette.responses import JSONResponse
 
-    from bridge.sdk.camera_relay import CAMERA_HEADERS
+    from bridge.sdk.camera_relay import camera_headers
 
     if SIM_MODE != "real":
         return JSONResponse(
@@ -2378,7 +2386,7 @@ def _camera_unavailable():  # noqa: ANN202 - starlette types
             # The 503 needs the CORS header too. Without it the browser refuses
             # to let the console READ this body — so the page could not show the
             # reason, which is the only thing this response exists to carry.
-            headers=dict(CAMERA_HEADERS),
+            headers=camera_headers(origin),
         )
     return None
 
@@ -2395,7 +2403,8 @@ async def camera_status(request):  # noqa: ANN001, ANN201 - starlette types
     """
     from starlette.responses import JSONResponse
 
-    unavailable = _camera_unavailable()
+    origin = _origin_of(request)
+    unavailable = _camera_unavailable(origin)
     if unavailable is not None:
         return unavailable
 
@@ -2407,7 +2416,7 @@ async def camera_status(request):  # noqa: ANN001, ANN201 - starlette types
     source = camera_relay.choose_source(videohub, vision)
     return JSONResponse(
         camera_relay.merged_status(videohub, vision, source),
-        headers=dict(camera_relay.CAMERA_HEADERS),
+        headers=camera_relay.camera_headers(origin),
     )
 
 
@@ -2421,7 +2430,8 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
     """
     from starlette.responses import JSONResponse, Response
 
-    unavailable = _camera_unavailable()
+    origin = _origin_of(request)
+    unavailable = _camera_unavailable(origin)
     if unavailable is not None:
         return unavailable
 
@@ -2439,7 +2449,10 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
             return Response(
                 content=jpeg,
                 media_type="image/jpeg",
-                headers={**camera_relay.CAMERA_HEADERS, "Content-Length": str(len(jpeg))},
+                headers={
+                    **camera_relay.camera_headers(origin),
+                    "Content-Length": str(len(jpeg)),
+                },
             )
 
     if source == "vision":
@@ -2449,13 +2462,13 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
             log.exception("camera.relay_frame_failed")
         else:
             return Response(content=body, media_type="image/jpeg",
-                            headers=dict(camera_relay.CAMERA_HEADERS))
+                            headers=camera_relay.camera_headers(origin))
 
     status = camera_relay.merged_status(videohub, vision, source)
     return JSONResponse(
         {"error": "no frame yet", "hint": status.get("hint"), "status": status},
         status_code=503,
-        headers=dict(camera_relay.CAMERA_HEADERS),
+        headers=camera_relay.camera_headers(origin),
     )
 
 
@@ -2510,7 +2523,8 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
     """
     from starlette.responses import JSONResponse, StreamingResponse
 
-    unavailable = _camera_unavailable()
+    origin = _origin_of(request)
+    unavailable = _camera_unavailable(origin)
     if unavailable is not None:
         return unavailable
 
@@ -2530,7 +2544,7 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
         return JSONResponse(
             {"error": "no frame yet", "hint": status.get("hint"), "status": status},
             status_code=503,
-            headers=dict(camera_relay.CAMERA_HEADERS),
+            headers=camera_relay.camera_headers(origin),
         )
 
     if source == "vision":
@@ -2538,7 +2552,7 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
         # multipart format with the same boundary, so re-framing it here would
         # be re-encoding a stream we have no reason to touch — and would put a
         # JPEG decode per frame on the bridge, which owns stop_everything.
-        media_type, headers = camera_relay.relay_headers("stream")
+        media_type, headers = camera_relay.relay_headers("stream", origin)
         return StreamingResponse(
             _relay_stream(camera_relay.vision_url("stream.mjpg")),
             media_type=media_type,
@@ -2568,7 +2582,7 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
     return StreamingResponse(
         frames(),
         media_type="multipart/x-mixed-replace; boundary=" + boundary,
-        headers=dict(camera_relay.CAMERA_HEADERS),
+        headers=camera_relay.camera_headers(origin),
     )
 
 

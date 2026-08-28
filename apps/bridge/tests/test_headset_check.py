@@ -113,6 +113,91 @@ class TestVerdictHonoursTheProbe:
         assert verdict_for(answer, None) == SKIPPED
 
 
+#: Captured from the running bridge on g1-orin, 2026-08-28, over the tunnel.
+#:
+#: NOT INVENTED. The first version of this file guessed these shapes from
+#: reading `mcp_server.py`, which is how you write a parser that agrees with
+#: your own reading of the source and nothing else. These are the real bytes
+#: `curl` returned from the robot while `videohub_pc4` held the camera and no
+#: perception container was running — which is also the ordinary state, so it
+#: is the state the probes most need to get right.
+LIVE_CAMERA_STATUS = {
+    "v": 1,
+    "source": "videohub",
+    "live": True,
+    "frame_age_s": 0.071,
+    "frames": 3151,
+    "width": 1920,
+    "height": 1080,
+    "stream_width": 1920,
+    "stream_height": 1080,
+    "stale_after_s": 1.0,
+    "sources": {
+        "videohub": {"live": True, "hint": None},
+        "vision": {"live": False, "hint": "not answering on :8081"},
+    },
+}
+
+#: The real 503 from `/telemetry/scan` with no nav container running.
+NO_SCAN_503 = {
+    "error": "no scan received",
+    "hint": (
+        "the ring comes from the nav container's world_model_publisher, which "
+        "publishes nothing while the lidar is offline — check `ros2 topic hz "
+        "/scan` inside it before suspecting this bridge"
+    ),
+    "status": {
+        "present": False,
+        "age_s": None,
+        "stale": False,
+        "received": 0,
+        "rejected": 0,
+        "buckets": None,
+        "frame": None,
+    },
+}
+
+#: The real `/telemetry/gate` body, gate never armed.
+LIVE_GATE = {
+    "enabled": False,
+    "disabled_reason": "never armed",
+    "arm_expires_in_s": None,
+    "cmd_vel_received": 0,
+    "clamps": {"vx": [-0.2, 0.5], "vy": [-0.2, 0.2], "vyaw": [-0.8, 0.8]},
+    "link": {"started": True, "domain_id": 42, "reports_received": 0},
+}
+
+
+class TestAgainstWhatTheRobotActuallyReturned:
+    """The probes, run against payloads captured from the live bridge.
+
+    Every other test in this file uses a shape I wrote. These use bytes the
+    robot sent on 2026-08-28. If the two ever disagree, this is the one that
+    is right.
+    """
+
+    def test_the_live_camera_reads_as_present(self):
+        got = summarize_camera(LIVE_CAMERA_STATUS, 200)
+        assert got.data_present is True
+        # The field names are the thing being confirmed: `source` and `frames`
+        # are what the bridge really calls them.
+        assert "videohub" in got.detail
+        assert "3151" in got.detail
+
+    def test_the_real_no_scan_503_blocks_rather_than_fails(self):
+        # This is the case an operator hits constantly — no perception
+        # container — and the one where "I cannot see the radar" must NOT be
+        # recorded as a rendering bug.
+        got = summarize_scan(NO_SCAN_503, 503)
+        assert got.data_present is False
+        assert "world_model_publisher" in got.detail
+
+    def test_the_real_gate_body_reads_as_present(self):
+        got = summarize_gate(LIVE_GATE, 200)
+        assert got.data_present is True
+        assert "never armed" in got.detail
+
+
 class TestCameraProbe:
     def test_a_live_feed_is_data_present(self):
         got = summarize_camera({"live": True, "source": "videohub", "frames": 42}, 200)

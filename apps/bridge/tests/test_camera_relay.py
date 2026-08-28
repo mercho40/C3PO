@@ -165,32 +165,64 @@ class TestTheCorsHeaderAndItsBoundary:
     humanoid. Scoped to the read-only camera routes, it cannot.
     """
 
-    def test_the_camera_headers_allow_cross_origin_reads(self):
-        assert camera_relay.CAMERA_HEADERS["Access-Control-Allow-Origin"] == "*"
+    def test_an_allowlisted_origin_is_echoed_back(self):
+        # `http://localhost:3001` is where the Quest browser loads the console
+        # from — `quest_setup.sh` forwards 3001 — so this is the headset case.
+        headers = camera_relay.camera_headers("http://localhost:3001")
+        assert headers["Access-Control-Allow-Origin"] == "http://localhost:3001"
+
+    def test_the_echo_comes_with_vary_origin(self):
+        # The answer now depends on the request. A cache that missed that
+        # would hand one origin's response to another.
+        headers = camera_relay.camera_headers("http://localhost:3001")
+        assert headers["Vary"] == "Origin"
+
+    def test_an_unknown_origin_gets_no_cors_header_at_all(self):
+        # Not `*`, and not an echo. A page the deployment did not name does
+        # not get to read the robot's camera.
+        headers = camera_relay.camera_headers("https://evil.example")
+        assert "Access-Control-Allow-Origin" not in headers
+
+    def test_no_origin_means_no_header_and_that_is_fine(self):
+        # `apps/back`, curl, any native MCP client. CORS is a browser
+        # mechanism; its absence restricts nothing else.
+        headers = camera_relay.camera_headers(None)
+        assert "Access-Control-Allow-Origin" not in headers
+        assert headers["Cache-Control"] == "no-store"
+
+    def test_the_default_allowlist_matches_the_deployed_unit(self):
+        # `scripts/robot/c3po-bridge.service` sets
+        # BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001.
+        # A bridge started without the variable must behave like the deployed
+        # one, or "works on my machine" means something different here.
+        assert "http://localhost:3001" in camera_relay.CORS_ORIGINS
+        assert "http://127.0.0.1:3001" in camera_relay.CORS_ORIGINS
 
     def test_they_still_forbid_caching(self):
         # A cached frame is indistinguishable from a live one, which is the
         # whole reason `/camera/status` exists.
-        assert camera_relay.CAMERA_HEADERS["Cache-Control"] == "no-store"
+        assert camera_relay.CAMERA_BASE_HEADERS["Cache-Control"] == "no-store"
 
     def test_relayed_responses_carry_them_too(self):
         # The vision-container relay path is a separate branch from the
         # videohub one, with its own header construction. Both are the camera;
         # both need the header.
         for kind in ("stream", "frame"):
-            _media_type, headers = camera_relay.relay_headers(kind)
-            assert headers["Access-Control-Allow-Origin"] == "*", kind
+            _media_type, headers = camera_relay.relay_headers(
+                kind, "http://localhost:3001"
+            )
+            assert headers["Access-Control-Allow-Origin"] == "http://localhost:3001", kind
             assert headers["Cache-Control"] == "no-store", kind
 
-    def test_relay_headers_hands_out_copies_not_the_shared_dict(self):
+    def test_headers_are_fresh_dicts_not_the_shared_base(self):
         # Starlette is free to mutate the mapping it is given. Handing out the
         # module-level constant would let one response's edit reach every
         # later one.
-        _mt, first = camera_relay.relay_headers("stream")
+        first = camera_relay.camera_headers("http://localhost:3001")
         first["X-Scribbled-On"] = "1"
-        _mt, second = camera_relay.relay_headers("stream")
+        second = camera_relay.camera_headers("http://localhost:3001")
         assert "X-Scribbled-On" not in second
-        assert "X-Scribbled-On" not in camera_relay.CAMERA_HEADERS
+        assert "X-Scribbled-On" not in camera_relay.CAMERA_BASE_HEADERS
 
     def test_cors_is_not_applied_anywhere_outside_the_camera_relay(self):
         """The line that keeps `/mcp` off-limits to a browser.

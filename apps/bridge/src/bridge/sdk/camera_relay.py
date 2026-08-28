@@ -28,6 +28,7 @@ without asking anybody.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.request
@@ -232,17 +233,70 @@ def merged_status(
 #: a route to that port." A blanket CORS middleware here would do exactly that.
 #: These read-only camera routes get the header; nothing else does, and
 #: `test_camera_relay.py` holds that line.
-CAMERA_HEADERS: Dict[str, str] = {
-    "Cache-Control": "no-store",
-    "Access-Control-Allow-Origin": "*",
-}
+CAMERA_BASE_HEADERS: Dict[str, str] = {"Cache-Control": "no-store"}
+
+#: Origins allowed to READ the camera cross-origin.
+#:
+#: `BRIDGE_CORS_ORIGINS` HAS BEEN SET IN THE DEPLOYED SYSTEMD UNIT SINCE
+#: 2026-08-26 AND WAS READ BY NOTHING. `scripts/robot/c3po-bridge.service`
+#: carries
+#:
+#:     Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
+#:
+#: and `grep -rn BRIDGE_CORS_ORIGINS ~/c3po/apps/` on the robot returns
+#: nothing — verified against the running machine on 2026-08-28. Somebody
+#: decided what the CORS policy should be, wrote it into the deployment, and
+#: the code never implemented it. That is why `/camera/status` on the live
+#: bridge answers 200 with no `access-control-allow-origin` at all, and why
+#: the headset's `crossOrigin="anonymous"` image could not have loaded.
+#:
+#: The default here is the unit's own value, so a bridge started without the
+#: variable behaves the same as the deployed one.
+#:
+#: AN ALLOWLIST, NOT `*`. The first version of this fix sent `*` because the
+#: vision server it replaced did. The deployment had already said something
+#: narrower and better, and honouring it costs nothing: `http://localhost:3001`
+#: is exactly the origin the Quest browser loads the console from
+#: (`quest_setup.sh` forwards 3001 and the page is served at localhost), so the
+#: headset is covered without opening the routes to every page on the internet.
+CORS_ORIGINS: Tuple[str, ...] = tuple(
+    origin.strip()
+    for origin in os.environ.get(
+        "BRIDGE_CORS_ORIGINS", "http://localhost:3001,http://127.0.0.1:3001"
+    ).split(",")
+    if origin.strip()
+)
 
 
-def relay_headers(kind: str) -> Tuple[str, Dict[str, str]]:
+def camera_headers(origin: Optional[str] = None) -> Dict[str, str]:
+    """Headers for a `/camera/*` response, given the request's `Origin`.
+
+    Echoes the origin back when it is allowlisted, rather than sending `*`.
+    `Vary: Origin` goes with it, because the answer now depends on the request
+    and a cache that missed that would serve one origin's response to another.
+
+    No `Origin` (a native client, curl, `apps/back`) gets no CORS header and
+    does not need one — CORS is a browser mechanism and its absence is not a
+    restriction on anything else.
+
+    NOT SHARED WITH `/telemetry/*` OR `/mcp`. This bridge serves the tool
+    surface that can walk the robot on the same port, with no authentication;
+    `apps/back/src/routes/telemetry.ts` says "Never hand a browser a route to
+    that port". These read-only camera routes are the exception, and
+    `test_camera_relay.py` fails if the header appears anywhere else.
+    """
+    headers = dict(CAMERA_BASE_HEADERS)
+    if origin and origin in CORS_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Vary"] = "Origin"
+    return headers
+
+
+def relay_headers(kind: str, origin: Optional[str] = None) -> Tuple[str, Dict[str, str]]:
     """Content type and headers for a relayed response."""
     if kind == "stream":
         return (
             "multipart/x-mixed-replace; boundary=c3poframe",
-            dict(CAMERA_HEADERS),
+            camera_headers(origin),
         )
-    return "image/jpeg", dict(CAMERA_HEADERS)
+    return "image/jpeg", camera_headers(origin)

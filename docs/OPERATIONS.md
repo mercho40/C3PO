@@ -361,6 +361,43 @@ camera layer draws a **SIN IMAGEN** card naming the reason, the same way the
 radar dial always says why it is empty. A black field is an assertion that
 everything is fine, and it was wrong every time it appeared.
 
+🚨 **THE BRIDGE IS NOT ON LOOPBACK. It is on `0.0.0.0`, on the school LAN.**
+Verified on the running robot, 2026-08-28:
+
+```
+$ ss -ltnp | grep 8001
+LISTEN 0 2048 0.0.0.0:8001 0.0.0.0:*  users:(("python",pid=1213,...))
+$ hostname -I
+192.168.123.164  172.17.0.1  10.10.32.19      # <- 10.10.32.19 is the school LAN
+```
+
+`scripts/robot/c3po-bridge.service` sets `Environment=BRIDGE_HOST=0.0.0.0`,
+while `apps/bridge/.env.example` says `127.0.0.1`, the code default is
+`127.0.0.1`, and the table above and `apps/back/src/routes/telemetry.ts` both
+say **loopback**. Four places describe this port and the one that actually runs
+disagrees with the other three.
+
+The consequence: `http://10.10.32.19:8001/mcp` is reachable from anywhere on
+the school Wi-Fi, and it is the tool surface that can **walk the robot**, with
+no authentication of its own. The SSH-tunnel posture that everything else in
+this document assumes is not what is deployed. It arrived with the unit taken
+from `main` in `06e5ea9` (2026-08-26).
+
+Not changed here, because someone may be depending on direct LAN access to
+reach the bridge without a tunnel, and flipping it blind would take the console
+down. **Decide it deliberately:** either set `BRIDGE_HOST=127.0.0.1` in the
+unit and use the tunnel that is already documented, or keep the binding and put
+something in front of it.
+
+🔧 **`BRIDGE_CORS_ORIGINS` was set in the unit and read by no code.** The same
+file carries
+`Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001`,
+and `grep -rn BRIDGE_CORS_ORIGINS ~/c3po/apps/` on the robot returned nothing.
+Somebody decided the CORS policy, wrote it into the deployment, and it was
+never implemented — which is why `/camera/status` answered 200 with no
+`access-control-allow-origin` and the headset's camera could not have loaded.
+The bridge now reads it, applied to `/camera/*` only.
+
 ⚠️ **Forwarding 8001 also forwards `/mcp`, and that is a known trade.** 8001 is
 the bridge, which serves the tool surface that can walk the robot with no
 authentication of its own, on the same port as `/camera/*`. This is the thing
