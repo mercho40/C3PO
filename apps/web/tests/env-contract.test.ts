@@ -64,7 +64,10 @@ function importedNames(which: "public" | "private"): Map<string, string> {
     const text = readFileSync(file, "utf8");
     for (const match of text.matchAll(pattern)) {
       for (const raw of match[1].split(",")) {
-        const name = raw.trim().split(/\s+as\s+/)[0].trim();
+        const name = raw
+          .trim()
+          .split(/\s+as\s+/)[0]
+          .trim();
         if (name) out.set(name, file.slice(ROOT.length));
       }
     }

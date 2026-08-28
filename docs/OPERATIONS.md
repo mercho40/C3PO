@@ -347,7 +347,7 @@ has not been observed end to end, and the yaw sign is still unsettled.
 container. The feed had already moved to **8001**, the bridge's own port (see
 "WHY NOT PORT 8081" in `mcp_server.py`: 8081 belongs to the process that is dead
 in exactly the case the relay exists for). `PUBLIC_ROBOT_CAM_URL` was updated;
-the forward list was not, so the headset asked *its own* `127.0.0.1:8001`, where
+the forward list was not, so the headset asked _its own_ `127.0.0.1:8001`, where
 nothing listens.
 
 The symptom was "i cannot see the camara" with **everything else working** —

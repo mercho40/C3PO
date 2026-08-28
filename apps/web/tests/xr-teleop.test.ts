@@ -376,15 +376,7 @@ describe("drawPerEye — each layer is handed the eye it is drawing into", () =>
     const cam: Array<unknown> = [];
     const camera = { draw: (_o: boolean, eye?: unknown) => cam.push(eye) };
 
-    drawPerEye(
-      gl,
-      layer,
-      stereoPose(),
-      camera,
-      true,
-      menu.layer,
-      scan.layer,
-    );
+    drawPerEye(gl, layer, stereoPose(), camera, true, menu.layer, scan.layer);
 
     for (const seen of [menu.seen, scan.seen, cam as typeof menu.seen]) {
       expect(seen.length).toBe(2);

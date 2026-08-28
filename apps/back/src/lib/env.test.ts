@@ -40,7 +40,8 @@ function sourceFiles(dir: string, found: string[] = []): string[] {
     if (entry === "node_modules" || entry.startsWith(".")) continue;
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) sourceFiles(full, found);
-    else if (/\.ts$/.test(entry) && !/\.test\.ts$/.test(entry)) found.push(full);
+    else if (/\.ts$/.test(entry) && !/\.test\.ts$/.test(entry))
+      found.push(full);
   }
   return found;
 }

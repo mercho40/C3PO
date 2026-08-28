@@ -75,12 +75,20 @@ jobs:
         working-directory: apps/web
         run: bun test
 
-      # NOTE: `bunx prettier --check` currently fails on ~122 files (mostly
-      # vendored shadcn-svelte components, not hand-written code) — the repo
-      # predates this CI and was never prettier-clean. Deliberately not gated
-      # here: reformatting that much unrelated code as a side effect of adding
-      # CI isn't this workflow's call to make. Run `bun run format` repo-wide
-      # and re-add this step once that's done intentionally.
+      # The note that used to live here said `prettier --check` failed on ~122
+      # files, mostly vendored shadcn-svelte components, and that gating it
+      # would mean reformatting a lot of unrelated code. That was true when it
+      # was written and is not any more: measured on 2026-08-27, the repo is
+      # prettier-clean apart from files this branch itself touched.
+      #
+      # What was actually left were three files a TOOL wrote —
+      # `.pytest_cache/README.md` in two apps and a dist-info SBOM inside
+      # `apps/perception/.venv`. Both trees are gitignored, so CI never saw
+      # them; only somebody running `bun run format` after the test suite did,
+      # and it made the command look permanently broken. They are in
+      # `.prettierignore` now, which is what let this become a gate.
+      - name: Formatting
+        run: bunx prettier --check "**/*.{ts,tsx,svelte,json,md}"
 
   perception:
     name: Perception — lint, Stage 0 tests

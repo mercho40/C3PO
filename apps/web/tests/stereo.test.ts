@@ -125,8 +125,7 @@ describe("the doubling: what the old constant-clip-space placement did", () => {
     expect(l.tanX).toBeLessThan(r.tanX);
 
     // And by a lot: about ten degrees, far beyond any vergence range.
-    const apart =
-      (Math.atan(r.tanX) - Math.atan(l.tanX)) / DEG;
+    const apart = (Math.atan(r.tanX) - Math.atan(l.tanX)) / DEG;
     expect(apart).toBeGreaterThan(8);
   });
 

@@ -197,10 +197,12 @@ export function paintNoSignal(
   // the difference between "broken" and "black".
   ctx.fillStyle = "rgba(226, 232, 240, 0.92)";
   ctx.font = "26px system-ui, sans-serif";
-  if (reason) ctx.fillText(reason.text.slice(0, 42), CARD_W / 2, CARD_H / 2 + 8);
+  if (reason)
+    ctx.fillText(reason.text.slice(0, 42), CARD_W / 2, CARD_H / 2 + 8);
   ctx.fillStyle = "rgba(148, 163, 184, 0.9)";
   ctx.font = "22px system-ui, sans-serif";
-  if (reason) ctx.fillText(reason.hint.slice(0, 52), CARD_W / 2, CARD_H / 2 + 46);
+  if (reason)
+    ctx.fillText(reason.hint.slice(0, 52), CARD_W / 2, CARD_H / 2 + 46);
   ctx.textAlign = "left";
 }
 
