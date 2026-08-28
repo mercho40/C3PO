@@ -361,6 +361,26 @@ camera layer draws a **SIN IMAGEN** card naming the reason, the same way the
 radar dial always says why it is empty. A black field is an assertion that
 everything is fine, and it was wrong every time it appeared.
 
+⚠️ **Forwarding 8001 also forwards `/mcp`, and that is a known trade.** 8001 is
+the bridge, which serves the tool surface that can walk the robot with no
+authentication of its own, on the same port as `/camera/*`. This is the thing
+`apps/back/src/routes/telemetry.ts` warns against — "Never hand a browser a
+route to that port" — and `quest_setup.sh` now does it for the Quest's browser
+whenever the cable is connected.
+
+It is not currently exploitable: the bridge sends `Access-Control-Allow-Origin`
+on `/camera/*` and nowhere else, so a page in the headset browser cannot
+preflight a POST to `/mcp`. That is enforced by a test — `test_camera_relay.py`
+fails if the header appears outside `camera_relay.py` — rather than left to
+whoever edits the routes next.
+
+**The fix, for when somebody is wearing the headset to verify it:** serve the
+camera through `apps/back` on 3000, which is already forwarded, already behind
+Better Auth, and already how `/telemetry/*` and `/map/costmap.png` reach the
+console. Then the 8001 forward and the CORS grant both go away. It needs a
+streaming MJPEG proxy — a new shape for that service, since the existing
+proxies are request/response — which is why it was not done blind.
+
 ### Closing out the headset session — `headset_check.py` 🔧
 
 Everything the headset does is currently **unverified**: immersive mode, the

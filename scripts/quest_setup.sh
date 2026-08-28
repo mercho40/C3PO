@@ -93,7 +93,28 @@ PORTS=(
     "8767:teleop stream (tunnel to robot):yes"
 )
 if [ -n "$cam_port" ]; then
-    PORTS+=("$cam_port:camera MJPEG (PUBLIC_ROBOT_CAM_URL in $cam_from):no")
+    # WHAT FORWARDING THIS PORT ALSO FORWARDS.
+    #
+    # 8001 is not a camera port. It is the BRIDGE, and it serves `/mcp` — the
+    # tool surface that can walk the robot — with no authentication of its
+    # own, on the same port as `/camera/*`.
+    # `apps/back/src/routes/telemetry.ts` puts it plainly: "Never hand a
+    # browser a route to that port." This line does exactly that, for the
+    # Quest's browser, for as long as the cable is connected.
+    #
+    # WHY IT IS STILL HERE. The attack does not work today: the bridge sends
+    # `Access-Control-Allow-Origin` on `/camera/*` and NOWHERE else, so a page
+    # in the headset browser cannot preflight a POST to `/mcp`, and
+    # `test_camera_relay.py` fails if that header ever appears outside
+    # `camera_relay.py`. The protection is a test, not an accident.
+    #
+    # THE REAL FIX, when somebody is wearing the headset to check it: serve
+    # the camera through `apps/back` on 3000 — already forwarded, already
+    # behind Better Auth, already how `/telemetry/*` and `/map/costmap.png`
+    # reach the console. Then this forward goes away and the CORS grant with
+    # it. It needs a streaming MJPEG proxy, which is a new shape for that
+    # service, which is why it is not done blind.
+    PORTS+=("$cam_port:camera MJPEG + bridge /mcp (see note above):no")
 else
     warn "no port in PUBLIC_ROBOT_CAM_URL — the headset will have no picture"
 fi
