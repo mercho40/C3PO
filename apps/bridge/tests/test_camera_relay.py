@@ -136,3 +136,85 @@ def test_the_real_fetch_returns_none_for_a_closed_port(monkeypatch):
     monkeypatch.setattr(camera_relay, "VISION_PORT", 9)  # discard
     monkeypatch.setattr(camera_relay, "PROBE_TIMEOUT_S", 0.25)
     assert camera_relay._fetch_status() is None
+
+
+class TestTheCorsHeaderAndItsBoundary:
+    """`Access-Control-Allow-Origin` on the camera, and NOWHERE ELSE.
+
+    THE HEADER IS LOAD-BEARING. The console is served from `localhost:3001`
+    and this bridge answers on `127.0.0.1:8001` — a different origin — so both
+    of the console's uses of the camera are cross-origin:
+
+      * `mjpeg-camera.ts` fetches `/camera/status` and READS the body.
+      * `webxr/camera-layer.ts` sets `img.crossOrigin = "anonymous"`, because
+        WebGL will not sample a texture the page cannot read back.
+
+    Without the header the image never loads, `#ready` stays false, and the
+    headset draws nothing. `camera-layer.ts` asserts this works because "the
+    vision server sets Access-Control-Allow-Origin: * on every response" —
+    true until the feed moved to this process on port 8001, at which point the
+    obligation moved with it and nobody noticed. Fixing the forwarded port on
+    2026-08-27 restored REACHABILITY and would have left the headset black.
+
+    THE BOUNDARY IS ALSO LOAD-BEARING, and is why this is a constant rather
+    than a middleware. This same port serves `/mcp` — the tool surface that can
+    walk the robot — with no authentication of its own.
+    `apps/back/src/routes/telemetry.ts` says of it: "Never hand a browser a
+    route to that port." A blanket CORS middleware would do exactly that: let
+    any page the operator opens in the headset browser POST tool calls to a
+    humanoid. Scoped to the read-only camera routes, it cannot.
+    """
+
+    def test_the_camera_headers_allow_cross_origin_reads(self):
+        assert camera_relay.CAMERA_HEADERS["Access-Control-Allow-Origin"] == "*"
+
+    def test_they_still_forbid_caching(self):
+        # A cached frame is indistinguishable from a live one, which is the
+        # whole reason `/camera/status` exists.
+        assert camera_relay.CAMERA_HEADERS["Cache-Control"] == "no-store"
+
+    def test_relayed_responses_carry_them_too(self):
+        # The vision-container relay path is a separate branch from the
+        # videohub one, with its own header construction. Both are the camera;
+        # both need the header.
+        for kind in ("stream", "frame"):
+            _media_type, headers = camera_relay.relay_headers(kind)
+            assert headers["Access-Control-Allow-Origin"] == "*", kind
+            assert headers["Cache-Control"] == "no-store", kind
+
+    def test_relay_headers_hands_out_copies_not_the_shared_dict(self):
+        # Starlette is free to mutate the mapping it is given. Handing out the
+        # module-level constant would let one response's edit reach every
+        # later one.
+        _mt, first = camera_relay.relay_headers("stream")
+        first["X-Scribbled-On"] = "1"
+        _mt, second = camera_relay.relay_headers("stream")
+        assert "X-Scribbled-On" not in second
+        assert "X-Scribbled-On" not in camera_relay.CAMERA_HEADERS
+
+    def test_cors_is_not_applied_anywhere_outside_the_camera_relay(self):
+        """The line that keeps `/mcp` off-limits to a browser.
+
+        Read as source rather than by exercising routes: the claim is that no
+        OTHER response construction in this package can grow this header, and
+        counting where it can come from at all is the cheapest way to say so.
+        """
+        import pathlib
+
+        package = pathlib.Path(camera_relay.__file__).parent.parent
+        offenders = []
+        for path in sorted(package.rglob("*.py")):
+            if path.name == "camera_relay.py":
+                continue  # the one definition
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if "Access-Control-Allow-Origin" not in line:
+                    continue
+                if line.lstrip().startswith("#"):
+                    continue  # prose explaining the rule is not the rule
+                offenders.append(f"{path.name}:{number}")
+        assert not offenders, (
+            "Access-Control-Allow-Origin appears outside camera_relay.py: "
+            f"{offenders}. This bridge serves /mcp — an unauthenticated tool "
+            "surface that can walk the robot — on the same port, so CORS must "
+            "stay scoped to the read-only camera routes."
+        )

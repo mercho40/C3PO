@@ -275,10 +275,23 @@ export class CameraLayer {
    * streams at once, each still costing bandwidth through the SSH tunnel.
    *
    * `crossOrigin = "anonymous"` is required: WebGL refuses to sample a texture
-   * from an image the page cannot read back, and without it every upload
-   * throws a security error rather than showing a picture. The vision server
-   * sets `Access-Control-Allow-Origin: *` on every response including the
-   * stream, so this works — verified against its source, not assumed.
+   * from an image the page cannot read back, and without it the image does not
+   * load at all — `onerror` fires, `#ready` stays false, and this layer draws
+   * nothing.
+   *
+   * WHICH SERVER OWES THE HEADER HAS CHANGED, AND THAT WAS A REAL GAP. This
+   * note used to say "the vision server sets `Access-Control-Allow-Origin: *`
+   * on every response including the stream — verified against its source". It
+   * did, and that stopped being the relevant fact when `PUBLIC_ROBOT_CAM_URL`
+   * moved to the BRIDGE on 8001. The bridge sent no CORS headers at all, so
+   * fixing the forwarded port on 2026-08-27 restored reachability and would
+   * have left the headset black anyway, failing at the CORS check instead of
+   * the connection.
+   *
+   * The bridge now sends it, scoped to `/camera/*` only —
+   * `camera_relay.CAMERA_HEADERS`, with `test_camera_relay.py` holding the
+   * scope, because `/mcp` is on the same port and must never be readable by a
+   * page.
    */
   setStreamUrl(streamUrl: string): void {
     if (streamUrl === this.#url) return;

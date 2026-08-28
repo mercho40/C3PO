@@ -204,8 +204,45 @@ def merged_status(
     return status
 
 
+#: Headers every `/camera/*` response carries. NOT shared with `/telemetry/*`.
+#:
+#: `Access-Control-Allow-Origin` IS REQUIRED, and its absence made the headset
+#: black in a way the port fix alone could not have fixed.
+#:
+#: The console is served from `localhost:3001` and this bridge answers on
+#: `127.0.0.1:8001` — a different origin, so both of the console's uses are
+#: cross-origin:
+#:
+#:   * `mjpeg-camera.ts` does `fetch('/camera/status')` and READS the body,
+#:     which a browser refuses without this header.
+#:   * `webxr/camera-layer.ts` sets `img.crossOrigin = "anonymous"`, because
+#:     WebGL will not sample a texture the page cannot read back. Without this
+#:     header the image fails to load at all, `#ready` stays false, and the
+#:     layer draws nothing — the exact "i cannot see the camara" symptom.
+#:
+#: `camera-layer.ts` says this works because "the vision server sets
+#: Access-Control-Allow-Origin: * on every response including the stream —
+#: verified against its source". That was true, and stopped being true when the
+#: feed moved to THIS process on 8001. The relay inherits the obligation along
+#: with the traffic.
+#:
+#: SCOPED TO THE CAMERA ROUTES ON PURPOSE. This bridge also serves `/mcp` — the
+#: tool surface that can walk the robot — with no authentication, on this same
+#: port. `apps/back/src/routes/telemetry.ts` says of it: "Never hand a browser
+#: a route to that port." A blanket CORS middleware here would do exactly that.
+#: These read-only camera routes get the header; nothing else does, and
+#: `test_camera_relay.py` holds that line.
+CAMERA_HEADERS: Dict[str, str] = {
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": "*",
+}
+
+
 def relay_headers(kind: str) -> Tuple[str, Dict[str, str]]:
     """Content type and headers for a relayed response."""
     if kind == "stream":
-        return "multipart/x-mixed-replace; boundary=c3poframe", {"Cache-Control": "no-store"}
-    return "image/jpeg", {"Cache-Control": "no-store"}
+        return (
+            "multipart/x-mixed-replace; boundary=c3poframe",
+            dict(CAMERA_HEADERS),
+        )
+    return "image/jpeg", dict(CAMERA_HEADERS)
