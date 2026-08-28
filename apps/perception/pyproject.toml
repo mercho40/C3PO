@@ -34,7 +34,42 @@ dependencies = []
 dev = [
     "pytest>=8",
     "ruff>=0.7",
+    "mypy>=1.11",
 ]
+
+# THE TYPE CHECKER RUNS AT 3.10, AND THE SYNTAX FLOOR IS STILL 3.8.
+#
+# Those are two different checks and only one of them can be done here. ruff's
+# `target-version = "py38"` above is what stops 3.9+ SYNTAX reaching the vision
+# container, and that is the failure that breaks a container at start. mypy
+# cannot help with it — current mypy refuses `--python-version 3.8` outright
+# ("must be 3.10 or higher") — so it is pointed at the lowest version it will
+# accept and left to do the orthogonal job: finding type errors.
+#
+# It found nine on its first run, and three were worth having:
+#   * `detector.py` indexed its TensorRT binding dicts with `int | None`, four
+#     times, in the inference hot loop. The check that proves they are set
+#     lives in a different method, so the guarantee was real and invisible.
+#   * `run()` passed `source.intrinsics` — `Optional` until `start()` fills it
+#     — straight into the grounding maths on every tick. A source that started
+#     without a stream profile would have failed deep inside the deprojection,
+#     ten times a second, swallowed by the tick's blind except and reported as
+#     an inference failure.
+#   * `measure.py` filtered `None`s out of a list by rebinding the same name,
+#     which does not narrow, and then took `min()` of it.
+[tool.mypy]
+python_version = "3.10"
+# Nothing this checks is installed here and nothing ever will be: numpy,
+# TensorRT, pycuda, pyrealsense2, rclpy and cyclonedds all live in containers
+# on the robot. Without this every import is a hard error and drowns out the
+# findings above. Mirrors apps/bridge's mypy block, for the same reason.
+ignore_missing_imports = true
+check_untyped_defs = true
+# ROS launch descriptors. `launch.LaunchDescription` resolves only inside a
+# sourced ROS environment; off the robot the name collides with an unrelated
+# package and every file reports the same phantom error. They are declarative
+# and covered by `tests/test_bringup_spec.py` instead.
+exclude = "nav/ws/src/c3po_perception/launch/"
 
 [tool.uv]
 # No build backend and nothing to install: the sources ship by COPY in a

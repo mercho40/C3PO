@@ -62,12 +62,17 @@ function declaredKeys(path: string): Set<string> {
  * `env.ts`'s own docstring talks ABOUT `process.env.X`, in prose, explaining
  * the bug this whole module exists to prevent. Scanning raw text finds that
  * and reports a variable called `X` — a test failing on the documentation of
- * the thing it is checking. Strings get mangled by this too (`http://` loses
- * its tail), which does not matter: the result is only ever fed to a
- * `process.env.NAME` matcher.
+ * the thing it is checking.
+ *
+ * The line-comment pattern refuses to match a `//` preceded by a colon, so it
+ * does not eat the rest of a line containing `http://`. That would only ever
+ * cause a false NEGATIVE here, but the same helper in `bridge/url.test.ts`
+ * searches for a URL, where it caused a real one.
  */
 function stripComments(text: string): string {
-  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
 
 /** Every `process.env.NAME` read anywhere under src/, with its file. */

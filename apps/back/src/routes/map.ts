@@ -30,18 +30,7 @@
 
 import { Elysia } from "elysia";
 
-/**
- * The bridge's telemetry origin. `BRIDGE_URL` points at the MCP endpoint
- * (`…/mcp`); the telemetry routes are siblings of it, so derive rather than
- * introducing a second env var that can drift out of step with the first.
- */
-function telemetryUrl(path: string): string {
-  const bridgeUrl = process.env.BRIDGE_URL ?? "http://127.0.0.1:8000/mcp";
-  const base = new URL(bridgeUrl);
-  base.pathname = path;
-  base.search = "";
-  return base.toString();
-}
+import { telemetryUrl } from "@back/bridge/url";
 
 /** Placement metadata the bridge attaches, so the console can georeference the image. */
 const FORWARDED_HEADERS = [

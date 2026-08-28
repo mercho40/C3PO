@@ -503,8 +503,14 @@ class TensorRTDetector:
         self._bindings: List[int] = []
         self._host: Dict[int, Any] = {}
         self._device: Dict[int, Any] = {}
-        self._input_index: Optional[int] = None
-        self._output_index: Optional[int] = None
+        # Discovered as Optional, then STORED AS int once proven. The check
+        # below already guarantees both are set before anything calls `infer`
+        # — but it lives in a different method from every use, so the
+        # guarantee was invisible: `self._host[self._input_index]` is a dict
+        # indexed by a value typed `int | None`, four times, in the hot loop.
+        # Narrowing here turns "we checked once, trust us" into the type.
+        input_index: Optional[int] = None
+        output_index: Optional[int] = None
 
         for i in range(self._engine.num_bindings):
             shape = tuple(self._engine.get_binding_shape(i))
@@ -515,14 +521,16 @@ class TensorRTDetector:
             self._device[i] = device
             self._bindings.append(int(device))
             if self._engine.binding_is_input(i):
-                self._input_index = i
+                input_index = i
                 self._input_shape = shape
             else:
-                self._output_index = i
+                output_index = i
                 self._output_shape = shape
 
-        if self._input_index is None or self._output_index is None:
+        if input_index is None or output_index is None:
             raise RuntimeError(f"engine {engine_path} has no input or no output binding")
+        self._input_index: int = input_index
+        self._output_index: int = output_index
 
         self._stream = cuda.Stream()
         log("engine.ready", path=engine_path, input=self._input_shape,
@@ -916,8 +924,20 @@ def run() -> int:
     source = SyntheticSource() if fake else RealSenseSource()
     source.start()
 
+    # READ ONCE, HERE, AND FAIL LOUDLY IF ABSENT.
+    #
+    # `RealSenseSource.intrinsics` starts as None and is filled by `start()`
+    # from the stream profile. Passing it straight into `ground_all` on every
+    # tick meant a source that started without producing a profile would fail
+    # deep inside the deprojection maths, per-tick, swallowed by the blind
+    # except below and counted as "inference failed" — a camera calibration
+    # problem reported as a detector problem, ten times a second.
+    intrinsics = source.intrinsics
+    if intrinsics is None:
+        raise RuntimeError("camera source produced no intrinsics after start()")
+
     detector = None
-    if fake:
+    if isinstance(source, SyntheticSource):
         labels = source.labels()
     else:
         detector = TensorRTDetector()
@@ -948,9 +968,16 @@ def run() -> int:
 
         try:
             color, depth = source.read()
-            if fake:
+            # `isinstance` rather than the `fake` flag: the flag and the
+            # object's type say the same thing, but only one of them says it
+            # to a reader (or a type checker) looking at THIS line.
+            if isinstance(source, SyntheticSource):
                 detections = source.boxes()
             else:
+                # Non-None whenever `source` is a RealSenseSource — the branch
+                # above built it. Forty lines apart, and correlated through a
+                # flag, so it has to be said rather than inferred.
+                assert detector is not None
                 detections = detector.infer(color)
             # AFTER the frame grab and the inference both succeeded, and inside
             # the try for a reason: a tick that threw did not look at anything,
@@ -963,7 +990,7 @@ def run() -> int:
                     stream_mod.test_pattern(COLOR_W, COLOR_H, ticks) if fake else color
                 )
             objects, omitted = ground_all(
-                detections, depth, source.intrinsics, extrinsic, labels, source.depth_scale
+                detections, depth, intrinsics, extrinsic, labels, source.depth_scale
             )
         # BLIND EXCEPT, DELIBERATE: the whole point. A tick can fail in CUDA, in TensorRT,
         # in pyrealsense2 or in numpy, and the correct response to every one of

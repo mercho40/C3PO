@@ -104,7 +104,7 @@ class G1OdomTf(Node):
             Odometry, "/Odometry", self.on_odom,
             QoSProfile(depth=20, reliability=ReliabilityPolicy.RELIABLE),
         )
-        self._last = None
+        self._last: tuple[float, float, float, float] | None = None
         self._v = [0.0, 0.0, 0.0]
 
         if self.twist_source != "fastlio":

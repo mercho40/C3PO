@@ -46,7 +46,11 @@ import cyclonedds.idl.types as types  # noqa: F401  (kept: any added field needs
 @dataclass
 @annotate.final
 @annotate.autoid("sequential")
-class String_(idl.IdlStruct, typename="std_msgs.msg.dds_.String_"):
+# `typename=` is consumed by cyclonedds' own `__init_subclass__`, which
+# mypy cannot see through to — it checks the signature on `object`.
+class String_(  # type: ignore[call-arg]
+    idl.IdlStruct, typename="std_msgs.msg.dds_.String_"
+):
     """std_msgs/String. Byte-for-byte the struct idlc emits for it.
 
     Field order is positional on the wire under @final + sequential autoid.

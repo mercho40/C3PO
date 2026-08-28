@@ -20,13 +20,7 @@
 
 import { Elysia } from "elysia";
 
-function telemetryUrl(path: string): string {
-  const bridgeUrl = process.env.BRIDGE_URL ?? "http://127.0.0.1:8000/mcp";
-  const base = new URL(bridgeUrl);
-  base.pathname = path;
-  base.search = "";
-  return base.toString();
-}
+import { telemetryUrl } from "@back/bridge/url";
 
 /**
  * Proxy one JSON telemetry route.

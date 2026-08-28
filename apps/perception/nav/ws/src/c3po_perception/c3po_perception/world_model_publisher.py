@@ -138,15 +138,18 @@ class WorldModelPublisher(Node):
         self.create_subscription(
             LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
 
-        self._pose = None
+        # Annotated Optional rather than bare `None`: this attribute IS the
+        # 'absent is not empty' rule in local form — `None` means no odometry
+        # has arrived, which is a different fact from a pose at the origin.
+        self._pose: dict | None = None
         self._pose_stamp = 0.0
         self._pose_seen = 0.0
         self._objects: list[dict] = []
         self._objects_omitted = 0
         self._objects_seen = 0.0
-        self._free_space = None
+        self._free_space: dict[str, float] | None = None
         self._scan_seen = 0.0
-        self._scan_msg = None
+        self._scan_msg: LaserScan | None = None
         self._notes: list[str] = []
 
         hz = float(self.get_parameter("publish_hz").value)

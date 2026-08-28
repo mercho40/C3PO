@@ -116,7 +116,11 @@ class Runner:
 # printed take_camera's four-line refusal ABOVE the header explaining what stage
 # was even starting, so the reason arrived before the thing it was a reason for.
 try:
-    sys.stdout.reconfigure(line_buffering=True)
+    # `sys.stdout` is typed `TextIO`, which has no `reconfigure`; the concrete
+    # `TextIOWrapper` does. The `except AttributeError` below IS the check, and
+    # it is there because this runs on the robot's system interpreter where the
+    # stream may be something else entirely.
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
 except AttributeError:  # pragma: no cover - python < 3.7
     pass
 

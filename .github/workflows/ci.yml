@@ -50,12 +50,14 @@ jobs:
           echo 'BETTER_AUTH_SECRET=ci-placeholder-not-a-secret-0000000000' \
             >> apps/back/.env
 
-      # `bun run check-types` fans out to every workspace via turbo,
-      # including @repo/bridge (Python) -- its mypy check needs `uv` +
-      # CycloneDDS, which this job doesn't set up (that toolchain lives in
-      # the `bridge` job below, where its own lint/type-check step runs
-      # instead). Filter it out here rather than duplicate that setup.
-      - run: bun run check-types -- --filter='!@repo/bridge'
+      # `bun run check-types` fans out to every workspace via turbo, including
+      # the two PYTHON ones. @repo/bridge's mypy needs `uv` + CycloneDDS and
+      # @repo/perception's needs `uv`; neither toolchain is set up in this job.
+      # Both run their own type check in the jobs below that do have it, so
+      # filter them out here rather than duplicating the setup twice.
+      - run: >
+          bun run check-types --
+          --filter='!@repo/bridge' --filter='!@repo/perception'
 
       - name: apps/back unit tests
         working-directory: apps/back
@@ -131,6 +133,23 @@ jobs:
         working-directory: apps/perception
         run: uv run --project . ruff check .
 
+      # A DIFFERENT CHECK FROM THE ONE ABOVE, and both are needed.
+      #
+      # ruff enforces the 3.8 SYNTAX floor — the failure that breaks a
+      # container at start. mypy cannot: current mypy refuses
+      # `--python-version 3.8` outright. So it runs at 3.10 and does the
+      # orthogonal job, finding type errors. On its first run it found the
+      # TensorRT binding dicts being indexed with `int | None` four times in
+      # the inference hot loop, and `source.intrinsics` (Optional until
+      # `start()` fills it) being passed into the grounding maths on every
+      # tick — where a missing stream profile would have failed deep inside
+      # the deprojection and been reported as an inference failure.
+      #
+      # Source trees only, like apps/bridge's `mypy src`.
+      - name: mypy
+        working-directory: apps/perception
+        run: uv run --project . mypy vision bringup nav
+
   bridge:
     name: Bridge — lint, type-check, pytest
     runs-on: ubuntu-latest
@@ -179,9 +198,14 @@ jobs:
         working-directory: apps/bridge
         run: uv run ruff check src tests scripts
 
+      # `scripts` too, for the same reason ruff covers it: those are the files
+      # somebody runs standing next to a humanoid with an e-stop in their hand.
+      # It found two real typing faults in `arm_sign_check.py` the first time
+      # it ran — a driver variable holding two incompatible types on what
+      # looked like one path, in the script that MOVES THE ARMS.
       - name: mypy
         working-directory: apps/bridge
-        run: uv run mypy src
+        run: uv run mypy src scripts
 
       - name: pytest
         working-directory: apps/bridge
