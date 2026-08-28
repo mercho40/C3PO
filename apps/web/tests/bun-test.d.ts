@@ -39,6 +39,7 @@ declare module "bun:test" {
     toBeLessThan(expected: number): void;
     toBeLessThanOrEqual(expected: number): void;
     toBeUndefined(): void;
+    toBeDefined(): void;
     toContain(expected: unknown): void;
     toThrow(expected?: unknown): void;
     /** Negation. Only the matchers actually used are declared. */
