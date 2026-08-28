@@ -49,6 +49,7 @@
     type HandSample,
   } from "$lib/webxr/xr-teleop";
   import { alertFor, readinessFor } from "$lib/webxr/menu-layer";
+  import { cameraReasonFor } from "$lib/webxr/camera-layer";
   import { ScanFeed } from "$lib/robot/scan.svelte";
   import {
     buildFrame,
@@ -711,6 +712,12 @@
       // immediately rather than waiting for the next reconnect.
       if (camFrameUrl) session.setCameraStream(camFrameUrl);
       session.setCameraLive(camLive);
+      // And what to say if there is no picture yet. Entering VR while the feed
+      // is already down should open on the reason, not on a blank field that
+      // waits for the next poll to explain itself.
+      session.setCameraReason(
+        cameraReasonFor(camState, camDetail, camBase !== ""),
+      );
       // The preset list, with each entry's verification status straight from
       // the catalogue. `catalogueFailed` is why this is not just
       // `worksReal[name] === true`: an unreadable catalogue leaves the map
@@ -877,12 +884,20 @@
     if (!base) {
       camState = "error";
       camDetail = "PUBLIC_ROBOT_CAM_URL no está configurado.";
+      // The headset needs this one too, and it is the one case where the
+      // console knows for certain there will never be a picture.
+      vr?.setCameraReason(cameraReasonFor("error", camDetail, false));
       return;
     }
     camHandle = connectRobotCamera(base, {
       onState: (state, detail) => {
         camState = state;
         camDetail = detail ?? "";
+        // Straight to the headset. This state has been on the page all along,
+        // beside the camera panel — and an operator wearing the headset could
+        // not see the page, so "i cannot see the camara" on 2026-08-27 had no
+        // answer available from inside it. Now the black field says why.
+        vr?.setCameraReason(cameraReasonFor(state, camDetail));
       },
       onStatus: (status) => {
         camLive = status?.live ?? false;

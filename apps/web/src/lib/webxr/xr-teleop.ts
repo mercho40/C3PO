@@ -25,7 +25,7 @@
  * Never live-tested against an actual headset.
  */
 
-import { CameraLayer } from "./camera-layer";
+import { CameraLayer, type CameraReason } from "./camera-layer";
 import {
   MenuLayer,
   type MenuItem,
@@ -34,6 +34,7 @@ import {
   type Readiness,
 } from "./menu-layer";
 import { ScanLayer, type ScanRing } from "./scan-layer";
+import { eyeOffset, type EyePose } from "./stereo";
 
 export type HandSample = {
   /** Wrist position in the reference space, metres. */
@@ -373,7 +374,7 @@ function measureGrip(frame: XRFrame, hand: XRHand, space: XRSpace): number {
  * without losing the head pose it is in the middle of sampling.
  */
 export type XrLayer = {
-  draw(vpWidth?: number, vpHeight?: number): void;
+  draw(eye?: EyePose | null): void;
 };
 
 /**
@@ -398,7 +399,7 @@ export function drawPerEye(
    * an operator most needs to be told why.
    */
   camera: {
-    draw(opaque: boolean, vpWidth?: number, vpHeight?: number): void;
+    draw(opaque: boolean, eye?: EyePose | null): void;
   } | null,
   opaque: boolean,
   /**
@@ -438,26 +439,43 @@ export function drawPerEye(
     }
   };
 
+  // The head's own frame, needed to express each eye's position RELATIVE TO
+  // THE HEAD rather than to the room. Read once per frame, not once per eye:
+  // it is the same head both times.
+  const viewerFromRef = pose.transform?.inverse?.matrix;
+
   for (const view of pose.views) {
     const vp = layer.getViewport(view);
     if (!vp) continue;
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
+
+    // WHICH EYE THIS IS, not just how big it is.
+    //
+    // The layers used to get `vp.width`/`vp.height` and nothing else, which is
+    // enough to know the SHAPE of the render target and not enough to know
+    // where in the world the eye looking at it is. So every layer drew itself
+    // at the same clip-space coordinate in both eyes, and the operator saw two
+    // of each on 2026-08-27. The projection matrix carries the frustum's
+    // asymmetry and the eye transform carries the parallax; together they are
+    // what turns two images into one object. See `stereo.ts`.
+    //
+    // Null rather than a guess when the runtime gives us no matrix: `placeQuad`
+    // falls back to the old monoscopic placement, which does not fuse but does
+    // draw, and a HUD that does not fuse beats a HUD that is not there.
+    const projection = view.projectionMatrix;
+    const position = view.transform?.position;
+    const eye: EyePose | null =
+      projection && viewerFromRef && position
+        ? { projection, offset: eyeOffset(viewerFromRef, position) }
+        : null;
+
     if (camera) {
       // The camera IS the view in VR; in passthrough it is a heads-up layer
       // over the room, so it does not paint over what the operator can see.
-      //
-      // The viewport goes to draw() as well as to gl.viewport(): the quad is
-      // aspect-fitted to it. Setting the viewport alone stretches the frame to
-      // the eye's shape, which is how the first real session got a picture
-      // that was live, correct, and visibly deformed.
-      attempt(
-        "camera",
-        () => camera.draw(opaque, vp.width, vp.height),
-        "camera",
-      );
+      attempt("camera", () => camera.draw(opaque, eye), "camera");
     }
-    if (menu) attempt("menu", () => menu.draw(vp.width, vp.height), "menu");
-    if (scan) attempt("scan", () => scan.draw(vp.width, vp.height), "scan");
+    if (menu) attempt("menu", () => menu.draw(eye), "menu");
+    if (scan) attempt("scan", () => scan.draw(eye), "scan");
   }
   return failures;
 }
@@ -524,6 +542,7 @@ export class XrTeleopSession {
   #scan: ScanLayer | null = null;
   #pendingStreamUrl = "";
   #pendingLive = true;
+  #pendingReason: CameraReason = null;
   #cameraBroken = false;
   //: Held so the context can be explicitly released on teardown. A fresh
   //: canvas and context are created per VR entry and were only ever reclaimed
@@ -570,6 +589,19 @@ export class XrTeleopSession {
   setCameraLive(live: boolean): void {
     this.#pendingLive = live;
     this.#camera?.setLive(live);
+  }
+
+  /**
+   * Why there is no picture, shown in the headset when there is none.
+   *
+   * The page has always known this — `camState` and `camDetail` are on screen
+   * next to the camera panel — and it never reached the one place an operator
+   * with a headset on is looking. Same shape of gap as the readiness banner
+   * and the lidar ring before it.
+   */
+  setCameraReason(reason: CameraReason): void {
+    this.#pendingReason = reason;
+    this.#camera?.setReason(reason);
   }
 
   get active(): boolean {
@@ -787,6 +819,10 @@ export class XrTeleopSession {
         if (this.#pendingStreamUrl)
           this.#camera.setStreamUrl(this.#pendingStreamUrl);
         this.#camera.setLive(this.#pendingLive);
+        // Applied before the first frame, so a session entered while the feed
+        // is already down opens on the reason rather than on a blank field
+        // that only gets its explanation at the next poll.
+        this.#camera.setReason(this.#pendingReason);
       }
 
       let referenceSpace: XRReferenceSpace;

@@ -61,7 +61,14 @@ function stubGl() {
     getProgramParameter: rec("getProgramParameter", true),
     getProgramInfoLog: rec("getProgramInfoLog", ""),
     getAttribLocation: rec("getAttribLocation", 0),
-    getUniformLocation: rec("getUniformLocation", {}),
+    // Returns the uniform's NAME as its location, so a recorded `uniform2f`
+    // says WHICH uniform it set. The layer sets two of them per draw now
+    // (`u_scale` and `u_offset`), and "the last uniform2f" stopped meaning
+    // "the scale" the moment the second one was added.
+    getUniformLocation: (_program: unknown, name: string) => {
+      calls.push({ fn: "getUniformLocation", args: [_program, name] });
+      return name;
+    },
     createBuffer: rec("createBuffer", {}),
     bindBuffer: rec("bindBuffer"),
     bufferData: rec("bufferData"),
@@ -115,13 +122,56 @@ class FakeImage {
   }
 }
 
-function withFakeImage<T>(body: (made: FakeImage[]) => T): T {
+/**
+ * The 2D canvas the "no picture, and why" placeholder is painted on.
+ *
+ * Records the text drawn, because what the placeholder SAYS is the entire
+ * point of it — an unreadable or empty card is the black view it replaces.
+ */
+class FakeCanvas {
+  width = 0;
+  height = 0;
+  texts: string[] = [];
+  fills = 0;
+  ctx = {
+    fillStyle: "",
+    strokeStyle: "",
+    lineWidth: 0,
+    font: "",
+    textAlign: "",
+    clearRect: () => {},
+    fillRect: () => {
+      this.fills += 1;
+    },
+    strokeRect: () => {},
+    fillText: (t: string) => {
+      this.texts.push(t);
+    },
+  };
+  getContext(kind: string) {
+    return kind === "2d" ? this.ctx : null;
+  }
+}
+
+function withFakeImage<T>(
+  body: (made: FakeImage[], canvases: FakeCanvas[]) => T,
+): T {
   const made: FakeImage[] = [];
+  const canvases: FakeCanvas[] = [];
   const original = globalThis.Image;
   const originalDoc = (globalThis as { document?: unknown }).document;
   // A minimal document, so `setStreamUrl` takes the attach path the browser
   // takes. Without one it silently skips it and the test proves nothing.
+  //
+  // `createElement` is here for the same reason: without it the placeholder
+  // path returns null and every assertion about it passes vacuously.
   (globalThis as { document?: unknown }).document = {
+    createElement: (tag: string) => {
+      if (tag !== "canvas") return {};
+      const c = new FakeCanvas();
+      canvases.push(c);
+      return c;
+    },
     body: {
       appendChild: (el: FakeImage) => {
         el.attached = true;
@@ -136,7 +186,7 @@ function withFakeImage<T>(body: (made: FakeImage[]) => T): T {
     return img;
   };
   try {
-    return body(made);
+    return body(made, canvases);
   } finally {
     globalThis.Image = original;
     if (originalDoc === undefined) {
@@ -182,13 +232,19 @@ describe("attach", () => {
 });
 
 describe("draw", () => {
-  test("does nothing before a frame arrives, and does not throw", () => {
+  test("before a frame arrives it says so, and counts no uploads", () => {
     withFakeImage(() => {
       const { gl, calls } = stubGl();
       const layer = new CameraLayer(gl);
       layer.setStreamUrl("http://x/stream.mjpg");
       layer.draw(true);
-      expect(calls.some((c) => c.fn === "drawArrays")).toBe(false);
+      // It DOES draw now — the placeholder. Returning early here is what made
+      // "i cannot see the camara" unanswerable from inside the headset.
+      expect(calls.some((c) => c.fn === "drawArrays")).toBe(true);
+      expect(layer.showingNoSignal).toBe(true);
+      // But the frame counter must not move: the page tells a live feed from a
+      // frozen one by watching it, and placeholder repaints would make a dead
+      // camera look like it was delivering pictures.
       expect(layer.framesUploaded).toBe(0);
     });
   });
@@ -428,10 +484,29 @@ describe("the stream element is attached, and cleaned up", () => {
   });
 });
 
+/**
+ * An eye whose field is `k` times WIDER than it is tall, in tangent terms.
+ *
+ * This is the number the layer used to approximate as `vpWidth / vpHeight`.
+ * Symmetric (no `P[8]`/`P[9]`) and at the origin, so these tests are about
+ * SHAPE only — the stereo placement that reads the asymmetry lives in
+ * `stereo.test.ts`.
+ */
+function eyeOfShape(k: number) {
+  const P = new Float32Array(16);
+  P[0] = 1;
+  P[5] = k;
+  P[10] = -1;
+  P[11] = -1;
+  return { projection: P, offset: [0, 0, 0] as [number, number, number] };
+}
+
 describe("aspect fit — the picture that was live, correct and deformed", () => {
   /** The x,y passed to `u_scale` on the most recent draw. */
   function lastScale(calls: { fn: string; args: unknown[] }[]) {
-    const c = calls.filter((c) => c.fn === "uniform2f").at(-1);
+    const c = calls
+      .filter((c) => c.fn === "uniform2f" && c.args[0] === "u_scale")
+      .at(-1);
     return c ? [c.args[1] as number, c.args[2] as number] : null;
   }
 
@@ -442,17 +517,19 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive(640, 480); // the D435i's actual output
 
-      layer.draw(true, 1680, 1760); // a Quest eye viewport: TALLER than 4:3
+      const k = 1680 / 1760; // a Quest eye: TALLER than 4:3
+      layer.draw(true, eyeOfShape(k));
       const [sx, sy] = lastScale(calls)!;
       // The image is relatively WIDER than the eye, so width is the binding
       // constraint: fill it, and take bars top and bottom. Shrinking x instead
       // would squeeze the picture — the deformation being fixed here.
       expect(sx).toBe(FILL);
-      expect(sy).toBeCloseTo(FILL * (1680 / 1760 / (640 / 480)), 5);
+      expect(sy).toBeCloseTo(FILL * (k / (640 / 480)), 5);
       expect(sy).toBeLessThan(FILL);
-      // And the aspect actually drawn matches the source: the whole point.
-      // Independent of FILL, which scales both axes equally.
-      expect((1680 * sx) / (1760 * sy)).toBeCloseTo(640 / 480, 5);
+      // And the ANGLES actually subtended match the source: the whole point.
+      // `sx`/`sy` are clip-space, so dividing each by its own focal term is
+      // what turns them back into the shape an eye sees.
+      expect(sx / (sy / k)).toBeCloseTo(640 / 480, 5);
     });
   });
 
@@ -463,7 +540,7 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive(1920, 1080); // 16:9
 
-      layer.draw(true, 1000, 1000); // square eye
+      layer.draw(true, eyeOfShape(1)); // square field
       const [sx, sy] = lastScale(calls)!;
       expect(sx).toBe(FILL);
       expect(sy).toBeCloseTo(FILL * (1 / (1920 / 1080)), 5);
@@ -478,26 +555,23 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive(640, 480);
 
-      layer.draw(true, 1280, 960); // same 4:3
+      layer.draw(true, eyeOfShape(640 / 480)); // a field of the same shape
       // Matching aspect: no letterboxing, so both axes are exactly the inset.
-      expect(lastScale(calls)).toEqual([FILL, FILL]);
+      const [sx, sy] = lastScale(calls)!;
+      expect(sx).toBeCloseTo(FILL, 5);
+      expect(sy).toBeCloseTo(FILL, 5);
     });
   });
 
-  test("never scales ABOVE 1 — the quad stays inside clip space", () => {
+  test("never scales ABOVE the inset — the quad stays inside clip space", () => {
     withFakeImage((made) => {
       const { gl, calls } = stubGl();
       const layer = new CameraLayer(gl);
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive(640, 480);
 
-      for (const [w, h] of [
-        [100, 4000],
-        [4000, 100],
-        [1, 1],
-        [1920, 1080],
-      ]) {
-        layer.draw(true, w, h);
+      for (const k of [40, 0.025, 1, 1080 / 1920]) {
+        layer.draw(true, eyeOfShape(k));
         const [sx, sy] = lastScale(calls)!;
         expect(sx).toBeLessThanOrEqual(FILL);
         expect(sy).toBeLessThanOrEqual(FILL);
@@ -507,7 +581,7 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
     });
   });
 
-  test("a zero dimension falls back to full field, NOT to NaN", () => {
+  test("a zero dimension falls back to a square, NOT to NaN", () => {
     withFakeImage((made) => {
       const { gl, calls } = stubGl();
       const layer = new CameraLayer(gl);
@@ -517,23 +591,168 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       // to prevent, reintroduced by the fix for a distorted one.
       made[0].arrive(640, 0);
 
-      layer.draw(true, 1680, 1760);
+      const k = 1680 / 1760;
+      layer.draw(true, eyeOfShape(k));
       const [sx, sy] = lastScale(calls)!;
       expect(Number.isNaN(sx)).toBe(false);
       expect(Number.isNaN(sy)).toBe(false);
-      expect([sx, sy]).toEqual([FILL, FILL]);
+      // Square in ANGLE, which is not square in clip space. Wrongly shaped —
+      // there is no right shape for an image with no height — but visible,
+      // which is the whole bar this test is holding.
+      expect(sx).toBeCloseTo(FILL, 5);
+      expect(sy).toBeCloseTo(FILL * k, 5);
+      expect(sy).toBeGreaterThan(0);
     });
   });
 
-  test("no viewport given keeps the old full-field behaviour", () => {
+  test("no eye given still draws, with the field assumed square", () => {
     withFakeImage((made) => {
       const { gl, calls } = stubGl();
       const layer = new CameraLayer(gl);
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive(640, 480);
 
-      layer.draw(true); // non-XR callers pass no viewport
-      expect(lastScale(calls)).toEqual([FILL, FILL]);
+      // A caller outside an XR frame, or a runtime that handed us no
+      // projection matrix. It cannot fuse — there is nothing to fuse against —
+      // but it draws, and a picture that does not fuse beats a black view.
+      layer.draw(true);
+      const [sx, sy] = lastScale(calls)!;
+      expect(sx).toBeCloseTo(FILL, 5);
+      expect(sy).toBeCloseTo(FILL * (480 / 640), 5);
     });
+  });
+});
+
+/**
+ * A BLANK FIELD IS AN ASSERTION, AND IT IS USUALLY WRONG.
+ *
+ * On 2026-08-27 an operator wearing the headset reported "i cannot see the
+ * camara". Answering that took reading source, because every distinct cause —
+ * a stream port never forwarded, a dead vision container, a URL never
+ * configured, a frame still on its way — drew the identical thing: nothing.
+ * `draw()` returned early and the eye stayed black.
+ *
+ * These pin the replacement: when there is no picture, SAY SO, and say why.
+ * The same decision `ScanLayer` already made for the empty radar dial.
+ */
+describe("no signal — the black field that could not be diagnosed", () => {
+  /** The x,y passed to `u_scale` on the most recent draw. */
+  function scaleOf(calls: { fn: string; args: unknown[] }[]) {
+    const c = calls
+      .filter((c) => c.fn === "uniform2f" && c.args[0] === "u_scale")
+      .at(-1);
+    return c ? [c.args[1] as number, c.args[2] as number] : null;
+  }
+
+  test("says SIN IMAGEN even when nobody has given it a reason", () => {
+    withFakeImage((_made, canvases) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.draw(true);
+      // No stream, no reason set, nothing configured at all — the case that
+      // used to be indistinguishable from a healthy camera in a dark room.
+      expect(canvases.length).toBe(1);
+      expect(canvases[0].texts).toContain("SIN IMAGEN");
+    });
+  });
+
+  test("shows the reason and what to do about it", () => {
+    withFakeImage((_made, canvases) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setReason({
+        text: "el puerto de la cámara no llega",
+        hint: "corré scripts/quest_setup.sh de nuevo",
+      });
+      layer.draw(true);
+      expect(canvases[0].texts).toContain("el puerto de la cámara no llega");
+      expect(canvases[0].texts).toContain(
+        "corré scripts/quest_setup.sh de nuevo",
+      );
+    });
+  });
+
+  test("repaints when the reason changes, and not when it does not", () => {
+    withFakeImage((_made, canvases) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setReason({ text: "conectando", hint: "esperá" });
+      layer.draw(true);
+      const afterFirst = canvases[0].texts.length;
+
+      // Same reason, more frames: at 72-120 Hz a repaint and upload per frame
+      // would cost more than everything else this layer does.
+      layer.setReason({ text: "conectando", hint: "esperá" });
+      layer.draw(true);
+      layer.draw(true);
+      expect(canvases[0].texts.length).toBe(afterFirst);
+
+      layer.setReason({ text: "sin señal", hint: "revisá el túnel" });
+      layer.draw(true);
+      expect(canvases[0].texts).toContain("sin señal");
+    });
+  });
+
+  test("a real frame takes over — the placeholder is not sticky", () => {
+    withFakeImage((made, canvases) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      layer.draw(true);
+      expect(layer.showingNoSignal).toBe(true);
+
+      made[0].arrive(640, 480);
+      layer.draw(true);
+      expect(layer.showingNoSignal).toBe(false);
+      expect(layer.framesUploaded).toBe(1);
+      // And the card is not repainted once there is a picture to show.
+      const settled = canvases[0].texts.length;
+      layer.draw(true);
+      expect(canvases[0].texts.length).toBe(settled);
+    });
+  });
+
+  test("a feed that dies goes back to saying why", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480);
+      layer.draw(true);
+      expect(layer.showingNoSignal).toBe(false);
+
+      // The vision server closes the stream after ~1 s with no frame; the
+      // <img> reports the error and stops being a picture.
+      made[0].onerror?.();
+      layer.draw(true);
+      expect(layer.showingNoSignal).toBe(true);
+    });
+  });
+
+  test("it sits exactly where the picture would — 4:3, same letterboxing", () => {
+    withFakeImage((_made, canvases) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      const k = 1680 / 1760;
+      layer.draw(true, eyeOfShape(k));
+      expect(canvases[0].width).toBe(640);
+      expect(canvases[0].height).toBe(480);
+      // It stands in for the picture, so it should not jump when the picture
+      // arrives and replaces it.
+      const [sx, sy] = scaleOf(calls)!;
+      expect(sx).toBe(FILL);
+      expect(sy).toBeCloseTo(FILL * (k / (640 / 480)), 5);
+    });
+  });
+
+  test("no 2D canvas anywhere still does not throw in the frame callback", () => {
+    // Server rendering, or a runtime with no createElement. The frame callback
+    // this runs inside is what samples head pose — an exception escaping it
+    // stops steering for the rest of the session.
+    const { gl, calls } = stubGl();
+    const layer = new CameraLayer(gl);
+    expect(() => layer.draw(true)).not.toThrow();
+    expect(layer.showingNoSignal).toBe(false);
+    expect(calls.some((c) => c.fn === "drawArrays")).toBe(false);
   });
 });

@@ -37,6 +37,8 @@
  */
 
 /** The payload from `/telemetry/scan`, as the bridge passes it through. */
+import { placeQuad, type EyePose } from "./stereo";
+
 export type ScanRing = {
   /** Centimetres per bearing; `null` means nothing was seen that way. */
   r_cm: readonly (number | null)[];
@@ -407,8 +409,12 @@ export class ScanLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   }
 
-  /** Bottom-left of the eye — the corner the menu does not use. */
-  draw(vpWidth?: number, vpHeight?: number): void {
+  /**
+   * Lower-left of the field — the part the menu does not use.
+   *
+   * `eye` is the eye being drawn; see `MenuLayer.draw` and `stereo.ts`.
+   */
+  draw(eye?: EyePose | null): void {
     if (!this.#visible) return;
     this.#ensureCanvas();
     const ctx = this.#ctx;
@@ -439,17 +445,8 @@ export class ScanLayer {
     gl.enableVertexAttribArray(this.#posLoc);
     gl.vertexAttribPointer(this.#posLoc, 2, gl.FLOAT, false, 0, 0);
 
-    // Smaller than the menu: it is glanced at, not read. The canvas is square,
-    // so keeping it square on screen needs the same viewport-aspect correction
-    // the menu documents — scaling to clip space without it is what made the
-    // first camera quad visibly deformed.
-    const sx = 0.2;
-    const vpAspect =
-      vpWidth && vpHeight && vpWidth > 0 && vpHeight > 0
-        ? vpWidth / vpHeight
-        : 1;
-    const sy = sx * (H / W) * vpAspect;
-    // LOWER-LEFT OF CENTRE, not the bottom-left corner.
+    // LOWER-LEFT OF CENTRE, not the bottom-left corner. Smaller than the
+    // menu: it is glanced at, not read.
     //
     // The corner placement was invisible in the headset — reported
     // 2026-08-27, "I cannot see the radar and the points". Nothing was broken:
@@ -458,9 +455,15 @@ export class ScanLayer {
     // panel's top-right, one corner further out.
     //
     // Kept off-centre so it does not sit over the camera picture, and kept
-    // below the panel so the two never overlap at any viewport aspect.
-    gl.uniform2f(this.#scaleLoc, sx, sy);
-    gl.uniform2f(this.#offsetLoc, -0.42, -0.44);
+    // below the panel so the two never overlap.
+    //
+    // Angles, not render-target positions — the same change the menu
+    // documents. The canvas is square, and `aspect` plus the eye's own field
+    // of view is what keeps it square in the headset; the old
+    // viewport-pixel-shape approximation is gone.
+    const p = placeQuad(eye, { ox: -0.42, oy: -0.44, sx: 0.2, aspect: H / W });
+    gl.uniform2f(this.#scaleLoc, p.sx, p.sy);
+    gl.uniform2f(this.#offsetLoc, p.ox, p.oy);
     gl.uniform1f(this.#alphaLoc, 1.0);
 
     gl.enable(gl.BLEND);

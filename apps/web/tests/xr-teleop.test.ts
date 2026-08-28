@@ -28,6 +28,7 @@ import {
   WALK_STICK_DEADZONE,
   type Vec3,
 } from "../src/lib/webxr/xr-teleop";
+import type { EyePose } from "../src/lib/webxr/stereo";
 
 /** A quaternion for a yaw-only rotation about WebXR's up axis. */
 function yawQuat(radians: number) {
@@ -318,6 +319,107 @@ describe("drawPerEye — why the camera was invisible", () => {
 });
 
 /**
+ * The layers must be TOLD WHICH EYE, not just how big it is.
+ *
+ * `stereo.test.ts` proves the placement maths puts one object in front of the
+ * operator. None of that reaches the headset unless `drawPerEye` actually
+ * hands each layer that eye's projection and position — and "correct code that
+ * nothing calls" is a bug this project has now shipped five times. So this
+ * checks the wiring, not the maths.
+ */
+describe("drawPerEye — each layer is handed the eye it is drawing into", () => {
+  const VP = { x: 0, y: 0, width: 2064, height: 2208 };
+
+  /** Two eyes 64 mm apart, with the head one metre up and facing forward. */
+  function stereoPose() {
+    const eye = (x: number, p8: number) => ({
+      projectionMatrix: Object.assign(new Float32Array(16), {
+        0: 0.93,
+        5: 0.78,
+        8: p8,
+        10: -1,
+        11: -1,
+      }),
+      transform: { position: { x, y: 1, z: 0 } },
+    });
+    return {
+      views: [eye(-0.032, -0.09), eye(0.032, 0.09)],
+      // Head at (0, 1, 0): the inverse frame subtracts that, so the eyes come
+      // back as +-32 mm from the head rather than a metre off the floor.
+      transform: {
+        inverse: {
+          matrix: new Float32Array([
+            1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1, 0, 1,
+          ]),
+        },
+      },
+    } as unknown as XRViewerPose;
+  }
+
+  function spy() {
+    const seen: Array<EyePose | null> = [];
+    return {
+      seen,
+      layer: {
+        draw: (eye?: EyePose | null): void => {
+          seen.push(eye ?? null);
+        },
+      },
+    };
+  }
+
+  test("every layer gets a distinct eye, with the head-relative offset", () => {
+    const gl = { viewport: () => {} } as unknown as WebGLRenderingContext;
+    const layer = { getViewport: () => VP } as unknown as XRWebGLLayer;
+    const menu = spy();
+    const scan = spy();
+    const cam: Array<unknown> = [];
+    const camera = { draw: (_o: boolean, eye?: unknown) => cam.push(eye) };
+
+    drawPerEye(
+      gl,
+      layer,
+      stereoPose(),
+      camera,
+      true,
+      menu.layer,
+      scan.layer,
+    );
+
+    for (const seen of [menu.seen, scan.seen, cam as typeof menu.seen]) {
+      expect(seen.length).toBe(2);
+      const [l, r] = seen;
+      expect(l).not.toBeNull();
+      expect(r).not.toBeNull();
+      // The eye offsets are relative to the HEAD — +-32 mm — and not the
+      // metre-high position they have in the room. Passing the room position
+      // would place the panel a metre below the operator's feet.
+      expect(l!.offset[0]).toBeCloseTo(-0.032, 6);
+      expect(l!.offset[1]).toBeCloseTo(0, 6);
+      expect(r!.offset[0]).toBeCloseTo(0.032, 6);
+      // And each eye's OWN projection, carrying its own frustum asymmetry.
+      // One shared matrix here is the bug in a different disguise.
+      expect(l!.projection[8]).toBeCloseTo(-0.09, 6);
+      expect(r!.projection[8]).toBeCloseTo(0.09, 6);
+    }
+  });
+
+  test("a pose with no matrices passes null rather than throwing", () => {
+    // A runtime that gives us no projection must degrade to the monoscopic
+    // placement, not take the frame callback down — that callback is what
+    // samples head pose, so an exception here stops steering.
+    const gl = { viewport: () => {} } as unknown as WebGLRenderingContext;
+    const layer = { getViewport: () => VP } as unknown as XRWebGLLayer;
+    const menu = spy();
+    const pose = { views: ["left", "right"] } as unknown as XRViewerPose;
+
+    const failed = drawPerEye(gl, layer, pose, null, true, menu.layer);
+    expect(failed.menu).toBeNull();
+    expect(menu.seen).toEqual([null, null]);
+  });
+});
+
+/**
  * The layers fail INDEPENDENTLY, and this is a safety property rather than a
  * tidiness one.
  *
@@ -354,7 +456,7 @@ describe("drawPerEye — one broken layer does not take the others down", () => 
       layer,
       pose,
       thrower(boom) as unknown as {
-        draw(opaque: boolean, w?: number, h?: number): void;
+        draw(opaque: boolean, eye?: EyePose | null): void;
       },
       true,
       { draw: () => menuDraws.push(1) },

@@ -35,6 +35,8 @@
  * skills appear; the rest are visible, explained, and inert.
  */
 
+import { placeQuad, type EyePose } from "./stereo";
+
 export type MenuItem = {
   /** Skill name, as the bridge knows it. */
   name: string;
@@ -494,10 +496,14 @@ export class MenuLayer {
   }
 
   /**
-   * Draw the panel into the current viewport, low and centred so it does not
-   * cover what the operator is driving by.
+   * Draw the panel into the current viewport, centred and lifted so it does
+   * not cover what the operator is driving by.
+   *
+   * `eye` is the eye being drawn, and passing it is what makes the panel a
+   * single object rather than one image per eye — see `stereo.ts`. Optional
+   * only so a caller outside an XR frame still gets a picture.
    */
-  draw(vpWidth?: number, vpHeight?: number): void {
+  draw(eye?: EyePose | null): void {
     if (!this.#visible) return;
     this.#ensureCanvas();
     const ctx = this.#ctx;
@@ -536,22 +542,6 @@ export class MenuLayer {
     gl.enableVertexAttribArray(this.#posLoc);
     gl.vertexAttribPointer(this.#posLoc, 2, gl.FLOAT, false, 0, 0);
 
-    // A third of the eye's width, bottom-centre, aspect-correct. Same lesson as
-    // the camera quad: scaling to clip space without accounting for the
-    // viewport's shape is what makes a rendered thing look wrong in a headset.
-    //
-    // On screen the panel measures `sx * vpWidth` by `sy * vpHeight`, and we
-    // want that to be W:H. Solving for sy gives the line below. The fallback
-    // assumes a square viewport, which is wrong but close — and wrong in
-    // proportion rather than wrong by the inverse, which is what writing
-    // `sx * (W / H)` here would do: a panel 2.5x too tall on a 1.6:1 canvas.
-    const sx = 0.44;
-    const vpAspect =
-      vpWidth && vpHeight && vpWidth > 0 && vpHeight > 0
-        ? vpWidth / vpHeight
-        : 1;
-    const sy = sx * (H / W) * vpAspect;
-    gl.uniform2f(this.#scaleLoc, sx, sy);
     // CENTRED HORIZONTALLY, a little above the middle.
     //
     // It has now been in three places. Bottom-centre competed with the view of
@@ -566,7 +556,17 @@ export class MenuLayer {
     // watching the robot's feet, which is what bottom-centre got wrong, while
     // staying inside the cone that top-right got wrong. The readiness banner
     // and the alert band live in here, and both are useless unreadable.
-    gl.uniform2f(this.#offsetLoc, 0, 0.32);
+    //
+    // These are ANGLES now, not positions on the render target — the numbers
+    // are unchanged, but `placeQuad` reads them as "where the panel is" and
+    // works out where that lands in THIS eye. Passing the same clip-space
+    // constant to both eyes is what made the operator see two panels on
+    // 2026-08-27; the aspect correction that used to live here moved there too,
+    // where it can use the eye's real field of view instead of guessing it
+    // from the viewport's pixel shape.
+    const p = placeQuad(eye, { ox: 0, oy: 0.32, sx: 0.44, aspect: H / W });
+    gl.uniform2f(this.#scaleLoc, p.sx, p.sy);
+    gl.uniform2f(this.#offsetLoc, p.ox, p.oy);
     gl.uniform1f(this.#alphaLoc, 1.0);
 
     gl.enable(gl.BLEND);
