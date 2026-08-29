@@ -103,9 +103,14 @@ cleanly and discovers nothing. The one shared config
 containers and mirrored in the bridge) carries the full explanation, including
 why nothing large (PointCloud2) may cross this domain.
 
-The bridge side **must** create the domain as `Domain(42, explicit_xml)` — a bare
-`DomainParticipant(42)` inherits `connection.py`'s `<Domain id="any">` config
-(unicast peer at the control board) and silently discovers nothing. See
+The bridge side **must** create the domain as `Domain(42, explicit_xml)`. This
+used to be load-bearing in a second way: a bare `DomainParticipant(42)`
+inherited `connection.py`'s `<Domain id="any">` config (unicast peer at the
+control board) and silently discovered nothing. That config is scoped to a
+single domain as of 2026-08-29, so the inheritance trap is gone — but passing
+the config explicitly is still required, because a bare participant would then
+come up on CycloneDDS defaults (multicast on, autodetermine) and discover
+nothing on `lo`. See
 `apps/bridge/src/bridge/sdk/perception_link.py` for the mechanics, the cmd_vel
 gate, the clamps and the deadman.
 
@@ -326,15 +331,21 @@ nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
 - **`arm_navigation`'s TTL and clamps.** The clamp values in
   `perception_link.py` are reasoned defaults, not measurements — someone who has
   watched this robot walk should set them.
-- **The pending `connection.py` fix.** `DDS_INTERFACE=eth0` is currently logged
-  but never applied — the vendor SDK's inline config overrides `CYCLONEDDS_URI`,
-  so the bridge runs on autodetermine and works only because `docker0` is DOWN,
-  and every perception stage brings containers up. The fix (scope
-  `<Domain id="any">` to `id="0"`, pass the interface through to
-  `ChannelFactoryInitialize`; note `ChannelConfigHasInterface` carries no
-  `<Peers>` block, which is acceptable — multicast on eth0 is how the control
-  board publishes) must land in a supervised window, never as a side effect of
-  landing perception.
+- **The `connection.py` fix — landed 2026-08-29, unconfirmed on hardware.**
+  `DDS_INTERFACE=eth0` used to be logged but never applied: the vendor SDK's
+  inline config overrides `CYCLONEDDS_URI`, so the bridge ran on autodetermine
+  and worked only because `docker0` is DOWN — and every perception stage brings
+  containers up. It is now passed to `ChannelFactoryInitialize`, the XML is
+  scoped to one domain instead of `id="any"`, and the unicast workaround is
+  `SIM_MODE`-conditional. As predicted here, `ChannelConfigHasInterface` carries
+  no `<Peers>` block, which is acceptable — multicast on eth0 is how the control
+  board publishes.
+
+  What still needs the supervised window is **confirming** it, not landing it:
+  check that `dds.init` logs `interface_reason=pinned` and not `missing`. A
+  wrong or stale `DDS_INTERFACE` falls back to autodetermine — today's
+  behaviour — rather than stranding the bridge, so the downside is bounded to
+  "no better than before".
 - **COCO's vocabulary.** YOLO11n has no `door`, `doorway` or `stairs` class —
   and stairs are what a walking humanoid most needs to not be surprised by. The
   detector will be technically working and practically blind to this robot's

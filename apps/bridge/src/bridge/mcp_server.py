@@ -89,7 +89,15 @@ if SIM_MODE != "stub":
     from bridge.sdk.connection import init_dds
     from bridge.sdk.state import get_sampler
 
-    init_dds(robot_host=ROBOT_HOST, domain_id=DDS_DOMAIN_ID, interface=DDS_INTERFACE)
+    # SIM_MODE is passed rather than left to init_dds's environment default:
+    # it decides whether the config asks for unicast-to-one-peer, which is a
+    # simulator workaround and a topic-hiding hazard onboard.
+    init_dds(
+        robot_host=ROBOT_HOST,
+        domain_id=DDS_DOMAIN_ID,
+        interface=DDS_INTERFACE,
+        sim_mode=SIM_MODE,
+    )
     # Warm the subscriber singleton so messages start flowing immediately.
     get_sampler()
 

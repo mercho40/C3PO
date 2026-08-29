@@ -16,18 +16,21 @@ WHY A SECOND DOMAIN AND NOT DOMAIN 0:
     _common.sh.
 
 THE CONFIG MUST BE PASSED EXPLICITLY. `Domain(42, _DOMAIN42_XML)`, never a bare
-`DomainParticipant(42)`. connection.py writes `<Domain id="any">` with
-AllowMulticast=false and a lone `<Peer address="192.168.123.161"/>`, and "any"
-applies to EVERY domain created without its own config — so a bare participant
-on 42 would inherit "unicast to the control board" and discover nothing, with no
-error. (dds_create_domain(id, cfg) with a non-NULL cfg overrides CYCLONEDDS_URI,
-which is also why domain 0 does not read that file today; see connection.py.)
+`DomainParticipant(42)`, which would come up on CycloneDDS defaults (multicast
+on, autodetermine interface) and discover nothing on `lo`.
 
-This module is deliberately SELF-SUFFICIENT about that: it depends on nothing
-connection.py does or does not do. It passes its own XML for its own domain, so
-it stays correct both before and after the `id="any"` → `id="0"` fix lands
-(apps/perception/README.md, decisions list — the connection.py scoping fix; a
-supervised change to domain 0's config).
+Until 2026-08-29 there was a second, worse reason: connection.py wrote
+`<Domain id="any">` with AllowMulticast=false and a lone
+`<Peer address="192.168.123.161"/>`, and "any" applied to EVERY domain created
+without its own config — so a bare participant on 42 inherited "unicast to the
+control board" and discovered nothing, with no error. That config is now scoped
+to the single domain it initializes, so the inheritance trap is gone.
+(dds_create_domain(id, cfg) with a non-NULL cfg overrides CYCLONEDDS_URI, which
+is also why domain 0 does not read that file at all; see connection.py.)
+
+This module is deliberately SELF-SUFFICIENT about all of it: it depends on
+nothing connection.py does or does not do, which is why the scoping change
+above required no edit here.
 
 BOTH DDS OBJECTS ARE HELD ON A MODULE SINGLETON FOR PROCESS LIFETIME.
 cyclonedds-python's Entity.__del__ calls dds_delete, so a dropped reference to
