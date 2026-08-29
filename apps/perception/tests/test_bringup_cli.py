@@ -8,6 +8,7 @@ other team lost.
 
 from __future__ import annotations
 
+import os
 from typing import List, Sequence, Tuple
 
 import pytest
@@ -27,7 +28,11 @@ class FakeRunner:
         topic_ready=True,
         http_ready=True,
         logs=None,
+        script_rc=None,
     ):
+        #: Exit code per helper script, by basename. 127 is "not on disk" —
+        #: see `Runner.run_script`. Defaults to 0 for anything unlisted.
+        self._script_rc = dict(script_rc or {})
         self.calls: List[List[str]] = []
         self.scripts: List[Tuple[str, dict]] = []
         self.slept = 0.0
@@ -79,7 +84,7 @@ class FakeRunner:
 
     def run_script(self, path, env=None):
         self.scripts.append((path, dict(env or {})))
-        return 0
+        return self._script_rc.get(os.path.basename(path), 0)
 
 
 ENV = {"HOME": "/home/unitree", "C3PO_DIR": "/home/unitree/c3po"}
@@ -283,3 +288,87 @@ def test_every_stage_dry_runs_without_touching_the_machine(stage):
     assert runner.calls == []
     assert runner.scripts == []
     assert runner.dirs == []
+
+
+# --- a helper script that is not on disk -------------------------------------
+#
+# On 2026-08-29 `scripts/robot/stop_gemm`, `take_camera` and `run_c3po` were all
+# missing from the robot's working tree — tracked in git, gone from disk, cause
+# never established. Every camera-claiming stage then died on a raw
+# FileNotFoundError traceback out of `subprocess.call`, with the real problem on
+# the last line. The two cases below are the same accident wanting opposite
+# answers, which is the whole reason 127 is told apart from every other rc.
+
+
+def test_a_missing_stop_gemm_refuses_rather_than_starting_anyway():
+    """gemm is running and holding the sensor. Carrying on is the worst option.
+
+    Starting the containers with gemm still on the device is the "one commander"
+    failure `_common.sh` exists to prevent, and it presents as a detector that
+    comes up clean and sees nothing — a far longer debugging session than a
+    refusal that names the missing file.
+    """
+    runner = FakeRunner(gemm=["gemm-ai"], script_rc={"stop_gemm": 127})
+    assert bring_up("perception", runner, env=ENV, scripts_dir="/s") == 1
+    assert created(runner) == [], "nothing may start while gemm holds the device"
+
+
+def test_the_refusal_names_the_containers_it_actually_found(capsys):
+    """The manual fallback has to act on what was detected, which is containers.
+
+    It first read `sudo systemctl stop gemm-ai`, which is wrong in a way that
+    costs an operator real time: OPERATIONS is explicit that `stop_gemm` does
+    NOT stop `gemm-ai.service` — it filters running *containers*, and that is
+    equally what `gemm_running()` here sees. Naming the unit sends somebody to
+    stop a voice assistant while the containers keep the camera.
+    """
+    runner = FakeRunner(gemm=["gemm-bringup", "gemm-slam"], script_rc={"stop_gemm": 127})
+    bring_up("perception", runner, env=ENV, scripts_dir="/s")
+    printed = capsys.readouterr()
+    text = printed.out + printed.err
+    assert "docker stop gemm-bringup gemm-slam" in text
+    assert "systemctl" not in text
+
+
+def test_a_missing_stop_gemm_is_not_fatal_when_gemm_is_not_running():
+    """Nothing to release, so its absence costs this stage nothing."""
+    runner = FakeRunner(script_rc={"stop_gemm": 127})
+    assert bring_up("perception", runner, env=ENV, scripts_dir="/s") == 0
+
+
+def test_a_missing_take_camera_warns_but_still_brings_the_stage_up():
+    """Different problem, opposite answer.
+
+    Nothing is announced to be holding the device, so the detector may simply
+    find it — and if it does not, the stage reports it offline honestly.
+    Refusing here would cost the lidar ring too, for a camera that might have
+    worked.
+    """
+    runner = FakeRunner(script_rc={"take_camera": 127})
+    assert bring_up("perception", runner, env=ENV, scripts_dir="/s") == 0
+    assert VISION in created(runner)
+
+
+def test_the_absent_and_the_refused_camera_do_not_share_a_message(capsys):
+    """"could not release the camera" sends somebody into udev and permissions.
+
+    For a file that is simply not on disk that is the wrong hour to spend, so
+    rc 127 and rc 2 must not print the same sentence.
+    """
+    absent = FakeRunner(script_rc={"take_camera": 127})
+    bring_up("perception", absent, env=ENV, scripts_dir="/s")
+    absent_out = capsys.readouterr()  # ONE call: a second returns only new output
+
+    refused = FakeRunner(script_rc={"take_camera": 2})
+    bring_up("perception", refused, env=ENV, scripts_dir="/s")
+    refused_out = capsys.readouterr()
+
+    assert "missing" in absent_out.out + absent_out.err
+    assert "missing" not in refused_out.out + refused_out.err
+
+
+def test_run_script_reports_127_instead_of_raising():
+    """The crash itself, at its source: a return code, not a traceback."""
+    from bringup.cli import Runner
+
+    assert Runner().run_script("/nonexistent/definitely-not-a-real-helper") == 127

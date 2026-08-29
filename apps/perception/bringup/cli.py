@@ -105,7 +105,25 @@ class Runner:
         # otherwise land after everything the child writes.
         sys.stdout.flush()
         sys.stderr.flush()
-        return subprocess.call([path], env=merged)
+        try:
+            return subprocess.call([path], env=merged)
+        except FileNotFoundError:
+            # A MISSING HELPER IS A CHECKOUT PROBLEM, NOT A CRASH.
+            #
+            # On 2026-08-29 `scripts/robot/stop_gemm`, `take_camera` and
+            # `run_c3po` were all missing from the robot's working tree —
+            # tracked in git, deleted on disk, cause never established. Every
+            # camera-claiming stage then died on a raw
+            # `FileNotFoundError` traceback out of `subprocess.call`, twenty
+            # lines deep, with the actual problem on the last line.
+            #
+            # 127 is the shell's own "command not found", so callers can tell
+            # "the helper is absent" apart from "the helper ran and refused",
+            # which are different problems with different fixes.
+            err(f"missing helper script: {path}")
+            err("  it is tracked in git but not on disk. Restore it with:")
+            err("    cd ~/c3po && git checkout -- scripts/robot/")
+            return 127
 
 
 # --- output -----------------------------------------------------------------
@@ -294,11 +312,30 @@ def _arbitrate(
         info("would stop gemm if running, then take the camera")
         return True
 
-    if gemm_running(runner):
+    holders = gemm_running(runner)
+    if holders:
         warn(f"stage '{stage.name}' claims a shared sensor")
         info("stopping gemm to release it")
         if scripts_dir:
-            runner.run_script(os.path.join(scripts_dir, "stop_gemm"))
+            rc = runner.run_script(os.path.join(scripts_dir, "stop_gemm"))
+            if rc == 127:
+                # REFUSE, rather than carry on. gemm is RUNNING and holding a
+                # sensor this stage has just announced it will take, and the
+                # one thing that releases it is not there. Starting the
+                # containers anyway means two stacks reaching for one device —
+                # the exact "one commander" failure `_common.sh` exists to
+                # prevent — and it would present as a detector that starts and
+                # sees nothing.
+                err("cannot release the sensor from gemm, and gemm is running")
+                err("  restore the script (above), or stop the containers yourself:")
+                # The CONTAINERS, by name, and deliberately not
+                # `systemctl stop gemm-ai`: what was detected here is
+                # `docker ps` output, and OPERATIONS §"stop_gemm does not stop
+                # gemm-ai.service" is explicit that the unit and the containers
+                # are different things. Naming the service would send somebody
+                # to stop a voice assistant while the holders kept the camera.
+                err(f"    docker stop {' '.join(holders)}")
+                return False
 
     # stop_gemm frees GEMM's holders and deliberately leaves `videohub_pc4`
     # alone — that one is Unitree's, not gemm's to stop. But a stage that needs
@@ -312,6 +349,11 @@ def _arbitrate(
         if rc == 2:
             # take_camera distinguishes "not allowed" from "would not help".
             warn("the camera could not be released without a terminal — detector stays offline")
+        elif rc == 127:
+            # Absent, not refused. A warning that says "could not release the
+            # camera" would send somebody looking at permissions and udev for
+            # a file that is simply not on disk.
+            warn("take_camera is missing — the detector will start with no device")
         elif rc != 0:
             warn("could not release the camera — the detector will stay offline")
     return True
