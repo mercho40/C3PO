@@ -407,11 +407,35 @@ BRIDGE_URL=http://127.0.0.1:8001/mcp
 fails while `BRIDGE_URL` names a non-loopback host, so the breakage explains
 itself rather than presenting as a dead robot.
 
+**The tunnel was already mandatory, which is what makes this cheap.** `/camera/*`
+and `/mcp` are `@mcp.custom_route`s on the _same_ FastMCP server — one process,
+one port. A working headset setup already forwards 8001, because
+`apps/web/.env.example` reaches the camera at `http://127.0.0.1:8001/camera` and
+`quest_setup.sh` prints the `-L 8001:127.0.0.1:8001` line for exactly that
+reason. So the LAN binding was never buying access that the tunnel did not
+already provide — the console's two halves had simply drifted into disagreeing
+about how to reach one port on one process, with `apps/web` going through the
+tunnel and `apps/back` going around it. Pointing `BRIDGE_URL` at
+`127.0.0.1:8001` needs no new forward.
+
 ⚠️ **The robot is still binding `0.0.0.0` until it is redeployed.** The unit
-file is what changed; the running service picks it up on
-`sudo systemctl daemon-reload && sudo systemctl restart c3po-bridge`. Until
-then `c3po_health` keeps reporting the wildcard bind as a problem, which is
-correct — it reads the socket, not this file.
+file is what changed, and `/etc/systemd/system/c3po-bridge.service` is a symlink
+into the checkout, so the update rides a `git pull` — **but only if the robot's
+checkout is on a branch that contains the change.** A `git pull` on the robot
+pulls whatever branch it already has; if this is still sitting on an unmerged
+branch, the pull is a no-op and the restart faithfully re-applies `0.0.0.0`.
+Check with `git -C ~/c3po log --oneline -1 -- scripts/robot/c3po-bridge.service`
+before concluding anything. Then:
+
+```bash
+git -C ~/c3po pull
+grep BRIDGE_HOST ~/c3po/scripts/robot/c3po-bridge.service   # must say 127.0.0.1
+sudo systemctl daemon-reload && sudo systemctl restart c3po-bridge
+ss -ltnp | grep 8001                                        # must NOT say 0.0.0.0
+```
+
+Until that lands, `c3po_health` keeps reporting the wildcard bind as a problem,
+which is correct — it reads the socket, not this file.
 
 🔧 **`BRIDGE_CORS_ORIGINS` was set in the unit and read by no code.** The same
 file carries
