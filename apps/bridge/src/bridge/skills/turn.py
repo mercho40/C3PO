@@ -221,7 +221,12 @@ async def run(
         try:
             await asyncio.shield(asyncio.ensure_future(stop_motion(height)))
         except (Exception, asyncio.CancelledError):
-            pass
+            # The firmware's own duration deadman still halts this, so a
+            # failure here is not dangerous — but it is not nothing either, and
+            # swallowing it silently means a stop path that has been failing
+            # every time looks identical to one that works. `teleop/_safe_stop`
+            # logs every one of its failure branches for this reason.
+            log.warning("turn.cancel_stop_failed", task_id=task.task_id, exc_info=True)
         raise  # never swallow cancellation
 
     except Exception as exc:
@@ -233,5 +238,5 @@ async def run(
         try:
             await stop_motion(height)
         except Exception:
-            pass
+            log.warning("turn.failure_stop_failed", task_id=task.task_id, exc_info=True)
         return task.to_dict()

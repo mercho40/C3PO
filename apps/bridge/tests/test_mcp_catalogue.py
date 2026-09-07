@@ -303,6 +303,42 @@ def test_apps_back_does_not_reintroduce_a_second_catalogue():
     )
 
 
+def test_exactly_one_tool_is_classified_safety(tools):
+    """`classification="safety"` BYPASSES THE ADMIN GATE IN apps/back.
+
+    `apps/back/src/routes/skills.ts` decides who may invoke a skill directly:
+
+        const isSafety = skill ? skill.classification === "safety" : knownSafety;
+        if (!isSafety && user.role !== "admin") return 403;
+
+    That is correct and deliberate — an e-stop must not be admin-gated, and it
+    must not stop working because the catalogue could not be fetched. But it
+    means this string, set HERE, decides authorization THERE: marking any other
+    tool `safety` silently makes it invocable by every authenticated
+    non-admin, straight past the reasoning agent, with no change in apps/back
+    and nothing in its diff to review.
+
+    `damp` is the tempting one — it is a safety transition in the FSM sense —
+    and it moves a 35 kg biped. The FSM meaning of "safety" and the
+    authorization meaning are not the same word, and only one of them belongs
+    in this field.
+
+    apps/back pins its own half in `SAFETY_SKILLS` (`skills.test.ts`). This is
+    the other half of that contract; the two are meant to name the same single
+    tool.
+    """
+    safety = sorted(
+        name
+        for name, tool in tools.items()
+        if (tool.meta or {}).get("c3po", {}).get("classification") == "safety"
+    )
+    assert safety == ["stop_everything"], (
+        f"tools classified 'safety': {safety}. Anything on this list bypasses "
+        "the admin gate in apps/back/src/routes/skills.ts. If a tool genuinely "
+        "belongs here, add it to SAFETY_SKILLS there in the same change."
+    )
+
+
 def test_every_tool_carries_complete_safety_metadata(tools):
     """`_meta` is how safety information reaches clients — including Claude Code.
 
