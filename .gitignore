@@ -44,3 +44,6 @@ CLAUDE.md
 .claude
 .mcp.json
 skills-lock.json
+
+# Agent/session scratch space — never a deliverable.
+.scratch/

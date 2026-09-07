@@ -255,7 +255,21 @@ class WorldModelPublisher(Node):
             "detector_online": detector_online,
             "objects": self._objects if detector_online else [],
             "objects_omitted": self._objects_omitted if detector_online else 0,
-            "lidar_online": lidar_online and self._free_space is not None,
+            # ARRIVAL ONLY. This used to be `and self._free_space is not None`,
+            # which is the "absent is not empty" rule broken in the one file
+            # that states it: a scan whose returns are all `inf` — an open
+            # room, everything beyond range_max — leaves `_free_space` None and
+            # reported a working LiDAR as offline. `detector_online` two lines
+            # up gets this right, and says so: an online detector seeing
+            # nothing publishes `objects: []` with `detector_online: true`.
+            #
+            # Nothing downstream loses information, because the consumer
+            # already treats the two independently — `world_model.build()`
+            # does `if not lidar_online or free_space is None` and degrades on
+            # either. So this only changes what an operator is told about the
+            # sensor, from "offline" to "online, no usable returns", which is
+            # the true and more useful statement.
+            "lidar_online": lidar_online,
             "free_space": self._free_space if lidar_online else None,
             # Only what the CONTAINER knows: a rejected payload, a scan in the
             # wrong frame. The bridge appends its own degradation notes from
