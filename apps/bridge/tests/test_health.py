@@ -359,11 +359,17 @@ def test_a_stale_pidfile_does_not_resurrect_a_dead_bridge():
 
 # --- where it is listening --------------------------------------------------
 #
-# Four places describe this port and they do not agree: `.env.example` and the
-# code default say 127.0.0.1, `docs/OPERATIONS.md` and apps/back's
-# `telemetry.ts` say loopback, and `scripts/robot/c3po-bridge.service` sets
+# Four places described this port and they did not agree: `.env.example` and the
+# code default said 127.0.0.1, `docs/OPERATIONS.md` and apps/back's
+# `telemetry.ts` said loopback, and `scripts/robot/c3po-bridge.service` set
 # BRIDGE_HOST=0.0.0.0 — which is what `ss -ltnp` found actually running on the
 # robot on 2026-08-28. So the report reads the SOCKET, not any of the four.
+#
+# The unit was moved to 127.0.0.1 on 2026-09-06, so all five now agree. These
+# tests keep their teeth anyway, and deliberately: reading the socket is what
+# catches the NEXT disagreement, including a unit that gets taken from another
+# branch again (which is how the 0.0.0.0 arrived — 06e5ea9). Until the robot
+# has been redeployed, the machine is still binding the wildcard.
 
 
 def check_names(report):

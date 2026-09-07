@@ -16,7 +16,12 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DEFAULT_BRIDGE_URL, bridgeUrl, telemetryUrl } from "./url";
+import {
+  DEFAULT_BRIDGE_URL,
+  bridgeUrl,
+  telemetryUrl,
+  unreachableHint,
+} from "./url";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 
@@ -127,5 +132,43 @@ describe("bridge URL", () => {
       if (saved === undefined) delete process.env.BRIDGE_URL;
       else process.env.BRIDGE_URL = saved;
     }
+  });
+});
+
+describe("the tunnel hint", () => {
+  // The bridge stopped binding 0.0.0.0 on 2026-09-06, because /mcp can walk
+  // the robot and has no auth of its own. Anything still dialling the robot's
+  // LAN address now gets a refused connection that looks exactly like a dead
+  // robot — the same symptom this module already exists to prevent.
+
+  test("a LAN address gets the tunnel command, with its own port", () => {
+    const hint = unreachableHint("http://10.10.32.19:8001/mcp");
+    expect(hint).toContain("ssh -N -L 8001:127.0.0.1:8001");
+    expect(hint).toContain("10.10.32.19");
+    // ControlMaster=no is not decoration: OPERATIONS records that a forward on
+    // a shared master evaporates when the master idles out, which presents as
+    // a tunnel that worked and then stopped.
+    expect(hint).toContain("ControlMaster=no");
+  });
+
+  test("loopback gets no hint, because nothing is wrong with it", () => {
+    expect(unreachableHint("http://127.0.0.1:8001/mcp")).toBeNull();
+    expect(unreachableHint("http://localhost:8001/mcp")).toBeNull();
+    expect(unreachableHint(DEFAULT_BRIDGE_URL)).toBeNull();
+  });
+
+  test("a malformed URL returns null rather than throwing", () => {
+    // This runs inside a `.catch` on the connect path. Throwing here would
+    // replace a diagnosable BridgeUnavailableError with a TypeError about URL
+    // parsing, which is a strictly worse thing to find in a log.
+    expect(unreachableHint("not a url")).toBeNull();
+    expect(unreachableHint("")).toBeNull();
+  });
+
+  test("the port is carried through, not hardcoded to 8001", () => {
+    // 8000 vs 8001 is the exact confusion this file opens by describing.
+    const hint = unreachableHint("http://10.10.32.19:8000/mcp");
+    expect(hint).toContain("ssh -N -L 8000:127.0.0.1:8000");
+    expect(hint).toContain("http://127.0.0.1:8000/mcp");
   });
 });

@@ -371,23 +371,47 @@ $ hostname -I
 192.168.123.164  172.17.0.1  10.10.32.19      # <- 10.10.32.19 is the school LAN
 ```
 
-`scripts/robot/c3po-bridge.service` sets `Environment=BRIDGE_HOST=0.0.0.0`,
-while `apps/bridge/.env.example` says `127.0.0.1`, the code default is
+`scripts/robot/c3po-bridge.service` **used to set** `Environment=BRIDGE_HOST=0.0.0.0`,
+while `apps/bridge/.env.example` said `127.0.0.1`, the code default was
 `127.0.0.1`, and the table above and `apps/back/src/routes/telemetry.ts` both
-say **loopback**. Four places describe this port and the one that actually runs
-disagrees with the other three.
+said **loopback**. Four places described this port and the one that actually ran
+disagreed with the other three.
 
-The consequence: `http://10.10.32.19:8001/mcp` is reachable from anywhere on
+The consequence: `http://10.10.32.19:8001/mcp` was reachable from anywhere on
 the school Wi-Fi, and it is the tool surface that can **walk the robot**, with
 no authentication of its own. The SSH-tunnel posture that everything else in
-this document assumes is not what is deployed. It arrived with the unit taken
+this document assumes was not what was deployed. It arrived with the unit taken
 from `main` in `06e5ea9` (2026-08-26).
 
-Not changed here, because someone may be depending on direct LAN access to
-reach the bridge without a tunnel, and flipping it blind would take the console
-down. **Decide it deliberately:** either set `BRIDGE_HOST=127.0.0.1` in the
-unit and use the tunnel that is already documented, or keep the binding and put
-something in front of it.
+✅ **Decided 2026-09-06: the unit binds `127.0.0.1`.** The alternative was to
+keep the LAN binding and write down that we meant it, and that loses on the
+merits — an unauthenticated API that can walk a humanoid should not be
+reachable from a shared school Wi-Fi, the tunnel already exists and is already
+printed by `quest_setup.sh`, and every other place in the repo already said
+loopback. Keeping it would have meant editing five correct files to match one
+wrong one.
+
+**This breaks any back-end dialling the robot's LAN address**, which is not
+hypothetical: a local `apps/back/.env` carrying
+`BRIDGE_URL=http://10.10.32.19:8001/mcp` will now get a refused connection —
+`bridge_unavailable` against a bridge that is perfectly healthy, the same
+symptom the 8000/8001 port confusion produces. Two things to do, in this order:
+
+```bash
+ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po   # keep this running
+# then in apps/back/.env:
+BRIDGE_URL=http://127.0.0.1:8001/mcp
+```
+
+`apps/back` prints that exact pair of lines to its log the first time a connect
+fails while `BRIDGE_URL` names a non-loopback host, so the breakage explains
+itself rather than presenting as a dead robot.
+
+⚠️ **The robot is still binding `0.0.0.0` until it is redeployed.** The unit
+file is what changed; the running service picks it up on
+`sudo systemctl daemon-reload && sudo systemctl restart c3po-bridge`. Until
+then `c3po_health` keeps reporting the wildcard bind as a problem, which is
+correct — it reads the socket, not this file.
 
 🔧 **`BRIDGE_CORS_ORIGINS` was set in the unit and read by no code.** The same
 file carries

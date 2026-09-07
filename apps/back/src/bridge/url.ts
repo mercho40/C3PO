@@ -61,3 +61,42 @@ export function telemetryUrl(path: string): string {
   base.search = "";
   return base.toString();
 }
+
+/** Hosts that need no tunnel to reach: this machine. */
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+/**
+ * The one-line remedy for an unreachable bridge, or `null` when there is none.
+ *
+ * The bridge stopped binding `0.0.0.0` on 2026-09-06 — it can walk the robot
+ * and has no authentication of its own, so it must not sit open on the school
+ * Wi-Fi (`scripts/robot/c3po-bridge.service` carries the full note). Anything
+ * still dialling the robot's LAN address now gets a refused connection.
+ *
+ * That failure is indistinguishable from "the robot is off" at the point where
+ * it surfaces: a 502 `bridge_unavailable` with both processes visibly healthy —
+ * the exact symptom `url.ts` already exists to prevent one port typo from
+ * causing. The difference is that this one has a fix that fits on one line, so
+ * the line is printed rather than left to be rediscovered.
+ *
+ * Deliberately NOT sent to the client: it names internal hosts, and a browser
+ * cannot act on it. It goes to the server log, where the person who can start
+ * a tunnel is looking.
+ */
+export function unreachableHint(url: string = bridgeUrl()): string | null {
+  let host: string;
+  let port: string;
+  try {
+    const parsed = new URL(url);
+    host = parsed.hostname;
+    port = parsed.port || "8001";
+  } catch {
+    return null;
+  }
+  if (LOOPBACK.has(host)) return null;
+  return (
+    `BRIDGE_URL points at ${host}:${port}, but the bridge binds loopback only. ` +
+    `Open the tunnel:  ssh -N -L ${port}:127.0.0.1:${port} -o ControlMaster=no c3po  ` +
+    `then set BRIDGE_URL=http://127.0.0.1:${port}/mcp in apps/back/.env`
+  );
+}

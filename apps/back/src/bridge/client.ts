@@ -16,7 +16,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { bridgeUrl } from "./url";
+import { bridgeUrl, unreachableHint } from "./url";
 
 // Read once at module load, as before — `client.test.ts` sets the env var and
 // then dynamically imports this module to aim it at a dead port. The default
@@ -52,10 +52,22 @@ async function connect(): Promise<Client> {
   return client;
 }
 
+// The tunnel hint is printed ONCE per process, not per failed call. A console
+// polling telemetry against a down bridge would otherwise write this line
+// several times a second and bury everything else in the log.
+let hintPrinted = false;
+
 function getClient(): Promise<Client> {
   if (!clientPromise) {
     clientPromise = connect().catch((err) => {
       clientPromise = null; // let the next call retry a fresh connection
+      if (!hintPrinted) {
+        const hint = unreachableHint(BRIDGE_URL);
+        if (hint) {
+          hintPrinted = true;
+          console.error(`[bridge] ${hint}`);
+        }
+      }
       throw new BridgeUnavailableError(err);
     });
   }
