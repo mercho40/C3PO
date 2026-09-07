@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 
+import pytest
 from c3po_vision import stream
 
 
@@ -239,3 +240,62 @@ def test_at_capacity_is_reported_even_while_the_feed_is_live():
     st = latest.status(time.time())
     assert st["live"] is True
     assert st["at_capacity"] is True
+
+
+# --- the slot must come back even when the headers never go out --------------
+
+
+def _detached_handler(latest):
+    """A Handler with no socket. `__init__` would run a whole request cycle."""
+    handler_cls = stream._handler_class(latest, quality=60, scale=1.0)
+    return handler_cls.__new__(handler_cls)
+
+
+def test_a_client_that_vanishes_before_the_headers_does_not_leak_its_slot():
+    """The window between claiming the slot and writing the first byte.
+
+    `_headers` ends in `end_headers()`, which flushes to the socket — so a
+    client that closed the tab in that window raises BrokenPipeError out of it.
+    While that call sat OUTSIDE the try/finally, the exception escaped before
+    the decrement was ever reached and the slot was taken permanently. Four of
+    those and this endpoint answers 503 forever while `/status` reports four
+    clients that do not exist: "reports healthy, serves nothing" again, reached
+    from the other side.
+    """
+    latest = stream._Latest()
+    handler = _detached_handler(latest)
+
+    def explode(*_args, **_kwargs):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    handler._headers = explode  # type: ignore[method-assign]
+
+    try:
+        handler._stream()
+    except BrokenPipeError:
+        # Escaping is acceptable — BaseHTTPRequestHandler's caller deals with
+        # it. Leaking the slot on the way out is not.
+        pass
+
+    assert latest.clients == 0, "the slot was claimed and never released"
+
+
+def test_the_refused_client_never_took_a_slot_to_begin_with():
+    """The 503 path returns before the try, so it must not decrement either.
+
+    Symmetry matters here: an over-eager `finally` would push `clients`
+    negative on every refusal, and a negative count reads as free capacity —
+    turning the cap into the opposite of a cap.
+    """
+    latest = stream._Latest()
+    latest.clients = stream.MAX_STREAM_CLIENTS
+    handler = _detached_handler(latest)
+
+    errors = []
+    handler.send_error = lambda code, msg=None: errors.append(code)  # type: ignore[method-assign]
+    handler._headers = lambda *a, **k: pytest.fail("headers sent to a refused client")
+
+    handler._stream()
+
+    assert errors == [503]
+    assert latest.clients == stream.MAX_STREAM_CLIENTS

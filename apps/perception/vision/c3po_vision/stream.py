@@ -430,8 +430,18 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                 )
                 return
 
-            self._headers("multipart/x-mixed-replace; boundary=" + BOUNDARY)
+            # INSIDE the try, not before it. `_headers` ends in `end_headers()`,
+            # which flushes to the socket and raises BrokenPipeError /
+            # ConnectionResetError if the client went away in the window
+            # between claiming the slot above and writing the first byte. With
+            # the call outside, that exception escaped before the `finally`
+            # below was ever entered: the slot was taken and never given back.
+            # Four of those and this endpoint answers 503 forever while
+            # `/status` reports four clients that do not exist — which is the
+            # same "reports healthy, serves nothing" failure the client cap was
+            # added to end, reached by a different route.
             try:
+                self._headers("multipart/x-mixed-replace; boundary=" + BOUNDARY)
                 seq = 0
                 while True:
                     seq, frame, _stamp = latest.wait_for_newer(
