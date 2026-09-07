@@ -12,6 +12,17 @@
 
 set -uo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# SOURCING _common.sh TURNS `-e` BACK ON. `set` mutates the CALLER's shell, and
+# _common.sh opens with `set -euo pipefail` — so the `-e` deliberately omitted
+# one line above is active from here down, and has been for every run of this
+# script. Verified, not assumed: a script with `set -uo pipefail` that sources
+# one with `-e` aborts on the next failing bare command.
+#
+# `uv sync` below is unaffected either way: it is an `if` CONDITION, which `-e`
+# does not act on, so the documented "a failed sync with a usable venv is a
+# warning" behaviour is intact and always was. The one command this reached was
+# `./scripts/postsync.sh`, which is now handled explicitly below rather than by
+# an option this file says it does not set.
 . "$here/_common.sh"
 
 cd "$BRIDGE_DIR" || { err "no bridge at $BRIDGE_DIR"; exit 1; }
@@ -32,7 +43,28 @@ if uv sync --quiet --extra voice --extra stt; then
     # postsync re-applies the unitree_sdk2py patch. It must run after EVERY
     # sync, or the SDK reverts to the unpatched upstream and the bridge imports
     # a version that cannot reach this robot.
-    ./scripts/postsync.sh
+    #
+    # FATAL, DELIBERATELY — and stated here because until now it was fatal only
+    # as a side effect of the `-e` inherited from _common.sh, which this file's
+    # own header says it does not set.
+    #
+    # It is the right answer, which is why it is being kept rather than
+    # softened. `c3po-bridge.service` runs this as `ExecStartPre=` with no `-`
+    # prefix, so a nonzero exit here means the bridge does not start — and no
+    # bridge means no `stop_everything`, which this file's header rightly calls
+    # the thing to avoid. But the alternative is worse: an unpatched SDK gives a
+    # bridge that comes up, answers /mcp and telemetry, shows "running" on the
+    # console, and CANNOT COMMAND THE ROBOT. An operator then has an e-stop
+    # button wired to nothing. A bridge that is visibly down is a problem
+    # somebody fixes in a minute; a bridge that reports healthy and does nothing
+    # is the failure mode that has cost this project the most.
+    if ! ./scripts/postsync.sh; then
+        err "postsync FAILED — the unitree SDK patch is not applied"
+        err "  refusing to start: an unpatched SDK is a bridge that answers"
+        err "  every health check and cannot actually command the robot."
+        err "  Fix with: cd $BRIDGE_DIR && ./scripts/postsync.sh"
+        exit 1
+    fi
     exit 0
 fi
 

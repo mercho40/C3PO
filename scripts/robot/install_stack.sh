@@ -56,9 +56,31 @@ sudo systemctl enable c3po-health.timer
 
 # logrotate: the bridge logs every tool call, and this robot has been left
 # running for days. Without this the log grows until somebody notices.
+#
+# COPIED, NOT SYMLINKED — THE ONE EXCEPTION TO THIS FILE'S SYMLINK RULE.
+# Everything above is symlinked so that `git pull` updates it, and for systemd
+# that is right. logrotate is different: it refuses config files in an include
+# directory that are not owned by root, and it refuses them from the daily
+# timer where nobody reads the complaint. A symlink into a checkout owned by
+# `unitree` therefore LOOKS installed and silently never runs — which is
+# exactly what this script did until now, while printing that it had succeeded.
+#
+# `install_robot_scripts.sh` found this and documented it at length; this
+# script kept applying the general rule to the one file it does not fit. The
+# consequence is not cosmetic: ~/.c3po/logs grows unbounded and fills the only
+# filesystem this robot has, which takes down the bridge — the process that
+# owns `stop_everything`.
+#
+# The cost of copying is that `git pull` does NOT update it. Re-run this script.
 if [ -f "$here/c3po-logs.logrotate" ]; then
-    echo "==> installing logrotate config"
-    sudo ln -sf "$here/c3po-logs.logrotate" /etc/logrotate.d/c3po
+    echo "==> installing logrotate config (copied: logrotate rejects non-root files)"
+    sudo install -o root -g root -m 0644 \
+        "$here/c3po-logs.logrotate" /etc/logrotate.d/c3po
+    # Parse it now rather than discover a syntax error from the daily timer.
+    if ! sudo logrotate --debug /etc/logrotate.d/c3po >/dev/null 2>&1; then
+        echo "    WARNING: logrotate could not parse the installed config —"
+        echo "    check with: sudo logrotate --debug /etc/logrotate.d/c3po"
+    fi
 fi
 
 cat <<'EOF'
