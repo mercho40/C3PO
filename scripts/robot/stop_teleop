@@ -52,6 +52,34 @@ for pair in "teleop stream:$TELEOP_PID:stray_teleop_pids"; do
         warn "$label running outside our pidfile — stopping (pid: $(echo "$strays" | tr '\n' ' '))"
         # shellcheck disable=SC2086
         kill $strays 2>/dev/null || true
+
+        # WAIT, LIKE THE PIDFILE PATH ABOVE. This used to set stopped=1 the
+        # instant SIGTERM was sent, so "VR teleop stopped" was printed for a
+        # process that had not exited — and the comment right above says why
+        # that matters: a stray still holds DDS and can still write setpoints.
+        #
+        # Same 8 s budget, same reason. A stray is still a teleop server, so it
+        # gets the same graceful shutdown: its handler sends the zero-velocity
+        # command and ramps the arm weight down, and SIGKILL during that ramp
+        # leaves the arms blended part-way.
+        #
+        # Written with explicit if/fi rather than `cmd && var=1`: this script
+        # runs under `-e` from _common.sh, where a `&&` list whose left side
+        # fails is itself a failing command and would abort the loop.
+        for _ in $(seq 1 40); do
+            alive=""
+            for p in $strays; do
+                if kill -0 "$p" 2>/dev/null; then alive=1; fi
+            done
+            if [ -z "$alive" ]; then break; fi
+            sleep 0.2
+        done
+        for p in $strays; do
+            if kill -0 "$p" 2>/dev/null; then
+                warn "  stray $p did not exit on SIGTERM — killing"
+                kill -9 "$p" 2>/dev/null || true
+            fi
+        done
         stopped=1
     fi
 done
