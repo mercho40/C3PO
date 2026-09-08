@@ -4,54 +4,84 @@
  * the sole channel to the robot, including the panic-button stop_everything
  * call.
  *
- * BRIDGE_URL is overridden to an unused local port so this test never depends
- * on whether a real bridge happens to be running -- the connection failure is
- * real (a genuine refused TCP connect), not mocked, just aimed at a port
- * nothing listens on.
+ * THE REAL-CONNECT TESTS RUN IN A CHILD PROCESS, AND THEY HAVE TO.
  *
- * It is set in `beforeEach`, NOT once before a dynamic import. The module used
- * to read the address once at load time, so this test only worked if it was the
- * first thing to import `./client` — and it is not. `catalogue.test.ts` and
- * `skills.test.ts` both pull it in transitively, and bun loaded them first in
- * CI: the address was already fixed to the one from the seeded `.env`, the
- * override arrived too late, and the test failed there while passing locally,
- * where the file order happened to differ. `client.ts` now resolves the URL per
- * connect, which removes the ordering dependency from both sides.
+ * `bun test` shares ONE module registry across every file in the run, and
+ * `routes/skills.test.ts` calls `mock.module("../bridge/client", ...)` — whose
+ * `callTool` resolves. Same resolved file, so whichever file loads later gets
+ * the other's version. In CI that mock won, and this file's "the bridge is
+ * unreachable" test received a promise that RESOLVED: it was asserting against
+ * a stub written for a different file's purposes. Locally the order differed
+ * and it passed, which is why it survived.
+ *
+ * `skills.test.ts` already documents that the registry is shared. The
+ * conclusion it did not draw is that a test needing the REAL module cannot get
+ * it from inside the same process, at any point in the file, by any ordering.
+ * So these two spawn `bun` and assert on its exit code.
+ *
+ * The value of the original is preserved: the child aims at a port nothing
+ * listens on, so the failure is a genuine refused TCP connect rather than a
+ * mock of one.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { BridgeUnavailableError, callTool } from "./client";
-
+// fileURLToPath, not `.pathname` — this repo lives under a directory with
+// spaces in its name, which `.pathname` hands back percent-encoded.
+const CLIENT_TS = fileURLToPath(new URL("./client.ts", import.meta.url));
 const DEAD_PORT = "http://127.0.0.1:39217/mcp";
 
-// Per test, so it holds no matter which file imported `./client` first.
-beforeEach(() => {
-  process.env.BRIDGE_URL = DEAD_PORT;
-});
+/**
+ * Run one assertion about the real client in a fresh process.
+ *
+ * Exit codes rather than stdout parsing: 0 is the expectation met, and every
+ * other value is a distinct way of being wrong, so a failure says which.
+ */
+async function inFreshProcess(body: string): Promise<number> {
+  const script = `
+    process.env.BRIDGE_URL = ${JSON.stringify(DEAD_PORT)};
+    const { callTool, BridgeUnavailableError } = await import(${JSON.stringify(CLIENT_TS)});
+    ${body}
+  `;
+  const proc = Bun.spawn(["bun", "-e", script], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, BRIDGE_URL: DEAD_PORT },
+  });
+  return await proc.exited;
+}
 
 describe("callTool", () => {
   test("throws BridgeUnavailableError when the bridge is unreachable", async () => {
-    await expect(callTool("get_state", {})).rejects.toBeInstanceOf(
-      BridgeUnavailableError,
-    );
-  });
+    const code = await inFreshProcess(`
+      try {
+        await callTool("get_state", {});
+        process.exit(2);                       // resolved: no refusal happened
+      } catch (err) {
+        process.exit(err instanceof BridgeUnavailableError ? 0 : 3);
+      }
+    `);
+    expect(code).toBe(0); // 2 = resolved, 3 = wrong error type
+  }, 30_000);
 
   test("a failed connection doesn't wedge the client -- the next call retries rather than hanging on a cached rejection", async () => {
-    await expect(callTool("get_state", {})).rejects.toBeInstanceOf(
-      BridgeUnavailableError,
-    );
-    // If `clientPromise` weren't reset to null after the first failure,
-    // this second call would reuse the same rejected promise. It still
-    // rejects the same way here (nothing is listening either way), but the
-    // point is it completes promptly via a fresh connect() attempt rather
-    // than any stuck/cached state -- proven by both calls resolving well
-    // under the test timeout.
-    await expect(callTool("get_state", {})).rejects.toBeInstanceOf(
-      BridgeUnavailableError,
-    );
-  });
+    // If `clientPromise` were not reset after the first failure, the second
+    // call would await the same rejected promise instead of attempting a fresh
+    // connect. Both still reject here — nothing is listening either way — so
+    // what this proves is that the second one gets there promptly and by its
+    // own route.
+    const code = await inFreshProcess(`
+      let first = false;
+      try { await callTool("get_state", {}); } catch { first = true; }
+      let second = false;
+      try { await callTool("get_state", {}); } catch (err) {
+        second = err instanceof BridgeUnavailableError;
+      }
+      process.exit(first && second ? 0 : 4);
+    `);
+    expect(code).toBe(0); // 4 = one of the two calls did not reject as expected
+  }, 30_000);
 });
 
 describe("a discarded session is actually closed", () => {
