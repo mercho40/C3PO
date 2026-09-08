@@ -49,6 +49,7 @@
     "better-auth": "^1.5.5",
     "dompurify": "^3.3.1",
     "elysia": "^1.4.28",
+    "mode-watcher": "^1.1.0",
     "runed": "^0.37.1",
     "shiki": "^4.0.2",
     "svelte-exmarkdown": "^5.0.2",
