@@ -704,9 +704,27 @@
       },
       { camera: camBase !== "" },
     );
+    // ASSIGNED BEFORE THE AWAIT, DELIBERATELY.
+    //
+    // `start()` blocks on the WebXR consent prompt, which can sit there for
+    // seconds, and `onDestroy` and `exitVr` reach the session ONLY through
+    // `vr`. While this was assigned after the await, `vr` stayed null for that
+    // whole window: navigating away mid-prompt ran `vr?.stop()` against
+    // nothing, and the session — once granted — went on to arm the control
+    // loop on a page the operator had already left, with no PARAR on screen to
+    // stop it. `XrTeleopSession.stop()` carries an `#abandonOnStart` guard
+    // written for exactly this case, and it was unreachable from here.
+    vr = session;
     try {
       await session.start(overlayRoot);
-      vr = session;
+      // RESOLVED IS NOT RUNNING. The abandon guard ends the session and
+      // `return`s — it does not throw — so a start that was stopped mid-flight
+      // lands here looking like a success. Everything below this line arms
+      // motion, so it has to be gated on a session that actually exists.
+      if (!session.active) {
+        vr = null;
+        return;
+      }
       // The camera connection may already be running — hand over its current
       // URL and liveness so entering VR after the feed is up shows a picture
       // immediately rather than waiting for the next reconnect.
@@ -743,6 +761,11 @@
       motionStartedAt = null;
       ensureLoopRunning();
     } catch (err) {
+      // `vr` is now assigned before the await, so a failed start must clear it
+      // rather than leave the page holding a session that never came up. It is
+      // this function's own `session` either way — `enterVr` does not call this
+      // while one is active — so nothing else is being dropped here.
+      vr = null;
       vrError =
         err instanceof Error ? err.message : "No se pudo iniciar la sesión VR.";
     }
