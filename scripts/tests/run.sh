@@ -320,7 +320,17 @@ check_not_contains "PID 1 never follows unit symlinks into the writable checkout
 
 bridge_unit_source="$(cat "$repo/scripts/robot/c3po-bridge.service")"
 check_contains "systemd directly supervises the bridge" "Type=exec" "$bridge_unit_source"
-check_contains "the bridge daemon binds to the robot LAN" "Environment=BRIDGE_HOST=0.0.0.0" "$bridge_unit_source"
+# LOOPBACK, NOT THE LAN. This asserted `BRIDGE_HOST=0.0.0.0` until 2026-09-06,
+# which pinned the wrong behaviour: /mcp can walk a 35 kg humanoid and carries no
+# authentication of its own, so a wildcard bind put it on the school Wi-Fi for
+# anyone. Five other places in the repo already said loopback — .env.example, the
+# module default, run_c3po, telemetry.ts and OPERATIONS — and this test was
+# holding the one that disagreed in place. Reach it through the documented
+# tunnel; docs/OPERATIONS.md has the redeploy steps.
+check_contains "the bridge daemon binds loopback, not the LAN" \
+    "Environment=BRIDGE_HOST=127.0.0.1" "$bridge_unit_source"
+check_not_contains "the bridge daemon does not bind a wildcard address" \
+    "Environment=BRIDGE_HOST=0.0.0.0" "$bridge_unit_source"
 check_contains "the bridge permits the local web dev origins" \
     "Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001" \
     "$bridge_unit_source"

@@ -115,6 +115,12 @@ if [ -n "$cam_port" ]; then
     # it. It needs a streaming MJPEG proxy, which is a new shape for that
     # service, which is why it is not done blind.
     PORTS+=("$cam_port:camera MJPEG + bridge /mcp (see note above):no")
+    # Say WHICH file the port came from. `cam_from` was recorded and then never
+    # read (shellcheck SC2034), which is a shame: `.env` and `.env.example` can
+    # disagree, and "the headset has no picture" is exactly when you want to
+    # know that the port being forwarded came from the example file rather than
+    # from the one you edited.
+    ok "camera port $cam_port, read from apps/web/$cam_from"
 else
     warn "no port in PUBLIC_ROBOT_CAM_URL — the headset will have no picture"
 fi

@@ -106,6 +106,13 @@ jobs:
 
       - uses: astral-sh/setup-uv@v4
 
+      # Explicit and frozen, so a CI run cannot quietly resolve a different
+      # dependency set than the lockfile pins. Carried over from the duplicate
+      # `perception` job this one absorbed.
+      - name: Install perception test harness
+        working-directory: apps/perception
+        run: uv sync --frozen --group dev
+
       # NO ROBOT, NO ROS, NO DDS, NO CUDA, NO CAMERA — BY DESIGN, AND THAT IS
       # PRECISELY WHY THIS BELONGS IN CI.
       #
@@ -155,26 +162,6 @@ jobs:
       - name: mypy
         working-directory: apps/perception
         run: uv run --project . mypy vision bringup nav
-
-  perception:
-    name: Perception — lint and pytest
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v4
-
-      - name: Install perception test harness
-        working-directory: apps/perception
-        run: uv sync --frozen --group dev
-
-      - name: ruff
-        working-directory: apps/perception
-        run: uv run ruff check .
-
-      - name: pytest
-        working-directory: apps/perception
-        run: uv run pytest -v
 
   bridge:
     name: Bridge — lint, type-check, pytest
