@@ -57,6 +57,34 @@ async function connect(): Promise<Client> {
 // several times a second and bury everything else in the log.
 let hintPrinted = false;
 
+/**
+ * Drop a session we are done with, without letting the teardown throw.
+ *
+ * NULLING `clientPromise` ALONE IS NOT A RECONNECT. It stops the next call
+ * reusing this session, but the `Client` and its `StreamableHTTPClientTransport`
+ * are still open — so the bridge keeps the session registered and this process
+ * keeps the socket.
+ *
+ * That distinction only shows up on a TIMEOUT, which is why it survived: on a
+ * refused or dropped connection the SDK's own `_onclose` already tears the
+ * transport down, and that is the case `client.test.ts` covers. On a timeout it
+ * does not — `Protocol`'s timeout path sends `notifications/cancelled` and
+ * rejects the caller's promise, and only `_onclose` clears `_transport`
+ * (verified in the installed SDK, dist/esm/shared/protocol.js). So a bridge
+ * that goes slow rather than away — a stalled tunnel, a robot skill that runs
+ * past the 60 s default — leaked one session and one socket per occurrence,
+ * while every log line said "reconnecting".
+ *
+ * Best-effort by construction: this runs on a path that is already failing, and
+ * a close() that rejects must not replace the caller's BridgeUnavailableError
+ * with something less useful.
+ */
+function discard(client: Client): void {
+  void Promise.resolve()
+    .then(() => client.close())
+    .catch(() => {});
+}
+
 function getClient(): Promise<Client> {
   if (!clientPromise) {
     clientPromise = connect().catch((err) => {
@@ -102,7 +130,8 @@ export async function callTool(
   try {
     result = await client.callTool({ name, arguments: args });
   } catch (err) {
-    clientPromise = null; // connection likely broke — force reconnect next time
+    clientPromise = null; // let the next call build a fresh session
+    discard(client); // ...and actually close this one — see `discard`
     throw new BridgeUnavailableError(err);
   }
 
@@ -151,7 +180,8 @@ export async function listTools(): Promise<
       _meta: (t as { _meta?: unknown })._meta,
     }));
   } catch (err) {
-    clientPromise = null; // connection likely broke — force reconnect next time
+    clientPromise = null; // let the next call build a fresh session
+    discard(client); // ...and actually close this one — see `discard`
     throw new BridgeUnavailableError(err);
   }
 }
