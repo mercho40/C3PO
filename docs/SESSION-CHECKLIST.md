@@ -133,16 +133,22 @@ curl -s http://127.0.0.1:8081/status      # vision container, if perception is u
 Watch `clients` across a few page reloads. It must come back **down**. If it
 climbs and stays, the client-leak fix is not in the running image — see §5.
 
-### 2c. The lidar ring — an open room is no longer "offline"
+### 2c. The lidar ring
 
 ```bash
 curl -s http://127.0.0.1:8001/telemetry/scan | head -c 300
 ```
 
-`lidar_online` is now computed from message **arrival** only. In a large open
-space where every return is beyond range, expect `lidar_online: true` with
-`free_space: null` — "the sensor is fine, nothing is in range". Previously this
-reported the LiDAR as offline.
+What to expect: a `r_cm` array of 120 bearings, `stale: false`, and a small
+`age_s`. Verified on 2026-09-08: 78 of 120 bearings returning, 57 cm to 315 cm.
+`null` entries are bearings with no return, which is normal.
+
+⚠️ **The `lidar_online` fix is NOT in the running container.** It is computed
+from message arrival only as of this branch — so a genuinely clear scan no
+longer reports the sensor as offline — but that code lives in
+`world_model_publisher.py`, which is built into the nav image. Until
+`c3po perception build` is re-run, the robot still runs the old behaviour. See
+§5; do not read an `online: false` in an open room as a new fault.
 
 ---
 
@@ -255,10 +261,23 @@ headset's PARAR button and the console dispatch the same call.
 
 ## 5. Known-unverified, so nobody reports these as new faults
 
-- **The vision client-leak fix is not in the running image.**
-  `vision/c3po_vision` is `COPY`d into the container at build time, so the fix
-  stays inert until `c3po perception build` is re-run. If §2b shows `clients`
-  climbing, this is why.
+- **BOTH perception containers are running older code than this checkout.**
+  This was stated as a vision-only problem and that was wrong. The nav container
+  mounts `config` and `logs` and nothing else — `ros2 launch c3po_perception`
+  resolves the package from **inside the image** — so a `git pull` on the robot
+  updates the files on disk and changes nothing about what runs.
+
+  Inert until `c3po perception build` is re-run:
+  - `vision/c3po_vision/stream.py` — the client-slot leak (if §2b shows
+    `clients` climbing across page reloads, this is why)
+  - `world_model_publisher.py` — `lidar_online` computed from arrival, so an
+    open room stops reporting the sensor offline (§2c)
+  - `g1_odom_tf.py` — a >0.5 s odometry gap no longer republishes the pre-stall
+    velocity as current
+
+  The build is long. Start it early, in the background, rather than waiting on
+  it before doing anything else.
+
 - **The mount calibration in `g1_odom_tf` is half applied.**
   `base_in_body_xyz` and `mount_yaw_deg` reach the static `body -> base_link`
   transform only; the dynamic `odom -> base_footprint` and the `/odom` Nav2
