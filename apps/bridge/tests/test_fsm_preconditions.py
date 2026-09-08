@@ -145,6 +145,58 @@ class TestTheVocabularyIsReal:
                 )
 
 
+class TestTheDeclaredArmStatesAreTheEnforcedOnes:
+    """`move_arm` says one thing and `arm_sdk` enforces another, in two files.
+
+    `ALLOWED_FSM_IDS = {4, 500, 501}` in `teleop/arm_sdk.py` is what actually
+    refuses engagement. `move_arm`'s `preconditions` metadata is what the agent
+    and the operator READ. Nothing connected them.
+
+    That is this repository's most expensive recurring shape — two places that
+    have to agree, with nothing making them. It cost a headset session when the
+    camera port moved from 8081 to 8001 and only one of the two places knew, and
+    it is why `bridge/url.ts` exists at all.
+
+    It matters more here than for a port. If the enforced set gains a state and
+    the metadata does not, an agent refuses a call the robot would have
+    accepted — annoying. If the metadata gains one the code does not enforce,
+    the agent is told it may move a humanoid's arms from a posture where
+    `rt/arm_sdk` is not supported, and finds out otherwise while holding them
+    out in mid-air.
+
+    The risk was introduced deliberately and knowingly: this precondition used
+    to read `fsm_state_in_{4,500,501}`, in raw ids, which at least looked
+    comparable to the code. It was converted to labels on 2026-09-08 so that
+    one vocabulary is used across all eighteen tools — which is right, and
+    which is exactly what makes this test necessary.
+    """
+
+    def test_move_arm_declares_the_states_arm_sdk_actually_allows(self, tools):
+        from bridge.sdk import g1_protocol
+        from bridge.teleop.arm_sdk import ALLOWED_FSM_IDS
+
+        declared_labels: set = set()
+        for precondition in preconditions_of(tools["move_arm"]):
+            declared_labels.update(fsm_states_named(precondition))
+
+        assert declared_labels, (
+            "move_arm no longer declares any FSM precondition. `arm_sdk` still "
+            f"refuses everything outside {sorted(ALLOWED_FSM_IDS)}, so the tool "
+            "now promises more than the code allows."
+        )
+
+        # Labels back to ids, through the same table `mode_label` reads forward.
+        by_label = {label: mode for mode, label in g1_protocol.MODE_LABEL.items()}
+        declared_ids = {by_label[label] for label in declared_labels}
+
+        assert declared_ids == set(ALLOWED_FSM_IDS), (
+            f"move_arm declares {sorted(declared_labels)} = {sorted(declared_ids)}, "
+            f"but arm_sdk.ALLOWED_FSM_IDS is {sorted(ALLOWED_FSM_IDS)}. One of the "
+            "two moved without the other. The metadata is what an agent believes; "
+            "ALLOWED_FSM_IDS is what refuses it at the door."
+        )
+
+
 class TestTheSafetyExitCoversEveryPostureWeCanReach:
     """`damp` is the way out. Its accepted-from set had three holes.
 
