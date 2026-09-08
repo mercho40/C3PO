@@ -153,7 +153,9 @@ const VOICE_PREAMBLE = [
 
 /** A compact catalogue appended to the system prompt so the model knows scope.
  * Exported for testing — pure string generation once the catalogue is in hand. */
-export async function buildSystemPrompt(mode: AgentMode = "operator"): Promise<string> {
+export async function buildSystemPrompt(
+  mode: AgentMode = "operator",
+): Promise<string> {
   const lines = (await listSkills()).map((s) => {
     const where =
       s.works.sim && s.works.real

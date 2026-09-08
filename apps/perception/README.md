@@ -344,6 +344,7 @@ nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
   wrong or stale `DDS_INTERFACE` falls back to autodetermine — today's
   behaviour — rather than stranding the bridge, so the downside is bounded to
   "no better than before".
+
 - **COCO's vocabulary.** YOLO11n has no `door`, `doorway` or `stairs` class —
   and stairs are what a walking humanoid most needs to not be surprised by. The
   detector will be technically working and practically blind to this robot's

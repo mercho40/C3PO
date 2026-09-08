@@ -55,7 +55,11 @@ export async function ensureChat(opts: {
   organizationId?: string | null;
   title?: string | null;
   channel?: "text" | "voice";
-}): Promise<{ id: string; created: boolean; channel: "text" | "voice" } | null> {
+}): Promise<{
+  id: string;
+  created: boolean;
+  channel: "text" | "voice";
+} | null> {
   const existing = await db.query.chat.findFirst({
     where: eq(chat.id, opts.id),
     columns: { id: true, userId: true, channel: true },
@@ -187,7 +191,13 @@ export async function listChats(userId: string, limit = 50) {
 export async function getChatWithMessages(id: string, userId: string) {
   const row = await db.query.chat.findFirst({
     where: and(eq(chat.id, id), eq(chat.userId, userId)),
-    columns: { id: true, title: true, channel: true, createdAt: true, updatedAt: true },
+    columns: {
+      id: true,
+      title: true,
+      channel: true,
+      createdAt: true,
+      updatedAt: true,
+    },
   });
   if (!row) return null;
 

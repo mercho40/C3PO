@@ -388,8 +388,8 @@
 
     {#if data.selected?.channel === "voice"}
       <div class="panel px-4 py-3 text-sm text-ink-mute">
-        Voice transcript · read-only. Start a new typed chat rather than silently
-        merging two operators or two input channels.
+        Voice transcript · read-only. Start a new typed chat rather than
+        silently merging two operators or two input channels.
       </div>
     {:else}
       <PromptInput.Root
