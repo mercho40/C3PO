@@ -841,6 +841,13 @@ export class XrTeleopSession {
         } catch {
           // already ending
         }
+        // The "end" listener that normally releases the context is registered
+        // BELOW this point, so ending the session here fires nothing: the GL
+        // context and the three layers built on it were leaked on every
+        // abandoned start. Chrome force-loses the oldest context past roughly
+        // sixteen live ones, and the one it takes may be an ACTIVE session's —
+        // presenting as a black layer in a headset somebody is wearing.
+        this.#releaseGraphics();
         return;
       }
       this.#makeOverlayTransparent(overlayRoot);
@@ -856,21 +863,10 @@ export class XrTeleopSession {
         // Put the page back the way it looked before, or the console is left
         // with a transparent body over the browser's own background.
         this.#restoreOverlay();
-        // Release the context rather than waiting for GC — see `#gl`.
-        const lose = this.#gl?.getExtension("WEBGL_lose_context");
-        lose?.loseContext();
-        this.#gl = null;
+        this.#releaseGraphics();
         // A GL failure is per-session, not permanent: a re-entered session
         // gets a fresh context and deserves a fresh attempt at a picture.
         this.#cameraBroken = false;
-        // Disposing cuts the <img> src, which is what actually closes the
-        // MJPEG request — an ended session must not keep pulling frames.
-        this.#camera?.dispose();
-        this.#camera = null;
-        this.#menu?.dispose();
-        this.#menu = null;
-        this.#scan?.dispose();
-        this.#scan = null;
         this.#callbacks.onEnd?.();
       });
 
@@ -968,8 +964,38 @@ export class XrTeleopSession {
       } catch {
         // Already ending/ended — the throw below is the useful signal.
       }
+      // Same reason as the abandon branch above: a failure between creating the
+      // context and registering the "end" listener — `makeXRCompatible`,
+      // `updateRenderState`, or both `requestReferenceSpace` calls — left the
+      // context and any layers already built alive with nothing to release
+      // them. Retrying after a transient failure would then accumulate them.
+      this.#releaseGraphics();
       throw err;
     }
+  }
+
+  /**
+   * Drop the GL context and everything built on it.
+   *
+   * Extracted from the "end" listener because it is needed on two paths that
+   * never reach it: a start abandoned mid-flight, and a start that throws
+   * before the listener is registered. Idempotent — every field is
+   * null-guarded and then nulled — so the listener firing after one of those
+   * is harmless.
+   */
+  #releaseGraphics(): void {
+    // Release the context rather than waiting for GC — see `#gl`.
+    const lose = this.#gl?.getExtension("WEBGL_lose_context");
+    lose?.loseContext();
+    this.#gl = null;
+    // Disposing cuts the <img> src, which is what actually closes the MJPEG
+    // request — a session that is going away must not keep pulling frames.
+    this.#camera?.dispose();
+    this.#camera = null;
+    this.#menu?.dispose();
+    this.#menu = null;
+    this.#scan?.dispose();
+    this.#scan = null;
   }
 
   #sampleHands(
