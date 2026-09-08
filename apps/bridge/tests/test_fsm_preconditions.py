@@ -110,6 +110,12 @@ class TestTheVocabularyIsReal:
     def test_the_precondition_shapes_are_the_two_we_parse(self, tools):
         """A third spelling would be silently ignored by everything, including
         this test. Catch it here rather than let it look checked."""
+        # The complete non-FSM vocabulary, enumerated from the live tool list.
+        # It grew when main landed free-form arm/hand control (2026-09): those
+        # tools gate on a service, an env flag and a fresh LowState rather than
+        # on an FSM state. The rule this test enforces has not changed — a
+        # spelling nobody parses must fail here rather than look checked — so
+        # the list is extended rather than the assertion loosened.
         known_non_fsm = {
             "robot_upright",
             "battery_pct_gt_15",
@@ -118,6 +124,15 @@ class TestTheVocabularyIsReal:
             "operator_present",
             "real_hardware_only",
             "pose_available",
+            # free-form arm control
+            "arm_action_service_available",
+            "rt_arm_sdk_not_engaged",
+            "fresh_rt_lowstate",
+            "no_gesture_task_running",
+            "TELEOP_ARM_ENABLED=1",
+            # free-form hand control
+            "TELEOP_HAND_ENABLED=1",
+            "TELEOP_HAND_TYPE_configured",
         }
         for name, tool in tools.items():
             for precondition in preconditions_of(tool):

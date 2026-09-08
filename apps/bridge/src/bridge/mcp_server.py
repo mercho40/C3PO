@@ -21,8 +21,8 @@ Run:
 
 Registered in `.mcp.json` as `c3po-sim` — a spawned child process speaking
 stdio, the default transport. The `c3po-bridge` entry in `.mcp.json` is a
-different thing: the daemon running onboard the Jetson, reached over HTTP
-(port 8001 via the SSH tunnel) — i.e. the REAL robot.
+different thing: the daemon running onboard the Jetson, reached directly over
+LAN HTTP on port 8001 — i.e. the REAL robot.
 """
 
 from __future__ import annotations
@@ -73,7 +73,12 @@ DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
 # (see apps/back/src/bridge/client.ts). stdio stays untouched either way.
 BRIDGE_TRANSPORT = os.environ.get("BRIDGE_TRANSPORT", "stdio")
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
-BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8000"))
+BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8001"))
+BRIDGE_CORS_ORIGINS = tuple(
+    origin.strip()
+    for origin in os.environ.get("BRIDGE_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+)
 
 # How much longer than the byte-derived estimate `say(wait_for_completion=True)`
 # will wait for `play_state` to drop. Playback runs slightly past the estimate
@@ -1140,6 +1145,302 @@ async def dance(ctx: Context) -> dict:
     return {**await run_dance(ctx), "env": SIM_MODE}
 
 
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=6.0,
+        works_sim=False,
+        works_real=True,  # The 7106-by-id path is verified live (wave, 2026-08-15);
+        # most individual ids in the catalogue have not been watched yet.
+        preconditions=["arm_action_service_available", "rt_arm_sdk_not_engaged"],
+        typical_failure_modes=[
+            "unknown_gesture",
+            "arm_latched_7401",
+            "fsm_gated_7404",
+            "transport_unsupported",
+        ],
+    )
+)
+async def gesture(
+    ctx: Context,
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "Firmware action name, one of: blow_kiss_both_hands, "
+                "blow_kiss_left_hand, blow_kiss_right_hand, both_hands_up, "
+                "both_hands_up_deviate_right, box_both_hand_win, box_left_hand_win, "
+                "box_right_hand_win, clamp, forward_push, heart_both_hands, "
+                "heart_right_hand, high_five, hug, refuse, release_arm, "
+                "right_hand_on_heart, right_hand_up, shake_hand, turn_back_wave, "
+                "ultraman_ray, wave_above_head, wave_under_head. Case-insensitive."
+            ),
+        ),
+    ],
+    auto_release: Annotated[
+        bool,
+        Field(
+            description=(
+                "True (default): after the gesture completes, hold the pose "
+                "hold_s seconds and then send release_arm (99) automatically, "
+                "so the arm is never left latched under motor load. False: "
+                "leave the latch standing — you then OWN sending release_arm."
+            ),
+        ),
+    ] = True,
+    hold_s: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            le=15.0,
+            description="Seconds to hold the final pose before the automatic release.",
+        ),
+    ] = 2.0,
+) -> dict:
+    """Perform any preset arm gesture from the robot's own action catalogue — the arms move.
+
+    The full table the G1's firmware reports via GetActionList (23 preset
+    actions), not just the handful with dedicated tools. Same verified RPC
+    path as `wave` (arm service, api_id=7106); the call blocks until the
+    motion completes (the service acks on completion, up to ~15 s), then
+    holds and auto-releases per the parameters above.
+
+    Gating is per action: `turn_back_wave` needs a walk program (FSM 500/501);
+    six actions need a 29/27-DoF body, which this robot is. A sustained
+    gesture LATCHES the arm holding its final pose — the auto-release exists
+    because a latched arm left standing is servos under load with nothing
+    scheduled to let go (learned live 2026-08-27). Refused while
+    move_arm/teleop holds the arms (rt/arm_sdk contention, error 7400).
+
+    Isaac Sim: logged only (sim doesn't subscribe to `rt/api/arm/request`).
+    """
+    from bridge.skills.gesture import run as run_gesture
+
+    return {
+        **await run_gesture(name, ctx, auto_release=auto_release, hold_s=hold_s),
+        "env": SIM_MODE,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tools: custom arm + hand control (rt/arm_sdk, rt/brainco|dex3)
+# ---------------------------------------------------------------------------
+# Free-form counterparts to the preset gestures above. move_arm blends
+# joint-space setpoints into the running controller through the same driver VR
+# teleop uses (bridge/teleop/arm_sdk.py — every safety measure lives there);
+# set_hand/open_hands drive the BrainCo grippers (bridge/teleop/hands.py).
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="high",
+        status="real",
+        cancellable=True,
+        expected_duration_s=5.0,
+        works_sim=False,
+        works_real=False,  # NEVER LIVE-TESTED, and the wrist/left-arm joint
+        # signs are unverified — see bridge/teleop/arm_sdk.py's enablement note.
+        preconditions=[
+            "real_hardware_only",
+            "TELEOP_ARM_ENABLED=1",
+            # Labels, not raw ids: 4/500/501 are preparation/walk/walk_waist, and
+            # every other tool in this file states them by name. Two vocabularies
+            # for one concept is a thing the agent reading this has to guess at.
+            "fsm_state_in_{preparation,walk,walk_waist}",
+            "fresh_rt_lowstate",
+            "no_gesture_task_running",
+        ],
+        typical_failure_modes=[
+            "arm_teleop_disabled",
+            "fsm_not_allowed",
+            "stale_lowstate",
+            "gesture_contention",
+            "settle_timeout",
+        ],
+    )
+)
+async def move_arm(
+    ctx: Context,
+    side: Annotated[
+        Literal["left", "right", "both"],
+        Field(description="Which arm(s) to pose. 'both' mirrors the angles onto each arm."),
+    ] = "right",
+    shoulder_pitch_deg: Annotated[
+        float | None,
+        Field(ge=-90, le=90, description="Shoulder pitch, degrees. Positive = arm forward/up."),
+    ] = None,
+    shoulder_roll_deg: Annotated[
+        float | None,
+        Field(ge=-10, le=90, description="Shoulder roll, degrees. Positive = away from the body."),
+    ] = None,
+    shoulder_yaw_deg: Annotated[
+        float | None,
+        Field(ge=-45, le=45, description="Shoulder yaw, degrees."),
+    ] = None,
+    elbow_deg: Annotated[
+        float | None,
+        Field(ge=0, le=110, description="Elbow flexion, degrees. 0 = straight arm."),
+    ] = None,
+    wrist_roll_deg: Annotated[
+        float | None,
+        Field(ge=-45, le=45, description="Wrist roll, degrees. Sign convention UNVERIFIED."),
+    ] = None,
+    wrist_pitch_deg: Annotated[
+        float | None,
+        Field(ge=-30, le=30, description="Wrist pitch, degrees. Sign convention UNVERIFIED."),
+    ] = None,
+    wrist_yaw_deg: Annotated[
+        float | None,
+        Field(ge=-30, le=30, description="Wrist yaw, degrees. Sign convention UNVERIFIED."),
+    ] = None,
+    hold: Annotated[
+        bool,
+        Field(
+            description=(
+                "True (default): keep holding the pose under software control "
+                "until release_arm_control / another move_arm / stop_everything. "
+                "False: hand the arm back to the built-in controller once posed."
+            ),
+        ),
+    ] = True,
+) -> dict:
+    """Move individual arm joints to explicit angles — free-form posing, a physical arm moves.
+
+    Blends joint setpoints into the running motion controller over rt/arm_sdk
+    (the robot keeps its balance; legs stay under firmware control; works
+    while merely standing at FSM 4/500/501). Joints you omit stay where they
+    are, so partial commands compose. Motion is slew-limited to ~34°/s with a
+    2 s authority ramp on engage.
+
+    Disabled unless TELEOP_ARM_ENABLED=1 and SIM_MODE=real — joint sign
+    conventions are only partly verified (right shoulder/elbow measured
+    2026-08-20; wrists and left arm inferred). NEVER LIVE-TESTED end to end:
+    first use should be one small single-joint move with a person watching.
+    Preset gestures cannot run while this holds the arms (error 7400) — call
+    release_arm_control first.
+    """
+    from bridge.skills.arm_pose import run as run_move_arm
+
+    joints_deg = {
+        name: value
+        for name, value in {
+            "shoulder_pitch": shoulder_pitch_deg,
+            "shoulder_roll": shoulder_roll_deg,
+            "shoulder_yaw": shoulder_yaw_deg,
+            "elbow": elbow_deg,
+            "wrist_roll": wrist_roll_deg,
+            "wrist_pitch": wrist_pitch_deg,
+            "wrist_yaw": wrist_yaw_deg,
+        }.items()
+        if value is not None
+    }
+    return {**await run_move_arm(side, joints_deg, hold=hold, ctx=ctx), "env": SIM_MODE}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=3.0,
+        works_sim=False,
+        works_real=False,  # Same untested path as move_arm.
+        typical_failure_modes=["release_timeout"],
+    )
+)
+async def release_arm_control() -> dict:
+    """Hand the arms back to the built-in controller after move_arm.
+
+    Ramps the rt/arm_sdk blend weight to zero over ~2 s while holding the last
+    commanded pose, then the firmware's own controller owns the arms again.
+    Safe no-op when nothing is engaged. This is about the move_arm/teleop
+    path — to un-latch a preset gesture (error 7401), use `release_arm`
+    (firmware action 99) instead.
+    """
+    from bridge.skills.arm_pose import release as run_release
+
+    return {**await run_release(), "env": SIM_MODE}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="medium",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=False,  # NEVER LIVE-TESTED — and BrainCo's open/closed
+        # polarity is unconfirmed until TELEOP_BRAINCO_OPEN_AT is settled.
+        preconditions=[
+            "real_hardware_only",
+            "TELEOP_HAND_ENABLED=1",
+            "TELEOP_HAND_TYPE_configured",
+        ],
+        typical_failure_modes=["hands_not_configured", "side_not_configured"],
+    )
+)
+async def set_hand(
+    side: Annotated[
+        Literal["left", "right", "both"],
+        Field(description="Which hand. Only sides in TELEOP_HAND_SIDES actually move."),
+    ] = "right",
+    closure: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            le=1.0,
+            description="0.0 = fully open, 1.0 = fully closed. Intermediate values are partial grips.",
+        ),
+    ] = 0.0,
+) -> dict:
+    """Set a dexterous hand's grip — physical fingers move (BrainCo Revo2).
+
+    One closure scalar per hand, 0.0 open to 1.0 closed, published to the
+    hand's command topic. IMPORTANT: these hands have NO firmware dead-man —
+    a closed hand stays closed until open_hands (or stop_everything, which now
+    relaxes them) is called, even if the bridge dies. Never leave a grip
+    closed on a person.
+
+    Requires TELEOP_HAND_ENABLED=1 plus the hand type/polarity env config
+    (bridge/teleop/hands.py documents every knob); reports honestly when
+    unconfigured instead of guessing. Real hardware only — nothing in sim
+    subscribes the hand topics.
+    """
+    from bridge.skills.hand import run_set
+
+    return {**await run_set(side, closure), "env": SIM_MODE}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=1.0,
+        works_sim=False,
+        works_real=False,  # Same untested path as set_hand.
+        typical_failure_modes=["hands_not_configured"],
+    )
+)
+async def open_hands() -> dict:
+    """Open every configured hand fully — the release for set_hand.
+
+    Publishes closure 0.0 to each hand in TELEOP_HAND_SIDES. Call this after
+    any grip: the BrainCo hands have no firmware dead-man, so nothing else
+    (except stop_everything) will open them.
+    """
+    from bridge.skills.hand import run_open
+
+    return {**await run_open(), "env": SIM_MODE}
+
+
 # ---------------------------------------------------------------------------
 # Tool: say
 # ---------------------------------------------------------------------------
@@ -1667,7 +1968,8 @@ async def listen(
         "always_listening": source["always_on"],
         "audio_source": source["source"],
         "note": (
-            None if diag.get("audio_flowing") or diag["mic_ever_open"] or source["always_on"]
+            None
+            if diag.get("audio_flowing") or diag["mic_ever_open"] or source["always_on"]
             else "No audio has arrived. The robot's own microphone has been seen "
             "BOTH gated on the remote's L1+L2 wake-up mode and free-running with "
             "no remote at all, so silence here is not proof of either. It does "
@@ -2107,8 +2409,8 @@ def list_active_tasks(
 # READ-ONLY, AND STRUCTURALLY SO. This route reads a cached payload the link
 # already received. It cannot arm the gate, cannot publish, and cannot reach
 # anything that actuates — the whole cmd_vel path is untouched by it. The bridge
-# still binds loopback with no auth of its own, so this is reached the same way
-# everything else is: through the SSH tunnel, not from the school LAN.
+# has no auth of its own and the onboard unit exposes it directly on the school
+# LAN, alongside the MCP and camera routes.
 
 
 @mcp.custom_route("/telemetry/costmap.png", methods=["GET"])
@@ -2287,6 +2589,156 @@ async def surroundings_json(request):  # noqa: ANN001, ANN201 - starlette types
         return JSONResponse({"error": "could not build a snapshot"}, status_code=503)
 
 
+_VOICE_KEEPALIVE_S = 15.0
+_VOICE_DISCONNECT_POLL_S = 0.5
+
+
+async def _voice_event_body(request, listener):  # noqa: ANN001, ANN201 - starlette types
+    """Yield non-consuming voice events until the HTTP client disconnects."""
+    import json
+
+    sequence = listener.sequence()
+    keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
+    try:
+        while True:
+            if await request.is_disconnected():
+                return
+
+            wait_s = min(
+                _VOICE_DISCONNECT_POLL_S,
+                max(0.0, keepalive_at - time.monotonic()),
+            )
+            item = await asyncio.to_thread(listener.wait_for_next, sequence, wait_s)
+
+            # Starlette cancels the generator on most disconnects, but checking
+            # explicitly also handles ASGI servers that only expose the state via
+            # receive(), and avoids writing one last event to a closed socket.
+            if await request.is_disconnected():
+                return
+            if item is not None:
+                sequence = item["seq"]
+                yield f"data: {json.dumps(item, separators=(',', ':'))}\n\n".encode()
+                keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
+            elif time.monotonic() >= keepalive_at:
+                yield b": keepalive\n\n"
+                keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
+    except asyncio.CancelledError:
+        # Client disconnects normally cancel StreamingResponse's producer task.
+        # There is no upstream resource to close; ending the generator is enough.
+        return
+
+
+@mcp.custom_route("/telemetry/voice/events", methods=["GET"])
+async def voice_events(request):  # noqa: ANN001, ANN201 - starlette types
+    """Live speech/stop items as SSE without consuming the agent's poll queue."""
+    from starlette.responses import StreamingResponse
+
+    from bridge.skills.listen import get_mic_listener
+
+    return StreamingResponse(
+        _voice_event_body(request, get_mic_listener()),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _voice_pcm_body(request, listener):  # noqa: ANN001, ANN201 - starlette types
+    """Stream the listener's live 16 kHz PCM without blocking the MCP event loop."""
+    import threading
+
+    stop = threading.Event()
+    frames = listener.audio_frames(stop)
+    waiting_for_frame = False
+    try:
+        while not await request.is_disconnected():
+            try:
+                waiting_for_frame = True
+                frame = await asyncio.to_thread(next, frames)
+                waiting_for_frame = False
+            except StopIteration:
+                return
+            if await request.is_disconnected():
+                return
+            yield frame
+    except asyncio.CancelledError:
+        return
+    finally:
+        stop.set()
+        # `to_thread` cancellation does not stop its worker. Closing a generator
+        # while that worker is inside `next()` raises "generator already executing";
+        # the stop event lets it unwind itself on the next 500 ms queue timeout.
+        if not waiting_for_frame:
+            frames.close()
+        # Disarm session-scoped auto-stop while leaving the always-on detector
+        # and transcript listener running.
+        listener.set_on_stop(None)
+
+
+@mcp.custom_route("/telemetry/voice/audio/input", methods=["GET"])
+async def voice_audio_input(request):  # noqa: ANN001, ANN201 - starlette types
+    """Live 16 kHz mono PCM for the trusted backend's OpenAI Realtime socket."""
+    from starlette.responses import StreamingResponse
+
+    from bridge.skills.listen import get_mic_listener
+
+    listener = get_mic_listener()
+    event_loop = asyncio.get_running_loop()
+
+    def stop_locally(_phrase: str) -> None:
+        # The detector runs in its own thread. Schedule onto the bridge's event
+        # loop; no network or model round-trip sits between the phrase and stop.
+        asyncio.run_coroutine_threadsafe(stop_everything(), event_loop)
+
+    listener.start(on_stop=stop_locally)
+    return StreamingResponse(
+        _voice_pcm_body(request, listener),
+        media_type="audio/pcm;rate=16000;channels=1",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@mcp.custom_route("/telemetry/voice/audio/output", methods=["POST", "DELETE"])
+async def voice_audio_output(request):  # noqa: ANN001, ANN201 - starlette types
+    """Play one 16 kHz PCM chunk, or stop C3PO-owned playback on DELETE."""
+    from starlette.responses import JSONResponse
+
+    if SIM_MODE != "real":
+        return JSONResponse({"status": "ok", "stub": True, "env": SIM_MODE})
+
+    from bridge.sdk import g1_rpc
+
+    if request.method == "DELETE":
+        code, data = await asyncio.to_thread(g1_rpc.stop_play)
+        return JSONResponse(
+            {"status": "ok" if code == 0 else "failed", "rpc_code": code, "rpc_data": data}
+        )
+
+    stream_id = request.query_params.get("stream_id", "").strip()
+    if not stream_id or len(stream_id) > 100:
+        return JSONResponse({"error": "invalid_stream_id"}, status_code=400)
+    pcm = await request.body()
+    if not pcm or len(pcm) > 512_000 or len(pcm) % 2:
+        return JSONResponse({"error": "invalid_pcm"}, status_code=400)
+
+    code, data = await asyncio.to_thread(g1_rpc.play_pcm, pcm, stream_id)
+    return JSONResponse(
+        {
+            "status": "ok" if code == 0 else "failed",
+            "rpc_code": code,
+            "rpc_data": data,
+            "bytes": len(pcm),
+        }
+    )
+
+
 @mcp.custom_route("/telemetry/voice", methods=["GET"])
 async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
     """What the robot has heard recently, and whether it can hear at all.
@@ -2342,13 +2794,13 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
 #
 # WHY NOT PORT 8081. That port belongs to the vision container, and two servers
 # racing for one bind is a coin-flip failure with a confusing symptom. Riding
-# 8001 costs nothing extra: the tunnel that reaches this bridge is already open
-# (`-L 8001:127.0.0.1:8001`), so unlike `:8081` this needs no second forward.
+# 8001 costs nothing extra: the bridge is already directly reachable there,
+# and unlike `:8081` this needs no second exposed service.
 # The console picks a feed with one variable, because `endpoint()` in
 # `apps/web/src/lib/robot/mjpeg-camera.ts` is a plain base + path join:
 #
-#     PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera   <- this, no -L 8081
-#     PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8081          <- the detector's
+#     PUBLIC_ROBOT_CAM_URL=http://g1-orin.local:8001/camera <- relay/picker
+#     PUBLIC_ROBOT_CAM_URL=http://g1-orin.local:8081        <- detector only
 #
 # The paths and the `/status` field names are identical to the vision
 # container's on purpose: one client in the console, two possible servers, no
@@ -2578,8 +3030,9 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
                 last_seq = current
                 last_new = time.monotonic()
                 yield (
-                    "--{}\r\nContent-Type: image/jpeg\r\n"
-                    "Content-Length: {}\r\n\r\n".format(boundary, len(data)).encode("ascii")
+                    "--{}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n".format(
+                        boundary, len(data)
+                    ).encode("ascii")
                     + data
                     + b"\r\n"
                 )
@@ -2593,6 +3046,28 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
         headers=camera_relay.camera_headers(origin),
     )
 
+
+async def _run_streamable_http() -> None:
+    """Run FastMCP with narrowly scoped browser origins for direct camera access."""
+    import uvicorn
+    from starlette.middleware.cors import CORSMiddleware
+    from starlette.types import ASGIApp
+
+    app: ASGIApp = mcp.streamable_http_app()
+    if BRIDGE_CORS_ORIGINS:
+        app = CORSMiddleware(
+            app,
+            allow_origins=list(BRIDGE_CORS_ORIGINS),
+            allow_methods=["GET"],
+            allow_headers=["*"],
+        )
+    config = uvicorn.Config(
+        app,
+        host=BRIDGE_HOST,
+        port=BRIDGE_PORT,
+        log_level=mcp.settings.log_level.lower(),
+    )
+    await uvicorn.Server(config).serve()
 
 
 def main() -> None:
@@ -2733,7 +3208,7 @@ def main() -> None:
             host=BRIDGE_HOST,
             port=BRIDGE_PORT,
         )
-        mcp.run(transport="streamable-http")
+        asyncio.run(_run_streamable_http())
     else:
         log.info("c3po-bridge.start", sim_mode=SIM_MODE, transport="stdio")
         mcp.run()  # default transport is stdio

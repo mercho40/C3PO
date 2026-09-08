@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import socket
 import threading
 import time
@@ -240,6 +241,14 @@ class Transcriber:
         trailing silence that would close it."""
         text = json.loads(self._rec.FinalResult()).get("text", "").strip()
         return text or None
+
+    def reset(self) -> None:
+        """Discard an in-progress decode, used when the robot starts speaking.
+
+        Without this reset, Vosk can carry the first half of room speech across
+        our playback-suppression window and emit one combined final afterwards.
+        """
+        self._rec.Reset()
 
 
 def transcribe_pcm(pcm: bytes, frame_bytes: int = FRAME_BYTES) -> list[str]:
@@ -455,11 +464,9 @@ def upgrade_whisperer_if_possible(current: Any) -> Any:
 
     WHY THIS IS NOT JUST "RESTART THE BRIDGE". `build_whisperer` runs once, when
     the listener thread starts, so the backend is decided at bridge boot and
-    never revisited. That made upgrading a circular errand on this robot: the
-    GPU transcriber lives in a perception container, and restarting the bridge
-    runs `stop_c3po`, which stops perception. Start STT then restart the bridge
-    and you have stopped STT; start STT after and the bridge never notices. The
-    only way through was an ordering nobody should have to know.
+    never revisited. The GPU transcriber is an independently managed perception
+    container and may appear or be replaced at any point; restarting core robot
+    infrastructure to discover it is unnecessary disruption.
 
     It is also the honest shape for the thing itself. The vision container is
     started, stopped and replaced by hand many times in a session, and each time
@@ -754,6 +761,7 @@ class MicListener:
         max_keep: int = 32,
         source: Callable[[], Iterator[bytes]] | None = None,
         build: Callable[[], tuple[Any, Any, Any]] | None = None,
+        playback_active: Callable[[], bool] | None = None,
     ) -> None:
         """`source` and `build` exist so this is testable off the robot.
 
@@ -772,12 +780,19 @@ class MicListener:
         self._max_keep = max_keep
         self._source = source or (lambda: default_source())
         self._build = build
+        self._playback_active = playback_active or self._robot_is_speaking
         self._lock = threading.Lock()
+        self._changed = threading.Condition(self._lock)
+        self._sequence = 0
         self._thread: threading.Thread | None = None
         self._stop_evt = threading.Event()
 
         self._pending: list[dict[str, Any]] = []
         self._history: deque[dict[str, Any]] = deque(maxlen=max_keep)
+        # Raw PCM subscribers power the Realtime API without opening a second
+        # ALSA device or competing for the multicast source. Queues are bounded:
+        # fresh voice audio is useful; seconds-old audio after a slow network is not.
+        self._audio_subscribers: set[queue.Queue[bytes]] = set()
         self._on_stop: Callable[[str], None] | None = None
 
         self._frames = 0
@@ -785,12 +800,31 @@ class MicListener:
         self._last_audio_at: float | None = None
         self._error: str | None = None
 
+    @staticmethod
+    def _robot_is_speaking() -> bool:
+        """Use the firmware's measured playback state, not a duration guess."""
+        try:
+            from bridge.sdk.audio_msg import get_audio_msg_link
+
+            return get_audio_msg_link().is_playing()
+        except Exception:
+            # Playback telemetry is an enhancement to listening, not a reason to
+            # make the microphone thread fail closed forever.
+            return False
+
     # -- lifecycle -----------------------------------------------------------
 
+    def set_on_stop(self, on_stop: Callable[[str], None] | None) -> None:
+        """Arm/disarm session-scoped stop action without restarting the listener."""
+        self._on_stop = on_stop
+
     def start(self, on_stop: Callable[[str], None] | None = None) -> None:
+        # A Realtime audio subscriber may arrive after the boot-started listener.
+        # Updating the callback even when the thread is already alive lets that
+        # explicit session arm bridge-local spoken stop without restarting audio.
+        self.set_on_stop(on_stop)
         if self._thread is not None and self._thread.is_alive():
             return
-        self._on_stop = on_stop
         self._stop_evt.clear()
         self._thread = threading.Thread(target=self._run, name="mic-listener", daemon=True)
         self._thread.start()
@@ -837,6 +871,7 @@ class MicListener:
             ).start()
 
         utterance = bytearray()
+        suppressing_playback = False
         for frame in self._source():
             if self._stop_evt.is_set():
                 break
@@ -854,6 +889,31 @@ class MicListener:
                         self._on_stop(hit)
                     except Exception:
                         log.exception("mic_listener.on_stop_failed")
+
+            # The multicast mic hears the robot's own speaker. Feeding that back
+            # to the voice loop creates a recursive conversation: answer -> hear
+            # answer -> answer the answer. `rt/audio_msg` gives us the firmware's
+            # real playback state, so suppress ordinary transcription while it is
+            # active. Keep the independent stop detector above alive: a person
+            # shouting the emergency phrase must still be heard over playback.
+            if self._playback_active():
+                utterance.clear()
+                if not suppressing_playback:
+                    reset = getattr(transcriber, "reset", None)
+                    if reset is not None:
+                        reset()
+                    log.info("mic_listener.playback_suppressed")
+                suppressing_playback = True
+                continue
+            if suppressing_playback:
+                # Start the post-playback utterance with a clean decoder too; the
+                # playback-state edge and audio packets are not synchronized.
+                reset = getattr(transcriber, "reset", None)
+                if reset is not None:
+                    reset()
+                suppressing_playback = False
+
+            self._publish_audio(frame)
 
             current = self._whisperer
             if current is not None:
@@ -890,8 +950,14 @@ class MicListener:
                 return
 
     def _record(self, text: str, kind: str) -> None:
-        item = {"text": text, "kind": kind, "at": time.monotonic()}
-        with self._lock:
+        with self._changed:
+            self._sequence += 1
+            item = {
+                "text": text,
+                "kind": kind,
+                "at": time.monotonic(),
+                "_seq": self._sequence,
+            }
             if kind == "speech":
                 self._utterances += 1
             self._pending.append(item)
@@ -900,22 +966,97 @@ class MicListener:
             # able to grow this without limit while somebody talks at the robot.
             if len(self._pending) > self._max_keep:
                 del self._pending[: -self._max_keep]
+            self._changed.notify_all()
 
     # -- reading -------------------------------------------------------------
+
+    def _publish_audio(self, frame: bytes) -> None:
+        with self._lock:
+            subscribers = tuple(self._audio_subscribers)
+        for subscriber in subscribers:
+            try:
+                subscriber.put_nowait(frame)
+            except queue.Full:
+                # Drop the oldest frame and keep the live edge. Backpressure must
+                # never grow memory or make the stop detector wait on OpenAI.
+                try:
+                    subscriber.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    subscriber.put_nowait(frame)
+                except queue.Full:
+                    pass
+
+    def audio_frames(self, stop: threading.Event, max_frames: int = 64) -> Iterator[bytes]:
+        """Yield non-playback 16 kHz PCM to one bounded, removable subscriber."""
+        subscriber: queue.Queue[bytes] = queue.Queue(maxsize=max_frames)
+        with self._lock:
+            self._audio_subscribers.add(subscriber)
+        try:
+            while not stop.is_set():
+                try:
+                    yield subscriber.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+        finally:
+            with self._lock:
+                self._audio_subscribers.discard(subscriber)
+
+    @staticmethod
+    def _readable(item: dict[str, Any], now: float, *, sequenced: bool = False) -> dict[str, Any]:
+        readable = {key: value for key, value in item.items() if key != "_seq"}
+        readable["age_s"] = round(now - item["at"], 2)
+        if sequenced:
+            readable["seq"] = item["_seq"]
+        return readable
+
+    def sequence(self) -> int:
+        """The latest recorded sequence, for starting a non-consuming wait."""
+        with self._lock:
+            return self._sequence
+
+    def wait_for_next(
+        self, after_sequence: int, timeout: float | None = None
+    ) -> dict[str, Any] | None:
+        """Wait for the oldest retained item newer than ``after_sequence``.
+
+        Unlike :meth:`poll`, this never consumes an item. Multiple HTTP clients
+        can therefore follow the same stream while the agent retains exclusive
+        consuming semantics. History remains bounded by ``max_keep``; a lagging
+        client resumes at the oldest item still retained.
+        """
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._changed:
+            while True:
+                item = next(
+                    (candidate for candidate in self._history if candidate["_seq"] > after_sequence),
+                    None,
+                )
+                if item is not None:
+                    return self._readable(item, time.monotonic(), sequenced=True)
+
+                if deadline is None:
+                    self._changed.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._changed.wait(remaining)
 
     def poll(self) -> list[dict[str, Any]]:
         """Everything heard since the last poll. Returns immediately, always."""
         now = time.monotonic()
         with self._lock:
             items, self._pending = self._pending, []
-        return [{**i, "age_s": round(now - i["at"], 2)} for i in items]
+        return [self._readable(i, now) for i in items]
 
     def recent(self, seconds: float = 30.0) -> list[dict[str, Any]]:
         """Recent history WITHOUT consuming it — for a second look at context."""
         now = time.monotonic()
         with self._lock:
             items = [i for i in self._history if now - i["at"] <= seconds]
-        return [{**i, "age_s": round(now - i["at"], 2)} for i in items]
+        return [self._readable(i, now) for i in items]
 
     def diagnostics(self) -> dict[str, Any]:
         now = time.monotonic()

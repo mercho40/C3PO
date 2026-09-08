@@ -281,7 +281,7 @@ def assess(
         # window. Reporting it as a problem would train people to ignore this.
         checks.append(Check("perception", "running by hand: {}".format(" ".join(running))))
     else:
-        checks.append(Check("perception", "no stage enabled (sensors are the other team's)"))
+        checks.append(Check("perception", "off (no sensor is claimed by C3PO)"))
 
     gemm = [c for c in gemm_containers if c]
     checks.append(
@@ -305,40 +305,15 @@ def render(report: Report, colour: bool = False) -> str:
     return "\n".join(lines)
 
 
-def repairs_for(report: Report) -> List[str]:
-    """Unit names worth restarting, in order. Empty when nothing is broken.
-
-    Separated from the acting so `--repair` can be tested without a systemd.
-    Only ever restarts what the report calls a problem, and never invents a
-    target for a problem it cannot fix — 'the gate is armed' is not a fault to
-    repair, it is a fact to report.
-    """
-    units: List[str] = []
-    for check in report.checks:
-        if not check.problem:
-            continue
-        if check.name == "bridge":
-            units.append("c3po-bridge")
-        elif check.name.startswith("perception (") and "NO CONTAINERS" in check.detail:
-            stage = check.name[len("perception (") : -1]
-            units.append("c3po-perception@{}".format(stage))
-    return units
-
-
 def probe_and_assess(
     *,
     read_pid: Callable[[], Optional[int]],
     http_get: Callable[[str], Optional[str]],
-    list_units: Callable[[], Sequence[str]],
     docker_ps: Callable[[str], Sequence[str]],
     port: int = 8001,
     list_binds: Optional[Callable[[int], Sequence[str]]] = None,
 ) -> Report:
     """Run the probes, then assess. The only place the two are joined."""
-    stage: Optional[str] = None
-    for unit in list_units():
-        if unit.startswith("c3po-perception@") and unit.endswith(".service"):
-            stage = unit[len("c3po-perception@") : -len(".service")]
     return assess(
         bridge_pid=read_pid(),
         gate_json=http_get("http://127.0.0.1:{}/telemetry/gate".format(port)),
@@ -347,7 +322,18 @@ def probe_and_assess(
         # ring", which is exactly right. The 503's own reason is for the
         # console, which has room to print it.
         scan_json=http_get("http://127.0.0.1:{}/telemetry/scan".format(port)),
-        enabled_stage=stage,
+        # None, and correctly so on this architecture. The stage used to be
+        # read back from an enabled `c3po-perception@<stage>.service`; main
+        # moved perception off per-stage units (2026-09), so there is no unit
+        # to ask and nothing here can know which stage is running.
+        #
+        # That lands the ring check in its "nav up, stage not known" branch,
+        # which is a NOTE rather than a fault — the branch written for exactly
+        # this case, because `perception_up` by hand enables no unit either and
+        # calling a correctly-running `odometry` broken would put a red line on
+        # a healthy stack. `assess()` keeps the parameter: the tests exercise
+        # every branch through it, and a caller that does know can pass it.
+        enabled_stage=None,
         perception_containers=docker_ps("^c3po-perception"),
         gemm_containers=docker_ps("^gemm"),
         port=port,
@@ -358,25 +344,18 @@ def probe_and_assess(
 # --- the command ------------------------------------------------------------
 
 
-def _read_pid(path: str) -> Optional[int]:
-    """The pid in the pidfile, if that process is alive.
+def _service_main_pid(unit: str) -> Optional[int]:
+    """The systemd-owned main pid, or None when the unit is inactive/unknown.
 
-    A stale pidfile after an unclean shutdown must not read as "running" — the
-    robot has produced exactly that, and a health check that believes it is the
-    least useful moment to be wrong.
+    The bridge has one lifecycle owner now. Reading MainPID avoids recreating a
+    second source of truth in ~/.c3po/run and cannot go stale across a restart.
     """
-    import os
-
+    raw = _run(["systemctl", "show", "--property=MainPID", "--value", unit]).strip()
     try:
-        with open(path) as fh:
-            pid = int((fh.read() or "").strip())
-    except (OSError, ValueError):
+        pid = int(raw)
+    except ValueError:
         return None
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return None
-    return pid
+    return pid if pid > 0 else None
 
 
 def _http_get(url: str, timeout: float = 5.0) -> Optional[str]:
@@ -429,20 +408,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     import sys
 
     args = list(sys.argv[1:] if argv is None else argv)
-    repair = "--repair" in args
+    if args:
+        print("usage: c3po status", file=sys.stderr)
+        return 2
     port = int(os.environ.get("BRIDGE_PORT", "8001"))
-    run_dir = os.environ.get("C3PO_RUN_DIR", os.path.expanduser("~/.c3po/run"))
 
     report = probe_and_assess(
-        read_pid=lambda: _read_pid(os.path.join(run_dir, "bridge.pid")),
+        read_pid=lambda: _service_main_pid("c3po-bridge.service"),
         http_get=_http_get,
-        list_units=lambda: [
-            line.split()[0]
-            for line in _run(
-                ["systemctl", "list-units", "--no-legend", "c3po-perception@*.service"]
-            ).splitlines()
-            if line.split()
-        ],
         docker_ps=lambda prefix: [
             name
             for name in _run(
@@ -455,17 +428,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     print(render(report, colour=sys.stdout.isatty()))
-
-    if repair:
-        units = repairs_for(report)
-        if not units:
-            print("\n  nothing to repair")
-        for unit in units:
-            print("\n  restarting {}".format(unit))
-            if _run(["systemctl", "restart", unit]) == "" and os.geteuid() != 0:
-                # systemctl is silent on success AND on a permission failure, so
-                # say what is likely rather than claiming it worked.
-                print("    (needs root if that had no effect: sudo systemctl restart {})".format(unit))
 
     return 0 if report.healthy else 1
 

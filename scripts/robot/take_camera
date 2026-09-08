@@ -98,7 +98,7 @@ fi
 # bring-up that needed the camera.
 # ASK ABOUT THE ACTUAL COMMAND, not about sudo in general. `sudo -n true` tests
 # whether we may run ANYTHING without a password, which stays false under the
-# narrow grant in c3po-camera.sudoers — that authorises exactly two commands and
+# narrow camera grants in c3po.sudoers — those authorise exactly two commands and
 # nothing else. Testing the wrong thing here would make the grant look like it
 # had not been installed. `sudo -l <cmd>` answers the question actually being
 # asked: may I run THIS, unattended?

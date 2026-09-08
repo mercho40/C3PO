@@ -61,7 +61,7 @@ mock.module("@back/skills", () => ({
   })),
 }));
 
-const { buildSystemPrompt } = await import("./runtime");
+const { agentToolExclusions, buildSystemPrompt } = await import("./runtime");
 
 describe("buildSystemPrompt", () => {
   test("does not hardcode a specific sim/real environment", async () => {
@@ -76,6 +76,24 @@ describe("buildSystemPrompt", () => {
     const prompt = await buildSystemPrompt();
     expect(prompt.toLowerCase()).toContain("get_state");
     expect(prompt).toContain("env");
+  });
+
+  test("voice mode is conversational and does not treat speech as a command", async () => {
+    const prompt = await buildSystemPrompt("voice");
+    expect(prompt).toContain("spoken conversation");
+    expect(prompt).toContain("normally need no tool");
+    expect(prompt).toContain("clearly asks");
+    expect(prompt).toContain("exact words you want spoken");
+    expect(prompt).toContain("call the matching tool in this same");
+    expect(prompt).toContain("Do not invent");
+    expect(prompt).toContain("garbled or incoherent");
+  });
+
+  test("the voice host exclusively owns listening and speaking", () => {
+    const excluded = agentToolExclusions("voice");
+    expect(excluded.has("listen")).toBe(true);
+    expect(excluded.has("say")).toBe(true);
+    expect(agentToolExclusions("operator").size).toBe(0);
   });
 
   test("every skill is listed with its actual sim/real availability tag", async () => {

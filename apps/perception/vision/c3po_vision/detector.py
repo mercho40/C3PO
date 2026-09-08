@@ -77,7 +77,7 @@ import os
 import signal
 import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence
 
 # Stdlib-only at module scope (Pillow and numpy are lazy inside it), so this
 # import keeps the "importable on a Mac" property the docstring above claims.
@@ -191,7 +191,7 @@ def log(event: str, **fields: Any) -> None:
     sys.stderr.flush()
 
 
-def load_labels(path: str) -> List[str]:
+def load_labels(path: str) -> list[str]:
     """One class name per line, in the model's class-index order.
 
     Missing file is NOT fatal: an unlabelled detection still has a range and a
@@ -242,7 +242,7 @@ class RealSenseSource:
         self._rs: Any = None
         self._pipeline: Any = None
         self._align: Any = None
-        self.intrinsics: Optional[Intrinsics] = None
+        self.intrinsics: Intrinsics | None = None
         self.depth_scale = 0.001
 
     def start(self) -> None:
@@ -273,7 +273,7 @@ class RealSenseSource:
             fy=round(intr.fy, 1), ppx=round(intr.ppx, 1), ppy=round(intr.ppy, 1),
             depth_scale=self.depth_scale)
 
-    def read(self) -> Tuple[Any, Any]:
+    def read(self) -> tuple[Any, Any]:
         """(colour BGR HxWx3 uint8, depth HxW uint16). Raises on timeout.
 
         Raising is deliberate — see `run()`. A timed-out frame is "did not
@@ -328,7 +328,7 @@ class SyntheticSource:
             width=COLOR_W, height=COLOR_H,
         )
         self.depth_scale = 0.001
-        self._frame: Optional[List[List[int]]] = None
+        self._frame: list[list[int]] | None = None
         self._tick = 0
 
     def start(self) -> None:
@@ -342,11 +342,11 @@ class SyntheticSource:
         log("synthetic.ready", objects=len(self.SCENE), w=COLOR_W, h=COLOR_H,
             note="no camera, no CUDA — Stage 3")
 
-    def read(self) -> Tuple[Any, Any]:
+    def read(self) -> tuple[Any, Any]:
         self._tick += 1
         return None, self._frame
 
-    def boxes(self) -> List[Tuple[int, float, Tuple[float, float, float, float]]]:
+    def boxes(self) -> list[tuple[int, float, tuple[float, float, float, float]]]:
         """Detections for this tick, as (class_index, confidence, box).
 
         Every fourth tick is EMPTY on purpose. `objects: []` with the heartbeat
@@ -361,7 +361,7 @@ class SyntheticSource:
             out.append((i, conf, (float(x0), float(y0), float(x1), float(y1))))
         return out
 
-    def labels(self) -> List[str]:
+    def labels(self) -> list[str]:
         return [entry[0] for entry in self.SCENE]
 
     def close(self) -> None:
@@ -500,12 +500,12 @@ class TensorRTDetector:
         # Static shapes throughout: the export is dynamic=False, batch=1, which
         # is what lets this use execute_v2 and a single pair of fixed device
         # allocations rather than the enqueueV3 machinery.
-        self._bindings: List[int] = []
-        self._host: Dict[int, Any] = {}
-        self._device: Dict[int, Any] = {}
+        self._bindings: list[int] = []
+        self._host: dict[int, Any] = {}
+        self._device: dict[int, Any] = {}
         # Discovered as Optional, then STORED AS int once proven. The check
-        # below already guarantees both are set before anything calls `infer`
-        # — but it lives in a different method from every use, so the
+        # after the loop already guarantees both are set before anything calls
+        # `infer` — but it lives in a different method from every use, so the
         # guarantee was invisible: `self._host[self._input_index]` is a dict
         # indexed by a value typed `int | None`, four times, in the hot loop.
         # Narrowing here turns "we checked once, trust us" into the type.
@@ -538,7 +538,7 @@ class TensorRTDetector:
 
     # -- preprocessing ------------------------------------------------------
 
-    def letterbox(self, image: Any) -> Tuple[Any, float, int, int]:
+    def letterbox(self, image: Any) -> tuple[Any, float, int, int]:
         """BGR HxWx3 uint8 -> NCHW float32 in [0, 1], plus the inverse mapping.
 
         Returns (blob, scale, pad_x, pad_y) where a model-space coordinate maps
@@ -586,7 +586,7 @@ class TensorRTDetector:
 
     # -- inference ----------------------------------------------------------
 
-    def infer(self, image: Any) -> List[Tuple[int, float, Tuple[float, float, float, float]]]:
+    def infer(self, image: Any) -> list[tuple[int, float, tuple[float, float, float, float]]]:
         """One colour frame -> [(class_index, confidence, (x0, y0, x1, y1))].
 
         Boxes come back in COLOUR-IMAGE pixels, which is the frame grounding.py
@@ -625,7 +625,7 @@ class TensorRTDetector:
         *,
         width: int,
         height: int,
-    ) -> List[Tuple[int, float, Tuple[float, float, float, float]]]:
+    ) -> list[tuple[int, float, tuple[float, float, float, float]]]:
         """YOLO11's raw head -> boxes in colour-image pixels, after class-wise NMS.
 
         The head is (1, 4 + num_classes, num_anchors) — cx, cy, w, h in NETWORK
@@ -672,7 +672,7 @@ class TensorRTDetector:
         x1 = x1.clip(0, width - 1)
         y1 = y1.clip(0, height - 1)
 
-        out: List[Tuple[int, float, Tuple[float, float, float, float]]] = []
+        out: list[tuple[int, float, tuple[float, float, float, float]]] = []
         for cls in np.unique(class_ids):
             idx = np.where(class_ids == cls)[0]
             kept = self._nms(x0[idx], y0[idx], x1[idx], y1[idx], scores[idx], NMS_IOU)
@@ -685,7 +685,7 @@ class TensorRTDetector:
         out.sort(key=lambda d: d[1], reverse=True)
         return out
 
-    def _nms(self, x0: Any, y0: Any, x1: Any, y1: Any, scores: Any, iou: float) -> List[int]:
+    def _nms(self, x0: Any, y0: Any, x1: Any, y1: Any, scores: Any, iou: float) -> list[int]:
         """Greedy IoU suppression within one class. Plain numpy, ~microseconds.
 
         Class-wise, not global: a chair overlapping a person is two objects, and
@@ -694,7 +694,7 @@ class TensorRTDetector:
         np = self._np
         areas = (x1 - x0 + 1.0) * (y1 - y0 + 1.0)
         order = scores.argsort()[::-1]
-        keep: List[int] = []
+        keep: list[int] = []
         while order.size > 0:
             i = int(order[0])
             keep.append(i)
@@ -806,7 +806,7 @@ class ObjectsPublisher:
         )
         log("dds.ready", domain=self._domain_id, topic=self._topic_name, qos="reliable")
 
-    def publish(self, payload: Dict[str, Any]) -> None:
+    def publish(self, payload: dict[str, Any]) -> None:
         self._writer.write(self._String(data=json.dumps(payload, separators=(",", ":"))))
 
 
@@ -821,7 +821,7 @@ class StdoutPublisher:
     def start(self) -> None:
         log("dds.skipped", reason="C3PO_VISION_DRY_RUN=1", output="stdout")
 
-    def publish(self, payload: Dict[str, Any]) -> None:
+    def publish(self, payload: dict[str, Any]) -> None:
         sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
         sys.stdout.flush()
 
@@ -831,7 +831,7 @@ class StdoutPublisher:
 # --------------------------------------------------------------------------
 
 
-def build_report(objects: List[Dict[str, Any]], omitted: int, stamp: float) -> Dict[str, Any]:
+def build_report(objects: list[dict[str, Any]], omitted: int, stamp: float) -> dict[str, Any]:
     """The published payload. Pure, so its shape is checkable without a camera.
 
     `objects` are already `Observation.to_dict()`-shaped (grounding.to_observation
@@ -848,13 +848,13 @@ def build_report(objects: List[Dict[str, Any]], omitted: int, stamp: float) -> D
 
 
 def ground_all(
-    detections: Sequence[Tuple[int, float, Tuple[float, float, float, float]]],
+    detections: Sequence[tuple[int, float, tuple[float, float, float, float]]],
     depth: Any,
     intrinsics: Intrinsics,
     extrinsic: CameraExtrinsic,
     labels: Sequence[str],
     depth_scale: float,
-) -> Tuple[List[Dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int]:
     """2-D detections -> wire objects. Returns (objects, omitted).
 
     Ordering is by range, NEAREST FIRST, before the cap: if anything has to be
@@ -865,7 +865,7 @@ def ground_all(
     0 — that would be an obstacle materialising inside the robot. Dropping one
     detection is not the same as an empty scene, and the tick still publishes.
     """
-    grounded: List[Tuple[float, Dict[str, Any]]] = []
+    grounded: list[tuple[float, dict[str, Any]]] = []
     for class_id, confidence, box in detections:
         g = ground_box(
             box, depth, intrinsics,

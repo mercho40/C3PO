@@ -1,7 +1,7 @@
 """Supervised first-motion ladder for the VR teleop path.
 
 Run this **standing next to the robot, with the physical e-stop in reach**,
-against a bridge already running onboard (`run_c3po`) and reached over the SSH
+against a bridge already running onboard (`c3po start`) and reached over the SSH
 tunnel. It walks the escalation in the only order that makes sense — read
 before write, arms before legs, smallest possible motion before anything
 sustained — and stops dead on the first failure.
@@ -244,7 +244,7 @@ async def main() -> int:
         print(f"\nERROR: {innermost(exc)!r}")
         print(
             "If this is a connection error, check the SSH tunnel is up and the\n"
-            "bridge is running onboard (`run_c3po`). Note the port differs by\n"
+            "bridge is running onboard (`c3po start`). Note the port differs by\n"
             "target: 8001 onboard, 8000 for a locally-run bridge."
         )
         return 2

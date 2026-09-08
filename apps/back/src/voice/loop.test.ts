@@ -140,6 +140,63 @@ describe("VoiceLoop", () => {
     expect(loop.snapshot().running).toBe(false);
   });
 
+  test("event input reaches the agent without polling listen", async () => {
+    const calls: string[] = [];
+    const heard: string[] = [];
+    const loop = new VoiceLoop({
+      callTool: async (name) => {
+        calls.push(name);
+        return { status: "ok" };
+      },
+      runAgent: async (text) => {
+        heard.push(text);
+      },
+      inputStatus: async () => ({
+        mic_ever_open: true,
+        always_listening: false,
+      }),
+      events: async function* (signal) {
+        yield { seq: 7, kind: "speech", text: "hola C3PO" };
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      },
+      sleep: async () => {},
+    });
+    loop.start();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await loop.stop();
+    expect(heard).toEqual(["hola C3PO"]);
+    expect(calls).not.toContain("listen");
+    expect(loop.snapshot().micEverOpen).toBe(true);
+  });
+
+  test("stop events bypass the agent on the event-driven path", async () => {
+    const calls: string[] = [];
+    const heard: string[] = [];
+    const loop = new VoiceLoop({
+      callTool: async (name) => {
+        calls.push(name);
+        return { status: "ok" };
+      },
+      runAgent: async (text) => {
+        heard.push(text);
+      },
+      events: async function* (signal) {
+        yield { seq: 8, kind: "stop", text: "emergencia" };
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      },
+      sleep: async () => {},
+    });
+    loop.start();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await loop.stop();
+    expect(calls).toContain("stop_everything");
+    expect(heard).toEqual([]);
+  });
+
   test("agent runs never overlap", async () => {
     // The next poll must not start a second turn while the first is thinking.
     // listen() buffers, so nothing said meanwhile is lost.

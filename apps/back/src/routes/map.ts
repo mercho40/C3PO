@@ -30,7 +30,7 @@
 
 import { Elysia } from "elysia";
 
-import { telemetryUrl } from "@back/bridge/url";
+import { bridgeSiblingUrl } from "../bridge/url";
 
 /** Placement metadata the bridge attaches, so the console can georeference the image. */
 const FORWARDED_HEADERS = [
@@ -49,7 +49,7 @@ export const mapRoutes = new Elysia().get(
   async ({ status }) => {
     let upstream: Response;
     try {
-      upstream = await fetch(telemetryUrl("/telemetry/costmap.png"), {
+      upstream = await fetch(bridgeSiblingUrl("/telemetry/costmap.png"), {
         // Short: at 1 Hz a slow map is a stale map, and the console would
         // rather be told "no map" than block a poll cycle waiting for one.
         signal: AbortSignal.timeout(3000),

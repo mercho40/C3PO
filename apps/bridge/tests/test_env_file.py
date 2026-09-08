@@ -1,7 +1,7 @@
 """`.env` parsing, including the line that makes systemd's own loader wrong.
 
 This exists so the bridge can be started directly by a unit file instead of
-through `run_c3po`, which sources `.env` in a shell. Everything here is about
+through the old shell launcher. Everything here is about
 matching what `set -a; . ./.env` does closely enough that moving the
 responsibility changes no behaviour.
 """

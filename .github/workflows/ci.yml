@@ -7,7 +7,7 @@ on:
 
 jobs:
   typescript:
-    name: TypeScript — type-check
+    name: TypeScript and shell — checks and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,9 +59,15 @@ jobs:
           bun run check-types --
           --filter='!@repo/bridge' --filter='!@repo/perception'
 
-      - name: apps/back unit tests
-        working-directory: apps/back
-        run: bun test
+      # The shell suite runs shellcheck when available. Install it explicitly so
+      # CI never reports a skipped static-analysis gate as a pass.
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      # Keep package tests behind Turbo so local and CI task selection use the
+      # same package boundaries and cache keys.
+      - name: back, web, and robot-script tests
+        run: bun run test -- --filter=@repo/back --filter=@repo/web --filter=@repo/robot-scripts
 
       # THE HEADSET'S TESTS WERE NOT RUN BY ANYTHING UNTIL 2026-08-27.
       #
@@ -150,6 +156,26 @@ jobs:
         working-directory: apps/perception
         run: uv run --project . mypy vision bringup nav
 
+  perception:
+    name: Perception — lint and pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Install perception test harness
+        working-directory: apps/perception
+        run: uv sync --frozen --group dev
+
+      - name: ruff
+        working-directory: apps/perception
+        run: uv run ruff check .
+
+      - name: pytest
+        working-directory: apps/perception
+        run: uv run pytest -v
+
   bridge:
     name: Bridge — lint, type-check, pytest
     runs-on: ubuntu-latest
@@ -183,7 +209,7 @@ jobs:
 
       - name: Install bridge deps
         working-directory: apps/bridge
-        run: uv sync --group dev
+        run: uv sync --frozen --group dev
 
       - name: Apply unitree_sdk2py patch
         working-directory: apps/bridge

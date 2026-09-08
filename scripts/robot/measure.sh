@@ -11,7 +11,6 @@
 # Run it alongside whatever stage is already up.
 
 set -euo pipefail
-here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 C3PO_DIR="${C3PO_DIR:-$HOME/c3po}"
 export C3PO_DIR

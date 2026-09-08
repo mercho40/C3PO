@@ -2,8 +2,8 @@
 # Bring up perception. The logic lives in apps/perception/bringup/ — this is a
 # shim, and deliberately the only shell left in the path.
 #
-# It stays a file on PATH because that is what a person at the robot types and
-# what systemd's ExecStart names. Everything below the exec is Python with tests
+# It remains a narrow internal file because systemd's ExecStart and the `c3po`
+# CLI both delegate here. Everything below the exec is Python with tests
 # (apps/perception/tests/test_bringup_{spec,cli}.py), because the 381 lines this
 # replaced could only be exercised by running them on the robot and watching
 # what the other team lost.

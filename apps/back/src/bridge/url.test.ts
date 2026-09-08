@@ -7,8 +7,8 @@
  * processes visibly healthy". A one-character mistake that looks like a dead
  * robot.
  *
- * The fallback for it used to be written out in three files and the
- * `telemetryUrl` helper in two, verbatim. Nothing made them agree.
+ * The fallback for it used to be written out in three files and the derivation
+ * helper in two, verbatim. Nothing made them agree.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -18,15 +18,15 @@ import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_BRIDGE_URL,
+  bridgeSiblingUrl,
   bridgeUrl,
-  telemetryUrl,
   unreachableHint,
 } from "./url";
 
-const SRC = fileURLToPath(new URL("..", import.meta.url));
-
-/** What must appear once. Test files are excluded from the scan below. */
-const LITERAL = "127.0.0.1:8000/mcp";
+// `fileURLToPath`, not `.pathname`: this repository lives under a directory
+// with spaces in its name, which `.pathname` returns percent-encoded.
+const SRC = fileURLToPath(new URL("../", import.meta.url));
+const LITERAL = DEFAULT_BRIDGE_URL;
 
 /**
  * Source with comments removed.
@@ -52,12 +52,12 @@ function sourceFiles(dir: string, found: string[] = []): string[] {
   return found;
 }
 
-describe("bridge URL", () => {
+describe("bridge URL configuration", () => {
   test("the default literal appears in exactly one source file", () => {
     // The point of the whole module. If this fails, somebody has written the
     // address out again somewhere and the two can now drift — which is the
-    // failure that took a day out of the headset session when the camera port
-    // moved from 8081 to 8001 and one of the two places that knew did not.
+    // failure that cost a headset session when the camera port moved from 8081
+    // to 8001 and only one of the two places that knew about it was updated.
     //
     // Comments stripped: prose that MENTIONS the address is not a second copy
     // that can drift, and a docstring explaining the rule should not fail the
@@ -68,7 +68,22 @@ describe("bridge URL", () => {
     expect(holders.map((f) => f.slice(SRC.length))).toEqual(["bridge/url.ts"]);
   });
 
-  test("falls back to the local bridge when nothing is set", () => {
+  test("defaults to the robot's port, not a local bridge's", () => {
+    // 8001 is what the deployed bridge listens on and what the documented
+    // tunnel forwards. A developer running locally on 8000 sets BRIDGE_URL;
+    // the robot works unconfigured, which is the case that matters when
+    // something is already going wrong.
+    expect(DEFAULT_BRIDGE_URL).toBe("http://127.0.0.1:8001/mcp");
+    expect(bridgeUrl("")).toBe(DEFAULT_BRIDGE_URL);
+  });
+
+  test("honours an explicit endpoint", () => {
+    expect(bridgeUrl("http://bridge.test:9000/mcp")).toBe(
+      "http://bridge.test:9000/mcp",
+    );
+  });
+
+  test("falls back to the default when the environment is unset", () => {
     const saved = process.env.BRIDGE_URL;
     delete process.env.BRIDGE_URL;
     try {
@@ -78,60 +93,23 @@ describe("bridge URL", () => {
     }
   });
 
-  test("the environment wins when it is set", () => {
-    const saved = process.env.BRIDGE_URL;
-    process.env.BRIDGE_URL = "http://127.0.0.1:8001/mcp";
-    try {
-      expect(bridgeUrl()).toBe("http://127.0.0.1:8001/mcp");
-    } finally {
-      if (saved === undefined) delete process.env.BRIDGE_URL;
-      else process.env.BRIDGE_URL = saved;
-    }
-  });
-
-  test("telemetry paths are siblings of /mcp, on the same origin", () => {
-    // Derived rather than configured separately: a second env var for the
-    // telemetry origin is a second thing to get wrong, pointing at the same
-    // process.
-    const saved = process.env.BRIDGE_URL;
-    process.env.BRIDGE_URL = "http://127.0.0.1:8001/mcp";
-    try {
-      expect(telemetryUrl("/telemetry/scan")).toBe(
-        "http://127.0.0.1:8001/telemetry/scan",
-      );
-    } finally {
-      if (saved === undefined) delete process.env.BRIDGE_URL;
-      else process.env.BRIDGE_URL = saved;
-    }
-  });
-
-  test("a query string on the bridge URL does not leak into telemetry", () => {
-    // These endpoints are proxied. A caller's parameters belong to the proxy,
-    // and forwarding a stray `?token=` upstream would be a surprise.
-    const saved = process.env.BRIDGE_URL;
-    process.env.BRIDGE_URL = "http://127.0.0.1:8000/mcp?session=abc";
-    try {
-      expect(telemetryUrl("/telemetry/gate")).toBe(
-        "http://127.0.0.1:8000/telemetry/gate",
-      );
-    } finally {
-      if (saved === undefined) delete process.env.BRIDGE_URL;
-      else process.env.BRIDGE_URL = saved;
-    }
+  test("derives sibling routes without carrying MCP query state", () => {
+    expect(
+      bridgeSiblingUrl(
+        "/telemetry/voice",
+        "http://bridge.test:9000/mcp?session=stale",
+      ),
+    ).toBe("http://bridge.test:9000/telemetry/voice");
   });
 
   test("the robot's port survives the round trip unchanged", () => {
     // The specific mistake `.env.example` warns about is 8000 vs 8001. If the
     // derivation ever normalised or defaulted the port away, a console aimed
     // at the robot would silently talk to a local bridge instead.
-    const saved = process.env.BRIDGE_URL;
-    process.env.BRIDGE_URL = "http://127.0.0.1:8001/mcp";
-    try {
-      expect(new URL(telemetryUrl("/telemetry/scan")).port).toBe("8001");
-    } finally {
-      if (saved === undefined) delete process.env.BRIDGE_URL;
-      else process.env.BRIDGE_URL = saved;
-    }
+    expect(
+      new URL(bridgeSiblingUrl("/telemetry/scan", "http://127.0.0.1:8001/mcp"))
+        .port,
+    ).toBe("8001");
   });
 });
 

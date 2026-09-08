@@ -3,12 +3,12 @@
  *
  * WHY THIS FILE EXISTS
  *
- * The default `http://127.0.0.1:8000/mcp` was written out three times —
- * `bridge/client.ts`, `routes/map.ts`, `routes/telemetry.ts` — and the
- * `telemetryUrl` helper twice, verbatim, in the two route files.
+ * The bridge's address was written out three times — `bridge/client.ts`,
+ * `routes/map.ts`, `routes/telemetry.ts` — and the path-derivation helper twice,
+ * verbatim, in the two route files.
  *
- * That is worth consolidating here rather than anywhere else because of what
- * `apps/back/.env.example` already says about this exact value, at length:
+ * That is worth consolidating because of what `apps/back/.env.example` already
+ * says about this exact value, at length:
  *
  *     THE PORT DIFFERS BY TARGET, and the two are one character apart:
  *       8000 — a locally-run bridge
@@ -18,10 +18,14 @@
  *     which presents as "bridge_unavailable" with both processes visibly
  *     healthy.
  *
- * A one-character mistake with a symptom that looks like a dead robot, and the
- * fallback for it was written down three times. One of those copies drifting
- * is the same shape of failure as the camera port that moved from 8081 to 8001
- * while `quest_setup.sh` kept forwarding the old one.
+ * A one-character mistake with a symptom that looks like a dead robot.
+ *
+ * THE DEFAULT IS 8001, THE ROBOT'S. Both branches consolidated this file
+ * independently and picked different defaults; 8001 is the right one, because
+ * it is the port the deployed bridge actually listens on and the one the
+ * documented tunnel forwards. A developer running a local bridge on 8000 sets
+ * BRIDGE_URL; the robot — the case that matters when something is wrong — works
+ * without configuration.
  *
  * NOT IN `lib/env.ts`, DELIBERATELY, FOR TWO REASONS.
  *
@@ -38,28 +42,31 @@
  * about.
  */
 
-/** The local-bridge default. Not the robot's — see the note above. */
-export const DEFAULT_BRIDGE_URL = "http://127.0.0.1:8000/mcp";
+/** The bridge's MCP endpoint as deployed — the robot, over the tunnel. */
+export const DEFAULT_BRIDGE_URL = "http://127.0.0.1:8001/mcp";
 
-/** The bridge's MCP endpoint, from the environment or the default. */
-export function bridgeUrl(): string {
-  return process.env.BRIDGE_URL ?? DEFAULT_BRIDGE_URL;
+/** Resolve the MCP endpoint without duplicating its deployment default. */
+export function bridgeUrl(configured = process.env.BRIDGE_URL): string {
+  return configured || DEFAULT_BRIDGE_URL;
 }
 
 /**
- * A bridge telemetry route, derived from the MCP endpoint.
+ * Derive a read-only HTTP endpoint served beside `/mcp` on the bridge.
  *
- * `BRIDGE_URL` points at `…/mcp`; the telemetry routes are siblings of it, so
- * this rewrites the path rather than introducing a second env var that can
- * drift out of step with the first. The query string is dropped because these
- * are proxied endpoints and any caller's parameters belong to the proxy, not
- * to the upstream.
+ * `BRIDGE_URL` points at `…/mcp`; the telemetry, camera and voice routes are
+ * siblings of it, so this rewrites the path rather than introducing a second
+ * env var that can drift out of step with the first. The query string is
+ * dropped because these are proxied endpoints and any caller's parameters
+ * belong to the proxy, not to the upstream.
  */
-export function telemetryUrl(path: string): string {
-  const base = new URL(bridgeUrl());
-  base.pathname = path;
-  base.search = "";
-  return base.toString();
+export function bridgeSiblingUrl(
+  path: string,
+  configured = process.env.BRIDGE_URL,
+): string {
+  const url = new URL(bridgeUrl(configured));
+  url.pathname = path;
+  url.search = "";
+  return url.toString();
 }
 
 /** Hosts that need no tunnel to reach: this machine. */
@@ -75,7 +82,7 @@ const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
  *
  * That failure is indistinguishable from "the robot is off" at the point where
  * it surfaces: a 502 `bridge_unavailable` with both processes visibly healthy —
- * the exact symptom `url.ts` already exists to prevent one port typo from
+ * the exact symptom this module already exists to prevent one port typo from
  * causing. The difference is that this one has a fix that fits on one line, so
  * the line is printed rather than left to be rediscovered.
  *

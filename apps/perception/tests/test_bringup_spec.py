@@ -144,6 +144,20 @@ def test_nothing_restarts_itself(stage):
 
 
 @pytest.mark.parametrize("stage", sorted(STAGES))
+def test_container_logs_are_bounded_without_touching_the_shared_daemon(stage):
+    """A wedged ROS node must not fill the filesystem that also holds the bridge."""
+    for container in build(stage):
+        args = container.create_args()
+        assert args[args.index("--log-driver") + 1] == "json-file"
+        options = {
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "--log-opt"
+        }
+        assert options == {"max-file=3", "max-size=32m"}, container.name
+
+
+@pytest.mark.parametrize("stage", sorted(STAGES))
 def test_nothing_runs_privileged_or_on_a_bridge_network(stage):
     """This host also runs the process that can walk the legs.
 

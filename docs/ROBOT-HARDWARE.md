@@ -846,7 +846,7 @@ depth will not resolve, still needs the device.
 | `videohub_pc4` | `:8001/camera` | our detector | who typically causes it           |
 | -------------- | -------------- | ------------ | --------------------------------- |
 | alive          | **works**      | cannot start | nobody has taken the camera       |
-| killed         | dark, says why | **works**    | `take_camera`, or gemm's bring-up |
+| killed         | dark, says why | **works**    | `c3po camera take`, or gemm's bring-up |
 
 `scripts/robot/take_camera` is the one place that performs the swap, because stopping
 `master_service` is a change to a shared robot and not a bring-up step: it also carries the

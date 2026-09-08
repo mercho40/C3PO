@@ -20,7 +20,7 @@
 
 import { Elysia } from "elysia";
 
-import { telemetryUrl } from "@back/bridge/url";
+import { bridgeSiblingUrl } from "../bridge/url";
 
 /**
  * Proxy one JSON telemetry route.
@@ -37,7 +37,7 @@ async function proxyJson(
 ): Promise<unknown> {
   let upstream: Response;
   try {
-    upstream = await fetch(telemetryUrl(path), {
+    upstream = await fetch(bridgeSiblingUrl(path), {
       // Short on purpose: this is polled, and a slow answer is a stale answer.
       // The console would rather be told nothing arrived than block a cycle.
       signal: AbortSignal.timeout(3000),

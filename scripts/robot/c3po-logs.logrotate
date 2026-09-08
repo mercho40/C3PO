@@ -1,71 +1,23 @@
-# logrotate for ~/.c3po/logs on the robot.
+# Logs written as ordinary files by perception/build tooling. Installed as a
+# root-owned copy by install_stack.sh. Bridge logs live in journald and are
+# bounded by the OS journal policy; use `c3po logs` to follow them.
 #
-# Installed to /etc/logrotate.d/c3po by install_robot_scripts.sh, which is where
-# the distro's daily logrotate run will read it. Nothing else on this machine
-# bounds these files: bridge.log has been append-only since the stack controls
-# landed, and perception adds a Cyclone trace file that is written continuously
-# whenever a container is up.
-#
-# HARDCODED /home/unitree, ON PURPOSE. logrotate is run by root out of the
-# system timer, so it cannot expand $HOME, and a `/home/*/.c3po/...` glob would
-# make the `su` line below wrong for every other user it matched.
-# install_robot_scripts.sh refuses to install this if the checkout is not the
-# unitree user's — the same rule install_boot_unit.sh applies to the unit file.
-#
-# WHAT IS *NOT* COVERED, so this is not read as more than it is:
-#
-#   * Container stdout/stderr. `docker create` in perception_up sets no
-#     --log-opt, so both containers' streams land in the daemon's json-file
-#     driver under /var/lib/docker/containers/<id>/*-json.log — root-owned, not
-#     in this directory, and unbounded. logrotate must not be pointed at them:
-#     rotating a json log out from under a running daemon breaks `docker logs`
-#     for that container. Bounding them means --log-opt max-size on the
-#     container, or log-opts in the shared /etc/docker/daemon.json, and the
-#     second of those is the other team's file. Open decision.
-#   * ~/.c3po/logs/measure/. Those are timestamped per-run directories written
-#     by collectors that append for the length of a measurement; copytruncate
-#     across a live run would silently corrupt the sample set that the whole
-#     compute-budget verdict is computed from. They are finite and small — delete
-#     old ones by hand.
-#   * ~/.ros/log inside the containers. rcl's own logs live in the container
-#     filesystem and go away with `docker rm`.
+# Docker container stdout/stderr is also excluded: each C3PO container uses the
+# json-file driver with max-size=32m,max-file=3. Rotating Docker's files behind
+# the daemon would corrupt `docker logs`.
 
-/home/unitree/.c3po/logs/bridge.log
 /home/unitree/.c3po/logs/build/*.log
 /home/unitree/.c3po/logs/perception/*.log
 {
-    # Rotate as the owner, not as root. With copytruncate the rotated copy is
-    # created by whoever runs logrotate, and a directory of root-owned .gz files
-    # in a user's home is a small trap for the next person who tries to clean up
-    # over ssh without sudo.
     su unitree unitree
-
     daily
     rotate 7
-    # ...but not only daily. A wedged Nav2 or a Cyclone trace at `finest` can
-    # produce hundreds of MB between two runs of the daily timer, and this robot
-    # has one filesystem: filling / takes the bridge, and the bridge owns
-    # stop_everything.
     maxsize 64M
-
-    missingok       # every one of these paths is absent on a fresh robot
+    missingok
     notifempty
     compress
-    delaycompress   # keep the most recent rotation readable without zcat
+    delaycompress
 
-    # copytruncate, NOT create+rename. Nothing that writes here can be told to
-    # reopen its log:
-    #   * the bridge is nohup'd from run_c3po with no signal handler for it;
-    #   * Cyclone opens <OutputFile> once when the participant is created and
-    #     holds the fd for the life of the process.
-    # Renaming under either of them means the process keeps writing to an
-    # unlinked inode and the "rotated" log is the only one that ever grows again.
-    #
-    # The cost is the copy/truncate race — writes landing in that window are
-    # lost. That is acceptable here and it is bounded: run_c3po redirects with
-    # `>>`, so the fd is O_APPEND and post-truncate writes resume at offset 0
-    # rather than at the old offset. (A plain `>` redirect would leave a sparse
-    # file that reports its pre-rotation size again immediately, which looks
-    # exactly like logrotate having done nothing.)
+    # Cyclone opens its trace output once and cannot be told to reopen it.
     copytruncate
 }

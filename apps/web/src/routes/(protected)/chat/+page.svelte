@@ -386,26 +386,33 @@
       </div>
     {/if}
 
-    <PromptInput.Root
-      onSubmit={(message) => send(message.text)}
-      class="panel shadow-none"
-    >
-      <PromptInput.Body>
-        <PromptInput.Textarea
-          placeholder="Enviá un mensaje…"
-          class="text-sm text-ink placeholder:text-ink-mute"
-        />
-        <PromptInput.Toolbar class="border-t border-hairline px-3 py-2">
-          <span class="hidden readout sm:inline">
-            Enter para enviar · Shift + Enter para salto de línea
-          </span>
-          <PromptInput.Submit
-            status={chat.status}
-            onStop={() => chat.stop()}
-            class="ms-auto size-9 rounded-full"
+    {#if data.selected?.channel === "voice"}
+      <div class="panel px-4 py-3 text-sm text-ink-mute">
+        Voice transcript · read-only. Start a new typed chat rather than silently
+        merging two operators or two input channels.
+      </div>
+    {:else}
+      <PromptInput.Root
+        onSubmit={(message) => send(message.text)}
+        class="panel shadow-none"
+      >
+        <PromptInput.Body>
+          <PromptInput.Textarea
+            placeholder="Enviá un mensaje…"
+            class="text-sm text-ink placeholder:text-ink-mute"
           />
-        </PromptInput.Toolbar>
-      </PromptInput.Body>
-    </PromptInput.Root>
+          <PromptInput.Toolbar class="border-t border-hairline px-3 py-2">
+            <span class="hidden readout sm:inline">
+              Enter para enviar · Shift + Enter para salto de línea
+            </span>
+            <PromptInput.Submit
+              status={chat.status}
+              onStop={() => chat.stop()}
+              class="ms-auto size-9 rounded-full"
+            />
+          </PromptInput.Toolbar>
+        </PromptInput.Body>
+      </PromptInput.Root>
+    {/if}
   </div>
 </div>

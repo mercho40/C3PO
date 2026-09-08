@@ -5,7 +5,7 @@
   // operator can bookmark or paste into an incident report, and the server load
   // already has the messages ready on first paint.
   import { goto, invalidateAll } from "$app/navigation";
-  import { MessageSquare, Plus, Trash2 } from "@lucide/svelte";
+  import { MessageSquare, Mic, Plus, Trash2 } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { createApi } from "$lib/api";
@@ -13,6 +13,7 @@
   type ChatSummary = {
     id: string;
     title: string | null;
+    channel: "text" | "voice";
     updatedAt: string | Date;
   };
 
@@ -116,7 +117,11 @@
                     ? 'bg-accent text-ink'
                     : 'text-ink-mute hover:bg-wash-hover hover:text-ink'}"
                 >
-                  <MessageSquare class="size-3.5 shrink-0" />
+                  {#if item.channel === "voice"}
+                    <Mic class="size-3.5 shrink-0" aria-label="Conversación de voz" />
+                  {:else}
+                    <MessageSquare class="size-3.5 shrink-0" />
+                  {/if}
                   <span class="truncate">{item.title ?? "Sin título"}</span>
                 </a>
                 <!-- Revealed on hover/focus so the list stays calm, but always

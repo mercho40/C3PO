@@ -56,8 +56,8 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-#: Same directory the robot scripts keep pidfiles in, so a deployment already
-#: creates it and `stop_c3po` already knows where to look.
+#: Shared runtime directory for the durable stop sentinel and teleop sidecar
+#: state. The installer/runtime commands create it as needed.
 DEFAULT_RUN_DIR = Path(os.environ.get("C3PO_RUN_DIR", str(Path.home() / ".c3po" / "run")))
 SENTINEL_NAME = "stop_everything"
 

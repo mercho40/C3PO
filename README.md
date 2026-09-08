@@ -15,7 +15,7 @@ apps/
   bridge/       Python 3.12 sidecar (uv) — MCP server, Unitree SDK, DDS
   perception/   ROS 2 perception + navigation containers for the robot's Jetson
 docs/           Architecture, decisions, operations, robot reference
-scripts/robot/  Onboard stack controls (run_c3po, stop_c3po, perception_up, …)
+scripts/robot/  Onboard implementation; one operator CLI: `c3po`
 packages/       Reserved for shared TS packages
 ```
 
@@ -28,6 +28,7 @@ packages/       Reserved for shared TS packages
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md)         | Deploying and operating — topology, stack controls, addressing        |
 | [`docs/ROBOT-API.md`](docs/ROBOT-API.md)           | The G1's reverse-engineered control API — services, api_ids, FSM      |
 | [`docs/ROBOT-HARDWARE.md`](docs/ROBOT-HARDWARE.md) | What the physical robot presents — network, peripherals, cohabitation |
+| [`docs/MONDAY-RUNBOOK.md`](docs/MONDAY-RUNBOOK.md) | Ordered first hardware window — gates, pass criteria, rollbacks       |
 | `apps/*/README.md`                                 | Developing each app                                                   |
 
 ## Quickstart
@@ -42,19 +43,29 @@ cp apps/web/.env.example apps/web/.env
 # Database (needs local PostgreSQL — see apps/back/README.md)
 cd apps/back && bun run db:migrate && cd ../..
 
-# Dev servers: web on :3001, back on :3000
+# Existing local dev servers: back on :3000, web on :3001
 bun run dev
+
+# Real robot instead (direct LAN connection to g1-orin.local)
+bun run dev:robot
 ```
 
-The Python bridge is set up separately — CycloneDDS build, `uv sync`, and the SDK patch are covered in [`apps/bridge/README.md`](apps/bridge/README.md). Claude Code sessions get it automatically via `.mcp.json`.
+The Python bridge needs its one-time CycloneDDS/`uv` setup before that command;
+[`apps/bridge/README.md`](apps/bridge/README.md) covers it. Claude Code sessions
+also get the bridge automatically via `.mcp.json`.
 
 ## Commands
 
-| Command               | Description                  |
-| --------------------- | ---------------------------- |
-| `bun run dev`         | Start TS apps in development |
-| `bun run build`       | Build TS apps                |
-| `bun run check-types` | Type-check across monorepo   |
-| `bun run format`      | Format with Prettier         |
+| Command               | Description                                           |
+| --------------------- | ----------------------------------------------------- |
+| `bun run dev`         | Start the existing local development servers          |
+| `bun run dev:robot`   | Start API and web against the robot over the LAN      |
+| `bun run start`       | Start production builds against the configured bridge |
+| `bun run build`       | Build the monorepo                                    |
+| `bun run check-types` | Type-check across the monorepo                        |
+| `bun run test`        | Test across the monorepo                              |
+| `bun run format`      | Format with Prettier                                  |
 
-Per-app commands (database, bridge scripts, perception stages) live in each app's README.
+On the robot, the corresponding integrated surface is `c3po up [profile]` and
+`c3po down`; see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). Per-app commands
+remain for development and diagnostics.

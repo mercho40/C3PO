@@ -91,9 +91,12 @@ def test_the_filter_and_its_helper_still_exist():
 def test_every_lookup_helper_routes_through_the_filter():
     """The four the run_/stop_ scripts actually call."""
     src = COMMON_SH.read_text()
+    # `running_bridge_pids` and `stray_bridge_pids` were renamed/removed on main
+    # (2026-09) — `bridge_process_pids` is the surviving bridge lookup and every
+    # run_/stop_ script calls it. The list tracks the helpers that exist; the
+    # rule they have to obey has not changed.
     for fn in (
-        "running_bridge_pids",
-        "stray_bridge_pids",
+        "bridge_process_pids",
         "stray_teleop_pids",
         "other_commander_pids",
     ):

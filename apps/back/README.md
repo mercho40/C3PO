@@ -90,10 +90,11 @@ src/
     chats.ts           GET /chats, GET /chats/:id, DELETE /chats/:id — history
     telemetry.ts       GET /telemetry/{surroundings,voice} — the bridge's own,
                        proxied so a browser never reaches port 8001 directly
-    voice.ts           POST /voice/{start,stop}, GET /voice/status — the switch
-                       that makes what the robot HEARS into what it DOES
-  voice/loop.ts        the loop itself: poll `listen`, hand each utterance to the
-                       agent, never two at once (design: docs/ARCHITECTURE.md §4.1)
+    voice.ts           POST /voice/{start,stop}, GET /voice/status — explicit
+                       operator-owned legacy or OpenAI Realtime voice session
+  voice/loop.ts        legacy transcript → text-agent → Piper fallback
+  voice/realtime.ts    PCM ↔ OpenAI WebSocket, tool dispatch, durable transcript
+                       (design: docs/ARCHITECTURE.md §4.1)
   skills/              catalogue derived from the bridge at runtime (listTools +
                        cache — see catalogue.ts), not hand-mirrored; metadata like
                        danger level and preconditions rides in the tools' _meta

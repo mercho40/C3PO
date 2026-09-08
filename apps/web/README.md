@@ -54,10 +54,10 @@ different ways, and the page picks by env — `PUBLIC_ROBOT_CAM_URL` first, then
 |           | Simulator                              | Real G1                                          |
 | --------- | -------------------------------------- | ------------------------------------------------ |
 | Server    | teleimager/aiortc, one per camera      | `apps/perception`'s vision container             |
-| Transport | WebRTC (H.264, VP8 retry) over HTTPS   | MJPEG over plain HTTP, through the SSH tunnel    |
+| Transport | WebRTC (H.264, VP8 retry) over HTTPS   | MJPEG over plain HTTP on the robot LAN           |
 | Client    | `src/lib/webrtc/sim-camera.ts`         | `src/lib/robot/mjpeg-camera.ts`                  |
 | Cameras   | 3 (head stereo + two wrists)           | 1 — the D435i colour node is the only one fitted |
-| Bring-up  | ports 60001-3, accept the cert on each | `perception_up perception`, forward :8081        |
+| Bring-up  | ports 60001-3, accept the cert on each | `c3po up perception`, then use bridge `:8001`    |
 
 Both modules carry the reasoning in their headers. The one thing worth
 repeating here: an `<img>` on an MJPEG stream keeps showing the last frame it
@@ -80,25 +80,24 @@ loops. A 240 x 240 grid encodes to ~540 bytes of indexed PNG, so polling it at
 
 **It takes a different route from the camera, and that asymmetry is deliberate.**
 
-|        | Live camera                        | Live map                          |
-| ------ | ---------------------------------- | --------------------------------- |
-| Path   | browser → robot `:8081` **direct** | browser → `back` → bridge `:8001` |
-| Auth   | none (the tunnel is the boundary)  | Better Auth, via `back`           |
-| Tunnel | needs `-L 8081`                    | needs nothing extra               |
-| Env    | `PUBLIC_ROBOT_CAM_URL`             | none — it uses `PUBLIC_API_URL`   |
+|        | Live camera                     | Live map                          |
+| ------ | ------------------------------- | --------------------------------- |
+| Path   | browser → bridge `:8001/camera` | browser → `back` → bridge `:8001` |
+| Auth   | none (trusted robot LAN)        | Better Auth, via `back`           |
+| Tunnel | none for desktop development    | none                              |
+| Env    | `PUBLIC_ROBOT_CAM_URL`          | none — it uses `PUBLIC_API_URL`   |
 
-The reason is what each port serves. `:8081` serves nothing but frames, so
-handing a browser a route to it costs only the frames. `:8001` is the **bridge**,
-which also serves `/mcp` — the tool surface that can walk the robot — and binds
-loopback with no auth of its own. So the map is proxied instead, which keeps the
-browser off that port entirely and puts the image behind the only authentication
-anywhere in this path.
+The bridge's `:8001/camera` path selects and relays whichever onboard camera
+producer currently owns the device. The same port also serves `/mcp`, so the
+robot Wi-Fi must be treated as a trusted network: the bridge has no authentication
+of its own. The map remains proxied through `back` because its data already comes
+from an MCP tool and belongs behind the app's authentication boundary.
 
 Two consequences worth knowing before you debug either:
 
-- **The map can work while the camera does not.** The camera needs `-L 8081` in
-  your tunnel and the map does not, so a tunnel opened for `back` alone gives
-  you a map and a dead video panel. That is the expected state, not a fault.
+- **The map can work while the camera does not.** The map goes through `back`,
+  while the browser fetches camera bytes from the robot directly. A bad robot
+  hostname, CORS policy, or browser network path can therefore break only video.
 - **"No map" has three distinct forms**, and they need different fixes: `sin
 mapa` means nothing is publishing a costmap — almost always that no nav2 stage
   is running, and the bridge's hint naming the command sits in the tooltip;

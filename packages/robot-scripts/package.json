@@ -1,0 +1,8 @@
+{
+  "name": "@repo/robot-scripts",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "test": "C3PO_REQUIRE_SHELLCHECK=1 bash ../../scripts/tests/run.sh"
+  }
+}

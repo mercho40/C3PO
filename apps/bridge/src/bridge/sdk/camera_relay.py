@@ -17,11 +17,11 @@ project has already chased through two headset sessions, twice concluding the
 camera hardware was broken when it was merely somewhere else.
 
 So the bridge picks. `:8001/camera` serves videohub when videohub is live and
-relays :8081 when it is not, and `-L 8081` stops being something to remember.
+relays :8081 when it is not, leaving one LAN camera URL to remember.
 
 WHY THE BRIDGE AND NOT THE CONSOLE. Both feeds are on the Jetson's loopback and
-the bridge is already there; a browser would need a second forward and a CORS
-story to try them itself. The bridge also already knows one of the two answers
+the bridge is already there; a browser would otherwise need two exposed ports
+and two CORS policies. The bridge also already knows one of the two answers
 without asking anybody.
 """
 
