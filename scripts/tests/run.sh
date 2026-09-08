@@ -371,6 +371,29 @@ check_contains "unitree_slam is treated as a locomotion commander" \
 # Optional for a direct run on the robot, where it is not installed. Package/CI
 # runs set C3PO_REQUIRE_SHELLCHECK=1 so a missing analyzer is a failure rather
 # than a deceptively green skipped gate.
+echo "== teleop readiness =="
+#
+# `run_teleop` used to sleep 2 s and ask whether the process still existed. A
+# server that comes up, fails to bind 8767 and sits there is ALIVE — so it
+# printed "teleop stream up" and handed the operator a port serving nothing.
+# `quest_setup.sh` then forwards that port to the headset, where it finally
+# surfaces as a session that will not start, a long way from the cause.
+#
+# `run_c3po` was rewritten for exactly this bug and waits for its port. These
+# assert the sidecar learned the same lesson.
+
+run_teleop_src="$(cat "$repo/scripts/robot/run_teleop")"
+check_contains "teleop start waits for the port, not just the process" \
+    "nc -z 127.0.0.1" "$run_teleop_src"
+check_contains "teleop start distinguishes running-but-not-listening" \
+    "never bound" "$run_teleop_src"
+check_contains "teleop start gives up early when the process died" \
+    'sidecar_pid "$TELEOP_PID" >/dev/null 2>&1 || break' "$run_teleop_src"
+check_not_contains "teleop start no longer reports success on a bare sleep" \
+    'sleep 2
+
+if sidecar_pid' "$run_teleop_src"
+
 echo "== quest port ownership =="
 #
 # THE FAILURE THIS SECTION EXISTS FOR, 2026-09-08.
