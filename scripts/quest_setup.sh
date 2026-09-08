@@ -49,6 +49,29 @@ warn() { printf '  %s!%s %s\n' "$_yellow" "$_reset" "$1"; }
 err()  { printf '  %s✗%s %s\n' "$_red" "$_reset" "$1" >&2; }
 say()  { printf '\n%s%s%s\n' "$_bold" "$1" "$_reset"; }
 
+# WHOSE SERVER IS THAT, ACTUALLY?
+#
+# "Something is listening" is not "our app is listening", and on 2026-09-08 that
+# gap cost a whole headset session. Port 3001 held two strangers in succession:
+# a Vite left running for two WEEKS from a different checkout, and then a
+# Next.js dev server belonging to an unrelated project. Both answered. Both were
+# forwarded to the headset. What the operator saw was somebody else's website,
+# with no error anywhere naming the cause -- and a login form no account could
+# ever satisfy, because it was not our login form.
+#
+# This script already refuses to forward to a DEAD port, on the stated grounds
+# that the failure would otherwise surface later, inside the headset. A forward
+# to the WRONG LIVE port breaks the same promise and costs more to diagnose,
+# because every check reports healthy.
+#
+# The owner's working directory is the cheapest reliable signal: a dev server
+# for this repo runs inside this repo. Only meaningful for the servers that run
+# HERE -- 8767 and the camera port are ssh tunnels, where the local owner is ssh
+# by design.
+port_owner_pid() { lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | head -1; }
+port_owner_cwd() { lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; }
+port_owner_cmd() { ps -o command= -p "$1" 2>/dev/null | cut -c1-90; }
+
 # THE CAMERA PORT IS READ, NOT HARDCODED, AND THAT IS THE WHOLE POINT.
 #
 # It was hardcoded to 8081, and on 2026-08-27 an operator wearing the headset
@@ -196,7 +219,43 @@ for entry in "${PORTS[@]}"; do
             fi
             ;;
     esac
+    # Ownership, for the servers that run on this machine. See the note beside
+    # `port_owner_pid`. A stranger holding the port is a HARD failure: forwarding
+    # it hands the headset an app we did not build, and every other check in this
+    # script will still say green.
+    wrong_owner=0
     if [ "$listening" = "1" ]; then
+        case "$port" in
+            3000|3001)
+                _pid="$(port_owner_pid "$port")"
+                _cwd=""
+                [ -n "$_pid" ] && _cwd="$(port_owner_cwd "$_pid")"
+                case "$_cwd" in
+                    "$_repo"|"$_repo"/*)
+                        : ;;                       # ours
+                    "")
+                        # lsof gave nothing (permissions, or a process that just
+                        # exited). Not proof of a stranger, so do not fail on it.
+                        warn "$port  $label — listening, but the owner could not be identified"
+                        ;;
+                    *)
+                        wrong_owner=1 ;;
+                esac
+                ;;
+        esac
+    fi
+
+    if [ "$wrong_owner" = "1" ]; then
+        err "$port  $label — held by something OUTSIDE this checkout"
+        echo "     pid $_pid  cwd: $_cwd"
+        echo "     $(port_owner_cmd "$_pid")"
+        echo "     this repo: $_repo"
+        echo "     Forwarding it would hand the headset that app instead of the"
+        echo "     console — which is exactly what happened on 2026-09-08."
+        echo "     Stop it, or run the dev server from this checkout:"
+        echo "       kill $_pid"
+        fatal=1
+    elif [ "$listening" = "1" ]; then
         ok "$port  $label"
     elif [ "$required" = "yes" ]; then
         if [ "${tunnel_empty:-0}" = "1" ]; then

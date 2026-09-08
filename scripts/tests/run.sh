@@ -371,6 +371,65 @@ check_contains "unitree_slam is treated as a locomotion commander" \
 # Optional for a direct run on the robot, where it is not installed. Package/CI
 # runs set C3PO_REQUIRE_SHELLCHECK=1 so a missing analyzer is a failure rather
 # than a deceptively green skipped gate.
+echo "== quest port ownership =="
+#
+# THE FAILURE THIS SECTION EXISTS FOR, 2026-09-08.
+#
+# `quest_setup.sh` verified that something was LISTENING on 3001 and forwarded
+# it to the headset. Two different strangers held that port in succession: a
+# Vite left running for two weeks from another checkout, and a Next.js dev
+# server from an unrelated project. Both answered a TCP connect, so both passed.
+# The operator put the headset on and got somebody else's website, with a login
+# form no account could satisfy -- and every check in the script said green.
+#
+# These tests exercise the real classifier against real listeners, rather than
+# grepping the script for the word "cwd": the thing worth proving is that a
+# process outside this repo is actually rejected.
+
+quest_setup_src="$(cat "$repo/scripts/quest_setup.sh")"
+check_contains "quest setup identifies who owns a local port" \
+    "port_owner_cwd" "$quest_setup_src"
+check_contains "quest setup fails on a port held from outside the checkout" \
+    "held by something OUTSIDE this checkout" "$quest_setup_src"
+
+# The classifier, lifted verbatim from the script so the test cannot drift from
+# an implementation it only pretends to check.
+_owner_pid() { lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | head -1; }
+_owner_cwd() { lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; }
+_classify() {
+    local port="$1" pid cwd
+    pid="$(_owner_pid "$port")"
+    [ -n "$pid" ] || { printf 'nothing'; return; }
+    cwd="$(_owner_cwd "$pid")"
+    case "$cwd" in
+        "$repo"|"$repo"/*) printf 'ours' ;;
+        "")                printf 'unknown' ;;
+        *)                 printf 'stranger' ;;
+    esac
+}
+
+# A listener started from INSIDE the repo is ours.
+( cd "$repo" && python3 -m http.server 39311 >/dev/null 2>&1 ) &
+_ours_job=$!
+disown "$_ours_job" 2>/dev/null || true
+sleep 2
+check "a port served from inside the checkout is accepted" "ours" "$(_classify 39311)"
+kill "$_ours_job" 2>/dev/null || true
+
+# A listener started from OUTSIDE it is not, however healthy it looks.
+( cd /tmp && python3 -m http.server 39312 >/dev/null 2>&1 ) &
+_them_job=$!
+disown "$_them_job" 2>/dev/null || true
+sleep 2
+check "a port served from outside the checkout is rejected" "stranger" "$(_classify 39312)"
+kill "$_them_job" 2>/dev/null || true
+
+# And an unused port is neither -- "nothing is listening" is a different
+# problem with a different message, and must not be reported as a stranger.
+check "an unused port is not mistaken for a stranger" "nothing" "$(_classify 39313)"
+
+wait 2>/dev/null || true
+
 echo "== shellcheck =="
 if command -v shellcheck >/dev/null 2>&1; then
     while IFS= read -r script; do

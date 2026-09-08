@@ -148,9 +148,75 @@ reported the LiDAR as offline.
 
 ## 3. Headset
 
+### 3a. Serve the console from the checkout you are testing
+
+This is the step that has now cost two sessions, in two different ways.
+
+The dev server must run from the checkout whose code you want to test. On
+2026-08-26 the console was served from a different checkout, so a stereo fix
+that was genuinely committed appeared not to work. On 2026-09-08 port 3001 was
+held by a Vite left running for two WEEKS from that same other checkout, and
+then by a Next.js dev server from an unrelated project — the headset was
+forwarded to both and showed somebody else's website, with a login form no
+account could satisfy.
+
+`quest_setup.sh` now checks the OWNER of ports 3000 and 3001 and refuses to
+forward a port held by a process running outside this repository. It names the
+pid, the working directory and the command, so "the wrong thing is on 3001" is a
+sentence you read rather than a fortnight of confusion. If it fires, kill the
+process it names and start the dev server from here:
+
+```bash
+bun run dev          # from the repo root: 3000 + 3001
+```
+
+Confirm what is actually being served before putting the headset on:
+
+```bash
+curl -s http://localhost:3001/ | grep -o 'C3PO'     # must print C3PO
+```
+
+### 3b. Forward the ports
+
 ```bash
 scripts/quest_setup.sh          # forwards the ports; prints which .env the
                                 # camera port came from
+```
+
+### 3c. Log in
+
+The console is behind Better Auth and `/vr-control` redirects to `/login`
+without a session. Passwords for pre-existing dev accounts are not recoverable —
+if you do not have one, make an account rather than guessing:
+
+```bash
+curl -s -X POST http://localhost:3000/api/auth/sign-up/email \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"something-typeable","name":"You"}'
+```
+
+Then restart `apps/back` once: an address listed in `ADMIN_EMAILS` is promoted
+to admin at startup, and the log says so (`[admin] promoted to admin: ...`).
+Admin matters — without it the walk buttons return 403.
+
+Pick a password you can type on a virtual keyboard. Typing symbols in a headset
+is its own small ordeal.
+
+### 3d. Check what the headset is actually showing
+
+If the Quest browser restored an old tab, everything above can be perfect and
+you will still be looking at the wrong page. With the headset connected:
+
+```bash
+adb forward tcp:9222 localabstract:chrome_devtools_remote
+curl -s http://127.0.0.1:9222/json/list | grep -o '"url": "[^"]*"' | head
+```
+
+Every open tab, by URL. If none of them is `localhost:3001`, that is the
+problem — and you can navigate it from here rather than typing in VR:
+
+```bash
+curl -s -X PUT "http://127.0.0.1:9222/json/new?http://localhost:3001/login"
 ```
 
 Then, with the headset on and someone watching the robot:
