@@ -33,13 +33,12 @@
  * throws on missing values, and its own docstring notes that optional settings
  * are intentionally kept out. `BRIDGE_URL` is optional with a working default.
  *
- * And `client.ts` reads its URL once at module-load time, which
- * `client.test.ts` depends on: it sets `process.env.BRIDGE_URL` to a dead port
- * and then dynamically imports the module, so the failure it observes is a
- * genuine refused TCP connect rather than a mock. Reading through `env.ts`
- * would freeze the value at whenever THAT module first got imported by
- * anything in the suite, which is not something a test should have to reason
- * about.
+ * And reading through `env.ts` would freeze the value at whenever THAT module
+ * first got imported by anything in the suite — which is not something a test
+ * should have to reason about. `client.ts` learned that lesson the hard way: it
+ * used to capture this address once at module load, which made its behaviour
+ * depend on import order and failed in CI while passing locally. It now
+ * resolves per connect.
  */
 
 /** The bridge's MCP endpoint as deployed — the robot, over the tunnel. */

@@ -18,10 +18,20 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { bridgeUrl, unreachableHint } from "./url";
 
-// Read once at module load, as before — `client.test.ts` sets the env var and
-// then dynamically imports this module to aim it at a dead port. The default
-// itself now lives in ./url, which is the only copy of it.
-const BRIDGE_URL = bridgeUrl();
+// RESOLVED PER CONNECT, NOT ONCE AT MODULE LOAD.
+//
+// It used to be a module-level `const`, and that made this file's behaviour
+// depend on WHEN it was first imported. `client.test.ts` sets BRIDGE_URL to a
+// dead port and then dynamically imports this module — which only works if it
+// is the first importer. It is not: `catalogue.test.ts` and `skills.test.ts`
+// both pull `client.ts` in transitively, and bun ran them first in CI, so the
+// module was already loaded with the address from the seeded `.env` and the
+// test's override arrived too late. Locally the file order differed and it
+// passed, which is the worst version of this bug.
+//
+// Reading it per connect is also just better: the value costs nothing to look
+// up, `connect()` already runs on every reconnect, and changing BRIDGE_URL no
+// longer needs a process restart to take effect.
 
 /** The bridge could not be reached / the session could not be established. */
 export class BridgeUnavailableError extends Error {
@@ -47,7 +57,7 @@ let clientPromise: Promise<Client> | null = null;
 
 async function connect(): Promise<Client> {
   const client = new Client({ name: "c3po-back", version: "1.0.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(BRIDGE_URL));
+  const transport = new StreamableHTTPClientTransport(new URL(bridgeUrl()));
   await client.connect(transport);
   return client;
 }
@@ -90,7 +100,7 @@ function getClient(): Promise<Client> {
     clientPromise = connect().catch((err) => {
       clientPromise = null; // let the next call retry a fresh connection
       if (!hintPrinted) {
-        const hint = unreachableHint(BRIDGE_URL);
+        const hint = unreachableHint(bridgeUrl());
         if (hint) {
           hintPrinted = true;
           console.error(`[bridge] ${hint}`);

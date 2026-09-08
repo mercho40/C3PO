@@ -4,18 +4,32 @@
  * the sole channel to the robot, including the panic-button stop_everything
  * call.
  *
- * BRIDGE_URL is overridden to an unused local port *before* importing the
- * module (it reads the env var once at module-load time) so this test never
- * depends on whether a real bridge happens to be running on the default
- * port in this environment -- the connection failure is real (a genuine
- * refused TCP connect), not mocked, just aimed at a port nothing listens on.
+ * BRIDGE_URL is overridden to an unused local port so this test never depends
+ * on whether a real bridge happens to be running -- the connection failure is
+ * real (a genuine refused TCP connect), not mocked, just aimed at a port
+ * nothing listens on.
+ *
+ * It is set in `beforeEach`, NOT once before a dynamic import. The module used
+ * to read the address once at load time, so this test only worked if it was the
+ * first thing to import `./client` — and it is not. `catalogue.test.ts` and
+ * `skills.test.ts` both pull it in transitively, and bun loaded them first in
+ * CI: the address was already fixed to the one from the seeded `.env`, the
+ * override arrived too late, and the test failed there while passing locally,
+ * where the file order happened to differ. `client.ts` now resolves the URL per
+ * connect, which removes the ordering dependency from both sides.
  */
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-process.env.BRIDGE_URL = "http://127.0.0.1:39217/mcp";
-const { callTool, BridgeUnavailableError } = await import("./client");
+import { BridgeUnavailableError, callTool } from "./client";
+
+const DEAD_PORT = "http://127.0.0.1:39217/mcp";
+
+// Per test, so it holds no matter which file imported `./client` first.
+beforeEach(() => {
+  process.env.BRIDGE_URL = DEAD_PORT;
+});
 
 describe("callTool", () => {
   test("throws BridgeUnavailableError when the bridge is unreachable", async () => {
