@@ -94,7 +94,15 @@ if SIM_MODE != "stub":
     from bridge.sdk.connection import init_dds
     from bridge.sdk.state import get_sampler
 
-    init_dds(robot_host=ROBOT_HOST, domain_id=DDS_DOMAIN_ID, interface=DDS_INTERFACE)
+    # SIM_MODE is passed rather than left to init_dds's environment default:
+    # it decides whether the config asks for unicast-to-one-peer, which is a
+    # simulator workaround and a topic-hiding hazard onboard.
+    init_dds(
+        robot_host=ROBOT_HOST,
+        domain_id=DDS_DOMAIN_ID,
+        interface=DDS_INTERFACE,
+        sim_mode=SIM_MODE,
+    )
     # Warm the subscriber singleton so messages start flowing immediately.
     get_sampler()
 
@@ -288,7 +296,9 @@ async def walk_to(
         cancellable=True,
         expected_duration_s=12.0,
         works_sim=True,
-        works_real=False,
+        # Measured on the robot 2026-08-26 — see the docstring for the numbers
+        # and for what this claim does NOT cover.
+        works_real=True,
         preconditions=["robot_upright", "no_active_turn_task"],
         typical_failure_modes=["timeout", "no_pose"],
     )
@@ -335,25 +345,38 @@ async def turn(
     progress via `ctx.report_progress`. Cancellable via `cancel_task` or
     `stop_everything`.
 
-    **The yaw sign is no longer the blocker.** `works_real` was set False on
-    2026-08-15 because "turn's yaw sign convention is still unverified and may
-    rotate the wrong way". That is now settled: on 2026-08-20 a commanded
-    positive yaw rotated the robot counterclockwise, measured three times off
-    `rt/odommodestate` (+5.26, +5.77 and again in a full run), through the same
-    `send_velocity` path this skill uses. Positive really is left.
+    **WATCHED ON HARDWARE 2026-08-26.** `works_real` was False through two
+    separate objections and both are now discharged. The yaw sign was settled
+    on 2026-08-20 (positive is counterclockwise, measured three times off
+    `rt/odommodestate`). The closed loop — this skill reading pose, computing
+    an error and deciding when to stop — was measured on the robot with an
+    operator watching, feet on the ground and the gantry slack, via
+    `scripts/measure_turn.py`:
 
-    It stays False anyway, and deliberately. `works_real` means *a human has
-    watched this skill run* — and nobody has watched `turn`. What was verified
-    is the sign convention it shares with the teleop stream, not this skill's
-    own closed loop: it reads pose, computes an error, and decides when to
-    stop, and none of that has executed on hardware. Flipping the flag on
-    evidence about a shared component would be exactly the kind of claim the
-    flag exists to prevent.
+        commanded  achieved  residual  ratio  reached  elapsed
+          +40.0     +37.48     2.52    1.07    true     4.9 s
+          +40.0     +36.67     3.33    1.09    true     4.0 s
 
-    What it needs is one supervised run: a small delta (30-45 degrees) with
-    room to rotate, watching whether it converges and stops inside tolerance.
-    Expect it to be slow — measured yaw under-travels command by ~2.2x on this
-    body, so allow generous timeouts.
+    Both converged, both stopped on their own, and the operator confirmed each
+    rotation was smooth. That is what this flag asserts.
+
+    WHAT THE CLAIM DOES NOT COVER, recorded so nobody reads more into it:
+
+    * ACCURACY IS ABOUT +/-3.5 DEGREES on a 40 degree command, not the 3 degree
+      tolerance. `tolerance_radians` is when the loop stops STEERING; the
+      firmware then holds the last velocity for up to a second and the body
+      coasts past that point. `reached` and `final_yaw_error_radians` are
+      therefore sampled at different instants and can disagree — run 2 above
+      decided it had arrived and settled 3.41 degrees out. Neither number is
+      wrong; they answer different questions.
+    * THE STOP FIRES ON A SINGLE UNFILTERED POSE SAMPLE. Leg odometry is noisy,
+      so one reading dipping inside tolerance ends the loop. Requiring N
+      consecutive in-tolerance samples would tighten this, and is the obvious
+      next improvement.
+    * Under-travel measured **1.08x**, not the ~2.2x this docstring previously
+      predicted. That figure was stale; timeouts do not need to be generous.
+      Both runs converged in under 5 seconds. An earlier 20 s timeout was a
+      wedged bridge RPC channel, not a slow loop.
     """
     log.info(
         "turn.called",
@@ -580,7 +603,13 @@ async def stop_everything() -> dict:
         expected_duration_s=1.0,
         works_sim=False,
         works_real=True,
-        preconditions=["fsm_state_in_{preparation,walk,walk_waist,run,squat,zero_torque}"],
+        # `squat_up`, NOT `squat`. The `squat` SKILL sends SQUAT_UP (706) —
+        # deliberately, see its docstring — so the robot reports `squat_up`,
+        # and mode 2 (`squat`) is an index this bridge never sends. Naming it
+        # here described a state nothing can produce, which is the sort of
+        # thing free text in a metadata dict gets away with until somebody
+        # wires it up. `test_fsm_preconditions.py` now checks it.
+        preconditions=["fsm_state_in_{preparation,walk,walk_waist,run,squat_up,zero_torque}"],
         typical_failure_modes=["fsm_transition_rejected", "transport_unsupported"],
     )
 )
@@ -1218,7 +1247,10 @@ async def gesture(
         preconditions=[
             "real_hardware_only",
             "TELEOP_ARM_ENABLED=1",
-            "fsm_state_in_{4,500,501}",
+            # Labels, not raw ids: 4/500/501 are preparation/walk/walk_waist, and
+            # every other tool in this file states them by name. Two vocabularies
+            # for one concept is a thing the agent reading this has to guess at.
+            "fsm_state_in_{preparation,walk,walk_waist}",
             "fresh_rt_lowstate",
             "no_gesture_task_running",
         ],
@@ -2485,6 +2517,54 @@ async def gate_status(request):  # noqa: ANN001, ANN201 - starlette types
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
+@mcp.custom_route("/telemetry/scan", methods=["GET"])
+async def scan_json(request):  # noqa: ANN001, ANN201 - starlette types
+    """The lidar ring: ~120 bearings of centimetres, for the headset surround.
+
+    503 WITH A REASON when there is none. "No ring" has three very different
+    causes — the nav container is not running, the Mid-360 is unplugged, or the
+    lidar is up and this bridge is on the wrong domain — and an operator in a
+    headset can diagnose none of them from an empty circle. The counters go out
+    with the error for the same reason `/telemetry/gate` sends `link`: a quiet
+    topic and a quiet DOMAIN look identical from the outside.
+
+    THE AGE GOES OUT WITH THE RING, ALWAYS. `stale` is computed here rather
+    than left to the renderer so that every consumer draws the same line in the
+    same place, but the payload is still sent when stale — a renderer that grey
+    out an old ring is more useful than one that blinks it out of existence,
+    and both need the flag. What must never happen is an old ring shown as
+    current: that is an obstacle that has moved and did not.
+
+    Read-only and structurally so, like the costmap, gate and surroundings
+    routes: it reads received samples and can actuate nothing.
+    """
+    from starlette.responses import JSONResponse
+
+    from bridge.sdk.perception_link import SCAN_STALE_AFTER_S, get_link
+
+    link = get_link()
+    payload, age = link.latest_scan()
+    if payload is None:
+        return JSONResponse(
+            {
+                "error": "no scan received",
+                "hint": (
+                    "the ring comes from the nav container's world_model_publisher, "
+                    "which publishes nothing while the lidar is offline — check "
+                    "`ros2 topic hz /scan` inside it before suspecting this bridge"
+                ),
+                "status": link.scan_status(),
+            },
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    body = dict(payload)
+    body["age_s"] = None if age is None else round(age, 3)
+    body["stale"] = bool(age is not None and age > SCAN_STALE_AFTER_S)
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
 @mcp.custom_route("/telemetry/surroundings", methods=["GET"])
 async def surroundings_json(request):  # noqa: ANN001, ANN201 - starlette types
     """The D7 snapshot the agent sees, for the operator console.
@@ -2738,9 +2818,19 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
 _CAMERA_WAKE_S = 0.02
 
 
-def _camera_unavailable():  # noqa: ANN202 - starlette types
+def _origin_of(request) -> str | None:  # noqa: ANN001 - starlette types
+    """The request's `Origin`, or None. Browsers send it; native clients do not."""
+    try:
+        return request.headers.get("origin")
+    except Exception:  # noqa: BLE001 — a request without headers is still a request
+        return None
+
+
+def _camera_unavailable(origin: str | None = None):  # noqa: ANN202 - starlette types
     """The 503 body for "there is no camera here", or None if there is one."""
     from starlette.responses import JSONResponse
+
+    from bridge.sdk.camera_relay import camera_headers
 
     if SIM_MODE != "real":
         return JSONResponse(
@@ -2753,6 +2843,10 @@ def _camera_unavailable():  # noqa: ANN202 - starlette types
                 ),
             },
             status_code=503,
+            # The 503 needs the CORS header too. Without it the browser refuses
+            # to let the console READ this body — so the page could not show the
+            # reason, which is the only thing this response exists to carry.
+            headers=camera_headers(origin),
         )
     return None
 
@@ -2769,7 +2863,8 @@ async def camera_status(request):  # noqa: ANN001, ANN201 - starlette types
     """
     from starlette.responses import JSONResponse
 
-    unavailable = _camera_unavailable()
+    origin = _origin_of(request)
+    unavailable = _camera_unavailable(origin)
     if unavailable is not None:
         return unavailable
 
@@ -2781,7 +2876,7 @@ async def camera_status(request):  # noqa: ANN001, ANN201 - starlette types
     source = camera_relay.choose_source(videohub, vision)
     return JSONResponse(
         camera_relay.merged_status(videohub, vision, source),
-        headers={"Cache-Control": "no-store"},
+        headers=camera_relay.camera_headers(origin),
     )
 
 
@@ -2795,7 +2890,8 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
     """
     from starlette.responses import JSONResponse, Response
 
-    unavailable = _camera_unavailable()
+    origin = _origin_of(request)
+    unavailable = _camera_unavailable(origin)
     if unavailable is not None:
         return unavailable
 
@@ -2813,7 +2909,10 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
             return Response(
                 content=jpeg,
                 media_type="image/jpeg",
-                headers={"Cache-Control": "no-store", "Content-Length": str(len(jpeg))},
+                headers={
+                    **camera_relay.camera_headers(origin),
+                    "Content-Length": str(len(jpeg)),
+                },
             )
 
     if source == "vision":
@@ -2822,14 +2921,14 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
         except Exception:
             log.exception("camera.relay_frame_failed")
         else:
-            return Response(
-                content=body, media_type="image/jpeg", headers={"Cache-Control": "no-store"}
-            )
+            return Response(content=body, media_type="image/jpeg",
+                            headers=camera_relay.camera_headers(origin))
 
     status = camera_relay.merged_status(videohub, vision, source)
     return JSONResponse(
         {"error": "no frame yet", "hint": status.get("hint"), "status": status},
         status_code=503,
+        headers=camera_relay.camera_headers(origin),
     )
 
 
@@ -2884,7 +2983,8 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
     """
     from starlette.responses import JSONResponse, StreamingResponse
 
-    unavailable = _camera_unavailable()
+    origin = _origin_of(request)
+    unavailable = _camera_unavailable(origin)
     if unavailable is not None:
         return unavailable
 
@@ -2904,6 +3004,7 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
         return JSONResponse(
             {"error": "no frame yet", "hint": status.get("hint"), "status": status},
             status_code=503,
+            headers=camera_relay.camera_headers(origin),
         )
 
     if source == "vision":
@@ -2911,7 +3012,7 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
         # multipart format with the same boundary, so re-framing it here would
         # be re-encoding a stream we have no reason to touch — and would put a
         # JPEG decode per frame on the bridge, which owns stop_everything.
-        media_type, headers = camera_relay.relay_headers("stream")
+        media_type, headers = camera_relay.relay_headers("stream", origin)
         return StreamingResponse(
             _relay_stream(camera_relay.vision_url("stream.mjpg")),
             media_type=media_type,
@@ -2942,7 +3043,7 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
     return StreamingResponse(
         frames(),
         media_type="multipart/x-mixed-replace; boundary=" + boundary,
-        headers={"Cache-Control": "no-store"},
+        headers=camera_relay.camera_headers(origin),
     )
 
 

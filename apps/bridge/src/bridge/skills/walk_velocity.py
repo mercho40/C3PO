@@ -166,7 +166,12 @@ async def run(
         try:
             await asyncio.shield(asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5))
         except (Exception, asyncio.CancelledError):
-            pass
+            # Not dangerous — the firmware deadman above still halts this — but
+            # not nothing either. Swallowed silently, a stop path that fails
+            # every single time is indistinguishable from one that works.
+            # `teleop/_safe_stop` logs each of its failure branches for exactly
+            # this reason; these two were the odd ones out.
+            log.warning("walk_velocity.cancel_stop_failed", task_id=task.task_id, exc_info=True)
         raise  # never swallow cancellation -- the caller is entitled to it
 
     except Exception as exc:
@@ -178,5 +183,5 @@ async def run(
         try:
             await asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5)
         except Exception:
-            pass
+            log.warning("walk_velocity.failure_stop_failed", task_id=task.task_id, exc_info=True)
         return task.to_dict()

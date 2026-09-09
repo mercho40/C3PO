@@ -50,8 +50,8 @@
     {#if voice.running}
       <p class="text-sm text-amber-600 dark:text-amber-500">
         The robot will answer naturally and remember this conversation. It uses
-        robot tools only when you clearly request a physical task. End the session
-        before talking about the robot rather than to it.
+        robot tools only when you clearly request a physical task. End the
+        session before talking about the robot rather than to it.
       </p>
     {:else}
       <p class="text-sm text-muted-foreground">
@@ -103,7 +103,9 @@
 
       {#if voice.state.conversation?.phase !== "idle"}
         <p class="text-sm text-muted-foreground">
-          {voice.state.conversation?.phase === "streaming" ? "Thinking…" : "Speaking…"}
+          {voice.state.conversation?.phase === "streaming"
+            ? "Thinking…"
+            : "Speaking…"}
         </p>
       {:else if voice.state.conversation?.lastTurn}
         <p class="text-xs text-muted-foreground">

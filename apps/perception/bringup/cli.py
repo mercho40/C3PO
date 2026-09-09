@@ -24,6 +24,30 @@ from bringup.spec import NAV, STAGES, STT, VISION, Stage, containers_for, contai
 PREFIX = "c3po-perception"
 
 
+#: How long ONE readiness probe may take, in seconds.
+#:
+#: Each attempt spawns a fresh `ros2 topic echo`, which must complete full DDS
+#: discovery before it can report anything. Measured on the robot 2026-08-26
+#: with `nav2-fake` up: 2.25 s at load 10, against a 3 s ceiling — and at load
+#: 15, which is simply what the box reads while the other team runs SLAM, it
+#: exceeded 3 s on EVERY attempt. A completely healthy stack tore itself down,
+#: twenty participants having made discovery slower than the timeout allowed.
+#:
+#: The old value was not a little tight, it was tight in the one condition that
+#: matters: a shared robot with somebody else working on it.
+PROBE_TIMEOUT_S = 12
+
+#: Gap between attempts. Small on purpose — the probe's own timeout is the
+#: thing that dominates.
+PROBE_INTERVAL_S = 1
+
+#: Attempts before rolling back. Worst case READY_ATTEMPTS * (PROBE_TIMEOUT_S +
+#: PROBE_INTERVAL_S) = 260 s, which is SHORTER than the 360 s the old loop could
+#: take while being far more tolerant of a loaded box. A genuinely absent
+#: publisher is still reported in about four minutes.
+READY_ATTEMPTS = 20
+
+
 class Runner:
     """Everything with a side effect. Replaced wholesale in tests."""
 
@@ -81,7 +105,25 @@ class Runner:
         # otherwise land after everything the child writes.
         sys.stdout.flush()
         sys.stderr.flush()
-        return subprocess.call([path], env=merged)
+        try:
+            return subprocess.call([path], env=merged)
+        except FileNotFoundError:
+            # A MISSING HELPER IS A CHECKOUT PROBLEM, NOT A CRASH.
+            #
+            # On 2026-08-29 `scripts/robot/stop_gemm`, `take_camera` and
+            # `run_c3po` were all missing from the robot's working tree —
+            # tracked in git, deleted on disk, cause never established. Every
+            # camera-claiming stage then died on a raw
+            # `FileNotFoundError` traceback out of `subprocess.call`, twenty
+            # lines deep, with the actual problem on the last line.
+            #
+            # 127 is the shell's own "command not found", so callers can tell
+            # "the helper is absent" apart from "the helper ran and refused",
+            # which are different problems with different fixes.
+            err(f"missing helper script: {path}")
+            err("  it is tracked in git but not on disk. Restore it with:")
+            err("    cd ~/c3po && git checkout -- scripts/robot/")
+            return 127
 
 
 # --- output -----------------------------------------------------------------
@@ -92,7 +134,11 @@ class Runner:
 # printed take_camera's four-line refusal ABOVE the header explaining what stage
 # was even starting, so the reason arrived before the thing it was a reason for.
 try:
-    sys.stdout.reconfigure(line_buffering=True)
+    # `sys.stdout` is typed `TextIO`, which has no `reconfigure`; the concrete
+    # `TextIOWrapper` does. The `except AttributeError` below IS the check, and
+    # it is there because this runs on the robot's system interpreter where the
+    # stream may be something else entirely.
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
 except AttributeError:  # pragma: no cover - python < 3.7
     pass
 
@@ -266,11 +312,30 @@ def _arbitrate(
         info("would stop gemm if running, then take the camera")
         return True
 
-    if gemm_running(runner):
+    holders = gemm_running(runner)
+    if holders:
         warn(f"stage '{stage.name}' claims a shared sensor")
         info("stopping gemm to release it")
         if scripts_dir:
-            runner.run_script(os.path.join(scripts_dir, "stop_gemm"))
+            rc = runner.run_script(os.path.join(scripts_dir, "stop_gemm"))
+            if rc == 127:
+                # REFUSE, rather than carry on. gemm is RUNNING and holding a
+                # sensor this stage has just announced it will take, and the
+                # one thing that releases it is not there. Starting the
+                # containers anyway means two stacks reaching for one device —
+                # the exact "one commander" failure `_common.sh` exists to
+                # prevent — and it would present as a detector that starts and
+                # sees nothing.
+                err("cannot release the sensor from gemm, and gemm is running")
+                err("  restore the script (above), or stop the containers yourself:")
+                # The CONTAINERS, by name, and deliberately not
+                # `systemctl stop gemm-ai`: what was detected here is
+                # `docker ps` output, and OPERATIONS §"stop_gemm does not stop
+                # gemm-ai.service" is explicit that the unit and the containers
+                # are different things. Naming the service would send somebody
+                # to stop a voice assistant while the holders kept the camera.
+                err(f"    docker stop {' '.join(holders)}")
+                return False
 
     # stop_gemm frees GEMM's holders and deliberately leaves `videohub_pc4`
     # alone — that one is Unitree's, not gemm's to stop. But a stage that needs
@@ -284,6 +349,11 @@ def _arbitrate(
         if rc == 2:
             # take_camera distinguishes "not allowed" from "would not help".
             warn("the camera could not be released without a terminal — detector stays offline")
+        elif rc == 127:
+            # Absent, not refused. A warning that says "could not release the
+            # camera" would send somebody looking at permissions and udev for
+            # a file that is simply not on disk.
+            warn("take_camera is missing — the detector will start with no device")
         elif rc != 0:
             warn("could not release the camera — the detector will stay offline")
     return True
@@ -311,7 +381,7 @@ def _await_ready(stage: Stage, runner: Runner, env: Dict[str, str]) -> int:
         return 1
 
     info("waiting for /c3po/world_summary on domain 42")
-    for _ in range(90):
+    for _ in range(READY_ATTEMPTS):
         if not running_containers(runner):
             break
         code, _ = runner.docker(
@@ -323,7 +393,7 @@ def _await_ready(stage: Stage, runner: Runner, env: Dict[str, str]) -> int:
                 (
                     "source /opt/ros/humble/setup.bash;"
                     " source /opt/c3po/ws/install/setup.bash;"
-                    " timeout 3 ros2 topic echo --once /c3po/world_summary"
+                    f" timeout {PROBE_TIMEOUT_S} ros2 topic echo --once /c3po/world_summary"
                 ),
             ]
         )
@@ -332,12 +402,48 @@ def _await_ready(stage: Stage, runner: Runner, env: Dict[str, str]) -> int:
             _check_vision(stage, runner, env)
             warn("/cmd_vel forwarding in the bridge stays OFF until arm_navigation is called")
             return 0
-        runner.sleep(1)
+        runner.sleep(PROBE_INTERVAL_S)
 
-    err("no world summary after 90s — rolling back")
+    # The number is the WORST CASE and says so. The old message read
+    # "after 90s" while the loop was 90 attempts of a 3 s timeout plus a 1 s
+    # sleep — up to six minutes, reported as ninety seconds. Somebody timing
+    # the failure against that number concludes the machine is wedged.
+    err(
+        f"no world summary after {READY_ATTEMPTS} attempts (up to {READY_ATTEMPTS * (PROBE_TIMEOUT_S + PROBE_INTERVAL_S)}s) — rolling back"
+    )
+    _dump_logs_before_rollback(runner)
     for name in existing_containers(runner):
         runner.docker(["rm", "-f", name])
     return 1
+
+
+def _dump_logs_before_rollback(runner: Runner) -> None:
+    """Print each container's tail BEFORE it is destroyed.
+
+    THE ROLLBACK ITSELF IS CORRECT and must stay: `nav2` and `perception` claim
+    the Livox and the RealSense away from gemm, so a failed bring-up that left
+    its containers running would hold the other team's sensors hostage. That is
+    exactly why the `stt` branch above does the opposite — it claims nothing,
+    so leaving it up costs nobody anything.
+
+    What was wrong is that the rollback destroyed the only evidence. On
+    2026-08-26 `nav2-fake` reported "no world summary" and rolled back while
+    every synthetic publisher was at message #200+ and world_model_publisher,
+    planner_server and the lifecycle manager were all alive — and `docker logs`
+    had already been deleted by the time anyone looked. The second run had to
+    be wrapped in a polling loop just to catch the output.
+
+    So: release the sensors, keep the evidence. The tail goes to the terminal
+    the operator is already looking at rather than a file they must be told
+    about.
+    """
+    for name in existing_containers(runner):
+        code, out = runner.docker(["logs", "--tail", "40", name])
+        if code != 0 or not out.strip():
+            continue
+        err(f"  --- last lines of {name} (the container is about to be removed) ---")
+        for line in out.strip().splitlines():
+            err(f"  {line}")
 
 
 def _check_vision(stage: Stage, runner: Runner, env: Dict[str, str]) -> None:

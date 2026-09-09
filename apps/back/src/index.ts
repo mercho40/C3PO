@@ -10,6 +10,15 @@ import { agentRoutes } from "@back/routes/agent";
 import { chatsRoutes } from "@back/routes/chats";
 import { voiceRoutes } from "@back/routes/voice";
 import { reconcileAdmins } from "@back/lib/admin-bootstrap";
+// Imported for its VALUES below, and for its import-time validation.
+//
+// That validation already ran before this line — `admin-bootstrap` imports
+// `env` too — which is precisely the problem with relying on it: the
+// guarantee that WEB_URL is set came from an unrelated module's import graph,
+// and deleting the admin bootstrap from this file would have silently
+// restored the failure `env.ts` was written to end (CORS pinned to the origin
+// `"undefined"`, which is a string, and matches nothing).
+import { env } from "@back/lib/env";
 
 // Before listening: make sure the accounts that are supposed to be able to
 // drive the robot actually can. Awaited so the first request after boot sees
@@ -23,7 +32,7 @@ const app = new Elysia()
   .use(betterAuth)
   .use(
     cors({
-      origin: process.env.WEB_URL!,
+      origin: env.WEB_URL,
       methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
       credentials: true,
       allowedHeaders: ["Content-Type", "Authorization"],
@@ -43,7 +52,7 @@ const app = new Elysia()
       .use(chatsRoutes)
       .use(voiceRoutes),
   )
-  .listen(Number(process.env.PORT) || 3000);
+  .listen(env.PORT);
 
 console.log(
   `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`,

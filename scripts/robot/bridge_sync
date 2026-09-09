@@ -12,6 +12,17 @@
 
 set -uo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# SOURCING _common.sh TURNS `-e` BACK ON. `set` mutates the CALLER's shell, and
+# _common.sh opens with `set -euo pipefail` — so the `-e` deliberately omitted
+# one line above is active from here down, and has been for every run of this
+# script. Verified, not assumed: a script with `set -uo pipefail` that sources
+# one with `-e` aborts on the next failing bare command.
+#
+# `uv sync` below is unaffected either way: it is an `if` CONDITION, which `-e`
+# does not act on, so the documented "a failed sync with a usable venv is a
+# warning" behaviour is intact and always was. The one command this reached was
+# `./scripts/postsync.sh`, which is now handled explicitly below rather than by
+# an option this file says it does not set.
 . "$here/_common.sh"
 
 cd "$BRIDGE_DIR" || { err "no bridge at $BRIDGE_DIR"; exit 1; }
@@ -31,8 +42,26 @@ if uv sync --quiet --extra voice --extra stt; then
     # postsync re-applies the unitree_sdk2py patch. It must succeed after EVERY
     # sync, or the SDK imports a module the package does not ship. Stamp only
     # after the patch so a failed patch cannot be skipped on the next start.
+    #
+    # FATAL, DELIBERATELY. `c3po-bridge.service` runs this as `ExecStartPre=`
+    # with no `-` prefix, so a non-zero exit means the bridge does not start —
+    # and no bridge means no `stop_everything`, which the header above rightly
+    # calls the thing to avoid. The alternative is worse: an unpatched SDK gives
+    # a bridge that comes up, answers /mcp and telemetry, reads "running" on the
+    # console, and CANNOT COMMAND THE ROBOT. That is an e-stop wired to nothing.
+    # A bridge that is visibly down gets fixed in a minute; one that reports
+    # healthy and does nothing is the failure mode that has cost this project
+    # the most.
+    #
+    # Explicit `if !` rather than a bare call, and that matters: this file sets
+    # `-uo pipefail` and deliberately NOT `-e`, but sourcing _common.sh turns
+    # `-e` back on for everything below it. The check should not depend on an
+    # option this file says it does not set.
     if ! ./scripts/postsync.sh; then
-        err "dependency sync succeeded but the Unitree SDK patch failed"
+        err "postsync FAILED — the Unitree SDK patch is not applied"
+        err "  refusing to start: an unpatched SDK answers every health check"
+        err "  and cannot actually command the robot."
+        err "  Fix with: cd $BRIDGE_DIR && ./scripts/postsync.sh"
         exit 1
     fi
     printf '%s' "$hash" > "$stamp" 2>/dev/null || true

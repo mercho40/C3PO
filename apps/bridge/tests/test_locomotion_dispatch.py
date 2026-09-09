@@ -1,12 +1,13 @@
-"""Tests for velocity dispatch (`bridge.skills._locomotion`) and the DDS
-interface pin (`bridge.sdk.connection`).
+"""Tests for velocity dispatch (`bridge.skills._locomotion`).
 
-Both are things that fail *silently* in production — a velocity command sent
-to the wrong channel is a no-op, and an unpinned NIC picks the wrong network
-only sometimes — so they're worth pinning down in tests that never touch DDS.
+This fails *silently* in production — a velocity command sent to the wrong
+channel is a no-op — so it is worth pinning down in tests that never touch DDS.
 
 `_locomotion.SIM_MODE` is read once at import, so tests monkeypatch the module
 attribute rather than the environment.
+
+The DDS interface pin used to be tested here too; it lives in
+test_dds_connection.py now.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import json
 
 import pytest
 
-from bridge.sdk import connection, g1_protocol, g1_rpc
+from bridge.sdk import g1_protocol, g1_rpc
 from bridge.skills import _locomotion
 
 
@@ -184,29 +185,5 @@ def test_set_velocity_parameter_matches_vendor_schema(monkeypatch):
     }
 
 
-# --------------------------------------------------------------------------
-# DDS interface pin
-# --------------------------------------------------------------------------
-
-
-def test_interface_element_defaults_to_autodetermine():
-    assert 'autodetermine="true"' in connection._interface_element(None)
-    assert 'autodetermine="true"' in connection._interface_element("")
-
-
-def test_interface_element_pins_named_nic():
-    element = connection._interface_element("eth0")
-    assert element == '<NetworkInterface name="eth0" />'
-    assert "autodetermine" not in element
-
-
-def test_peer_xml_embeds_pinned_interface_and_host(tmp_path, monkeypatch):
-    monkeypatch.setattr(connection.tempfile, "gettempdir", lambda: str(tmp_path))
-
-    xml = connection._write_peer_xml("192.168.123.161", "eth0").read_text()
-
-    assert '<NetworkInterface name="eth0" />' in xml
-    assert '<Peer address="192.168.123.161" />' in xml
-    # Unicast peers only: multicast is what we can't rely on across the Mac's
-    # Wi-Fi, and onboard the peer address is enough to find the control board.
-    assert "<AllowMulticast>false</AllowMulticast>" in xml
+# The DDS interface-pin tests that lived here moved to test_dds_connection.py
+# when the pin was made to actually reach the SDK.

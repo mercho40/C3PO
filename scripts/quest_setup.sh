@@ -24,8 +24,22 @@
 # will not load — which is the worst possible moment to learn the SSH tunnel
 # dropped.
 #
-# NOT YET TESTED AGAINST AN ACTUAL QUEST. The reasoning above is sound and the
-# checks below are real, but nobody has run this with a headset plugged in.
+# FIRST RUN AGAINST A REAL QUEST: 2026-08-21. adb detection, authorisation, the
+# port checks and all four `adb reverse` forwards work, and the Quest browser
+# loads the console over `http://localhost:3001` — confirmed by Vite
+# server-rendering a request that came from the headset. The secure-context
+# reasoning above holds.
+#
+# Two bugs surfaced on that run, both now fixed and both worth knowing about:
+#   * Vite binds `localhost` -> `::1` ONLY, while `adb reverse` connects over
+#     IPv4. The forward succeeded and the headset got a blank page with nothing
+#     logged anywhere. `apps/web/package.json` now passes `--host 127.0.0.1`.
+#   * The empty-tunnel check below was defeated by `pipefail` (see §3).
+#
+# STILL UNPROVEN: that an immersive WebXR session drives the robot. On the first
+# run no teleop session ever registered (`list_active_tasks` stayed empty),
+# because 8767 was not yet forwarded. Head yaw reaching the robot from a headset
+# has not been observed end to end.
 
 set -euo pipefail
 
@@ -35,13 +49,104 @@ warn() { printf '  %s!%s %s\n' "$_yellow" "$_reset" "$1"; }
 err()  { printf '  %s✗%s %s\n' "$_red" "$_reset" "$1" >&2; }
 say()  { printf '\n%s%s%s\n' "$_bold" "$1" "$_reset"; }
 
+# WHOSE SERVER IS THAT, ACTUALLY?
+#
+# "Something is listening" is not "our app is listening", and on 2026-09-08 that
+# gap cost a whole headset session. Port 3001 held two strangers in succession:
+# a Vite left running for two WEEKS from a different checkout, and then a
+# Next.js dev server belonging to an unrelated project. Both answered. Both were
+# forwarded to the headset. What the operator saw was somebody else's website,
+# with no error anywhere naming the cause -- and a login form no account could
+# ever satisfy, because it was not our login form.
+#
+# This script already refuses to forward to a DEAD port, on the stated grounds
+# that the failure would otherwise surface later, inside the headset. A forward
+# to the WRONG LIVE port breaks the same promise and costs more to diagnose,
+# because every check reports healthy.
+#
+# The owner's working directory is the cheapest reliable signal: a dev server
+# for this repo runs inside this repo. Only meaningful for the servers that run
+# HERE -- 8767 and the camera port are ssh tunnels, where the local owner is ssh
+# by design.
+port_owner_pid() { lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | head -1; }
+port_owner_cwd() { lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; }
+port_owner_cmd() { ps -o command= -p "$1" 2>/dev/null | cut -c1-90; }
+
+# THE CAMERA PORT IS READ, NOT HARDCODED, AND THAT IS THE WHOLE POINT.
+#
+# It was hardcoded to 8081, and on 2026-08-27 an operator wearing the headset
+# reported "i cannot see the camara" while everything else worked. Nothing was
+# broken. The feed had MOVED: `apps/bridge` now serves it on 8001 (see the
+# "WHY NOT PORT 8081" note in `mcp_server.py` — 8081 belongs to the vision
+# container, which is dead in exactly the case this feed exists for), and
+# `PUBLIC_ROBOT_CAM_URL` was updated to match. This list was not.
+#
+# So the console asked the headset's own `127.0.0.1:8001`, where nothing is
+# listening, the <img> errored, and `CameraLayer.draw` returned before drawing
+# anything — silently, because a camera with no frame is indistinguishable
+# from a camera that has not connected yet. Everything else reaches the bridge
+# through apps/back on 3000, which IS forwarded, which is exactly why movement
+# worked and only the picture was missing.
+#
+# Two places had to agree and one of them moved. Reading the port the console
+# will actually ask for means they cannot disagree again.
+_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cam_port=""
+cam_from=""
+# `.env` first, `.env.example` as the fallback: `.env` is gitignored, so a
+# fresh clone has none, and silently forwarding nothing would reproduce the
+# very symptom this reads the file to prevent. Forwarding the documented
+# default instead is safe — if it is the wrong port, the listening check below
+# says so out loud, which is the whole contract of this script.
+for _env in "$_repo/apps/web/.env" "$_repo/apps/web/.env.example"; do
+    [ -f "$_env" ] || continue
+    cam_url=$(sed -n 's/^[[:space:]]*PUBLIC_ROBOT_CAM_URL[[:space:]]*=[[:space:]]*//p' \
+        "$_env" | tail -n 1 | tr -d '"'\''[:space:]')
+    # host:port from the URL, and only if the port is digits. No port means
+    # the scheme default, which nothing here tunnels — leave it empty and say
+    # so rather than forwarding a guess.
+    cam_port=$(printf '%s' "$cam_url" | sed -n 's#^[a-zA-Z]*://[^/:]*:\([0-9][0-9]*\).*#\1#p')
+    if [ -n "$cam_port" ]; then cam_from="${_env##*/}"; break; fi
+done
+
 # port:what-it-is:fatal
 PORTS=(
     "3001:web console (vite):yes"
     "3000:apps/back API:yes"
     "8767:teleop stream (tunnel to robot):yes"
-    "8081:camera MJPEG (tunnel to robot):no"
 )
+if [ -n "$cam_port" ]; then
+    # WHAT FORWARDING THIS PORT ALSO FORWARDS.
+    #
+    # 8001 is not a camera port. It is the BRIDGE, and it serves `/mcp` — the
+    # tool surface that can walk the robot — with no authentication of its
+    # own, on the same port as `/camera/*`.
+    # `apps/back/src/routes/telemetry.ts` puts it plainly: "Never hand a
+    # browser a route to that port." This line does exactly that, for the
+    # Quest's browser, for as long as the cable is connected.
+    #
+    # WHY IT IS STILL HERE. The attack does not work today: the bridge sends
+    # `Access-Control-Allow-Origin` on `/camera/*` and NOWHERE else, so a page
+    # in the headset browser cannot preflight a POST to `/mcp`, and
+    # `test_camera_relay.py` fails if that header ever appears outside
+    # `camera_relay.py`. The protection is a test, not an accident.
+    #
+    # THE REAL FIX, when somebody is wearing the headset to check it: serve
+    # the camera through `apps/back` on 3000 — already forwarded, already
+    # behind Better Auth, already how `/telemetry/*` and `/map/costmap.png`
+    # reach the console. Then this forward goes away and the CORS grant with
+    # it. It needs a streaming MJPEG proxy, which is a new shape for that
+    # service, which is why it is not done blind.
+    PORTS+=("$cam_port:camera MJPEG + bridge /mcp (see note above):no")
+    # Say WHICH file the port came from. `cam_from` was recorded and then never
+    # read (shellcheck SC2034), which is a shame: `.env` and `.env.example` can
+    # disagree, and "the headset has no picture" is exactly when you want to
+    # know that the port being forwarded came from the example file rather than
+    # from the one you edited.
+    ok "camera port $cam_port, read from apps/web/$cam_from"
+else
+    warn "no port in PUBLIC_ROBOT_CAM_URL — the headset will have no picture"
+fi
 
 say "1. adb"
 if ! command -v adb >/dev/null 2>&1; then
@@ -82,15 +187,31 @@ for entry in "${PORTS[@]}"; do
     # promises to prevent, and it was committing it. Forcing a byte through
     # the channel is what tells them apart.
     listening=0
+    # The camera port comes from PUBLIC_ROBOT_CAM_URL and is tunnelled like
+    # 8767, so it needs the forced-byte probe rather than `nc -z`. Naming it
+    # by variable keeps this branch correct when the feed moves again, which
+    # is precisely what caught us out when it moved from 8081 to 8001.
     case "$port" in
-        8081|8767)
-            if curl -sS --max-time 4 -o /dev/null "http://127.0.0.1:$port/" 2>&1 \
-                 | grep -qE "reset by peer|Empty reply|Recv failure"; then
-                listening=0   # tunnel up, nothing behind it on the robot
-                tunnel_empty=1
-            elif nc -z 127.0.0.1 "$port" 2>/dev/null; then
-                listening=1
-            fi
+        8767|"${cam_port:-__none__}")
+            # Capture first, match second. Under `set -o pipefail` (line 31) a
+            # `curl | grep` pipeline reports CURL's status, not grep's — and the
+            # curl that proves the tunnel is empty exits 52/56 by definition. So
+            # the match was computed correctly and then thrown away, the `elif`
+            # ran, and `nc -z` awarded the dead port a green tick. That is the
+            # failure this script's header promises to prevent, committed again
+            # by the fix for it. Found with a real headset on 2026-08-21.
+            probe=$(curl -sS --max-time 4 -o /dev/null "http://127.0.0.1:$port/" 2>&1 || true)
+            case "$probe" in
+                *"reset by peer"*|*"Empty reply"*|*"Recv failure"*)
+                    listening=0   # tunnel up, nothing behind it on the robot
+                    tunnel_empty=1
+                    ;;
+                *)
+                    if nc -z 127.0.0.1 "$port" 2>/dev/null; then
+                        listening=1
+                    fi
+                    ;;
+            esac
             ;;
         *)
             if nc -z 127.0.0.1 "$port" 2>/dev/null || nc -z ::1 "$port" 2>/dev/null; then
@@ -98,7 +219,43 @@ for entry in "${PORTS[@]}"; do
             fi
             ;;
     esac
+    # Ownership, for the servers that run on this machine. See the note beside
+    # `port_owner_pid`. A stranger holding the port is a HARD failure: forwarding
+    # it hands the headset an app we did not build, and every other check in this
+    # script will still say green.
+    wrong_owner=0
     if [ "$listening" = "1" ]; then
+        case "$port" in
+            3000|3001)
+                _pid="$(port_owner_pid "$port")"
+                _cwd=""
+                [ -n "$_pid" ] && _cwd="$(port_owner_cwd "$_pid")"
+                case "$_cwd" in
+                    "$_repo"|"$_repo"/*)
+                        : ;;                       # ours
+                    "")
+                        # lsof gave nothing (permissions, or a process that just
+                        # exited). Not proof of a stranger, so do not fail on it.
+                        warn "$port  $label — listening, but the owner could not be identified"
+                        ;;
+                    *)
+                        wrong_owner=1 ;;
+                esac
+                ;;
+        esac
+    fi
+
+    if [ "$wrong_owner" = "1" ]; then
+        err "$port  $label — held by something OUTSIDE this checkout"
+        echo "     pid $_pid  cwd: $_cwd"
+        echo "     $(port_owner_cmd "$_pid")"
+        echo "     this repo: $_repo"
+        echo "     Forwarding it would hand the headset that app instead of the"
+        echo "     console — which is exactly what happened on 2026-09-08."
+        echo "     Stop it, or run the dev server from this checkout:"
+        echo "       kill $_pid"
+        fatal=1
+    elif [ "$listening" = "1" ]; then
         ok "$port  $label"
     elif [ "$required" = "yes" ]; then
         if [ "${tunnel_empty:-0}" = "1" ]; then
@@ -125,8 +282,10 @@ if [ "$fatal" = "1" ]; then
     echo "     bun run dev                                  # 3000 + 3001"
     echo "     ssh -N -o ControlMaster=no \\"
     echo "         -L 8001:127.0.0.1:8001 \\"
-    echo "         -L 8081:127.0.0.1:8081 \\"
-    echo "         -L 8767:127.0.0.1:8767 c3po              # 8767 + 8081"
+    echo "         -L 8767:127.0.0.1:8767 c3po              # 8767 + the camera"
+    echo
+    echo "     the camera rides 8001 with the bridge — PUBLIC_ROBOT_CAM_URL"
+    echo "     in apps/web/.env is what decides, and this script follows it."
     exit 1
 fi
 

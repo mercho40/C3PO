@@ -320,7 +320,17 @@ check_not_contains "PID 1 never follows unit symlinks into the writable checkout
 
 bridge_unit_source="$(cat "$repo/scripts/robot/c3po-bridge.service")"
 check_contains "systemd directly supervises the bridge" "Type=exec" "$bridge_unit_source"
-check_contains "the bridge daemon binds to the robot LAN" "Environment=BRIDGE_HOST=0.0.0.0" "$bridge_unit_source"
+# LOOPBACK, NOT THE LAN. This asserted `BRIDGE_HOST=0.0.0.0` until 2026-09-06,
+# which pinned the wrong behaviour: /mcp can walk a 35 kg humanoid and carries no
+# authentication of its own, so a wildcard bind put it on the school Wi-Fi for
+# anyone. Five other places in the repo already said loopback — .env.example, the
+# module default, run_c3po, telemetry.ts and OPERATIONS — and this test was
+# holding the one that disagreed in place. Reach it through the documented
+# tunnel; docs/OPERATIONS.md has the redeploy steps.
+check_contains "the bridge daemon binds loopback, not the LAN" \
+    "Environment=BRIDGE_HOST=127.0.0.1" "$bridge_unit_source"
+check_not_contains "the bridge daemon does not bind a wildcard address" \
+    "Environment=BRIDGE_HOST=0.0.0.0" "$bridge_unit_source"
 check_contains "the bridge permits the local web dev origins" \
     "Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001" \
     "$bridge_unit_source"
@@ -361,6 +371,88 @@ check_contains "unitree_slam is treated as a locomotion commander" \
 # Optional for a direct run on the robot, where it is not installed. Package/CI
 # runs set C3PO_REQUIRE_SHELLCHECK=1 so a missing analyzer is a failure rather
 # than a deceptively green skipped gate.
+echo "== teleop readiness =="
+#
+# `run_teleop` used to sleep 2 s and ask whether the process still existed. A
+# server that comes up, fails to bind 8767 and sits there is ALIVE — so it
+# printed "teleop stream up" and handed the operator a port serving nothing.
+# `quest_setup.sh` then forwards that port to the headset, where it finally
+# surfaces as a session that will not start, a long way from the cause.
+#
+# `run_c3po` was rewritten for exactly this bug and waits for its port. These
+# assert the sidecar learned the same lesson.
+
+run_teleop_src="$(cat "$repo/scripts/robot/run_teleop")"
+check_contains "teleop start waits for the port, not just the process" \
+    "nc -z 127.0.0.1" "$run_teleop_src"
+check_contains "teleop start distinguishes running-but-not-listening" \
+    "never bound" "$run_teleop_src"
+check_contains "teleop start gives up early when the process died" \
+    'sidecar_pid "$TELEOP_PID" >/dev/null 2>&1 || break' "$run_teleop_src"
+check_not_contains "teleop start no longer reports success on a bare sleep" \
+    'sleep 2
+
+if sidecar_pid' "$run_teleop_src"
+
+echo "== quest port ownership =="
+#
+# THE FAILURE THIS SECTION EXISTS FOR, 2026-09-08.
+#
+# `quest_setup.sh` verified that something was LISTENING on 3001 and forwarded
+# it to the headset. Two different strangers held that port in succession: a
+# Vite left running for two weeks from another checkout, and a Next.js dev
+# server from an unrelated project. Both answered a TCP connect, so both passed.
+# The operator put the headset on and got somebody else's website, with a login
+# form no account could satisfy -- and every check in the script said green.
+#
+# These tests exercise the real classifier against real listeners, rather than
+# grepping the script for the word "cwd": the thing worth proving is that a
+# process outside this repo is actually rejected.
+
+quest_setup_src="$(cat "$repo/scripts/quest_setup.sh")"
+check_contains "quest setup identifies who owns a local port" \
+    "port_owner_cwd" "$quest_setup_src"
+check_contains "quest setup fails on a port held from outside the checkout" \
+    "held by something OUTSIDE this checkout" "$quest_setup_src"
+
+# The classifier, lifted verbatim from the script so the test cannot drift from
+# an implementation it only pretends to check.
+_owner_pid() { lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | head -1; }
+_owner_cwd() { lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; }
+_classify() {
+    local port="$1" pid cwd
+    pid="$(_owner_pid "$port")"
+    [ -n "$pid" ] || { printf 'nothing'; return; }
+    cwd="$(_owner_cwd "$pid")"
+    case "$cwd" in
+        "$repo"|"$repo"/*) printf 'ours' ;;
+        "")                printf 'unknown' ;;
+        *)                 printf 'stranger' ;;
+    esac
+}
+
+# A listener started from INSIDE the repo is ours.
+( cd "$repo" && python3 -m http.server 39311 >/dev/null 2>&1 ) &
+_ours_job=$!
+disown "$_ours_job" 2>/dev/null || true
+sleep 2
+check "a port served from inside the checkout is accepted" "ours" "$(_classify 39311)"
+kill "$_ours_job" 2>/dev/null || true
+
+# A listener started from OUTSIDE it is not, however healthy it looks.
+( cd /tmp && python3 -m http.server 39312 >/dev/null 2>&1 ) &
+_them_job=$!
+disown "$_them_job" 2>/dev/null || true
+sleep 2
+check "a port served from outside the checkout is rejected" "stranger" "$(_classify 39312)"
+kill "$_them_job" 2>/dev/null || true
+
+# And an unused port is neither -- "nothing is listening" is a different
+# problem with a different message, and must not be reported as a stranger.
+check "an unused port is not mistaken for a stranger" "nothing" "$(_classify 39313)"
+
+wait 2>/dev/null || true
+
 echo "== shellcheck =="
 if command -v shellcheck >/dev/null 2>&1; then
     while IFS= read -r script; do

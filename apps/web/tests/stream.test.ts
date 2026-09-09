@@ -23,6 +23,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildFrame,
   connectTeleop,
+  idlePayload,
   type TeleopInput,
 } from "../src/lib/teleop/stream";
 
@@ -276,5 +277,72 @@ describe("stall detection — 'Conectado' on a dead link", () => {
     } finally {
       h.restore();
     }
+  });
+});
+
+describe("observe-only — a headset that watches and commands nothing", () => {
+  /**
+   * The failure this guards against is not a wrong movement, it is a WRONG
+   * BELIEF: someone puts on a headset having been told it is passive, turns
+   * their head to look around, and the robot turns. Every assertion below is
+   * a pose that WOULD command something in a normal session.
+   */
+
+  test("a large head yaw commands nothing", () => {
+    const f = buildFrame(
+      input({ observeOnly: true, yawErrorRadians: BIG_YAW }),
+    );
+    expect(f.enabled).toBe(false);
+    expect(f.head.yaw).toBe(0);
+  });
+
+  test("a held walk button commands nothing", () => {
+    for (const dir of ["forward", "back"] as const) {
+      const f = buildFrame(input({ observeOnly: true, walking: dir }));
+      expect(f.enabled).toBe(false);
+      expect(f.walk).toBe(0);
+    }
+  });
+
+  test("requested arms are not mirrored", () => {
+    const f = buildFrame(
+      input({
+        observeOnly: true,
+        armsRequested: true,
+        left: {
+          position: [0.2, 1.3, -0.3],
+          orientation: [0, 0, 0, 1],
+          grip: 0.9,
+        },
+      }),
+    );
+    expect(f.arms).toBe(false);
+    expect(f.hands.left?.tracked).not.toBe(true);
+  });
+
+  test("everything at once still yields exactly the idle payload", () => {
+    // The worst case: an observer walking, turning and gesturing at once.
+    const f = buildFrame(
+      input({
+        observeOnly: true,
+        yawErrorRadians: BIG_YAW,
+        walking: "forward",
+        armsRequested: true,
+        headPosition: [1, 2, 3],
+      }),
+    );
+    expect(f).toEqual(idlePayload());
+  });
+
+  test("omitting the flag is unchanged behaviour, not silent passivity", () => {
+    // Default-off matters as much as the flag working: every existing caller
+    // omits it, and a frame that quietly stopped commanding would be a robot
+    // that stopped responding with nothing to point at.
+    const normal = buildFrame(input({ yawErrorRadians: BIG_YAW }));
+    expect(normal.enabled).toBe(true);
+    expect(normal.head.yaw).toBeCloseTo(BIG_YAW, 6);
+    expect(
+      buildFrame(input({ observeOnly: false, walking: "forward" })).walk,
+    ).toBe(1);
   });
 });

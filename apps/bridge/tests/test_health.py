@@ -19,8 +19,26 @@ CLOSED = json.dumps(
 
 BASE = dict(
     bridge_pid=1234,
+    # No ring by default. With no stage enabled and no containers that is the
+    # NORMAL state — the sensors belong to the other team most of the time —
+    # so it must not colour the baseline every one of these tests builds on.
+    scan_json=None,
+    enabled_stage=None,
     perception_containers=[],
     gemm_containers=[],
+)
+
+RING = json.dumps(
+    {
+        "v": 1,
+        "frame": "base_footprint",
+        "a0_deg": -180.0,
+        "step_deg": 3.0,
+        "max_cm": 1200,
+        "r_cm": [None] * 119 + [200],
+        "age_s": 0.2,
+        "stale": False,
+    }
 )
 
 
@@ -144,3 +162,251 @@ def test_the_report_counts_problems():
     args["bridge_pid"] = None
     out = render(assess(gate_json=None, **args))
     assert "2 problem(s)" in out
+
+
+# --- the lidar ring ---------------------------------------------------------
+#
+# The ring is drawn to an operator whose eyes are covered. "Is it arriving" is
+# a question they cannot answer from inside the headset, so it has to be
+# answerable from the robot's own side, in the command somebody already types.
+
+
+def test_no_ring_and_no_perception_is_not_a_fault():
+    """The daily state. A red line here every day trains people to ignore this.
+
+    The Livox and the RealSense belong to the other team most of the time, and
+    a health check that calls the normal case broken is worse than one that
+    does not mention it.
+    """
+    report = assess(gate_json=ARMED, **BASE)
+    assert "lidar ring" not in problem_names(report)
+    assert "no perception stage" in detail_for(report, "lidar ring")
+
+
+def test_no_ring_WHILE_perception_runs_is_a_fault():
+    """Something is publishing and the ring is not reaching this process.
+
+    This is the shape of the bug that has bitten this project five times: a
+    component that is running, correct, and connected to nothing.
+    """
+    base = dict(BASE)
+    base["enabled_stage"] = "fake"
+    base["perception_containers"] = ["c3po-perception-nav"]
+    report = assess(gate_json=ARMED, **base)
+    assert "lidar ring" in problem_names(report)
+
+
+def test_nav_up_by_hand_with_no_ring_is_a_NOTE_not_a_fault():
+    """`perception_up` enables no unit, so we cannot tell which stage it is.
+
+    `fake` owes a ring and `odometry` does not, and both run the same
+    container. Calling this a fault would put a red line on a correctly
+    running `odometry` — and this module already argues, about the
+    enabled-unit check, that a health report which cries wolf gets ignored.
+    Guessing in the other direction and staying silent would hide the real
+    fault. So: say it, name the stages that owe a ring, flag nothing.
+    """
+    base = dict(BASE)
+    base["perception_containers"] = ["c3po-perception-nav"]
+    report = assess(gate_json=ARMED, **base)
+    assert "lidar ring" not in problem_names(report)
+    detail = detail_for(report, "lidar ring")
+    assert "nav is up" in detail
+    assert "fake" in detail
+
+
+def test_the_ring_stages_are_the_ones_that_really_launch_the_publisher():
+    """RING_STAGES must stay in step with apps/perception/bringup/spec.py.
+
+    The list is the difference between "no ring is a fault" and "no ring is
+    expected", and it lives in a different app from the launch files it
+    describes. A stage renamed there would silently stop being checked here.
+    """
+    import re
+    from pathlib import Path as _Path
+
+    from bridge.health import RING_STAGES
+
+    spec = _Path(__file__).resolve().parents[3] / "apps" / "perception" / "bringup" / "spec.py"
+    declared = set(re.findall(r'^    "([a-z0-9-]+)": Stage\(', spec.read_text(), re.M))
+    assert declared, "the stage regex found nothing — it has drifted"
+    missing = sorted(set(RING_STAGES) - declared)
+    assert not missing, "RING_STAGES names stages that no longer exist: {}".format(missing)
+
+
+def test_a_live_ring_reports_how_many_bearings_saw_something():
+    base = dict(BASE)
+    base["scan_json"] = RING
+    base["perception_containers"] = ["c3po-perception-nav"]
+    report = assess(gate_json=ARMED, **base)
+    detail = detail_for(report, "lidar ring")
+    assert "lidar ring" not in problem_names(report)
+    assert "1/120" in detail
+    assert "base_footprint" in detail
+
+
+def test_a_stale_ring_is_a_problem_even_though_it_arrived():
+    """The dangerous one. A ring that stopped updating looks like a still room.
+
+    `present and stale` is not a lesser version of `present`; it is the state
+    where the operator is being shown a memory and told nothing.
+    """
+    base = dict(BASE)
+    base["scan_json"] = json.dumps(
+        {"v": 1, "r_cm": [200], "stale": True, "age_s": 4.1, "frame": "base_footprint"}
+    )
+    base["perception_containers"] = ["c3po-perception-nav"]
+    report = assess(gate_json=ARMED, **base)
+    assert "lidar ring" in problem_names(report)
+    assert "STALE" in detail_for(report, "lidar ring")
+
+
+def test_a_stale_string_is_not_treated_as_true_or_false_by_truthiness():
+    """Same rule as the gate: `is True`, never truthiness.
+
+    A JSON `"stale": "false"` is a truthy string. Reading it loosely would
+    report a fresh ring as stale, or worse, the reverse.
+    """
+    base = dict(BASE)
+    base["scan_json"] = json.dumps(
+        {"v": 1, "r_cm": [200, None], "stale": "false", "frame": "base_footprint"}
+    )
+    base["perception_containers"] = ["c3po-perception-nav"]
+    report = assess(gate_json=ARMED, **base)
+    assert "lidar ring" not in problem_names(report)
+    assert "1/2" in detail_for(report, "lidar ring")
+
+
+def test_a_503_hint_body_reads_as_no_ring_not_as_a_crash():
+    """The bridge answers 503 with a JSON hint when nothing is publishing.
+
+    `_parse` returns None for anything without the shape, so the hint body
+    degrades to "no ring" rather than being mistaken for one.
+    """
+    base = dict(BASE)
+    base["scan_json"] = json.dumps({"error": "no scan received", "hint": "..."})
+    report = assess(gate_json=ARMED, **base)
+    # No stage running, so this is the benign branch — but crucially it did not
+    # come back as a ring with 0 bearings, which would read as a clear room.
+    assert "lidar ring" not in problem_names(report)
+    assert "0/0" not in detail_for(report, "lidar ring")
+
+
+def test_a_broken_ring_does_not_blame_the_bridge():
+    """The ring comes from the nav container; the bridge only relays it.
+
+    Pointing somebody at the bridge for a missing scan sends them to restart
+    the one process that owns `stop_everything` — taking teleop down and
+    leaving the actual cause untouched.
+
+    This used to assert against `repairs_for()`, a health-report field that
+    named units to restart. `main` removed that feature (2026-09), so the same
+    property is now asserted directly: the ring is a problem, and the bridge is
+    not the thing reported as broken.
+    """
+    base = dict(BASE)
+    base["enabled_stage"] = "fake"
+    base["perception_containers"] = ["c3po-perception-nav"]
+    report = assess(gate_json=ARMED, **base)
+
+    assert "lidar ring" in problem_names(report)
+    assert "bridge" not in problem_names(report)
+
+
+# --- liveness detection -----------------------------------------------------
+#
+# Caught on the robot 2026-08-27: c3po_health printed "bridge DOWN" while the
+# bridge was answering /telemetry/scan and /telemetry/gate. The unit had been
+# switched to Type=exec, which writes no pidfile, so the only pidfile on disk
+# was a three-day-old leftover naming a dead process.
+
+
+def test_a_bridge_that_answers_is_running_even_with_no_pidfile():
+    """Proof of life beats lifecycle bookkeeping.
+
+    Type=exec starts the interpreter directly and writes nothing. Reporting
+    DOWN for a process that just returned a gate reading is the same class of
+    error as this module's original sin.
+    """
+    report = assess(gate_json=ARMED, **dict(BASE, bridge_pid=None))
+    assert "bridge" not in problem_names(report)
+    assert "answering" in detail_for(report, "bridge")
+
+
+def test_a_live_pidfile_is_still_preferred_when_present():
+    report = assess(gate_json=ARMED, **dict(BASE, bridge_pid=4242))
+    assert "pid 4242" in detail_for(report, "bridge")
+
+
+def test_no_pidfile_and_no_answer_is_still_DOWN():
+    """The one case that must stay a problem.
+
+    Nothing on the port and nothing in the pidfile is a dead bridge, and a
+    dead bridge means no stop_everything — which is the reason this check
+    exists at all.
+    """
+    report = assess(gate_json=None, **dict(BASE, bridge_pid=None))
+    assert "bridge" in problem_names(report)
+    assert "DOWN" in detail_for(report, "bridge")
+
+
+def test_a_stale_pidfile_does_not_resurrect_a_dead_bridge():
+    """`_read_pid` returns None for a pid that is not alive, so this is the
+    same input as "no pidfile" — asserted so the two paths cannot drift."""
+    report = assess(gate_json=None, **dict(BASE, bridge_pid=None))
+    assert "DOWN" in detail_for(report, "bridge")
+
+
+# --- where it is listening --------------------------------------------------
+#
+# Four places described this port and they did not agree: `.env.example` and the
+# code default said 127.0.0.1, `docs/OPERATIONS.md` and apps/back's
+# `telemetry.ts` said loopback, and `scripts/robot/c3po-bridge.service` set
+# BRIDGE_HOST=0.0.0.0 — which is what `ss -ltnp` found actually running on the
+# robot on 2026-08-28. So the report reads the SOCKET, not any of the four.
+#
+# The unit was moved to 127.0.0.1 on 2026-09-06, so all five now agree. These
+# tests keep their teeth anyway, and deliberately: reading the socket is what
+# catches the NEXT disagreement, including a unit that gets taken from another
+# branch again (which is how the 0.0.0.0 arrived — 06e5ea9). Until the robot
+# has been redeployed, the machine is still binding the wildcard.
+
+
+def check_names(report):
+    return [c.name for c in report.checks]
+
+
+def test_a_wildcard_bind_is_a_problem_and_says_why():
+    # `/mcp` can walk the robot and has no auth of its own. On a shared school
+    # LAN a wildcard bind means anybody on the Wi-Fi can drive it.
+    report = assess(gate_json=CLOSED, bind_hosts=["0.0.0.0"], **BASE)
+    detail = detail_for(report, "bridge bind")
+    assert "0.0.0.0" in detail
+    assert "no auth" in detail
+    assert "bridge bind" in problem_names(report)
+
+
+def test_ipv6_any_counts_too():
+    report = assess(gate_json=CLOSED, bind_hosts=["::"], **BASE)
+    assert "bridge bind" in problem_names(report)
+
+
+def test_loopback_is_reported_and_is_not_a_problem():
+    report = assess(gate_json=CLOSED, bind_hosts=["127.0.0.1"], **BASE)
+    assert "loopback" in detail_for(report, "bridge bind")
+    assert "bridge bind" not in problem_names(report)
+
+
+def test_an_unknown_bind_says_nothing_rather_than_guessing():
+    # `ss` missing, or output this could not parse. Empty is NOT evidence of
+    # loopback, and reporting a clean bind from no information would be the
+    # confident-wrong answer this module exists to avoid.
+    report = assess(gate_json=CLOSED, bind_hosts=[], **BASE)
+    assert "bridge bind" not in check_names(report)
+
+
+def test_a_wildcard_alongside_loopback_still_reports_the_wildcard():
+    # Dual-stack machines list both. The permissive one is the one that counts.
+    report = assess(gate_json=CLOSED, bind_hosts=["127.0.0.1", "0.0.0.0"], **BASE)
+    assert "bridge bind" in problem_names(report)
+    assert "0.0.0.0" in detail_for(report, "bridge bind")

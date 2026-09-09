@@ -246,8 +246,11 @@ def judge(samples: Sequence[Sample], sustain_n: int = SUSTAIN_S) -> List[Verdict
         else:
             out.append(Verdict("thermal", "PASS", f"peak tj {max(temps)} C"))
 
-    clocks = [s.mean_clock_mhz() for s in samples]
-    clocks = [c for c in clocks if c is not None]
+    # Filtered inline, like `temps` above and `emc` below. Building the list
+    # and then rebinding the same name to a filtered copy leaves it typed as
+    # "may contain None" — which is what it was, and which `min()` below would
+    # have compared against an int.
+    clocks = [c for c in (s.mean_clock_mhz() for s in samples) if c is not None]
     if not clocks:
         out.append(Verdict("clocks", "UNKNOWN", "no CPU clocks in the samples"))
     elif min(clocks) < CLK_FAIL_MHZ:

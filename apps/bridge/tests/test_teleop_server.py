@@ -433,3 +433,133 @@ async def test_a_failing_dispatch_still_stops_the_robot(session, sent, monkeypat
     await asyncio.wait_for(srv._dispatch_loop(session, _FakeWs()), timeout=2.0)
 
     assert sent[-1] == (0.0, 0.0, 0.0, srv.STAND_HEIGHT)
+
+
+# --- liveness: the head is what tells a person from a wedged client ----------
+#
+# The duration latch exists for "a wedged client still faithfully sending
+# enabled:true while nobody is wearing the headset", and its docstring says it
+# was not expected to fire in normal use. That was true when walking meant
+# TAPPING a button. A thumbstick held to cross a room reaches 8 s every time —
+# it tripped seven times in one session on 2026-08-24 and read as "the walking
+# is a bit buggy".
+#
+# So head movement refreshes the window. The tests that matter most here are
+# the ones proving the ORIGINAL case still trips.
+
+
+async def test_a_frozen_head_still_trips_the_latch(session, sent, monkeypatch):
+    """The case the latch was written for, unchanged.
+
+    A wedged client repeating its last frame produces zero head movement,
+    forever. That is exactly what makes it detectable.
+    """
+    monkeypatch.setattr(srv, "MAX_CONTINUOUS_MOTION_S", 0.05)
+    start = 1000.0
+    for i, t in enumerate((start, start + 0.02, start + 0.2)):
+        # Same head pose every frame — the definition of wedged.
+        session.ingest(parse_frame(frame(seq=i + 1, walk=1.0)))
+        session.last_frame_at = t
+        await srv._dispatch_once(session, t)
+
+    assert session.deadman_tripped is True
+    assert sent[-1][0] == 0.0
+
+
+async def test_a_moving_head_keeps_the_window_open(session, sent, monkeypatch):
+    """An operator holding the stick and looking around does not get cut off."""
+    monkeypatch.setattr(srv, "MAX_CONTINUOUS_MOTION_S", 0.05)
+    start = 1000.0
+    yaw = 0.0
+    for i in range(12):
+        # Well past LIVENESS_YAW_RAD each step: a real head moves more than
+        # this just breathing over the same interval.
+        yaw += 0.10
+        t = start + i * 0.02
+        session.ingest(
+            parse_frame(frame(seq=i + 1, walk=1.0, head={"yaw": yaw, "pos": [0.0, 1.6, 0.0]}))
+        )
+        session.last_frame_at = t
+        await srv._dispatch_once(session, t)
+
+    assert session.deadman_tripped is False, "a present operator was cut off"
+
+
+async def test_translation_alone_also_counts_as_present(session, sent, monkeypatch):
+    """Leaning or stepping is movement even with the head pointed one way."""
+    monkeypatch.setattr(srv, "MAX_CONTINUOUS_MOTION_S", 0.05)
+    start = 1000.0
+    z = 0.0
+    for i in range(12):
+        z += 0.05  # 5 cm per frame, past LIVENESS_POS_M
+        t = start + i * 0.02
+        session.ingest(
+            parse_frame(frame(seq=i + 1, walk=1.0, head={"yaw": 0.0, "pos": [0.0, 1.6, z]}))
+        )
+        session.last_frame_at = t
+        await srv._dispatch_once(session, t)
+
+    assert session.deadman_tripped is False
+
+
+async def test_micro_jitter_below_the_threshold_does_not_count(session, sent, monkeypatch):
+    """Sensor noise must not read as a person.
+
+    A headset on a table drifts. If that refreshed the window, the latch would
+    be defeated by the exact situation it guards against.
+    """
+    monkeypatch.setattr(srv, "MAX_CONTINUOUS_MOTION_S", 0.05)
+    start = 1000.0
+    yaw = 0.0
+    for i in range(12):
+        yaw += 0.001  # ~0.06 deg/frame, far below LIVENESS_YAW_RAD
+        t = start + i * 0.02
+        session.ingest(
+            parse_frame(frame(seq=i + 1, walk=1.0, head={"yaw": yaw, "pos": [0.0, 1.6, 0.0]}))
+        )
+        session.last_frame_at = t
+        await srv._dispatch_once(session, t)
+
+    assert session.deadman_tripped is True, "drift was mistaken for an operator"
+
+
+async def test_the_hard_ceiling_ignores_liveness(session, sent, monkeypatch):
+    """Motion stays BOUNDED even for a demonstrably present operator.
+
+    Someone wearing the headset with a thumb parked on the stick is a real
+    thing in a shared lab, and head movement would otherwise refresh the window
+    forever.
+    """
+    monkeypatch.setattr(srv, "MAX_CONTINUOUS_MOTION_S", 0.05)
+    monkeypatch.setattr(srv, "MAX_MOTION_HARD_CEILING_S", 0.2)
+    start = 1000.0
+    yaw = 0.0
+    for i in range(20):
+        yaw += 0.10  # moving the whole time
+        t = start + i * 0.03
+        session.ingest(
+            parse_frame(frame(seq=i + 1, walk=1.0, head={"yaw": yaw, "pos": [0.0, 1.6, 0.0]}))
+        )
+        session.last_frame_at = t
+        await srv._dispatch_once(session, t)
+
+    assert session.deadman_tripped is True
+    assert sent[-1][0] == 0.0
+
+
+async def test_release_clears_both_clocks(session, sent, monkeypatch):
+    """Letting go re-arms everything, including the hard ceiling."""
+    monkeypatch.setattr(srv, "MAX_CONTINUOUS_MOTION_S", 0.05)
+    start = 1000.0
+    session.ingest(parse_frame(frame(seq=1, walk=1.0)))
+    session.last_frame_at = start
+    await srv._dispatch_once(session, start)
+    assert session.motion_hard_started_at is not None
+
+    session.ingest(parse_frame(frame(seq=2, walk=0.0, enabled=False)))
+    session.last_frame_at = start + 0.1
+    await srv._dispatch_once(session, start + 0.1)
+
+    assert session.motion_started_at is None
+    assert session.motion_hard_started_at is None
+    assert session.deadman_tripped is False
