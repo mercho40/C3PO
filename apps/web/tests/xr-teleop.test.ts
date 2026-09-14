@@ -16,6 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   angleBetween,
+  buttonPressed,
   drawPerEye,
   fingerCurl,
   restoreOverlayBackground,
@@ -23,8 +24,11 @@ import {
   normalizeAngle,
   quaternionYaw,
   subtract,
+  walkAxisFrom,
+  WALK_STICK_DEADZONE,
   type Vec3,
 } from "../src/lib/webxr/xr-teleop";
+import type { EyePose } from "../src/lib/webxr/stereo";
 
 /** A quaternion for a yaw-only rotation about WebXR's up axis. */
 function yawQuat(radians: number) {
@@ -254,7 +258,7 @@ describe("drawPerEye — why the camera was invisible", () => {
 
   test("sets the viewport for each eye, from the layer", () => {
     const h = harness(["left", "right"], [LEFT, RIGHT]);
-    expect(drawPerEye(h.gl, h.layer, h.pose, h.camera, true)).toBeNull();
+    expect(drawPerEye(h.gl, h.layer, h.pose, h.camera, true).camera).toBeNull();
 
     expect(h.viewportCalls).toEqual([
       [0, 0, 2064, 2208],
@@ -303,13 +307,210 @@ describe("drawPerEye — why the camera was invisible", () => {
       },
     };
 
-    expect(drawPerEye(gl, layer, pose, camera, true)).toBe(boom);
+    expect(drawPerEye(gl, layer, pose, camera, true).camera).toBe(boom);
   });
 
   test("no views is not an error — tracking can be mid-recovery", () => {
     const h = harness([], []);
-    expect(drawPerEye(h.gl, h.layer, h.pose, h.camera, true)).toBeNull();
+    const failed = drawPerEye(h.gl, h.layer, h.pose, h.camera, true);
+    expect(failed.camera).toBeNull();
     expect(h.draws.length).toBe(0);
+  });
+});
+
+/**
+ * The layers must be TOLD WHICH EYE, not just how big it is.
+ *
+ * `stereo.test.ts` proves the placement maths puts one object in front of the
+ * operator. None of that reaches the headset unless `drawPerEye` actually
+ * hands each layer that eye's projection and position — and "correct code that
+ * nothing calls" is a bug this project has now shipped five times. So this
+ * checks the wiring, not the maths.
+ */
+describe("drawPerEye — each layer is handed the eye it is drawing into", () => {
+  const VP = { x: 0, y: 0, width: 2064, height: 2208 };
+
+  /** Two eyes 64 mm apart, with the head one metre up and facing forward. */
+  function stereoPose() {
+    const eye = (x: number, p8: number) => ({
+      projectionMatrix: Object.assign(new Float32Array(16), {
+        0: 0.93,
+        5: 0.78,
+        8: p8,
+        10: -1,
+        11: -1,
+      }),
+      transform: { position: { x, y: 1, z: 0 } },
+    });
+    return {
+      views: [eye(-0.032, -0.09), eye(0.032, 0.09)],
+      // Head at (0, 1, 0): the inverse frame subtracts that, so the eyes come
+      // back as +-32 mm from the head rather than a metre off the floor.
+      transform: {
+        inverse: {
+          matrix: new Float32Array([
+            1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1, 0, 1,
+          ]),
+        },
+      },
+    } as unknown as XRViewerPose;
+  }
+
+  function spy() {
+    const seen: Array<EyePose | null> = [];
+    return {
+      seen,
+      layer: {
+        draw: (eye?: EyePose | null): void => {
+          seen.push(eye ?? null);
+        },
+      },
+    };
+  }
+
+  test("every layer gets a distinct eye, with the head-relative offset", () => {
+    const gl = { viewport: () => {} } as unknown as WebGLRenderingContext;
+    const layer = { getViewport: () => VP } as unknown as XRWebGLLayer;
+    const menu = spy();
+    const scan = spy();
+    const cam: Array<unknown> = [];
+    const camera = { draw: (_o: boolean, eye?: unknown) => cam.push(eye) };
+
+    drawPerEye(gl, layer, stereoPose(), camera, true, menu.layer, scan.layer);
+
+    for (const seen of [menu.seen, scan.seen, cam as typeof menu.seen]) {
+      expect(seen.length).toBe(2);
+      const [l, r] = seen;
+      expect(l).not.toBeNull();
+      expect(r).not.toBeNull();
+      // The eye offsets are relative to the HEAD — +-32 mm — and not the
+      // metre-high position they have in the room. Passing the room position
+      // would place the panel a metre below the operator's feet.
+      expect(l!.offset[0]).toBeCloseTo(-0.032, 6);
+      expect(l!.offset[1]).toBeCloseTo(0, 6);
+      expect(r!.offset[0]).toBeCloseTo(0.032, 6);
+      // And each eye's OWN projection, carrying its own frustum asymmetry.
+      // One shared matrix here is the bug in a different disguise.
+      expect(l!.projection[8]).toBeCloseTo(-0.09, 6);
+      expect(r!.projection[8]).toBeCloseTo(0.09, 6);
+    }
+  });
+
+  test("a pose with no matrices passes null rather than throwing", () => {
+    // A runtime that gives us no projection must degrade to the monoscopic
+    // placement, not take the frame callback down — that callback is what
+    // samples head pose, so an exception here stops steering.
+    const gl = { viewport: () => {} } as unknown as WebGLRenderingContext;
+    const layer = { getViewport: () => VP } as unknown as XRWebGLLayer;
+    const menu = spy();
+    const pose = { views: ["left", "right"] } as unknown as XRViewerPose;
+
+    const failed = drawPerEye(gl, layer, pose, null, true, menu.layer);
+    expect(failed.menu).toBeNull();
+    expect(menu.seen).toEqual([null, null]);
+  });
+});
+
+/**
+ * The layers fail INDEPENDENTLY, and this is a safety property rather than a
+ * tidiness one.
+ *
+ * A single try around all three, plus a caller that nulls `#camera` on failure
+ * and gates the whole draw block on `#camera` existing, meant one camera
+ * shader failure removed the readiness banner ("the robot is limp, do damp →
+ * prepare → 501") and the lidar radar ("there is a wall 40 cm behind you") as
+ * collateral. That is the exact moment an operator wearing a headset has lost
+ * the picture and needs both of those more than they needed the picture.
+ */
+describe("drawPerEye — one broken layer does not take the others down", () => {
+  const LEFT_VP = { x: 0, y: 0, width: 2064, height: 2208 };
+
+  function eyes() {
+    const gl = { viewport: () => {} } as unknown as WebGLRenderingContext;
+    const layer = { getViewport: () => LEFT_VP } as unknown as XRWebGLLayer;
+    const pose = { views: ["left", "right"] } as unknown as XRViewerPose;
+    return { gl, layer, pose };
+  }
+
+  const thrower = (err: unknown) => ({
+    draw: () => {
+      throw err;
+    },
+  });
+
+  test("a dead camera still leaves the menu and the radar drawing", () => {
+    const { gl, layer, pose } = eyes();
+    const boom = new Error("camera shader");
+    const menuDraws: number[] = [];
+    const scanDraws: number[] = [];
+    const failed = drawPerEye(
+      gl,
+      layer,
+      pose,
+      thrower(boom) as unknown as {
+        draw(opaque: boolean, eye?: EyePose | null): void;
+      },
+      true,
+      { draw: () => menuDraws.push(1) },
+      { draw: () => scanDraws.push(1) },
+    );
+    expect(failed.camera).toBe(boom);
+    expect(failed.menu).toBeNull();
+    expect(failed.scan).toBeNull();
+    expect(menuDraws.length).toBe(2);
+    expect(scanDraws.length).toBe(2);
+  });
+
+  test("a dead radar does not cost the operator the picture", () => {
+    const { gl, layer, pose } = eyes();
+    const boom = new Error("scan shader");
+    const camDraws: boolean[] = [];
+    const failed = drawPerEye(
+      gl,
+      layer,
+      pose,
+      { draw: (opaque: boolean) => camDraws.push(opaque) },
+      true,
+      null,
+      thrower(boom),
+    );
+    expect(failed.scan).toBe(boom);
+    expect(failed.camera).toBeNull();
+    expect(camDraws.length).toBe(2);
+  });
+
+  test("a broken layer is not retried for the second eye", () => {
+    // Two eyes at 72-120 Hz means a re-thrown shader error several thousand
+    // times a minute into the frame callback that samples head pose.
+    const { gl, layer, pose } = eyes();
+    let attempts = 0;
+    drawPerEye(
+      gl,
+      layer,
+      pose,
+      null,
+      true,
+      {
+        draw: () => {
+          attempts += 1;
+          throw new Error("menu shader");
+        },
+      },
+      null,
+    );
+    expect(attempts).toBe(1);
+  });
+
+  test("no camera at all still draws the panels", () => {
+    // A session with no stream configured used to be an entirely blank
+    // headset: no picture, and nothing saying why.
+    const { gl, layer, pose } = eyes();
+    const menuDraws: number[] = [];
+    const failed = drawPerEye(gl, layer, pose, null, true, {
+      draw: () => menuDraws.push(1),
+    });
+    expect(menuDraws.length).toBe(2);
+    expect(failed.camera).toBeNull();
   });
 });
 
@@ -363,5 +564,85 @@ describe("overlay transparency — drawn correctly, then painted over", () => {
     const el = root("rgb(6, 9, 15)", "");
     stripOverlayBackground(el);
     expect(el.style.display).toBe("flex");
+  });
+});
+
+describe("walkAxisFrom — the thumbstick that walks the robot", () => {
+  /**
+   * The sign is the whole risk here. Getting it backwards means the robot
+   * walks TOWARD the operator when they pull back to stop it — the panic
+   * gesture producing the opposite of what it asks for, on a 35 kg humanoid,
+   * driven by someone whose eyes are covered.
+   *
+   * Per the gamepad spec, stick Y is NEGATIVE when pushed away from the user.
+   */
+  const AWAY = -1; // pushed away from the operator
+  const TOWARD = 1; // pulled back toward the operator
+
+  test("pushing the stick AWAY walks forward", () => {
+    expect(walkAxisFrom([0, 0, 0, AWAY])).toBe(1);
+  });
+
+  test("pulling the stick BACK walks backward", () => {
+    expect(walkAxisFrom([0, 0, 0, TOWARD])).toBe(-1);
+  });
+
+  test("a resting thumb is not a walk request", () => {
+    for (const y of [0, 0.1, -0.1, 0.3, -0.3, 0.59, -0.59]) {
+      expect(walkAxisFrom([0, 0, 0, y])).toBe(0);
+    }
+  });
+
+  test("the deadzone boundary is inclusive, so exactly-at-threshold moves", () => {
+    expect(walkAxisFrom([0, 0, 0, -WALK_STICK_DEADZONE])).toBe(1);
+    expect(walkAxisFrom([0, 0, 0, WALK_STICK_DEADZONE])).toBe(-1);
+  });
+
+  test("falls back to the two-axis layout when there is no second pair", () => {
+    // Some runtimes report only [x, y]. Reading axes[3] there is undefined,
+    // and undefined must not read as "not walking" when the operator IS.
+    expect(walkAxisFrom([0, AWAY])).toBe(1);
+    expect(walkAxisFrom([0, TOWARD])).toBe(-1);
+    expect(walkAxisFrom([0, 0])).toBe(0);
+  });
+
+  test("no controller, no axes, or garbage is 0 — never a movement", () => {
+    expect(walkAxisFrom(null)).toBe(0);
+    expect(walkAxisFrom(undefined)).toBe(0);
+    expect(walkAxisFrom([])).toBe(0);
+    expect(walkAxisFrom([0])).toBe(0);
+    expect(walkAxisFrom([0, NaN])).toBe(0);
+    expect(walkAxisFrom([0, 0, 0, NaN])).toBe(0);
+    expect(walkAxisFrom([0, Infinity])).toBe(0);
+  });
+
+  test("a fully deflected stick is the same intent as a just-past one", () => {
+    // No proportional speed: walk_velocity's own clamp owns the magnitude, and
+    // a stick that goes faster the harder you push is a stick that surprises
+    // you at the extremes.
+    expect(walkAxisFrom([0, 0, 0, -1])).toBe(walkAxisFrom([0, 0, 0, -0.61]));
+  });
+});
+
+describe("buttonPressed — the read that dispatches a gesture", () => {
+  test("reads `pressed`, not the analogue value", () => {
+    // A trigger resting at 0.02 is not a press. Reading `value` would make a
+    // gesture fire because someone's finger was touching the trigger.
+    expect(buttonPressed({ buttons: [{ pressed: false }] }, 0)).toBe(false);
+    expect(buttonPressed({ buttons: [{ pressed: true }] }, 0)).toBe(true);
+  });
+
+  test("a missing button, gamepad or index is not a press", () => {
+    expect(buttonPressed(null, 0)).toBe(false);
+    expect(buttonPressed(undefined, 0)).toBe(false);
+    expect(buttonPressed({}, 0)).toBe(false);
+    expect(buttonPressed({ buttons: [] }, 0)).toBe(false);
+    expect(buttonPressed({ buttons: [{ pressed: true }] }, 4)).toBe(false);
+  });
+
+  test("a button object without `pressed` is not a press", () => {
+    // Strict === true, so a runtime reporting `{value: 1}` and no `pressed`
+    // does not dispatch motion on a truthiness accident.
+    expect(buttonPressed({ buttons: [{}] }, 0)).toBe(false);
   });
 });

@@ -71,10 +71,39 @@ start_sidecar() {
 
 start_sidecar "teleop stream" bridge.teleop.server "$TELEOP_PID" "$TELEOP_LOG"
 
-sleep 2
+# ALIVE IS NOT LISTENING, AND THIS SCRIPT USED TO CONFIRM THE WRONG ONE.
+#
+# It slept 2 s and asked whether the process still existed. A teleop server that
+# comes up, fails to bind 8767 — the port already taken, an address in use after
+# an unclean stop — and then sits there is ALIVE, so this printed "teleop stream
+# up" and handed the operator a URL that serves nothing. `quest_setup.sh` then
+# forwards that port to the headset, where the failure finally surfaces as a
+# session that will not start, a long way from its cause.
+#
+# `run_c3po` was rewritten for exactly this and waits for the bridge to answer
+# on its port. Same bug, same fix, ported to the sidecar: poll until something
+# is actually accepting on TELEOP_PORT, and give up if the process dies first.
+teleop_port="${TELEOP_PORT:-8767}"
+listening=0
+for _ in $(seq 1 30); do
+    if nc -z 127.0.0.1 "$teleop_port" 2>/dev/null; then
+        listening=1
+        break
+    fi
+    # No point waiting out the timeout for a process that has already exited —
+    # the log will say why, and saying so now is more useful than in 15 s.
+    sidecar_pid "$TELEOP_PID" >/dev/null 2>&1 || break
+    sleep 0.5
+done
 
-if sidecar_pid "$TELEOP_PID" >/dev/null 2>&1; then
-    ok "teleop stream up (pid $(sidecar_pid "$TELEOP_PID"))"
+if [ "$listening" = "1" ]; then
+    ok "teleop stream up (pid $(sidecar_pid "$TELEOP_PID"), listening on $teleop_port)"
+elif sidecar_pid "$TELEOP_PID" >/dev/null 2>&1; then
+    err "teleop stream is RUNNING but never bound $teleop_port"
+    err "  a live process that is not listening is the failure this check exists for:"
+    err "  the headset would be forwarded to a dead port and fail there instead."
+    err "  see $TELEOP_LOG — 'address already in use' is the usual cause"
+    exit 1
 else
     err "teleop stream failed to start — see $TELEOP_LOG"
     exit 1

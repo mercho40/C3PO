@@ -21,6 +21,7 @@
   import {
     ArrowUp,
     ArrowDown,
+    Eye,
     Glasses,
     Hand,
     Link2,
@@ -47,6 +48,9 @@
     checkXrSupport,
     type HandSample,
   } from "$lib/webxr/xr-teleop";
+  import { alertFor, readinessFor } from "$lib/webxr/menu-layer";
+  import { cameraReasonFor } from "$lib/webxr/camera-layer";
+  import { ScanFeed } from "$lib/robot/scan.svelte";
   import {
     buildFrame,
     connectTeleop,
@@ -79,6 +83,19 @@
    * every event that means "the operator is no longer holding this".
    */
   function releaseAllControls() {
+    // Cleared unconditionally, and BEFORE the walking check. This runs on
+    // session end, blur, visibility change and pointer cancel — every "the
+    // operator is no longer holding this" event. Leaving it set would mean the
+    // next stick sample compared against a stale direction, saw no change, and
+    // returned without ever calling startWalking again: the stick would be
+    // dead until the operator waggled it through neutral.
+    stickWalk = null;
+    // Same reasoning for the buttons. A session that ended with the trigger
+    // held would leave `prev.trigger` true, so the NEXT session's first press
+    // is not an edge and does nothing — the operator presses, gets no gesture,
+    // and has no way to know they have to release a button they are not
+    // holding any more.
+    prevButtons = { trigger: false, primary: false };
     if (walking !== null) {
       walking = null;
       if (!bridgeHolds && !loopShouldRun()) {
@@ -169,6 +186,27 @@
   // Latched once the dead-man fires; blocks all motion until the operator
   // visibly lets go (head back to centre / fresh button press).
   let deadManTripped = false;
+
+  //: OBSERVE-ONLY: watch the robot's view, command nothing.
+  //
+  //: For the second person in the room, for a demo, and for checking a camera
+  //: without becoming a commander. Set BEFORE the session starts and never
+  //: changed while one is live — a toggle mid-session would mean the operator
+  //: cannot tell by looking whether the thing on their head is driving.
+  //
+  //: There are two independent ways this page commands the robot — the teleop
+  //: socket the bridge PULLS frames from, and the local `sendVelocity` loop —
+  //: so one flag on one branch would not be enough. Closed at three points:
+  //:   1. entering observe-only calls `disconnectStream()`, and the connect
+  //:      button is disabled for the session, so the socket does not exist;
+  //:   2. `loopShouldRun()` returns false, so the local loop never starts —
+  //:      it keys on `vrActive`, which IS set for an observer;
+  //:   3. `buildFrame()` takes `observeOnly` and returns the idle payload
+  //:      before reading any pose — in the pure policy, where it is tested,
+  //:      rather than in a caller that has to remember.
+  //: Any one would do. Three means a later edit to one of them cannot quietly
+  //: arm a headset whose wearer was told it was passive.
+  let viewOnly = $state(false);
 
   let vrSupported = $state(false);
   let arSupported = $state(false);
@@ -340,6 +378,11 @@
   }
 
   function loopShouldRun(): boolean {
+    // Observe-only commands nothing, and this is the guard that matters most:
+    // the condition below is true whenever `vrActive` is, and an observer's
+    // session sets `vrActive` like any other. Without this line, entering
+    // "view only" would start the velocity loop on the operator's head pose.
+    if (viewOnly) return false;
     // While the socket is up the bridge owns locomotion. Running this loop too
     // would put two writers on SetVelocity. `bridgeHolds`, not `streaming`:
     // a stalled socket is still transmitting.
@@ -459,6 +502,77 @@
     void sendVelocity(wantVx, wantVyaw, STEP_S);
   }
 
+  //: Previous frame's button state, for edge detection. The session reports
+  //: held-state at display rate, so without this a single press of A would
+  //: cycle the highlight through the whole list in under a tenth of a second
+  //: and the trigger would fire the same skill 70 times.
+  let prevButtons = { trigger: false, primary: false };
+
+  /**
+   * The in-headset preset menu: A cycles, trigger fires.
+   *
+   * Fires on the PRESS edge, not the release. A gesture is a one-shot with no
+   * hold semantics, and waiting for release means an operator who presses and
+   * keeps holding gets nothing and presses harder.
+   */
+  function applyMenuButtons(b: { trigger: boolean; primary: boolean }) {
+    const prev = prevButtons;
+    prevButtons = { ...b };
+    // Observers cycle the highlight — reading the list is not commanding — but
+    // the trigger does nothing. Being able to look at what exists is exactly
+    // what someone in view-only mode is there for.
+    if (b.primary && !prev.primary) vr?.advanceMenu();
+    if (viewOnly) return;
+    if (!(b.trigger && !prev.trigger)) return;
+    // `menuSelection` returns null for anything unverified, so this cannot
+    // dispatch untested motion even if the highlight somehow sat on it.
+    const item = vr?.menuSelection;
+    if (!item) return;
+    void runPreset(item.name);
+  }
+
+  //: Which direction the thumbstick is currently asking for, so a change is
+  //: distinguishable from the same intent repeated at frame rate. `onSample`
+  //: fires 72-120 times a second; without this, every frame of a held stick
+  //: would look like a fresh press and keep re-arming the dead-man, which is
+  //: exactly the latch that stops a runaway.
+  let stickWalk: WalkDir | null = null;
+
+  /**
+   * Thumbstick -> walk, with the same rules as the on-screen buttons.
+   *
+   * Only ever drives walking it started itself. If the operator is holding a
+   * DOM button (passthrough, where the overlay composites) that press owns
+   * `walking`, and a stick reading 0 must not cancel it — two input paths
+   * fighting over one piece of state is how a held button silently stops
+   * working.
+   */
+  function applyWalkAxis(axis: -1 | 0 | 1) {
+    // Observers do not walk. `startWalking` would be blocked downstream by
+    // `loopShouldRun()` and by `buildFrame`, but not setting the state at all
+    // means the UI does not show a walk that is not happening either.
+    if (viewOnly) {
+      stickWalk = null;
+      return;
+    }
+    const want: WalkDir | null =
+      axis === 1 ? "forward" : axis === -1 ? "back" : null;
+    if (want === stickWalk) return; // unchanged; do not re-arm anything
+
+    if (want === null) {
+      // Released. Only stop what the stick started — see above.
+      if (stickWalk !== null && walking === stickWalk) stopWalking();
+      stickWalk = null;
+      return;
+    }
+    // Pushed, or pushed the other way. Reverse goes through a stop so the
+    // dead-man re-arms and a new motion window starts, rather than sliding
+    // from forward to back inside one window that never resets.
+    if (walking !== null && walking !== want) stopWalking();
+    stickWalk = want;
+    startWalking(want);
+  }
+
   function startWalking(dir: WalkDir) {
     if (walking) return;
     walking = dir;
@@ -495,10 +609,25 @@
   //: one that blocks on the headset's own consent prompt.
   let enteringVr = false;
 
-  async function enterVr() {
+  /**
+   * @param observe Enter without becoming a commander — see `viewOnly`.
+   */
+  async function enterVr(observe = false) {
     if (enteringVr) return;
     enteringVr = true;
+    viewOnly = observe;
     try {
+      if (observe) {
+        // An already-open teleop socket is the one path that survives every
+        // guard on `viewOnly`: the bridge PULLS frames from it, so it does not
+        // care what this page thinks its mode is. Close it before the headset
+        // goes on, rather than trusting the operator to notice a connected
+        // stream and a passive session at the same time.
+        disconnectStream();
+        // Anything already in flight from before is not this session's to keep
+        // holding: an observer inherits no held buttons.
+        releaseAllControls();
+      }
       await startVrSession();
     } finally {
       enteringVr = false;
@@ -523,9 +652,16 @@
           handRight = s.right;
           lastYawSampleAt = Date.now();
           noteHandsVisible();
+          applyWalkAxis(s.walkAxis);
+          applyMenuButtons(s.buttons);
         },
         onEnd: () => {
           vrActive = false;
+          // Back to commanding by default. Observe-only is a property of ONE
+          // session, chosen on the way in; leaving it latched would mean the
+          // next operator's "Entrar en VR" silently did nothing to the robot
+          // and they would have no way to tell from inside the headset.
+          viewOnly = false;
           xrMode = null;
           xrCameraLive = false;
           xrCameraEverHadFrame = false;
@@ -556,6 +692,10 @@
           // outlived the session and the component, writing $state on a
           // destroyed page for as long as the tab lived.
           stopReadouts();
+          // Same reasoning as `stopReadouts`: the radar is polled for a panel
+          // that no longer exists, and a 4 Hz fetch outliving the session is
+          // the same leak in a different timer.
+          scanFeed.stop();
           if (!loopShouldRun()) {
             stopLoop();
             void sendVelocity(0, 0, 0.5);
@@ -564,14 +704,56 @@
       },
       { camera: camBase !== "" },
     );
+    // ASSIGNED BEFORE THE AWAIT, DELIBERATELY.
+    //
+    // `start()` blocks on the WebXR consent prompt, which can sit there for
+    // seconds, and `onDestroy` and `exitVr` reach the session ONLY through
+    // `vr`. While this was assigned after the await, `vr` stayed null for that
+    // whole window: navigating away mid-prompt ran `vr?.stop()` against
+    // nothing, and the session — once granted — went on to arm the control
+    // loop on a page the operator had already left, with no PARAR on screen to
+    // stop it. `XrTeleopSession.stop()` carries an `#abandonOnStart` guard
+    // written for exactly this case, and it was unreachable from here.
+    vr = session;
     try {
       await session.start(overlayRoot);
-      vr = session;
+      // RESOLVED IS NOT RUNNING. The abandon guard ends the session and
+      // `return`s — it does not throw — so a start that was stopped mid-flight
+      // lands here looking like a success. Everything below this line arms
+      // motion, so it has to be gated on a session that actually exists.
+      if (!session.active) {
+        vr = null;
+        return;
+      }
       // The camera connection may already be running — hand over its current
       // URL and liveness so entering VR after the feed is up shows a picture
       // immediately rather than waiting for the next reconnect.
       if (camFrameUrl) session.setCameraStream(camFrameUrl);
       session.setCameraLive(camLive);
+      // And what to say if there is no picture yet. Entering VR while the feed
+      // is already down should open on the reason, not on a blank field that
+      // waits for the next poll to explain itself.
+      session.setCameraReason(
+        cameraReasonFor(camState, camDetail, camBase !== ""),
+      );
+      // The preset list, with each entry's verification status straight from
+      // the catalogue. `catalogueFailed` is why this is not just
+      // `worksReal[name] === true`: an unreadable catalogue leaves the map
+      // empty, and treating empty as "nothing is verified" is the safe
+      // reading — the menu shows everything struck through and fires nothing,
+      // rather than quietly offering skills whose status we could not check.
+      session.setMenuItems(
+        presets.map((p) => ({
+          name: p.name,
+          label: p.label,
+          verified: !data.catalogueFailed && data.worksReal[p.name] === true,
+        })),
+      );
+      session.setMenuVisible(true);
+      // Off in passthrough: an operator who can see the actual room does not
+      // need a drawing of it, and the corner is better spent on the room.
+      session.setScanVisible(session.mode !== "immersive-ar");
+      scanFeed.start();
       xrMode = session.mode;
       vrActive = true;
       ensureReadouts();
@@ -579,6 +761,11 @@
       motionStartedAt = null;
       ensureLoopRunning();
     } catch (err) {
+      // `vr` is now assigned before the await, so a failed start must clear it
+      // rather than leave the page holding a session that never came up. It is
+      // this function's own `session` either way — `enterVr` does not call this
+      // while one is active — so nothing else is being dropped here.
+      vr = null;
       vrError =
         err instanceof Error ? err.message : "No se pudo iniciar la sesión VR.";
     }
@@ -605,6 +792,13 @@
    */
   function buildTeleopFrame(): TeleopFramePayload {
     return buildFrame({
+      // Third guard, and the one that cannot be forgotten by a caller:
+      // `buildFrame` returns the idle payload on this before reading any pose.
+      // `connectStream()` is not called in observe-only, so nothing should
+      // pull this at all — but "should" is doing load-bearing work in that
+      // sentence, and being wrong means a headset commanding a robot while its
+      // wearer believes it cannot.
+      observeOnly: viewOnly,
       now: Date.now(),
       vrActive,
       lastSampleAt: lastYawSampleAt,
@@ -713,12 +907,20 @@
     if (!base) {
       camState = "error";
       camDetail = "PUBLIC_ROBOT_CAM_URL no está configurado.";
+      // The headset needs this one too, and it is the one case where the
+      // console knows for certain there will never be a picture.
+      vr?.setCameraReason(cameraReasonFor("error", camDetail, false));
       return;
     }
     camHandle = connectRobotCamera(base, {
       onState: (state, detail) => {
         camState = state;
         camDetail = detail ?? "";
+        // Straight to the headset. This state has been on the page all along,
+        // beside the camera panel — and an operator wearing the headset could
+        // not see the page, so "i cannot see the camara" on 2026-08-27 had no
+        // answer available from inside it. Now the black field says why.
+        vr?.setCameraReason(cameraReasonFor(state, camDetail));
       },
       onStatus: (status) => {
         camLive = status?.live ?? false;
@@ -767,6 +969,7 @@
     walking = null;
     armsRequested = false;
     vr?.stop();
+    scanFeed.stop();
     // Closing the stream sends one last released frame, so the bridge stops on
     // a frame rather than waiting out its staleness timeout.
     teleop?.close();
@@ -844,6 +1047,64 @@
   // fine, it is simply standing still.
   const GESTURE_FSM = ["walk", "walk_waist", "run"];
   const canGesture = $derived(GESTURE_FSM.includes(live.state?.posture ?? ""));
+
+  //: The same fact, pushed to the ONE place the operator is actually looking.
+  //:
+  //: On 2026-08-21 an operator in the headset reported three failures —
+  //: gestures refused "something about the arm", walk buttons dead, no turning
+  //: with head movement — which were one fact: the robot was limp in
+  //: zero_torque. `canGesture` above already knew. It was on the page, behind
+  //: a headset, which is the same as nowhere.
+  const readiness = $derived(
+    readinessFor(
+      live.state?.posture,
+      live.online,
+      live.state?.faults,
+      // `bridgeHolds`, not `streaming`: a socket that is open but stalled is
+      // not commanding anything, and the operator needs to know that as much
+      // as they need to know about one that was never opened.
+      bridgeHolds,
+    ),
+  );
+  $effect(() => {
+    // Reads `readiness` so the effect re-runs when it changes; `setReadiness`
+    // is itself guarded against repaints for an unchanged value, because this
+    // ticks with every state poll.
+    vr?.setMenuReadiness(readiness);
+  });
+
+  //: The two latches that stop motion while everything else looks healthy.
+  //:
+  //: `deadman_tripped` is the one that bit on 2026-08-24: it fires at 8 s of
+  //: continuous motion — a limit a TAPPED button never reached and a HELD
+  //: thumbstick reaches every time — so walking stopped dead seven times in
+  //: one session and read as "the walking is a bit buggy". The status carrying
+  //: it already arrived twice a second, on the page, behind a headset.
+  const menuAlert = $derived(
+    alertFor(
+      teleopStatus?.deadman_tripped === true,
+      teleopStatus?.stopped_by_estop === true,
+    ),
+  );
+  $effect(() => {
+    vr?.setMenuAlert(menuAlert);
+  });
+
+  //: The lidar radar, bottom-left of each eye.
+  //:
+  //: POLLED ONLY WHILE A SESSION IS OPEN. The ring exists for the operator
+  //: whose view of the room is a 69-degree camera on a black surround; on the
+  //: desktop console the map already shows the same obstacles with more
+  //: context. Polling it from a page nobody is wearing would put 4 requests a
+  //: second through the SSH tunnel for a panel that is not drawn.
+  const scanFeed = new ScanFeed();
+  $effect(() => {
+    // `scanFeed.reason` is read as well as the ring so this re-runs when the
+    // only thing that changed is WHY there is nothing — an operator staring
+    // at an empty dial needs the reason to update even though the (absent)
+    // ring did not.
+    vr?.setScanRing(scanFeed.ring, scanFeed.reason);
+  });
 
   //: An outcome now carries its own words, because the interesting failures are
   //: all distinguishable and used to be indistinguishable.
@@ -932,6 +1193,11 @@
     if (presetBusy) return;
     presetBusy = name;
     presetOutcome = { ...presetOutcome, [name]: null };
+    // Mirror into the headset. Without this the operator in VR presses the
+    // trigger and sees nothing change — no spinner, no result, no way to tell
+    // a dispatched gesture from a swallowed press.
+    vr?.setMenuBusy(name);
+    vr?.setMenuStatus(null);
     try {
       const { data, error } = await createApi(fetch)
         .skills({ name })
@@ -957,6 +1223,16 @@
       };
     } finally {
       presetBusy = null;
+      vr?.setMenuBusy(null);
+      // Whatever the page decided — sent, unconfirmed, refused, or a network
+      // failure — goes to the headset verbatim. `runPreset` already
+      // distinguishes those four, and an operator in VR needs the difference
+      // more than one looking at the screen does: "Enviado" and "Enviado (sin
+      // confirmar)" mean very different things about a robot they cannot see.
+      const outcome = presetOutcome[name];
+      vr?.setMenuStatus(
+        outcome ? { text: outcome.text, kind: outcome.kind } : null,
+      );
     }
   }
 </script>
@@ -1182,11 +1458,30 @@
         navegador del Quest para usar esta función.
       </p>
     {:else if !vrActive}
-      <Button onclick={enterVr} class="w-fit gap-2 cta">
-        <Glasses class="size-4" /> Entrar en VR
-      </Button>
+      <div class="flex flex-wrap items-center gap-3">
+        <Button onclick={() => enterVr(false)} class="w-fit gap-2 cta">
+          <Glasses class="size-4" /> Entrar en VR
+        </Button>
+        <Button
+          variant="outline"
+          onclick={() => enterVr(true)}
+          class="w-fit gap-2"
+        >
+          <Eye class="size-4" /> Entrar solo para ver
+        </Button>
+      </div>
+      <p class="readout">
+        «Solo para ver» muestra la cámara del robot sin comandarlo: no abre el
+        stream de teleoperación, no mueve nada y no toma el control si otra
+        persona está manejando.
+      </p>
     {:else}
       <div class="flex flex-wrap items-center gap-3">
+        {#if viewOnly}
+          <Badge variant="outline" class="gap-1">
+            <Eye class="size-3" /> Solo vista — no comanda
+          </Badge>
+        {/if}
         <Button variant="outline" onclick={recenterVr}>Recentrar</Button>
         <Button variant="outline" onclick={exitVr}>Salir de VR</Button>
         <span class="readout">
@@ -1288,9 +1583,23 @@
 
     <div class="flex flex-wrap items-center gap-3">
       {#if !streaming}
-        <Button onclick={connectStream} class="w-fit gap-2 cta">
+        <!-- Locked during an observe-only session. Opening this socket is
+             exactly what makes the headset a commander, and the bridge PULLS
+             from it — so leaving the button live would let one tap turn a
+             session someone entered as passive into one that drives, with no
+             change visible inside the headset. -->
+        <Button
+          onclick={connectStream}
+          disabled={viewOnly && vrActive}
+          class="w-fit gap-2 cta"
+        >
           <Link2 class="size-4" /> Conectar puente
         </Button>
+        {#if viewOnly && vrActive}
+          <span class="readout">
+            Sesión en modo solo vista — salí de VR para poder comandar.
+          </span>
+        {/if}
       {:else}
         <Button variant="outline" onclick={disconnectStream} class="gap-2">
           <Link2Off class="size-4" /> Desconectar

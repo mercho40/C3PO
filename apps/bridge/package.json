@@ -7,7 +7,7 @@
     "serve:http": "BRIDGE_TRANSPORT=http SIM_MODE=stub uv run --project . python -m bridge.mcp_server",
     "teleop": "uv run --project . python -m bridge.teleop.server",
     "build": "uv sync && bash scripts/postsync.sh",
-    "check-types": "uv run --project . mypy src",
+    "check-types": "uv run --project . mypy src scripts",
     "lint": "uv run --project . ruff check src tests",
     "test": "uv run --project . pytest"
   }

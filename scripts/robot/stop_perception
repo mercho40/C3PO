@@ -45,5 +45,21 @@ still="$(perception_running_containers)"
 if [ -n "$still" ]; then
     err "ignored SIGTERM after 20s — killing: $still"
     for c in $still; do _docker kill "$c" >/dev/null 2>&1 || true; done
+    sleep 1
 fi
+
+# RE-CHECK AFTER THE KILL, like stop_c3po does. Without this the script printed
+# success unconditionally: `docker kill` was fired and the result never looked
+# at, so a container that survived it — blocked in D-state on camera or LiDAR
+# I/O, which is why the stop above already needs -t 20 — was reported as
+# stopped. This file's own header says the nav container is the only thing that
+# can emit /c3po/cmd_vel, so "stopped" is exactly the claim that must not be
+# made on faith.
+still="$(perception_running_containers)"
+if [ -n "$still" ]; then
+    err "still up after kill: $still — they can still publish /c3po/cmd_vel"
+    err "  docker rm -f $still"
+    exit 1
+fi
+
 ok "perception stopped; the bridge and its closed gate are untouched"

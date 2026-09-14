@@ -25,7 +25,16 @@
  * Never live-tested against an actual headset.
  */
 
-import { CameraLayer } from "./camera-layer";
+import { CameraLayer, type CameraReason } from "./camera-layer";
+import {
+  MenuLayer,
+  type MenuItem,
+  type MenuAlert,
+  type MenuStatus,
+  type Readiness,
+} from "./menu-layer";
+import { ScanLayer, type ScanRing } from "./scan-layer";
+import { eyeOffset, type EyePose } from "./stereo";
 
 export type HandSample = {
   /** Wrist position in the reference space, metres. */
@@ -45,7 +54,85 @@ export type XrSample = {
   headPosition: [number, number, number];
   left: HandSample | null;
   right: HandSample | null;
+  /**
+   * Walk intent from a controller thumbstick: 1 forward, -1 back, 0 neutral.
+   *
+   * A thumbstick rather than a drawn button, because it is a dead-man the
+   * hardware enforces: let go and it springs to centre, so "stop" needs no
+   * code path, no event, and nothing to be working. A button drawn into the
+   * scene has to be found by eye, pressed by raycast, and RELEASED by another
+   * raycast — and the release is the one that matters. Under passthrough the
+   * page's own DOM buttons already work; this is for `immersive-vr`, where
+   * `dom-overlay` does not composite and there is nothing to press.
+   *
+   * 0 when no controller is present, which is the same as "not asking to
+   * walk". Hand-tracking-only sessions keep working exactly as before.
+   */
+  walkAxis: -1 | 0 | 1;
+  /**
+   * Controller buttons, OR-ed across both hands.
+   *
+   * Raw held-state, not edges. Edge detection belongs to whoever acts on it:
+   * this fires at display rate and has no idea what a press should mean, and
+   * a session that swallowed repeats would make a held button indistinguishable
+   * from a released one for any consumer that wanted the difference.
+   *
+   * `trigger` is buttons[0] and `primary` is buttons[4] (A/X) in the
+   * xr-standard mapping. Both false when there is no controller.
+   */
+  buttons: { trigger: boolean; primary: boolean };
 };
+
+/** Index in the `xr-standard` gamepad mapping. */
+const BUTTON_TRIGGER = 0;
+const BUTTON_PRIMARY = 4; // A on the right controller, X on the left
+
+/**
+ * Whether a gamepad button is pressed, tolerating every shape a runtime
+ * might hand back.
+ *
+ * `pressed` is the field to read — `value` is analogue and a trigger resting
+ * at 0.02 is not a press. A missing button reads as not pressed, because the
+ * alternative in a headset is a preset firing because a runtime reported one
+ * fewer button than expected.
+ */
+export function buttonPressed(
+  gamepad: { buttons?: readonly { pressed?: boolean }[] } | null | undefined,
+  index: number,
+): boolean {
+  return gamepad?.buttons?.[index]?.pressed === true;
+}
+
+/**
+ * Thumbstick Y to a walk intent. Pure, so the thresholds are testable.
+ *
+ * WebXR's standard mapping puts the primary thumbstick on axes[2]/axes[3],
+ * with axes[0]/axes[1] the touchpad — but not every runtime populates four
+ * axes, so this falls back to [0]/[1] when the pair is absent rather than
+ * reading undefined and deciding the operator is not asking for anything.
+ *
+ * Y is NEGATIVE when a stick is pushed away from the operator, per the
+ * gamepad spec. Forward is therefore -y, and getting that backwards would
+ * mean the robot walks toward someone who pulled back to stop — so it is
+ * stated here once and tested, rather than inferred at the call site.
+ *
+ * The deadzone is deliberately large. This is not a game: a resting thumb, a
+ * stick that does not quite centre, or a knock while reaching for something
+ * must all read as "not walking", and the cost of a high threshold is only
+ * that the operator pushes further.
+ */
+export const WALK_STICK_DEADZONE = 0.6;
+
+export function walkAxisFrom(
+  axes: readonly number[] | null | undefined,
+): -1 | 0 | 1 {
+  if (!axes) return 0;
+  const y = axes.length >= 4 ? axes[3] : axes[1];
+  if (typeof y !== "number" || !Number.isFinite(y)) return 0;
+  if (y <= -WALK_STICK_DEADZONE) return 1; // pushed away = forward
+  if (y >= WALK_STICK_DEADZONE) return -1; // pulled back = backward
+  return 0;
+}
 
 export type XrTeleopOptions = {
   /**
@@ -286,26 +373,111 @@ function measureGrip(frame: XRFrame, hand: XRHand, space: XRSpace): number {
  * Returns the error if drawing threw, so the caller can drop the camera
  * without losing the head pose it is in the middle of sampling.
  */
+export type XrLayer = {
+  draw(eye?: EyePose | null): void;
+};
+
+/**
+ * Which layers threw this frame. `null` per layer means it drew.
+ *
+ * ONE OBJECT INSTEAD OF ONE ERROR, because the layers must fail
+ * independently. See `drawPerEye`.
+ */
+export type LayerFailures = {
+  camera: unknown | null;
+  menu: unknown | null;
+  scan: unknown | null;
+};
+
 export function drawPerEye(
   gl: WebGLRenderingContext,
   layer: XRWebGLLayer,
   pose: XRViewerPose,
-  camera: { draw(opaque: boolean): void },
+  /**
+   * Null when no camera is configured at all. The panels still draw — see the
+   * failure-isolation note below; a headset with no picture is exactly when
+   * an operator most needs to be told why.
+   */
+  camera: {
+    draw(opaque: boolean, eye?: EyePose | null): void;
+  } | null,
   opaque: boolean,
-): unknown | null {
+  /**
+   * Drawn after the camera, into the same viewport, so it sits over the
+   * picture rather than under it. Optional: sessions without a menu pass
+   * nothing and this is a no-op.
+   */
+  menu?: XrLayer | null,
+  /**
+   * The lidar radar, drawn in the opposite corner from the menu. Optional for
+   * the same reason: a session without perception passes nothing.
+   */
+  scan?: XrLayer | null,
+): LayerFailures {
+  // EACH LAYER GETS ITS OWN try, AND THIS IS THE POINT.
+  //
+  // One try around all three meant a camera shader failure took the menu and
+  // the radar with it — and the caller, which nulls `#camera` on a failure,
+  // then stopped calling this at all because the whole block was gated on the
+  // camera existing. So the single most likely GL failure silently removed
+  // the readiness banner that says why the robot will not move and the radar
+  // that says what is behind it, at the exact moment the operator lost the
+  // picture and needed both. Three layers, three failures, three decisions.
+  const failures: LayerFailures = { camera: null, menu: null, scan: null };
+
+  const attempt = (
+    key: keyof LayerFailures,
+    draw: () => void,
+    what: string,
+  ): void => {
+    // Already broken this frame: do not call it again for the second eye.
+    if (failures[key]) return;
+    try {
+      draw();
+    } catch (err) {
+      failures[key] = err ?? new Error(`${what} draw failed`);
+    }
+  };
+
+  // The head's own frame, needed to express each eye's position RELATIVE TO
+  // THE HEAD rather than to the room. Read once per frame, not once per eye:
+  // it is the same head both times.
+  const viewerFromRef = pose.transform?.inverse?.matrix;
+
   for (const view of pose.views) {
     const vp = layer.getViewport(view);
     if (!vp) continue;
     gl.viewport(vp.x, vp.y, vp.width, vp.height);
-    try {
+
+    // WHICH EYE THIS IS, not just how big it is.
+    //
+    // The layers used to get `vp.width`/`vp.height` and nothing else, which is
+    // enough to know the SHAPE of the render target and not enough to know
+    // where in the world the eye looking at it is. So every layer drew itself
+    // at the same clip-space coordinate in both eyes, and the operator saw two
+    // of each on 2026-08-27. The projection matrix carries the frustum's
+    // asymmetry and the eye transform carries the parallax; together they are
+    // what turns two images into one object. See `stereo.ts`.
+    //
+    // Null rather than a guess when the runtime gives us no matrix: `placeQuad`
+    // falls back to the old monoscopic placement, which does not fuse but does
+    // draw, and a HUD that does not fuse beats a HUD that is not there.
+    const projection = view.projectionMatrix;
+    const position = view.transform?.position;
+    const eye: EyePose | null =
+      projection && viewerFromRef && position
+        ? { projection, offset: eyeOffset(viewerFromRef, position) }
+        : null;
+
+    if (camera) {
       // The camera IS the view in VR; in passthrough it is a heads-up layer
       // over the room, so it does not paint over what the operator can see.
-      camera.draw(opaque);
-    } catch (err) {
-      return err ?? new Error("camera draw failed");
+      attempt("camera", () => camera.draw(opaque, eye), "camera");
     }
+    if (menu) attempt("menu", () => menu.draw(eye), "menu");
+    if (scan) attempt("scan", () => scan.draw(eye), "scan");
   }
-  return null;
+  return failures;
 }
 
 /** What an overlay root looked like before the session took it over. */
@@ -366,8 +538,11 @@ export class XrTeleopSession {
   #mode: XRSessionMode | null = null;
   #options: XrTeleopOptions;
   #camera: CameraLayer | null = null;
+  #menu: MenuLayer | null = null;
+  #scan: ScanLayer | null = null;
   #pendingStreamUrl = "";
   #pendingLive = true;
+  #pendingReason: CameraReason = null;
   #cameraBroken = false;
   //: Held so the context can be explicitly released on teardown. A fresh
   //: canvas and context are created per VR entry and were only ever reclaimed
@@ -416,8 +591,84 @@ export class XrTeleopSession {
     this.#camera?.setLive(live);
   }
 
+  /**
+   * Why there is no picture, shown in the headset when there is none.
+   *
+   * The page has always known this — `camState` and `camDetail` are on screen
+   * next to the camera panel — and it never reached the one place an operator
+   * with a headset on is looking. Same shape of gap as the readiness banner
+   * and the lidar ring before it.
+   */
+  setCameraReason(reason: CameraReason): void {
+    this.#pendingReason = reason;
+    this.#camera?.setReason(reason);
+  }
+
   get active(): boolean {
     return this.#session !== null;
+  }
+
+  /**
+   * Preset menu, drawn in the headset. Everything here is a no-op before the
+   * session starts and after it ends, so the page can call them whenever its
+   * own state changes without tracking session lifetime.
+   */
+  setMenuItems(items: readonly MenuItem[]): void {
+    this.#menu?.setItems(items);
+  }
+
+  setMenuVisible(visible: boolean): void {
+    this.#menu?.setVisible(visible);
+  }
+
+  setMenuStatus(status: MenuStatus): void {
+    this.#menu?.setStatus(status);
+  }
+
+  setMenuBusy(name: string | null): void {
+    this.#menu?.setBusy(name);
+  }
+
+  /** Why the robot can or cannot act — drawn where the operator is looking. */
+  setMenuReadiness(readiness: Readiness | null): void {
+    this.#menu?.setReadiness(readiness);
+  }
+
+  /** A latch currently stopping motion, and the gesture that clears it. */
+  setMenuAlert(alert: MenuAlert): void {
+    this.#menu?.setAlert(alert);
+  }
+
+  /**
+   * The lidar ring, or null when none is arriving.
+   *
+   * `reason` is what the panel says INSTEAD of drawing an empty dial. "No
+   * scan" has several causes an operator in a headset cannot tell apart, and
+   * a clear-looking circle is the worst possible way to report any of them.
+   */
+  setScanRing(ring: ScanRing | null, reason?: string | null): void {
+    this.#scan?.setRing(ring, reason);
+  }
+
+  /** Whether the radar is drawn at all — off in passthrough, where the
+   * operator can simply look around the room themselves. */
+  setScanVisible(visible: boolean): void {
+    this.#scan?.setVisible(visible);
+  }
+
+  /** Move the highlight to the next VERIFIED item. */
+  advanceMenu(): void {
+    this.#menu?.advance();
+  }
+
+  /** What firing the trigger would run, or null. Never an unverified skill. */
+  get menuSelection(): MenuItem | null {
+    const item = this.#menu?.selectedItem ?? null;
+    // Belt and braces: `advance()` only ever lands on verified entries, but
+    // the caller is about to COMMAND A ROBOT with whatever this returns, and
+    // an empty or all-unverified catalogue is exactly when the highlight has
+    // nowhere legitimate to sit.
+    return item?.verified ? item : null;
   }
 
   /** Whether any hand has been tracked since the session began. */
@@ -489,8 +740,27 @@ export class XrTeleopSession {
     // VR stays as a fallback for a headset without passthrough. There the
     // overlay may still not composite, which is why `start()` reports the mode
     // it got and the page warns.
+    //
+    // 2026-08-24: THAT REASONING IS NOW OBSOLETE, so the preference is
+    // reversed. The controls are no longer DOM — `menu-layer.ts` paints the
+    // gesture list, the readiness banner and the latch alerts into the XR
+    // layer itself, in WebGL. `immersive-vr` therefore no longer means "no
+    // controls"; it means the compositor shows nothing except what we draw.
+    //
+    // Which is what the operator asked for, twice, in the words "modo
+    // environment" and "everything that is not the camera is black". Under
+    // passthrough the black clear this module does in VR is deliberately not
+    // applied — painting the room black to show a camera OF that room is the
+    // wrong trade — so an AR session can never be a surround, however the
+    // camera quad is drawn. The mode was the reason the surround never
+    // appeared, not the clear colour.
+    //
+    // What that costs: in AR the operator could see the actual robot beside
+    // the rendering of it, which for same-room teleop is genuinely useful. AR
+    // stays as the fallback, and `mode` is still reported so the page can say
+    // which one it got.
     const requested: XRSessionMode[] = (await checkXrSupport()).immersiveAr
-      ? ["immersive-ar", "immersive-vr"]
+      ? ["immersive-vr", "immersive-ar"]
       : ["immersive-vr"];
 
     let session: XRSession | null = null;
@@ -535,6 +805,12 @@ export class XrTeleopSession {
       const layer = new XRWebGLLayer(session, gl);
       await session.updateRenderState({ baseLayer: layer });
 
+      // The panels are NOT conditional on a camera. A session started with no
+      // stream configured used to get an entirely blank headset — no picture,
+      // and also no readiness banner explaining that, and no radar. The camera
+      // is the thing that might be absent; the reasons it is absent are not.
+      this.#menu = new MenuLayer(gl);
+      this.#scan = new ScanLayer(gl);
       if (this.#options.camera) {
         this.#camera = new CameraLayer(gl);
         // The URL arrives via setCameraStream(), possibly before this point —
@@ -543,6 +819,10 @@ export class XrTeleopSession {
         if (this.#pendingStreamUrl)
           this.#camera.setStreamUrl(this.#pendingStreamUrl);
         this.#camera.setLive(this.#pendingLive);
+        // Applied before the first frame, so a session entered while the feed
+        // is already down opens on the reason rather than on a blank field
+        // that only gets its explanation at the next poll.
+        this.#camera.setReason(this.#pendingReason);
       }
 
       let referenceSpace: XRReferenceSpace;
@@ -561,6 +841,13 @@ export class XrTeleopSession {
         } catch {
           // already ending
         }
+        // The "end" listener that normally releases the context is registered
+        // BELOW this point, so ending the session here fires nothing: the GL
+        // context and the three layers built on it were leaked on every
+        // abandoned start. Chrome force-loses the oldest context past roughly
+        // sixteen live ones, and the one it takes may be an ACTIVE session's —
+        // presenting as a black layer in a headset somebody is wearing.
+        this.#releaseGraphics();
         return;
       }
       this.#makeOverlayTransparent(overlayRoot);
@@ -576,17 +863,10 @@ export class XrTeleopSession {
         // Put the page back the way it looked before, or the console is left
         // with a transparent body over the browser's own background.
         this.#restoreOverlay();
-        // Release the context rather than waiting for GC — see `#gl`.
-        const lose = this.#gl?.getExtension("WEBGL_lose_context");
-        lose?.loseContext();
-        this.#gl = null;
+        this.#releaseGraphics();
         // A GL failure is per-session, not permanent: a re-entered session
         // gets a fresh context and deserves a fresh attempt at a picture.
         this.#cameraBroken = false;
-        // Disposing cuts the <img> src, which is what actually closes the
-        // MJPEG request — an ended session must not keep pulling frames.
-        this.#camera?.dispose();
-        this.#camera = null;
         this.#callbacks.onEnd?.();
       });
 
@@ -597,7 +877,21 @@ export class XrTeleopSession {
         active.requestAnimationFrame(onFrame);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
-        gl.clearColor(0, 0, 0, 0);
+        // OPAQUE black in VR, transparent under passthrough.
+        //
+        // The camera quad no longer fills the eye — it is fitted to the frame's
+        // aspect and inset — so whatever the clear leaves behind is now VISIBLE
+        // around it. Transparent in `immersive-vr` means the compositor shows
+        // its own background there, which reads as the picture floating in
+        // something rather than being the world. Black surround makes the frame
+        // the only lit thing in the headset, which is what "environment mode"
+        // means to the operator who asked for it.
+        //
+        // AR keeps the transparent clear: under passthrough the operator is in
+        // the same room as the robot, and painting their room black to show
+        // them a camera of it is the wrong trade.
+        const opaqueSurround = this.#mode !== "immersive-ar";
+        gl.clearColor(0, 0, 0, opaqueSurround ? 1 : 0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
         const pose = frame.getViewerPose(space);
@@ -605,24 +899,41 @@ export class XrTeleopSession {
         // staleness timeout (not this module) decides when that should stop
         // the robot; a single missed frame at 72-120Hz isn't it.
 
-        if (this.#camera) {
-          const failure = drawPerEye(
+        if (this.#camera || this.#menu || this.#scan) {
+          const failed = drawPerEye(
             gl,
             layer,
             pose,
             this.#camera,
             this.#mode !== "immersive-ar",
+            this.#menu,
+            this.#scan,
           );
-          if (failure) {
-            // Shader compile or link failure throws out of draw(), and this
-            // callback is what samples head pose. Letting it escape kills
-            // steering silently for the rest of the session while the robot
-            // stays safe but unresponsive. Drop the picture, keep the pose.
+          // Shader compile or link failure throws out of draw(), and this
+          // callback is what samples head pose. Letting it escape kills
+          // steering silently for the rest of the session while the robot
+          // stays safe but unresponsive. Drop the layer, keep the pose — and
+          // drop ONLY the layer that threw.
+          if (failed.camera) {
             this.#cameraBroken = true;
             this.#camera = null;
             console.error(
               "[xr] camera layer disabled after draw failure",
-              failure,
+              failed.camera,
+            );
+          }
+          if (failed.menu) {
+            this.#menu = null;
+            console.error(
+              "[xr] menu layer disabled after draw failure",
+              failed.menu,
+            );
+          }
+          if (failed.scan) {
+            this.#scan = null;
+            console.error(
+              "[xr] scan layer disabled after draw failure",
+              failed.scan,
             );
           }
         }
@@ -640,6 +951,8 @@ export class XrTeleopSession {
           yawErrorRadians: normalizeAngle(yaw - this.#forwardYaw),
           headPosition: [p.x, p.y, p.z],
           ...hands,
+          walkAxis: this.#sampleWalkAxis(active),
+          buttons: this.#sampleButtons(active),
         });
       };
       session.requestAnimationFrame(onFrame);
@@ -651,8 +964,38 @@ export class XrTeleopSession {
       } catch {
         // Already ending/ended — the throw below is the useful signal.
       }
+      // Same reason as the abandon branch above: a failure between creating the
+      // context and registering the "end" listener — `makeXRCompatible`,
+      // `updateRenderState`, or both `requestReferenceSpace` calls — left the
+      // context and any layers already built alive with nothing to release
+      // them. Retrying after a transient failure would then accumulate them.
+      this.#releaseGraphics();
       throw err;
     }
+  }
+
+  /**
+   * Drop the GL context and everything built on it.
+   *
+   * Extracted from the "end" listener because it is needed on two paths that
+   * never reach it: a start abandoned mid-flight, and a start that throws
+   * before the listener is registered. Idempotent — every field is
+   * null-guarded and then nulled — so the listener firing after one of those
+   * is harmless.
+   */
+  #releaseGraphics(): void {
+    // Release the context rather than waiting for GC — see `#gl`.
+    const lose = this.#gl?.getExtension("WEBGL_lose_context");
+    lose?.loseContext();
+    this.#gl = null;
+    // Disposing cuts the <img> src, which is what actually closes the MJPEG
+    // request — a session that is going away must not keep pulling frames.
+    this.#camera?.dispose();
+    this.#camera = null;
+    this.#menu?.dispose();
+    this.#menu = null;
+    this.#scan?.dispose();
+    this.#scan = null;
   }
 
   #sampleHands(
@@ -690,6 +1033,53 @@ export class XrTeleopSession {
       else if (source.handedness === "right") right = sample;
     }
     return { left, right };
+  }
+
+  /**
+   * Walk intent from whichever controller is reporting one.
+   *
+   * Either hand, and the LARGEST magnitude wins rather than the first found:
+   * `inputSources` has no guaranteed order, so first-wins would make which
+   * controller works depend on enumeration order — fine in testing, confusing
+   * in a headset, and impossible to diagnose from inside one.
+   *
+   * Contradictory sticks (one forward, one back) cancel to 0. That is the
+   * safe reading of "two hands disagree", and it is what a startled operator
+   * grabbing both controllers produces.
+   */
+  #sampleWalkAxis(session: XRSession): -1 | 0 | 1 {
+    let best: -1 | 0 | 1 = 0;
+    let bestMag = 0;
+    let sawForward = false;
+    let sawBack = false;
+    for (const source of session.inputSources) {
+      const axes = source.gamepad?.axes;
+      const intent = walkAxisFrom(axes);
+      if (intent === 0) continue;
+      if (intent > 0) sawForward = true;
+      else sawBack = true;
+      const y = axes && axes.length >= 4 ? axes[3] : axes?.[1];
+      const mag = Math.abs(typeof y === "number" ? y : 0);
+      if (mag > bestMag) {
+        bestMag = mag;
+        best = intent;
+      }
+    }
+    if (sawForward && sawBack) return 0;
+    return best;
+  }
+
+  /** Buttons from any controller. Either hand works — see `#sampleWalkAxis`. */
+  #sampleButtons(session: XRSession): { trigger: boolean; primary: boolean } {
+    let trigger = false;
+    let primary = false;
+    for (const source of session.inputSources) {
+      const gp = source.gamepad;
+      if (!gp) continue;
+      if (buttonPressed(gp, BUTTON_TRIGGER)) trigger = true;
+      if (buttonPressed(gp, BUTTON_PRIMARY)) primary = true;
+    }
+    return { trigger, primary };
   }
 
   #makeOverlayTransparent(root: HTMLElement): void {

@@ -171,8 +171,13 @@ def camera_findings(
     status_state: str,
     status_body: str,
     stream_has_frames: Optional[bool],
+    cors_ok: Optional[bool] = None,
 ) -> List[Finding]:
-    """What /status and the stream body mean, together."""
+    """What /status, the stream body and the CORS header mean, together.
+
+    `cors_ok` is the question this section used to be missing, and its absence
+    is why the last line below used to be wrong. None means we could not ask.
+    """
     if not url:
         return [
             Finding(
@@ -239,9 +244,44 @@ def camera_findings(
                 Finding(
                     OK,
                     "real frame data is arriving — the whole chain to this Mac works",
-                    ["if the headset still shows nothing after this, it is the renderer"],
+                    # THIS HINT USED TO SAY "if the headset still shows nothing
+                    # after this, it is the renderer", AND THAT WAS WRONG. On
+                    # 2026-08-28 the chain worked to the Mac — videohub live at
+                    # 1920x1080, frames flowing — and the headset would still
+                    # have been black, because the bridge sent no CORS header
+                    # and the WebGL layer's `crossOrigin="anonymous"` image
+                    # cannot load without one. A confident wrong pointer at the
+                    # renderer is how the last two of these cost a day each.
+                    ["frames are not the whole story — see the CORS line below"],
                 )
             )
+            if cors_ok is False:
+                out.append(
+                    Finding(
+                        BAD,
+                        "frames arrive, but the reply is not readable by the console",
+                        [
+                            "no Access-Control-Allow-Origin for " + CONSOLE_ORIGIN + ".",
+                            "The on-page panel will still show a picture — a plain <img>",
+                            "needs no CORS. THE HEADSET WILL NOT: its WebGL layer sets",
+                            "crossOrigin=anonymous, because WebGL refuses to sample a",
+                            "texture the page cannot read back, and without the header",
+                            "the image never loads at all.",
+                            "",
+                            "This is a DEPLOY problem, not a camera or renderer one:",
+                            "the bridge on the robot is running a build from before",
+                            "BRIDGE_CORS_ORIGINS was implemented. Update and restart it:",
+                            "  ssh c3po 'cd ~/c3po && git pull && sudo systemctl restart c3po-bridge'",
+                        ],
+                    )
+                )
+            elif cors_ok:
+                out.append(
+                    Finding(
+                        OK,
+                        "and the console is allowed to read it — the headset can load it",
+                    )
+                )
         else:
             out.append(
                 Finding(
@@ -356,22 +396,58 @@ def headset_findings(adb_present: bool, listing: str, reverse_listing: str) -> L
 # --- a standing stop --------------------------------------------------------
 
 
-def estop_finding(stop_at: Optional[float], ack_at: Optional[float], when: str = "") -> Finding:
+def estop_finding(
+    stop_at: Optional[float],
+    ack_at: Optional[float],
+    when: str = "",
+    run_dir: str = "",
+) -> Finding:
     """A stop deliberately outlives the session it was pressed in.
 
     So an outstanding one is a WARNING with an explanation, never a failure:
     it is working as designed, and somebody who reads it as a fault will go
     looking for a broken robot.
+
+    WHOSE STOP, THOUGH. The sentinel is per-machine by construction — `estop.py`
+    puts it at `$HOME/.c3po/run` on whatever host is running. For real hardware
+    the bridge runs ONBOARD, because DDS only exists on the robot's internal
+    LAN, so the sentinel that actually latches teleop is the ROBOT's. Preflight
+    runs on the operator's Mac and reads the Mac's.
+
+    Both directions of that are wrong, and the second is the dangerous one:
+
+      * a months-old local sim stop reads as a live safety state on the robot
+        (this Mac carried one from 2026-08-20 for days);
+      * a real standing stop ONBOARD is invisible from here and reports as
+        "no stop outstanding".
+
+    So both branches name the machine. Reading the robot's over SSH was
+    considered and rejected: a check that can hang on the network is not what
+    you want in the thing you run before a headset goes on. It points at the
+    one-line command instead.
     """
+    where = " ({})".format(run_dir) if run_dir else ""
     if not stop_at or (ack_at or 0) >= stop_at:
-        return Finding(OK, "no stop outstanding")
+        return Finding(
+            OK,
+            "no stop outstanding on this machine",
+            ["the onboard bridge keeps its own — this check cannot see it"],
+        )
     notes = [
         "this is not broken — a stop deliberately outlives the session it was pressed in.",
         "It clears itself once you connect: hold the dead-man RELEASED for one full second.",
     ]
     if when:
         notes.append("Pressed at: {}".format(when))
-    return Finding(WARN, "an emergency stop is recorded and has not been cleared", notes)
+    notes.append("Read from THIS machine{}".format(where))
+    notes.append("The onboard bridge keeps its OWN sentinel, and that one is what")
+    notes.append("latches teleop on real hardware. Check it with:")
+    notes.append("    ssh c3po 'ls -l ~/.c3po/run/'")
+    return Finding(
+        WARN,
+        "an emergency stop is recorded on THIS MACHINE and has not been cleared",
+        notes,
+    )
 
 
 # --- the verdict ------------------------------------------------------------
@@ -450,6 +526,41 @@ def _curl(url: str, timeout: int = 5) -> Tuple[int, str, str]:
 def _probe(url: str, timeout: int = 5) -> Tuple[str, str]:
     rc, body, stderr = _curl(url, timeout)
     return classify_probe(rc, stderr), body
+
+
+#: The origin the console is served from, and therefore the one the headset
+#: uses: `quest_setup.sh` forwards 3001 and the Quest browser loads
+#: `http://localhost:3001/vr-control`.
+CONSOLE_ORIGIN = "http://localhost:3001"
+
+
+def _camera_allows_console(url: str, origin: str = CONSOLE_ORIGIN) -> Optional[bool]:
+    """Does `/status` come back readable by the console? None if we could not ask.
+
+    Sends a real `Origin` and looks for `Access-Control-Allow-Origin` coming
+    back, because that is exactly what the browser will do and exactly what it
+    will refuse over. See `camera_findings` for why this is a separate question
+    from whether frames are arriving.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "curl", "-sS", "--max-time", "6",
+                "-o", "/dev/null", "-D", "-",
+                "-H", "Origin: " + origin,
+                url,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return b"access-control-allow-origin" in (proc.stdout or b"").lower()
 
 
 def _stream_has_frames(url: str, boundary: str = "c3poframe") -> bool:
@@ -552,11 +663,17 @@ def _camera_section(repo_root: str) -> Section:
 
     state, body = _probe(url.rstrip("/") + "/status", timeout=5)
     has_frames: Optional[bool] = None
+    cors_ok: Optional[bool] = None
     status = _parse_json(body) if state == "alive" else None
     if status is not None and status.get("live") is True:
         has_frames = _stream_has_frames(url.rstrip("/") + "/stream.mjpg")
+        # Asked only when there is a picture to be readable. A CORS complaint
+        # about a feed that is not running would be noise on top of the real
+        # finding.
+        cors_ok = _camera_allows_console(url.rstrip("/") + "/status")
     return Section(
-        "3. The camera, end to end", camera_findings(url, source, state, body, has_frames)
+        "3. The camera, end to end",
+        camera_findings(url, source, state, body, has_frames, cors_ok),
     )
 
 
@@ -582,7 +699,7 @@ def _estop_section() -> Section:
     when = time.strftime("%H:%M:%S on %d %b", time.localtime(stop_at)) if stop_at else ""
     return Section(
         "5. Is a stop still standing?",
-        [estop_finding(stop_at, mtime("stop_acknowledged"), when)],
+        [estop_finding(stop_at, mtime("stop_acknowledged"), when, run_dir)],
     )
 
 

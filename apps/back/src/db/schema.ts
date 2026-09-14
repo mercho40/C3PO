@@ -217,7 +217,10 @@ export const chat = pgTable(
     // Typed and spoken conversations share one durable transcript shape, but the
     // channel remains explicit so the UI never implies that ambient robot audio
     // was typed by the authenticated operator.
-    channel: text("channel").$type<"text" | "voice">().default("text").notNull(),
+    channel: text("channel")
+      .$type<"text" | "voice">()
+      .default("text")
+      .notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

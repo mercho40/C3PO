@@ -5,10 +5,20 @@ node_modules
 build
 dist
 
-# Python (bridge)
+# Python (bridge + perception)
+#
+# `.pytest_cache/README.md` and the dist-info SBOMs inside a `.venv` are files
+# a TOOL wrote, and they are the reason `prettier --check` could not be a gate:
+# it passed on a clean checkout and failed the moment anybody ran the test
+# suite, which is not a signal about the code. Both trees are gitignored, so CI
+# never saw them — only the person running `bun run format` locally did.
 apps/bridge/.venv
 apps/bridge/uv.lock
 apps/bridge/**/__pycache__
+apps/perception/.venv
+apps/perception/uv.lock
+apps/perception/**/__pycache__
+**/.pytest_cache
 
 # Locks + generated
 bun.lock

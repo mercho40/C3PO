@@ -167,3 +167,23 @@ elif echo "$holders" | grep -q "realsense2_camera"; then
 else
     err "  the vision container will fail with 'Device or resource busy'"
 fi
+
+# EXIT 0, EVEN THOUGH THE CAMERA IS STILL HELD — and explicitly, because
+# falling off the end here looked like an oversight.
+#
+# THIS SCRIPT'S EXIT STATUS MEANS "gemm's containers are stopped", NOT "the
+# camera is free". They are different questions and only the first one is this
+# script's job: the common holder above is `videohub_pc4`, which is UNITREE's,
+# under master_service, and deliberately not killed here. Returning non-zero
+# for it would be returning non-zero on the ordinary case.
+#
+# That matters more than it looks: `run_c3po:58` invokes this as a bare command
+# while running under `-e` from `_common.sh`, so a non-zero exit here would
+# abort the bridge start — and no bridge means no `stop_everything`. Reporting
+# "the camera is busy" by refusing to start the e-stop would be a bad trade.
+#
+# SO: a caller that needs the DEVICE must not chain on this script's status.
+# `stop_gemm && perception_up perception` will proceed into a vision container
+# that dies with 'Device or resource busy'. Use `take_camera` (which is the
+# deliberate half of this question) or check `video_device_holders` directly.
+exit 0

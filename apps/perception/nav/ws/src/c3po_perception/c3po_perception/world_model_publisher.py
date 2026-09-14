@@ -60,6 +60,8 @@ from rclpy.qos import (
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
+from c3po_perception import scan_ring
+
 REPORT_VERSION = 1
 
 # A source is OFFLINE, not stale, after this. Deliberately short: the bridge
@@ -99,6 +101,13 @@ class WorldModelPublisher(Node):
                          history=HistoryPolicy.KEEP_LAST, depth=1,
                          durability=DurabilityPolicy.VOLATILE)
         self.pub = self.create_publisher(String, "/c3po/world_summary", qos)
+        # A SECOND topic rather than a field on the summary. The summary is read
+        # by the agent and by the awareness panel and is deliberately small;
+        # this is ten times its size and only wanted while somebody is looking
+        # at the 360 view. Separate topics mean the bridge can serve one without
+        # paying for the other, and a consumer of either is unaffected when the
+        # other changes shape.
+        self.scan_pub = self.create_publisher(String, "/c3po/scan", qos)
 
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
         self.create_subscription(String, "/c3po/objects", self._on_objects, 10)
@@ -129,14 +138,18 @@ class WorldModelPublisher(Node):
         self.create_subscription(
             LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
 
-        self._pose = None
+        # Annotated Optional rather than bare `None`: this attribute IS the
+        # 'absent is not empty' rule in local form — `None` means no odometry
+        # has arrived, which is a different fact from a pose at the origin.
+        self._pose: dict | None = None
         self._pose_stamp = 0.0
         self._pose_seen = 0.0
         self._objects: list[dict] = []
         self._objects_omitted = 0
         self._objects_seen = 0.0
-        self._free_space = None
+        self._free_space: dict[str, float] | None = None
         self._scan_seen = 0.0
+        self._scan_msg: LaserScan | None = None
         self._notes: list[str] = []
 
         hz = float(self.get_parameter("publish_hz").value)
@@ -168,7 +181,14 @@ class WorldModelPublisher(Node):
             payload = json.loads(msg.data)
             if int(payload.get("v", 0)) != 1:
                 raise ValueError(f"unsupported objects schema v={payload.get('v')}")
-        except Exception as exc:  # noqa: BLE001 - reject any malformed detector payload
+        # BLIND EXCEPT, DELIBERATE: this is the trust boundary. The payload crossed domain
+        # 42 from another container and may be malformed in any way at all —
+        # bad JSON, wrong schema version, a field of the wrong type. Every one
+        # of those means the same thing to this node, and the docstring above
+        # is explicit that the answer is a NOTE, never a silent drop and never
+        # an empty scene. A narrower catch here would turn a bad payload into a
+        # dead node, which reads to the operator as "there is nothing around".
+        except Exception as exc:  # noqa: BLE001
             self._notes.append(f"Detector payload rejected: {exc}")
             return
         self._objects_seen = time.time()
@@ -186,6 +206,12 @@ class WorldModelPublisher(Node):
         for a frame bug to hide.
         """
         self._scan_seen = time.time()
+        # Kept whole for the ring, which needs every bearing rather than the
+        # four sectors below. Stored, not published here: `/scan` arrives at the
+        # lidar's rate and republishing at that rate would put ten times the
+        # summary's bytes on the wire ten times as often, for a picture nobody
+        # can read faster than the emit timer redraws it.
+        self._scan_msg = msg
         if msg.header.frame_id and msg.header.frame_id != "base_footprint":
             self._notes.append(
                 f"Scan arrives in '{msg.header.frame_id}', not 'base_footprint'; "
@@ -229,7 +255,21 @@ class WorldModelPublisher(Node):
             "detector_online": detector_online,
             "objects": self._objects if detector_online else [],
             "objects_omitted": self._objects_omitted if detector_online else 0,
-            "lidar_online": lidar_online and self._free_space is not None,
+            # ARRIVAL ONLY. This used to be `and self._free_space is not None`,
+            # which is the "absent is not empty" rule broken in the one file
+            # that states it: a scan whose returns are all `inf` — an open
+            # room, everything beyond range_max — leaves `_free_space` None and
+            # reported a working LiDAR as offline. `detector_online` two lines
+            # up gets this right, and says so: an online detector seeing
+            # nothing publishes `objects: []` with `detector_online: true`.
+            #
+            # Nothing downstream loses information, because the consumer
+            # already treats the two independently — `world_model.build()`
+            # does `if not lidar_online or free_space is None` and degrades on
+            # either. So this only changes what an operator is told about the
+            # sensor, from "offline" to "online, no usable returns", which is
+            # the true and more useful statement.
+            "lidar_online": lidar_online,
             "free_space": self._free_space if lidar_online else None,
             # Only what the CONTAINER knows: a rejected payload, a scan in the
             # wrong frame. The bridge appends its own degradation notes from
@@ -237,6 +277,39 @@ class WorldModelPublisher(Node):
             "notes": notes,
         }
         self.pub.publish(String(data=json.dumps(report, separators=(",", ":"))))
+        self._emit_scan(lidar_online)
+
+    def _emit_scan(self, lidar_online: bool) -> None:
+        """The bearing ring, on the same timer as the summary.
+
+        Publishes NOTHING when the lidar is offline rather than an empty ring.
+        A ring of nulls and a ring nobody sent look identical to a renderer, and
+        the difference is "the room is empty" versus "we stopped being able to
+        see" — which is the same false negative `lidar_online` exists to make
+        visible in the summary. The consumer ages its last sample out instead.
+        """
+        msg = self._scan_msg
+        if not lidar_online or msg is None:
+            return
+        try:
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            payload = scan_ring.encode(
+                list(msg.ranges),
+                msg.angle_min,
+                msg.angle_increment,
+                msg.range_min,
+                msg.range_max,
+                msg.header.frame_id,
+                stamp,
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad scan must not kill the node
+            # Same posture as the objects payload: a note, never a silent drop,
+            # and never a plausible-looking empty scene.
+            self._notes.append(f"Scan ring rejected: {exc}")
+            return
+        self.scan_pub.publish(
+            String(data=json.dumps(payload, separators=(",", ":")))
+        )
 
 
 def main() -> None:

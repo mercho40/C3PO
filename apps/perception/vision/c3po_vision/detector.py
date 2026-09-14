@@ -77,7 +77,7 @@ import os
 import signal
 import sys
 import time
-from typing import Any, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 # Stdlib-only at module scope (Pillow and numpy are lazy inside it), so this
 # import keeps the "importable on a Mac" property the docstring above claims.
@@ -205,7 +205,10 @@ def load_labels(path: str) -> list[str]:
         if not names:
             raise ValueError("labels file is empty")
         return names
-    except Exception as exc:  # noqa: BLE001 - missing or unreadable labels are non-fatal
+    # BLIND EXCEPT, DELIBERATE: any failure to read the labels file — missing,
+    # unreadable, empty, wrong encoding — has the one same answer, and it is
+    # not to take the detector down. The log names the consequence.
+    except Exception as exc:  # noqa: BLE001
         log("labels.missing", path=path, error=repr(exc),
             consequence="objects will be reported as class_<index>")
         return []
@@ -289,9 +292,13 @@ class RealSenseSource:
 
     def close(self) -> None:
         if self._pipeline is not None:
+            # Shutdown path. A RealSense pipeline that will not stop cleanly
+            # has nothing left to tell us — the process is going away either
+            # way, and raising here would mask whatever we were shutting down
+            # FOR. Silence is correct exactly once, and this is the place.
             try:
                 self._pipeline.stop()
-            except Exception:  # noqa: BLE001, S110 - best-effort hardware shutdown
+            except Exception:  # noqa: BLE001, S110
                 pass
 
 
@@ -366,6 +373,69 @@ class SyntheticSource:
 # --------------------------------------------------------------------------
 
 
+# `trt.nptype()` cannot be called on this image. TensorRT's Python bindings
+# build their dtype table with `np.bool`, an alias NumPy REMOVED in 1.24.0 —
+# and vision/Dockerfile pins numpy to 1.24.4 EXACTLY, on purpose (the base
+# image ships 1.17.4, which a `numpy<2` bound would silently satisfy). The pin
+# is right; the call site was the problem.
+#
+# The failure is nastier than a normal version skew because the table is built
+# lazily, inside nptype(). Importing tensorrt works, constructing the engine
+# works, and it dies on the FIRST BINDING of the first engine load with
+# `AttributeError: module 'numpy' has no attribute 'bool'` from inside a
+# vendor file — which reads as a broken TensorRT install rather than two
+# pinned versions disagreeing. Cost us the camera on 2026-08-21.
+#
+# Mapping it here depends on neither. Built on first use, not at import: numpy
+# and tensorrt are function-local imports throughout this module, on purpose —
+# it stays importable on a machine with neither installed, which is what lets
+# the tests run off the Jetson.
+#
+# This is half the fix. It removes the dependence at the one call site we own;
+# TensorRTDetector.__init__ also defines `np.bool` before importing tensorrt,
+# for the call sites inside the bindings that we do not own. Both are needed —
+# see the comment there.
+_TRT_TO_NUMPY: Optional[Dict[Any, Any]] = None
+
+
+def _np_dtype(dt: Any) -> Any:
+    """TensorRT binding dtype -> numpy dtype, by exact byte width.
+
+    Deliberately raises on anything unmapped (BF16, FP8) rather than widening
+    to the nearest numpy type. These allocations are sized by `host.nbytes`
+    and copied by width, so a dtype that is close but not the same size does
+    not degrade the output — it silently mis-sizes the device buffer.
+    """
+    global _TRT_TO_NUMPY
+    if _TRT_TO_NUMPY is None:
+        import numpy as np
+        import tensorrt as trt
+
+        # getattr so a TensorRT lacking a member drops that entry rather than
+        # failing here — the same class of breakage this function exists to fix.
+        _TRT_TO_NUMPY = {
+            getattr(trt.DataType, name): np_type
+            for name, np_type in (
+                ("FLOAT", np.float32),
+                ("HALF", np.float16),
+                ("INT8", np.int8),
+                ("UINT8", np.uint8),
+                ("INT32", np.int32),
+                ("INT64", np.int64),
+                ("BOOL", np.bool_),
+            )
+            if hasattr(trt.DataType, name)
+        }
+    try:
+        return _TRT_TO_NUMPY[dt]
+    except KeyError:
+        raise RuntimeError(
+            f"no exact numpy dtype for TensorRT binding dtype {dt!r}. "
+            "Re-export the engine in a supported precision, or add the "
+            "mapping here only if the byte width matches exactly."
+        ) from None
+
+
 class TensorRTDetector:
     """YOLO11 on a prebuilt TRT plan. NMS on the CPU, on purpose.
 
@@ -390,35 +460,22 @@ class TensorRTDetector:
         import pycuda.autoinit  # noqa: F401  (import side effect: CUDA context)
         import pycuda.driver as cuda
 
-        # `np.bool` BEFORE tensorrt, because whether it exists is not stable.
+        # The BELT to `_np_dtype`'s braces. Both exist on purpose; neither is
+        # dead code, and deleting either one re-opens a bug that cost us the
+        # camera twice. See the comment above `_np_dtype` for the bug itself.
         #
-        # JetPack 5.1.1 ships TensorRT 8.5.2.2, whose `nptype()` builds a dtype
-        # table containing a literal `np.bool` (`tensorrt/__init__.py:166`).
-        # numpy expired that alias in 1.24, and this image pins numpy at exactly
-        # 1.24.4 — deliberately, with an assertion, because cv2's ABI needs it.
+        # `_np_dtype` covers the ONE call site we own. This covers the ones we
+        # do not: anything inside the TensorRT bindings that reaches for
+        # `np.bool` on a numpy that no longer has it. It has to run BEFORE
+        # `import tensorrt`, because whether the alias resolves depends on
+        # import order — which is why the same image, same container, failed on
+        # a cold engine cache and ran fine on a warm one (robot, 2026-08-22):
+        # the build path and the load path import a different set of modules
+        # before reaching here. A startup coin-flip that costs the detector.
         #
-        # Observed on the robot 2026-08-22, SAME image, SAME container, two
-        # consecutive starts:
-        #
-        #   first start   AttributeError: module 'numpy' has no attribute 'bool'
-        #                 at trt.nptype(...), exit 139, and because TensorRT had
-        #                 already allocated, the visible tail was CUDA
-        #                 deallocation errors — which read as a GPU or engine
-        #                 fault and are neither.
-        #   second start  ran fine, and has been detecting since.
-        #
-        # The difference is the engine: the first start BUILDS it, the second
-        # loads it from cache, and those two paths import a different set of
-        # modules before reaching here. So whether `np.bool` resolves depends on
-        # whether something else in the process happened to define it first —
-        # which makes this a startup coin-flip, and a coin-flip that costs the
-        # whole detector whenever it lands wrong. A cold cache is exactly when
-        # it lands wrong: first run after a rebuild or a new device.
-        #
-        # Defining it removes the dependence on import order, and it is what the
-        # table wants: `np.bool` WAS `bool`, and that entry maps TRT's BOOL to
-        # the builtin. The numpy pin is left alone — cv2 depends on it, and
-        # moving it to please TensorRT trades a caught error for an ABI mismatch.
+        # This is what the table wants anyway: `np.bool` WAS `bool`. The numpy
+        # pin stays where it is — cv2 depends on 1.24.4, and moving it to please
+        # TensorRT trades a caught error for an ABI mismatch.
         if not hasattr(np, "bool"):
             np.bool = bool  # type: ignore[attr-defined]
 
@@ -446,26 +503,34 @@ class TensorRTDetector:
         self._bindings: list[int] = []
         self._host: dict[int, Any] = {}
         self._device: dict[int, Any] = {}
-        self._input_index: int | None = None
-        self._output_index: int | None = None
+        # Discovered as Optional, then STORED AS int once proven. The check
+        # after the loop already guarantees both are set before anything calls
+        # `infer` — but it lives in a different method from every use, so the
+        # guarantee was invisible: `self._host[self._input_index]` is a dict
+        # indexed by a value typed `int | None`, four times, in the hot loop.
+        # Narrowing here turns "we checked once, trust us" into the type.
+        input_index: Optional[int] = None
+        output_index: Optional[int] = None
 
         for i in range(self._engine.num_bindings):
             shape = tuple(self._engine.get_binding_shape(i))
-            dtype = trt.nptype(self._engine.get_binding_dtype(i))
+            dtype = _np_dtype(self._engine.get_binding_dtype(i))
             host = np.empty(shape, dtype=dtype)
             device = cuda.mem_alloc(host.nbytes)
             self._host[i] = host
             self._device[i] = device
             self._bindings.append(int(device))
             if self._engine.binding_is_input(i):
-                self._input_index = i
+                input_index = i
                 self._input_shape = shape
             else:
-                self._output_index = i
+                output_index = i
                 self._output_shape = shape
 
-        if self._input_index is None or self._output_index is None:
+        if input_index is None or output_index is None:
             raise RuntimeError(f"engine {engine_path} has no input or no output binding")
+        self._input_index: int = input_index
+        self._output_index: int = output_index
 
         self._stream = cuda.Stream()
         log("engine.ready", path=engine_path, input=self._input_shape,
@@ -859,8 +924,20 @@ def run() -> int:
     source = SyntheticSource() if fake else RealSenseSource()
     source.start()
 
+    # READ ONCE, HERE, AND FAIL LOUDLY IF ABSENT.
+    #
+    # `RealSenseSource.intrinsics` starts as None and is filled by `start()`
+    # from the stream profile. Passing it straight into `ground_all` on every
+    # tick meant a source that started without producing a profile would fail
+    # deep inside the deprojection maths, per-tick, swallowed by the blind
+    # except below and counted as "inference failed" — a camera calibration
+    # problem reported as a detector problem, ten times a second.
+    intrinsics = source.intrinsics
+    if intrinsics is None:
+        raise RuntimeError("camera source produced no intrinsics after start()")
+
     detector = None
-    if fake:
+    if isinstance(source, SyntheticSource):
         labels = source.labels()
     else:
         detector = TensorRTDetector()
@@ -891,9 +968,16 @@ def run() -> int:
 
         try:
             color, depth = source.read()
-            if fake:
+            # `isinstance` rather than the `fake` flag: the flag and the
+            # object's type say the same thing, but only one of them says it
+            # to a reader (or a type checker) looking at THIS line.
+            if isinstance(source, SyntheticSource):
                 detections = source.boxes()
             else:
+                # Non-None whenever `source` is a RealSenseSource — the branch
+                # above built it. Forty lines apart, and correlated through a
+                # flag, so it has to be said rather than inferred.
+                assert detector is not None
                 detections = detector.infer(color)
             # AFTER the frame grab and the inference both succeeded, and inside
             # the try for a reason: a tick that threw did not look at anything,
@@ -906,9 +990,14 @@ def run() -> int:
                     stream_mod.test_pattern(COLOR_W, COLOR_H, ticks) if fake else color
                 )
             objects, omitted = ground_all(
-                detections, depth, source.intrinsics, extrinsic, labels, source.depth_scale
+                detections, depth, intrinsics, extrinsic, labels, source.depth_scale
             )
-        except Exception as exc:  # noqa: BLE001 - a failed tick must never publish
+        # BLIND EXCEPT, DELIBERATE: the whole point. A tick can fail in CUDA, in TensorRT,
+        # in pyrealsense2 or in numpy, and the correct response to every one of
+        # them is identical — do not publish, count it, keep the loop alive.
+        # Narrowing this would let an unlisted exception kill the detector,
+        # which is the one outcome the branch below exists to prevent.
+        except Exception as exc:  # noqa: BLE001
             # NO PUBLISH ON A FAILED TICK. See the module docstring: an empty
             # object list means "I looked and the room is clear", and this
             # branch is precisely the case where we did not look. Silence is

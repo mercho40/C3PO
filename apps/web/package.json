@@ -4,8 +4,8 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "vite dev --port 3001",
-    "dev:robot": "PUBLIC_ROBOT_CAM_URL=http://${C3PO_ROBOT_HOST:-g1-orin.local}:8001/camera PUBLIC_TELEOP_HOST=${C3PO_ROBOT_HOST:-g1-orin.local} vite dev --port 3001",
+    "dev": "vite dev --port 3001 --host 127.0.0.1",
+    "dev:robot": "PUBLIC_ROBOT_CAM_URL=http://${C3PO_ROBOT_HOST:-g1-orin.local}:8001/camera PUBLIC_TELEOP_HOST=${C3PO_ROBOT_HOST:-g1-orin.local} vite dev --port 3001 --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview",
     "test": "bun test",
@@ -49,6 +49,7 @@
     "better-auth": "^1.5.5",
     "dompurify": "^3.3.1",
     "elysia": "^1.4.28",
+    "mode-watcher": "^1.1.0",
     "runed": "^0.37.1",
     "shiki": "^4.0.2",
     "svelte-exmarkdown": "^5.0.2",

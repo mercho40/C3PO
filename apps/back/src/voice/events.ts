@@ -62,13 +62,16 @@ export async function* parseVoiceEvents(
   }
 }
 
-export async function bridgeVoiceStatus(signal: AbortSignal): Promise<VoiceStatus> {
+export async function bridgeVoiceStatus(
+  signal: AbortSignal,
+): Promise<VoiceStatus> {
   const response = await fetch(bridgeSiblingUrl("/telemetry/voice"), {
     headers: { Accept: "application/json" },
     cache: "no-store",
     signal,
   });
-  if (!response.ok) throw new Error(`voice status unavailable (${response.status})`);
+  if (!response.ok)
+    throw new Error(`voice status unavailable (${response.status})`);
   return (await response.json()) as VoiceStatus;
 }
 

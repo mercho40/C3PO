@@ -51,9 +51,9 @@ cp .env.example .env
 
 The repo's `.mcp.json` defines two bridge entries, and the distinction is a safety property, not bookkeeping — the tool-name prefix tells you which machine is about to move:
 
-| Server        | Tools                 | Target                                                                                                          |
-| ------------- | --------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `c3po-sim`    | `mcp__c3po-sim__*`    | **Isaac Sim.** Spawned locally by Claude Code (`uv run … bridge.mcp_server`, `SIM_MODE=isaac`)                  |
+| Server        | Tools                 | Target                                                                                            |
+| ------------- | --------------------- | ------------------------------------------------------------------------------------------------- |
+| `c3po-sim`    | `mcp__c3po-sim__*`    | **Isaac Sim.** Spawned locally by Claude Code (`uv run … bridge.mcp_server`, `SIM_MODE=isaac`)    |
 | `c3po-bridge` | `mcp__c3po-bridge__*` | **The real G1.** `type: http` → `http://g1-orin.local:8001/mcp` — the onboard daemon over the LAN |
 
 `c3po-sim` can never reach the real robot no matter what you set: it runs on the Mac, and the control board publishes DDS only on the robot's internal wired LAN (see `docs/ROBOT-HARDWARE.md`). Conversely, `mcp__c3po-bridge__*` tools command real hardware whenever the robot is reachable on the LAN.

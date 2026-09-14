@@ -572,3 +572,67 @@ def test_describe_surroundings_actually_consumes_the_perception_report():
         "the no-report fallback must still degrade explicitly — 'nothing "
         "detected' and 'nothing looked' are different answers (D7)"
     )
+
+
+# --- the two velocity ceilings, and the gap between them --------------------
+
+
+def test_the_nav_gate_stays_under_the_sim_fitted_caps():
+    """The invariant `perception_link` states about itself, pinned.
+
+    `CLAMP_VX/VY/WZ` are described as "deliberately below the sim-fitted MAX_* in
+    skills/_locomotion.py" — they are the ENFORCING backstop for a mis-edited
+    nav2_params.yaml, whose own max_vel_x is only advisory. A backstop above the
+    thing it backs up is not one.
+    """
+    from bridge.sdk import perception_link as pl
+    from bridge.skills import _locomotion as loc
+
+    assert pl.CLAMP_VX[1] < loc.MAX_FWD_VEL
+    assert pl.CLAMP_VX[0] > loc.MAX_BACK_VEL
+    assert pl.CLAMP_VY[1] < loc.MAX_LAT_VEL
+    assert pl.CLAMP_WZ[1] < loc.MAX_YAW_VEL
+
+
+def test_the_gate_and_the_skill_path_disagree_about_the_safe_forward_speed():
+    """AN OPEN DECISION, PINNED SO IT CANNOT DRIFT FURTHER IN SILENCE.
+
+    Two paths reach the same legs with different ceilings:
+
+        walk_velocity   MAX_LINEAR_VEL = 0.30   hardware-vetted
+        the Nav2 gate   CLAMP_VX[1]    = 0.50   reasoned, UNMEASURED
+
+    `walk_velocity` clamps to 0.30 because, in its own words, the sim caps are
+    "3-5x the only speeds ever measured on this physical robot", and that clamp
+    is what stands between wiring up real odometry and commanding a humanoid to
+    1 m/s on an unmeasured path. `perception_link` then permits 0.50 down the
+    planner path, and says of its own numbers: "UNMEASURED. These three tuples
+    are reasoned defaults, not numbers anyone has watched this robot walk at."
+
+    So the one number anybody has actually measured is the LOWER of the two, and
+    it guards the path a human drives, while the path a planner drives is
+    allowed 66% more. That may still be the right call — a planner brakes for
+    obstacles and a headset operator does not — but it is a judgement nobody has
+    recorded making, and `perception_link` itself calls it a decision owed to the
+    project before Stage 8.
+
+    This test does not decide it. It asserts the CURRENT relationship so the
+    two numbers cannot drift further apart without somebody reading this, and
+    fails loudly if they do. When the decision is made, change the assertion and
+    delete this paragraph.
+    """
+    from bridge.sdk import perception_link as pl
+    from bridge.skills.walk_velocity import MAX_LINEAR_VEL
+
+    assert MAX_LINEAR_VEL == 0.30, (
+        "the hardware-vetted forward cap moved; re-read the note above and "
+        "decide what the Nav2 gate should be before changing this"
+    )
+    assert pl.CLAMP_VX[1] == 0.50, (
+        "the Nav2 gate's forward clamp moved. If this is the Stage 8 decision "
+        "being made, good — update this test and the note above with it."
+    )
+    assert pl.CLAMP_VX[1] > MAX_LINEAR_VEL, (
+        "the gate is now at or below the vetted cap, which is the safer "
+        "direction and probably the resolution of the open question above"
+    )

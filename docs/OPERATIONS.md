@@ -6,6 +6,11 @@ that have already cost real debugging time. How the system fits together is
 reverse-engineered control API is `docs/ROBOT-API.md`; why choices were made is
 `docs/DECISIONS.md`. Per-app dev docs live in each app's README.
 
+**Standing next to the robot with a session to run?** `docs/SESSION-CHECKLIST.md`
+is the ordered runbook — deploy, verify, headset, then motion — and it starts
+with the deploy step that silently does nothing if the robot's checkout is on
+the wrong branch. This file is the reference; that one is the sequence.
+
 ---
 
 ## 1. Topology
@@ -321,7 +326,232 @@ The script verifies every port is listening **before** forwarding, because a
 forward to a dead port succeeds now and fails later, in the headset, as a page
 that will not load. Needs `adb` (`brew install --cask android-platform-tools`),
 developer mode on the headset, and the in-headset "Allow USB debugging?" prompt
-accepted — that last one is easy to miss. ⚠️ Not yet tested with a real headset.
+accepted — that last one is easy to miss.
+
+✅ **First run against a real Quest: 2026-08-21.** Detection, authorisation, the
+port checks and all four forwards work, and the Quest browser loads the console
+over `http://localhost:3001` — the secure-context reasoning holds. Two bugs
+surfaced and were fixed on that run: Vite bound `::1` only while `adb reverse`
+connects over IPv4 (fixed with `--host 127.0.0.1` in `apps/web/package.json`),
+and the script's own empty-tunnel check was silently defeated by `pipefail`,
+awarding a dead camera port a green tick — the exact failure its header promises
+to prevent, reintroduced by the shape of the fix for it.
+
+⚠️ **Still unproven: that an immersive session drives the robot.** On the first
+run no teleop session ever registered — `list_active_tasks` stayed empty, because
+8767 was not forwarded at the time. Head yaw reaching the robot from a headset
+has not been observed end to end, and the yaw sign is still unsettled.
+
+🔧 **The camera port is read from `PUBLIC_ROBOT_CAM_URL`, not hardcoded — since
+2026-08-27.** The forward list said 8081, which is `apps/perception`'s vision
+container. The feed had already moved to **8001**, the bridge's own port (see
+"WHY NOT PORT 8081" in `mcp_server.py`: 8081 belongs to the process that is dead
+in exactly the case the relay exists for). `PUBLIC_ROBOT_CAM_URL` was updated;
+the forward list was not, so the headset asked _its own_ `127.0.0.1:8001`, where
+nothing listens.
+
+The symptom was "i cannot see the camara" with **everything else working** —
+because everything else reaches the bridge through apps/back on 3000, which was
+forwarded. `quest_setup.sh` now parses the port out of `apps/web/.env` (falling
+back to `.env.example`), so the two cannot drift apart again. If you point
+`PUBLIC_ROBOT_CAM_URL` somewhere new, the forward follows it with no edit here.
+
+The headset also no longer goes silently black when the feed is missing: the
+camera layer draws a **SIN IMAGEN** card naming the reason, the same way the
+radar dial always says why it is empty. A black field is an assertion that
+everything is fine, and it was wrong every time it appeared.
+
+🚨 **THE BRIDGE IS NOT ON LOOPBACK. It is on `0.0.0.0`, on the school LAN.**
+Verified on the running robot, 2026-08-28:
+
+```
+$ ss -ltnp | grep 8001
+LISTEN 0 2048 0.0.0.0:8001 0.0.0.0:*  users:(("python",pid=1213,...))
+$ hostname -I
+192.168.123.164  172.17.0.1  10.10.32.19      # <- 10.10.32.19 is the school LAN
+```
+
+`scripts/robot/c3po-bridge.service` **used to set** `Environment=BRIDGE_HOST=0.0.0.0`,
+while `apps/bridge/.env.example` said `127.0.0.1`, the code default was
+`127.0.0.1`, and the table above and `apps/back/src/routes/telemetry.ts` both
+said **loopback**. Four places described this port and the one that actually ran
+disagreed with the other three.
+
+The consequence: `http://10.10.32.19:8001/mcp` was reachable from anywhere on
+the school Wi-Fi, and it is the tool surface that can **walk the robot**, with
+no authentication of its own. The SSH-tunnel posture that everything else in
+this document assumes was not what was deployed. It arrived with the unit taken
+from `main` in `06e5ea9` (2026-08-26).
+
+✅ **Decided 2026-09-06: the unit binds `127.0.0.1`.** The alternative was to
+keep the LAN binding and write down that we meant it, and that loses on the
+merits — an unauthenticated API that can walk a humanoid should not be
+reachable from a shared school Wi-Fi, the tunnel already exists and is already
+printed by `quest_setup.sh`, and every other place in the repo already said
+loopback. Keeping it would have meant editing five correct files to match one
+wrong one.
+
+**This breaks any back-end dialling the robot's LAN address**, which is not
+hypothetical: a local `apps/back/.env` carrying
+`BRIDGE_URL=http://10.10.32.19:8001/mcp` will now get a refused connection —
+`bridge_unavailable` against a bridge that is perfectly healthy, the same
+symptom the 8000/8001 port confusion produces. Two things to do, in this order:
+
+```bash
+ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po   # keep this running
+# then in apps/back/.env:
+BRIDGE_URL=http://127.0.0.1:8001/mcp
+```
+
+`apps/back` prints that exact pair of lines to its log the first time a connect
+fails while `BRIDGE_URL` names a non-loopback host, so the breakage explains
+itself rather than presenting as a dead robot.
+
+**The tunnel was already mandatory, which is what makes this cheap.** `/camera/*`
+and `/mcp` are `@mcp.custom_route`s on the _same_ FastMCP server — one process,
+one port. A working headset setup already forwards 8001, because
+`apps/web/.env.example` reaches the camera at `http://127.0.0.1:8001/camera` and
+`quest_setup.sh` prints the `-L 8001:127.0.0.1:8001` line for exactly that
+reason. So the LAN binding was never buying access that the tunnel did not
+already provide — the console's two halves had simply drifted into disagreeing
+about how to reach one port on one process, with `apps/web` going through the
+tunnel and `apps/back` going around it. Pointing `BRIDGE_URL` at
+`127.0.0.1:8001` needs no new forward.
+
+⚠️ **The robot is still binding `0.0.0.0` until it is redeployed.** The unit
+file is what changed, and `/etc/systemd/system/c3po-bridge.service` is a symlink
+into the checkout, so the update rides a `git pull` — **but only if the robot's
+checkout is on a branch that contains the change.** A `git pull` on the robot
+pulls whatever branch it already has; if this is still sitting on an unmerged
+branch, the pull is a no-op and the restart faithfully re-applies `0.0.0.0`.
+Check with `git -C ~/c3po log --oneline -1 -- scripts/robot/c3po-bridge.service`
+before concluding anything. Then:
+
+```bash
+git -C ~/c3po pull
+grep BRIDGE_HOST ~/c3po/scripts/robot/c3po-bridge.service   # must say 127.0.0.1
+sudo systemctl daemon-reload && sudo systemctl restart c3po-bridge
+ss -ltnp | grep 8001                                        # must NOT say 0.0.0.0
+```
+
+Until that lands, `c3po_health` keeps reporting the wildcard bind as a problem,
+which is correct — it reads the socket, not this file.
+
+🔧 **`BRIDGE_CORS_ORIGINS` was set in the unit and read by no code.** The same
+file carries
+`Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001`,
+and `grep -rn BRIDGE_CORS_ORIGINS ~/c3po/apps/` on the robot returned nothing.
+Somebody decided the CORS policy, wrote it into the deployment, and it was
+never implemented — which is why `/camera/status` answered 200 with no
+`access-control-allow-origin` and the headset's camera could not have loaded.
+The bridge now reads it, applied to `/camera/*` only.
+
+✅ **The header plumbing is verified ON THE ROBOT** (2026-08-28), without
+disturbing the running stack: this branch was checked out into a throwaway
+worktree and started in `SIM_MODE=stub` on loopback:8009, which creates no DDS
+participant (`mcp_server.py`'s `if SIM_MODE != "stub"` guard), claims no
+sensor and commands nothing. Results:
+
+| request                         | response                                                              |
+| ------------------------------- | --------------------------------------------------------------------- |
+| `Origin: http://localhost:3001` | `access-control-allow-origin: http://localhost:3001` + `vary: Origin` |
+| `Origin: https://evil.example`  | no CORS header                                                        |
+| no `Origin` (apps/back, curl)   | no CORS header — correct, CORS is browser-only                        |
+
+The 503 (stub mode has no camera) **carries the header**, which was the point:
+the console can read the _reason_. `Vary` is not needed on the no-CORS replies
+because every camera response is `Cache-Control: no-store`, so nothing caches
+them. The process was killed by pid and the worktree removed; the robot's
+checkout stayed on `152e3a6`.
+
+What remains unverified is the picture in the headset, which needs the bridge
+restarted onto this branch.
+
+⚠️ **Forwarding 8001 also forwards `/mcp`, and that is a known trade.** 8001 is
+the bridge, which serves the tool surface that can walk the robot with no
+authentication of its own, on the same port as `/camera/*`. This is the thing
+`apps/back/src/routes/telemetry.ts` warns against — "Never hand a browser a
+route to that port" — and `quest_setup.sh` now does it for the Quest's browser
+whenever the cable is connected.
+
+It is not currently exploitable: the bridge sends `Access-Control-Allow-Origin`
+on `/camera/*` and nowhere else, so a page in the headset browser cannot
+preflight a POST to `/mcp`. That is enforced by a test — `test_camera_relay.py`
+fails if the header appears outside `camera_relay.py` — rather than left to
+whoever edits the routes next.
+
+**The fix, for when somebody is wearing the headset to verify it:** serve the
+camera through `apps/back` on 3000, which is already forwarded, already behind
+Better Auth, and already how `/telemetry/*` and `/map/costmap.png` reach the
+console. Then the 8001 forward and the CORS grant both go away. It needs a
+streaming MJPEG proxy — a new shape for that service, since the existing
+proxies are request/response — which is why it was not done blind.
+
+### Deploying this branch to the robot, then closing it out 🔧
+
+The robot's checkout was on `152e3a6` as of 2026-08-28 — it does not have the
+HUD placement fix, the stereo fix, the camera CORS fix, or anything else from
+the last two days. Nothing in the headset can be judged until it does.
+
+```bash
+# 1. Robot free? Nobody else driving? (OPERATIONS §4 — one commander.)
+ssh c3po 'cd ~/c3po && git pull && sudo systemctl restart c3po-bridge'
+ssh c3po 'systemctl is-active c3po-bridge'
+
+# 2. Prove the fix landed, from the Mac, before the headset goes on:
+ssh c3po 'curl -sD- -o /dev/null -H "Origin: http://localhost:3001" \
+    http://127.0.0.1:8001/camera/status | grep -i access-control'
+#    expect:  access-control-allow-origin: http://localhost:3001
+#    nothing => the restart did not take the new code. Stop here.
+
+# 3. Then the headset.
+scripts/quest_setup.sh
+cd apps/bridge && uv run python scripts/headset_check.py
+```
+
+`c3po-bridge.service` says "does not claim sensors at boot", so the restart in
+step 1 does not take the camera or the LiDAR from anyone — but it is still a
+restart of a shared machine's service, so ask first.
+
+Step 2 is not optional and is the lesson of 2026-08-27/28: the port fix and the
+CORS fix are two separate causes of one identical black view, and testing the
+second while running a build that has neither is how you conclude a correct fix
+did not work. `preflight` now runs this check itself and says so in plain
+language when frames arrive but the console cannot read them.
+
+### Closing out the headset session — `headset_check.py` 🔧
+
+Everything the headset does is currently **unverified**: immersive mode, the
+panel position, the readiness banner, joystick walking, the 8-second alert
+band, the lidar radar, the camera picture, and the per-eye stereo fix. Eight
+changes across four days, none of them worn.
+
+```bash
+scripts/quest_setup.sh                                     # forward the ports
+ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po     # another terminal
+cd apps/bridge && uv run python scripts/headset_check.py
+```
+
+It prompts for each one with what to look for, and prints a report that can be
+pasted into the commit that flips a claim from unverified to verified.
+
+**The part that is not a checklist:** every visual check that depends on data
+asks the bridge FIRST, and a NO with no data behind it is recorded **BLOCKED**,
+never FAIL.
+
+That distinction is the entire point. "I cannot see the radar" and "I cannot
+see the camera" were reported three times between 21 and 27 August and the
+cause was different every time — a clip-space placement outside the lens cone,
+a QoS mismatch that meant no ring was ever published, and a port the headset
+never had forwarded. **Two of those three were not rendering bugs**, and from
+inside the headset all three looked identical. A FAIL from this script means
+"the data was there and the headset did not show it", which is worth acting on.
+A BLOCKED means go and start something.
+
+Nothing in it commands the robot — every probe is a GET against a read-only
+telemetry route. The two checks that involve motion ask the operator to drive,
+because a script that walks a humanoid while somebody's eyes are covered is not
+a thing this repo is going to grow.
 
 ### The VR teleop stream on the Jetson 🔧
 
@@ -329,6 +559,13 @@ One more process now runs beside the bridge, for `/vr-control`. It is not under
 the bridge unit — `c3po up teleop` starts it per session because it exists to
 serve a person who is currently wearing a headset. The same profile starts
 `apps/perception`'s vision container on port 8081, which owns the D435i.
+
+The camera normally comes from the **bridge's own relay on 8001** —
+`PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera`, which is what
+`quest_setup.sh` reads and forwards. The vision container serves the same paths
+on 8081 and is the process that actually owns the D435i, so pointing the
+variable at `:8081` instead works with no code change — but only while that
+container is alive, which is exactly the case the 8001 relay exists to cover.
 
 | Process                | Start            | Port | What it is                                                      |
 | ---------------------- | ---------------- | ---- | --------------------------------------------------------------- |
@@ -375,11 +612,103 @@ the firmware's own `duration` deadman.
 
 ⚠️ **The teleop stream has never run against the robot.**
 
+#### What still needs confirming with the headset on
+
+Written and tested off-robot, never worn. Each line is a thing an operator can
+only verify from inside a session, and each has a specific way of being wrong
+that looks fine from outside.
+
+| Confirm                 | Wrong looks like                                                         |
+| ----------------------- | ------------------------------------------------------------------------ |
+| Black surround in VR    | the picture floating in the compositor's own background, not a lit frame |
+| Panel top-right         | anywhere else — bottom-centre competes with where the robot is walking   |
+| Readiness banner        | blank while the robot refuses gestures, walk and head-turn all at once   |
+| Lidar radar bottom-left | an empty dial with no reason on it, or dots on the wrong side            |
+| Thumbstick walk         | one impulse then nothing — that was the 8 s latch, now liveness-gated    |
+| 8 s alert band          | walking stops dead with nothing on screen naming the latch               |
+
+The radar has one reading worth checking deliberately: **stand something to the
+robot's left and confirm the dot appears on the LEFT of the dial.** REP-103 puts
++yaw counterclockwise, the radar is heading-up, and a sign flip there is the one
+bug that looks entirely plausible — dots, rings, a robot in the middle — while
+telling someone the wall on their left is on their right.
+
 ### `apps/perception` → G1 Jetson
 
 Built with `c3po perception build`, normally run with `c3po up <stage>`, and
 never started by the bridge's boot path (§4). Architecture, stages, and thresholds:
 `apps/perception/README.md`.
+
+### Stage 3 + Stage 4, start to finish 🔧
+
+Both are **sensor-free**: they leave the Livox and the RealSense with gemm, so
+neither needs a window negotiated with the other team. This is the sequence, in
+the order that keeps each check interpretable.
+
+```bash
+~/c3po/scripts/robot/perception_up fake
+C3PO_NO_TAKEOVER=1 ~/c3po/scripts/robot/run_c3po   # NO_TAKEOVER: gemm stays up
+~/c3po/scripts/robot/c3po_health
+```
+
+`c3po_health` is the whole Stage 3 crossing in one line:
+
+```
+lidar ring    8/120 bearings in base_footprint
+```
+
+Eight, because the fake scan is eight bearings 45° apart — verified off-robot by
+`apps/perception/tests/test_fake_scan_ring_contract.py`, so a different number
+here is a real finding rather than a surprise. `base_footprint` matters too: the
+headset refuses any other frame rather than silently rotating the room.
+
+Then the two kills, **one at a time**, so it is clear which flipped what:
+
+```bash
+docker exec c3po-perception-nav pkill -f '/c3po/objects'   # detector offline
+docker exec c3po-perception-nav pkill -f '/scan'           # lidar offline
+```
+
+Match on the **topic alone**. `pkill -f 'topic pub /c3po/objects'` looks right
+and never matches — `-r 4` sits between the two words — so it exits 1 in
+silence, nothing dies, and "absent is not empty" appears to be broken while
+being fine. Already cost one session.
+
+And `pkill -f` matches **the command line running it**, including your own. A
+helper script killed over SSH with `pkill -f my_helper.sh` takes the SSH
+session with it, because the pattern appears in that session's own `bash -c`.
+Confirmed the hard way on 2026-08-26. Match something narrower than the whole
+invocation, or use the recorded pid.
+
+| after killing   | what must happen                                                      |
+| --------------- | --------------------------------------------------------------------- |
+| `/c3po/objects` | summary flips to `detector: offline` with a note, `objects: []`       |
+| `/scan`         | `/telemetry/scan` keeps the last ring, `age_s` climbing, then `stale` |
+
+The second is the first real exercise of `SCAN_STALE_AFTER_S`. A **blanked**
+ring is a bug: an old ring dimmed and labelled is correct, an empty dial is the
+one thing this display must never say by accident.
+
+Stage 4 adds Nav2 over the same synthetic sources, brought up **unconfigured**:
+
+```bash
+~/c3po/scripts/robot/perception_up nav2-fake
+docker exec c3po-perception-nav ros2 service call \
+  /lifecycle_manager_navigation/manage_nodes \
+  nav2_msgs/srv/ManageLifecycleNodes "{command: 0}"
+curl -s 127.0.0.1:8001/telemetry/gate
+```
+
+Send one goal **with the gate closed**. The reading that matters is the
+conjunction, and either half alone is misleading:
+
+```
+cmd_vel_received        climbing   Nav2 is planning and publishing
+dropped_while_disabled  climbing   every one of them was refused
+last_sent               null       nothing ever reached the robot
+```
+
+A SIGILL here means MPPI got installed by accident.
 
 ---
 

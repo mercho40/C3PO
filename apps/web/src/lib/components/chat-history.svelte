@@ -118,7 +118,10 @@
                     : 'text-ink-mute hover:bg-wash-hover hover:text-ink'}"
                 >
                   {#if item.channel === "voice"}
-                    <Mic class="size-3.5 shrink-0" aria-label="Conversación de voz" />
+                    <Mic
+                      class="size-3.5 shrink-0"
+                      aria-label="Conversación de voz"
+                    />
                   {:else}
                     <MessageSquare class="size-3.5 shrink-0" />
                   {/if}

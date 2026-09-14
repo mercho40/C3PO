@@ -23,7 +23,7 @@ C3PO_DIR="${C3PO_DIR:-$HOME/c3po}"
 BRIDGE_DIR="$C3PO_DIR/apps/bridge"
 RUN_DIR="${C3PO_RUN_DIR:-$HOME/.c3po/run}"
 LOG_DIR="${C3PO_LOG_DIR:-$HOME/.c3po/logs}"
-BRIDGE_BIND_HOST="${C3PO_BRIDGE_BIND_HOST:-0.0.0.0}"
+BRIDGE_BIND_HOST="${C3PO_BRIDGE_BIND_HOST:-127.0.0.1}"
 
 # The VR teleop stream. Not managed by the bridge unit: it exists to
 # serve a person who is currently wearing a headset, so it is per-session,
@@ -130,33 +130,50 @@ bridge_main_pid() {
     printf '%s' "$pid"
 }
 
+# Every live bridge, whoever started it. `bridge_pid` only knows the one named
+# in the pidfile, and on 2026-08-20 that was exactly the problem: a bridge was
+# running and serving while the pidfile named a different, dead process.
+#
+# NAME from main, whose callers all use `bridge_process_pids`. IMPLEMENTATION
+# through `_pids_matching`, which drops self-and-ancestors — a bare `pgrep -f`
+# here reintroduces the trap documented beside `_is_self_or_ancestor`, where the
+# pattern matches the very shell asking the question.
 bridge_process_pids() {
-    pgrep -f 'bridge\.mcp_server' 2>/dev/null || true
+    _pids_matching 'bridge\.mcp_server'
 }
 
 # Prove that a TCP listener belongs to a specific process, rather than trusting
-# an HTTP response from whatever happened to win the port. Match the configured
-# IPv4 bind exactly. The deployed service deliberately uses 0.0.0.0 for direct
-# LAN access; tests pass loopback explicitly when exercising that case.
+# an HTTP response from whatever happened to win the port.
+#
+# The deployed service binds 127.0.0.1 (it stopped offering the leg-commanding
+# API to the school Wi-Fi). Asking for loopback therefore also accepts a
+# wildcard listener, because a process bound to 0.0.0.0 does serve 127.0.0.1 —
+# the reverse is not true, so asking for 0.0.0.0 still demands the wildcard.
+# Getting this backwards makes a healthy bridge read as "did not become ready".
+#
 # Linux exposes the socket inode without root through /proc/net/tcp and the same
 # inode through /proc/<pid>/fd. C3PO_PROC_ROOT makes the parser testable.
 process_listens_ipv4_port() {
     local pid="$1" port="$2" host="${3:-$BRIDGE_BIND_HOST}" proc_root="${C3PO_PROC_ROOT:-/proc}"
-    local address_hex local_address listeners fd target inode listener
+    local address_hex hex port_hex local_address listeners fd target inode listener
 
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
     case "$port" in ''|*[!0-9]*) return 1 ;; esac
     case "$host" in
         0.0.0.0)   address_hex="00000000" ;;
-        127.0.0.1) address_hex="0100007F" ;;
+        127.0.0.1) address_hex="0100007F 00000000" ;;
         *) return 1 ;;
     esac
     [ -d "$proc_root/$pid/fd" ] || return 1
-    local_address="$address_hex:$(printf '%04X' "$port")"
-    listeners="$(awk -v local_address="$local_address" \
-        '$4 == "0A" && toupper($2) == local_address { print $10 }' \
-        "$proc_root/net/tcp" 2>/dev/null || true)"
-    [ -n "$listeners" ] || return 1
+    port_hex="$(printf '%04X' "$port")"
+    listeners=""
+    for hex in $address_hex; do
+        local_address="$hex:$port_hex"
+        listeners="$listeners $(awk -v local_address="$local_address" \
+            '$4 == "0A" && toupper($2) == local_address { print $10 }' \
+            "$proc_root/net/tcp" 2>/dev/null || true)"
+    done
+    [ -n "${listeners// /}" ] || return 1
 
     for fd in "$proc_root/$pid/fd"/*; do
         [ -e "$fd" ] || [ -L "$fd" ] || continue
@@ -204,7 +221,7 @@ sidecar_pid() {
 }
 
 stray_teleop_pids() {
-    pgrep -f 'bridge\.teleop\.server' 2>/dev/null || true
+    _pids_matching 'bridge\.teleop\.server'
 }
 
 
@@ -242,12 +259,26 @@ _is_self_or_ancestor() {
     return 1
 }
 
-other_commander_pids() {
+# EVERY process lookup in this file goes through here. A bare `pgrep -f` finds
+# the shell that is asking — `ssh robot '...pgrep -f bridge.mcp_server...'`
+# reports its own `bash -c`. That is not hypothetical in either direction:
+#
+#   * run_c3po refused to start on 2026-08-26, reporting "a bridge process
+#     exists outside c3po-bridge.service" for an ssh command line;
+#   * stop_c3po reports the same match as a "leftover" bridge, which invites
+#     somebody to kill their own session.
+#
+# Defined after `_is_self_or_ancestor`; bash resolves both at call time.
+_pids_matching() {
     local pid
-    for pid in $(pgrep -f "$OTHER_COMMANDER_PATTERNS" 2>/dev/null || true); do
+    for pid in $(pgrep -f "$1" 2>/dev/null || true); do
         _is_self_or_ancestor "$pid" && continue
         printf '%s\n' "$pid"
     done
+}
+
+other_commander_pids() {
+    _pids_matching "$OTHER_COMMANDER_PATTERNS"
 }
 
 warn_if_other_commander() {

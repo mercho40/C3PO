@@ -87,7 +87,10 @@ function voiceStatus() {
       stopsTriggered: 0,
       micEverOpen: state.micEverOpen,
       alwaysListening: false,
-      conversation: { phase: state.phase === "speaking" ? "speaking" : "idle", lastTurn: null },
+      conversation: {
+        phase: state.phase === "speaking" ? "speaking" : "idle",
+        lastTurn: null,
+      },
     };
   }
   return {
@@ -119,7 +122,8 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
       console.log(`[voice] conversation start requested by ${user.id}`);
       if (useRealtime()) {
         const active = realtime.snapshot();
-        if (active.running && active.ownerId !== user.id) return status(409, voiceStatus());
+        if (active.running && active.ownerId !== user.id)
+          return status(409, voiceStatus());
         if (!active.running) {
           const chatId = crypto.randomUUID();
           const owned = await ensureChat({
@@ -165,7 +169,8 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
       console.log(`[voice] stop requested by ${user.id}`);
       if (useRealtime()) {
         const active = realtime.snapshot();
-        if (active.running && active.ownerId !== user.id) return status(409, voiceStatus());
+        if (active.running && active.ownerId !== user.id)
+          return status(409, voiceStatus());
         await realtime.stop();
       } else {
         await getLoop().stop();
