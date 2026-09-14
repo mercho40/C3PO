@@ -127,7 +127,15 @@ fi
 if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_port 2468 8001; then
     pass=$((pass + 1))
 else
-    fail=$((fail + 1)); failed_names+=("the deployed wildcard listener satisfies readiness")
+    fail=$((fail + 1)); failed_names+=("a wildcard listener satisfies a loopback request")
+fi
+# The regression of 2026-09-14: the unit moved to 127.0.0.1 and this default was
+# left at 0.0.0.0, so the probe hunted for a wildcard listener that no longer
+# existed and `c3po up` aborted on a bridge that was serving fine.
+if C3PO_PROC_ROOT="$proc_fixture" process_listens_ipv4_port 4321 8001; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1)); failed_names+=("the deployed loopback listener satisfies the default host")
 fi
 rm -rf "$proc_fixture"
 

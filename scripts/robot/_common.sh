@@ -23,7 +23,7 @@ C3PO_DIR="${C3PO_DIR:-$HOME/c3po}"
 BRIDGE_DIR="$C3PO_DIR/apps/bridge"
 RUN_DIR="${C3PO_RUN_DIR:-$HOME/.c3po/run}"
 LOG_DIR="${C3PO_LOG_DIR:-$HOME/.c3po/logs}"
-BRIDGE_BIND_HOST="${C3PO_BRIDGE_BIND_HOST:-0.0.0.0}"
+BRIDGE_BIND_HOST="${C3PO_BRIDGE_BIND_HOST:-127.0.0.1}"
 
 # The VR teleop stream. Not managed by the bridge unit: it exists to
 # serve a person who is currently wearing a headset, so it is per-session,
@@ -143,28 +143,37 @@ bridge_process_pids() {
 }
 
 # Prove that a TCP listener belongs to a specific process, rather than trusting
-# an HTTP response from whatever happened to win the port. Match the configured
-# IPv4 bind exactly. The deployed service deliberately uses 0.0.0.0 for direct
-# LAN access; tests pass loopback explicitly when exercising that case.
+# an HTTP response from whatever happened to win the port.
+#
+# The deployed service binds 127.0.0.1 (it stopped offering the leg-commanding
+# API to the school Wi-Fi). Asking for loopback therefore also accepts a
+# wildcard listener, because a process bound to 0.0.0.0 does serve 127.0.0.1 —
+# the reverse is not true, so asking for 0.0.0.0 still demands the wildcard.
+# Getting this backwards makes a healthy bridge read as "did not become ready".
+#
 # Linux exposes the socket inode without root through /proc/net/tcp and the same
 # inode through /proc/<pid>/fd. C3PO_PROC_ROOT makes the parser testable.
 process_listens_ipv4_port() {
     local pid="$1" port="$2" host="${3:-$BRIDGE_BIND_HOST}" proc_root="${C3PO_PROC_ROOT:-/proc}"
-    local address_hex local_address listeners fd target inode listener
+    local address_hex hex port_hex local_address listeners fd target inode listener
 
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac
     case "$port" in ''|*[!0-9]*) return 1 ;; esac
     case "$host" in
         0.0.0.0)   address_hex="00000000" ;;
-        127.0.0.1) address_hex="0100007F" ;;
+        127.0.0.1) address_hex="0100007F 00000000" ;;
         *) return 1 ;;
     esac
     [ -d "$proc_root/$pid/fd" ] || return 1
-    local_address="$address_hex:$(printf '%04X' "$port")"
-    listeners="$(awk -v local_address="$local_address" \
-        '$4 == "0A" && toupper($2) == local_address { print $10 }' \
-        "$proc_root/net/tcp" 2>/dev/null || true)"
-    [ -n "$listeners" ] || return 1
+    port_hex="$(printf '%04X' "$port")"
+    listeners=""
+    for hex in $address_hex; do
+        local_address="$hex:$port_hex"
+        listeners="$listeners $(awk -v local_address="$local_address" \
+            '$4 == "0A" && toupper($2) == local_address { print $10 }' \
+            "$proc_root/net/tcp" 2>/dev/null || true)"
+    done
+    [ -n "${listeners// /}" ] || return 1
 
     for fd in "$proc_root/$pid/fd"/*; do
         [ -e "$fd" ] || [ -L "$fd" ] || continue
