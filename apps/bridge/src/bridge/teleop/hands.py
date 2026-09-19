@@ -39,15 +39,22 @@ which covers the operator letting go, the frames going stale, the session
 ending and the process being cancelled. **Do not add a code path that closes a
 hand without a matching release; on this hardware nothing else will open it.**
 
-⚠️ **Which end of [0,1] is open is still unknown.** BrainCo never documents it,
-Inspire DFX maps 1.0 = open, and `hand_sdk` says positive torque closes. So
-`TELEOP_BRAINCO_OPEN_AT` has no default. Getting it backwards turns every
-"relax your hand" into "clench".
+**Which end of [0,1] is open — SETTLED 2026-08-27: 0.0 is open.** Two sources
+that finally agree: BrainCo's own parameter docs (cited verbatim in the gemm
+stack's `robot_hand_brainco.py` on this robot's Jetson: *"the angles are in
+the range [0, 1] ==> 0.0: fully open, 1.0: fully closed"*), and that same
+driver — which has actually moved this robot's right hand at 100 Hz — writing
+q=0.0 as its open/rest pose. `TELEOP_BRAINCO_OPEN_AT` therefore defaults to 0
+now; it remains overridable because the flag predates the answer, but a value
+that is set and not 0/1 still refuses — a wrong answer is worse than none.
+
+One more fact from the same working driver: it never commands a full 1.0.
+Fingers cap at 0.98 and the thumb channel at 0.7 — a fully-closed thumb jams
+against the closing fingers. `BRAINCO_CLOSURE_CAPS` mirrors that.
 
 Enablement: `TELEOP_HAND_ENABLED=1` **and** `TELEOP_HAND_TYPE` in
-{`brainco`, `dex3`}, plus `TELEOP_BRAINCO_OPEN_AT` in {0, 1} for BrainCo.
-Anything short of that yields a `NullHandDriver` that logs and publishes
-nothing — teleop still runs, the fingers just do not move.
+{`brainco`, `dex3`}. Anything short of that yields a `NullHandDriver` that
+logs and publishes nothing — teleop still runs, the fingers just do not move.
 """
 
 from __future__ import annotations
@@ -75,6 +82,13 @@ DEFAULT_SIDES: tuple[Side, ...] = ("right",)
 # finger order, and the recommendation to run all finger speeds at 1.0.
 BRAINCO_MOTORS = 6
 BRAINCO_SPEED = 1.0
+
+# Per-channel closure ceilings, order [Thumb, Thumb_aux, Index, Middle, Ring,
+# Pinky]. From the gemm stack's working BrainCo driver on this same robot: it
+# clips every finger to 0.98 and channel 1 to 0.7 — commanded to a full fist,
+# the thumb collides with the closing fingers. Applied after polarity, so the
+# cap always means "never quite fully closed" regardless of wire direction.
+BRAINCO_CLOSURE_CAPS = (0.98, 0.70, 0.98, 0.98, 0.98, 0.98)
 
 # --- Dex3-1 ------------------------------------------------------------------
 # 7 motors, radians. IDL order is `thumb_0, thumb_1, thumb_2, middle_0,
@@ -181,11 +195,14 @@ class BrainCoHandDriver(HandDriver):
 
         # `open_at` is the wire value meaning "open", so closure runs from it
         # toward the other end. Written this way rather than as an `if` so the
-        # unknown polarity is one number, not two code paths.
-        position = self.open_at + (1.0 - 2.0 * self.open_at) * _clamp01(grip)
+        # polarity stays one number, not two code paths.
+        closure = _clamp01(grip)
 
         cmds = []
-        for _ in range(BRAINCO_MOTORS):
+        for cap in BRAINCO_CLOSURE_CAPS:
+            # Cap the CLOSURE, then map to the wire — so "thumb never quite
+            # fully closed" holds on either polarity.
+            position = self.open_at + (1.0 - 2.0 * self.open_at) * min(closure, cap)
             cmd = unitree_go_msg_dds__MotorCmd_()
             cmd.q = float(position)
             cmd.dq = float(BRAINCO_SPEED)
