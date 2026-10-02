@@ -5,14 +5,18 @@
   let { size = 16 }: LoaderIconProps = $props();
 </script>
 
+<!-- Decorative: every caller pairs it with visible text ("Pensando…"), and the
+     registry's <title>Loader</title> made screen readers announce "Loader
+     Pensando…" in English. -->
 <svg
+  aria-hidden="true"
+  focusable="false"
   height={size}
   stroke-linejoin="round"
   style="color: currentcolor;"
   viewBox="0 0 16 16"
   width={size}
 >
-  <title>Loader</title>
   <g clip-path="url(#clip0_2393_1490)">
     <path d="M8 0V4" stroke="currentColor" stroke-width="1.5" />
     <path d="M8 16V12" opacity="0.5" stroke="currentColor" stroke-width="1.5" />

@@ -12,7 +12,7 @@
 
   let {
     onSelect,
-    label = "Add photos or files",
+    label = "Agregar fotos o archivos",
     class: className,
     ...props
   }: Props = $props();

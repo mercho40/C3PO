@@ -1,5 +1,6 @@
 import { IsMobile } from "$lib/hooks/is-mobile.svelte.js";
 import { getContext, setContext } from "svelte";
+import { isTypingTarget } from "$lib/robot/estop";
 import { SIDEBAR_KEYBOARD_SHORTCUT } from "./constants.js";
 
 type Getter<T> = () => T;
@@ -41,7 +42,17 @@ class SidebarState {
   }
 
   // Event handler to apply to the `<svelte:window>`
+  //
+  // Not while typing: Ctrl/⌘+B is "bold" in a contenteditable and a habit in
+  // text fields, and the Settings page promises operators that no shortcut
+  // fires while they write. Upstream shadcn toggles the sidebar from inside the
+  // chat composer — and swallows the keystroke with preventDefault. Same
+  // typing test as the e-stop hotkey, so the two shortcuts agree on what
+  // "typing" means.
   handleShortcutKeydown = (e: KeyboardEvent) => {
+    if (isTypingTarget(e.target instanceof HTMLElement ? e.target : null)) {
+      return;
+    }
     if (e.key === SIDEBAR_KEYBOARD_SHORTCUT && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       this.toggle();

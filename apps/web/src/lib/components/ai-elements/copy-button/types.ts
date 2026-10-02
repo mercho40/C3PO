@@ -27,6 +27,8 @@ export type CopyButtonPropsWithoutHTML = WithChildren<
     icon?: Snippet<[]>;
     animationDuration?: number;
     disbled?: boolean;
+    /** Accessible name, e.g. "Copiar respuesta". Spanish; defaults to "Copiar". */
+    label?: string;
     onCopy?: (status: UseClipboard["status"]) => void;
   }
 >;

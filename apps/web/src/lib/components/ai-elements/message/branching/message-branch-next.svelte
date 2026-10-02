@@ -20,7 +20,7 @@
 </script>
 
 <Button
-  aria-label="Next branch"
+  aria-label="Versión siguiente"
   disabled={isDisabled}
   onclick={() => branchContext.goToNext()}
   size="icon"

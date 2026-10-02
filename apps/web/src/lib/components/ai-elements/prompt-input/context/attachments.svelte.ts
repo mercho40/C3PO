@@ -1,4 +1,5 @@
 import { getContext, setContext } from "svelte";
+import { newId } from "$lib/chat/ids";
 import type { PromptInputAttachment } from "./types.js";
 
 export type AttachmentError = {
@@ -164,7 +165,8 @@ export class AttachmentsContext {
     let added: PromptInputAttachment[] = [];
     for (let file of capped) {
       added.push({
-        id: crypto.randomUUID(),
+        // Not crypto.randomUUID(): undefined on plain http (see $lib/chat/ids).
+        id: newId(),
         file,
         previewUrl: URL.createObjectURL(file),
         mediaType: file.type,

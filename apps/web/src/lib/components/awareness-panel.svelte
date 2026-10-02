@@ -5,7 +5,14 @@
   D7's whole contract is that an empty scene and an unobserved scene are
   different facts, so when the detector is offline this shows the warning
   instead of an empty list — and the warning is the bridge's own words, not a
-  string invented here.
+  string invented here (marked `lang="en"`, because they are English).
+
+  The second thing: a scene that is no longer current must not look current.
+  On a 503 the bridge is up but could not build a snapshot; the last scene is
+  kept so the operator can still read it, but muted under "Última escena
+  conocida", and the reason is always shown — it used to render only on a
+  transport failure, so a 503 left a frozen scene looking live (or "Waiting
+  for the first snapshot…" forever).
 
   Ages and staleness come from the robot as reported. Nothing is recomputed
   against the browser's clock: a console that disagrees with the robot about how
@@ -13,153 +20,356 @@
 -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import * as Card from "$lib/components/ui/card/index.js";
-  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { resolve } from "$app/paths";
+  import { ChevronRight, Square } from "@lucide/svelte";
+  import Callout from "$lib/components/callout.svelte";
   import { Awareness } from "$lib/robot/awareness.svelte";
+  import { formatAge } from "$lib/robot/format";
+  import {
+    FREE_SPACE_SECTORS,
+    bearingWords,
+    formatConfidence,
+    formatRange,
+    sceneNote,
+    sourceName,
+    sourceTone,
+    sourceWord,
+    type SourceTone,
+  } from "$lib/robot/awareness-copy";
 
-  const awareness = new Awareness();
+  let {
+    section = "all",
+  }: {
+    /** Which half to render. /voice shows only what the robot hears. */
+    section?: "all" | "sees" | "hears";
+  } = $props();
+
+  // Only the reads this panel draws: /voice mounts it with section="hears",
+  // and that page fetching the D7 scene every second was perception work on
+  // the Jetson for nothing. `section` is fixed for a mount (no page switches
+  // it), so the poller is built for it once.
+  // svelte-ignore state_referenced_locally
+  const awareness = new Awareness(section);
 
   onMount(() => {
     awareness.start();
     return () => awareness.stop();
   });
 
-  // Bearings are egocentric: 0 ahead, POSITIVE LEFT (D7). Rendering that sign
-  // backwards would put every obstacle on the wrong side of the robot, so the
-  // words are derived here in one place rather than at each call site.
-  function side(bearingDeg: number): string {
-    const b = Math.round(bearingDeg);
-    if (Math.abs(b) <= 15) return "ahead";
-    if (Math.abs(b) >= 165) return "behind";
-    return b > 0 ? `${Math.abs(b)}° left` : `${Math.abs(b)}° right`;
-  }
+  const scene = $derived(awareness.surroundings);
+  // The scene on screen is the current world only when the last poll built it.
+  const current = $derived(!awareness.degraded && !awareness.unreachable);
+  const freeSpace = $derived(
+    FREE_SPACE_SECTORS.map(([key, name]) => ({
+      name,
+      value: scene?.free_space?.[key],
+    })).filter((s) => s.value != null),
+  );
 
-  function statusTone(
-    s: string | undefined,
-  ): "default" | "secondary" | "destructive" {
-    if (s === "ok") return "default";
-    if (s === "stale") return "secondary";
-    return "destructive";
-  }
+  const PILL: Record<SourceTone, string> = {
+    ok: "border-ok/30 text-ok",
+    warn: "border-warn/30 text-warn",
+    danger: "border-danger/30 text-danger-soft",
+    neutral: "border-hairline-strong text-ink-mute",
+  };
+
+  const voice = $derived(awareness.voice);
 </script>
 
-<div class="grid gap-4 md:grid-cols-2">
-  <Card.Root>
-    <Card.Header>
-      <Card.Title class="flex items-center justify-between gap-2">
-        <span>Sees</span>
-        <span class="flex gap-1">
-          {#each Object.entries(awareness.surroundings?.sources ?? {}) as [name, status] (name)}
-            <Badge variant={statusTone(status)} class="text-[10px] uppercase">
-              {name}: {status}
-            </Badge>
-          {/each}
-        </span>
-      </Card.Title>
-    </Card.Header>
-    <Card.Content class="space-y-3">
-      {#if awareness.unreachable}
-        <p class="text-sm text-destructive">{awareness.reason}</p>
-      {:else if !awareness.surroundings}
-        <p class="text-sm text-muted-foreground">
-          Waiting for the first snapshot…
-        </p>
-      {:else}
-        <!--
-          Notes BEFORE objects, deliberately. They carry "detection is offline,
-          this is not an empty scene" — which an operator must read before, not
-          after, concluding the way is clear.
-        -->
-        {#each awareness.surroundings.notes ?? [] as note (note)}
-          <p class="text-sm text-amber-600 dark:text-amber-500">{note}</p>
-        {/each}
-
-        {#if awareness.objects.length > 0}
-          <ul class="space-y-1 text-sm">
-            {#each awareness.objects as obj (obj.label + obj.bearing_deg)}
-              <li class="flex items-baseline justify-between gap-3">
-                <span class="font-medium">{obj.label}</span>
-                <span class="text-muted-foreground tabular-nums">
-                  {obj.range_m.toFixed(1)} m · {side(obj.bearing_deg)}
-                </span>
-              </li>
-            {/each}
-          </ul>
-        {:else if awareness.detectorOnline}
-          <!-- Only sayable when the detector is actually running. -->
-          <p class="text-sm text-muted-foreground">
-            Nothing detected right now.
-          </p>
-        {/if}
-
-        {#if (awareness.surroundings.objects_omitted ?? 0) > 0}
-          <!-- Truncation is always declared (D7) — a list that quietly drops
-               things is worse than a shorter one that says so. -->
-          <p class="text-xs text-muted-foreground">
-            + {awareness.surroundings.objects_omitted} more not listed
-          </p>
-        {/if}
-      {/if}
-    </Card.Content>
-  </Card.Root>
-
-  <Card.Root>
-    <Card.Header>
-      <Card.Title class="flex items-center justify-between gap-2">
-        <span>Hears</span>
-        {#if awareness.voice}
-          <Badge
-            variant={awareness.voice.always_listening ? "default" : "secondary"}
-            class="text-[10px] uppercase"
-          >
-            {awareness.voice.always_listening ? "always on" : "push-to-talk"}
-          </Badge>
-        {/if}
-      </Card.Title>
-    </Card.Header>
-    <Card.Content class="space-y-3">
-      {#if !awareness.voice}
-        <p class="text-sm text-muted-foreground">No voice telemetry.</p>
-      {:else if awareness.voice.error}
-        <p class="text-sm text-destructive">{awareness.voice.error}</p>
-      {:else}
-        {#if !awareness.voice.always_listening && !awareness.voice.mic_ever_open}
-          <!--
-            The most important sentence in this panel. With a push-to-talk mic,
-            an empty transcript almost always means nobody held the button —
-            NOT that the room was silent. An operator who reads it the other way
-            concludes the robot ignored someone.
-          -->
-          <p class="text-sm text-amber-600 dark:text-amber-500">
-            The robot has not been able to hear anything. Its microphone only
-            opens while someone holds <strong>L1+L2</strong> on the remote — this
-            is not silence in the room.
-          </p>
-        {/if}
-
-        {#if awareness.voice.recent.length > 0}
-          <ul class="space-y-1 text-sm">
-            {#each awareness.voice.recent
-              .slice(-8)
-              .reverse() as item, i (item.text + item.age_s + i)}
-              <li class="flex items-baseline justify-between gap-3">
-                <span
-                  class={item.kind === "stop"
-                    ? "font-semibold text-destructive"
-                    : ""}
+<div class="@container">
+  <div class={["grid gap-4", section === "all" && "@3xl:grid-cols-2"]}>
+    {#if section !== "hears"}
+      <section class="flex min-w-0 flex-col gap-3 panel p-5">
+        <div
+          class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2"
+        >
+          <div class="flex items-baseline gap-2">
+            <h2 class="eyebrow">Ve</h2>
+            {#if scene?.report_age_s != null}
+              <span class="readout">escena {formatAge(scene.report_age_s)}</span
+              >
+            {/if}
+          </div>
+          {#if scene}
+            <ul
+              class="flex flex-wrap gap-1.5"
+              aria-label="Fuentes de percepción"
+            >
+              {#each Object.entries(scene.sources ?? {}) as [name, status] (name)}
+                <li
+                  class="rounded-full border px-2 py-0.5 readout {PILL[
+                    sourceTone(status, current)
+                  ]}"
                 >
-                  {item.kind === "stop" ? `⏹ ${item.text}` : item.text}
-                </span>
-                <span class="text-xs text-muted-foreground tabular-nums">
-                  {item.age_s.toFixed(0)}s ago
-                </span>
-              </li>
-            {/each}
-          </ul>
-        {:else if awareness.voice.mic_ever_open}
-          <p class="text-sm text-muted-foreground">Nothing said recently.</p>
+                  {sourceName(name)}: {current
+                    ? sourceWord(status)
+                    : "sin dato"}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
+        {#if awareness.reason}
+          <Callout tone="warn">
+            {awareness.reason}
+            {#if awareness.bridgeReason}
+              <span class="readout text-ink-dim">
+                Puente: <span lang="en">{awareness.bridgeReason}</span></span
+              >
+            {/if}
+          </Callout>
         {/if}
-      {/if}
-    </Card.Content>
-  </Card.Root>
+
+        {#if !scene}
+          {#if !awareness.reason}
+            <p class="text-sm text-ink-mute">Esperando la primera escena…</p>
+          {/if}
+        {:else}
+          <!-- Not dimmed with opacity: that took the 11 px readouts below
+               contrast. The heading says it is history, in words, and the
+               values drop to the muted ink. -->
+          <div class="flex flex-col gap-3">
+            {#if !current}
+              <p class="eyebrow text-ink-dim">
+                {awareness.degraded
+                  ? "Última escena conocida — el puente no pudo armar una nueva"
+                  : "Última escena conocida — sin respuesta del puente"}
+              </p>
+            {/if}
+
+            <!--
+              Notes BEFORE objects, deliberately. They carry "detection is
+              offline, this is not an empty scene" — which an operator must read
+              before, not after, concluding the way is clear. The bridge already
+              declares any truncation here ("N more object(s) detected but not
+              listed"), so the panel does not add its own line for it.
+            -->
+            <!-- Keyed by position: the bridge can repeat a sentence, and a
+                 duplicate key throws in production. Known sentences lead in
+                 Spanish with the bridge's English underneath; unknown ones
+                 stay verbatim (awareness-copy.ts). -->
+            {#each scene.notes ?? [] as raw, i (i)}
+              {@const note = sceneNote(raw)}
+              <div class="flex flex-col gap-0.5">
+                {#if note.es}
+                  <p class="text-sm text-warn">{note.es}</p>
+                  <p class="readout break-words" lang="en">{note.en}</p>
+                {:else}
+                  <p class="text-sm text-warn" lang="en">{note.en}</p>
+                {/if}
+              </div>
+            {/each}
+
+            {#if awareness.objects.length > 0}
+              <ul class="flex flex-col gap-1.5 text-sm">
+                <!-- Keyed by position. The old key concatenated label, bearing
+                     and range — "cup"+1+"2.5" and "cup"+12+".5" collide, and
+                     two identical detections always did — and Svelte throws
+                     each_key_duplicate on that in production. The list is
+                     re-sorted every poll, so identity buys nothing here. -->
+                {#each awareness.objects as obj, i (i)}
+                  <li
+                    class="flex flex-wrap items-baseline justify-between gap-x-3"
+                  >
+                    <span
+                      class={[
+                        "font-medium",
+                        current ? "text-ink" : "text-ink-mute",
+                      ]}
+                      lang="en">{obj.label}</span
+                    >
+                    <span
+                      class="flex flex-wrap items-baseline gap-x-2 text-ink-dim"
+                    >
+                      <span class="font-mono"
+                        >{formatRange(obj.range_m)} · {bearingWords(
+                          obj.bearing_deg,
+                        )}</span
+                      >
+                      {#if formatConfidence(obj.confidence)}
+                        <span class="readout"
+                          >conf. {formatConfidence(obj.confidence)}</span
+                        >
+                      {/if}
+                      {#if obj.age_s != null}
+                        <span class="readout">{formatAge(obj.age_s)}</span>
+                      {/if}
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+            {:else if awareness.detectorOnline}
+              <!-- Only sayable when the detector is actually running. -->
+              <p class="text-sm text-ink-mute">No se detecta nada ahora.</p>
+            {/if}
+
+            {#if freeSpace.length > 0}
+              <div class="flex flex-col gap-1 border-t border-hairline pt-2.5">
+                <h3 class="eyebrow">Espacio libre</h3>
+                <dl class="flex flex-wrap gap-x-4 gap-y-1">
+                  {#each freeSpace as s (s.name)}
+                    <div class="flex items-baseline gap-1.5">
+                      <dt class="text-xs text-ink-mute">{s.name}</dt>
+                      <dd
+                        class={[
+                          "font-mono text-sm",
+                          current ? "text-ink" : "text-ink-mute",
+                        ]}
+                      >
+                        {formatRange(s.value)}
+                      </dd>
+                    </div>
+                  {/each}
+                </dl>
+              </div>
+            {/if}
+
+            {#if (scene.landmarks?.length ?? 0) > 0}
+              <div class="flex flex-col gap-1 border-t border-hairline pt-2.5">
+                <h3 class="eyebrow">Lugares guardados</h3>
+                <ul class="flex flex-col gap-1 text-sm">
+                  {#each scene.landmarks ?? [] as lm, i (i)}
+                    <li
+                      class="flex flex-wrap items-baseline justify-between gap-x-3"
+                    >
+                      <span class={current ? "text-ink" : "text-ink-mute"}
+                        >{lm.label}</span
+                      >
+                      <span class="flex items-baseline gap-2 text-ink-dim">
+                        <span class="font-mono"
+                          >{formatRange(lm.range_m)} · {bearingWords(
+                            lm.bearing_deg,
+                          )}</span
+                        >
+                        {#if lm.age_s != null}
+                          <span class="readout">{formatAge(lm.age_s)}</span>
+                        {/if}
+                      </span>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </section>
+    {/if}
+
+    {#if section !== "sees"}
+      <section class="flex min-w-0 flex-col gap-3 panel p-5">
+        <div
+          class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2"
+        >
+          <div class="flex items-baseline gap-2">
+            <h2 class="eyebrow">Escucha</h2>
+            {#if voice}
+              <span
+                class="rounded-full border border-hairline-strong px-2 py-0.5 readout text-ink-dim"
+              >
+                {voice.always_listening
+                  ? "micrófono siempre abierto"
+                  : "pulsar para hablar · L1+L2"}
+              </span>
+            {/if}
+          </div>
+          {#if section === "all"}
+            <a
+              href={resolve("/voice")}
+              class="inline-flex min-h-8 items-center gap-0.5 rounded text-xs text-ink-mute transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none"
+            >
+              Control por voz
+              <ChevronRight class="size-3.5" aria-hidden="true" />
+            </a>
+          {/if}
+        </div>
+
+        {#if awareness.voiceReason}
+          <Callout tone="warn">
+            {awareness.voiceReason}
+            {#if awareness.voiceBridgeReason}
+              <span class="readout text-ink-dim">
+                Puente: <span lang="en">{awareness.voiceBridgeReason}</span
+                ></span
+              >
+            {/if}
+          </Callout>
+        {/if}
+
+        {#if !voice}
+          {#if !awareness.voiceReason}
+            <p class="text-sm text-ink-mute">
+              {awareness.loaded
+                ? "Sin telemetría de voz."
+                : "Esperando la telemetría de voz…"}
+            </p>
+          {/if}
+        {:else}
+          {#if voice.error}
+            <p class="text-sm text-danger-soft" role="alert">
+              El stack de voz informa un error:
+              <span lang="en">{voice.error}</span>
+            </p>
+          {/if}
+
+          {#if !voice.mic_ever_open}
+            <!--
+              The most important sentence in this panel. With a push-to-talk
+              mic, an empty transcript almost always means nobody held the
+              button — NOT that the room was silent. An operator who reads it
+              the other way concludes the robot ignored someone. With an
+              always-on mic the same silence means something else entirely: no
+              audio is arriving at all.
+            -->
+            <p class="text-sm text-warn">
+              {#if voice.always_listening}
+                El micrófono está siempre abierto, pero todavía no llegó audio.
+                Revisá el micrófono del robot (fuente: <span class="font-mono"
+                  >{voice.audio_source}</span
+                >).
+              {:else}
+                El robot todavía no pudo escuchar nada. Su micrófono solo se
+                abre mientras alguien mantiene <strong>L1+L2</strong> en el control:
+                esto no es silencio en la sala.
+              {/if}
+            </p>
+          {:else if voice.seconds_since_audio != null}
+            <span class="readout"
+              >último audio {formatAge(voice.seconds_since_audio)}</span
+            >
+          {/if}
+
+          {#if voice.recent.length > 0}
+            <ul class="flex flex-col gap-1.5 text-sm">
+              {#each voice.recent
+                .slice(-8)
+                .reverse() as item, i (item.text + item.age_s + i)}
+                <li class="flex items-baseline justify-between gap-3">
+                  <span
+                    class={[
+                      "min-w-0 break-words",
+                      item.kind === "stop"
+                        ? "font-medium text-danger-soft"
+                        : "text-ink",
+                    ]}
+                  >
+                    {#if item.kind === "stop"}
+                      <Square
+                        class="mr-1 inline size-3 align-[-1px]"
+                        aria-hidden="true"
+                      /><span class="sr-only">Frase de parada: </span>
+                    {/if}
+                    {item.text}
+                  </span>
+                  <span class="shrink-0 readout">{formatAge(item.age_s)}</span>
+                </li>
+              {/each}
+            </ul>
+          {:else if voice.mic_ever_open}
+            <p class="text-sm text-ink-mute">Nadie habló últimamente.</p>
+          {/if}
+        {/if}
+      </section>
+    {/if}
+  </div>
 </div>

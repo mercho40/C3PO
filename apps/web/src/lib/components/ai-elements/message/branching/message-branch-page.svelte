@@ -25,6 +25,6 @@
   {#if children}
     {@render children()}
   {:else}
-    {branchContext.currentBranch + 1} of {branchContext.totalBranches}
+    {branchContext.currentBranch + 1} de {branchContext.totalBranches}
   {/if}
 </ButtonGroup.Text>

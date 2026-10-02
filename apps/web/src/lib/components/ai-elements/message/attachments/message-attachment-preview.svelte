@@ -33,7 +33,7 @@
 
 <Dialog.Root>
   <Dialog.Trigger
-    aria-label={`Preview ${data.filename || "image attachment"}`}
+    aria-label={`Ver ${data.filename || "imagen adjunta"}`}
     class={cn(
       "block size-full cursor-zoom-in overflow-hidden rounded-lg",
       className,
@@ -41,7 +41,7 @@
     type="button"
   >
     <img
-      alt={data.filename || "attachment"}
+      alt={data.filename || "adjunto"}
       class="size-full object-cover object-center transition-transform duration-200 group-hover:scale-[1.03]"
       height={96}
       onload={handleImageLoad}
@@ -55,8 +55,8 @@
     showCloseButton={false}
   >
     <Dialog.Header class="sr-only">
-      <Dialog.Title>{data.filename || "Image attachment"}</Dialog.Title>
-      <Dialog.Description>Preview image attachment</Dialog.Description>
+      <Dialog.Title>{data.filename || "Imagen adjunta"}</Dialog.Title>
+      <Dialog.Description>Vista previa de la imagen adjunta</Dialog.Description>
     </Dialog.Header>
 
     <div
@@ -67,7 +67,7 @@
         style={previewFrameStyle}
       >
         <img
-          alt={data.filename || "attachment preview"}
+          alt={data.filename || "vista previa del adjunto"}
           class="size-full object-contain object-center"
           onload={handleImageLoad}
           {src}

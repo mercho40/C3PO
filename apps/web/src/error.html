@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#06090f" />
+    <title>Error %sveltekit.status% · C3PO</title>
+    <!--
+      Last-resort page: SvelteKit serves this when rendering the error page
+      itself failed (e.g. the root layout threw). No JS, no stylesheet, no
+      fonts — anything that needs the app to work cannot be relied on here.
+      The palette hexes are inlined because layout.css is not loaded; they
+      mirror --c3-void, --c3-panel, --c3-hairline-strong, --c3-ink,
+      --c3-ink-dim, --c3-ink-mute and --c3-peri.
+    -->
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2.5rem 1rem;
+        box-sizing: border-box;
+        background: #06090f;
+        color: #eaf1ff;
+        font-family: system-ui, sans-serif;
+      }
+      main {
+        max-width: 28rem;
+        width: 100%;
+        padding: 1.75rem;
+        border: 1px solid rgba(180, 210, 255, 0.16);
+        border-radius: 0.875rem;
+        background: #0c1220;
+        text-align: center;
+      }
+      .code {
+        margin: 0;
+        font-family: ui-monospace, monospace;
+        font-size: 0.75rem;
+        letter-spacing: 0.04em;
+        color: #93a1b8;
+      }
+      h1 {
+        margin: 0.75rem 0;
+        font-size: 1.25rem;
+        text-transform: uppercase;
+        letter-spacing: -0.01em;
+      }
+      p {
+        color: #c6dcff;
+        font-size: 0.875rem;
+        line-height: 1.5;
+      }
+      .detail {
+        font-family: ui-monospace, monospace;
+        font-size: 0.75rem;
+        color: #93a1b8;
+        word-break: break-word;
+      }
+      a {
+        display: inline-block;
+        margin-top: 0.5rem;
+        padding: 0.6rem 1rem;
+        border-radius: 0.625rem;
+        background: #9fc5ff;
+        color: #06121c;
+        font-weight: 600;
+        font-size: 0.875rem;
+        text-decoration: none;
+      }
+      a:focus-visible {
+        outline: 2px solid #7ee5ff;
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="code">Error %sveltekit.status%</p>
+      <h1>La consola no pudo mostrar esta página</h1>
+      <p>
+        Algo falló antes de que la página pudiera cargarse. Si el robot se está
+        moviendo, usá la parada física.
+      </p>
+      <!-- The exception's own message, in English. -->
+      <p class="detail" lang="en">%sveltekit.error.message%</p>
+      <a href="/">Volver al inicio</a>
+    </main>
+  </body>
+</html>

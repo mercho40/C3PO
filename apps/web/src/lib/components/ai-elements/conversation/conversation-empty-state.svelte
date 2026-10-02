@@ -16,8 +16,8 @@
 <script lang="ts">
   let {
     class: className,
-    title = "No messages yet",
-    description = "Start a conversation to see messages here",
+    title = "Todavía no hay mensajes",
+    description = "Empezá una conversación para ver los mensajes acá",
     icon,
     children,
     ref = $bindable(null),

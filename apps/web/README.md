@@ -1,8 +1,10 @@
 # C3PO Web (`apps/web`)
 
 SvelteKit 5 operator console (Svelte runes, Tailwind CSS 4): login/signup and
-a `(protected)` group with the dashboard, live map, live camera, and agent
-chat with history. Talks to `apps/back` via Eden Treaty — the backend's `App`
+a `(protected)` group with the dashboard, live map, cameras, agent chat with
+history, voice control, VR control, a health board and settings. The page list
+lives once, in `src/lib/nav.ts` — sidebar entries, topbar titles and browser-tab
+titles all come from it. Talks to `apps/back` via Eden Treaty — the backend's `App`
 type is imported through the `@back/*` alias (defined in `svelte.config.js`;
 the generated `.svelte-kit/tsconfig.json` picks it up), so API calls like
 `api.health.get()` are typed end to end.
@@ -12,8 +14,9 @@ the generated `.svelte-kit/tsconfig.json` picks it up), so API calls like
 ```bash
 bun run dev          # vite dev on port 3001
 bun run build        # production build
-bun run preview      # preview the build
+bun run preview      # preview the build (also `bun run start`)
 bun run check-types  # svelte-check
+bun test             # pure-logic tests in tests/ (see "UI conventions")
 ```
 
 **Never add `--bun` to the dev script.** It forces Vite onto Bun's runtime,
@@ -36,14 +39,69 @@ are two different transports, not two addresses for one (below).
   (`getCookieCache`, no backend call on the fast path; the code comments
   cover the cache-lapse revalidation) and populates `event.locals.user` /
   `event.locals.session`.
-- `src/routes/(protected)/+layout.server.ts` redirects to `/login` without a
-  session; anything inside `(protected)/` is guarded automatically.
-- Login/signup pages are server-rendered (not prerendered) and send
-  already-authenticated visitors to `/dashboard` client-side — the root
-  layout's `data.user` plus an `$effect` calling `goto`.
+  If the backend is unreachable during that revalidation the request is
+  treated as signed out **without clearing cookies**, and `locals.backendDown`
+  lets `/login` say "No se pudo contactar al servidor" instead of every page
+  500ing for a returning operator.
+- `src/routes/(protected)/+layout.server.ts` redirects to
+  `/login?redirectTo=<path>` without a session (and adds `&reason=expired` when
+  `/state` answers 401); anything inside `(protected)/` is guarded
+  automatically. A 401 seen later by any client poller does the same through
+  `redirectToLogin()` — an expired session is never shown as a robot that is
+  "offline". `redirectTo` is sanitised server-side (`login/auth-params.ts`,
+  tested against open-redirect forms).
+- Login/signup are server-rendered and redirect already-authenticated visitors
+  in their `+page.server.ts`. Logout navigates with `invalidateAll`, which is
+  what keeps the root layout's `data.user` from bouncing `/login` →
+  `/dashboard` → `/login`.
+- Social buttons render only for providers `back` reports as configured on
+  its public `GET /health` (`auth.providers`); with none, the forms show no
+  social buttons at all.
 - Server `load` functions fetching protected backend routes must forward the
   auth cookie:
   `api.route.get({ headers: { cookie: request.headers.get("cookie") ?? "" } })`.
+
+## The console shell
+
+Everything that must be true on every page lives in the `(protected)` layout,
+which owns one instance each of `RobotLive` (`/state`), `VoiceLoopControl`
+(`/voice/status`) and `Gate` (`/telemetry/gate`) and hands them down through
+`$lib/robot/context.ts`.
+
+- **Polling follows one policy** (`$lib/robot/poller.svelte.ts`): never two
+  requests in flight, every request carries a timeout, a 401 goes to login,
+  and optional pause while the tab is hidden. `/state` had no timeout once, and
+  a bridge that stalled instead of refusing kept the topbar on "En línea" for
+  the MCP SDK's 60 s default. Any new poller extends `Poller`. Eden Treaty
+  never throws on a failed fetch — it returns `{status: 503, value: Error}` —
+  so an `Error` value means "could not reach back", not a bridge 503.
+- **One vocabulary for a missing link** (`$lib/robot/link-copy.ts`): "Sin
+  conexión" (no answer), "Sin puente" (back says the bridge is down), "Sin
+  acceso a la API", "Sesión vencida". "En vivo"/"Sin señal" are media words and
+  never describe the robot link.
+- **The e-stop is one press, wherever it is pressed.** Its state lives in
+  `$lib/robot/estop.svelte.ts`, so the topbar button, the in-headset button on
+  `/vr-control` (the only stop visible inside the WebXR dom-overlay — keep it)
+  and the global **Shift+Space** hotkey always agree. Only telemetry read
+  _after_ the 200 can confirm a stop, and only a posture the bridge can vouch
+  for: offline, unknown (the post-reboot race), stale (`stale_fsm_*`) or stub
+  all stay "Sin confirmar"; only "Detenido" clears itself. A 504
+  `bridge_timeout` means back stopped waiting while the stop kept running on the
+  bridge — "Sin respuesta", never "the order did not leave". The hotkey is
+  caught in the capture phase so the focused control (a hold-to-walk button, a
+  hold-to-confirm tile) never sees it, and `/vr-control` latches its own walk
+  loop on any press. The topbar stop sits above every bits-ui overlay (sheet,
+  dialog, alert dialog) — the stop is idempotent, so bypassing a modal is
+  safe, and a modal that swallows the first tap on PARAR is not.
+- **Privacy and autonomy are visible everywhere**: an "Escuchando" chip while a
+  voice session runs, and "NAV ARMADO · N s" while Nav2 is armed to drive. An
+  armed gate that can no longer be read keeps its chip and says "sin datos" —
+  unknown is not closed.
+- **Skill results have one meaning** (`$lib/robot/skill-outcome.ts`). The
+  bridge never raises: a firmware refusal is a 200 with `status: "failed"`, a
+  bring-up step can be acked without happening, a stub only logs. Every
+  surface — chat tool cards, VR tiles and walk loop, the stop — classifies
+  results through it.
 
 ## The live camera
 
@@ -65,6 +123,14 @@ received forever, so the robot client polls `/status` and the page renders
 "congelado" over a picture that is real but old. Never remove that poll and
 leave the picture — a frozen frame that reads as live is the failure this page
 already tore out a fake HUD to avoid.
+
+The robot picture is drawn by `src/lib/components/robot-camera-view.svelte`,
+shared with `/vr-control` (which keeps owning the connection, because the XR
+layer uses the same stream). The page shows `/camera/status`'s
+`source`/`sources`/`hint`, and `/camera/frame.jpg` backs the Captura button. A
+failed status fetch is classified as network vs CORS (`BRIDGE_CORS_ORIGINS`)
+vs mixed content (HTTPS console, HTTP camera), because they need different
+fixes and used to share one "network" message.
 
 ## The live map
 
@@ -98,15 +164,46 @@ Two consequences worth knowing before you debug either:
 - **The map can work while the camera does not.** The map goes through `back`,
   while the browser fetches camera bytes from the robot directly. A bad robot
   hostname, CORS policy, or browser network path can therefore break only video.
-- **"No map" has three distinct forms**, and they need different fixes: `sin
+- **"No map" has several distinct forms**, and they need different fixes: `sin
 mapa` means nothing is publishing a costmap — almost always that no nav2 stage
-  is running, and the bridge's hint naming the command sits in the tooltip;
-  `mapa no disponible` means the console cannot reach `back`; and a map shown at
-  reduced opacity with `desactualizado` is real but stale. Showing an old map is
-  fine, showing it as current is not.
+  is running, and the bridge's hint naming the command is in the "¿Por qué?"
+  disclosure under the status line; `mapa no disponible` means back or the
+  bridge behind it did not answer (the disclosure says which); `mapa sin
+metadatos de ubicación` means a map arrived that cannot be placed; and before
+  the first answer the line reads `cargando mapa…`. A map already drawn is kept
+  through later failures, desaturated and hatched — never faded, because fading
+  erased the near-black lethal cells — with the failure and its age beside it
+  (`mapa no disponible · último hace 42 s`); `desactualizado` is the bridge's own
+  stale verdict. Showing an old map is fine, showing it as current is not.
+
+The map and the dashboard's mini-map are the same component,
+`pose-canvas.svelte`: one SVG in metres at a uniform scale, heading per REP-103
+(yaw 0 = +x = right, positive counter-clockwise — the old wedge rotated the
+wrong way), and an edge arrow with the distance when the robot is out of view.
+The projection math lives in `src/lib/robot/map-geometry.ts`, with tests.
 
 The costmap exists wherever Nav2 does, so `perception_up nav2-fake` brings it up
 on synthetic odom and scan — **no sensors, nothing taken from the other team.**
+
+## Voice, health and settings
+
+- **`/voice`** is the voice session's home: the switch (an explicit decision —
+  speech near the robot becomes turns), the engine's phase, who owns a
+  realtime session (`ownedByYou`; only the owner can end it or open its
+  transcript), what the robot heard, past voice transcripts, and an admin-only
+  "Decir". Under the realtime engine the spoken stop phrase does nothing, and
+  the page says so rather than showing a "Paradas 0" counter.
+- **`/health`** is one row per subsystem — server, bridge and catalogue, robot
+  link, battery, faults, autonomous navigation, perception, voice, camera,
+  map — sorted worst first. The summary never says "todo en orden" while any
+  row has no data. Classification is pure (`src/lib/robot/health.ts`, tested).
+  Admins also get the command log (`GET /audit`).
+- **`/settings`** shows the account and role, the console's environment and
+  shortcuts, and — for admins — user management through Better Auth's admin
+  plugin (no backend code; it gates itself). Roles reach an open console
+  within ~5 minutes, because the role rides the session cookie cache;
+  "Actualizar rol" forces a re-read. `ADMIN_EMAILS` re-grants admin at every
+  backend restart.
 
 ## Deploy
 
@@ -119,5 +216,17 @@ because `getCookieCache` needs Node crypto — see the comment in
 - `src/lib/components/ui/` — shadcn-svelte-style components (bits-ui +
   Tailwind); `src/lib/components/` — app-level components.
 - Merge classes with `cn()` from `src/lib/utils.ts`.
+- The design system is `src/routes/layout.css` — palette, tokens and the
+  `panel` / `panel-hero` (one per screen) / `tile` / `eyebrow` / `readout` /
+  `stamp` / `cta` utilities. No literal colours in components; cyan means
+  "moving under power" and nothing else; 11 px (`text-2xs`) is the floor.
+- Copy is Spanish in voseo. Bridge and agent text shown verbatim is wrapped in
+  `<span lang="en">`. Section labels are `<h2 class="eyebrow">`.
+- Inline `<Callout>` for a state that persists; a toast (`svelte-sonner`) for
+  the outcome of a one-shot action.
+- Decision logic goes in plain `.ts` modules with tests in `tests/` — `bun
+test` cannot load a `.svelte.ts` (runes are a compiler feature), so the rune
+  classes stay thin. `tests/bun-test.d.ts` is a deliberately small `bun:test`
+  shim; widen it rather than adding `bun-types`.
 - Use the Svelte MCP server when writing `.svelte` files (`list-sections` →
   `get-documentation`, then `svelte-autofixer`).

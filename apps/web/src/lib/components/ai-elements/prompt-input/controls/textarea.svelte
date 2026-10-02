@@ -11,12 +11,14 @@
     placeholder?: string;
     value?: string;
     onchange?: (event: Event) => void;
+    /** The composer has no visible label, so callers must name it. */
+    "aria-label"?: string;
   }
   // indexing
   let {
     ref = $bindable(null),
     class: className,
-    placeholder = "What would you like to know?",
+    placeholder = "Escribí un mensaje…",
     value = $bindable(""),
     onchange,
     ...props

@@ -1,23 +1,41 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
-    Navigation,
-    Plus,
+    Crosshair,
+    House,
+    Info,
     Minus,
-    ShieldCheck,
-    TriangleAlert,
+    Navigation2,
+    Plus,
   } from "@lucide/svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
   import PostureFigure from "$lib/components/posture-figure.svelte";
-  import { projectPose, projectMeters } from "$lib/robot/live-state.svelte";
+  import PoseCanvas from "$lib/components/pose-canvas.svelte";
+  import FaultList from "$lib/components/fault-list.svelte";
+  import ScaleBar from "$lib/components/robot/scale-bar.svelte";
+  import MapLegend from "$lib/components/robot/map-legend.svelte";
   import { Costmap } from "$lib/robot/costmap.svelte";
   import { getRobotLive } from "$lib/robot/context";
+  import { readPosture, LOAD_TEXT } from "$lib/robot/posture";
+  import { MotionTracker } from "$lib/robot/motion";
+  import { staleness } from "$lib/robot/faults";
+  import { LINK } from "$lib/robot/link-copy";
+  import { describeCostmap } from "$lib/robot/map-copy";
   import {
-    readPosture,
-    LOAD_TEXT,
-    LOAD_FILL,
-    LOAD_BORDER,
-  } from "$lib/robot/posture";
+    SPAN_MAX,
+    SPAN_MIN,
+    clampSpan,
+    compassCssRotation,
+    type XY,
+  } from "$lib/robot/map-geometry";
+  import {
+    UNIT_ID,
+    batteryLevel,
+    batteryPct,
+    batteryTone,
+    formatDistance,
+    formatPose,
+    yawDegrees,
+  } from "$lib/robot/format";
 
   // Shared with the dashboard and the topbar — see `(protected)/+layout.svelte`.
   // Reusing it is what lets the travelled path survive the trip from /dashboard.
@@ -36,269 +54,429 @@
     return () => costmap.stop();
   });
 
-  // Zoom drives the metres→canvas projection scale, so +/- actually work.
-  let scale = $state(6);
-  const zoomIn = () => (scale = Math.min(24, scale * 1.3));
-  const zoomOut = () => (scale = Math.max(2, scale / 1.3));
-
-  // The costmap's rect in canvas %, using the UNCLAMPED projection — clamping
-  // corners would squash the image and break its alignment with the marker.
-  // `origin` is the grid's bottom-left, so the top edge is origin + extent.
-  const mapRect = $derived.by(() => {
-    const p = costmap.placement;
-    if (!p) return null;
-    const topLeft = projectMeters(p.originXM, p.originYM + p.heightM, scale);
-    const bottomRight = projectMeters(p.originXM + p.widthM, p.originYM, scale);
-    return {
-      left: topLeft.left,
-      top: topLeft.top,
-      width: bottomRight.left - topLeft.left,
-      height: bottomRight.top - topLeft.top,
-    };
-  });
-
   const robot = $derived(live.state);
-  const faults = $derived(robot?.faults ?? []);
   const online = $derived(live.online);
+  // No reading ever ≠ an old reading: nothing to label "· última" (see the
+  // dashboard, which follows the same rule).
+  const hasReading = $derived(robot !== null);
   const pose = $derived(robot?.pose ?? null);
-  const battery = $derived(Math.round(robot?.battery_pct ?? 0));
-  const yawDeg = $derived(
-    pose ? Math.round((pose.yaw_radians_world * 180) / Math.PI) : 0,
+  const stale = $derived(staleness(robot?.faults));
+  // The pose on screen is history when the link is down OR odometry froze.
+  const poseOld = $derived(!online || stale.pose !== null);
+
+  const motionTracker = new MotionTracker();
+  const motion = $derived(
+    motionTracker.observe(pose, live.lastOkAt, stale.pose !== null),
   );
-  const marker = $derived(
+  const posture = $derived(
+    readPosture(robot?.posture, online, {
+      motion,
+      staleS: stale.posture,
+      stub: live.simulated,
+      problem: live.problem,
+      hasReading,
+    }),
+  );
+
+  const yawDeg = $derived(yawDegrees(pose?.yaw_radians_world));
+  const battery = $derived(batteryPct(robot?.battery_pct));
+  const batteryBar = $derived(
+    {
+      unknown: "bg-ink-mute",
+      critical: "bg-danger",
+      low: "bg-warn",
+      ok: "bg-peri",
+      full: "bg-peri",
+    }[batteryLevel(robot?.battery_pct)],
+  );
+
+  // --- the view -----------------------------------------------------------
+  //
+  // Following is the default once there is a costmap: the costmap is a 24 m
+  // window that rolls WITH the robot, so a view pinned to the odometry origin
+  // watched the map slide off-screen as soon as the robot walked away.
+  // `everLoaded` flips once, so this default is applied once and an operator
+  // who turns follow off keeps it off.
+  let following = $derived(costmap.everLoaded);
+  let center = $state<XY>({ x: 0, y: 0 });
+  let span = $state(16);
+  let ppm = $state(0);
+
+  const viewCenter = $derived(
+    following && pose
+      ? { x: pose.x_meters_world, y: pose.y_meters_world }
+      : center,
+  );
+
+  function onviewchange(next: { center: XY; span: number }, cause: string) {
+    span = next.span;
+    if (cause === "pan") {
+      center = next.center;
+      following = false;
+    } else if (!following) {
+      // A zoom while following keeps the robot centred: it zooms on the
+      // robot, not on wherever the pointer happened to be.
+      center = next.center;
+    }
+  }
+
+  function zoom(factor: number) {
+    span = clampSpan(span * factor);
+  }
+
+  function recenterOrigin() {
+    following = false;
+    center = { x: 0, y: 0 };
+  }
+
+  function followRobot() {
+    if (following) {
+      // Turning follow OFF keeps the current view where it is.
+      center = viewCenter;
+      following = false;
+    } else {
+      following = true;
+    }
+  }
+
+  const mapLine = $derived(
+    describeCostmap({
+      loaded: costmap.loaded,
+      status: costmap.status,
+      url: costmap.url,
+      placement: costmap.placement,
+      ageS: costmap.ageS,
+      bridgeStale: costmap.bridgeStale,
+      reason: costmap.reason,
+      hint: costmap.hint,
+    }),
+  );
+  const mapLineTone = $derived(
+    { ok: "text-ink-dim", warn: "text-warn", mute: "text-ink-mute" }[
+      mapLine.tone
+    ],
+  );
+
+  const canvasCostmap = $derived(
+    costmap.url && costmap.placement
+      ? {
+          url: costmap.url,
+          placement: costmap.placement,
+          stale: costmap.stale,
+        }
+      : null,
+  );
+
+  const linkLabel = $derived(
+    online ? LINK.online : LINK[live.problem ?? "offline"],
+  );
+
+  // A value that is not a current measurement says which kind it is, in
+  // words and in the muted ink — never by opacity alone, which took the
+  // 11 px labels down to ~3:1 and told a screen reader nothing.
+  const batteryMark = $derived(
+    battery == null
+      ? null
+      : live.simulated
+        ? "simulada"
+        : !online && hasReading
+          ? "última"
+          : null,
+  );
+  const facts = $derived([
+    {
+      label: "Rumbo",
+      value: yawDeg != null ? `${yawDeg}°` : "—",
+      mark: live.simulated ? "simulado" : pose && poseOld ? "último" : null,
+    },
+    {
+      label: "Posición",
+      value: formatPose(pose),
+      mark: live.simulated ? "simulada" : pose && poseOld ? "última" : null,
+    },
+    {
+      // A measurement only once a pose has been seen: "0.0 m" before that
+      // claimed the robot was watched standing still.
+      label: "Recorrido en esta sesión",
+      value: live.trail.length > 0 ? formatDistance(live.distanceM) : "—",
+      mark: null,
+    },
+  ]);
+
+  // One treatment for every text chip over the map — same fill, edge and
+  // padding — so none reads as more (or less) official than the others.
+  const chip =
+    "rounded-md border border-hairline bg-abyss/80 px-2 py-1 backdrop-blur-sm";
+
+  const mapSummary = $derived(
     pose
-      ? projectPose(pose.x_meters_world, pose.y_meters_world, scale)
-      : { left: 50, top: 50 },
+      ? `Mapa en vivo. ${UNIT_ID} en ${formatPose(pose)}, rumbo ${yawDeg}°, ${posture.label}${poseOld ? " (última posición conocida)" : ""}`
+      : `Mapa en vivo. ${UNIT_ID} sin posición`,
   );
-  const trailPoints = $derived(
-    live.trail
-      .map((p) => {
-        const { left, top } = projectPose(p.x, p.y, scale);
-        return `${left},${top}`;
-      })
-      .join(" "),
-  );
-
-  const posture = $derived(readPosture(robot?.posture, online));
-
-  // Single live unit fed by /state. Multi-robot fleet is future work.
-  const unit = $derived({
-    id: "BIPED-01",
-    tag: online ? "En vivo" : "Sin señal",
-    kind: robot ? `Unitree G1 · ${robot.env}` : "Unitree G1",
-    active: online,
-  });
 </script>
 
 <div class="flex h-full min-h-0 flex-col gap-4 pb-2 lg:flex-row">
-  <!-- Map -->
-  <section class="relative min-h-[380px] min-w-0 flex-1 overflow-hidden panel">
-    <div
-      class="absolute inset-0 bg-[radial-gradient(ellipse_at_center,var(--c3-panel),var(--c3-trench)_80%)]"
+  <!-- @container: the controls go icon-only by the MAP's width, not the
+       viewport's — at 1024 px the map is ~380 px wide beside the aside, as
+       narrow as a phone's. -->
+  <section
+    class="@container relative min-h-[420px] min-w-0 flex-1 overflow-hidden panel"
+    aria-label="Mapa"
+  >
+    <PoseCanvas
+      class="absolute inset-0"
+      {pose}
+      trail={live.trail}
+      load={posture.load}
+      center={viewCenter}
+      {span}
+      stale={poseOld || live.simulated}
+      label={UNIT_ID}
+      animate={!following}
+      costmap={canvasCostmap}
+      interactive
+      {onviewchange}
+      onlocate={() => (following = true)}
+      bind:ppm
+      ariaLabel={mapSummary}
     >
-      <!-- Nav2's costmap. UNDER the reference grid on purpose: the grid is how
-           you read distance, and a map that hides it makes the view prettier
-           and less useful. `image-rendering: pixelated` because a costmap cell
-           IS the unit of knowledge — smoothing invents confidence between
-           cells that Nav2 never had. -->
-      {#if costmap.url && mapRect}
-        <img
-          src={costmap.url}
-          alt="Nav2 global costmap"
-          class="pointer-events-none absolute transition-opacity duration-300"
-          class:opacity-40={costmap.stale}
-          class:opacity-80={!costmap.stale}
-          style="left:{mapRect.left}%;top:{mapRect.top}%;width:{mapRect.width}%;height:{mapRect.height}%;image-rendering:pixelated"
-        />
-      {/if}
+      <!-- View controls, top-left. Follow is a toggle, so it says whether it
+           is on (aria-pressed) instead of being a button that does something
+           unannounced.
 
-      <!-- Reference grid, matching the dashboard's mini-map so the two read as
-           the same surface at different sizes. The origin cross is brighter:
-           (0,0) is where odometry started, the only fixed landmark there is. -->
-      <svg
-        class="absolute inset-0 size-full"
-        preserveAspectRatio="none"
-        viewBox="0 0 100 100"
+           Bounded on the right by the compass (64 px + its 16 px inset): the
+           row used to run under it on phones and at 1024 px, and the compass
+           took the taps meant for "Recentrar". On a narrow map the labels go
+           to screen-reader-only text and the buttons become 40 px icons.
+           The row itself ignores the pointer, so the gap between the buttons
+           still pans the map. -->
+      <div
+        class="pointer-events-none absolute top-4 right-[5.5rem] left-4 flex flex-wrap items-start gap-2"
+      >
+        <button
+          type="button"
+          onclick={followRobot}
+          disabled={!pose}
+          aria-pressed={following}
+          title="Seguir robot"
+          class={[
+            "pointer-events-auto inline-flex min-h-10 items-center gap-1.5 rounded-full border bg-abyss/80 px-3 text-xs backdrop-blur-sm transition-colors focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none disabled:opacity-40 sm:min-h-8 @max-md:size-10 @max-md:justify-center @max-md:px-0",
+            following
+              ? "border-accent-edge text-ink"
+              : "border-hairline-strong text-ink-mute hover:text-ink",
+          ]}
+        >
+          <Crosshair class="size-3.5 shrink-0" aria-hidden="true" />
+          <span class="@max-md:sr-only">Seguir robot</span>
+        </button>
+        <button
+          type="button"
+          onclick={recenterOrigin}
+          title="Recentrar en origen"
+          class="pointer-events-auto inline-flex min-h-10 items-center gap-1.5 rounded-full border border-hairline-strong bg-abyss/80 px-3 text-xs text-ink-mute backdrop-blur-sm transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none sm:min-h-8 @max-md:size-10 @max-md:justify-center @max-md:px-0"
+        >
+          <House class="size-3.5 shrink-0" aria-hidden="true" />
+          <span class="@max-md:sr-only">Recentrar en origen</span>
+        </button>
+      </div>
+
+      <!-- Heading, top-right. The needle is an UP-pointing icon turned by
+           90° − yaw (map-geometry.ts): the old one used a top-right-pointing
+           glyph turned by +yaw, which read 45° at yaw 0 and turned the wrong
+           way. Peri, not cyan: a heading is data, not motion.
+
+           pointer-events-none: it is a readout, not a control, and it used to
+           eat taps aimed at the buttons beside it. An old heading is drawn
+           dashed and muted rather than faded. -->
+      <div
+        class={[
+          "pointer-events-none absolute top-4 right-4 flex size-[64px] flex-col items-center justify-center gap-0.5 rounded-full border bg-abyss/80 backdrop-blur-sm",
+          poseOld
+            ? "border-dashed border-hairline-strong"
+            : "border-hairline-strong",
+        ]}
         aria-hidden="true"
       >
-        <g stroke="var(--c3-hairline)" stroke-width="0.2">
-          {#each [10, 20, 30, 40, 60, 70, 80, 90] as t (t)}
-            <line x1="0" y1={t} x2="100" y2={t} />
-            <line x1={t} y1="0" x2={t} y2="100" />
-          {/each}
-        </g>
-        <g stroke="var(--c3-hairline-strong)" stroke-width="0.35">
-          <line x1="0" y1="50" x2="100" y2="50" />
-          <line x1="50" y1="0" x2="50" y2="100" />
-        </g>
-      </svg>
-
-      <!-- Travelled path, integrated from the live pose stream -->
-      {#if live.trail.length > 1}
-        <svg
-          class="absolute inset-0 size-full"
-          preserveAspectRatio="none"
-          viewBox="0 0 100 100"
-          aria-hidden="true"
-        >
-          <polyline
-            points={trailPoints}
-            fill="none"
-            stroke="var(--c3-peri)"
-            stroke-opacity="0.5"
-            stroke-width="0.5"
-            stroke-dasharray="0.6 1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
+        {#if pose}
+          <Navigation2
+            class={[
+              "size-4 motion-safe:transition-transform motion-safe:duration-500",
+              poseOld ? "text-ink-mute" : "text-peri",
+            ]}
+            style="transform: rotate({compassCssRotation(
+              pose.yaw_radians_world,
+            )}deg)"
           />
-        </svg>
-      {/if}
-
-      <!-- Robot marker (BIPED-01), driven by live pose -->
-      <div
-        class="absolute transition-[left,top] duration-500 ease-out"
-        style="left:{marker.left}%;top:{marker.top}%"
-      >
-        <!-- The marker carries load, not connectivity. It used to go cyan and
-             glow whenever the bridge answered, which lit it up for a robot lying
-             limp on the floor — the one colour the console reserves for "moving
-             under power". -->
-        {#if posture.load === "moving"}
-          <span class="absolute -inset-7 rounded-full bg-accent blur-[7px]"
-          ></span>
+          <span class={["readout", poseOld ? "text-ink-mute" : "text-ink-dim"]}
+            >{yawDeg}°</span
+          >
+        {:else}
+          <span class="readout">—</span>
         {/if}
-        <span
-          class="absolute -inset-3.5 rounded-full border opacity-50 {LOAD_BORDER[
-            posture.load
-          ]}"
-        ></span>
-        <!-- Heading wedge rotates with yaw -->
-        <span
-          class="absolute top-1/2 left-1/2 origin-bottom"
-          style="transform:translate(-50%,-100%) rotate({yawDeg}deg)"
-        >
-          <span class="block h-4 w-px {LOAD_FILL[posture.load]}"></span>
-        </span>
-        <span
-          class="relative block size-4 rounded-full {LOAD_FILL[
-            posture.load
-          ]} shadow-[0_0_0_3px_rgba(5,7,13,0.85)] {posture.load === 'moving'
-            ? 'shadow-[0_0_24px_var(--c3-cyan-hot),0_0_0_3px_rgba(5,7,13,0.85)]'
-            : ''}"
-        ></span>
-        <span
-          class="absolute -top-7 left-1/2 -translate-x-1/2 rounded-md border border-hairline-strong bg-abyss/85 px-2 py-1 readout whitespace-nowrap text-ink backdrop-blur-sm"
-          >{unit.id}</span
-        >
       </div>
 
-      <!-- Compass -->
+      <!-- Bottom-left: where it is, how far a metre is, and what the map is. -->
       <div
-        class="absolute top-5 right-5 flex size-[60px] flex-col items-center justify-center rounded-full border border-hairline-strong bg-abyss/60 backdrop-blur-sm"
+        class="pointer-events-none absolute bottom-4 left-4 flex max-w-[calc(100%-6rem)] flex-col items-start gap-2"
       >
-        <Navigation
-          class="size-3.5 text-cyan-hot transition-transform duration-500"
-          style="transform:rotate({yawDeg}deg)"
-        />
-        <span class="readout text-peri">{yawDeg}°</span>
-      </div>
-
-      <!-- Coordinates / scale bar -->
-      <div class="absolute bottom-5 left-5 flex flex-col gap-1">
-        <span class="readout">
-          {#if pose}
-            x {pose.x_meters_world.toFixed(2)} · y {pose.y_meters_world.toFixed(
-              2,
-            )} m
-          {:else}
-            sin posición
+        <span
+          class={["readout", chip, poseOld ? "text-ink-mute" : "text-ink-dim"]}
+        >
+          {formatPose(pose)}
+          {#if pose && !online}
+            <!-- The LINK word, as in the topbar: "sin señal" is camera/map
+                 vocabulary and named a different fault. -->
+            · {LINK[live.problem ?? "offline"].toLowerCase()} · última posición
+          {:else if pose && stale.pose !== null}
+            · odometría detenida hace {Math.round(stale.pose)} s
           {/if}
         </span>
-        <span class="h-px w-20 bg-ink-mute"></span>
-        <span class="readout">{(100 / scale / 2).toFixed(1)} m</span>
-        <!-- Costmap state, in three distinguishable forms. "no map is being
-             published" and "the console cannot reach the API" are different
-             problems with different fixes, and a single "sin mapa" for both
-             would send the operator to the wrong one. The bridge's own hint —
-             which names the command that would produce a costmap — rides in
-             the tooltip rather than the label, because it is English and long. -->
-        <span class="readout" title={costmap.reason ?? undefined}>
-          {#if costmap.url && costmap.placement}
-            mapa {costmap.placement.resolutionM.toFixed(2)} m/celda{#if costmap.stale}
-              · desactualizado{:else if costmap.ageS !== null}
-              · {costmap.ageS.toFixed(1)} s{/if}
-          {:else if costmap.unreachable}
-            mapa no disponible
-          {:else}
-            sin mapa
+        {#if ppm > 0}
+          <!-- Only once measured: an empty chip before the first layout. -->
+          <div class={chip}>
+            <ScaleBar {ppm} />
+          </div>
+        {/if}
+        <div
+          class={["pointer-events-auto flex flex-col items-start gap-1", chip]}
+        >
+          <!-- Costmap state in its distinguishable forms (map-copy.ts). The
+               explanation used to live in a hover tooltip, out of reach of
+               touch and keyboard; it is a disclosure now.
+
+               Only the state words are live. The resolution and age tick
+               every poll, and inside the status region they re-announced the
+               map once a second. -->
+          <p class="readout {mapLineTone}">
+            <span role="status">{mapLine.label}</span>{#if mapLine.meta}<span
+                >{` · ${mapLine.meta}`}</span
+              >{/if}
+          </p>
+          {#if mapLine.detail || mapLine.hint}
+            <details class="group max-w-[46ch]">
+              <summary
+                class="inline-flex cursor-pointer list-none items-center gap-1 rounded readout text-ink-mute hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none [&::-webkit-details-marker]:hidden"
+              >
+                <Info class="size-3" aria-hidden="true" />
+                <span class="group-open:hidden">¿Por qué?</span>
+                <span class="hidden group-open:inline">Ocultar</span>
+              </summary>
+              <div class="mt-1 flex flex-col gap-1 text-xs leading-relaxed">
+                {#if mapLine.detail}
+                  <p class="text-ink-dim">{mapLine.detail}</p>
+                {/if}
+                {#if mapLine.hintEs}
+                  <!-- A sentence we know: Spanish first, the bridge's own
+                       words underneath (map-copy.ts). -->
+                  <p class="text-ink-dim">{mapLine.hintEs}</p>
+                {/if}
+                {#if mapLine.hint}
+                  <p class="readout break-words">
+                    Puente: <span lang="en">{mapLine.hint}</span>
+                  </p>
+                {/if}
+              </div>
+            </details>
           {/if}
-        </span>
+        </div>
       </div>
 
-      <!-- Zoom -->
+      <!-- Zoom. 40 px targets on touch; the canvas also takes wheel, pinch
+           and +/− from the keyboard. The ring is inset: the group clips its
+           corners (overflow-hidden), and an outer ring was cut to a sliver. -->
       <div
-        class="absolute right-5 bottom-5 flex flex-col overflow-hidden rounded-lg border border-hairline-strong bg-abyss/60 backdrop-blur-sm"
+        class="absolute right-4 bottom-4 flex flex-col overflow-hidden rounded-lg border border-hairline-strong bg-abyss/70 backdrop-blur-sm"
       >
-        <Button
-          variant="ghost"
-          size="icon"
+        <button
+          type="button"
           aria-label="Acercar"
-          onclick={zoomIn}
-          class="size-8 rounded-none text-ink hover:bg-wash-hover hover:text-ink"
+          onclick={() => zoom(1 / 1.3)}
+          disabled={span <= SPAN_MIN}
+          class="flex size-10 items-center justify-center text-ink transition-colors hover:bg-wash-hover focus-visible:bg-wash-hover focus-visible:ring-2 focus-visible:ring-cyan-hot/60 focus-visible:outline-none focus-visible:ring-inset disabled:opacity-40 sm:size-9"
         >
-          <Plus class="size-3.5" />
-        </Button>
+          <Plus class="size-4" aria-hidden="true" />
+        </button>
         <span class="h-px w-full bg-hairline"></span>
-        <Button
-          variant="ghost"
-          size="icon"
+        <button
+          type="button"
           aria-label="Alejar"
-          onclick={zoomOut}
-          class="size-8 rounded-none text-ink hover:bg-wash-hover hover:text-ink"
+          onclick={() => zoom(1.3)}
+          disabled={span >= SPAN_MAX}
+          class="flex size-10 items-center justify-center text-ink transition-colors hover:bg-wash-hover focus-visible:bg-wash-hover focus-visible:ring-2 focus-visible:ring-cyan-hot/60 focus-visible:outline-none focus-visible:ring-inset disabled:opacity-40 sm:size-9"
         >
-          <Minus class="size-3.5" />
-        </Button>
+          <Minus class="size-4" aria-hidden="true" />
+        </button>
       </div>
-    </div>
+    </PoseCanvas>
   </section>
 
   <!-- The unit itself: same body, same vocabulary as the dashboard, so moving
        between the two pages never means re-learning what a state looks like. -->
-  <aside class="flex shrink-0 flex-col gap-4 panel p-4 lg:w-[320px]">
+  <aside
+    class="flex shrink-0 flex-col gap-4 panel p-4 lg:w-[320px] lg:overflow-y-auto"
+  >
     <div class="flex items-center gap-2.5">
       <span
-        class="size-1.5 shrink-0 rounded-full {unit.active
-          ? 'bg-ok shadow-[0_0_10px_rgba(94,231,161,0.6)]'
-          : 'bg-danger shadow-[0_0_10px_rgba(255,77,106,0.6)]'}"
+        class={[
+          "size-1.5 shrink-0 rounded-full",
+          online ? "bg-ok" : "bg-danger",
+        ]}
+        aria-hidden="true"
       ></span>
-      <span class="stamp text-base text-ink">{unit.id}</span>
-      <span class="ml-auto eyebrow">{unit.tag}</span>
+      <span class="stamp text-base text-ink">{UNIT_ID}</span>
+      <!-- Not a live region: the topbar already announces the link, and two
+           regions saying the same word read it twice. -->
+      <span class="ml-auto eyebrow">{linkLabel}</span>
     </div>
+
+    {#if live.simulated}
+      <!-- Stub mode: pose (0,0), 87 % and no faults are fabricated. -->
+      <p
+        class="w-fit rounded-full border border-warn/40 bg-warn/10 px-2.5 py-0.5 font-mono text-2xs tracking-[0.12em] text-warn uppercase"
+      >
+        Simulación · datos ficticios
+      </p>
+    {/if}
 
     <div class="flex items-end gap-3 tile p-3">
       <div class="h-[112px] w-[92px] shrink-0">
         <PostureFigure pose={posture.pose} load={posture.load} />
       </div>
       <div class="flex min-w-0 flex-1 flex-col gap-1 pb-1">
-        <span class="eyebrow">Postura</span>
-        <span class="truncate stamp-quiet text-lg {LOAD_TEXT[posture.load]}"
-          >{posture.label}</span
+        <h2 class="eyebrow">Postura</h2>
+        <span
+          class="stamp-quiet text-lg break-words {LOAD_TEXT[posture.load]}"
+          aria-live="polite">{posture.label}</span
         >
-        <span class="truncate readout">{unit.kind}</span>
+        {#if !online || posture.stale || live.simulated}
+          <span class="text-xs leading-snug text-ink-mute"
+            >{posture.detail}</span
+          >
+        {/if}
+        <span class="readout break-words"
+          >Unitree G1{robot?.env ? ` · ${robot.env}` : ""}</span
+        >
       </div>
     </div>
 
     <div class="flex flex-col gap-2">
       <div class="flex items-baseline justify-between gap-3">
-        <span class="eyebrow">Batería</span>
-        <span class="font-mono text-sm text-ink"
-          >{robot?.battery_pct != null ? `${battery} %` : "—"}</span
+        <h2 class="eyebrow">
+          Batería{batteryMark ? ` · ${batteryMark}` : ""}
+        </h2>
+        <span
+          class="font-mono text-sm {batteryMark
+            ? 'text-ink-mute'
+            : batteryTone(robot?.battery_pct)}"
+          >{battery != null ? `${battery} %` : "—"}</span
         >
       </div>
       <div class="h-1 overflow-hidden rounded-full bg-hairline-strong">
         <div
-          class="h-full rounded-full bg-gradient-to-r from-deep-blue to-cyan-hot transition-[width] duration-500"
-          style="width:{battery}%"
+          class="h-full rounded-full transition-[width] duration-500 {batteryMark
+            ? 'bg-ink-mute'
+            : batteryBar}"
+          style:width="{battery ?? 0}%"
         ></div>
       </div>
     </div>
@@ -307,45 +485,49 @@
          at a size that reads from across the room. Scale is deliberately not
          repeated here — the scale bar bottom-left of the map is the better
          instrument for it, since it is measured against the map itself. -->
-    <div class="flex flex-col">
-      {#each [["Rumbo", pose ? `${yawDeg}°` : "—"], ["Posición", pose ? `x ${pose.x_meters_world.toFixed(2)}  y ${pose.y_meters_world.toFixed(2)} m` : "—"], ["Recorrido", `${(live.distanceM / 1000).toFixed(2)} km`]] as [label, value] (label)}
+    <dl class="flex flex-col">
+      {#each facts as fact (fact.label)}
         <div
           class="flex items-baseline justify-between gap-3 border-t border-hairline py-2.5"
         >
-          <span class="eyebrow">{label}</span>
-          <span class="font-mono text-sm text-ink">{value}</span>
+          <dt class="eyebrow">
+            {fact.label}{fact.mark ? ` · ${fact.mark}` : ""}
+          </dt>
+          <dd
+            class={[
+              "text-right font-mono text-sm",
+              fact.mark || fact.value === "—" ? "text-ink-mute" : "text-ink",
+            ]}
+          >
+            {fact.value}
+          </dd>
         </div>
       {/each}
-    </div>
+    </dl>
 
     <!-- Faults were visible on the dashboard and nowhere else, so an operator
          watching the robot move across the map — exactly when a fault matters —
          had no way to know one had been raised. -->
     <div class="flex flex-col gap-2 border-t border-hairline pt-3">
-      <span class="eyebrow">Diagnóstico</span>
-      {#if !online}
-        <p class="text-sm text-ink-mute">Sin conexión con el robot.</p>
-      {:else if faults.length === 0}
-        <p class="flex items-center gap-2 text-sm text-ok">
-          <ShieldCheck class="size-4 shrink-0" />
-          Sin fallos
-        </p>
-      {:else}
-        <ul class="flex flex-col gap-2">
-          {#each faults as fault (fault)}
-            <li class="flex items-start gap-2 text-danger-soft">
-              <TriangleAlert class="mt-0.5 size-4 shrink-0" />
-              <span class="min-w-0 font-mono text-xs break-words">{fault}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
+      <h2 class="eyebrow">Diagnóstico</h2>
+      <FaultList
+        faults={robot?.faults ?? []}
+        {online}
+        problem={live.problem}
+        simulated={live.simulated}
+        compact
+      />
+    </div>
+
+    <div class="flex flex-col gap-2 border-t border-hairline pt-3">
+      <h2 class="eyebrow">Leyenda</h2>
+      <MapLegend costmap={canvasCostmap !== null} load={posture.load} />
     </div>
 
     <p class="readout leading-relaxed">
-      Posición en tiempo real desde <span class="text-peri">/state</span>. El
-      origen (0, 0) está en el centro; el rastro integra el recorrido a medida
-      que el robot se mueve.
+      Posición desde <span class="text-peri">/state</span>, en metros del marco
+      de odometría: (0, 0) es donde arrancó la odometría, no un punto del
+      edificio. El rastro integra lo recorrido en esta sesión de la consola.
     </p>
   </aside>
 </div>
