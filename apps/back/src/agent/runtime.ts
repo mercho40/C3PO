@@ -17,7 +17,7 @@
  * catalogue arrives from the bridge over MCP as plain JSON Schema (pydantic's
  * output), so it maps onto AI SDK tools via `jsonSchema()` with no conversion.
  *
- * Provider: TIC AI (`http://ia.ort.edu.ar/api/v1`), ORT's OpenAI-compatible
+ * Provider: TIC AI (`https://ia.ort.edu.ar/api/v1`), ORT's OpenAI-compatible
  * gateway in front of models running locally on campus. Nothing here is
  * TIC-specific beyond the defaults — point AGENT_BASE_URL / AGENT_MODEL /
  * AGENT_API_KEY somewhere else and any OpenAI-compatible server works.
@@ -30,9 +30,10 @@
  *    and the first request throws UnsupportedModelVersionError — a runtime
  *    failure that typechecks and compiles clean. npm publishes matching
  *    dist-tags (`ai-v6`, `ai-v5`) if a line ever has to be walked back.
- * 2. Plain HTTP. The TIC AI site documents an https:// base URL, but the host
- *    does not answer on 443 — only port 80. Keep the scheme in env so this can
- *    flip without a redeploy of the code.
+ * 2. HTTPS only. Port 80 is administratively blocked from the campus Wi-Fi
+ *    VLAN while 443 answers — the opposite of what this comment used to claim
+ *    (commit 63c3149). Test both ports before calling the host unreachable,
+ *    and keep the scheme in env so it can flip without a code change.
  *
  * And one thing to expect rather than fix: the gateway is not always up. Its
  * nginx front end answers 502 with an HTML body when the upstream drops; the
@@ -55,13 +56,14 @@ import {
 
 import { listSkills } from "@back/skills";
 import { logToolCall } from "@back/db/chats";
+import type { ToolCallSource } from "@back/db/schema";
 import {
   callTool,
   BridgeToolError,
   BridgeUnavailableError,
 } from "@back/bridge/client";
 
-const BASE_URL = process.env.AGENT_BASE_URL ?? "http://ia.ort.edu.ar/api/v1";
+const BASE_URL = process.env.AGENT_BASE_URL ?? "https://ia.ort.edu.ar/api/v1";
 /** `tic-chat` is the gateway's tool-calling chat model. Its site advertises
  *  `tic-code` and `tic-embed` too, but on 2026-08-18 `GET /models` returned only
  *  `tic-chat` and `tic-test` — trust the endpoint, not the brochure. */
@@ -122,6 +124,13 @@ const SYSTEM_PREAMBLE = [
 
 export type AgentMode = "operator" | "voice";
 
+/** Who dispatched, and by which path — stamped on every audit row a turn writes. */
+type AuditContext = {
+  chatId: string | null;
+  userId?: string | null;
+  source: ToolCallSource;
+};
+
 export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
   // The voice host owns both ends of the audio channel. Giving these tools to
   // the model permits duplicate speech and competing reads from one buffer.
@@ -153,7 +162,9 @@ const VOICE_PREAMBLE = [
 
 /** A compact catalogue appended to the system prompt so the model knows scope.
  * Exported for testing — pure string generation once the catalogue is in hand. */
-export async function buildSystemPrompt(mode: AgentMode = "operator"): Promise<string> {
+export async function buildSystemPrompt(
+  mode: AgentMode = "operator",
+): Promise<string> {
   const lines = (await listSkills()).map((s) => {
     const where =
       s.works.sim && s.works.real
@@ -177,9 +188,13 @@ export async function buildSystemPrompt(mode: AgentMode = "operator"): Promise<s
  * message for two reasons: this is the only place with a real duration, and it
  * still records the call if the stream is aborted mid-turn — which is exactly
  * when you most want to know what the robot was told to do.
+ *
+ * `audit` says who and which path. `userId` undefined lets `logToolCall`
+ * resolve the chat's owner; a chat-less voice turn has no chat to resolve
+ * from, so its caller must pass the session owner explicitly.
  */
 async function buildTools(
-  chatId: string | null,
+  audit: AuditContext,
   excluded: ReadonlySet<string> = new Set(),
 ): Promise<ToolSet> {
   const tools: ToolSet = {};
@@ -197,7 +212,7 @@ async function buildTools(
         try {
           const result = await callTool(skill.name, params);
           void logToolCall({
-            chatId,
+            ...audit,
             skillName: skill.name,
             params,
             result,
@@ -215,7 +230,7 @@ async function buildTools(
                 ? "bridge_unavailable"
                 : String(err);
           void logToolCall({
-            chatId,
+            ...audit,
             skillName: skill.name,
             params,
             status: "error",
@@ -244,7 +259,20 @@ async function buildTools(
  */
 export async function runAgentChat(
   messages: UIMessage[],
-  opts: { chatId?: string | null; mode?: AgentMode } = {},
+  opts: {
+    chatId?: string | null;
+    mode?: AgentMode;
+    /** Who this turn runs for, for the audit trail. See `buildTools`. */
+    userId?: string | null;
+    /**
+     * Ends the agent loop when the operator stops the reply (or leaves the
+     * page). Without it, "Detener respuesta" only closed the stream to the
+     * browser: the loop kept running server-side and could go on dispatching
+     * robot skills nobody was watching. A skill already in flight still
+     * finishes — this stops the NEXT step, not the robot.
+     */
+    abortSignal?: AbortSignal;
+  } = {},
 ) {
   if (!API_KEY) {
     throw new Error(
@@ -258,7 +286,16 @@ export async function runAgentChat(
   const excludedTools = agentToolExclusions(mode);
   const [system, tools] = await Promise.all([
     buildSystemPrompt(mode),
-    buildTools(opts.chatId ?? null, excludedTools),
+    buildTools(
+      {
+        chatId: opts.chatId ?? null,
+        // Spread only when given: undefined must stay undefined so
+        // `logToolCall` falls back to the chat's owner.
+        ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+        source: mode === "voice" ? "voice" : "agent",
+      },
+      excludedTools,
+    ),
   ]);
 
   return streamText({
@@ -274,5 +311,6 @@ export async function runAgentChat(
     }),
     tools,
     stopWhen: stepCountIs(MAX_STEPS),
+    abortSignal: opts.abortSignal,
   });
 }

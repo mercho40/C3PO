@@ -38,16 +38,33 @@ import { betterAuth } from "@back/lib/auth-plugin";
  * your own messages and none of the robot's.
  *
  * Passing it also puts the id in the stream's `start` chunk, so the client's
- * copy of the message and the row on disk agree — which is what makes
- * `regenerate` rewrite a reply in place instead of appending a second one.
+ * copy of the message and the row on disk agree.
+ *
+ * That agreement is NOT enough to make a retry rewrite a reply in place:
+ * `regenerate()` drops the failed assistant message on the client and the
+ * server mints a new id, so the partial reply `onEnd` already saved stayed in
+ * the history beside the retried one. The console therefore sends the failed
+ * message's id as `replaceMessageId`, and the retry reuses it — `appendMessage`
+ * upserts by id, scoped to this chat, so the row (and its place in the
+ * sequence) is overwritten rather than duplicated.
  */
 const generateMessageId = createIdGenerator({ prefix: "msg", size: 16 });
+
+/** The first response id is `replaceId` when given; every later one is fresh. */
+function messageIdsFor(replaceId: string | undefined): () => string {
+  let pending = replaceId;
+  return () => {
+    const next = pending ?? generateMessageId();
+    pending = undefined;
+    return next;
+  };
+}
 
 export const agentRoutes = new Elysia({ prefix: "/agent" })
   .use(betterAuth)
   .post(
     "/",
-    async ({ body, user, session, status }) => {
+    async ({ body, user, session, status, request }) => {
       const messages = body.messages as UIMessage[];
       const latest = messages[messages.length - 1];
 
@@ -79,11 +96,23 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
         }
       }
 
-      const result = await runAgentChat(messages, { chatId });
+      // `userId` attributes the audit rows even when the chat is not persisted
+      // (no chat id to look the owner up from).
+      const result = await runAgentChat(messages, {
+        chatId,
+        userId: user.id,
+        // Aborts when the browser goes away (Stop, or leaving /chat). `onEnd`
+        // below still persists what the aborted turn produced.
+        abortSignal: request.signal,
+      });
 
       return result.toUIMessageStreamResponse({
         originalMessages: messages,
-        generateMessageId,
+        // Only meaningful with a persisted chat: without one there is no row
+        // to overwrite, and a caller-chosen id buys nothing.
+        generateMessageId: messageIdsFor(
+          chatId ? body.replaceMessageId : undefined,
+        ),
         // `onFinish` is the deprecated spelling of this callback in ai@7.
         onEnd: async ({ responseMessage, isAborted }) => {
           // An aborted turn still persists what was generated — a half-finished
@@ -110,6 +139,10 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
       body: t.Object({
         id: t.Optional(t.String()),
         messages: t.Array(t.Any()),
+        // On a retry: the failed assistant message to overwrite (see
+        // `messageIdsFor`). A foreign id is harmless — `appendMessage` refuses
+        // to update another chat's row and writes a fresh one instead.
+        replaceMessageId: t.Optional(t.String({ maxLength: 64 })),
       }),
       detail: {
         summary:

@@ -57,7 +57,10 @@ export function realtimeTools(skills: RealtimeSkill[]) {
     }));
 }
 
-export function realtimeSessionUpdate(instructions: string, skills: RealtimeSkill[]) {
+export function realtimeSessionUpdate(
+  instructions: string,
+  skills: RealtimeSkill[],
+) {
   return {
     type: "session.update" as const,
     session: {
@@ -136,10 +139,16 @@ class RobotAudioSink {
         headers: { "Content-Type": "application/octet-stream" },
         body: Buffer.from(chunk),
       });
-      if (!response.ok) throw new Error(`robot audio output failed (${response.status})`);
-      const result = (await response.json()) as { status?: string; rpc_code?: number };
+      if (!response.ok)
+        throw new Error(`robot audio output failed (${response.status})`);
+      const result = (await response.json()) as {
+        status?: string;
+        rpc_code?: number;
+      };
       if (result.status !== "ok") {
-        throw new Error(`robot rejected audio output (rpc ${result.rpc_code ?? "unknown"})`);
+        throw new Error(
+          `robot rejected audio output (rpc ${result.rpc_code ?? "unknown"})`,
+        );
       }
     });
   }
@@ -171,7 +180,8 @@ export class RealtimeVoiceSession {
 
   async start(options: StartOptions): Promise<void> {
     if (this.state.running) {
-      if (this.state.ownerId !== options.ownerId) throw new Error("voice session is owned by another operator");
+      if (this.state.ownerId !== options.ownerId)
+        throw new Error("voice session is owned by another operator");
       return;
     }
     const apiKey = process.env.OPENAI_API_KEY;
@@ -194,7 +204,10 @@ export class RealtimeVoiceSession {
     this.audio = new RobotAudioSink();
 
     try {
-      const [baseInstructions, skills] = await Promise.all([buildSystemPrompt("voice"), listSkills()]);
+      const [baseInstructions, skills] = await Promise.all([
+        buildSystemPrompt("voice"),
+        listSkills(),
+      ]);
       const instructions = `${baseInstructions}\n\nRealtime voice safety: high-danger tools are intentionally unavailable. Ask the operator to use the authenticated console for those actions.`;
       const url = new URL("wss://api.openai.com/v1/realtime");
       url.searchParams.set("model", MODEL);
@@ -209,7 +222,8 @@ export class RealtimeVoiceSession {
       socket.on("message", (raw) => this.receive(raw));
       socket.on("error", (error) => this.fail(error));
       socket.on("close", () => {
-        if (this.state.running) this.fail(new Error("OpenAI Realtime connection closed"));
+        if (this.state.running)
+          this.fail(new Error("OpenAI Realtime connection closed"));
       });
 
       this.send(realtimeSessionUpdate(instructions, skills));
@@ -242,12 +256,16 @@ export class RealtimeVoiceSession {
 
   private async pumpRobotAudio(signal: AbortSignal): Promise<void> {
     try {
-      const response = await fetch(bridgeSiblingUrl("/telemetry/voice/audio/input"), {
-        headers: { Accept: "audio/pcm" },
-        cache: "no-store",
-        signal,
-      });
-      if (!response.ok || !response.body) throw new Error(`robot audio input failed (${response.status})`);
+      const response = await fetch(
+        bridgeSiblingUrl("/telemetry/voice/audio/input"),
+        {
+          headers: { Accept: "audio/pcm" },
+          cache: "no-store",
+          signal,
+        },
+      );
+      if (!response.ok || !response.body)
+        throw new Error(`robot audio input failed (${response.status})`);
       const reader = response.body.getReader();
       const resampler = new Pcm16Resampler(16_000, 24_000);
       try {
@@ -329,7 +347,10 @@ export class RealtimeVoiceSession {
     }
   }
 
-  private async persistTranscript(role: "user" | "assistant", transcript?: string): Promise<void> {
+  private async persistTranscript(
+    role: "user" | "assistant",
+    transcript?: string,
+  ): Promise<void> {
     const text = transcript?.trim();
     const chatId = this.state.chatId;
     if (!text || !chatId) return;
@@ -340,8 +361,13 @@ export class RealtimeVoiceSession {
       this.state.lastReply = text;
       this.state.agentRuns += 1;
     }
-    await appendMessage({ id: messageId(), chatId, role, parts: [{ type: "text", text }] }).catch(
-      (error) => console.error("[voice/realtime] transcript persistence failed", error),
+    await appendMessage({
+      id: messageId(),
+      chatId,
+      role,
+      parts: [{ type: "text", text }],
+    }).catch((error) =>
+      console.error("[voice/realtime] transcript persistence failed", error),
     );
   }
 
@@ -369,8 +395,15 @@ export class RealtimeVoiceSession {
       result = { error };
     }
     this.state.toolCalls += 1;
-    await logToolCall({
+    // Fire-and-forget, like the agent's: `logToolCall` never throws, and
+    // awaiting it made the model wait on a database write before it could hear
+    // the tool's result and answer the person standing at the robot.
+    void logToolCall({
       chatId,
+      // Explicit rather than resolved from the chat: the session owner is who
+      // started the microphone, and is known right here.
+      userId: this.state.ownerId,
+      source: "voice",
       skillName: name,
       params: args,
       result,
@@ -382,15 +415,19 @@ export class RealtimeVoiceSession {
       id: messageId(),
       chatId,
       role: "assistant",
-      parts: [{
-        type: "dynamic-tool",
-        toolName: name,
-        toolCallId: callId,
-        state: "output-available",
-        input: args,
-        output: result,
-      }],
-    }).catch((cause) => console.error("[voice/realtime] tool persistence failed", cause));
+      parts: [
+        {
+          type: "dynamic-tool",
+          toolName: name,
+          toolCallId: callId,
+          state: "output-available",
+          input: args,
+          output: result,
+        },
+      ],
+    }).catch((cause) =>
+      console.error("[voice/realtime] tool persistence failed", cause),
+    );
     this.send({
       type: "conversation.item.create",
       item: {
@@ -417,7 +454,10 @@ export class RealtimeVoiceSession {
 }
 
 async function safetyIdentifier(userId: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(userId));
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(userId),
+  );
   return Buffer.from(digest).toString("hex");
 }
 

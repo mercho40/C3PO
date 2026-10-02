@@ -44,7 +44,15 @@ export interface CatalogueSnapshot {
   rejected?: string[];
 }
 
-let cached: { skills: SkillCatalogueEntry[]; at: number } | null = null;
+let cached: {
+  skills: SkillCatalogueEntry[];
+  rejected: string[];
+  at: number;
+} | null = null;
+
+/** How long a fresh answer is reused without asking the bridge again. */
+const FRESH_MS = 5000;
+let freshUntil = 0;
 
 /** Turn one MCP tool into the catalogue shape the rest of `back` already speaks. */
 function toEntry(tool: {
@@ -77,6 +85,17 @@ function toEntry(tool: {
  * what the robot could do, clearly marked stale.
  */
 export async function getCatalogue(): Promise<CatalogueSnapshot> {
+  // A very short TTL. The catalogue only changes when the bridge restarts, but
+  // every /skills/:name/invoke reads it — and the VR walk loop invokes about
+  // once a second, which was one bridge `tools/list` round trip per step.
+  if (cached && Date.now() < freshUntil) {
+    return {
+      skills: cached.skills,
+      source: "bridge",
+      ageSeconds: Math.round((Date.now() - cached.at) / 1000),
+      ...(cached.rejected.length ? { rejected: cached.rejected } : {}),
+    };
+  }
   try {
     const tools = await listTools();
 
@@ -105,7 +124,8 @@ export async function getCatalogue(): Promise<CatalogueSnapshot> {
     }
     skills.sort((a, b) => a.name.localeCompare(b.name));
 
-    cached = { skills, at: Date.now() };
+    cached = { skills, rejected, at: Date.now() };
+    freshUntil = cached.at + FRESH_MS;
     return {
       skills,
       source: "bridge",
@@ -127,6 +147,11 @@ export async function getCatalogue(): Promise<CatalogueSnapshot> {
     // will eventually treat one as the other.
     return { skills: [], source: "bridge", ageSeconds: 0, error: detail };
   }
+}
+
+/** Forget the fresh answer, so the next read asks the bridge. */
+export function invalidateCatalogue(): void {
+  freshUntil = 0;
 }
 
 export async function listSkills(): Promise<SkillCatalogueEntry[]> {

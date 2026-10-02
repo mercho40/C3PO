@@ -28,11 +28,21 @@
  * its own outer guard. Reason: `/invoke` needs `user` typed, which requires
  * the `auth` macro's resolver to run within this plugin's own scope — if
  * this plugin were also nested inside index.ts's outer guard (like tasks/
- * state/agent are), the session would resolve twice per request (verified:
- * two separate `auth.api.getSession()` calls, doubling DB/session-store
- * load on the one route that actually moves the robot). Every other guarded
- * route doesn't need typed `user`, so the outer guard alone is still right
- * for them.
+ * state/agent are), the session would resolve twice per request. Re-verified
+ * 2026-10-01 against Elysia 1.4.28: nested, one /invoke ran the macro's
+ * resolver twice; mounted beside the guard, once. index.ts had drifted back
+ * to nesting it (so PARAR and every ~1.1/s VR walk_velocity paid two
+ * `auth.api.getSession()` calls); it is mounted outside again. Every other
+ * guarded route doesn't need typed `user`, so the outer guard alone is still
+ * right for them.
+ *
+ * Audit: every dispatch that reaches the bridge through /invoke writes a
+ * `tool_call_log` row (`source: "direct"`) — this is the reasoning-free path
+ * behind every VR button, the walk loop, bring-up and PARAR, and it used to
+ * leave no record at all. The write is fire-and-forget by construction: the
+ * response never waits on the database, because the stop must never wait on
+ * an audit row. Refusals before dispatch (401/403/404/422) are not dispatches
+ * and are not logged here.
  */
 
 import { Elysia, t } from "elysia";
@@ -45,6 +55,7 @@ import {
   BridgeToolError,
 } from "../bridge/client";
 import { betterAuth } from "@back/lib/auth-plugin";
+import { logToolCall } from "@back/db/chats";
 
 //: Skills that must dispatch even when the catalogue cannot be read.
 //:
@@ -54,6 +65,9 @@ import { betterAuth } from "@back/lib/auth-plugin";
 //: own classification whenever the catalogue IS available, so the two cannot
 //: drift silently — see the test.
 export const SAFETY_SKILLS = new Set(["stop_everything"]);
+
+/** How long PARAR waits for the bridge before answering 504 (the stop keeps running). */
+const SAFETY_TIMEOUT_MS = 8000;
 
 export const skillsRoutes = new Elysia({ prefix: "/skills" })
   .use(betterAuth)
@@ -72,6 +86,11 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
             source: snap.source,
             age_seconds: snap.ageSeconds,
             ...(snap.error ? { bridge_error: snap.error } : {}),
+            // Tools the bridge offered whose `_meta` could not be read. They
+            // are excluded rather than served with a guessed danger level —
+            // but excluded silently, a tool just vanished from the console.
+            // Forwarded so /health can name them.
+            ...(snap.rejected?.length ? { rejected: snap.rejected } : {}),
             skills: snap.skills,
           };
         },
@@ -100,8 +119,14 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
       .post(
         "/:name/invoke",
         async ({ params: { name }, body, status, user }) => {
-          const skill = await getSkill(name);
           const knownSafety = SAFETY_SKILLS.has(name);
+          // The stop never waits on the catalogue. `getSkill` asks the bridge
+          // for its tool list first, and a bridge that accepts connections but
+          // never answers held PARAR behind that list for the MCP default
+          // timeout — the stop was not even attempted until it expired. A
+          // known safety skill needs no schema (no arguments) and no admin
+          // check, so it skips the lookup and is dispatched immediately.
+          const skill = knownSafety ? undefined : await getSkill(name);
 
           // A missing catalogue entry is a 404 for everything EXCEPT a skill
           // we already know is a stop.
@@ -127,9 +152,7 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
           // dispatches straight to the bridge. `knownSafety` covers the
           // catalogue being unavailable: an e-stop must not become
           // admin-gated because a fetch failed.
-          const isSafety = skill
-            ? skill.classification === "safety"
-            : knownSafety;
+          const isSafety = knownSafety || skill?.classification === "safety";
           if (!isSafety && user.role !== "admin") {
             return status(403, {
               error: "admin_required",
@@ -161,19 +184,86 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
             args = validated.value;
           }
 
-          try {
-            return await callTool(name, args);
-          } catch (err) {
-            if (err instanceof BridgeUnavailableError)
-              return status(502, { error: "bridge_unavailable", name });
-            if (err instanceof BridgeToolError)
-              return status(502, {
-                error: "tool_error",
-                name,
-                detail: err.detail,
-              });
-            return status(502, { error: "bridge_error", name });
+          // Audited whatever happens next. `void`, never `await`: an audit
+          // row is not allowed to sit between an operator and PARAR.
+          // `logToolCall` never throws, and reads a 200 body that reports a
+          // failure (`status: "failed"`, a non-empty `error`) as `error`.
+          const startedAt = Date.now();
+          const audit = (
+            outcome:
+              | { result: unknown }
+              | { error: string; body: Record<string, unknown> },
+          ) =>
+            void logToolCall({
+              userId: user.id,
+              source: "direct",
+              skillName: name,
+              params: args,
+              ...("result" in outcome
+                ? { result: outcome.result, status: "ok" as const }
+                : {
+                    result: outcome.body,
+                    status: "error" as const,
+                    error: outcome.error,
+                  }),
+              durationMs: Date.now() - startedAt,
+            });
+
+          const failureBody = (err: unknown) =>
+            err instanceof BridgeUnavailableError
+              ? { error: "bridge_unavailable", name }
+              : err instanceof BridgeToolError
+                ? { error: "tool_error", name, detail: err.detail }
+                : { error: "bridge_error", name };
+          const auditFailure = (err: unknown) => {
+            const body = failureBody(err);
+            audit({
+              error:
+                "detail" in body ? `${body.error}: ${body.detail}` : body.error,
+              body,
+            });
+            return body;
+          };
+
+          // The dispatch, audited when it SETTLES — however long that takes —
+          // so the log records what really happened, not when we stopped
+          // waiting.
+          const dispatch = callTool(name, args).then(
+            (result) => {
+              audit({ result });
+              return { ok: true as const, result };
+            },
+            (err: unknown) => ({ ok: false as const, body: auditFailure(err) }),
+          );
+
+          // A stop must answer quickly or not at all: unbounded, a hung bridge
+          // held PARAR on "Parando…" for the MCP SDK's 60 s default. But the
+          // bound is on our WAITING, not on the call: the SDK's own timeout
+          // sends `notifications/cancelled`, which made the bridge cancel the
+          // stop_everything it was in the middle of — zero velocity may already
+          // have gone out and a damp may still land. So the call keeps running
+          // and the operator is told the truth: no answer yet (504), not "the
+          // order never left". Other skills keep the default — gestures and
+          // walks legitimately run for tens of seconds.
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const settled = await (isSafety
+            ? Promise.race([
+                dispatch,
+                new Promise<{ ok: "timeout" }>((resolve) => {
+                  timer = setTimeout(
+                    () => resolve({ ok: "timeout" }),
+                    SAFETY_TIMEOUT_MS,
+                  );
+                }),
+              ])
+            : dispatch);
+          if (timer) clearTimeout(timer);
+
+          if (settled.ok === "timeout") {
+            return status(504, { error: "bridge_timeout", name });
           }
+          if (settled.ok) return settled.result;
+          return status(502, settled.body);
         },
         {
           params: t.Object({ name: t.String() }),

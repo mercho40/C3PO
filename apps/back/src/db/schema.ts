@@ -195,7 +195,8 @@ export const invitationRelations = relations(invitation, ({ one }) => ({
 //
 // `session` (singular, above) is Better Auth's login session. These are the
 // operator-facing records: conversations with the internal agent, and an audit
-// trail of every skill the agent dispatched to the robot.
+// trail of every skill dispatched to the robot — by the agent, by a voice
+// session, or directly through /skills/:name/invoke.
 // ---------------------------------------------------------------------------
 
 /** One conversation with the internal agent. */
@@ -217,7 +218,10 @@ export const chat = pgTable(
     // Typed and spoken conversations share one durable transcript shape, but the
     // channel remains explicit so the UI never implies that ambient robot audio
     // was typed by the authenticated operator.
-    channel: text("channel").$type<"text" | "voice">().default("text").notNull(),
+    channel: text("channel")
+      .$type<"text" | "voice">()
+      .default("text")
+      .notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -252,6 +256,18 @@ export const chatMessage = pgTable(
   (t) => [uniqueIndex("chat_message_chat_seq_idx").on(t.chatId, t.seq)],
 );
 
+/**
+ * Which path a dispatch took to the robot.
+ *
+ *  - `agent`  — the internal agent, from a typed /agent chat turn.
+ *  - `voice`  — a spoken session (realtime, or the legacy loop's agent turns).
+ *  - `direct` — POST /skills/:name/invoke: no model in the loop at all. Every VR
+ *               button, the walk_velocity loop, bring-up and PARAR.
+ *
+ * Null only on rows written before the column existed.
+ */
+export type ToolCallSource = "agent" | "voice" | "direct";
+
 /** Every skill dispatched to the robot — the audit trail (docs/ARCHITECTURE.md, operational schema). */
 export const toolCallLog = pgTable(
   "tool_call_log",
@@ -261,10 +277,21 @@ export const toolCallLog = pgTable(
       .$defaultFn(() => crypto.randomUUID()),
     // Nullable: skills can also be driven by an external MCP client with no
     // chat behind them. The audit trail should still capture those.
-    chatId: text("chat_id").references(() => chat.id, { onDelete: "cascade" }),
+    //
+    // `set null`, not cascade. This used to cascade, which meant deleting a
+    // chat silently deleted the record of what that chat made the robot do —
+    // an audit trail its own subject could erase from the history rail. The
+    // row now outlives the conversation; `user_id` keeps the attribution.
+    chatId: text("chat_id").references(() => chat.id, { onDelete: "set null" }),
     messageId: text("message_id").references(() => chatMessage.id, {
       onDelete: "set null",
     }),
+    // Who dispatched it. Nullable for three honest reasons: legacy rows, an
+    // external MCP client with no console session, and an account deleted
+    // since (`set null` keeps the row — "someone, since removed, walked the
+    // robot" is still a fact worth keeping).
+    userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
+    source: text("source").$type<ToolCallSource>(),
     skillName: text("skill_name").notNull(),
     params: jsonb("params").$type<Record<string, unknown>>(),
     result: jsonb("result"),
@@ -278,6 +305,11 @@ export const toolCallLog = pgTable(
     // "What did the robot actually do, and when" — the question you ask after
     // something goes wrong, without knowing which chat caused it.
     index("tool_call_log_skill_idx").on(t.skillName, t.createdAt),
+    // GET /audit's default read: newest first across everything, paged by a
+    // (created_at, id) cursor. `id` breaks ties — a VR walk loop writes a row
+    // every ~0.9 s and an agent step can write several in one millisecond, so
+    // a timestamp-only cursor would skip or repeat rows at a page boundary.
+    index("tool_call_log_created_idx").on(t.createdAt, t.id),
   ],
 );
 
@@ -297,6 +329,7 @@ export const chatMessageRelations = relations(chatMessage, ({ one }) => ({
 
 export const toolCallLogRelations = relations(toolCallLog, ({ one }) => ({
   chat: one(chat, { fields: [toolCallLog.chatId], references: [chat.id] }),
+  user: one(user, { fields: [toolCallLog.userId], references: [user.id] }),
   message: one(chatMessage, {
     fields: [toolCallLog.messageId],
     references: [chatMessage.id],
