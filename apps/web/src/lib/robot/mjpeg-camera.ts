@@ -21,9 +21,12 @@
 //
 // REACHABILITY
 // ------------
-// The onboard bridge exposes this directly at g1-orin.local:8001. It is plain
-// HTTP, so it works from the local HTTP dev console; an HTTPS-hosted console
-// needs an HTTPS/WSS gateway before browsers will accept the mixed content.
+// `PUBLIC_ROBOT_CAM_URL` points at apps/back (`http://localhost:3000/camera`),
+// which relays the bridge's `/camera/*` behind Better Auth — the same path
+// `/telemetry/*` and the costmap take. The browser never talks to the bridge's
+// port, which also serves the unauthenticated `/mcp`. Hence
+// `credentials: "include"` below: the session cookie is what gets the picture.
+// apps/back reaches the bridge at its own BRIDGE_URL.
 
 export type RobotCamState =
   | "connecting"
@@ -122,6 +125,9 @@ export function connectRobotCamera(
     try {
       const res = await fetch(endpoint(baseUrl, "status"), {
         cache: "no-store",
+        // The feed is served by apps/back behind Better Auth; without the
+        // session cookie every poll is a 401 and the panel reads "error".
+        credentials: "include",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const status = (await res.json()) as RobotCamStatus;

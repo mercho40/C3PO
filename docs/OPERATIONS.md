@@ -467,25 +467,23 @@ checkout stayed on `152e3a6`.
 What remains unverified is the picture in the headset, which needs the bridge
 restarted onto this branch.
 
-⚠️ **Forwarding 8001 also forwards `/mcp`, and that is a known trade.** 8001 is
-the bridge, which serves the tool surface that can walk the robot with no
-authentication of its own, on the same port as `/camera/*`. This is the thing
-`apps/back/src/routes/telemetry.ts` warns against — "Never hand a browser a
-route to that port" — and `quest_setup.sh` now does it for the Quest's browser
-whenever the cable is connected.
+🔧 **The camera now reaches the browser through `apps/back`, not port 8001.**
+8001 is the bridge, which also serves `/mcp` — the tool surface that can walk
+the robot, unauthenticated. `quest_setup.sh` used to forward it into the Quest's
+browser for the picture, protected only by a test keeping CORS off `/mcp`.
 
-It is not currently exploitable: the bridge sends `Access-Control-Allow-Origin`
-on `/camera/*` and nowhere else, so a page in the headset browser cannot
-preflight a POST to `/mcp`. That is enforced by a test — `test_camera_relay.py`
-fails if the header appears outside `camera_relay.py` — rather than left to
-whoever edits the routes next.
+`apps/back/src/routes/camera.ts` now relays `/camera/status` and
+`/camera/stream.mjpg` behind Better Auth, on 3000 — already forwarded, and the
+same path `/telemetry/*` and `/map/costmap.png` take.
+`PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`; the console sends its
+session cookie (`credentials: "include"`, `crossOrigin="use-credentials"`), and
+`quest_setup.sh` forwards nothing extra. The stream proxy times out only on
+connect, never on a live stream, and closing the viewer closes the upstream
+request (`camera.test.ts`), so reconnects do not pile up streams in the tunnel.
 
-**The fix, for when somebody is wearing the headset to verify it:** serve the
-camera through `apps/back` on 3000, which is already forwarded, already behind
-Better Auth, and already how `/telemetry/*` and `/map/costmap.png` reach the
-console. Then the 8001 forward and the CORS grant both go away. It needs a
-streaming MJPEG proxy — a new shape for that service, since the existing
-proxies are request/response — which is why it was not done blind.
+The bridge keeps its `/camera/*` CORS grant for direct debugging. **Unverified
+with the headset on**, like the rest of this section; the first check is that
+`/vr-control` shows a picture with no forward on 8001.
 
 ### Deploying this branch to the robot, then closing it out 🔧
 
@@ -560,12 +558,13 @@ the bridge unit — `c3po up teleop` starts it per session because it exists to
 serve a person who is currently wearing a headset. The same profile starts
 `apps/perception`'s vision container on port 8081, which owns the D435i.
 
-The camera normally comes from the **bridge's own relay on 8001** —
-`PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera`, which is what
-`quest_setup.sh` reads and forwards. The vision container serves the same paths
-on 8081 and is the process that actually owns the D435i, so pointing the
-variable at `:8081` instead works with no code change — but only while that
-container is alive, which is exactly the case the 8001 relay exists to cover.
+The camera comes from the **bridge's own relay on 8001**, which `apps/back`
+proxies behind auth — `PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`. The
+browser never talks to 8001, which also serves the unauthenticated `/mcp`. The
+vision container serves the same paths on 8081 and is the process that actually
+owns the D435i; the bridge relays it when the vendor feed is dark. Pointing the
+variable straight at `:8081` or `:8001` still works for debugging, and
+`quest_setup.sh` warns when it does.
 
 | Process                | Start            | Port | What it is                                                      |
 | ---------------------- | ---------------- | ---- | --------------------------------------------------------------- |
@@ -747,8 +746,8 @@ first destructive migration is cheaper than after. Local-dev workarounds live in
 ## 8. CI / CD
 
 CI (`.github/workflows/ci.yml`) runs TypeScript/Svelte type-checks, back and web unit
-tests, the perception harness's Ruff + pytest gates, and the bridge's Ruff + mypy + pytest
-gates. There is **no CD**: web is automatic on Vercel;
+tests, prettier, the perception harness's Ruff + pytest gates, and the bridge's Ruff +
+mypy + pytest gates. There is **no CD**: web is automatic on Vercel;
 `back` would need a runner that can reach the LAN box (self-hosted, or a manual
 `make deploy`); the bridge deploy is the one-liner in §5.
 

@@ -201,11 +201,16 @@ describe("attach", () => {
   test("sets crossOrigin before src — without it WebGL renders black", () => {
     withFakeImage((made) => {
       const { gl } = stubGl();
-      new CameraLayer(gl).setStreamUrl("http://127.0.0.1:8081/stream.mjpg");
+      new CameraLayer(gl).setStreamUrl(
+        "http://localhost:3000/camera/stream.mjpg",
+      );
       // A texture sourced from an image the page cannot read back throws on
       // upload. The symptom is a black view, not an error anyone sees.
-      expect(made[0].crossOrigin).toBe("anonymous");
-      expect(made[0].src).toBe("http://127.0.0.1:8081/stream.mjpg");
+      // `use-credentials`, not `anonymous`: the feed is behind Better Auth in
+      // apps/back, and an anonymous CORS request drops the session cookie —
+      // a 401, and the same black view.
+      expect(made[0].crossOrigin).toBe("use-credentials");
+      expect(made[0].src).toBe("http://localhost:3000/camera/stream.mjpg");
     });
   });
 
@@ -363,7 +368,7 @@ describe("reconnection — the failure the source recovers from", () => {
       expect(made.length).toBe(2);
       expect(made[0].src).toBe("");
       expect(made[1].src).toBe("http://x/stream.mjpg?c=2");
-      expect(made[1].crossOrigin).toBe("anonymous");
+      expect(made[1].crossOrigin).toBe("use-credentials");
     });
   });
 

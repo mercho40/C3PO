@@ -274,31 +274,20 @@ export class CameraLayer {
    * session that reconnects a few times ends up holding several open MJPEG
    * streams at once, each still costing bandwidth over the robot's Wi-Fi.
    *
-   * `crossOrigin = "anonymous"` is required: WebGL refuses to sample a texture
-   * from an image the page cannot read back, and without it the image does not
-   * load at all — `onerror` fires, `#ready` stays false, and this layer draws
-   * nothing.
+   * A CORS mode is required: WebGL refuses to sample a texture from an image
+   * the page cannot read back, and without one the image does not load at all
+   * — `onerror` fires, `#ready` stays false, and this layer draws nothing.
    *
-   * WHICH SERVER OWES THE HEADER HAS CHANGED, AND THAT WAS A REAL GAP. This
-   * note used to say "the vision server sets `Access-Control-Allow-Origin: *`
-   * on every response including the stream — verified against its source". It
-   * did, and that stopped being the relevant fact when `PUBLIC_ROBOT_CAM_URL`
-   * moved to the BRIDGE on 8001. The bridge sent no CORS headers at all, so
-   * fixing the forwarded port on 2026-08-27 restored reachability and would
-   * have left the headset black anyway, failing at the CORS check instead of
-   * the connection.
+   * `"use-credentials"`, NOT `"anonymous"`. The feed is served by apps/back
+   * behind Better Auth (`routes/camera.ts`), and an anonymous CORS request
+   * drops the session cookie: a 401, and the same black view as every other
+   * camera failure this layer has had. apps/back's CORS already allows
+   * `WEB_URL` with credentials, which is what this mode requires.
    *
-   * The bridge now sends it, scoped to `/camera/*` only, and scoped again by
-   * ORIGIN: `camera_relay.camera_headers()` echoes the request's origin when
-   * it appears in `BRIDGE_CORS_ORIGINS`, and sends nothing otherwise. That
-   * variable was already set in the deployed systemd unit
-   * (`http://localhost:3001,http://127.0.0.1:3001`) and read by no code —
-   * somebody had decided the policy and it was never implemented, which is
-   * the other half of why this was broken. `http://localhost:3001` is where
-   * the Quest browser loads the console, so the headset is covered.
-   *
-   * `test_camera_relay.py` holds both scopes, because `/mcp` is on the same
-   * port and must never be readable by a page.
+   * History worth keeping: the feed used to come straight from the bridge on
+   * 8001, which needed the bridge to grant CORS (`BRIDGE_CORS_ORIGINS`) and
+   * `quest_setup.sh` to forward the port that also serves `/mcp` into the
+   * headset. Relaying through apps/back removed both.
    */
   setStreamUrl(streamUrl: string): void {
     if (streamUrl === this.#url) return;
@@ -315,7 +304,7 @@ export class CameraLayer {
       this.#img.remove();
     }
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    img.crossOrigin = "use-credentials";
     img.onload = () => (this.#ready = true);
     img.onerror = () => (this.#ready = false);
     img.src = streamUrl;
