@@ -88,6 +88,25 @@ const BUTTON_TRIGGER = 0;
 const BUTTON_PRIMARY = 4; // A on the right controller, X on the left
 
 /**
+ * The gamepad of a Touch controller, or null for anything else.
+ *
+ * A TRACKED HAND CAN HAVE A GAMEPAD TOO. Quest Browser exposes hand input
+ * sources with a gamepad whose button 0 is the PINCH — the same index as the
+ * controller trigger. Reading it as one meant an operator closing their hand
+ * (to grip, or just mirroring the arms) fired whichever preset was selected,
+ * and a hand's axes could in principle steer the walk. Presets and walking are
+ * controller gestures; hands only ever drive the arm mirror, through
+ * `#sampleHands`, which reads joints and not this.
+ */
+export function controllerGamepad(source: {
+  hand?: unknown;
+  gamepad?: Gamepad | null;
+}): Gamepad | null {
+  if (source.hand) return null;
+  return source.gamepad ?? null;
+}
+
+/**
  * Whether a gamepad button is pressed, tolerating every shape a runtime
  * might hand back.
  *
@@ -836,6 +855,12 @@ export class XrTeleopSession {
         // stop() arrived while we were still setting up. End it now rather
         // than hand back a session nobody is holding.
         this.#abandonOnStart = false;
+        // The "end" listener is not attached yet, so nothing else will free
+        // the layers — and the camera's <img> would keep pulling the MJPEG
+        // stream through apps/back for the life of the tab.
+        this.#disposeLayers();
+        this.#gl = null;
+        this.#mode = null;
         try {
           await session.end();
         } catch {
@@ -865,12 +890,7 @@ export class XrTeleopSession {
         this.#cameraBroken = false;
         // Disposing cuts the <img> src, which is what actually closes the
         // MJPEG request — an ended session must not keep pulling frames.
-        this.#camera?.dispose();
-        this.#camera = null;
-        this.#menu?.dispose();
-        this.#menu = null;
-        this.#scan?.dispose();
-        this.#scan = null;
+        this.#disposeLayers();
         this.#callbacks.onEnd?.();
       });
 
@@ -963,6 +983,10 @@ export class XrTeleopSession {
     } catch (err) {
       this.#session = null;
       this.#referenceSpace = null;
+      // Same as the abandon path: the "end" listener may not be attached yet.
+      this.#disposeLayers();
+      this.#gl = null;
+      this.#mode = null;
       try {
         await session.end();
       } catch {
@@ -1027,7 +1051,7 @@ export class XrTeleopSession {
     let sawForward = false;
     let sawBack = false;
     for (const source of session.inputSources) {
-      const axes = source.gamepad?.axes;
+      const axes = controllerGamepad(source)?.axes;
       const intent = walkAxisFrom(axes);
       if (intent === 0) continue;
       if (intent > 0) sawForward = true;
@@ -1048,7 +1072,7 @@ export class XrTeleopSession {
     let trigger = false;
     let primary = false;
     for (const source of session.inputSources) {
-      const gp = source.gamepad;
+      const gp = controllerGamepad(source);
       if (!gp) continue;
       if (buttonPressed(gp, BUTTON_TRIGGER)) trigger = true;
       if (buttonPressed(gp, BUTTON_PRIMARY)) primary = true;
@@ -1067,6 +1091,21 @@ export class XrTeleopSession {
     }
     this.#overlayRoot = null;
     this.#overlayStyleBackup = null;
+  }
+
+  /**
+   * Free the GL layers. Disposing the camera cuts its <img> src, which is what
+   * actually closes the MJPEG request — an ended session must not keep pulling
+   * frames. Shared by the "end" listener and the two ways `#start` can bail
+   * out before that listener exists.
+   */
+  #disposeLayers(): void {
+    this.#camera?.dispose();
+    this.#camera = null;
+    this.#menu?.dispose();
+    this.#menu = null;
+    this.#scan?.dispose();
+    this.#scan = null;
   }
 
   /** End the session. `onEnd` fires once the browser confirms teardown. */

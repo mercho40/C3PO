@@ -16,6 +16,7 @@
   import { createApi } from "$lib/api";
   import { getRobotLive } from "$lib/robot/context";
   import { readPosture } from "$lib/robot/posture";
+  import { ESTOP_EVENT } from "$lib/robot/estop-event";
 
   const live = getRobotLive();
   const online = $derived(live.online);
@@ -63,6 +64,11 @@
 
   async function stop() {
     if (busy) return;
+    // Before the network, and to the whole page: anything on this page that
+    // commands motion on its own loop (/vr-control's walk_velocity ticks) must
+    // stop sending NOW, not after the bridge answers, and must not resume
+    // because the next tick ran. The bridge's stop does not latch that loop.
+    window.dispatchEvent(new Event(ESTOP_EVENT));
     busy = true;
     outcome = null;
     if (timer) clearTimeout(timer);
