@@ -21,13 +21,13 @@
 //
 // REACHABILITY
 // ------------
-// The stream binds the Jetson's loopback by default, so `PUBLIC_ROBOT_CAM_URL`
-// normally points at a local port forwarded over the same SSH tunnel that
-// carries the bridge:
-//   ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8081:127.0.0.1:8081 c3po
-// That is also why this is plain HTTP with no certificate dance: the transport
-// is already an encrypted tunnel, and a self-signed cert per port is the thing
-// that makes the sim's cameras annoying to bring up.
+// `PUBLIC_ROBOT_CAM_URL` points at apps/back (`http://localhost:3000/camera`),
+// which relays the bridge's `/camera/*` behind Better Auth — the same path
+// `/telemetry/*` and the costmap take. The browser never talks to the bridge's
+// port, which also serves the unauthenticated `/mcp`. Hence
+// `credentials: "include"` below: the session cookie is what gets the picture.
+// Only apps/back needs the SSH tunnel to the robot:
+//   ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po
 
 export type RobotCamState =
   | "connecting"
@@ -126,6 +126,9 @@ export function connectRobotCamera(
     try {
       const res = await fetch(endpoint(baseUrl, "status"), {
         cache: "no-store",
+        // The feed is served by apps/back behind Better Auth; without the
+        // session cookie every poll is a 401 and the panel reads "error".
+        credentials: "include",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const status = (await res.json()) as RobotCamStatus;

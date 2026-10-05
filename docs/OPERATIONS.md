@@ -419,25 +419,23 @@ checkout stayed on `152e3a6`.
 What remains unverified is the picture in the headset, which needs the bridge
 restarted onto this branch.
 
-⚠️ **Forwarding 8001 also forwards `/mcp`, and that is a known trade.** 8001 is
-the bridge, which serves the tool surface that can walk the robot with no
-authentication of its own, on the same port as `/camera/*`. This is the thing
-`apps/back/src/routes/telemetry.ts` warns against — "Never hand a browser a
-route to that port" — and `quest_setup.sh` now does it for the Quest's browser
-whenever the cable is connected.
+🔧 **The camera now reaches the browser through `apps/back`, not port 8001.**
+8001 is the bridge, which also serves `/mcp` — the tool surface that can walk
+the robot, unauthenticated. `quest_setup.sh` used to forward it into the Quest's
+browser for the picture, protected only by a test keeping CORS off `/mcp`.
 
-It is not currently exploitable: the bridge sends `Access-Control-Allow-Origin`
-on `/camera/*` and nowhere else, so a page in the headset browser cannot
-preflight a POST to `/mcp`. That is enforced by a test — `test_camera_relay.py`
-fails if the header appears outside `camera_relay.py` — rather than left to
-whoever edits the routes next.
+`apps/back/src/routes/camera.ts` now relays `/camera/status` and
+`/camera/stream.mjpg` behind Better Auth, on 3000 — already forwarded, and the
+same path `/telemetry/*` and `/map/costmap.png` take.
+`PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`; the console sends its
+session cookie (`credentials: "include"`, `crossOrigin="use-credentials"`), and
+`quest_setup.sh` forwards nothing extra. The stream proxy times out only on
+connect, never on a live stream, and closing the viewer closes the upstream
+request (`camera.test.ts`), so reconnects do not pile up streams in the tunnel.
 
-**The fix, for when somebody is wearing the headset to verify it:** serve the
-camera through `apps/back` on 3000, which is already forwarded, already behind
-Better Auth, and already how `/telemetry/*` and `/map/costmap.png` reach the
-console. Then the 8001 forward and the CORS grant both go away. It needs a
-streaming MJPEG proxy — a new shape for that service, since the existing
-proxies are request/response — which is why it was not done blind.
+The bridge keeps its `/camera/*` CORS grant for direct debugging. **Unverified
+with the headset on**, like the rest of this section; the first check is that
+`/vr-control` shows a picture with no forward on 8001.
 
 ### Deploying this branch to the robot, then closing it out 🔧
 
@@ -509,13 +507,13 @@ a thing this repo is going to grow.
 
 One more process now runs beside the bridge, for `/vr-control`. It is not under
 `run_c3po` or the boot unit — it is started by hand, per session, because it exists to
-serve a person who is currently wearing a headset. The camera normally comes from
-the **bridge's own relay on 8001** — `PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8001/camera`,
-which is what `quest_setup.sh` reads and forwards. `apps/perception`'s vision
+serve a person who is currently wearing a headset. The camera comes from the
+**bridge's own relay on 8001**, which `apps/back` proxies behind auth —
+`PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`. `apps/perception`'s vision
 container (`perception_up perception`, port 8081) serves the same paths and is the
-process that owns the D435i, so pointing the variable at `:8081` instead works
-with no code change — but only while that container is alive, which is exactly
-the case the 8001 relay exists to cover.
+process that owns the D435i; the bridge relays it when the vendor feed is dark.
+Pointing the variable straight at `:8081` or `:8001` still works for debugging,
+and `quest_setup.sh` warns when it does.
 
 | Process                | Start        | Port | What it is                                                      |
 | ---------------------- | ------------ | ---- | --------------------------------------------------------------- |
@@ -696,9 +694,9 @@ first destructive migration is cheaper than after. Local-dev workarounds live in
 
 ## 8. CI / CD
 
-CI (`.github/workflows/ci.yml`) runs type-check across all workspaces plus the bridge's
-pytest. `apps/perception`'s pytest suites are **not** in CI yet, even though its Stage 0
-cites them as the verification step. There is **no CD**: web is automatic on Vercel;
+CI (`.github/workflows/ci.yml`) runs type-check across all workspaces, `bun test` in
+`back` and `web`, prettier, and the bridge's and `apps/perception`'s pytest, ruff and
+mypy. There is **no CD**: web is automatic on Vercel;
 `back` would need a runner that can reach the LAN box (self-hosted, or a manual
 `make deploy`); the bridge deploy is the one-liner in §5.
 
@@ -772,17 +770,16 @@ Plain facts, not a roadmap. Each stays here until fixed.
   container (`restart=unless-stopped`) was up again on its own after `run_c3po`'s
   explicit `docker stop` (§4) — "stopped" is not a permanent state. Verify with
   `docker ps` before counting on the sensors or the one-commander invariant.
-- **The one-commander check has blind spots.** `OTHER_COMMANDER_PATTERNS` in
-  `scripts/robot/_common.sh` covers `cmd_vel_to_loco|xr_teleoperate|brainco_hand_server`
-  but not `unitree_slam` — its 1102 pose navigation closes its own PID velocity loop
-  (`docs/ROBOT-API.md`) — or the returning gemm container's `gemm_robot_server`
-  (audited: no `SetFsmId`/`SetVelocity`/`LocoClient`/`cmd_vel`/7101/7105 references, so
-  no leg risk today; re-check if their backend grows). `warn_if_other_commander` should
-  extend to both.
-- **`bridge.log` is never rotated** — append-only structlog (path defined in
-  `scripts/robot/_common.sh`). Add a logrotate entry before it matters, and make it
-  cover the two perception container log streams and the CycloneDDS trace file
-  perception adds, not just `bridge.log`.
+- **The one-commander check has a blind spot.** `OTHER_COMMANDER_PATTERNS` in
+  `scripts/robot/_common.sh` covers `cmd_vel_to_loco|xr_teleoperate|brainco_hand_server|unitree_slam`
+  but not the returning gemm container's `gemm_robot_server` (audited: no
+  `SetFsmId`/`SetVelocity`/`LocoClient`/`cmd_vel`/7101/7105 references, so no leg risk
+  today; re-check if their backend grows).
+- **Container logs are unbounded.** `scripts/robot/c3po-logs.logrotate` covers
+  `bridge.log`, build logs and perception's host-side logs, but the containers'
+  stdout/stderr land in Docker's json-file driver with no `--log-opt max-size`. Fixing it
+  means `perception_up` passing `--log-opt`, or `/etc/docker/daemon.json` — the other
+  team's file. Open decision; details in the logrotate file's header.
 - **Bridge WS `:7077` token is unenforced** — the WS transport is design, not built;
   once it leaves loopback the token is the only thing between the LAN and a humanoid's
   motion API (`docs/ARCHITECTURE.md`).

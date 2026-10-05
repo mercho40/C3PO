@@ -6,6 +6,7 @@ import { tasksRoutes } from "@back/routes/tasks";
 import { stateRoutes } from "@back/routes/state";
 import { mapRoutes } from "@back/routes/map";
 import { telemetryRoutes } from "@back/routes/telemetry";
+import { cameraRoutes } from "@back/routes/camera";
 import { agentRoutes } from "@back/routes/agent";
 import { chatsRoutes } from "@back/routes/chats";
 import { voiceRoutes } from "@back/routes/voice";
@@ -48,6 +49,7 @@ const app = new Elysia()
       .use(stateRoutes)
       .use(mapRoutes)
       .use(telemetryRoutes)
+      .use(cameraRoutes)
       .use(agentRoutes)
       .use(chatsRoutes)
       .use(voiceRoutes),
