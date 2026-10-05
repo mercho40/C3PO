@@ -38,6 +38,7 @@
   } from "@lucide/svelte";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import StopButton from "$lib/components/stop-button.svelte";
+  import { ESTOP_EVENT } from "$lib/robot/estop-event";
   import { Button } from "$lib/components/ui/button/index.js";
   import { createApi } from "$lib/api";
   import { authClient } from "$lib/auth-client";
@@ -103,6 +104,20 @@
         void sendVelocity(0, 0, 0.5);
       }
     }
+  }
+
+  /**
+   * PARAR, pressed anywhere on the page. The bridge stops the robot and latches
+   * the stream, but not THIS page's walk_velocity loop: with no stream up, the
+   * next tick ~0.9 s later sent a fresh walk from a held stick or a turned
+   * head. Latched exactly like the hold dead-man — yaw and walk stay zero until
+   * a deliberate re-press (`startWalking`) or a recenter.
+   */
+  function onEstop() {
+    releaseAllControls();
+    deadManTripped = true;
+    motionStartedAt = null;
+    stopLoop();
   }
 
   const live = getRobotLive();
@@ -322,11 +337,13 @@
     window.addEventListener("pointercancel", release);
     window.addEventListener("blur", release);
     document.addEventListener("visibilitychange", onHidden);
+    window.addEventListener(ESTOP_EVENT, onEstop);
     return () => {
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
       window.removeEventListener("blur", release);
       document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener(ESTOP_EVENT, onEstop);
     };
   });
 
@@ -359,9 +376,38 @@
   }
 
   async function sendVelocity(vx: number, vyaw: number, duration_s: number) {
-    const { error } = await createApi(fetch)
-      .skills({ name: "walk_velocity" })
-      .invoke.post({ vx, vy: 0, vyaw, duration_s });
+    const isStop = vx === 0 && vyaw === 0;
+    let data: unknown;
+    let error: { status: unknown } | null;
+    try {
+      ({ data, error } = await createApi(fetch)
+        .skills({ name: "walk_velocity" })
+        .invoke.post({ vx, vy: 0, vyaw, duration_s }));
+    } catch {
+      // Every caller is `void sendVelocity(...)`, so a network failure here
+      // was an unhandled rejection and nothing on screen. A stop that never
+      // left the browser is the one failure the operator must hear about.
+      walkError = isStop
+        ? "No se pudo enviar la parada — usá PARAR."
+        : "No se pudo enviar el comando de movimiento.";
+      walking = null;
+      stopLoop();
+      return;
+    }
+    // THE BRIDGE ANSWERS 200 WITH `status: "failed"`, it does not raise. A
+    // refused stop (firmware rpc_error) used to read as success, leaving the
+    // last setpoint to run out its duration with nothing on screen.
+    // `teleop_active` is the exception: the stream holds locomotion and stops
+    // the robot on its own, so a stop it refuses is not a stop that was lost.
+    const body = (data ?? null) as Record<string, unknown> | null;
+    if (!error && body?.status === "failed" && body.phase !== "teleop_active") {
+      walkError = isStop
+        ? "El robot rechazó la parada — usá PARAR."
+        : "El robot rechazó el comando de movimiento.";
+      walking = null;
+      stopLoop();
+      return;
+    }
     if (error) {
       const status = error.status as number;
       if (status === 401) {
@@ -408,9 +454,26 @@
   // Readouts are not dispatch. They run whenever there is a session to read.
   let uiTimer: ReturnType<typeof setInterval> | null = null;
 
+  /**
+   * A walk the THUMBSTICK started ends when the head pose goes stale.
+   *
+   * The stick only ever releases a walk by being SAMPLED at neutral, and the
+   * samples come from the XR frame loop — which stops when the headset comes
+   * off, the system menu opens, or tracking is lost. Yaw and arms were already
+   * gated on freshness (`buildFrame`, `currentYawError`); `walking` was not,
+   * so a stick held at that moment kept walking — on the stream and on the
+   * HTTP loop alike — until the 8 s hold latch, about 1.6 m with nobody
+   * looking. DOM-button walks are left alone: their release comes from
+   * pointer events, which do not depend on tracking.
+   */
+  function releaseStaleStickWalk() {
+    if (trackingStale && stickWalk !== null) applyWalkAxis(0);
+  }
+
   function refreshReadouts() {
     yawDisplayDeg = Math.round((yawErrorRadians * 180) / Math.PI);
     trackingStale = vrActive && Date.now() - lastYawSampleAt > VR_STALE_MS;
+    releaseStaleStickWalk();
     if (vr) {
       xrCameraLive = camLive && vr.cameraHasFrame;
       xrCameraEverHadFrame ||= vr.cameraHasFrame;
@@ -454,6 +517,7 @@
       xrCameraBroken = vr.cameraBroken;
     }
     trackingStale = vrActive && Date.now() - lastYawSampleAt > VR_STALE_MS;
+    releaseStaleStickWalk();
 
     if (!loopShouldRun()) {
       stopLoop();
@@ -750,6 +814,11 @@
         })),
       );
       session.setMenuVisible(true);
+      // The effects that keep these current cannot fire just because `vr`
+      // was assigned (it is not `$state`), so the first values go in here.
+      session.setMenuReadiness(readiness);
+      session.setMenuAlert(menuAlert);
+      session.setScanRing(scanFeed.ring, scanFeed.reason);
       // Off in passthrough: an operator who can see the actual room does not
       // need a drawing of it, and the corner is better spent on the room.
       session.setScanVisible(session.mode !== "immersive-ar");
@@ -1070,7 +1139,15 @@
     // Reads `readiness` so the effect re-runs when it changes; `setReadiness`
     // is itself guarded against repaints for an unchanged value, because this
     // ticks with every state poll.
-    vr?.setMenuReadiness(readiness);
+    //
+    // READ IT BEFORE THE CALL, NOT AS ITS ARGUMENT. `vr` is not `$state`, and
+    // it is null when this first runs at mount — so `vr?.set…(readiness)`
+    // short-circuited, never read `readiness`, and the effect subscribed to
+    // nothing and never ran again. The headset showed no readiness pill, no
+    // latch alert and an empty radar for every session. `startVrSession`
+    // pushes the current values once `vr` exists; these keep them current.
+    const r = readiness;
+    vr?.setMenuReadiness(r);
   });
 
   //: The two latches that stop motion while everything else looks healthy.
@@ -1087,7 +1164,9 @@
     ),
   );
   $effect(() => {
-    vr?.setMenuAlert(menuAlert);
+    // Read first — see the readiness effect above.
+    const a = menuAlert;
+    vr?.setMenuAlert(a);
   });
 
   //: The lidar radar, bottom-left of each eye.
@@ -1103,7 +1182,10 @@
     // only thing that changed is WHY there is nothing — an operator staring
     // at an empty dial needs the reason to update even though the (absent)
     // ring did not.
-    vr?.setScanRing(scanFeed.ring, scanFeed.reason);
+    // Read first — see the readiness effect above.
+    const ring = scanFeed.ring;
+    const reason = scanFeed.reason;
+    vr?.setScanRing(ring, reason);
   });
 
   //: An outcome now carries its own words, because the interesting failures are

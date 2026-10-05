@@ -17,6 +17,7 @@ import { describe, expect, test } from "bun:test";
 import {
   angleBetween,
   buttonPressed,
+  controllerGamepad,
   drawPerEye,
   fingerCurl,
   restoreOverlayBackground,
@@ -644,5 +645,26 @@ describe("buttonPressed — the read that dispatches a gesture", () => {
     // Strict === true, so a runtime reporting `{value: 1}` and no `pressed`
     // does not dispatch motion on a truthiness accident.
     expect(buttonPressed({ buttons: [{}] }, 0)).toBe(false);
+  });
+});
+
+describe("controllerGamepad — a pinch is not a trigger", () => {
+  const pinched = {
+    buttons: [{ pressed: true }],
+    axes: [0, 0, 0, -1],
+  } as unknown as Gamepad;
+
+  test("a tracked hand's gamepad is ignored, however pressed it looks", () => {
+    // Quest Browser reports the pinch as button 0 — the trigger's index.
+    expect(controllerGamepad({ hand: {}, gamepad: pinched })).toBeNull();
+  });
+
+  test("a controller's gamepad is read", () => {
+    expect(controllerGamepad({ gamepad: pinched })).toBe(pinched);
+  });
+
+  test("no gamepad is null, not undefined", () => {
+    expect(controllerGamepad({})).toBeNull();
+    expect(controllerGamepad({ gamepad: null })).toBeNull();
   });
 });
