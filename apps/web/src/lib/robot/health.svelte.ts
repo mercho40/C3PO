@@ -12,7 +12,8 @@
  *   GET  {API}/telemetry/surroundings      perception sources
  *   GET  {API}/telemetry/voice             the robot's microphone
  *   GET  {API}/map/costmap.png             only the X-C3PO-* headers matter
- *   GET  {PUBLIC_ROBOT_CAM_URL}/status     direct to the robot, no credentials
+ *   GET  {PUBLIC_ROBOT_CAM_URL}/status     apps/back's relay (session cookie);
+ *                                          no cookie if pointed at the robot
  *
  * Each read keeps its own outcome (see `Read` in `health.ts`), so one dead
  * source never blanks the others — the page exists to say WHICH part is down.
@@ -26,6 +27,8 @@
 
 import { PUBLIC_API_URL } from "$env/static/public";
 import { Poller, type PollResult } from "./poller.svelte";
+import { sameOrigin } from "./health";
+
 import type {
   CameraStatus,
   CatalogueEnvelope,
@@ -170,19 +173,22 @@ export class HealthProbe extends Poller {
             COSTMAP_HEADERS,
           ),
         ),
-        // Direct to the robot, like /live-camera: a plain GET, no cookies —
-        // the bridge's camera routes have no auth, and sending credentials
-        // cross-origin would need a CORS setup they do not have.
+        // Normally apps/back's relay, behind the login like everything above:
+        // without the cookie every probe was a 401, and this page reported a
+        // working camera as down. A debug URL aimed straight at the robot
+        // gets no cookie — the bridge grants no credentialed CORS.
         this.#cameraUrl
-          ? request(`${this.#cameraUrl}/status`, signal, "omit").then((r) =>
-              toRead<CameraStatus>(r, (res) => res.json()),
-            )
+          ? request(
+              `${this.#cameraUrl}/status`,
+              signal,
+              sameOrigin(this.#cameraUrl, api) ? "include" : "omit",
+            ).then((r) => toRead<CameraStatus>(r, (res) => res.json()))
           : null,
       ]);
 
     // A 401 from any protected read is a session problem, never a robot
     // problem — the base class sends the operator to log in.
-    const reads = [catalogue, surroundings, voice, costmap];
+    const reads = [catalogue, surroundings, voice, costmap, camera];
     if (reads.some((r) => r && "unauthorized" in r && r.unauthorized)) {
       return "unauthorized";
     }
