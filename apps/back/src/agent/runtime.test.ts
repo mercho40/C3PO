@@ -61,7 +61,8 @@ mock.module("@back/skills", () => ({
   })),
 }));
 
-const { agentToolExclusions, buildSystemPrompt } = await import("./runtime");
+const { agentToolExclusions, buildSystemPrompt, offeredInMode } =
+  await import("./runtime");
 
 describe("buildSystemPrompt", () => {
   test("does not hardcode a specific sim/real environment", async () => {
@@ -94,6 +95,18 @@ describe("buildSystemPrompt", () => {
     expect(excluded.has("listen")).toBe(true);
     expect(excluded.has("say")).toBe(true);
     expect(agentToolExclusions("operator").size).toBe(0);
+  });
+
+  test("overheard speech is never offered a high-danger skill", () => {
+    const high = { name: "arm_navigation", dangerLevel: "high" };
+    const low = { name: "wave", dangerLevel: "low" };
+    expect(offeredInMode(high, "voice")).toBe(false);
+    expect(offeredInMode(low, "voice")).toBe(true);
+    expect(offeredInMode({ name: "say", dangerLevel: "low" }, "voice")).toBe(
+      false,
+    );
+    // A typed operator turn keeps the full catalogue.
+    expect(offeredInMode(high, "operator")).toBe(true);
   });
 
   test("every skill is listed with its actual sim/real availability tag", async () => {

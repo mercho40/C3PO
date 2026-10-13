@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   RealtimeVoiceSession,
   realtimeSessionUpdate,
@@ -55,5 +57,28 @@ describe("OpenAI Realtime session contract", () => {
       interrupt_response: true,
     });
     expect(event.session.tools[0]?.name).toBe("wave");
+  });
+});
+
+describe("a function call the session never declared", () => {
+  // Structural: `executeTool` is private and needs a live OpenAI socket. What
+  // is pinned is that the declared set is recorded where the session is
+  // configured, and checked before anything reaches the bridge.
+  const src = readFileSync(
+    fileURLToPath(new URL("./realtime.ts", import.meta.url)),
+    "utf8",
+  );
+
+  test("the declared names are recorded from the same list sent to OpenAI", () => {
+    expect(src).toContain(
+      "this.declaredTools = new Set(realtimeTools(skills).map((t) => t.name));",
+    );
+  });
+
+  test("an undeclared name is refused before callTool", () => {
+    const body = src.slice(src.indexOf("private async executeTool"));
+    const guard = body.indexOf("if (!this.declaredTools.has(name)) {");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(body.indexOf("await callTool(name, args)"));
   });
 });

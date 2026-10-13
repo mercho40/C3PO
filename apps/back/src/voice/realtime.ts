@@ -1,10 +1,10 @@
 import WebSocket, { type RawData } from "ws";
 import { createIdGenerator } from "ai";
 
-import { callTool } from "@back/bridge/client";
+import { BridgeToolError, callTool } from "@back/bridge/client";
 import { bridgeSiblingUrl } from "@back/bridge/url";
 import { appendMessage, logToolCall } from "@back/db/chats";
-import { buildSystemPrompt } from "@back/agent/runtime";
+import { buildSystemPrompt, offeredInMode } from "@back/agent/runtime";
 import { listSkills } from "@back/skills";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
@@ -43,12 +43,7 @@ type RealtimeSkill = Awaited<ReturnType<typeof listSkills>>[number];
 
 export function realtimeTools(skills: RealtimeSkill[]) {
   return skills
-    .filter(
-      (skill) =>
-        skill.name !== "listen" &&
-        skill.name !== "say" &&
-        skill.dangerLevel !== "high",
-    )
+    .filter((skill) => offeredInMode(skill, "voice"))
     .map((skill) => ({
       type: "function" as const,
       name: skill.name,
@@ -159,6 +154,13 @@ export class RealtimeVoiceSession {
   private socket: WebSocket | null = null;
   private inputAbort: AbortController | null = null;
   private audio = new RobotAudioSink();
+  /**
+   * The tool names this session DECLARED to the model. A function call naming
+   * anything else is refused here: what was declared to OpenAI is a request,
+   * not an enforcement, and `executeTool` used to dispatch whatever name came
+   * back — including a high-danger skill the declaration had left out.
+   */
+  private declaredTools: ReadonlySet<string> = new Set();
   private eventTail: Promise<void> = Promise.resolve();
   private state: RealtimeVoiceState = {
     running: false,
@@ -226,6 +228,7 @@ export class RealtimeVoiceSession {
           this.fail(new Error("OpenAI Realtime connection closed"));
       });
 
+      this.declaredTools = new Set(realtimeTools(skills).map((t) => t.name));
       this.send(realtimeSessionUpdate(instructions, skills));
 
       this.state.phase = "listening";
@@ -387,12 +390,25 @@ export class RealtimeVoiceSession {
     let result: unknown;
     let status: "ok" | "error" = "ok";
     let error: string | null = null;
-    try {
-      result = await callTool(name, args);
-    } catch (cause) {
+    if (!this.declaredTools.has(name)) {
       status = "error";
-      error = cause instanceof Error ? cause.message : String(cause);
+      error = `tool_not_offered: ${name}`;
       result = { error };
+    } else {
+      try {
+        result = await callTool(name, args);
+      } catch (cause) {
+        status = "error";
+        // The robot's own reason, not just "tool_error: <name>": it is what
+        // the audit row and the model both need to say what went wrong.
+        error =
+          cause instanceof BridgeToolError
+            ? `${cause.message}: ${cause.detail}`
+            : cause instanceof Error
+              ? cause.message
+              : String(cause);
+        result = { error };
+      }
     }
     this.state.toolCalls += 1;
     // Fire-and-forget, like the agent's: `logToolCall` never throws, and
