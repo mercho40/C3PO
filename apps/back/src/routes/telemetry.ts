@@ -54,7 +54,13 @@ async function proxyJson(
   }
   if (!upstream.ok) return status(502, { error: "bridge_error" });
 
-  return new Response(await upstream.arrayBuffer(), {
+  // The timeout covers reading the BODY too: headers that arrive just before
+  // it leave `arrayBuffer()` to throw, which escaped as a 500 — a server bug,
+  // to the console — instead of the bridge being slow.
+  const body = await upstream.arrayBuffer().catch(() => null);
+  if (body === null) return status(502, { error: "bridge_unavailable" });
+
+  return new Response(body, {
     headers: {
       "Content-Type": "application/json",
       // Never cache. A cached scene or transcript is indistinguishable from a

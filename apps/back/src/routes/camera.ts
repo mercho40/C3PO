@@ -80,7 +80,13 @@ async function proxyOnce(
   const failed = await upstreamFailure(upstream, status);
   if (failed !== null) return failed;
 
-  return new Response(await upstream.arrayBuffer(), {
+  // The timeout covers reading the BODY too: headers that arrive just before
+  // it leave `arrayBuffer()` to throw, which escaped as a 500 — a server bug,
+  // to the console — instead of the bridge being slow.
+  const body = await upstream.arrayBuffer().catch(() => null);
+  if (body === null) return status(502, { error: "bridge_unavailable" });
+
+  return new Response(body, {
     headers: {
       "Content-Type": upstream.headers.get("Content-Type") ?? contentType,
       "Cache-Control": "no-store",

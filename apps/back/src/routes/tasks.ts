@@ -18,15 +18,33 @@ import {
   BridgeUnavailableError,
   BridgeToolError,
 } from "../bridge/client";
+import { auditedCall } from "../bridge/audited";
+
+/**
+ * The signed-in user, from the auth guard this module is mounted inside
+ * (index.ts). Present at runtime but untyped here, because this module does
+ * not `.use(betterAuth)` itself — doing so nests the macro and doubles the
+ * session lookup (see index.ts). Absent reads as "unknown" in the audit row.
+ */
+function userIdOf(ctx: unknown): string | null {
+  const user = (ctx as { user?: { id?: unknown } }).user;
+  return typeof user?.id === "string" ? user.id : null;
+}
 
 export const tasksRoutes = new Elysia({ prefix: "/tasks" })
   .post(
     "/:task_id/cancel",
-    async ({ params: { task_id }, body, status }) => {
+    async (ctx) => {
+      const {
+        params: { task_id },
+        body,
+        status,
+      } = ctx;
       const mode = body?.mode ?? "graceful";
+      const who = { userId: userIdOf(ctx), source: "direct" as const };
       try {
         if (mode === "estop") {
-          const raw = await callTool("stop_everything", {});
+          const raw = await auditedCall("stop_everything", {}, who);
           // Bridge tools always return a dict today, but nothing at the
           // type level guarantees it -- spreading a non-object (e.g. a bare
           // string) into a response object silently produces garbage
@@ -37,7 +55,7 @@ export const tasksRoutes = new Elysia({ prefix: "/tasks" })
               : { raw };
           return { mode, task_id, ...result };
         }
-        return await callTool("cancel_task", { task_id });
+        return await auditedCall("cancel_task", { task_id }, who);
       } catch (err) {
         if (err instanceof BridgeUnavailableError)
           return status(502, { error: "bridge_unavailable", task_id });

@@ -86,6 +86,7 @@ src/
   lib/auth-plugin.ts   Elysia plugin defining the `auth: true` macro (see Auth below)
   lib/admin-bootstrap.ts  grants role "admin" to ADMIN_EMAILS at boot
   db/                  Drizzle schema + client + chat persistence queries (chats.ts)
+  bridge/audited.ts    callTool + audit row, for paths outside /skills and the agent
   bridge/client.ts     MCP client — calls the bridge's tools over BRIDGE_URL
   bridge/url.ts        BRIDGE_URL and its sibling HTTP routes, in one place
   routes/

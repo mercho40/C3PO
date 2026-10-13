@@ -27,6 +27,7 @@ import { createIdGenerator } from "ai";
 
 import { runAgentChat } from "@back/agent/runtime";
 import { callTool } from "@back/bridge/client";
+import { auditedCall } from "@back/bridge/audited";
 import { deleteChat, ensureChat } from "@back/db/chats";
 import { betterAuth } from "@back/lib/auth-plugin";
 import { VoiceConversation } from "@back/voice/conversation";
@@ -66,11 +67,11 @@ const conversation = new VoiceConversation({
     return result.textStream;
   },
   speak: async (text) => {
-    await callTool("say", {
-      text,
-      language: "spanish",
-      wait_for_completion: true,
-    });
+    await auditedCall(
+      "say",
+      { text, language: "spanish", wait_for_completion: true },
+      { userId: legacyStartedBy, source: "voice" },
+    );
   },
   newId,
 });
@@ -131,7 +132,16 @@ function voiceStatus(userId?: string) {
 function getLoop(): VoiceLoop {
   if (loop === null) {
     loop = new VoiceLoop({
-      callTool: (name, args) => callTool(name, args),
+      // Audited, except the `listen` poll: it commands nothing and runs several
+      // times a second. The spoken "stop" goes out through here, and is
+      // exactly the command an audit trail must not miss.
+      callTool: (name, args) =>
+        name === "listen"
+          ? callTool(name, args)
+          : auditedCall(name, args, {
+              userId: legacyStartedBy,
+              source: "voice",
+            }),
       runAgent: runAgentOnUtterance,
       events: bridgeVoiceEvents,
       inputStatus: bridgeVoiceStatus,
