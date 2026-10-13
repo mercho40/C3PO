@@ -26,6 +26,13 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import {
+  BridgeToolError,
+  BridgeUnavailableError,
+  failure,
+  sessionLost,
+} from "./client";
 
 // fileURLToPath, not `.pathname` — this repo lives under a directory with
 // spaces in its name, which `.pathname` hands back percent-encoded.
@@ -118,16 +125,30 @@ describe("a discarded session is actually closed", () => {
     // bare occurrences and passed happily against a `// discard(client);`,
     // which is the same trap `url.test.ts` hit when its comment-stripper ate
     // the `//` inside `http://`.
-    const statement = (name: string) =>
-      (src.match(new RegExp(String.raw`^\s*${name};`, "gm")) ?? []).length;
+    const statement = (pattern: string) =>
+      (src.match(new RegExp(String.raw`^\s*${pattern}`, "gm")) ?? []).length;
 
-    // Three resets exist. The one inside `connect().catch` is exempt and must
-    // stay exempt: connect() FAILED, so there is no established session to
-    // close, and the SDK already closes the half-built one itself.
-    expect(statement(String.raw`clientPromise = null`)).toBe(3);
+    // Both live-session failure paths go through `abandon`, and only when the
+    // session is actually lost — see the classification tests below.
+    expect(
+      statement(
+        String.raw`if \(sessionLost\(err\)\) abandon\(pending, client\);`,
+      ),
+    ).toBe(2);
+    // `abandon` closes what it gives up on, and clears the shared slot only
+    // if it still holds THIS session (a late failure must not drop a newer one).
+    const abandonBody = src.slice(src.indexOf("function abandon"));
+    const end = abandonBody.indexOf("\n}\n");
+    expect(abandonBody.slice(0, end)).toContain(
+      "if (clientPromise === pending) clientPromise = null;",
+    );
+    expect(abandonBody.slice(0, end)).toContain("discard(client);");
+  });
 
-    // The other two run after `await getClient()` handed us a live client.
-    expect(statement(String.raw`discard\(client\)`)).toBe(2);
+  test("a tool call sets its own ceiling instead of inheriting the SDK's 60 s", () => {
+    // Omitting `timeout` does not mean "none": the SDK falls back to 60 s and
+    // cancels the call on the bridge. walk_to accepts up to 300 s.
+    expect(src).toContain("timeout: CALL_TIMEOUT_MS");
   });
 
   test("the close cannot replace the caller's error with its own", () => {
@@ -138,5 +159,37 @@ describe("a discarded session is actually closed", () => {
     const body = src.slice(src.indexOf("function discard"));
     expect(body).toContain(".catch(");
     expect(body.slice(0, body.indexOf("}"))).toContain("void ");
+  });
+});
+
+describe("which failures end the session", () => {
+  test("a lost connection does, and reads as the bridge being unavailable", () => {
+    const closed = new McpError(
+      ErrorCode.ConnectionClosed,
+      "Connection closed",
+    );
+    expect(sessionLost(closed)).toBe(true);
+    expect(failure("walk_to", closed)).toBeInstanceOf(BridgeUnavailableError);
+    // A transport error (refused, reset, tunnel gone) is not an McpError.
+    expect(sessionLost(new TypeError("fetch failed"))).toBe(true);
+  });
+
+  test("a timeout does not — other calls, PARAR included, ride the same session", () => {
+    const timedOut = new McpError(
+      ErrorCode.RequestTimeout,
+      "Request timed out",
+    );
+    expect(sessionLost(timedOut)).toBe(false);
+    expect(failure("list_tools", timedOut)).toBeInstanceOf(
+      BridgeUnavailableError,
+    );
+  });
+
+  test("the bridge refusing a request is about that request, not the bridge", () => {
+    const refused = new McpError(ErrorCode.InvalidParams, "bad arguments");
+    expect(sessionLost(refused)).toBe(false);
+    const err = failure("walk_to", refused);
+    expect(err).toBeInstanceOf(BridgeToolError);
+    expect((err as BridgeToolError).detail).toContain("bad arguments");
   });
 });

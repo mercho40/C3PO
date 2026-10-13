@@ -16,6 +16,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { bridgeUrl, unreachableHint } from "./url";
 
 // RESOLVED PER CONNECT, NOT ONCE AT MODULE LOAD.
@@ -95,6 +96,46 @@ function discard(client: Client): void {
     .catch(() => {});
 }
 
+/**
+ * Whether a failed request means the SESSION is gone, not just this request.
+ *
+ * Only then may the shared session be closed. It carries every call in flight —
+ * a walk, the catalogue refresh, and PARAR — so closing it because ONE request
+ * timed out or was refused rejected all the others as "bridge_unavailable",
+ * including a stop that may well have run. The SDK reports a lost connection as
+ * `ConnectionClosed`, and a transport failure (refused, reset, the tunnel gone)
+ * as a plain error from the transport; a timeout, or the bridge refusing the
+ * request, leaves the session perfectly usable.
+ */
+export function sessionLost(err: unknown): boolean {
+  if (err instanceof McpError) return err.code === ErrorCode.ConnectionClosed;
+  return true;
+}
+
+/**
+ * Give up on a session after `sessionLost`. Clears the shared slot only if it
+ * still holds THIS session: a failure that lands after a reconnect must not
+ * drop — and leak — the newer one.
+ */
+function abandon(pending: Promise<Client>, client: Client): void {
+  if (clientPromise === pending) clientPromise = null;
+  discard(client); // ...and actually close it — see `discard`
+}
+
+/** One failed request, as the callers' two error types. */
+export function failure(name: string, err: unknown): Error {
+  // The bridge answered and refused the request itself (bad arguments, an
+  // unknown tool): that is about this call, not about the bridge being down.
+  if (
+    err instanceof McpError &&
+    err.code !== ErrorCode.ConnectionClosed &&
+    err.code !== ErrorCode.RequestTimeout
+  ) {
+    return new BridgeToolError(name, err.message);
+  }
+  return new BridgeUnavailableError(err);
+}
+
 function getClient(): Promise<Client> {
   if (!clientPromise) {
     clientPromise = connect().catch((err) => {
@@ -124,6 +165,14 @@ function textOf(content: unknown): string | undefined {
 }
 
 /**
+ * The ceiling for one tool call: past the longest any skill accepts (`walk_to`
+ * takes `timeout_s` up to 300, `turn` up to 120), so it only ever fires on a
+ * bridge that is wedged. Not larger than `setTimeout` can hold (2^31-1 ms) —
+ * past that it fires after 1 ms.
+ */
+const CALL_TIMEOUT_MS = 15 * 60_000;
+
+/**
  * Invoke a bridge tool by name and return its decoded result.
  *
  * FastMCP returns the tool's dict as `structuredContent`; we fall back to
@@ -134,20 +183,27 @@ export async function callTool(
   name: string,
   args: Record<string, unknown> = {},
 ): Promise<unknown> {
-  // No per-call timeout on purpose. The SDK's `timeout` option CANCELS the
-  // call on the bridge (`notifications/cancelled`), which for a skill that is
-  // halfway through moving the robot — or stopping it — is the wrong thing to
-  // do. Callers that need to stop waiting race the promise instead (see
-  // routes/skills.ts) and let the call finish.
-  const client = await getClient();
+  // A timeout CANCELS the call on the bridge (`notifications/cancelled`),
+  // which for a skill halfway through moving the robot — or stopping it — is
+  // the wrong thing to do. Callers that need to stop waiting race the promise
+  // instead (see routes/skills.ts) and let the call finish.
+  //
+  // So the timeout is set, explicitly, beyond any skill: leaving it out does
+  // NOT mean "none" — the SDK then applies its 60 s default
+  // (DEFAULT_REQUEST_TIMEOUT_MSEC, shared/protocol.js), and a 2-minute walk_to
+  // was cancelled on the robot at 60 s while the console reported the bridge
+  // as unreachable.
+  const pending = getClient();
+  const client = await pending;
 
   let result: Awaited<ReturnType<Client["callTool"]>>;
   try {
-    result = await client.callTool({ name, arguments: args });
+    result = await client.callTool({ name, arguments: args }, undefined, {
+      timeout: CALL_TIMEOUT_MS,
+    });
   } catch (err) {
-    clientPromise = null; // let the next call build a fresh session
-    discard(client); // ...and actually close this one — see `discard`
-    throw new BridgeUnavailableError(err);
+    if (sessionLost(err)) abandon(pending, client);
+    throw failure(name, err);
   }
 
   if (result.isError) {
@@ -187,7 +243,8 @@ export async function listTools(): Promise<
     _meta?: unknown;
   }>
 > {
-  const client = await getClient();
+  const pending = getClient();
+  const client = await pending;
   try {
     // Bounded, unlike callTool: listing tools moves nothing, and every
     // non-safety /invoke and the catalogue wait on it. A bridge that accepts
@@ -203,8 +260,9 @@ export async function listTools(): Promise<
       _meta: (t as { _meta?: unknown })._meta,
     }));
   } catch (err) {
-    clientPromise = null; // let the next call build a fresh session
-    discard(client); // ...and actually close this one — see `discard`
+    // A slow catalogue refresh is a timeout, and the session is still carrying
+    // whatever else is in flight — so only a lost session is torn down.
+    if (sessionLost(err)) abandon(pending, client);
     throw new BridgeUnavailableError(err);
   }
 }
