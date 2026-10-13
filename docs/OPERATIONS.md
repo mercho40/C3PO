@@ -70,18 +70,18 @@ locally spawned sim server live in `.mcp.json` (`c3po-sim`).
 
 The port map, in one place:
 
-| Service                    | Host                    | Port  | Notes                                                                      |
-| -------------------------- | ----------------------- | ----- | -------------------------------------------------------------------------- |
-| `apps/back` HTTP           | LAN box (dev: anywhere) | 3000  | Better Auth cookie                                                         |
-| `apps/web` dev             | dev machine             | 3001  | Vite                                                                       |
-| `apps/bridge` MCP (daemon) | Jetson, **LAN**         | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated                   |
-| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                            |
-| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback          |
-| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`        |
-| Head camera via videohub   | Jetson, **LAN**         | 8001  | `/camera/*` on the bridge — the same feed **without** owning `/dev/video4` |
-| VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; unauthenticated      |
-| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                           |
-| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                         |
+| Service                    | Host                    | Port  | Notes                                                                   |
+| -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------------- |
+| `apps/back` HTTP           | LAN box (dev: anywhere) | 3000  | Better Auth cookie                                                      |
+| `apps/web` dev             | dev machine             | 3001  | Vite                                                                    |
+| `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it |
+| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                         |
+| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback       |
+| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`     |
+| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge, relayed to browsers by `apps/back` on 3000   |
+| VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; unauthenticated   |
+| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                        |
+| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                      |
 
 `DDS_DOMAIN_ID`: Isaac Sim is `1`, the real G1 is `0` (set per host in `apps/bridge/.env`;
 see `apps/bridge/.env.example`).
@@ -93,6 +93,32 @@ _different device_ — a stale IP does not fail closed, it reaches the wrong mac
 the name in `~/.ssh/config`, in `BRIDGE_URL`, everywhere. Lease history, MAC, Wi-Fi
 whitelist, and the vendor route trap that black-holes the robot's egress are in
 `docs/ROBOT-HARDWARE.md` — the route trap must be re-checked after any Unitree OTA.
+
+The bridge has listened on **loopback only** since 2026-09-06 (`scripts/robot/
+c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the tunnel —
+`ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po` — with
+`BRIDGE_URL=http://127.0.0.1:8001/mcp`. `bun run dev:robot` still dials
+`g1-orin.local:8001` directly and gets a refused connection against the current unit;
+`apps/back` logs the tunnel line when that happens (`unreachableHint`).
+
+**The cable, and keeping the internet.** `c3po-wire` is the Mac's alias for the cabled
+path (`192.168.77.1`, reported 2026-10-13). Joining the robot's own Wi-Fi drops the
+school's — a Mac is on one Wi-Fi network at a time — and the robot has no uplink to share.
+Use the school Wi-Fi for the internet and the cable for the robot, with **Wi-Fi first in
+the service order**: System Settings → Network → "…" → Set Service Order, or
+
+```bash
+networksetup -listnetworkserviceorder | head -3      # Wi-Fi must be (1)
+sudo networksetup -ordernetworkservices "Wi-Fi" …     # every service, Wi-Fi first
+```
+
+Otherwise the cable can win: on the Mac this was written on, all four USB Ethernet
+adapters ranked above Wi-Fi, so every connection went down the cable to a robot that
+cannot forward it. If the
+cable gets no `192.168.77.x` address (a `169.254.x.x` one means it did not), set it by
+hand with **no router**, so the cable can never become the default route:
+`sudo ipconfig set <enX> MANUAL 192.168.77.50 255.255.255.0` (until unplugged), or the
+same values under the adapter's Details → TCP/IP with Router left empty.
 
 ---
 

@@ -94,6 +94,10 @@ name in `~/.ssh/config`, `BRIDGE_URL`, and anywhere else the robot needs naming.
 DHCP reservation for `14:0a:02:f0:63:f6` would work too, but mDNS needs no cooperation from
 the school's network team.
 
+**2026-10-13:** the operator reported the robot at `192.168.77.1`, reached by cable
+(`c3po-wire`). Not yet reached from the Mac — record which interface owns it, and
+whether `g1-orin.local` resolves over the cable, the first time it is. **[?]**
+
 The SSH user is **`unitree`** (home `/home/unitree`). `c3po` (Wi-Fi/mDNS) and `c3po-wire`
 (cabled path) are `Host` aliases in the Mac's `~/.ssh/config`, not accounts on the robot.
 **[live]**
