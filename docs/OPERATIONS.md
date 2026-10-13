@@ -97,8 +97,8 @@ whitelist, and the vendor route trap that black-holes the robot's egress are in
 The bridge has listened on **loopback only** since 2026-09-06 (`scripts/robot/
 c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the tunnel —
 `ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po` — with
-`BRIDGE_URL=http://127.0.0.1:8001/mcp`. `bun run dev:robot` still dials
-`g1-orin.local:8001` directly and gets a refused connection against the current unit;
+`BRIDGE_URL=http://127.0.0.1:8001/mcp` — the default in `apps/back/.env.example` and in
+`bun run dev:robot`. Anything still dialling `g1-orin.local:8001` gets a refused connection;
 `apps/back` logs the tunnel line when that happens (`unreachableHint`).
 
 **The cable, and keeping the internet.** `c3po-wire` is the Mac's alias for the cabled
