@@ -20,7 +20,11 @@ from bridge.preflight import (
     camera_url_from_env,
     classify_probe,
     direct_service_finding,
+    bridge_base_from_env,
+    bridge_finding,
+    console_camera_finding,
     estop_finding,
+    reads_through_back,
     headset_findings,
     is_back_health,
     port_of,
@@ -139,7 +143,7 @@ def test_frames_arriving_is_no_longer_reported_as_proof_the_rest_is_fine():
     assert "it is the renderer" not in text
 
 
-def test_frames_arriving_without_cors_is_a_failure_and_names_the_deploy():
+def test_frames_arriving_without_cors_is_a_failure_and_names_the_fix():
     # The exact 2026-08-28 state: a live feed the console cannot read.
     findings = camera_findings(
         "http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=False
@@ -149,8 +153,9 @@ def test_frames_arriving_without_cors_is_a_failure_and_names_the_deploy():
     # It must say WHY the on-page panel looks fine while the headset does not,
     # because "but the camera works on the page" is what stops the search.
     assert "crossOrigin" in text
-    assert "DEPLOY problem" in text
-    assert "systemctl restart c3po-bridge" in text
+    # Only a console aimed straight at the robot needs the grant; the fix
+    # offered is the normal setup, through apps/back.
+    assert "localhost:3000/camera" in text
 
 
 def test_frames_plus_cors_is_the_clean_pass():
@@ -404,3 +409,71 @@ def test_a_sibling_folder_sharing_the_prefix_is_not_inside():
 
 def test_an_unknown_owner_reports_nothing_rather_than_guessing():
     assert port_owner_finding(3000, "apps/back", None, REPO) is None
+
+
+# --- the bridge, where apps/back dials it ------------------------------------
+
+
+def test_the_bridge_is_found_where_back_will_dial_it():
+    env = "BRIDGE_URL=http://127.0.0.1:8001/mcp   # tunnel\n"
+    assert bridge_base_from_env(env) == "http://127.0.0.1:8001"
+    # The shell wins, as it does for back itself (process.env).
+    assert bridge_base_from_env(env, "http://127.0.0.1:8011/mcp") == "http://127.0.0.1:8011"
+    # No config at all is back's own default, not a guess.
+    assert bridge_base_from_env(None) == "http://127.0.0.1:8001"
+
+
+def test_a_closed_tunnel_says_so_and_prints_it():
+    f = bridge_finding("http://127.0.0.1:8001", "nothing")
+    assert f.level == BAD and "tunnel is not open" in f.text
+    assert any("-L 8001:127.0.0.1:8001" in n for n in f.notes)
+
+
+def test_a_lan_bridge_url_is_called_out_not_retried():
+    # The bridge refuses LAN connections since 2026-09-06; probing
+    # g1-orin.local:8001 failed on every correctly deployed robot.
+    f = bridge_finding("http://g1-orin.local:8001", "nothing")
+    assert f.level == BAD and "127.0.0.1:8001" in " ".join(f.notes)
+
+
+def test_an_answering_bridge_passes():
+    assert bridge_finding("http://127.0.0.1:8001", "alive").level == OK
+
+
+# --- where the console reads the camera --------------------------------------
+
+
+def test_through_back_with_the_relay_mounted_is_the_normal_setup():
+    # 401 without a session = the relay exists and is gated.
+    f = console_camera_finding("http://localhost:3000/camera", "apps/web/.env", 401)
+    assert f.level == OK
+
+
+def test_a_back_without_the_relay_is_named():
+    f = console_camera_finding("http://localhost:3000/camera", "apps/web/.env", 404)
+    assert f.level == BAD and "bun run dev" in " ".join(f.notes)
+
+
+def test_straight_at_the_bridge_is_a_debug_setup_and_says_so():
+    f = console_camera_finding("http://127.0.0.1:8001/camera", "apps/web/.env", 0)
+    assert f.level == WARN
+    assert "localhost:3000/camera" in " ".join(f.notes)
+
+
+def test_back_is_recognised_by_its_own_address_not_by_port_3000():
+    assert reads_through_back("http://localhost:3100/camera", "http://localhost:3100")
+    assert reads_through_back("http://localhost:3000/camera", "http://localhost:3000/")
+    assert not reads_through_back("http://127.0.0.1:8001/camera", "http://localhost:3000")
+    # Same port, different host, is a different server.
+    assert not reads_through_back("http://g1-orin.local:3000/camera", "http://localhost:3000")
+
+
+def test_the_bridges_no_camera_reply_is_reported_in_its_own_words():
+    # A stub bridge's 503 has no `live` and no `frames`; it is not a camera
+    # whose frames "arrived and then stopped".
+    body = json.dumps(
+        {"error": "the head camera is real-hardware only", "hint": "use the sim feeds"}
+    )
+    text = text_of(camera_findings("http://127.0.0.1:8001/camera", "env", "alive", body, None))
+    assert "real-hardware only" in text and "use the sim feeds" in text
+    assert "arrived and then stopped" not in text
