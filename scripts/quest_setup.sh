@@ -189,9 +189,10 @@ for entry in "${PORTS[@]}"; do
     [ "$tunnelled_cam" = "3000" ] && tunnelled_cam="__none__"
     case "$port" in
         8767|"$tunnelled_cam")
-            # Capture first, match second. Under `set -o pipefail` (line 31) a
-            # `curl | grep` pipeline reports CURL's status, not grep's — and the
-            # curl that proves the tunnel is empty exits 52/56 by definition. So
+            # Capture first, match second. Under pipefail (the `set -euo
+            # pipefail` line at the top) a `curl | grep` pipeline reports
+            # CURL's status, not grep's — and the curl that proves the tunnel
+            # is empty exits 52/56 by definition. So
             # the match was computed correctly and then thrown away, the `elif`
             # ran, and `nc -z` awarded the dead port a green tick. That is the
             # failure this script's header promises to prevent, committed again
