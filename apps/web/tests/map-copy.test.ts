@@ -74,18 +74,18 @@ describe("describeCostmap", () => {
       ...base,
       status: "noCostmap",
       ageS: 12,
-      hint: "run perception_up nav2",
+      hint: "run c3po perception up nav2",
     });
     expect(l.label).toBe("sin mapa publicado");
     expect(l.meta).toBe("último hace 12 s");
     // Unknown bridge sentence: verbatim only, no invented translation.
-    expect(l.hint).toBe("run perception_up nav2");
+    expect(l.hint).toBe("run c3po perception up nav2");
     expect(l.hintEs).toBeNull();
   });
 
   test("the bridge's known costmap hint gets Spanish first, English kept", () => {
     const en =
-      "the costmap comes from Nav2's global_costmap, so it exists only while a nav2 stage is up: `perception_up nav2-fake` (no sensors) or `perception_up nav2` (claims both sensors)";
+      "the costmap comes from Nav2's global_costmap, so it exists only while a nav2 stage is up: `c3po perception up nav2-fake` (no sensors) or `c3po perception up nav2` (claims both sensors)";
     const l = describeCostmap({ ...base, status: "noCostmap", hint: en });
     expect(l.hint).toBe(en);
     expect(l.hintEs).toContain("global_costmap de Nav2");

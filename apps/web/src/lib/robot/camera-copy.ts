@@ -227,7 +227,7 @@ export function describeRobotCam(input: DescribeInput): RobotCamCopy {
           "El puente responde, pero ninguna fuente entregó un cuadro todavía. Lo habitual es que otro proceso tenga la cámara: el feed del fabricante necesita ",
           { code: "videohub_pc4" },
           " y el de visión necesita ",
-          { code: "perception_up perception" },
+          { code: "c3po perception up perception" },
           " con la cámara tomada.",
         ],
         bridgeText: bridgeHint,

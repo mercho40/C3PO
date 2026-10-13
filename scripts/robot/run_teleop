@@ -38,7 +38,7 @@ if [ -n "$strays" ]; then
 fi
 
 if sidecar_pid "$TELEOP_PID" >/dev/null 2>&1; then
-    warn "teleop already running (pid $(sidecar_pid "$TELEOP_PID")) — use stop_teleop first"
+    warn "teleop already running (pid $(sidecar_pid "$TELEOP_PID")) — use 'c3po teleop stop' first"
     exit 0
 fi
 
@@ -142,14 +142,15 @@ case "$hand_enabled" in
     *)             info "fingers disabled. The hands are two BrainCo ([0,1], and NO firmware deadman — a closed hand stays closed until something opens it)" ;;
 esac
 
-say "Reach it directly"
+say "Reach it"
 cat <<'DIRECT'
-  bridge:  http://g1-orin.local:8001/mcp
-  camera:  http://g1-orin.local:8001/camera
-  teleop:  ws://g1-orin.local:8767
+  teleop:  ws://g1-orin.local:8767                  direct, on the LAN
+  bridge:  http://127.0.0.1:8001/mcp                loopback only — through
+           ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po
+  camera:  http://localhost:3000/camera             via apps/back, behind its login
 
   The Quest's WebXR secure-context path still needs HTTPS/WSS or the existing
-  adb reverse setup; ordinary desktop development needs no SSH tunnel.
+  adb reverse setup; desktop development needs no forward for 8767.
 DIRECT
 
 warn "while a headset session is open, do NOT drive the robot from anywhere else."

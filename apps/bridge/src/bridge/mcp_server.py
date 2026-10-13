@@ -2434,8 +2434,8 @@ async def costmap_png(request):  # noqa: ANN001, ANN201 - starlette types
                 "error": "no costmap received",
                 "hint": (
                     "the costmap comes from Nav2's global_costmap, so it exists only "
-                    "while a nav2 stage is up: `perception_up nav2-fake` (no sensors) "
-                    "or `perception_up nav2` (claims both sensors)"
+                    "while a nav2 stage is up: `c3po perception up nav2-fake` (no sensors) "
+                    "or `c3po perception up nav2` (claims both sensors)"
                 ),
             },
             status_code=503,
@@ -2794,13 +2794,15 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
 #
 # WHY NOT PORT 8081. That port belongs to the vision container, and two servers
 # racing for one bind is a coin-flip failure with a confusing symptom. Riding
-# 8001 costs nothing extra: the bridge is already directly reachable there,
-# and unlike `:8081` this needs no second exposed service.
-# The console picks a feed with one variable, because `endpoint()` in
+# 8001 costs nothing extra: apps/back already reaches the bridge there (over
+# the SSH tunnel — the bridge binds loopback), and relays /camera/* to the
+# browser behind its login (apps/back/src/routes/camera.ts). The console picks
+# a feed with one variable, because `endpoint()` in
 # `apps/web/src/lib/robot/mjpeg-camera.ts` is a plain base + path join:
 #
-#     PUBLIC_ROBOT_CAM_URL=http://g1-orin.local:8001/camera <- relay/picker
-#     PUBLIC_ROBOT_CAM_URL=http://g1-orin.local:8081        <- detector only
+#     PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera  <- apps/back's relay
+#     PUBLIC_ROBOT_CAM_URL=http://127.0.0.1:8081         <- detector only, debug,
+#                                                           over its own tunnel
 #
 # The paths and the `/status` field names are identical to the vision
 # container's on purpose: one client in the console, two possible servers, no

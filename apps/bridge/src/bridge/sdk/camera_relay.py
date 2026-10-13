@@ -199,8 +199,8 @@ def merged_status(
     if source is None:
         status["hint"] = (
             "neither camera feed is live. The vendor feed needs videohub_pc4 to hold "
-            "/dev/video4; the vision feed needs `perception_up perception` (or nav2) "
-            "with the device taken by `take_camera`. They cannot both work at once."
+            "/dev/video4; the vision feed needs `c3po perception up perception` (or nav2) "
+            "with the device taken by `c3po camera take`. They cannot both work at once."
         )
     return status
 

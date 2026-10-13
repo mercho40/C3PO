@@ -518,7 +518,7 @@ export function classifyLink(input: LinkInput, now: number): HealthRow {
       detail:
         "Los mensajes llegan pero las consultas RPC no: tras reiniciar el robot, el servicio suele arrancar antes que eth0.",
       action:
-        "Reiniciá el servicio c3po en el robot (stop_c3po; systemd lo levanta solo). No es un robot roto.",
+        "Reiniciá el servicio del puente en el robot (c3po restart). No es un robot roto.",
     });
   }
   if (raw?.fsm_age_s != null && raw.fsm_age_s > FSM_STALE_S) {
@@ -883,7 +883,7 @@ export function classifyPerception(
       ? "Con el detector apagado, una lista vacía de objetos NO significa camino libre."
       : null,
     action: offline.length
-      ? "Levantá el stage de percepción que corresponda (perception_up)."
+      ? "Levantá el stage de percepción que corresponda (c3po perception up <stage>)."
       : null,
     facts,
   };
@@ -1129,7 +1129,7 @@ export function classifyCamera(
     detail: null,
     ...bridge(c.hint),
     action:
-      "Mirá Cámaras para el detalle, o revisá quién tiene /dev/video4 (take_camera).",
+      "Mirá Cámaras para el detalle, o revisá quién tiene /dev/video4 (c3po camera take).",
     facts,
   };
 }
