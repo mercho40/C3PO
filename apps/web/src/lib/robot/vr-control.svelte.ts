@@ -312,9 +312,15 @@ export class VrControl {
    * already arrived twice a second, on the page, behind a headset.
    */
   get menuAlert(): MenuAlert {
+    // This page's OWN latch too, when it is the one commanding (no stream):
+    // the HTTP loop's 8 s dead-man otherwise trips with nothing in the
+    // headset — the 2026-08-24 symptom, on the other transport.
+    const own = this.deadManTripped && !this.bridgeHolds;
     return alertFor(
-      this.teleopStatus?.deadman_tripped === true,
-      this.teleopStatus?.stopped_by_estop === true,
+      this.teleopStatus?.deadman_tripped === true ||
+        (own && this.latchCause === "deadman"),
+      this.teleopStatus?.stopped_by_estop === true ||
+        (own && this.latchCause === "estop"),
     );
   }
 
@@ -362,6 +368,13 @@ export class VrControl {
   //: would look like a fresh press and keep re-arming the dead-man, which is
   //: exactly the latch that stops a runaway.
   #stickWalk: WalkDir | null = null;
+  //: Set whenever the stick's state was reset without the stick having been
+  //: SEEN at neutral (window blur, pointer events, stale tracking, session
+  //: end). Until a sample reads neutral, a deflected stick starts nothing.
+  //: Without it, a stick held through the 8 s latch was forgotten by any
+  //: overlay tap and the very next frame read as a fresh push: startWalking,
+  //: dead-man cleared, another 8 s — a held stick re-arming its own latch.
+  #stickNeedsNeutral = false;
   //: Previous frame's button state, for edge detection. The session reports
   //: held-state at display rate, so without this a single press of A would
   //: cycle the highlight through the whole list in under a tenth of a second
@@ -720,17 +733,16 @@ export class VrControl {
    * every event that means "the operator is no longer holding this".
    */
   releaseAllControls(): void {
-    // Cleared unconditionally, and BEFORE the walking check. This runs on
-    // session end, blur, visibility change and pointer cancel — every "the
-    // operator is no longer holding this" event. Leaving it set would mean the
-    // next stick sample compared against a stale direction, saw no change, and
-    // returned without ever calling startWalking again: the stick would be
-    // dead until the operator waggled it through neutral.
+    // Forget the stick's walk, but do NOT treat whatever it reads next as a
+    // fresh push: these events (session end, blur, visibility change, pointer
+    // up/cancel) say nothing about where the operator's thumb is. The stick
+    // has to be seen at neutral first — see `#stickNeedsNeutral`.
     this.#stickWalk = null;
-    // Same reasoning for the buttons. A session that ended with the trigger
-    // held would leave `prev.trigger` true, so the NEXT session's first press
-    // is not an edge and does nothing.
-    this.#prevButtons = { trigger: false, primary: false };
+    this.#stickNeedsNeutral = true;
+    // Same rule for the buttons: assume HELD, so a trigger still down from
+    // before is not mistaken for a new press that fires a preset. The cost is
+    // one release before the next press counts, which is the deliberate act.
+    this.#prevButtons = { trigger: true, primary: true };
     if (this.walking !== null) {
       this.walking = null;
       if (!this.bridgeHolds && !this.#loopShouldRun()) {
@@ -897,7 +909,12 @@ export class VrControl {
     // are left alone: their release comes from pointer events, which do not
     // depend on tracking. (`#tick` runs this too, so the loop catches it even
     // when the readout timer is not running.)
-    if (this.trackingStale && this.#stickWalk !== null) this.#applyWalkAxis(0);
+    if (this.trackingStale && this.#stickWalk !== null) {
+      if (this.walking === this.#stickWalk) this.stopWalking();
+      this.#stickWalk = null;
+      // No sample is arriving, so nothing says the thumb has let go.
+      this.#stickNeedsNeutral = true;
+    }
     const vr = this.#vr;
     if (vr) {
       this.xrCameraLive = this.camLive && vr.cameraHasFrame;
@@ -955,9 +972,12 @@ export class VrControl {
     // Re-arm once the operator has visibly let go: no walk button held AND
     // the head back near centre. A fresh button press re-arms too, via
     // startWalking -- both are deliberate human actions, which is the point.
+    // A stick still deflected is still held, even though `walking` was cleared
+    // when the latch fired.
     if (
       this.deadManTripped &&
       wantVx === 0 &&
+      this.#stickWalk === null &&
       Math.abs(this.#yawErrorRadians) < YAW_DEADZONE_RAD
     ) {
       this.deadManTripped = false;
@@ -1000,7 +1020,7 @@ export class VrControl {
   }
 
   startWalking(dir: WalkDir): void {
-    if (this.walking) return;
+    if (this.walking || this.#destroyed) return;
     // An observer does not walk. Blocked downstream as well (`#loopShouldRun`,
     // `buildFrame`), but not setting the state at all means the buttons do not
     // show a walk that is not happening either.
@@ -1052,12 +1072,17 @@ export class VrControl {
    * working.
    */
   #applyWalkAxis(axis: -1 | 0 | 1): void {
+    if (this.#destroyed) return;
     if (this.viewOnly) {
       this.#stickWalk = null;
       return;
     }
     const want: WalkDir | null =
       axis === 1 ? "forward" : axis === -1 ? "back" : null;
+    if (this.#stickNeedsNeutral) {
+      if (want !== null) return; // still deflected since the reset
+      this.#stickNeedsNeutral = false;
+    }
     if (want === this.#stickWalk) return; // unchanged; do not re-arm anything
 
     if (want === null) {
@@ -1319,7 +1344,10 @@ export class VrControl {
     // the bridge PULLS from it — so one tap would turn a session somebody
     // entered as passive into one that drives, with nothing visible changing
     // inside the headset. The button is disabled too; this is the guard.
-    if (this.viewOnly && this.vrActive) return;
+    // `viewOnly` alone, not `&& vrActive`: it is already set while the consent
+    // prompt is up, and a socket opened in that window would become a live
+    // commander the moment the session ended and `viewOnly` reset.
+    if (this.viewOnly) return;
     this.#teleop?.close();
     this.teleopStatus = null;
     const host = env.PUBLIC_TELEOP_HOST || location.hostname;
@@ -1458,6 +1486,9 @@ export class VrControl {
 
   /** Whether a tile must refuse a tap right now, because another one holds the lock. */
   lockedOut(key: string): boolean {
+    // An observer runs nothing — the gesture and bring-up tiles are reachable
+    // in passthrough, where the overlay composites. PARAR is not a tile.
+    if (this.viewOnly) return true;
     return this.lock !== null && this.lock.key !== key && key !== SAFE_STEP;
   }
 
@@ -1498,6 +1529,7 @@ export class VrControl {
     skill: string,
     body: Record<string, unknown> = {},
   ): Promise<void> {
+    // `lockedOut` covers observe-only too: "no mueve nada" includes the tiles.
     if (this.inFlight[key] || this.lockedOut(key)) return;
     const tookLock = this.lock === null;
     if (tookLock) this.lock = { key, label };
@@ -1531,7 +1563,9 @@ export class VrControl {
       const { [key]: _done, ...rest } = this.inFlight;
       this.inFlight = rest;
       if (tookLock && this.lock?.key === key) this.lock = null;
-      this.#vr?.setMenuBusy(null);
+      // Damp bypasses the lock, so it can finish while a gesture is still in
+      // flight: show that gesture as busy again rather than clearing it.
+      this.#vr?.setMenuBusy(this.lock?.key ?? null);
     }
     if (this.#destroyed) return;
     // Whatever the result was goes to the headset verbatim: "Enviado" and

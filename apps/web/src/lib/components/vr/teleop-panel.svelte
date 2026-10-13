@@ -59,12 +59,12 @@
         variant="outline"
         size="lg"
         class="min-h-12 gap-2 px-4"
-        disabled={ctl.viewOnly && ctl.vrActive}
+        disabled={ctl.viewOnly}
         onclick={() => ctl.connectStream()}
       >
         <Link2 class="size-4" aria-hidden="true" /> Conectar puente
       </Button>
-      {#if ctl.viewOnly && ctl.vrActive}
+      {#if ctl.viewOnly}
         <span class="readout">
           Sesión en modo solo vista — salí de VR para poder comandar.
         </span>

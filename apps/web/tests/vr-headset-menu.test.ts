@@ -66,7 +66,7 @@ describe("observe-only commands nothing", () => {
 
   test("the teleop socket cannot be opened during the session", () => {
     expect(body("connectStream(): void {")).toContain(
-      "if (this.viewOnly && this.vrActive) return;",
+      "if (this.viewOnly) return;",
     );
   });
 
@@ -91,7 +91,43 @@ describe("observe-only commands nothing", () => {
     );
   });
 
+  test("no tile runs for an observer — lockedOut is what every tile reads", () => {
+    expect(body("lockedOut(key: string): boolean {")).toContain(
+      "if (this.viewOnly) return true;",
+    );
+    // …and runSkill goes through it before dispatching anything.
+    const run = body("async runSkill(");
+    expect(run.indexOf("this.lockedOut(key)")).toBeGreaterThan(-1);
+    expect(run.indexOf("this.lockedOut(key)")).toBeLessThan(
+      run.indexOf("createApi("),
+    );
+  });
+
   test("it never outlives its session", () => {
     expect(body("onEnd: () => {")).toContain("this.viewOnly = false;");
+  });
+});
+
+describe("a held stick cannot re-arm its own latch", () => {
+  test("every reset of the stick demands a sample at neutral first", () => {
+    const release = body("releaseAllControls(): void {");
+    expect(release).toContain("this.#stickNeedsNeutral = true;");
+    // Buttons are assumed HELD after a reset, so a trigger still down is not
+    // a new press.
+    expect(release).toContain("{ trigger: true, primary: true }");
+    expect(body("#refreshReadouts(): void {")).toContain(
+      "this.#stickNeedsNeutral = true;",
+    );
+  });
+
+  test("a deflected stick starts nothing until it has been seen at neutral", () => {
+    const axis = body("#applyWalkAxis(axis: -1 | 0 | 1): void {");
+    const gate = axis.indexOf("if (this.#stickNeedsNeutral) {");
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(axis.indexOf("this.startWalking(want);"));
+  });
+
+  test("the dead-man does not re-arm while the stick is still held", () => {
+    expect(body("#tick(): void {")).toContain("this.#stickWalk === null &&");
   });
 });
