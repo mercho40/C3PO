@@ -59,11 +59,19 @@ async function upstreamFailure(
   return null;
 }
 
-async function proxyStatus(status: StatusFn): Promise<unknown> {
+/**
+ * A short, finite answer from the bridge, relayed whole. `/status` is polled
+ * twice a second, so a slow answer is a stale answer; `/frame.jpg` is one
+ * snapshot, and a 503 carries why there is none.
+ */
+async function proxyOnce(
+  path: string,
+  contentType: string,
+  status: StatusFn,
+): Promise<unknown> {
   let upstream: Response;
   try {
-    upstream = await fetch(bridgeSiblingUrl("/camera/status"), {
-      // Polled twice a second; a slow answer is a stale answer.
+    upstream = await fetch(bridgeSiblingUrl(path), {
       signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS),
     });
   } catch {
@@ -74,11 +82,14 @@ async function proxyStatus(status: StatusFn): Promise<unknown> {
 
   return new Response(await upstream.arrayBuffer(), {
     headers: {
-      "Content-Type": "application/json",
+      "Content-Type": upstream.headers.get("Content-Type") ?? contentType,
       "Cache-Control": "no-store",
     },
   });
 }
+
+const proxyStatus = (status: StatusFn) =>
+  proxyOnce("/camera/status", "application/json", status);
 
 async function proxyStream(
   request: Request,
@@ -136,6 +147,20 @@ export const cameraRoutes = new Elysia()
       tags: ["camera"],
     },
   })
+  // /live-camera's "Captura": the newest frame from the source itself, not a
+  // screenshot of a possibly stale <img>. It asked for this path through
+  // PUBLIC_ROBOT_CAM_URL from the day the camera moved behind back, and back
+  // did not relay it — the button failed with a 404 nobody had pressed.
+  .get(
+    "/camera/frame.jpg",
+    ({ status }) => proxyOnce("/camera/frame.jpg", "image/jpeg", status),
+    {
+      detail: {
+        summary: "The newest camera frame as one JPEG, or 503 and why not.",
+        tags: ["camera"],
+      },
+    },
+  )
   .get(
     "/camera/stream.mjpg",
     ({ request, status }) => proxyStream(request, status),

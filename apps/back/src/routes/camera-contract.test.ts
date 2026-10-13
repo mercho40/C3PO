@@ -27,19 +27,34 @@ const read = (...parts: string[]) => readFileSync(join(APPS, ...parts), "utf8");
 const CAMERA_TS = read("back", "src", "routes", "camera.ts");
 const MCP_SERVER_PY = read("bridge", "src", "bridge", "mcp_server.py");
 const MJPEG_TS = read("web", "src", "lib", "robot", "mjpeg-camera.ts");
+const LIVE_CAMERA = read(
+  "web",
+  "src",
+  "routes",
+  "(protected)",
+  "live-camera",
+  "+page.svelte",
+);
 const WEB_ENV = read("web", ".env.example");
 
 const all = (src: string, re: RegExp) =>
   [...src.matchAll(re)].map((m) => m[1]!);
 
 /** What back asks the bridge for. */
-const proxied = all(CAMERA_TS, /bridgeSiblingUrl\(\s*"([^"]+)"/g);
+const proxied = [
+  ...all(CAMERA_TS, /bridgeSiblingUrl\(\s*"([^"]+)"/g),
+  ...all(CAMERA_TS, /proxyOnce\(\s*"([^"]+)"/g),
+];
 /** What back exposes to the browser. */
 const exposed = all(CAMERA_TS, /\.get\(\s*"(\/camera\/[^"]+)"/g);
 /** What the bridge serves. */
 const served = all(MCP_SERVER_PY, /@mcp\.custom_route\(\s*"([^"]+)"/g);
 /** The leaf names the browser appends to PUBLIC_ROBOT_CAM_URL. */
-const asked = all(MJPEG_TS, /endpoint\(\s*baseUrl,\s*"([^"]+)"/g);
+const asked = [
+  ...all(MJPEG_TS, /endpoint\(\s*baseUrl,\s*"([^"]+)"/g),
+  // /live-camera's snapshot button asks for its own leaf.
+  ...all(LIVE_CAMERA, /endpoint\(\s*robotBase,\s*"([^"]+)"/g),
+];
 
 /** The path part of the documented PUBLIC_ROBOT_CAM_URL. */
 const camBasePath = (() => {
@@ -56,6 +71,7 @@ describe("camera route contract", () => {
     expect(exposed).toContain("/camera/status");
     expect(served).toContain("/camera/status");
     expect(asked).toContain("status");
+    expect(asked).toContain("frame.jpg");
     expect(camBasePath).toBe("/camera");
   });
 

@@ -12,6 +12,8 @@ import { cameraRoutes } from "./camera";
 
 let bridge: ReturnType<typeof Bun.serve>;
 let statusReply: () => Response = () => Response.json({ live: true });
+let frameReply: () => Response = () =>
+  new Response("JPEGBYTES", { headers: { "Content-Type": "image/jpeg" } });
 let streamClosed = 0;
 /**
  * A port nothing listens on. Picked by binding and releasing rather than
@@ -31,6 +33,7 @@ beforeAll(() => {
     fetch(req) {
       const path = new URL(req.url).pathname;
       if (path === "/camera/status") return statusReply();
+      if (path === "/camera/frame.jpg") return frameReply();
       if (path === "/camera/stream.mjpg") {
         let timer: ReturnType<typeof setInterval>;
         const body = new ReadableStream({
@@ -98,6 +101,24 @@ describe("/camera/status", () => {
     } finally {
       process.env.BRIDGE_URL = saved;
     }
+  });
+});
+
+describe("/camera/frame.jpg", () => {
+  test("relays one JPEG, uncached, with its type", async () => {
+    const res = await get("/camera/frame.jpg");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("image/jpeg");
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    expect(await res.text()).toBe("JPEGBYTES");
+  });
+
+  test("no frame yet is a 503 that keeps its reason", async () => {
+    frameReply = () =>
+      Response.json({ error: "no frame yet" }, { status: 503 });
+    const res = await get("/camera/frame.jpg");
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "no frame yet" });
   });
 });
 
