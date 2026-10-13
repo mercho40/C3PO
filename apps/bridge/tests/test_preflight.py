@@ -22,7 +22,9 @@ from bridge.preflight import (
     direct_service_finding,
     estop_finding,
     headset_findings,
+    is_back_health,
     port_of,
+    port_owner_finding,
     verdict,
 )
 
@@ -353,3 +355,52 @@ def test_when_nothing_answers_the_first_diagnosis_is_kept():
     assert best_state(["empty", "nothing"]) == "empty"
     assert best_state(["timeout", "nothing"]) == "timeout"
     assert best_state([]) == "nothing"
+
+
+# --- this machine's own servers ----------------------------------------------
+
+REPO = "/Users/op/c3po"
+
+
+def test_back_health_is_recognised_by_its_own_shape():
+    body = json.dumps({"status": "ok", "timestamp": 1, "auth": {"providers": []}})
+    assert is_back_health(body)
+
+
+def test_a_404_page_on_3000_is_not_the_api():
+    # 2026-10-13: a Next dev server from another project held 3000, curl exited
+    # 0 on its 404, and preflight said "the API answers /health".
+    assert not is_back_health("<!DOCTYPE html><html><body>404</body></html>")
+
+
+def test_someone_elses_ok_health_is_not_the_api_either():
+    assert not is_back_health(json.dumps({"status": "ok"}))
+    assert not is_back_health(json.dumps({"status": "ok", "auth": "yes"}))
+
+
+def test_a_back_that_says_it_is_not_ok_is_not_passed():
+    assert not is_back_health(json.dumps({"status": "error", "auth": {"providers": []}}))
+
+
+def test_a_server_inside_this_checkout_is_ours():
+    owner = ("123", REPO + "/apps/back", "bun run --watch src/index.ts")
+    assert port_owner_finding(3000, "apps/back", owner, REPO) is None
+    assert port_owner_finding(3000, "apps/back", ("1", REPO, "x"), REPO + "/") is None
+
+
+def test_a_server_from_another_folder_fails_and_names_it():
+    owner = ("14417", "/Users/op/Projects/Boutique", "next-server (v16.3.8)")
+    finding = port_owner_finding(3000, "apps/back", owner, REPO)
+    assert finding is not None and finding.level == BAD
+    assert "OUTSIDE" in finding.text
+    notes = " ".join(finding.notes)
+    assert "/Users/op/Projects/Boutique" in notes and "kill 14417" in notes
+
+
+def test_a_sibling_folder_sharing_the_prefix_is_not_inside():
+    owner = ("9", REPO + "-integrate/apps/web", "vite dev")
+    assert port_owner_finding(3001, "apps/web", owner, REPO) is not None
+
+
+def test_an_unknown_owner_reports_nothing_rather_than_guessing():
+    assert port_owner_finding(3000, "apps/back", None, REPO) is None

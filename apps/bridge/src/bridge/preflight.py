@@ -30,7 +30,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from bridge.env_file import parse_env_file
 
-__all__ = ["Finding", "Section", "verdict", "classify_probe", "best_state"]
+__all__ = [
+    "Finding",
+    "Section",
+    "verdict",
+    "classify_probe",
+    "best_state",
+    "is_back_health",
+    "port_owner_finding",
+]
 
 OK, WARN, BAD = "ok", "warn", "bad"
 
@@ -126,6 +134,59 @@ def direct_service_finding(
         [
             "check that {} resolves and both machines are on the same LAN".format(host),
             "on the robot:  {}".format(starter),
+        ],
+    )
+
+
+# --- this machine's own servers ----------------------------------------------
+
+
+def is_back_health(body: str) -> bool:
+    """Is this `/health` body apps/back's, and does it say ok?
+
+    "Something answered on 3000" is not the question. On 2026-10-13 a different
+    project's Next dev server held 3000 — up for 17 hours, from another folder —
+    and this check reported "the API answers /health": curl exits 0 on a 404,
+    and a 404 page is an answer. The demo console would have talked to a travel
+    site. So the body has to be apps/back's own shape (`src/index.ts`): an `ok`
+    status AND the `auth.providers` block nothing else on a dev machine sends.
+    """
+    data = _parse_json(body)
+    if data is None or data.get("status") != "ok":
+        return False
+    auth = data.get("auth")
+    return isinstance(auth, dict) and "providers" in auth
+
+
+def port_owner_finding(
+    port: int,
+    label: str,
+    owner: Optional[Tuple[str, str, str]],
+    repo_root: str,
+) -> Optional[Finding]:
+    """A failure if the process holding `port` was started outside this checkout.
+
+    `owner` is (pid, cwd, command) of the listener, or None when it could not be
+    identified (no `lsof`, a permission error, a process that just exited). None
+    reports NOTHING — not knowing who owns a port is not evidence of a stranger,
+    and a guessed failure is the kind of false alarm that teaches people to skip
+    preflight. Same contract as `quest_setup.sh`'s check (added after
+    2026-09-08, when it forwarded the wrong app into the headset).
+    """
+    if owner is None:
+        return None
+    pid, cwd, command = owner
+    root = repo_root.rstrip("/")
+    if cwd == root or cwd.startswith(root + "/"):
+        return None
+    return Finding(
+        BAD,
+        "{}  {} — held by something OUTSIDE this checkout".format(port, label),
+        [
+            "pid {}  cwd: {}".format(pid, cwd),
+            command[:90],
+            "this checkout: {}".format(root),
+            "stop it (kill {}) and run `bun run dev` from this checkout".format(pid),
         ],
     )
 
@@ -592,7 +653,23 @@ def _run(argv: Sequence[str]) -> Tuple[bool, str]:
     return True, proc.stdout.decode("utf-8", "replace") if proc.stdout else ""
 
 
-def _local_section() -> Section:
+def _port_owner(port: int) -> Optional[Tuple[str, str, str]]:
+    """(pid, cwd, command) of whatever LISTENs on `port`, or None if unknown."""
+    ok, pids = _run(["lsof", "-nP", "-tiTCP:{}".format(port), "-sTCP:LISTEN"])
+    pid = pids.split()[0] if ok and pids.split() else ""
+    if not pid:
+        return None
+    _, cwd_out = _run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"])
+    cwd = next(
+        (line[1:] for line in cwd_out.splitlines() if line.startswith("n")), ""
+    )
+    if not cwd:
+        return None
+    _, command = _run(["ps", "-o", "command=", "-p", pid])
+    return pid, cwd, command.strip()
+
+
+def _local_section(repo_root: str) -> Section:
     findings: List[Finding] = []
     for port, label in ((3000, "apps/back"), (3001, "apps/web")):
         state = best_state(
@@ -610,16 +687,27 @@ def _local_section() -> Section:
                 )
             )
         else:
-            findings.append(Finding(OK, "{}  {}".format(port, label)))
+            stranger = port_owner_finding(port, label, _port_owner(port), repo_root)
+            findings.append(stranger or Finding(OK, "{}  {}".format(port, label)))
 
-    state = best_state(
-        [
-            _probe("http://{}:3000/health".format(h), timeout=3)[0]
-            for h in ("localhost", "127.0.0.1")
-        ]
-    )
-    if state == "alive":
+    probes = [
+        _probe("http://{}:3000/health".format(h), timeout=3)
+        for h in ("localhost", "127.0.0.1")
+    ]
+    state = best_state([p[0] for p in probes])
+    if any(is_back_health(body) for _, body in probes):
         findings.append(Finding(OK, "the API answers /health"))
+    elif state == "alive":
+        findings.append(
+            Finding(
+                BAD,
+                "3000 answers, but not as apps/back",
+                [
+                    "its /health is not c3po's — another app holds the port",
+                    "`lsof -nP -iTCP:3000 -sTCP:LISTEN` names it",
+                ],
+            )
+        )
     else:
         findings.append(
             Finding(
@@ -711,7 +799,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     quick = "--quick" in args
     repo_root = os.environ.get("C3PO_DIR") or os.getcwd()
 
-    sections = [_local_section()]
+    sections = [_local_section(repo_root)]
     if not quick:
         sections.append(_robot_section())
         sections.append(_camera_section(repo_root))
