@@ -4,8 +4,8 @@ For a session with the physical G1 in front of you. Ordered so each step only
 runs once the thing it depends on is proven — most bad sessions in this
 project's history came from testing step 4 while step 1 was quietly broken.
 
-Everything here uses tools that already exist (`c3po`, `c3po_health`,
-`c3po_preflight`, `headset_check.py`). Nothing in this file needs to be
+Everything here uses tools that already exist (`c3po` — including `c3po status`
+and `c3po preflight` — and `headset_check.py`). Nothing in this file needs to be
 maintained separately from them.
 
 **Read §0 before touching anything.** It is the step that is new, and skipping it
@@ -15,12 +15,14 @@ means testing yesterday's code while believing it is today's.
 
 ## 0. Deploy — the one that silently does nothing if you get it wrong
 
-The robot runs from a git checkout at `~/c3po`, and
-`/etc/systemd/system/c3po-bridge.service` is a **symlink into it**. So the unit
-updates on `git pull` — **but only from a branch that contains the change**.
+The robot runs from a git checkout at `~/c3po`, but
+`/etc/systemd/system/c3po-bridge.service` is a root-owned **copy**, not a
+symlink into it. A `git pull` alone changes nothing systemd runs: the unit
+updates only when `./scripts/robot/c3po install` validates, copies and reloads it
+— **and only from a branch that contains the change**.
 
-A pull on the wrong branch is a no-op that reports success, and the restart then
-faithfully re-applies the old config. Check what you got; do not assume.
+A pull on the wrong branch is a no-op that reports success, and the install then
+faithfully re-copies the old config. Check what you got; do not assume.
 
 ```bash
 ssh c3po                     # or: ssh unitree@g1-orin.local
@@ -47,8 +49,8 @@ If it still says `0.0.0.0`, the pull did not bring the change and everything
 below is testing the old build. Stop and fix that first.
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl restart c3po-bridge
+./scripts/robot/c3po install && c3po restart                 # from ~/c3po
+grep BRIDGE_HOST /etc/systemd/system/c3po-bridge.service    # the copy: 127.0.0.1
 ss -ltnp | grep 8001                                        # must NOT say 0.0.0.0
 ```
 
@@ -84,7 +86,7 @@ c3po up operator      # bridge + camera perception + world model
 c3po status
 ```
 
-`c3po up` runs `c3po_health` itself at the end. Read it rather than skim it: it
+`c3po up` runs `c3po status` itself at the end. Read it rather than skim it: it
 reports **where the bridge is actually listening**, read from the socket, not
 from any config file. A `bridge bind` problem line here means §0 did not land.
 
@@ -239,7 +241,7 @@ question as whether the services are up.
 ## 4. Motion — last, and only after 1–3 are clean
 
 ```bash
-c3po_preflight        # reports; changes nothing, starts nothing, arms nothing
+c3po preflight        # reports; changes nothing, starts nothing, arms nothing
 ```
 
 Then the FSM sequence that this robot actually needs, in order. `damp` first,

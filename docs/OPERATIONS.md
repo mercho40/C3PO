@@ -34,20 +34,20 @@ flowchart TB
   LIDAR["Livox Mid-360"]
 
   VERCEL -->|HTTPS| UBUNTU
-  UBUNTU -->|"MCP/HTTP over LAN"| BRIDGE
+  UBUNTU -->|"MCP/HTTP, SSH tunnel to loopback :8001"| BRIDGE
   UBUNTU --> NEON
   PERCEPTION -->|"DDS, own domain"| BRIDGE
   BRIDGE -->|"DDS domain 0, eth0"| CTRL
   PERCEPTION -->|"internal LAN"| LIDAR
 ```
 
-| Component         | Where                     | How it deploys                                                   |
-| ----------------- | ------------------------- | ---------------------------------------------------------------- |
-| `apps/web`        | Vercel                    | git push (see `apps/web/README.md`)                              |
-| `apps/back`       | Ubuntu box on the LAN     | `bun build --compile` → one self-contained binary + systemd (§5) |
-| Postgres          | Neon (managed, sa-east-1) | `drizzle-kit migrate` on deploy (§7)                             |
-| `apps/bridge`     | G1 Jetson                 | `~/c3po` checkout; `git pull && c3po restart`; systemd           |
-| `apps/perception` | G1 Jetson                 | `c3po perception build`, then `c3po up <stage>`                  |
+| Component         | Where                     | How it deploys                                                                     |
+| ----------------- | ------------------------- | ---------------------------------------------------------------------------------- |
+| `apps/web`        | Vercel                    | git push (see `apps/web/README.md`)                                                |
+| `apps/back`       | Ubuntu box on the LAN     | `bun build --compile` → one self-contained binary + systemd (§5)                   |
+| Postgres          | Neon (managed, sa-east-1) | `drizzle-kit migrate` on deploy (§7)                                               |
+| `apps/bridge`     | G1 Jetson                 | `~/c3po` checkout; `git pull && ./scripts/robot/c3po install && c3po restart` (§5) |
+| `apps/perception` | G1 Jetson                 | `c3po perception build`, then `c3po up <stage>`                                    |
 
 Neon is the live DB only; local dev runs against a Homebrew Postgres — setup in
 `apps/back/README.md`.
@@ -62,7 +62,8 @@ why `back` must not be is argued in `docs/ARCHITECTURE.md`.
 **Sim topology.** Isaac Sim runs on a separate Ubuntu host, on DDS domain 1. The router
 blocks sim-host→Mac UDP across VLANs, so a Mac-hosted bridge cannot receive state from
 the sim — drive it from a bridge running locally on that box. Connection values for the
-locally spawned sim server live in `.mcp.json` (`c3po-sim`).
+locally spawned sim server live in your local `.mcp.json` (`c3po-sim`) — gitignored, so
+each developer writes their own; `apps/bridge/README.md` lists the two entries it needs.
 
 ---
 
@@ -219,7 +220,7 @@ logrotate policy; Docker output is bounded per C3PO container with
 
 **⚠️ `c3po gemm stop` does not stop `gemm-ai.service`.** It is a separate systemd
 voice/vision service, verified not to issue motion commands, and owns port 8000. Coordinate
-before stopping it. The bridge therefore uses LAN port 8001.
+before stopping it. The bridge therefore uses port 8001, on loopback.
 
 **⚠️ `c3po down` (and its `stop` alias) removes `stop_everything`.** Do not stop
 the stack mid-task expecting a software cancellation path; the physical e-stop
@@ -250,8 +251,9 @@ mv server.new server && systemctl restart c3po-back
 ```
 
 Keep the previous binary alongside for rollback. Env: see `apps/back/.env.example` — it
-is the authority for every variable, including the TIC AI gateway gotchas (plain HTTP,
-ORT-network-only, hand-issued keys). Two things to verify per deploy target:
+is the authority for every variable, including the TIC AI gateway gotchas (HTTPS only —
+port 80 is blocked from the Wi-Fi VLAN — ORT-network-only, hand-issued keys). Two things
+to verify per deploy target:
 
 - **The box must have a route to the TIC AI gateway.** Without one, `back` boots and
   serves `/health`, `/skills`, `/state` — and fails every `/agent` call. This rules out
@@ -287,12 +289,15 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
 - **⚠️ Restart is a brief `stop_everything` outage.** Deploy only with the robot stopped
   and the physical e-stop available.
 - **Transport trap.** The bridge defaults to stdio for child-process MCP use. The systemd
-  unit pins daemon mode to HTTP on `0.0.0.0:8001`; ad-hoc developer runs retain the
-  loopback default.
-- **Direct LAN exposure is deliberate.** Port 8001 has no transport authentication and
-  can invoke robot tools; port 8767 accepts live teleop setpoints while enabled. The robot
-  currently has no active host firewall. Use `g1-orin.local`, never a stale DHCP address,
-  and treat the school LAN as part of the robot's control boundary.
+  unit pins daemon mode to HTTP on `127.0.0.1:8001`, the same loopback bind ad-hoc
+  developer runs default to.
+- **8001 is loopback-only; 8767 is not.** Port 8001 has no transport authentication and
+  can invoke robot tools, so since 2026-09-06 it is reached only through the SSH tunnel
+  (§2) — `apps/back` and anything else off the robot dial `127.0.0.1:8001` on their own
+  end of `-L 8001:127.0.0.1:8001`. Port 8767 still accepts live teleop setpoints from the
+  LAN while `c3po up teleop` runs, and the robot has no active host firewall: use
+  `g1-orin.local`, never a stale DHCP address, and treat the school LAN as part of the
+  robot's control boundary for as long as teleop is up.
 - **Non-interactive SSH PATH trap.** `~/.local/bin` comes from `~/.profile`; use
   `ssh c3po 'bash -lc "c3po status"'` or the script's absolute path. The unit has an
   explicit `PATH` and does not depend on a login shell.
@@ -435,32 +440,35 @@ itself rather than presenting as a dead robot.
 
 **The tunnel was already mandatory, which is what makes this cheap.** `/camera/*`
 and `/mcp` are `@mcp.custom_route`s on the _same_ FastMCP server — one process,
-one port. A working headset setup already forwards 8001, because
-`apps/web/.env.example` reaches the camera at `http://127.0.0.1:8001/camera` and
-`quest_setup.sh` prints the `-L 8001:127.0.0.1:8001` line for exactly that
-reason. So the LAN binding was never buying access that the tunnel did not
-already provide — the console's two halves had simply drifted into disagreeing
+one port. A working headset setup already forwarded 8001, because
+`apps/web/.env.example` then reached the camera at `http://127.0.0.1:8001/camera`
+and `quest_setup.sh` printed the `-L 8001:127.0.0.1:8001` line for exactly that
+reason. (Both have since moved: the camera now goes through `apps/back` on 3000 —
+`PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`, below.) So the LAN binding
+was never buying access that the tunnel did not already provide — the console's two halves had simply drifted into disagreeing
 about how to reach one port on one process, with `apps/web` going through the
 tunnel and `apps/back` going around it. Pointing `BRIDGE_URL` at
 `127.0.0.1:8001` needs no new forward.
 
-⚠️ **The robot is still binding `0.0.0.0` until it is redeployed.** The unit
-file is what changed, and `/etc/systemd/system/c3po-bridge.service` is a symlink
-into the checkout, so the update rides a `git pull` — **but only if the robot's
-checkout is on a branch that contains the change.** A `git pull` on the robot
-pulls whatever branch it already has; if this is still sitting on an unmerged
-branch, the pull is a no-op and the restart faithfully re-applies `0.0.0.0`.
-Check with `git -C ~/c3po log --oneline -1 -- scripts/robot/c3po-bridge.service`
-before concluding anything. Then:
+⚠️ **A robot keeps binding `0.0.0.0` until it is redeployed.** The unit file is
+what changed, and `/etc/systemd/system/c3po-bridge.service` is a root-owned
+**copy**, not a symlink into the checkout: a `git pull` alone changes nothing
+systemd runs, and only `c3po install` validates, copies and reloads the new unit
+(§4, "The durable install"). The pull also has to bring the change — **it
+pulls whatever branch the checkout already has**, and on a branch without the
+change the install faithfully re-copies `0.0.0.0`. Check with
+`git -C ~/c3po log --oneline -1 -- scripts/robot/c3po-bridge.service` before
+concluding anything. Then:
 
 ```bash
 git -C ~/c3po pull
 grep BRIDGE_HOST ~/c3po/scripts/robot/c3po-bridge.service   # must say 127.0.0.1
-sudo systemctl daemon-reload && sudo systemctl restart c3po-bridge
+~/c3po/scripts/robot/c3po install && c3po restart
+grep BRIDGE_HOST /etc/systemd/system/c3po-bridge.service    # the copy systemd runs
 ss -ltnp | grep 8001                                        # must NOT say 0.0.0.0
 ```
 
-Until that lands, `c3po_health` keeps reporting the wildcard bind as a problem,
+Until that lands, `c3po status` keeps reporting the wildcard bind as a problem,
 which is correct — it reads the socket, not this file.
 
 🔧 **`BRIDGE_CORS_ORIGINS` was set in the unit and read by no code.** The same
@@ -519,7 +527,7 @@ the last two days. Nothing in the headset can be judged until it does.
 
 ```bash
 # 1. Robot free? Nobody else driving? (OPERATIONS §4 — one commander.)
-ssh c3po 'cd ~/c3po && git pull && sudo systemctl restart c3po-bridge'
+ssh c3po 'bash -lc "cd ~/c3po && git pull && ./scripts/robot/c3po install && c3po restart"'
 ssh c3po 'systemctl is-active c3po-bridge'
 
 # 2. Prove the fix landed, from the Mac, before the headset goes on:
@@ -589,8 +597,11 @@ proxies behind auth — `PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`. The
 browser never talks to 8001, which also serves the unauthenticated `/mcp`. The
 vision container serves the same paths on 8081 and is the process that actually
 owns the D435i; the bridge relays it when the vendor feed is dark. Pointing the
-variable straight at `:8081` or `:8001` still works for debugging, and
-`quest_setup.sh` warns when it does.
+variable straight at `:8081` or `:8001` (over a tunnel — both bind loopback) is a
+debugging setup only, and `quest_setup.sh` warns when it does: the console now
+sends its session cookie on the status poll and in the headset layer, and neither
+server grants credentials cross-origin, so those requests are refused by the
+browser. `curl` the hop instead.
 
 | Process                | Start            | Port | What it is                                                      |
 | ---------------------- | ---------------- | ---- | --------------------------------------------------------------- |
@@ -603,17 +614,19 @@ itself (`docs/ROBOT-HARDWARE.md`).
 
 The onboard launcher binds it to the LAN and it **has no authentication at all** — less
 even than the MCP transport when reached through `apps/back`'s session guard — and it
-carries live setpoints for the arms. Desktop development reaches it directly:
+carries live setpoints for the arms. Desktop development reaches **the teleop
+stream** directly; the bridge stays behind the 8001 tunnel (§2) and the camera behind
+`apps/back`:
 
 ```bash
-BRIDGE_URL=http://g1-orin.local:8001/mcp
-PUBLIC_ROBOT_CAM_URL=http://g1-orin.local:8001/camera
-PUBLIC_TELEOP_HOST=g1-orin.local
+BRIDGE_URL=http://127.0.0.1:8001/mcp                # apps/back/.env, over the tunnel
+PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera   # apps/web/.env, via apps/back
+PUBLIC_TELEOP_HOST=g1-orin.local                    # apps/web/.env, direct on the LAN
 ```
 
 The Quest remains different: WebXR requires a secure context, and an HTTPS page cannot
 open plain `ws://g1-orin.local:8767`. Until the robot serves TLS/WSS, keep the existing
-ADB-reverse/localhost path for the headset even though ordinary desktop use needs no tunnel.
+ADB-reverse/localhost path for the headset even though desktop use needs no forward for 8767.
 
 **One commander at a time, and the teleop server is one.** While a session is open it is
 the only writer of `SetVelocity` — `/vr-control` suspends its own `walk_velocity` loop and
@@ -671,12 +684,20 @@ neither needs a window negotiated with the other team. This is the sequence, in
 the order that keeps each check interpretable.
 
 ```bash
-~/c3po/scripts/robot/perception_up fake
-C3PO_NO_TAKEOVER=1 ~/c3po/scripts/robot/run_c3po   # NO_TAKEOVER: gemm stays up
-~/c3po/scripts/robot/c3po_health
+c3po perception up fake           # claims no device — gemm is left alone
+systemctl is-active c3po-bridge   # the boot-started bridge; it stops no one
+c3po status
 ```
 
-`c3po_health` is the whole Stage 3 crossing in one line:
+**Not `c3po up fake`.** Every `c3po up` profile, and `c3po start`, goes through
+`run_c3po`, which stops gemm if it is running — interactive start means take
+ownership — so there is no profile that keeps gemm up. What does is the bridge
+systemd starts at boot (`c3po install` enables it), which claims no sensor and
+stops nothing. If it is not active, `sudo systemctl start c3po-bridge.service`
+starts it the same way. (`C3PO_NO_TAKEOVER=1`, which this block used to set, is
+read by nothing.)
+
+`c3po status` is the whole Stage 3 crossing in one line:
 
 ```
 lidar ring    8/120 bearings in base_footprint
@@ -717,7 +738,7 @@ one thing this display must never say by accident.
 Stage 4 adds Nav2 over the same synthetic sources, brought up **unconfigured**:
 
 ```bash
-~/c3po/scripts/robot/perception_up nav2-fake
+c3po perception up nav2-fake      # not `c3po up nav2-fake`: that stops gemm
 docker exec c3po-perception-nav ros2 service call \
   /lifecycle_manager_navigation/manage_nodes \
   nav2_msgs/srv/ManageLifecycleNodes "{command: 0}"

@@ -141,10 +141,13 @@ Consequences:
   arbitrarily among `eth0`, `docker0`, `wlan0` — logged verbatim as
   `selected arbitrarily from: eth0, docker0, wlan0`. Unpinned, the bridge may see none of
   the robot. Hence `DDS_INTERFACE=eth0` onboard (the env var and its comment live in
-  `apps/bridge/.env.example`). ⚠️ The pinning **currently does not reach CycloneDDS** —
-  the vendor SDK's inline config overrides the bridge's `CYCLONEDDS_URI`; it has worked
-  only because autodetermine lands on `eth0` while `docker0` is down. The pending fix is
-  tracked in `docs/ROBOT-API.md` (known divergences). The vendor independently
+  `apps/bridge/.env.example`). Since 2026-08-29 the pin **reaches the SDK's domain**: the
+  bridge passes the name to `ChannelFactoryInitialize` (`bridge/sdk/connection.py`), because the vendor SDK's inline config overrides the bridge's
+  `CYCLONEDDS_URI` — before that the variable was logged and inert, and the bridge worked
+  only because autodetermine landed on `eth0` while `docker0` was down. The XML file still
+  does not reach that domain (its unicast `<Peers>` block cannot), and the pin is
+  unconfirmed on hardware: check that `dds.init` logs `interface_reason=pinned`
+  (`docs/ROBOT-API.md`, known divergences). The vendor independently
   corroborates the choice: their own `videohub_pc4` CycloneDDS config pins `eth0` with
   the 0.10.2 schema (§6.5).
 

@@ -54,7 +54,9 @@ bun run dev:robot
 
 The Python bridge needs its one-time CycloneDDS/`uv` setup before that command;
 [`apps/bridge/README.md`](apps/bridge/README.md) covers it. Claude Code sessions
-also get the bridge automatically via `.mcp.json`.
+can also get the bridge through a `.mcp.json` — a local file, gitignored and not
+in the repo, so each developer writes their own; that README lists its two
+entries.
 
 ## Commands
 

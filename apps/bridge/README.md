@@ -49,18 +49,18 @@ cp .env.example .env
 
 ### The two MCP servers — know which machine you are about to move
 
-The repo's `.mcp.json` defines two bridge entries, and the distinction is a safety property, not bookkeeping — the tool-name prefix tells you which machine is about to move:
+A local `.mcp.json` at the repo root defines two bridge entries. It is gitignored, not part of the repo, so each developer writes their own with these two. The distinction is a safety property, not bookkeeping — the tool-name prefix tells you which machine is about to move:
 
-| Server        | Tools                 | Target                                                                                            |
-| ------------- | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `c3po-sim`    | `mcp__c3po-sim__*`    | **Isaac Sim.** Spawned locally by Claude Code (`uv run … bridge.mcp_server`, `SIM_MODE=isaac`)    |
-| `c3po-bridge` | `mcp__c3po-bridge__*` | **The real G1.** `type: http` → `http://g1-orin.local:8001/mcp` — the onboard daemon over the LAN |
+| Server        | Tools                 | Target                                                                                                   |
+| ------------- | --------------------- | -------------------------------------------------------------------------------------------------------- |
+| `c3po-sim`    | `mcp__c3po-sim__*`    | **Isaac Sim.** Spawned locally by Claude Code (`uv run … bridge.mcp_server`, `SIM_MODE=isaac`)           |
+| `c3po-bridge` | `mcp__c3po-bridge__*` | **The real G1.** `type: http` → `http://127.0.0.1:8001/mcp` — the onboard daemon, through the SSH tunnel |
 
-`c3po-sim` can never reach the real robot no matter what you set: it runs on the Mac, and the control board publishes DDS only on the robot's internal wired LAN (see `docs/ROBOT-HARDWARE.md`). Conversely, `mcp__c3po-bridge__*` tools command real hardware whenever the robot is reachable on the LAN.
+`c3po-sim` can never reach the real robot no matter what you set: it runs on the Mac, and the control board publishes DDS only on the robot's internal wired LAN (see `docs/ROBOT-HARDWARE.md`). Conversely, `mcp__c3po-bridge__*` tools command real hardware whenever the tunnel to the robot is up.
 
 ### As an MCP child over stdio (sim / local dev)
 
-Claude Code auto-spawns `c3po-sim` per `.mcp.json` (its env block there carries the sim settings). Manual run for debugging or other MCP clients — with `.env` configured:
+Claude Code auto-spawns `c3po-sim` per your `.mcp.json` (its env block there carries the sim settings). Manual run for debugging or other MCP clients — with `.env` configured:
 
 ```bash
 uv run python -m bridge.mcp_server
@@ -71,19 +71,26 @@ uv run python -m bridge.mcp_server
 `apps/back` and the `c3po-bridge` MCP entry connect over **streamable-http**, so a daemon has to be told to serve that transport:
 
 ```bash
-BRIDGE_TRANSPORT=http BRIDGE_HOST=0.0.0.0 BRIDGE_PORT=8001 \
+BRIDGE_TRANSPORT=http BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=8001 \
 uv run python -m bridge.mcp_server
 ```
 
 This is not optional polish. The default transport is **stdio**, which is right when an MCP client spawns the bridge as a child and talks over pipes — but a daemon's stdin is `/dev/null`, so on stdio it reads EOF and exits immediately, before it ever reaches the robot. The symptom is a process that "fails to start" with almost nothing in the log.
 
-Onboard the G1 you do not run this by hand: `c3po up core` delegates the process lifecycle to `c3po-bridge.service` — see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md). The unit deliberately binds the daemon to the LAN; it can command the robot's legs and has no auth of its own.
+Onboard the G1 you do not run this by hand: `c3po up core` delegates the process lifecycle to `c3po-bridge.service` — see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md). The unit binds the daemon to loopback (`BRIDGE_HOST=127.0.0.1`, since 2026-09-06; the unit file has the reasoning): it can command the robot's legs and has no auth of its own, so nothing off the robot reaches it except through an SSH tunnel.
 
 ### Driving the real robot from Claude Code
 
-Start the bridge onboard with `c3po up core`, then point the MCP client directly
-at `http://g1-orin.local:8001/mcp`. The repository's local `.mcp.json` already
-uses that URL. The mDNS name matters because the robot's DHCP address moves.
+Start the bridge onboard with `c3po up core`, open the tunnel, then point the MCP
+client at your end of it:
+
+```bash
+ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po   # `c3po` = g1-orin.local
+```
+
+`c3po-bridge` in your local `.mcp.json` should say `http://127.0.0.1:8001/mcp`.
+`g1-orin.local:8001` is refused — the bridge is not on the LAN. Tunnel via the
+`c3po` alias (mDNS), never an IP: the robot's DHCP address moves.
 
 **Why not spawn it over SSH instead**, which would need no tunnel:
 
@@ -95,7 +102,7 @@ uses that URL. The mDNS name matters because the robot's DHCP address moves.
 }
 ```
 
-That starts a _second_ bridge process beside `c3po-bridge.service` — two processes able to command the legs through the same API, the exact condition `c3po up` refuses (one-commander invariant: `docs/OPERATIONS.md`). Keep one systemd-owned bridge and reach it directly.
+That starts a _second_ bridge process beside `c3po-bridge.service` — two processes able to command the legs through the same API, the exact condition `c3po up` refuses (one-commander invariant: `docs/OPERATIONS.md`). Keep one systemd-owned bridge and reach it through the tunnel.
 
 ### The teleop stream (Quest arm mirroring)
 
