@@ -8,12 +8,17 @@
   } from "./reasoning-context.svelte";
   import { untrack } from "svelte";
 
-  // indexing
-
   interface Props {
     class?: string;
+    /**
+     * True only while THIS block is the one the model is writing. The chat used
+     * to pass the chat-wide status here, so every saved block in the transcript
+     * flipped back to "Razonando…" on each new turn and then all inherited the
+     * new turn's duration when it ended.
+     */
     isStreaming?: boolean;
     open?: boolean;
+    /** Initial disclosure. Defaults to open while streaming, closed otherwise. */
     defaultOpen?: boolean;
     onOpenChange?: (open: boolean) => void;
     duration?: number;
@@ -24,28 +29,30 @@
     class: className = "",
     isStreaming = false,
     open = $bindable(),
-    defaultOpen = true,
+    defaultOpen,
     onOpenChange,
     duration = $bindable(),
     children,
     ...props
   }: Props = $props();
 
-  let AUTO_CLOSE_DELAY = 1000;
-  let MS_IN_S = 1000;
+  const AUTO_CLOSE_DELAY = 1000;
+  const MS_IN_S = 1000;
 
-  // Create the reasoning context
+  // A block reloaded from the database starts closed — it is history, and the
+  // registry's open-then-snap-shut on every page load made a transcript of ten
+  // turns flicker ten times. One the model is writing right now starts open.
+  const initialOpen = untrack(() => open ?? defaultOpen ?? isStreaming);
+
   let reasoningContext = new ReasoningContext({
     isStreaming: untrack(() => isStreaming),
-    isOpen: open ?? untrack(() => defaultOpen),
-    duration: duration ?? 0,
+    isOpen: initialOpen,
+    duration: untrack(() => duration ?? 0),
   });
 
-  // Set up controllable state for open
-  let isOpen = $state(open ?? untrack(() => defaultOpen));
-  let currentDuration = $state(duration ?? 0);
-  let hasAutoClosed = $state(false);
-  let startTime = $state<number | null>(null);
+  let isOpen = $state(initialOpen);
+  // Not reactive: nothing renders it, it only times the live stretch.
+  let startTime: number | null = null;
 
   // Sync external props to context and local state
   $effect(() => {
@@ -61,53 +68,39 @@
 
   $effect(() => {
     if (duration !== undefined) {
-      currentDuration = duration;
       reasoningContext.duration = duration;
     }
   });
 
-  // Track duration when streaming starts and ends
+  // Time the block only across a live → done transition we actually watched.
+  // A saved block never streamed here, so it keeps an unknown duration (the
+  // trigger then says "Razonamiento" rather than inventing a number).
   watch(
     () => isStreaming,
-    (isStreamingValue) => {
-      if (isStreamingValue) {
-        if (startTime === null) {
-          startTime = Date.now();
-        }
-      } else if (startTime !== null) {
-        let newDuration = Math.ceil((Date.now() - startTime) / MS_IN_S);
-        currentDuration = newDuration;
-        reasoningContext.duration = newDuration;
-        if (duration !== undefined) {
-          duration = newDuration;
-        }
-        startTime = null;
+    (streaming) => {
+      if (streaming) {
+        startTime ??= Date.now();
+        if (!isOpen) handleOpenChange(true);
+        return;
       }
+      if (startTime === null) return;
+
+      const measured = Math.max(
+        1,
+        Math.ceil((Date.now() - startTime) / MS_IN_S),
+      );
+      reasoningContext.duration = measured;
+      if (duration !== undefined) duration = measured;
+      startTime = null;
+
+      // Fold it away a beat after the model moves on, so the operator sees it
+      // finish before it collapses.
+      const timer = setTimeout(() => handleOpenChange(false), AUTO_CLOSE_DELAY);
+      return () => clearTimeout(timer);
     },
   );
 
-  // Auto-open when streaming starts, auto-close when streaming ends (once only)
-  watch(
-    () => [isStreaming, isOpen, defaultOpen, hasAutoClosed] as const,
-    ([isStreamingValue, isOpenValue, defaultOpenValue, hasAutoClosedValue]) => {
-      if (
-        defaultOpenValue &&
-        !isStreamingValue &&
-        isOpenValue &&
-        !hasAutoClosedValue
-      ) {
-        // Add a small delay before closing to allow user to see the content
-        let timer = setTimeout(() => {
-          handleOpenChange(false);
-          hasAutoClosed = true;
-        }, AUTO_CLOSE_DELAY);
-
-        return () => clearTimeout(timer);
-      }
-    },
-  );
-
-  let handleOpenChange = (newOpen: boolean) => {
+  function handleOpenChange(newOpen: boolean) {
     isOpen = newOpen;
     reasoningContext.setIsOpen(newOpen);
 
@@ -116,7 +109,7 @@
     }
 
     onOpenChange?.(newOpen);
-  };
+  }
 
   // Set the context for child components
   setReasoningContext(reasoningContext);

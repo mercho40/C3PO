@@ -9,6 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  canControl,
   canHear,
   isRunning,
   voiceCommand,
@@ -75,14 +76,15 @@ describe("voice loop client", () => {
     const { server, url } = serve({ start: { status: 500, body: {} } });
     const result = await voiceCommand(url, "start");
     expect(result.ok).toBe(false);
-    expect(!result.ok && result.reason).toContain("could not start");
+    expect(!result.ok && result.status).toBe(500);
+    expect(!result.ok && result.reason).toContain("rechazó");
     server.stop(true);
   });
 
   test("a 401 says so rather than blaming the robot", async () => {
     const { server, url } = serve({ start: { status: 401, body: {} } });
     const result = await voiceCommand(url, "start");
-    expect(!result.ok && result.reason).toBe("not signed in");
+    expect(!result.ok && result.reason).toBe("Sesión vencida.");
     server.stop(true);
   });
 
@@ -112,7 +114,8 @@ describe("voice loop client", () => {
     const { server, url } = serve({});
     server.stop(true);
     const result = await voiceCommand(url, "start");
-    expect(!result.ok && result.reason).toBe("back is unreachable");
+    expect(!result.ok && result.status).toBeNull();
+    expect(!result.ok && result.reason).toContain("servidor");
   });
 
   test("a 200 that is not JSON is a reason, not a crash", async () => {
@@ -121,7 +124,7 @@ describe("voice loop client", () => {
       fetch: () => new Response("<html>hello</html>", { status: 200 }),
     });
     const result = await voiceStatus(`http://127.0.0.1:${server.port}`);
-    expect(!result.ok && result.reason).toContain("not a status");
+    expect(!result.ok && result.reason).toContain("no es un estado");
     server.stop(true);
   });
 
@@ -134,6 +137,55 @@ describe("voice loop client", () => {
     await voiceCommand(url, "stop");
     expect(calls).toEqual(["POST /voice/start", "POST /voice/stop"]);
     server.stop(true);
+  });
+
+  test("a 409 keeps the owner's status, so the console can say who has the mic", async () => {
+    const { server, url } = serve({
+      start: { status: 409, body: { ...RUNNING, ownedByYou: false } },
+    });
+    const result = await voiceCommand(url, "start");
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.status).toBe(409);
+    expect(!result.ok && result.state?.ownedByYou).toBe(false);
+    expect(!result.ok && result.reason).toContain("Otro operador");
+    server.stop(true);
+  });
+
+  test("a 503 carries back's own reason", async () => {
+    const { server, url } = serve({
+      start: {
+        status: 503,
+        body: { error: "OPENAI_API_KEY is not configured" },
+      },
+    });
+    const result = await voiceCommand(url, "start");
+    expect(!result.ok && result.reason).toContain("OPENAI_API_KEY");
+    server.stop(true);
+  });
+
+  test("a hung back times out with its own reason, not 'unreachable'", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: async () => {
+        await Bun.sleep(500);
+        return new Response("{}", { status: 200 });
+      },
+    });
+    const result = await voiceCommand(
+      `http://127.0.0.1:${server.port}`,
+      "start",
+      50,
+    );
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.reason).toContain("a tiempo");
+    server.stop(true);
+  });
+
+  test("only the owner may end a realtime session", () => {
+    expect(canControl({ ...RUNNING, ownedByYou: false })).toBe(false);
+    expect(canControl({ ...RUNNING, ownedByYou: true })).toBe(true);
+    expect(canControl({ ...RUNNING, ownedByYou: null })).toBe(true);
+    expect(canControl(STOPPED)).toBe(true);
   });
 
   test("no state is not the same as not running", () => {

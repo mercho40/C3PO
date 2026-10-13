@@ -17,7 +17,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import { db } from "./drizzle";
-import { chat, chatMessage, toolCallLog } from "./schema";
+import { chat, chatMessage, toolCallLog, type ToolCallSource } from "./schema";
 
 /** Longest chat title we derive from the opening message. */
 const TITLE_MAX = 80;
@@ -123,7 +123,13 @@ export async function appendMessage(opts: {
       .onConflictDoUpdate({
         target: chatMessage.id,
         set: { parts: opts.parts },
-        setWhere: eq(chatMessage.chatId, opts.chatId),
+        // Same chat AND same role: a retry's `replaceMessageId` (or a
+        // replayed user message id) must never rewrite a row of the other role
+        // — that would leave assistant parts under a "user" row.
+        setWhere: and(
+          eq(chatMessage.chatId, opts.chatId),
+          eq(chatMessage.role, opts.role),
+        ),
       })
       .returning({ id: chatMessage.id });
 
@@ -143,10 +149,68 @@ export async function appendMessage(opts: {
   return finalId;
 }
 
-/** Record one dispatched skill. Never throws — auditing must not break a turn. */
+/**
+ * The failure a skill's result body reports, or null.
+ *
+ * THE BRIDGE NEVER RAISES. A firmware refusal comes back as a successful tool
+ * result — `{status: "failed", phase: "rpc_error", error: "rpc_error_code_7401"}`
+ * — so a caller that only knows "callTool did not throw" would log it as `ok`,
+ * and the audit trail would say the robot did something it refused to do. This
+ * is the same trap apps/web's `skill-outcome.ts` exists for; the log has to read
+ * the body the same way the console does.
+ */
+export function resultFailure(result: unknown): string | null {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) {
+    return null;
+  }
+  // Mirrors the `error` branch of apps/web's skill-outcome.ts classifier, so
+  // the admin's `status=error` filter finds the same rows the console paints
+  // red. Warnings (cancelled, not applicable, stub) are not failures.
+  const body = result as {
+    status?: unknown;
+    error?: unknown;
+    ok?: unknown;
+    phase?: unknown;
+    real_damp_fallback_succeeded?: unknown;
+    result?: { transitioned?: unknown } | null;
+  };
+  if (typeof body.error === "string" && body.error.length > 0)
+    return body.error;
+  if (body.status === "failed") return "failed";
+  // The one 200 that can mean the robot is still powered after a stop.
+  if (body.real_damp_fallback_succeeded === false) {
+    return "real_damp_fallback_failed";
+  }
+  if (body.ok === false) return "refused";
+  // Acked by the firmware, but the robot did not change state.
+  if (
+    body.phase === "acked_no_transition" ||
+    (body.result &&
+      typeof body.result === "object" &&
+      body.result.transitioned === false)
+  ) {
+    return "acked_no_transition";
+  }
+  return null;
+}
+
+/**
+ * Record one dispatched skill. Never throws — auditing must not break a turn.
+ *
+ * `status` is the TRANSPORT outcome the caller saw; an `ok` whose body reports
+ * a failure is recorded as `error` with the body's own code (`resultFailure`).
+ *
+ * `userId` omitted (undefined, not null) on a chat-backed call means "the
+ * chat's owner": resolved inside the INSERT, so attribution costs no extra
+ * round trip and cannot disagree with `ensureChat`, which already refuses to
+ * let anyone write into a chat that is not theirs. Pass null to record "nobody
+ * we know" explicitly.
+ */
 export async function logToolCall(opts: {
   chatId?: string | null;
   messageId?: string | null;
+  userId?: string | null;
+  source?: ToolCallSource | null;
   skillName: string;
   params?: Record<string, unknown>;
   result?: unknown;
@@ -154,15 +218,25 @@ export async function logToolCall(opts: {
   error?: string | null;
   durationMs?: number;
 }): Promise<void> {
+  const bodyFailure = opts.status === "ok" ? resultFailure(opts.result) : null;
+  const chatId = opts.chatId ?? null;
+  const userId =
+    opts.userId !== undefined
+      ? opts.userId
+      : chatId
+        ? sql`(select ${chat.userId} from ${chat} where ${chat.id} = ${chatId})`
+        : null;
   try {
     await db.insert(toolCallLog).values({
-      chatId: opts.chatId ?? null,
+      chatId,
       messageId: opts.messageId ?? null,
+      userId,
+      source: opts.source ?? null,
       skillName: opts.skillName,
       params: opts.params ?? null,
       result: (opts.result ?? null) as never,
-      status: opts.status,
-      error: opts.error ?? null,
+      status: bodyFailure ? "error" : opts.status,
+      error: opts.error ?? bodyFailure,
       durationMs: opts.durationMs ?? null,
     });
   } catch (err) {
@@ -171,8 +245,12 @@ export async function logToolCall(opts: {
   }
 }
 
-/** The caller's chats, most recently updated first. */
-export async function listChats(userId: string, limit = 50) {
+/** The caller's chats, most recently updated first — optionally one channel. */
+export async function listChats(
+  userId: string,
+  limit = 50,
+  channel?: "text" | "voice",
+) {
   return db
     .select({
       id: chat.id,
@@ -182,7 +260,11 @@ export async function listChats(userId: string, limit = 50) {
       updatedAt: chat.updatedAt,
     })
     .from(chat)
-    .where(eq(chat.userId, userId))
+    .where(
+      channel
+        ? and(eq(chat.userId, userId), eq(chat.channel, channel))
+        : eq(chat.userId, userId),
+    )
     .orderBy(desc(chat.updatedAt))
     .limit(limit);
 }
@@ -215,11 +297,32 @@ export async function getChatWithMessages(id: string, userId: string) {
   return { ...row, messages };
 }
 
-/** Delete a chat the caller owns. Messages and tool calls cascade. */
+/**
+ * Delete a chat the caller owns. Messages cascade; `tool_call_log` rows survive
+ * with `chat_id` set null — the audit trail outlives the conversation.
+ */
 export async function deleteChat(id: string, userId: string): Promise<boolean> {
   const deleted = await db
     .delete(chat)
     .where(and(eq(chat.id, id), eq(chat.userId, userId)))
     .returning({ id: chat.id });
   return deleted.length > 0;
+}
+
+/**
+ * Rename a chat. Scoped to the owner in the WHERE clause, like `deleteChat`, so
+ * someone else's id is indistinguishable from a missing one. Returns the new
+ * row, or null.
+ */
+export async function renameChat(
+  id: string,
+  userId: string,
+  title: string,
+): Promise<{ id: string; title: string | null } | null> {
+  const [row] = await db
+    .update(chat)
+    .set({ title, updatedAt: new Date() })
+    .where(and(eq(chat.id, id), eq(chat.userId, userId)))
+    .returning({ id: chat.id, title: chat.title });
+  return row ?? null;
 }

@@ -17,8 +17,21 @@
   let {
     pose = "unknown",
     load = "unknown",
+    label = null,
     class: className = "",
-  }: { pose?: Pose; load?: Load; class?: string } = $props();
+  }: {
+    pose?: Pose;
+    load?: Load;
+    /**
+     * The Spanish posture label, for the accessible name. Leave it null where
+     * the label is printed right beside the figure: the drawing then hides
+     * from assistive tech instead of reading the same fact twice. (It used to
+     * interpolate the internal English pose token — "slump", "walk" — into a
+     * Spanish sentence.)
+     */
+    label?: string | null;
+    class?: string;
+  } = $props();
 
   type Joints = {
     neck: [number, number];
@@ -204,8 +217,9 @@
   class="posture {className}"
   data-load={load}
   data-moving={moving}
-  role="img"
-  aria-label="Silueta del robot en postura: {pose}"
+  role={label ? "img" : undefined}
+  aria-label={label ? `Silueta del robot: ${label}` : undefined}
+  aria-hidden={label ? undefined : "true"}
 >
   <!-- Ground plane. Without it, lying down and standing read the same. -->
   <line class="ground" x1="4" y1="139" x2="126" y2="139" />

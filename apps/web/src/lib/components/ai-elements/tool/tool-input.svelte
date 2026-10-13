@@ -18,15 +18,17 @@
   let id = $props.id();
 </script>
 
+<!-- A field label, not a document heading: every card in a transcript has one,
+     and a heading per card buried the page's real structure. -->
 <div
   {id}
   class={cn("space-y-2 overflow-hidden px-3 pb-3", className)}
   {...restProps}
 >
-  <h4 class="eyebrow">Parámetros</h4>
+  <p class="eyebrow">Parámetros</p>
   <div class="overflow-hidden rounded-md border border-hairline bg-trench/60">
     <Code.Root code={formattedInput} lang="json" hideLines>
-      <Code.CopyButton />
+      <Code.CopyButton label="Copiar parámetros" />
     </Code.Root>
   </div>
 </div>

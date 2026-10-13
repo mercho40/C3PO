@@ -51,7 +51,7 @@
             {...props}
           >
             <XIcon />
-            <span class="sr-only">Close</span>
+            <span class="sr-only">Cerrar</span>
           </Button>
         {/snippet}
       </SheetPrimitive.Close>

@@ -49,9 +49,20 @@ const newId = createIdGenerator();
  * conversation history. It lives only for this process/session and is cleared
  * whenever a new voice session starts.
  */
+/**
+ * Who started the legacy loop, for the audit trail. Its turns have no chat to
+ * look an owner up from, so without this every robot command a spoken turn
+ * dispatched was logged with nobody behind it. Set on a stopped -> running
+ * start, cleared on stop.
+ */
+let legacyStartedBy: string | null = null;
+
 const conversation = new VoiceConversation({
   complete: async (messages) => {
-    const result = await runAgentChat(messages, { mode: "voice" });
+    const result = await runAgentChat(messages, {
+      mode: "voice",
+      userId: legacyStartedBy,
+    });
     return result.textStream;
   },
   speak: async (text) => {
@@ -73,20 +84,34 @@ let loop: VoiceLoop | null = null;
 const realtime = new RealtimeVoiceSession();
 const useRealtime = () => process.env.VOICE_ENGINE === "realtime";
 
-function voiceStatus() {
+/**
+ * The status an operator sees. `userId` decides ownership: a realtime session
+ * belongs to the operator who started it, and a second operator's console must
+ * be able to say "in use by someone else" rather than offering an End button
+ * that can only 409, or a transcript link to a chat that is not theirs.
+ */
+function voiceStatus(userId?: string) {
   if (useRealtime()) {
     const state = realtime.snapshot();
-    const { ownerId: _ownerId, ...publicState } = state;
+    const { ownerId, chatId, ...publicState } = state;
+    const ownedByYou = state.running ? ownerId === userId : null;
     return {
       ...publicState,
       engine: "openai-realtime" as const,
+      // Only the owner gets the transcript id — it is their chat, and it 404s
+      // for anyone else.
+      chatId: ownedByYou ? chatId : null,
+      ownedByYou,
       // Compatibility fields keep the existing dashboard readable while the
       // richer Realtime state is additive.
       utterancesHeard: state.utterancesHeard,
       agentRuns: state.agentRuns,
-      stopsTriggered: 0,
+      // Null, not 0: the realtime session does not act on spoken stop phrases
+      // at all (only the legacy loop does), so a counter reading "0" would
+      // imply a guard that is not there.
+      stopsTriggered: null,
       micEverOpen: state.micEverOpen,
-      alwaysListening: false,
+      alwaysListening: null,
       conversation: {
         phase: state.phase === "speaking" ? "speaking" : "idle",
         lastTurn: null,
@@ -97,6 +122,8 @@ function voiceStatus() {
     ...getLoop().snapshot(),
     engine: "legacy" as const,
     chatId: null,
+    // The legacy loop is process-wide and unowned: anyone signed in may stop it.
+    ownedByYou: null,
     conversation: conversation.state(),
   };
 }
@@ -123,7 +150,7 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
       if (useRealtime()) {
         const active = realtime.snapshot();
         if (active.running && active.ownerId !== user.id)
-          return status(409, voiceStatus());
+          return status(409, voiceStatus(user.id));
         if (!active.running) {
           const chatId = crypto.randomUUID();
           const owned = await ensureChat({
@@ -140,19 +167,22 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
             await deleteChat(chatId, user.id).catch(() => false);
             return status(503, {
               error: error instanceof Error ? error.message : String(error),
-              ...voiceStatus(),
+              ...voiceStatus(user.id),
             });
           }
         }
-        return voiceStatus();
+        return voiceStatus(user.id);
       }
 
       const l = getLoop();
       // A stopped -> running transition begins a fresh conversation. Repeated
       // start requests are idempotent and must not erase an active dialogue.
-      if (!l.snapshot().running) conversation.reset();
+      if (!l.snapshot().running) {
+        conversation.reset();
+        legacyStartedBy = user.id;
+      }
       l.start();
-      return voiceStatus();
+      return voiceStatus(user.id);
     },
     {
       auth: true,
@@ -170,12 +200,13 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
       if (useRealtime()) {
         const active = realtime.snapshot();
         if (active.running && active.ownerId !== user.id)
-          return status(409, voiceStatus());
+          return status(409, voiceStatus(user.id));
         await realtime.stop();
       } else {
         await getLoop().stop();
+        legacyStartedBy = null;
       }
-      return voiceStatus();
+      return voiceStatus(user.id);
     },
     {
       auth: true,
@@ -186,7 +217,7 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
       },
     },
   )
-  .get("/status", () => voiceStatus(), {
+  .get("/status", ({ user }) => voiceStatus(user.id), {
     auth: true,
     detail: {
       summary:

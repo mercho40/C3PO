@@ -1,17 +1,20 @@
 <script lang="ts">
-  import type { Component } from "svelte";
-  import { page } from "$app/state";
+  import { navigating, page } from "$app/state";
+  import { resolve } from "$app/paths";
+  import type { Pathname } from "$app/types";
   import * as Sidebar from "$lib/components/ui/sidebar/index.js";
+  import { useSidebar } from "$lib/components/ui/sidebar/index.js";
+  import { isActive, type NavGroup } from "$lib/nav";
 
-  type NavItem = {
-    title: string;
-    href?: string;
-    icon: Component;
-    disabled?: boolean;
-    badge?: string;
-  };
+  let { group }: { group: NavGroup } = $props();
 
-  let { label, items }: { label: string; items: NavItem[] } = $props();
+  const sidebar = useSidebar();
+
+  // Where a client navigation is heading. The target's server load can wait on
+  // the bridge (a /vr-control load awaits /state and the catalogue), and until
+  // it resolves the old page stays up with the rail on the OLD item — so a tap
+  // during a bridge stall looked dead and got tapped again.
+  const pendingPath = $derived(navigating.to?.url.pathname ?? null);
 </script>
 
 <Sidebar.Group>
@@ -22,49 +25,60 @@
        `text-sidebar-foreground/70` base class, which tailwind-merge cannot see
        conflicts with a custom utility. -->
   <Sidebar.GroupLabel class="eyebrow text-ink-mute">
-    {label}
+    {group.label}
   </Sidebar.GroupLabel>
   <Sidebar.Menu>
-    {#each items as item (item.title)}
+    {#each group.items as item (item.href)}
       {@const Icon = item.icon}
-      {#if item.disabled}
-        <Sidebar.MenuItem>
-          <Sidebar.MenuButton
-            aria-disabled="true"
-            tabindex={-1}
-            tooltipContent={item.title}
-            class="cursor-default pe-14 text-sidebar-foreground/40 hover:bg-transparent hover:text-sidebar-foreground/40 aria-disabled:pointer-events-auto"
-          >
-            <Icon />
-            <span>{item.title}</span>
-          </Sidebar.MenuButton>
-          {#if item.badge}
-            <Sidebar.MenuBadge
-              class="top-1.5 rounded-full border border-sidebar-border px-1.5 text-2xs font-medium tracking-wider text-sidebar-foreground/60 uppercase"
+      <!-- `isActive` matches nested routes too (/chat ⊃ /chat/x); the old exact
+           `pathname === href` lost the rail on any child page. -->
+      {@const active = isActive(page.url.pathname, item.href)}
+      {@const pending =
+        !active && pendingPath !== null && isActive(pendingPath, item.href)}
+      <Sidebar.MenuItem>
+        <!-- `onclick` goes through MenuButton so it is merged with the
+             tooltip trigger's own handlers rather than replacing them. -->
+        <Sidebar.MenuButton
+          isActive={active}
+          tooltipContent={item.title}
+          onclick={() => {
+            // The phone nav is a modal sheet; leaving it open after a tap kept
+            // its overlay over the page — and over the e-stop — so the first
+            // tap on PARAR after any navigation only dismissed it. app-sidebar
+            // also closes it after every navigation, whatever started it.
+            if (sidebar.isMobile) sidebar.setOpenMobile(false);
+          }}
+        >
+          {#snippet child({ props })}
+            <a
+              href={resolve(item.href as Pathname)}
+              {...props}
+              aria-current={active ? "page" : undefined}
+              data-pending={pending || undefined}
             >
-              {item.badge}
-            </Sidebar.MenuBadge>
-          {/if}
-        </Sidebar.MenuItem>
-      {:else}
-        {@const active = page.url.pathname === item.href}
-        <Sidebar.MenuItem>
-          <Sidebar.MenuButton isActive={active} tooltipContent={item.title}>
-            {#snippet child({ props })}
-              <a href={item.href} {...props}>
-                <Icon />
-                <span>{item.title}</span>
-              </a>
-            {/snippet}
-          </Sidebar.MenuButton>
-          {#if active}
-            <!-- Straight cyan rail — an absolute bar avoids the button's rounded-corner curve. -->
-            <span
-              class="pointer-events-none absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-cyan shadow-[0_0_10px_rgba(126,229,255,0.65)] group-data-[collapsible=icon]:hidden"
-            ></span>
-          {/if}
-        </Sidebar.MenuItem>
-      {/if}
+              <Icon />
+              <span>{item.title}</span>
+            </a>
+          {/snippet}
+        </Sidebar.MenuButton>
+        {#if active || pending}
+          <!-- Straight rail — an absolute bar avoids the button's rounded-corner
+               curve. Periwinkle, never cyan: cyan means "moving under power"
+               and nothing else, and the rail used to be the brightest cyan on
+               every page while the robot sat still. Active is solid with a
+               halo; pending is the same hue, dimmer and pulsing, on the item
+               being loaded. -->
+          <span
+            aria-hidden="true"
+            class={[
+              "pointer-events-none absolute inset-y-1.5 left-0 w-0.5 rounded-full group-data-[collapsible=icon]:hidden",
+              active
+                ? "bg-peri shadow-(--c3-glow-rail)"
+                : "bg-peri/70 motion-safe:animate-pulse",
+            ]}
+          ></span>
+        {/if}
+      </Sidebar.MenuItem>
     {/each}
   </Sidebar.Menu>
 </Sidebar.Group>

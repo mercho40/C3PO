@@ -8,66 +8,55 @@
  *
  * Seed it from a server `load` (`new RobotLive(data.state, data.online)`) for an
  * instant first paint, then call `start()` in `onMount` to go live.
+ *
+ * `online` is honest now: every request has a timeout (see `Poller`), so a
+ * bridge that stalls instead of refusing turns into "Sin conexión" within a few
+ * seconds rather than leaving the last reading on screen as current. `state` is
+ * KEPT across failures on purpose — panels show it as the last reading — so
+ * anything rendering it must check `online` before presenting it as live.
  */
 
-import { browser } from "$app/environment";
 import { createApi } from "$lib/api";
+import { linkFromError, type LinkProblem } from "./link-copy";
+import { Poller, type PollResult } from "./poller.svelte";
 import type { RobotState } from "@back/routes/state";
 
 export type PoseXY = { x: number; y: number };
 
-/**
- * Map a world-frame pose (metres) to a percentage position on a centred canvas.
- * Origin sits at the middle; +x → right, +y → up. `scale` is percent of the
- * canvas per metre. Clamped so the marker never leaves the frame.
- */
-export function projectPose(
-  x: number,
-  y: number,
-  scale = 6,
-): { left: number; top: number } {
-  return {
-    left: Math.min(96, Math.max(4, 50 + x * scale)),
-    top: Math.min(96, Math.max(4, 50 - y * scale)),
-  };
-}
+/** Why the console has no current state. Null while online. */
+export type { LinkProblem };
 
-/**
- * The same world→canvas projection as `projectPose`, WITHOUT the clamp.
- *
- * `projectPose` clamps to [4, 96] % so the robot marker stays visible when it
- * walks off the edge of the view — right for a point, wrong for a rectangle.
- * Clamping a costmap's corners would squash the image against the edge and
- * silently rescale it, so the map would no longer line up with the very marker
- * the clamp exists to protect. Anything with EXTENT must use this; anything
- * that is a single point should keep using `projectPose`.
- */
-export function projectMeters(
-  x: number,
-  y: number,
-  scale = 6,
-): { left: number; top: number } {
-  return { left: 50 + x * scale, top: 50 - y * scale };
-}
+/** A pose must move at least this far to count as travel or a trail point. */
+const JITTER_M = 0.05;
+const TRAIL_MAX = 240;
 
-export class RobotLive {
+export class RobotLive extends Poller {
   state = $state<RobotState | null>(null);
   online = $state(false);
+  /** Why there is no current state, in the shared link vocabulary. */
+  problem = $state<LinkProblem | null>(null);
   latencyMs = $state<number | null>(null);
   /** Cumulative path length in metres, integrated from polled pose deltas. */
   distanceM = $state(0);
   /** Recent world-frame positions, oldest → newest (capped). */
   trail = $state<PoseXY[]>([]);
 
-  #timer: ReturnType<typeof setInterval> | null = null;
   #last: PoseXY | null = null;
 
   constructor(initial?: RobotState | null, online = false) {
+    // The stop button reads `online`; it must never wait out a hung bridge.
+    super({ timeoutMs: 3500 });
     if (initial) {
       this.state = initial;
       this.online = online;
       this.#ingest(initial);
     }
+    if (!online) this.problem = "offline";
+  }
+
+  /** True when the bridge says every value is fabricated (stub mode). */
+  get simulated(): boolean {
+    return this.state?.stub === true;
   }
 
   #ingest(s: RobotState) {
@@ -76,39 +65,53 @@ export class RobotLive {
     const pt = { x: p.x_meters_world, y: p.y_meters_world };
     if (this.#last) {
       const d = Math.hypot(pt.x - this.#last.x, pt.y - this.#last.y);
-      // Ignore sub-2cm jitter so a stationary robot doesn't accrue distance.
-      if (d > 0.02) this.distanceM += d;
+      // Ignore jitter so a stationary robot neither accrues distance nor
+      // flushes its own trail: appending the same point every tick used to
+      // collapse the "travelled path" to a dot after ~3 minutes standing still.
+      if (d <= JITTER_M) return;
+      this.distanceM += d;
     }
     this.#last = pt;
-    this.trail = [...this.trail, pt].slice(-80);
+    this.trail = [...this.trail, pt].slice(-TRAIL_MAX);
   }
 
-  async #tick() {
+  protected async poll(signal: AbortSignal): Promise<PollResult> {
     const started = Date.now();
+    let res: Awaited<ReturnType<ReturnType<typeof createApi>["state"]["get"]>>;
     try {
-      const { data, error } = await createApi(fetch).state.get();
-      this.latencyMs = Date.now() - started;
-      if (error || !data) {
-        this.online = false;
-        return;
-      }
-      this.online = true;
-      this.state = data as RobotState;
-      this.#ingest(data as RobotState);
+      res = await createApi(fetch).state.get({ fetch: { signal } });
     } catch {
       this.online = false;
+      this.problem = signal.aborted ? "offline" : "noApi";
+      return "error";
     }
+    this.latencyMs = Date.now() - started;
+    const { data, error } = res;
+    // Eden never throws for a failed fetch: it returns `{ status: 503, value:
+    // <the thrown Error> }`. A real 503 from back carries a JSON body, so an
+    // Error value is the browser failing to reach back at all — or the
+    // timeout firing — and must not be reported as a bridge problem.
+    if (error?.value instanceof Error) {
+      this.online = false;
+      this.problem = signal.aborted ? "offline" : "noApi";
+      return "error";
+    }
+    if (error || !data) {
+      const status = error ? (error.status as number) : null;
+      this.online = false;
+      this.problem = linkFromError(status, error?.value);
+      return status === 401 ? "unauthorized" : "error";
+    }
+    this.online = true;
+    this.problem = null;
+    this.state = data as RobotState;
+    this.#ingest(data as RobotState);
+    return "ok";
   }
 
-  /** Begin polling. No-op on the server or if already running. */
-  start(intervalMs = 2000) {
-    if (!browser || this.#timer) return;
-    void this.#tick();
-    this.#timer = setInterval(() => void this.#tick(), intervalMs);
-  }
-
-  stop() {
-    if (this.#timer) clearInterval(this.#timer);
-    this.#timer = null;
+  /** Forget the travelled path (the odometer and trail), keeping the state. */
+  resetPath(): void {
+    this.distanceM = 0;
+    this.trail = this.#last ? [this.#last] : [];
   }
 }

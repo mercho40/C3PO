@@ -40,8 +40,11 @@ const goodMeta = (name: string, classification = "gesture") => ({
 });
 
 describe("catalogue resilience", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     toolsToReturn = [];
+    // The catalogue reuses a fresh answer for a few seconds; each test asks
+    // the (mocked) bridge for its own tool list.
+    (await import("./catalogue")).invalidateCatalogue();
   });
 
   test("a tool with malformed _meta is dropped, not fatal", async () => {

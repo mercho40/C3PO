@@ -97,4 +97,15 @@ export const telemetryRoutes = new Elysia()
         tags: ["telemetry"],
       },
     },
+  )
+  .get(
+    "/telemetry/gate",
+    ({ status }) => proxyJson("/telemetry/gate", status),
+    {
+      detail: {
+        summary:
+          "The Nav2 cmd_vel gate: whether autonomous driving is armed, for how long, and what it last sent.",
+        tags: ["telemetry"],
+      },
+    },
   );

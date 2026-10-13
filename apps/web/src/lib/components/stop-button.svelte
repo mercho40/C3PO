@@ -10,156 +10,82 @@
    *
    * It is quiet while the robot is stationary and asserts itself the moment the
    * robot is under power, which is the only time it is urgent.
+   *
+   * THE PRESS IS NOT THIS COMPONENT'S. It lives in `$lib/robot/estop.svelte`, so
+   * the topbar's button and the one /vr-control mounts inside the headset's
+   * dom-overlay show the same press. What the press means — and when "Parando…"
+   * may become "Detenido" — is decided in `$lib/robot/estop.ts`: only a
+   * telemetry reading taken after the order confirms it, offline is never
+   * confirmation, and only a confirmed stop clears itself.
+   *
+   * Announcements (the polite "Parando…/Detenido" and the failure alerts) are
+   * rendered ONCE, by the shell's EstopBanner — two buttons must not announce
+   * the same press twice.
    */
   import { Square, Check, TriangleAlert, Loader2 } from "@lucide/svelte";
-  import { goto } from "$app/navigation";
-  import { createApi } from "$lib/api";
   import { getRobotLive } from "$lib/robot/context";
   import { readPosture } from "$lib/robot/posture";
-  import { ESTOP_EVENT } from "$lib/robot/estop-event";
+  import { estop } from "$lib/robot/estop.svelte";
+  import { estopView, STOP_HOTKEY_LABEL } from "$lib/robot/estop";
 
   const live = getRobotLive();
-  const online = $derived(live.online);
-  const moving = $derived(
-    readPosture(live.state?.posture, live.online).load === "moving",
-  );
+  // "Under power and free to move": a gait controller is loaded (it takes a
+  // step the moment it is sent a velocity, even standing still), or the
+  // posture is motion by definition (a dance). Either way, the stop fills in.
+  const posture = $derived(readPosture(live.state?.posture, live.online));
+  const moving = $derived(posture.locomotion || posture.load === "moving");
+  const view = $derived(estopView(estop.phase));
 
-  /** What the last press did, as far as we can actually tell. */
-  type Outcome = "requested" | "rejected" | "unreachable" | null;
-  let busy = $state(false);
-  let outcome = $state<Outcome>(null);
-  let timer: ReturnType<typeof setTimeout> | null = null;
-
-  /**
-   * The button reports what it observes, not what it hopes.
-   *
-   * A 200 from `/skills/stop_everything/invoke` means the request was accepted,
-   * which is not the same as the robot having stopped — so the label stays
-   * "Parando…" until the live `/state` poll actually shows the robot out of a
-   * locomotion mode. Only then does it say "Detenido". Claiming a humanoid has
-   * halted on the strength of an HTTP status is the kind of thing an operator
-   * would only discover was wrong by watching it keep walking.
-   */
-  const label = $derived.by(() => {
-    if (outcome === "unreachable") return "Sin puente";
-    if (outcome === "rejected") return "Reintentar";
-    if (busy || (outcome === "requested" && moving)) return "Parando…";
-    // Offline is NOT confirmation. `readPosture` collapses an unreachable
-    // bridge to load "unknown", which is not "moving" — so without this the
-    // button turned green and claimed "Detenido" the moment telemetry
-    // dropped, which is exactly when it is least entitled to make that
-    // claim: the robot may well still be walking, and we can no longer see.
-    if (outcome === "requested" && !online) return "Sin confirmar";
-    if (outcome === "requested") return "Detenido";
-    return "Parar";
-  });
-
-  const tone = $derived.by(() => {
-    if (outcome === "unreachable") return "failed";
-    if (outcome === "rejected") return "failed";
-    if (outcome === "requested" && !online) return "unconfirmed";
-    if (outcome === "requested" && !moving && !busy) return "stopped";
-    return "idle";
-  });
-
-  async function stop() {
-    if (busy) return;
-    // Before the network, and to the whole page: anything on this page that
-    // commands motion on its own loop (/vr-control's walk_velocity ticks) must
-    // stop sending NOW, not after the bridge answers, and must not resume
-    // because the next tick ran. The bridge's stop does not latch that loop.
-    window.dispatchEvent(new Event(ESTOP_EVENT));
-    busy = true;
-    outcome = null;
-    if (timer) clearTimeout(timer);
-    try {
-      const { error } = await createApi(fetch)
-        .skills({ name: "stop_everything" })
-        .invoke.post({});
-      if (error && (error.status as number) === 401) {
-        // A generic "rejected" here reads as "the robot refused the stop" --
-        // the actual problem is the session expired, and retrying the same
-        // request will just fail the same way. Send the operator to re-auth
-        // instead of leaving them to press a button that can't work.
-        await goto("/login");
-        return;
-      }
-      // A 404 here is NOT "the robot refused". It means the catalogue could not
-      // be resolved — the bridge is unreachable AND nothing is cached — so
-      // `getSkill("stop_everything")` returned undefined and /invoke answered
-      // before ever reaching the safety exemption. Collapsing that into
-      // "rejected" tells the operator to retry a button that cannot work.
-      outcome = !error
-        ? "requested"
-        : (error.status as number) === 404
-          ? "unreachable"
-          : "rejected";
-    } catch {
-      outcome = "rejected";
-    } finally {
-      busy = false;
-      // A rejection stays put — it needs a decision, not a timeout. A confirmed
-      // stop clears itself.
-      if (outcome === "requested")
-        timer = setTimeout(() => (outcome = null), 6000);
-    }
+  function press() {
+    // aria-disabled rather than `disabled`: a disabled button drops keyboard
+    // focus mid-press, and the operator who just hit it should still be on it.
+    if (estop.busy) return;
+    void estop.press();
   }
 </script>
 
 <button
   type="button"
-  onclick={stop}
-  disabled={busy}
+  onclick={press}
+  aria-disabled={estop.busy}
+  aria-keyshortcuts="Shift+Space"
+  title="Parar todo movimiento del robot ({STOP_HOTKEY_LABEL})"
   data-moving={moving}
-  data-tone={tone}
+  data-tone={view.tone}
   class="stop"
-  aria-label="Parar todo movimiento del robot"
 >
   <span class="icon" aria-hidden="true">
-    {#if busy || (outcome === "requested" && moving)}
-      <Loader2 class="size-4 animate-spin" />
-    {:else if tone === "stopped"}
+    {#if view.spinning}
+      <Loader2 class="size-4 motion-safe:animate-spin" />
+    {:else if view.tone === "stopped"}
       <Check class="size-4" />
-    {:else if tone === "failed" || tone === "unconfirmed"}
+    {:else if view.tone === "failed" || view.tone === "unconfirmed"}
       <TriangleAlert class="size-4" />
     {:else}
       <Square class="size-4" />
     {/if}
   </span>
-  <span class="label">{label}</span>
+  <!-- The visible word IS the accessible name (plus a suffix saying what the
+       button does), so "Reintentar" said aloud to voice control matches what is
+       on screen. It used to carry a fixed aria-label that hid every state. -->
+  <span class="label hidden sm:inline">{view.label}</span>
+  <span class="label sm:hidden">{view.short}</span>
+  <span class="sr-only"> — detener todo movimiento del robot</span>
 </button>
-
-{#if outcome === "unreachable"}
-  <p role="alert" class="sr-only">
-    No se pudo alcanzar el puente, así que la orden de parada no salió. El robot
-    puede seguir en movimiento. Usá la parada física.
-  </p>
-{:else if outcome === "rejected"}
-  <!-- The one failure on this console that an operator must not scroll past:
-       the robot did not get the order and may still be moving. -->
-  <p role="alert" class="sr-only">
-    No se pudo enviar la orden de parada. El robot puede seguir en movimiento.
-  </p>
-{:else if tone === "unconfirmed"}
-  <p role="alert" class="sr-only">
-    Se envió la orden de parada, pero se perdió la conexión con el robot antes
-    de confirmarla. No se puede verificar si se detuvo.
-  </p>
-{/if}
 
 <style>
   .stop {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
+    gap: 0.375rem;
     /* 44px minimum on both axes: this is the control that halts a 1.3m humanoid,
        and the device it is pressed on is a phone held by someone standing next
        to that humanoid. `min-height` rather than `height` so it can grow with
        the longer confirmation labels. */
     min-height: 2.75rem;
     min-width: 2.75rem;
-    padding-inline: 0.875rem;
+    padding-inline: 0.75rem;
     border-radius: var(--radius-lg);
     border: 1px solid color-mix(in srgb, var(--c3-danger) 40%, transparent);
     background-color: color-mix(in srgb, var(--c3-danger) 8%, transparent);
@@ -178,14 +104,27 @@
       color 150ms;
   }
 
-  .stop:hover:not(:disabled) {
-    background-color: color-mix(in srgb, var(--c3-danger) 18%, transparent);
-    border-color: color-mix(in srgb, var(--c3-danger) 70%, transparent);
-    color: #fff;
+  @media (min-width: 40rem) {
+    .stop {
+      gap: 0.5rem;
+      padding-inline: 0.875rem;
+    }
   }
 
-  .stop:disabled {
+  .stop:focus-visible {
+    outline: 2px solid var(--c3-cyan-hot);
+    outline-offset: 2px;
+  }
+
+  .stop:hover:not([aria-disabled="true"]) {
+    background-color: color-mix(in srgb, var(--c3-danger) 18%, transparent);
+    border-color: color-mix(in srgb, var(--c3-danger) 70%, transparent);
+    color: var(--c3-on-danger);
+  }
+
+  .stop[aria-disabled="true"] {
     opacity: 0.75;
+    cursor: progress;
   }
 
   .icon {
@@ -197,11 +136,11 @@
   .stop[data-moving="true"] {
     background-color: var(--c3-danger);
     border-color: var(--c3-danger);
-    color: #fff;
+    color: var(--c3-on-danger);
   }
 
-  /* The order was sent but we can no longer see the robot. Amber, not green:
-     this is an open question, not a confirmation. */
+  /* The order was sent but nothing can confirm it. Amber, not green: this is an
+     open question, not a confirmation. */
   .stop[data-tone="unconfirmed"] {
     border-color: color-mix(in srgb, var(--c3-warn) 55%, transparent);
     background-color: color-mix(in srgb, var(--c3-warn) 12%, transparent);
@@ -216,7 +155,7 @@
 
   .stop[data-tone="failed"] {
     background-color: var(--c3-danger);
-    border-color: #fff;
-    color: #fff;
+    border-color: var(--c3-on-danger);
+    color: var(--c3-on-danger);
   }
 </style>

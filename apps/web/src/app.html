@@ -2,13 +2,30 @@
 <html lang="es">
   <head>
     <meta charset="utf-8" />
-    <link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+    <link
+      rel="icon"
+      href="%sveltekit.assets%/favicon.svg"
+      type="image/svg+xml"
+    />
+    <link
+      rel="apple-touch-icon"
+      href="%sveltekit.assets%/apple-touch-icon.png"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
+    <!-- --c3-void: the browser chrome on phones and the Quest matches the canvas. -->
+    <meta name="theme-color" content="#06090f" />
     <!-- Type is bundled, not fetched: see the font note in routes/layout.css.
 		     A Google Fonts <link> here is render-blocking, and this console is
 		     regularly opened on the robot's LAN with no route to the internet. -->
     %sveltekit.head%
+    <!-- Default AFTER %sveltekit.head% on purpose: the first <title> in the
+		     document wins, so a page's own title (or the console topbar's) takes
+		     precedence and this only applies where nothing else set one.
+		     There is no default meta description: unlike <title>, nothing makes
+		     the first of two descriptions win, so the landing page's own ended
+		     up duplicated by this one. The landing page sets its own. -->
+    <title>C3PO</title>
   </head>
   <body
     data-sveltekit-preload-code="viewport"

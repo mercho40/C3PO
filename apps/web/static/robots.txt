@@ -1,3 +1,14 @@
-# allow crawling everything by default
+# The landing page is public; the auth screens and the operator console are not
+# worth indexing on an internet-facing deploy (the console redirects to /login
+# anyway, so a crawler would only ever find the sign-in form).
 User-agent: *
-Disallow:
+Disallow: /login
+Disallow: /signup
+Disallow: /dashboard
+Disallow: /live-map
+Disallow: /live-camera
+Disallow: /chat
+Disallow: /voice
+Disallow: /vr-control
+Disallow: /health
+Disallow: /settings

@@ -1,97 +1,162 @@
 <script lang="ts">
-  import { goto } from "$app/navigation";
-  import {
-    ArrowRight,
-    MapPin,
-    ChevronRight,
-    Map,
-    ShieldCheck,
-    TriangleAlert,
-  } from "@lucide/svelte";
+  import { resolve } from "$app/paths";
+  import { ArrowRight, ChevronRight, MapPin } from "@lucide/svelte";
   import { Input } from "$lib/components/ui/input/index.js";
   import PostureFigure from "$lib/components/posture-figure.svelte";
+  import PoseCanvas from "$lib/components/pose-canvas.svelte";
+  import FaultList from "$lib/components/fault-list.svelte";
+  import ScaleBar from "$lib/components/robot/scale-bar.svelte";
   import AwarenessPanel from "$lib/components/awareness-panel.svelte";
-  import VoiceControl from "$lib/components/voice-control.svelte";
-  import { projectPose } from "$lib/robot/live-state.svelte";
+  import ActiveTasks from "$lib/components/robot/active-tasks.svelte";
   import { getRobotLive } from "$lib/robot/context";
+  import { readPosture, fsmReadout, LOAD_TEXT } from "$lib/robot/posture";
+  import { MotionTracker } from "$lib/robot/motion";
+  import { staleness } from "$lib/robot/faults";
+  import { LINK } from "$lib/robot/link-copy";
+  import { fitView } from "$lib/robot/map-geometry";
   import {
-    readPosture,
-    LOAD_TEXT,
-    LOAD_FILL,
-    LOAD_BORDER,
-  } from "$lib/robot/posture";
-
-  let { data } = $props();
+    UNIT_ID,
+    batteryPct,
+    batteryTone,
+    formatDistance,
+    formatLatency,
+    formatPose,
+    yawDegrees,
+  } from "$lib/robot/format";
 
   // Shared with the map and the topbar — see `(protected)/+layout.svelte`.
   const live = getRobotLive();
 
   const robot = $derived(live.state);
   const online = $derived(live.online);
-  const battery = $derived(
-    robot?.battery_pct != null ? Math.round(robot.battery_pct) : null,
-  );
-  const faults = $derived(robot?.faults ?? []);
-  const latencyMs = $derived(live.latencyMs ?? data.latencyMs);
+  const simulated = $derived(live.simulated);
+  // Whether ANY reading ever arrived. Offline with no reading is a different
+  // screen from offline with an old one: there is no "last" anything to label,
+  // and every "· última" over a "—" claimed a measurement that never existed.
+  const hasReading = $derived(robot !== null);
   const pose = $derived(robot?.pose ?? null);
-  const yawDeg = $derived(
-    pose ? Math.round((pose.yaw_radians_world * 180) / Math.PI) : null,
-  );
-  const posture = $derived(readPosture(robot?.posture, online));
+  const stale = $derived(staleness(robot?.faults));
+  // Position is history when the link is down or odometry stopped arriving
+  // (`stale_pose_*`): the bridge keeps reporting the last pose either way.
+  const poseOld = $derived(!online || stale.pose !== null);
 
-  const marker = $derived(
-    pose
-      ? projectPose(pose.x_meters_world, pose.y_meters_world)
-      : { left: 50, top: 50 },
+  // Motion is MEASURED from consecutive poses, not read off the FSM token: a
+  // gait controller (FSM 500/501/801/802) stands perfectly still at zero
+  // stick, and the console's one animation and its cyan are reserved for a
+  // robot that is actually moving.
+  const motionTracker = new MotionTracker();
+  const motion = $derived(
+    motionTracker.observe(pose, live.lastOkAt, stale.pose !== null),
   );
-  const trailPoints = $derived(
-    live.trail
-      .map((p) => {
-        const { left, top } = projectPose(p.x, p.y);
-        return `${left},${top}`;
-      })
-      .join(" "),
+  const posture = $derived(
+    readPosture(robot?.posture, online, {
+      motion,
+      staleS: stale.posture,
+      stub: simulated,
+      // Same word as the topbar for the same fault, and no "última lectura"
+      // when nothing was ever read (posture.ts).
+      problem: live.problem,
+      hasReading,
+    }),
   );
+  const fsm = $derived(fsmReadout(robot?.posture, robot?.raw?.fsm_id));
 
-  // Battery is the one number besides the posture that has a "running out"
-  // dimension worth colouring.
-  const batteryTone = $derived(
-    battery == null
+  const battery = $derived(batteryPct(robot?.battery_pct));
+  const yawDeg = $derived(yawDegrees(pose?.yaw_radians_world));
+
+  // What the latency number actually measures: browser → back → the bridge's
+  // get_state tool call, as timed by the client poll. Not "network" — and not
+  // the SSR-side seed from the layout load, which timed a different path and
+  // froze at page load; "—" until the first client poll says otherwise.
+  const latency = $derived(
+    online && live.lastOkAt !== null ? live.latencyMs : null,
+  );
+  const latencyTone = $derived(
+    latency == null
       ? "text-ink-mute"
-      : battery <= 20
-        ? "text-danger-soft"
-        : battery <= 40
-          ? "text-warn"
-          : "text-ink",
+      : latency > 500
+        ? "text-warn"
+        : "text-ink",
   );
+  const linkLabel = $derived(LINK[live.problem ?? "offline"]);
+
+  // A fact that is not a current measurement says which kind it is, in words
+  // — "· última" (history) or "· simulado" (the stub's fabrication) — and in
+  // the muted ink. It used to say it with opacity-55 alone, which took the
+  // 11 px labels down to ~3:1 and told a screen reader nothing at all.
+  // Simulated wins over old: a fabricated value is the bigger caveat.
+  const batteryMark = $derived(
+    simulated ? "simulada" : !online && hasReading ? "última" : null,
+  );
+  const poseMark = $derived(
+    simulated ? "simulada" : pose && poseOld ? "última" : null,
+  );
+  const yawMark = $derived(
+    simulated ? "simulado" : pose && poseOld ? "último" : null,
+  );
+
+  // Distance is a MEASUREMENT only once a pose has been seen (the trail gets
+  // its first point then). Before that "0.0 m" claimed the robot had been
+  // watched standing still; it had not been watched at all.
+  const travelled = $derived(
+    live.trail.length > 0 ? formatDistance(live.distanceM) : "—",
+  );
+
+  // One chip treatment for every text overlay on the map: same fill, edge
+  // and padding, so none of them reads as more (or less) official.
+  const chip =
+    "rounded-md border border-hairline bg-abyss/80 px-2 py-1 backdrop-blur-sm";
+
+  // The mini-map frames the whole session: the trail, the robot and the
+  // origin (the only fixed landmark), so the path walked is always on screen.
+  // Square-fit, so it holds on any canvas aspect.
+  const view = $derived(
+    fitView(
+      [
+        { x: 0, y: 0 },
+        ...live.trail,
+        ...(pose ? [{ x: pose.x_meters_world, y: pose.y_meters_world }] : []),
+      ],
+      1,
+      1,
+      { minSpan: 6, marginM: 1.5 },
+    ),
+  );
+  let ppm = $state(0);
 
   let command = $state("");
 
-  // The command box hands off to the agent chat, which streams the model's
-  // reply and tool calls; the query is auto-sent on arrival.
+  // The command box hands off to the agent chat as a plain GET form to
+  // /chat?q=… — SvelteKit routes it client-side like a link — and the chat
+  // auto-sends the query on arrival. Only an empty command is stopped here.
   function runCommand(e: SubmitEvent) {
-    e.preventDefault();
-    const text = command.trim();
-    if (!text) return;
-    goto(`/chat?q=${encodeURIComponent(text)}`);
+    if (!command.trim()) e.preventDefault();
   }
 </script>
 
-{#snippet fact(label: string, value: string, tone = "text-ink")}
+{#snippet fact(
+  label: string,
+  value: string,
+  tone = "text-ink",
+  mark: string | null = null,
+)}
   <!-- Values are never truncated. A coordinate clipped to "1.24, -0…" reads as
        a real reading rather than a hidden one, and the operator has no way to
        tell which. If a value outgrows its column it wraps, which is visibly a
        long value rather than invisibly a wrong one. -->
   <div class="flex min-w-0 flex-col gap-1 border-t border-hairline pt-2.5">
-    <span class="eyebrow">{label}</span>
-    <span class="font-mono text-sm break-words {tone}">{value}</span>
+    <span class="eyebrow">{label}{mark ? ` · ${mark}` : ""}</span>
+    <span class="font-mono text-sm break-words {mark ? 'text-ink-mute' : tone}"
+      >{value}</span
+    >
   </div>
 {/snippet}
 
-<!-- Two columns from 1400px: state on the left (what it is doing, then what you
-     can say to it), the map on the right taking the full height. The map is the
-     one panel that genuinely wants vertical room; giving the slack to the hero
-     instead just left a tall empty band above the robot.
+<!-- Two columns from 1400px. Left: what it is doing, then what you can say to
+     it. Right: where it is, then what it sees and hears — so the D7 notes
+     ("detection is OFFLINE — this is not an empty scene") sit on the FIRST
+     screen. They used to start exactly one viewport down, under a grid sized
+     to the full scroll height, on every desktop wide enough for two columns.
 
      The split is at 1400 rather than Tailwind's xl (1280) because at 1280 —
      minus a 255px sidebar — the hero track was too narrow to hold the figure
@@ -101,12 +166,15 @@
      below its content's min-content width, which let the headline push the
      layout wider than the viewport. -->
 <div
-  class="grid gap-4 pb-2 min-[1400px]:h-full min-[1400px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] min-[1400px]:pb-0"
+  class="grid gap-4 pb-2 min-[1400px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] min-[1400px]:items-start"
 >
   <div class="flex min-w-0 flex-col gap-4">
     <!-- Hero: what the robot is doing, right now. Everything else on this page
          is subordinate to it, which is why it is the only panel with the lift. -->
-    <section class="flex min-w-0 shrink-0 flex-col panel-hero p-5 sm:p-7">
+    <section
+      class="flex min-w-0 flex-col panel-hero p-5 sm:p-7"
+      aria-labelledby="hero-unit"
+    >
       <!-- Side by side only from lg up. Between the sidebar appearing (768px)
            and 1024px there is not enough room for a 245px figure and a 38px
            extended headline on one line, and the headline was the thing that
@@ -123,202 +191,191 @@
              over the robot, which is at least a true thing about the space it
              occupies — centring the text instead left a diagonal void. -->
         <div class="flex min-w-0 flex-1 flex-col lg:justify-end">
+          {#if simulated}
+            <!-- Stub mode returns a hard-coded 87 %, pose (0,0) and no faults
+                 for a robot that does not exist. Said first and loudly, so
+                 nothing below is read as a measurement. -->
+            <p
+              class="mb-3 inline-flex w-fit items-center gap-2 rounded-full border border-warn/40 bg-warn/10 px-3 py-1 font-mono text-xs tracking-[0.12em] text-warn uppercase"
+            >
+              Simulación · datos ficticios
+            </p>
+          {/if}
           <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span class="stamp text-2xl text-ink sm:text-[30px]">BIPED-01</span>
+            <h2 id="hero-unit" class="stamp text-2xl text-ink sm:text-[30px]">
+              {UNIT_ID}
+            </h2>
             <span class="readout"
               >Unitree G1{robot?.env ? ` · ${robot.env}` : ""}</span
             >
           </div>
 
-          <p
-            class="mt-3 stamp text-3xl leading-[1.05] lg:text-[38px] {LOAD_TEXT[
-              posture.load
-            ]}"
-          >
-            {posture.label}
-          </p>
-          <p class="mt-2 text-sm leading-relaxed text-ink-mute">
-            {posture.detail}
-          </p>
-          <!-- The firmware's own token, kept because whoever is debugging DDS
-               needs to know which FSM index produced the label above. -->
-          {#if robot?.posture}
-            <span class="mt-1.5 readout">fsm · {robot.posture}</span>
+          <!-- Only what changes when the STATE changes is live. The age of a
+               stale reading ("hace 35 s") is outside the region: inside it,
+               it was re-announced on every 2 s poll. -->
+          <div aria-live="polite">
+            <p
+              class="mt-3 stamp text-3xl leading-[1.05] lg:text-[38px] {LOAD_TEXT[
+                posture.load
+              ]}"
+            >
+              {posture.label}
+            </p>
+            <p class="mt-2 text-sm leading-relaxed text-ink-mute">
+              {posture.note}
+            </p>
+          </div>
+          {#if posture.since}
+            <span class="mt-1 readout">{posture.since}</span>
+          {/if}
+          <!-- The firmware's own token AND its index, because whoever is
+               debugging DDS needs to know which FSM mode produced the label
+               above — "run" alone cannot tell 801 from 802. -->
+          {#if fsm}
+            <span class="mt-1.5 readout">{fsm}</span>
           {/if}
 
           <div class="grid grid-cols-2 gap-x-6 gap-y-3 pt-6">
             {@render fact(
               "Batería",
               battery != null ? `${battery} %` : "—",
-              batteryTone,
+              batteryTone(robot?.battery_pct),
+              battery != null ? batteryMark : null,
             )}
-            {@render fact("Rumbo", yawDeg != null ? `${yawDeg}°` : "—")}
             {@render fact(
-              "Posición",
-              pose
-                ? `x ${pose.x_meters_world.toFixed(2)}  y ${pose.y_meters_world.toFixed(2)} m`
-                : "—",
+              "Rumbo",
+              yawDeg != null ? `${yawDeg}°` : "—",
+              "text-ink",
+              yawMark,
             )}
-            {@render fact("Red", online ? `${latencyMs} ms` : "sin enlace")}
+            {@render fact("Posición", formatPose(pose), "text-ink", poseMark)}
+            {@render fact(
+              "Latencia del puente",
+              online ? formatLatency(latency) : linkLabel,
+              online ? latencyTone : "text-ink-mute",
+            )}
           </div>
         </div>
       </div>
     </section>
 
-    <!-- What you can do about it. Sits under the hero and takes the leftover
-         height, so a long fault list has somewhere to go. -->
-    <section class="flex min-h-0 flex-1 flex-col gap-4 panel p-5">
-      <form onsubmit={runCommand} class="flex flex-col gap-2">
+    <!-- What you can do about it. -->
+    <section class="flex flex-col gap-5 panel p-5">
+      <form
+        action={resolve("/chat")}
+        method="GET"
+        onsubmit={runCommand}
+        class="flex flex-col gap-2"
+      >
         <label for="cmd" class="eyebrow">Decile qué hacer</label>
-        <div class="flex items-center gap-2 tile py-1 pr-1 pl-3">
+        <!-- The visible focus lives on the tile: the input inside is borderless
+             by design, and without this, tabbing into the page's main control
+             showed nothing at all. -->
+        <div
+          class="flex items-center gap-2 tile py-1 pr-1 pl-3 transition-colors focus-within:border-accent-edge focus-within:ring-2 focus-within:ring-cyan-hot/40"
+        >
+          <!-- text-base below md: iOS Safari zooms the page on focus for any
+               input under 16px. -->
           <Input
             id="cmd"
+            name="q"
+            autocomplete="off"
             bind:value={command}
             placeholder="Caminá 2 metros y saludá"
-            class="h-9 w-full rounded-none border-0 bg-transparent p-0 font-mono text-xs text-ink shadow-none placeholder:text-ink-mute focus-visible:ring-0"
+            class="h-9 w-full rounded-none border-0 bg-transparent p-0 font-mono text-base text-ink shadow-none placeholder:text-ink-mute focus-visible:ring-0 md:text-xs dark:bg-transparent"
           />
           <button
             type="submit"
             aria-label="Enviar al agente"
             disabled={command.trim().length === 0}
-            class="flex size-8 shrink-0 items-center justify-center rounded-md text-ink-mute transition-colors hover:bg-accent hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
+            class="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-mute transition-colors hover:bg-accent hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            <ArrowRight class="size-4" />
+            <ArrowRight class="size-4" aria-hidden="true" />
           </button>
         </div>
       </form>
 
-      <div class="flex min-h-0 flex-1 flex-col gap-2">
-        <span class="eyebrow">Diagnóstico</span>
-        <div class="min-h-0 flex-1 overflow-y-auto">
-          {#if !online}
-            <p class="text-sm text-ink-mute">Sin conexión con el robot.</p>
-          {:else if faults.length === 0}
-            <p class="flex items-center gap-2 text-sm text-ok">
-              <ShieldCheck class="size-4 shrink-0" />
-              Sin fallos
-            </p>
-          {:else}
-            <ul class="flex flex-col gap-2">
-              {#each faults as fault (fault)}
-                <li class="flex items-start gap-2 text-sm text-danger-soft">
-                  <TriangleAlert class="mt-0.5 size-4 shrink-0" />
-                  <span class="min-w-0 font-mono text-xs break-words"
-                    >{fault}</span
-                  >
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </div>
+      <ActiveTasks />
+
+      <div class="flex flex-col gap-2">
+        <h2 class="eyebrow">Diagnóstico</h2>
+        <FaultList
+          faults={robot?.faults ?? []}
+          {online}
+          problem={live.problem}
+          {simulated}
+        />
       </div>
     </section>
   </div>
 
-  <!-- Where it is. The one panel that genuinely benefits from height, so it
-       takes the full column. -->
-  <section class="flex min-w-0 flex-col panel p-5">
-    <div class="flex items-baseline justify-between gap-3">
-      <span class="eyebrow">Última ubicación conocida</span>
-      <a
-        href="/live-map"
-        class="flex items-center gap-1 text-xs text-ink-mute transition-colors hover:text-ink"
-      >
-        Mapa completo
-        <ChevronRight class="size-3.5" />
-      </a>
-    </div>
-
-    <div
-      class="relative mt-3 min-h-[220px] flex-1 overflow-hidden rounded-lg border border-hairline bg-trench"
-    >
-      <!-- A reference grid, so an empty frame reads as ground rather than as a
-             panel that failed to load. Origin lines are brighter: (0,0) is where
-             the robot's odometry started, which is the only fixed landmark. -->
-      <svg
-        class="absolute inset-0 size-full"
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        <g stroke="var(--c3-hairline)" stroke-width="0.2">
-          {#each [20, 40, 60, 80] as t (t)}
-            <line x1="0" y1={t} x2="100" y2={t} />
-            <line x1={t} y1="0" x2={t} y2="100" />
-          {/each}
-        </g>
-        <g stroke="var(--c3-hairline-strong)" stroke-width="0.3">
-          <line x1="0" y1="50" x2="100" y2="50" />
-          <line x1="50" y1="0" x2="50" y2="100" />
-        </g>
-      </svg>
-
-      {#if live.trail.length > 1}
-        <svg
-          class="absolute inset-0 size-full"
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-          aria-hidden="true"
+  <div class="flex min-w-0 flex-col gap-4">
+    <!-- Where it is. -->
+    <section class="flex min-w-0 flex-col panel p-5">
+      <div class="flex items-baseline justify-between gap-3">
+        <!-- "Última ubicación conocida" only when there IS one: with no pose
+             ever received it named a location nobody knew. -->
+        <h2 class="eyebrow">
+          {pose && poseOld ? "Última ubicación conocida" : "Ubicación"}
+        </h2>
+        <a
+          href={resolve("/live-map")}
+          class="flex min-h-8 items-center gap-1 rounded text-xs text-ink-mute transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none"
         >
-          <polyline
-            points={trailPoints}
-            fill="none"
-            stroke="var(--c3-peri)"
-            stroke-opacity="0.5"
-            stroke-width="0.5"
-            stroke-dasharray="0.6 1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      {/if}
-      <span class="absolute top-2.5 left-3 readout">
-        {#if pose}
-          x {pose.x_meters_world.toFixed(2)} · y {pose.y_meters_world.toFixed(
-            2,
-          )} m
-        {:else}
-          sin posición
-        {/if}
-      </span>
-      <div
-        class="absolute transition-[left,top] duration-500 ease-out"
-        style="left:{marker.left}%;top:{marker.top}%"
-      >
-        <!-- Same load encoding as the hero figure and the full map. -->
-        <span
-          class="absolute -inset-2 rounded-full border opacity-50 {LOAD_BORDER[
-            posture.load
-          ]}"
-        ></span>
-        <span
-          class="relative block size-3 rounded-full {LOAD_FILL[posture.load]}"
-        ></span>
+          Mapa completo
+          <ChevronRight class="size-3.5" aria-hidden="true" />
+        </a>
       </div>
-    </div>
 
-    <div class="mt-3 flex items-center gap-2.5 tile p-3">
-      <MapPin class="size-4 shrink-0 text-ink-mute" />
-      <span class="flex-1 text-sm text-ink">Distancia recorrida</span>
-      <span class="font-mono text-sm text-peri">
-        {(live.distanceM / 1000).toFixed(2)} km
-      </span>
-    </div>
-  </section>
-</div>
+      <PoseCanvas
+        class="mt-3 h-[260px] rounded-lg border border-hairline sm:h-[300px]"
+        {pose}
+        trail={live.trail}
+        load={posture.load}
+        center={view.center}
+        span={view.span}
+        stale={poseOld || simulated}
+        animate
+        bind:ppm
+        ariaLabel={pose
+          ? `Mini-mapa: ${UNIT_ID} en ${formatPose(pose)}${poseOld ? ", última posición conocida" : ""}`
+          : `Mini-mapa: ${UNIT_ID} sin posición`}
+      >
+        <span
+          class={[
+            "absolute top-2.5 left-3 readout",
+            chip,
+            poseOld ? "text-ink-mute" : "text-ink-dim",
+          ]}
+        >
+          {pose ? formatPose(pose) : "sin posición"}
+          {#if pose && stale.pose !== null}
+            · odometría detenida hace {Math.round(stale.pose)} s
+          {/if}
+        </span>
+        {#if ppm > 0}
+          <div class={["pointer-events-none absolute bottom-2.5 left-3", chip]}>
+            <ScaleBar {ppm} maxPx={90} />
+          </div>
+        {/if}
+      </PoseCanvas>
 
-<!-- What the robot SEES and HEARS. Full width rather than squeezed into the
-     column stack, because the D7 notes are sentences ("detection is OFFLINE —
-     this is not an empty scene") and they lose their force wrapped to a narrow
-     gutter. They are the part an operator must actually read. -->
-<div class="mt-4">
-  <AwarenessPanel />
-</div>
+      <div class="mt-3 flex items-center gap-2.5 tile p-3">
+        <MapPin class="size-4 shrink-0 text-ink-mute" aria-hidden="true" />
+        <span class="flex-1 text-sm text-ink">Recorrido en esta sesión</span>
+        <span
+          class={[
+            "font-mono text-sm",
+            live.trail.length > 0 ? "text-peri" : "text-ink-mute",
+          ]}>{travelled}</span
+        >
+      </div>
+    </section>
 
-<!-- The switch that makes what the robot hears into what it does. Directly
-     under the panel that shows what it heard, because the two are read
-     together: an operator deciding whether to hand the agent the microphone
-     wants the last few utterances in view while deciding. -->
-<div class="mt-4">
-  <VoiceControl />
+    <!-- What the robot SEES and HEARS. On the first screen at every width: the
+         D7 notes are sentences ("detection is OFFLINE — this is not an empty
+         scene") and they are the part an operator must actually read. The
+         voice switch moved to /voice; the Hears header links there. -->
+    <AwarenessPanel />
+  </div>
 </div>

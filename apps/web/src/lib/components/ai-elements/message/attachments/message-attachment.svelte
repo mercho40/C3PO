@@ -18,9 +18,7 @@
 
   let filename = $derived(data.filename || "");
   let isImage = $derived(!!data.url && !!data.mediaType?.startsWith("image/"));
-  let attachmentLabel = $derived(
-    filename || (isImage ? "Image" : "Attachment"),
-  );
+  let attachmentLabel = $derived(filename || (isImage ? "Imagen" : "Adjunto"));
 
   function handleRemove(event: MouseEvent) {
     event.stopPropagation();
@@ -36,14 +34,14 @@
     <MessageAttachmentPreview {data} />
     {#if onRemove}
       <Button
-        aria-label="Remove attachment"
+        aria-label="Quitar adjunto"
         class="absolute top-2 right-2 z-10 size-6 rounded-full bg-background/80 p-0 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 hover:bg-background [&>svg]:size-3"
         onclick={handleRemove}
         type="button"
         variant="ghost"
       >
         <X />
-        <span class="sr-only">Remove</span>
+        <span class="sr-only">Quitar</span>
       </Button>
     {/if}
   {:else}
@@ -66,14 +64,14 @@
     </Tooltip.Provider>
     {#if onRemove}
       <Button
-        aria-label="Remove attachment"
+        aria-label="Quitar adjunto"
         class="absolute top-2 right-2 z-10 size-6 shrink-0 rounded-full p-0 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent [&>svg]:size-3"
         onclick={handleRemove}
         type="button"
         variant="ghost"
       >
         <X />
-        <span class="sr-only">Remove</span>
+        <span class="sr-only">Quitar</span>
       </Button>
     {/if}
   {/if}

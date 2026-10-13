@@ -111,6 +111,25 @@ composition-root guard enforces auth at runtime but leaves `user` untyped
 inside the module. Pulling the plugin in from several modules is free
 (Elysia deduplicates by plugin name).
 
+Two modules are mounted **beside** that guard rather than inside it:
+`skillsRoutes` and `auditRoutes` carry their own `{ auth: true }` guard, and
+nesting them inside the outer one resolved the session twice per request
+(measured on Elysia 1.4.28) — which matters for `/skills/:name/invoke`, behind
+PARAR and the ~1 Hz VR walk loop. `mounted.test.ts` pins both mounts.
+`POST /skills/stop_everything/invoke` never waits on the catalogue (no
+schema, no admin check) and is raced against an 8 s timer rather than given an
+SDK timeout — the SDK's timeout cancels the call on the bridge, mid-stop. On the
+timer it answers 504 `bridge_timeout` while the stop keeps running. Other
+skills read the catalogue, which is reused for 5 s (the VR walk loop invokes
+about once a second) and whose `tools/list` is bounded at 3 s. `POST /agent`
+passes the request's abort signal to the agent loop, so a stopped reply (or a
+closed tab) ends its next steps instead of leaving it dispatching skills
+unseen. Unexpected errors are answered with a generic `internal_error` body;
+the real one goes to the log (a drizzle error's message is its SQL).
+`GET /audit` (the command log) is admin-only; `GET /health` is public and also
+reports which social sign-in providers are configured (`auth.providers`), so
+the login page renders only buttons that work.
+
 **Security caveat:** `/agent` can move the robot, and every authenticated
 caller shares the one hand-issued TIC AI key; tighten further
 (admin/org-scoped) before any multi-tenant use.
@@ -122,6 +141,15 @@ Drizzle ORM + PostgreSQL. Schema and its conventions live in
 `user`, `session`, `account`, `verification`, `organization`, `member`,
 `invitation`; the C3PO operational tables are `chat`, `chat_message`, and
 `tool_call_log`.
+
+`tool_call_log` is the audit trail of every skill dispatched to the robot, by
+any path: `source` is `agent`, `voice` or `direct` (`/skills/:name/invoke` —
+every VR button, the walk loop, bring-up and PARAR), and `user_id` says who.
+The write is fire-and-forget on every path: a stop must never wait on the
+database. A 200 whose body reports failure (`status: "failed"`, a non-empty
+`error`) is logged as `error` — the bridge never raises. `chat_id` is
+`ON DELETE SET NULL`, not cascade: deleting a chat must not erase the record of
+what it made the robot do.
 
 - **`session` vs `sessions`:** `session` (singular) is Better Auth's login
   session. The architecture also calls an operator/supervisor run a session

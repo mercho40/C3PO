@@ -55,9 +55,11 @@
       size="icon"
       type="button"
       variant="outline"
+      aria-label="Ir al final"
+      title="Ir al final"
       {...restProps}
     >
-      <ArrowDown class="size-4" />
+      <ArrowDown class="size-4" aria-hidden="true" />
     </Button>
   </div>
 {/if}

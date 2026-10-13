@@ -48,6 +48,18 @@
   --c3-danger: #ff4d6a;
   --c3-danger-soft: #ff8aa0; /* danger text — legible on dark, unlike the fill */
 
+  /* Costmap cells. These mirror the encoder's own PALETTE
+     (apps/perception/…/c3po_perception/costmap_png.py) so the map legend
+     matches the PNG pixel for pixel — they are the image's colours, not the
+     console's, which is why they sit outside the ink/accent families.
+     "Inflated" is the ramp's middle step. Unknown is a cool slate that appears
+     nowhere in the warm free→lethal ramp: "nobody looked" never reads as
+     "clear floor". */
+  --c3-map-free: #ffffff;
+  --c3-map-inflated: #fba04c;
+  --c3-map-lethal: #18181b;
+  --c3-map-unknown: #334155;
+
   /* Tints derived from the accents. Named by intent so a component never has
 	   to guess which alpha step is "the" border or "the" hover fill. */
   --c3-hairline: rgba(180, 210, 255, 0.09);
@@ -59,6 +71,19 @@
 
   --c3-glow-cyan: 0 0 24px rgba(126, 229, 255, 0.5);
   --c3-glow-soft: 0 8px 28px -10px rgba(126, 229, 255, 0.55);
+  /* The active nav rail's halo — tighter than glow-cyan, so a 2px bar glows
+     without bleeding into the label next to it. Periwinkle, like the rail:
+     "you are here" is navigation, and cyan means "moving under power". */
+  --c3-glow-rail: 0 0 10px rgba(159, 197, 255, 0.6);
+  /* A neutral lift for floating chrome (the landing's pill nav and hero
+     input) — depth without the accent glow that `cta` reserves for the one
+     call to action. */
+  --c3-shadow-float: 0 10px 30px -12px rgba(0, 0, 0, 0.7);
+  /* The "connected" dot. Green halo, same radius as the rail. */
+  --c3-glow-ok: 0 0 10px rgba(94, 231, 161, 0.7);
+  /* Text and borders on a filled danger surface — the e-stop under power.
+     Pure white: the ink tones are blue-tinted and lose contrast on red. */
+  --c3-on-danger: #ffffff;
 
   /* ---------------------------------------------------------------------
 	   shadcn contract. Mapping the palette onto these is what makes
@@ -136,6 +161,10 @@
   --color-wash: var(--c3-wash);
   --color-wash-hover: var(--c3-wash-hover);
   --color-accent-edge: var(--c3-accent-edge);
+  --color-map-free: var(--c3-map-free);
+  --color-map-inflated: var(--c3-map-inflated);
+  --color-map-lethal: var(--c3-map-lethal);
+  --color-map-unknown: var(--c3-map-unknown);
 
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -330,6 +359,42 @@
 
 @utility glow-cyan {
   filter: drop-shadow(0 0 10px rgba(126, 229, 255, 0.45));
+}
+
+/* Ambient depth: a cool wash from the top edge and a deeper one bottom-right,
+   so large flat regions (map canvas, empty chat) don't read as dead space. One
+   definition for the console shell AND the auth pages — the sign-in screen
+   promised "the same ambient wash as the console shell, so the transition after
+   sign-in is continuous", and it had quietly drifted to different numbers.
+   Background-image only: the caller keeps its own background colour. */
+@utility ambient {
+  background-image:
+    radial-gradient(
+      60% 40% at 50% 0%,
+      color-mix(in srgb, var(--c3-peri) 10%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      40% 40% at 100% 100%,
+      color-mix(in srgb, var(--c3-blue) 12%, transparent),
+      transparent 70%
+    );
+}
+
+/* The landing page's taller version of the same wash — it has a full-height
+   hero to light rather than a topbar. */
+@utility ambient-hero {
+  background-image:
+    radial-gradient(
+      120% 60% at 50% 0%,
+      color-mix(in srgb, var(--c3-peri) 14%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(
+      50% 40% at 90% 35%,
+      color-mix(in srgb, var(--c3-blue) 10%, transparent),
+      transparent 70%
+    );
 }
 
 /* ---------------------------------------------------------------------------

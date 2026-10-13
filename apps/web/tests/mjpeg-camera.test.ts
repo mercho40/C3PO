@@ -15,7 +15,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { connectRobotCamera, endpoint } from "../src/lib/robot/mjpeg-camera";
+import {
+  connectRobotCamera,
+  endpoint,
+  statusBackoffMs,
+} from "../src/lib/robot/mjpeg-camera";
 
 type Fake = {
   url: string;
@@ -293,4 +297,190 @@ test("a healthy stream is never reconnected", async () => {
   } finally {
     fake.stop();
   }
+});
+
+/**
+ * The bridge relay's extra fields. `/camera/status` on the bridge names the
+ * serving source and carries a `hint` when neither feed is live; a non-OK
+ * answer carries the bridge's own sentence in its JSON body. Both used to be
+ * dropped — the hint as an unknown field, the body behind a bare "HTTP 503".
+ */
+describe("bridge relay fields", () => {
+  test("source, sources and hint reach onStatus intact", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/status") {
+          return Response.json({
+            v: 1,
+            source: "none",
+            live: false,
+            frame_age_s: null,
+            frames: 0,
+            width: null,
+            height: null,
+            stream_width: null,
+            stream_height: null,
+            stale_after_s: 1.0,
+            sources: {
+              videohub: { live: false, hint: "videohub_pc4 is not running" },
+              vision: { live: false, hint: "not answering on :8081" },
+            },
+            hint: "neither camera feed is live.",
+          });
+        }
+        return new Response("--frame\r\n", {
+          headers: { "Content-Type": "multipart/x-mixed-replace; boundary=f" },
+        });
+      },
+    });
+    let last: import("../src/lib/robot/mjpeg-camera").RobotCamStatus | null =
+      null;
+    const details: (string | undefined)[] = [];
+    const handle = connectRobotCamera(`http://127.0.0.1:${server.port}`, {
+      onState: (_s, d) => details.push(d),
+      onStatus: (s) => (last = s ?? last),
+      onStreamUrl: () => {},
+    });
+    try {
+      await wait(900);
+      const got = last as unknown as {
+        source?: string;
+        hint?: string;
+        sources?: { videohub?: { hint?: string } };
+      } | null;
+      expect(got?.source).toBe("none");
+      expect(got?.hint).toBe("neither camera feed is live.");
+      expect(got?.sources?.videohub?.hint).toBe("videohub_pc4 is not running");
+      expect(details).toContain("la cámara todavía no entregó ningún cuadro");
+    } finally {
+      handle.close();
+      server.stop(true);
+    }
+  });
+
+  test("a non-OK answer keeps the bridge's own words after the code", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json(
+          {
+            error: "the head camera is real-hardware only",
+            sim_mode: "isaac",
+            hint: "the sim's cameras are teleimager WebRTC servers",
+          },
+          { status: 503 },
+        );
+      },
+    });
+    const details: (string | undefined)[] = [];
+    const handle = connectRobotCamera(`http://127.0.0.1:${server.port}`, {
+      onState: (_s, d) => details.push(d),
+      onStatus: () => {},
+      onStreamUrl: () => {},
+    });
+    try {
+      await wait(700);
+      expect(details).toContain(
+        "HTTP 503: the sim's cameras are teleimager WebRTC servers",
+      );
+    } finally {
+      handle.close();
+      server.stop(true);
+    }
+  });
+
+  test("a non-JSON error body is just the code", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response("Not Found", { status: 404 });
+      },
+    });
+    const details: (string | undefined)[] = [];
+    const handle = connectRobotCamera(`http://127.0.0.1:${server.port}`, {
+      onState: (_s, d) => details.push(d),
+      onStatus: () => {},
+      onStreamUrl: () => {},
+    });
+    try {
+      await wait(700);
+      expect(details).toContain("HTTP 404");
+    } finally {
+      handle.close();
+      server.stop(true);
+    }
+  });
+});
+
+/**
+ * Backoff only while there is no picture. Against a permanent 503 the client
+ * used to poll at 2 Hz forever (22 requests in 10 s in QA); the 500 ms cadence
+ * is for catching a LIVE stream that stalled, and a live stream keeps it.
+ */
+describe("status backoff", () => {
+  test("full speed for the first non-live answers, then doubling to a cap", () => {
+    expect(statusBackoffMs(0)).toBe(0);
+    expect(statusBackoffMs(4)).toBe(0);
+    expect(statusBackoffMs(5)).toBe(1000);
+    expect(statusBackoffMs(6)).toBe(2000);
+    expect(statusBackoffMs(7)).toBe(4000);
+    expect(statusBackoffMs(8)).toBe(5000);
+    expect(statusBackoffMs(50)).toBe(5000);
+  });
+
+  test("a permanent 503 is polled far less than 2 Hz", async () => {
+    let hits = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        hits += 1;
+        return Response.json(
+          { error: "the head camera is real-hardware only" },
+          { status: 503 },
+        );
+      },
+    });
+    const handle = connectRobotCamera(`http://127.0.0.1:${server.port}`, {
+      onState: () => {},
+      onStatus: () => {},
+      onStreamUrl: () => {},
+    });
+    try {
+      await wait(4200);
+      // At 2 Hz this would be ~9. Backed off: 4 fast polls, then 1 s, 2 s.
+      expect(hits).toBeLessThanOrEqual(7);
+      expect(hits).toBeGreaterThanOrEqual(4);
+    } finally {
+      handle.close();
+      server.stop(true);
+    }
+  });
+
+  test("a reconnect is someone looking: it polls at once", async () => {
+    let hits = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        hits += 1;
+        return Response.json({ error: "no" }, { status: 503 });
+      },
+    });
+    const handle = connectRobotCamera(`http://127.0.0.1:${server.port}`, {
+      onState: () => {},
+      onStatus: () => {},
+      onStreamUrl: () => {},
+    });
+    try {
+      await wait(3200); // deep in backoff
+      const before = hits;
+      handle.reconnect();
+      await wait(150);
+      expect(hits).toBe(before + 1);
+    } finally {
+      handle.close();
+      server.stop(true);
+    }
+  });
 });

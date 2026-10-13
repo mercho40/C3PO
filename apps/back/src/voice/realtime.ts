@@ -395,8 +395,15 @@ export class RealtimeVoiceSession {
       result = { error };
     }
     this.state.toolCalls += 1;
-    await logToolCall({
+    // Fire-and-forget, like the agent's: `logToolCall` never throws, and
+    // awaiting it made the model wait on a database write before it could hear
+    // the tool's result and answer the person standing at the robot.
+    void logToolCall({
       chatId,
+      // Explicit rather than resolved from the chat: the session owner is who
+      // started the microphone, and is known right here.
+      userId: this.state.ownerId,
+      source: "voice",
       skillName: name,
       params: args,
       result,

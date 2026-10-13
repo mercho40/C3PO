@@ -84,7 +84,7 @@
 
 <Dialog.Root bind:open>
   <Dialog.Trigger
-    aria-label={`Preview ${data.filename || "image attachment"}`}
+    aria-label={`Ver ${data.filename || "imagen adjunta"}`}
     class={cn(
       "block size-full cursor-zoom-in overflow-hidden rounded-md",
       className,
@@ -94,7 +94,7 @@
     {...props}
   >
     <img
-      alt={data.filename || "attachment"}
+      alt={data.filename || "adjunto"}
       class="size-full rounded-md object-cover transition-transform duration-200 group-hover:scale-[1.03]"
       height={56}
       onload={handleImageLoad}
@@ -114,7 +114,7 @@
           {ratio}
         >
           <img
-            alt={currentImage.filename || "attachment preview"}
+            alt={currentImage.filename || "vista previa del adjunto"}
             class="size-full object-contain"
             onload={handleImageLoad}
             src={getDisplayUrl(currentImage)}

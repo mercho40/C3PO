@@ -134,6 +134,11 @@ export async function callTool(
   name: string,
   args: Record<string, unknown> = {},
 ): Promise<unknown> {
+  // No per-call timeout on purpose. The SDK's `timeout` option CANCELS the
+  // call on the bridge (`notifications/cancelled`), which for a skill that is
+  // halfway through moving the robot — or stopping it — is the wrong thing to
+  // do. Callers that need to stop waiting race the promise instead (see
+  // routes/skills.ts) and let the call finish.
   const client = await getClient();
 
   let result: Awaited<ReturnType<Client["callTool"]>>;
@@ -172,6 +177,8 @@ export async function callTool(
  * the model had to invent timeouts, and a description telling the agent speech
  * was a stub after it had been implemented.
  */
+const LIST_TOOLS_TIMEOUT_MS = 3000;
+
 export async function listTools(): Promise<
   Array<{
     name: string;
@@ -182,7 +189,13 @@ export async function listTools(): Promise<
 > {
   const client = await getClient();
   try {
-    const result = await client.listTools();
+    // Bounded, unlike callTool: listing tools moves nothing, and every
+    // non-safety /invoke and the catalogue wait on it. A bridge that accepts
+    // connections but never answers must fall through to the cached catalogue
+    // in seconds, not after the SDK's 60 s default.
+    const result = await client.listTools(undefined, {
+      timeout: LIST_TOOLS_TIMEOUT_MS,
+    });
     return result.tools.map((t) => ({
       name: t.name,
       description: t.description,

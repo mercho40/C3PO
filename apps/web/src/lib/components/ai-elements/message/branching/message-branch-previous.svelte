@@ -20,7 +20,7 @@
 </script>
 
 <Button
-  aria-label="Previous branch"
+  aria-label="Versión anterior"
   disabled={isDisabled}
   onclick={() => branchContext.goToPrevious()}
   size="icon"

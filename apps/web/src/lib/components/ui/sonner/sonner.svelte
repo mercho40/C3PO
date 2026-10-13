@@ -15,6 +15,8 @@
 <Sonner
   theme="dark"
   class="toaster group"
+  containerAriaLabel="Notificaciones"
+  closeButtonAriaLabel="Cerrar notificación"
   style="--normal-bg: var(--color-popover); --normal-text: var(--color-popover-foreground); --normal-border: var(--color-border);"
   {...restProps}
 >

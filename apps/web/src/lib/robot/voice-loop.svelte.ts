@@ -4,8 +4,13 @@
  * DELIBERATELY THIN. Everything that decides what the operator is told lives in
  * `voice-loop.ts`, which is a plain module and therefore testable — `bun test`
  * cannot load a `.svelte.ts` at all, because runes are a compiler feature. This
- * holds reactive fields, a poll timer, and a guard against double-firing the
- * button that hands a robot its microphone.
+ * holds reactive fields, the poll (via `Poller`), and a guard against
+ * double-firing the button that hands a robot its microphone.
+ *
+ * ONE INSTANCE PER CONSOLE. The protected layout owns it (see `context.ts`), so
+ * the topbar can show that the robot is listening on every page — a running
+ * loop is a privacy state, and it used to be visible only at the bottom of the
+ * dashboard.
  *
  * STARTING IT IS NOT A TOGGLE, IT IS A DECISION. While it runs, speech near the
  * robot becomes a conversational turn; clear physical requests may call robot
@@ -14,6 +19,7 @@
  */
 
 import {
+  canControl,
   canHear,
   isRunning,
   voiceCommand,
@@ -21,25 +27,40 @@ import {
   type VoiceLoopState,
   type VoiceResult,
 } from "./voice-loop";
+import { Poller, type PollResult } from "./poller.svelte";
 
 export type { VoiceLoopState };
 
 const POLL_MS = 2000;
 
-export class VoiceLoopControl {
+export class VoiceLoopControl extends Poller {
   state = $state<VoiceLoopState | null>(null);
-  /** Why there is nothing, in words an operator can act on. Null when fine. */
+  /** Why the latest STATUS read failed, in words an operator can act on. */
   reason = $state<string | null>(null);
+  /**
+   * Why the latest start/stop failed. Kept apart from `reason` because a status
+   * poll succeeding 2 s later used to wipe the error before anyone read it.
+   * Cleared by the next successful command, or by the operator.
+   */
+  commandError = $state<string | null>(null);
   /** True while a start/stop is in flight, so the button cannot be double-fired. */
   busy = $state(false);
+  /** Which command is in flight, for "Iniciando…" / "Terminando…". */
+  pending = $state<"start" | "stop" | null>(null);
 
   /** Where `back` lives. Injected: `$env/static/public` is a build-time import
    *  and pulling it in here is what would make this module unloadable in a test. */
   readonly #base: string;
-  #timer: ReturnType<typeof setInterval> | null = null;
-  #inFlight = false;
+  /**
+   * Bumped whenever a start/stop answers. A status poll that was already in
+   * flight when the command was sent describes the loop BEFORE it, and landing
+   * after the command's reply it used to flip the chip back to "Escuchando"
+   * for a poll cycle after Stop — on a privacy state.
+   */
+  #commandSeq = 0;
 
   constructor(base: string) {
+    super({ timeoutMs: 4000 });
     this.#base = base;
   }
 
@@ -51,15 +72,13 @@ export class VoiceLoopControl {
     return canHear(this.state);
   }
 
-  start(): void {
-    if (this.#timer) return;
-    void this.#refresh();
-    this.#timer = setInterval(() => void this.#refresh(), POLL_MS);
+  /** False when another operator owns the running realtime session. */
+  get canControl(): boolean {
+    return canControl(this.state);
   }
 
-  stop(): void {
-    if (this.#timer) clearInterval(this.#timer);
-    this.#timer = null;
+  start(intervalMs = POLL_MS): void {
+    super.start(intervalMs);
   }
 
   async startLoop(): Promise<void> {
@@ -70,33 +89,44 @@ export class VoiceLoopControl {
     await this.#command("stop");
   }
 
-  #apply(result: VoiceResult): void {
-    if (result.ok) {
-      // The reply IS the new state — no optimistic flip.
-      this.state = result.state;
-      this.reason = null;
-    } else {
-      this.reason = result.reason;
-    }
+  dismissError(): void {
+    this.commandError = null;
   }
 
   async #command(which: "start" | "stop"): Promise<void> {
     if (this.busy) return;
     this.busy = true;
+    this.pending = which;
     try {
-      this.#apply(await voiceCommand(this.#base, which));
+      const result = await voiceCommand(this.#base, which);
+      this.#commandSeq += 1;
+      if (result.ok) {
+        // The reply IS the new state — no optimistic flip.
+        this.state = result.state;
+        this.commandError = null;
+      } else {
+        if (result.state) this.state = result.state;
+        this.commandError = result.reason;
+        if (result.status === 401) this.onUnauthorized();
+      }
     } finally {
       this.busy = false;
+      this.pending = null;
     }
   }
 
-  async #refresh(): Promise<void> {
-    if (this.#inFlight) return;
-    this.#inFlight = true;
-    try {
-      this.#apply(await voiceStatus(this.#base));
-    } finally {
-      this.#inFlight = false;
+  protected async poll(signal: AbortSignal): Promise<PollResult> {
+    const seq = this.#commandSeq;
+    const result: VoiceResult = await voiceStatus(this.#base, signal);
+    // Overtaken by a start/stop (or one is in flight): the command's reply is
+    // newer than this reading. Not a failure either.
+    if (seq !== this.#commandSeq || this.busy) return "ok";
+    if (result.ok) {
+      this.state = result.state;
+      this.reason = null;
+      return "ok";
     }
+    this.reason = result.reason;
+    return result.status === 401 ? "unauthorized" : "error";
   }
 }

@@ -77,3 +77,29 @@ describe("route wiring", () => {
     }
   }
 });
+
+/**
+ * Modules that run their own `auth` guard must sit BESIDE index.ts's outer
+ * guard, not inside it. Nested, Elysia runs the auth macro's resolver once per
+ * guard — measured on 1.4.28: two `getSession()` calls per request — and the
+ * module this matters most for is /skills, whose /invoke carries PARAR and the
+ * ~1.1/s VR walk loop. index.ts drifted back to nesting it once already, while
+ * skills.ts's docstring still said otherwise.
+ */
+describe("self-guarded modules are mounted outside the outer guard", () => {
+  const index = readFileSync(INDEX, "utf8");
+  // The call, not a mention of it in a comment.
+  const outerGuard = index.search(/\.guard\(\{ auth: true \},\s*\(app\)/);
+
+  test("index.ts has an outer guard to compare against", () => {
+    expect(outerGuard).toBeGreaterThan(0);
+  });
+
+  for (const symbol of ["skillsRoutes", "auditRoutes"]) {
+    test(`${symbol} is mounted before (outside) the outer guard`, () => {
+      const at = index.indexOf(`.use(${symbol})`);
+      expect(at).toBeGreaterThan(0);
+      expect(at).toBeLessThan(outerGuard);
+    });
+  }
+});

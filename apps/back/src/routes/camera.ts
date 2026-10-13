@@ -33,7 +33,7 @@
 
 import { Elysia } from "elysia";
 
-import { telemetryUrl } from "@back/bridge/url";
+import { bridgeSiblingUrl } from "@back/bridge/url";
 
 /** How long to wait for the bridge to START answering. Not a stream limit. */
 export const CONNECT_TIMEOUT_MS = 3000;
@@ -62,7 +62,7 @@ async function upstreamFailure(
 async function proxyStatus(status: StatusFn): Promise<unknown> {
   let upstream: Response;
   try {
-    upstream = await fetch(telemetryUrl("/camera/status"), {
+    upstream = await fetch(bridgeSiblingUrl("/camera/status"), {
       // Polled twice a second; a slow answer is a stale answer.
       signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS),
     });
@@ -95,7 +95,7 @@ async function proxyStream(
   );
   let upstream: Response;
   try {
-    upstream = await fetch(telemetryUrl("/camera/stream.mjpg"), {
+    upstream = await fetch(bridgeSiblingUrl("/camera/stream.mjpg"), {
       signal: upstreamAbort.signal,
     });
   } catch {

@@ -24,11 +24,18 @@ export type VoiceLoopState = {
   chatId?: string | null;
   lastReply?: string | null;
   toolCalls?: number;
+  /**
+   * Realtime only: whether the signed-in operator owns the running session.
+   * Null when nothing is running, or for the unowned legacy loop.
+   */
+  ownedByYou?: boolean | null;
   utterancesHeard: number;
   agentRuns: number;
-  stopsTriggered: number;
+  /** Null under the realtime engine, which does not act on spoken stops. */
+  stopsTriggered: number | null;
   micEverOpen: boolean;
-  alwaysListening: boolean;
+  /** Null under the realtime engine. */
+  alwaysListening: boolean | null;
   lastError: string | null;
   lastHeard: string | null;
   conversation?: {
@@ -45,44 +52,117 @@ export type VoiceLoopState = {
   };
 };
 
-/** Either the loop's state, or why there isn't one — never both, never neither. */
+/**
+ * Either the loop's state, or why there isn't one.
+ *
+ * A failure may still carry a `state`: a 409 from /voice/start means another
+ * operator owns the session, and back's body IS the current status — dropping
+ * it left the console unable to say who had the microphone.
+ */
 export type VoiceResult =
   | { ok: true; state: VoiceLoopState }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      reason: string;
+      status: number | null;
+      state?: VoiceLoopState;
+    };
 
-async function ask(
-  url: string,
-  init: RequestInit,
-  what: string,
-): Promise<VoiceResult> {
+function looksLikeState(body: unknown): body is VoiceLoopState {
+  return (
+    body !== null &&
+    typeof body === "object" &&
+    typeof (body as { running?: unknown }).running === "boolean"
+  );
+}
+
+async function ask(url: string, init: RequestInit): Promise<VoiceResult> {
   let res: Response;
   try {
     res = await fetch(url, { credentials: "include", ...init });
   } catch {
     // A dead `back` and a refusing `back` are different problems with different
     // fixes, and the operator should not have to guess which they have.
-    return { ok: false, reason: "back is unreachable" };
+    if (init.signal?.aborted) {
+      return {
+        ok: false,
+        status: null,
+        reason:
+          "El servidor no respondió a tiempo. Revisá el estado antes de volver a intentar.",
+      };
+    }
+    return {
+      ok: false,
+      status: null,
+      reason: "No se pudo contactar al servidor (apps/back).",
+    };
+  }
+  let body: unknown = null;
+  let parsed = false;
+  try {
+    body = await res.json();
+    parsed = true;
+  } catch {
+    // handled below
   }
   if (res.ok) {
-    try {
-      return { ok: true, state: (await res.json()) as VoiceLoopState };
-    } catch {
-      return { ok: false, reason: "back sent something that is not a status" };
-    }
+    if (parsed && looksLikeState(body)) return { ok: true, state: body };
+    return {
+      ok: false,
+      status: res.status,
+      reason: "El servidor respondió algo que no es un estado de voz.",
+    };
   }
-  if (res.status === 401) return { ok: false, reason: "not signed in" };
-  return { ok: false, reason: `could not ${what} the loop (${res.status})` };
+  if (res.status === 401) {
+    return { ok: false, status: 401, reason: "Sesión vencida." };
+  }
+  if (res.status === 409) {
+    return {
+      ok: false,
+      status: 409,
+      reason: "Otro operador tiene la conversación de voz.",
+      ...(looksLikeState(body) ? { state: body } : {}),
+    };
+  }
+  const serverError =
+    body &&
+    typeof body === "object" &&
+    typeof (body as { error?: unknown }).error === "string"
+      ? (body as { error: string }).error
+      : null;
+  return {
+    ok: false,
+    status: res.status,
+    reason: serverError
+      ? `El servidor rechazó el pedido: ${serverError}`
+      : `El servidor rechazó el pedido (HTTP ${res.status}).`,
+    ...(looksLikeState(body) ? { state: body } : {}),
+  };
 }
 
-export function voiceStatus(base: string): Promise<VoiceResult> {
-  return ask(`${base}/voice/status`, {}, "read");
+export function voiceStatus(
+  base: string,
+  signal?: AbortSignal,
+): Promise<VoiceResult> {
+  return ask(`${base}/voice/status`, { signal });
 }
+
+/**
+ * Starting a realtime session waits on the provider's handshake, so the bound
+ * is generous — but there is one: a hung back used to leave the switch on
+ * "Iniciando…" with the button locked, indefinitely.
+ */
+export const VOICE_COMMAND_TIMEOUT_MS = 20_000;
 
 export function voiceCommand(
   base: string,
   which: "start" | "stop",
+  timeoutMs: number = VOICE_COMMAND_TIMEOUT_MS,
 ): Promise<VoiceResult> {
-  return ask(`${base}/voice/${which}`, { method: "POST" }, which);
+  return ask(`${base}/voice/${which}`, {
+    method: "POST",
+    signal: AbortSignal.timeout(timeoutMs),
+  });
 }
 
 /**
@@ -99,4 +179,13 @@ export function canHear(state: VoiceLoopState | null): boolean {
 
 export function isRunning(state: VoiceLoopState | null): boolean {
   return state?.running === true;
+}
+
+/**
+ * Whether this operator may end the running session. A realtime session can
+ * only be ended by its owner; the legacy loop by anyone signed in.
+ */
+export function canControl(state: VoiceLoopState | null): boolean {
+  if (!state?.running) return true;
+  return state.ownedByYou !== false;
 }

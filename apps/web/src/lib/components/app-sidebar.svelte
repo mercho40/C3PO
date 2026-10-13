@@ -1,16 +1,10 @@
 <script lang="ts">
   import type { ComponentProps } from "svelte";
-  import {
-    Activity,
-    Gamepad2,
-    HeartPulse,
-    Map,
-    MessageSquare,
-    Mic,
-    Settings,
-    Video,
-  } from "@lucide/svelte";
+  import { afterNavigate } from "$app/navigation";
+  import { resolve } from "$app/paths";
   import * as Sidebar from "$lib/components/ui/sidebar/index.js";
+  import { useSidebar } from "$lib/components/ui/sidebar/index.js";
+  import { NAV } from "$lib/nav";
   import NavMain from "./nav-main.svelte";
   import NavUser from "./nav-user.svelte";
 
@@ -19,20 +13,16 @@
     ...restProps
   }: ComponentProps<typeof Sidebar.Root> = $props();
 
-  const navMain = [
-    { title: "Inicio", href: "/dashboard", icon: Activity },
-    { title: "Mapa en vivo", href: "/live-map", icon: Map },
-    { title: "Cámaras", href: "/live-camera", icon: Video },
-    { title: "Chat", href: "/chat", icon: MessageSquare },
-    { title: "Control VR", href: "/vr-control", icon: Gamepad2 },
-    // Not built yet — shown but disabled so they don't 404.
-    { title: "Control por voz", icon: Mic, disabled: true, badge: "Pronto" },
-    { title: "Salud", icon: HeartPulse, disabled: true, badge: "Pronto" },
-  ];
+  const sidebar = useSidebar();
 
-  const navSystem = [
-    { title: "Configuración", icon: Settings, disabled: true, badge: "Pronto" },
-  ];
+  // Every page the sidebar lists now exists, so there are no disabled "Pronto"
+  // entries left. "Control por voz" said "Pronto" while voice control shipped
+  // on the dashboard — an absence that read as "not built yet".
+
+  // Belt and braces with nav-main's onclick: whatever navigated (a link inside
+  // the sheet, the logo, the browser's back button), the phone's modal sheet
+  // must not stay over the page — or over the e-stop.
+  afterNavigate(() => sidebar.setOpenMobile(false));
 </script>
 
 <Sidebar.Root bind:ref collapsible="icon" {...restProps}>
@@ -41,13 +31,15 @@
       <Sidebar.MenuItem>
         <Sidebar.MenuButton size="lg">
           {#snippet child({ props })}
-            <a href="/dashboard" {...props}>
+            <a href={resolve("/dashboard")} {...props}>
               <div
                 class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary/10 ring-1 ring-sidebar-border"
               >
                 <img
                   src="/logo.svg"
                   alt=""
+                  width="20"
+                  height="20"
                   class="size-5 object-contain glow-cyan"
                 />
               </div>
@@ -67,8 +59,9 @@
   </Sidebar.Header>
 
   <Sidebar.Content>
-    <NavMain label="Plataforma" items={navMain} />
-    <NavMain label="Sistema" items={navSystem} />
+    {#each NAV as group (group.label)}
+      <NavMain {group} />
+    {/each}
   </Sidebar.Content>
 
   <Sidebar.Footer>

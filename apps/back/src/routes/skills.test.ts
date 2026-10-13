@@ -4,6 +4,8 @@
  *      used to be reachable by any authenticated user with zero LLM
  *      reasoning in between, see the docstring in ./skills.ts)
  *   2. the TypeBox `Value.Check` validation gate ahead of it
+ * and, at the end, the audit row every dispatch writes (fire-and-forget —
+ * the stop must never wait on the database).
  *
  * `@back/lib/auth`'s `auth.api.getSession` normally hits Postgres; mocked
  * here so these are fast unit tests that don't need a live DB. The mock
@@ -109,7 +111,49 @@ mock.module("../skills", () => ({
   listSkills: mock(async () => catalogueSkills),
 }));
 
+//: What `logToolCall` wrote: every `db.insert(table).values(row)` lands here.
+//: The real `logToolCall` runs (so its body-failure reading is exercised too);
+//: only the database underneath it is fake. `bun test` shares one module
+//: registry, so this mock's surface matches audit.test.ts's.
+let inserted: Record<string, unknown>[] = [];
+//: Set to make every insert hang forever — the stop must not wait on it.
+let insertHangs = false;
+
+function thenable(result: unknown) {
+  const self: Record<string, unknown> = {
+    then: (
+      resolve: (v: unknown) => unknown,
+      reject: (e: unknown) => unknown,
+    ) =>
+      insertHangs
+        ? new Promise(() => {})
+        : Promise.resolve(result).then(resolve, reject),
+  };
+  return new Proxy(self, {
+    get: (obj, prop) => (prop === "then" ? obj.then : () => thenable(result)),
+  });
+}
+
+mock.module("@back/db/drizzle", () => ({
+  db: {
+    insert: () => ({
+      values: (row: Record<string, unknown>) => {
+        inserted.push(row);
+        return thenable([]);
+      },
+    }),
+    select: () => thenable([]),
+    update: () => thenable([]),
+    delete: () => thenable([]),
+    query: { chat: { findFirst: async () => undefined } },
+  },
+}));
+
 const { skillsRoutes } = await import("./skills");
+const bridge = (await import("../bridge/client")) as unknown as {
+  callTool: ReturnType<typeof mock>;
+  BridgeUnavailableError: new (message?: string) => Error;
+};
 
 function invoke(name: string, body: unknown) {
   return skillsRoutes.handle(
@@ -235,4 +279,86 @@ test("the hardcoded safety list agrees with the catalogue's own classification",
   for (const name of classifiedSafety) {
     expect(SAFETY_SKILLS.has(name)).toBe(true);
   }
+});
+
+/**
+ * The direct path is audited — every VR button, the walk loop, bring-up and
+ * PARAR used to leave no record at all. And the audit write is never on the
+ * stop's critical path.
+ */
+describe("POST /skills/:name/invoke writes the audit trail", () => {
+  beforeEach(() => {
+    sessionUser = null;
+    catalogueSkills = FIXTURE_SKILLS;
+    inserted = [];
+    insertHangs = false;
+  });
+
+  test("a dispatch is logged as source 'direct', attributed to the caller", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    const res = await invoke("wave", {});
+    expect(res.status).toBe(200);
+    expect(inserted.length).toBe(1);
+    const row = inserted[0]!;
+    expect(row.source).toBe("direct");
+    expect(row.userId).toBe("u1");
+    expect(row.skillName).toBe("wave");
+    expect(row.status).toBe("ok");
+    expect(typeof row.durationMs).toBe("number");
+  });
+
+  test("a non-admin's PARAR is logged too, under their name", async () => {
+    sessionUser = { id: "u7", role: null };
+    await invoke("stop_everything", {});
+    expect(inserted.length).toBe(1);
+    expect(inserted[0]!.userId).toBe("u7");
+    expect(inserted[0]!.skillName).toBe("stop_everything");
+  });
+
+  test("a firmware refusal that arrives as a 200 body is logged as an error, with the bridge's code", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    bridge.callTool.mockImplementationOnce(async () => ({
+      status: "failed",
+      phase: "rpc_error",
+      error: "rpc_error_code_7401",
+    }));
+    const res = await invoke("wave", {});
+    expect(res.status).toBe(200);
+    expect(inserted[0]!.status).toBe("error");
+    expect(inserted[0]!.error).toBe("rpc_error_code_7401");
+  });
+
+  test("a bridge that cannot be reached is a 502 AND an error row", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    bridge.callTool.mockImplementationOnce(async () => {
+      throw new bridge.BridgeUnavailableError("down");
+    });
+    const res = await invoke("wave", {});
+    expect(res.status).toBe(502);
+    expect(inserted.length).toBe(1);
+    expect(inserted[0]!.status).toBe("error");
+    expect(inserted[0]!.error).toBe("bridge_unavailable");
+  });
+
+  test("the stop answers even when the audit write never completes", async () => {
+    sessionUser = { id: "u1", role: null };
+    insertHangs = true;
+    const res = await Promise.race([
+      invoke("stop_everything", {}),
+      new Promise<"blocked">((resolve) =>
+        setTimeout(() => resolve("blocked"), 500),
+      ),
+    ]);
+    expect(res).not.toBe("blocked");
+    expect((res as Response).status).toBe(200);
+  });
+
+  test("refusals before dispatch are not dispatches, and are not logged", async () => {
+    sessionUser = { id: "u2", role: null };
+    expect((await invoke("wave", {})).status).toBe(403);
+    sessionUser = { id: "u1", role: "admin" };
+    expect((await invoke("walk_velocity", { vx: "fast" })).status).toBe(422);
+    expect((await invoke("not_a_real_skill", {})).status).toBe(404);
+    expect(inserted.length).toBe(0);
+  });
 });

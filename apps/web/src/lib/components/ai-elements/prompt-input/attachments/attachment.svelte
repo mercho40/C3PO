@@ -41,7 +41,7 @@
       <Tooltip.Root delayDuration={400}>
         <Tooltip.Trigger class="min-w-0 flex-1">
           <h4 class="w-full truncate text-left text-sm font-medium">
-            {data.filename || "Unknown file"}
+            {data.filename || "Archivo desconocido"}
           </h4>
         </Tooltip.Trigger>
         <Tooltip.Content>
@@ -49,7 +49,7 @@
             <h4
               class="max-w-60 overflow-hidden text-left text-sm font-semibold wrap-break-word whitespace-normal"
             >
-              {data.filename || "Unknown file"}
+              {data.filename || "Archivo desconocido"}
             </h4>
             {#if data.mediaType}
               <div>{data.mediaType}</div>
@@ -63,7 +63,9 @@
     <Tooltip.Trigger>
       {#snippet child({ props: tooltipTriggerProps })}
         <Button
-          aria-label={mediaType === "image" ? "Remove image" : "Remove file"}
+          aria-label={mediaType === "image"
+            ? "Quitar imagen"
+            : "Quitar archivo"}
           class="absolute top-0.5 right-0.5 size-5 rounded-full opacity-0 group-hover:opacity-100"
           {...tooltipTriggerProps}
           onclick={(event) => {
@@ -79,7 +81,7 @@
       {/snippet}
     </Tooltip.Trigger>
     <Tooltip.Content>
-      {mediaType === "image" ? "Remove image" : "Remove file"}
+      {mediaType === "image" ? "Quitar imagen" : "Quitar archivo"}
     </Tooltip.Content>
   </Tooltip.Root>
 </div>
