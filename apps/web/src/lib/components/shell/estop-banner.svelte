@@ -19,9 +19,9 @@
    * - alert: a visible danger Callout, role=alert, until the operator decides.
    */
   import { X } from "@lucide/svelte";
-  import Callout from "$lib/components/callout.svelte";
-  import { estop } from "$lib/robot/estop.svelte";
-  import { estopMessage } from "$lib/robot/estop";
+  import Callout from "#lib/components/callout.svelte";
+  import { estop } from "#lib/robot/estop.svelte.js";
+  import { estopMessage } from "#lib/robot/estop.js";
 
   const message = $derived(
     estopMessage(estop.phase, estop.outcome?.code ?? null),

@@ -25,14 +25,14 @@
 import { Elysia } from "elysia";
 import { createIdGenerator } from "ai";
 
-import { runAgentChat } from "@back/agent/runtime";
-import { callTool } from "@back/bridge/client";
-import { deleteChat, ensureChat } from "@back/db/chats";
-import { betterAuth } from "@back/lib/auth-plugin";
-import { VoiceConversation } from "@back/voice/conversation";
-import { bridgeVoiceEvents, bridgeVoiceStatus } from "@back/voice/events";
-import { VoiceLoop } from "@back/voice/loop";
-import { RealtimeVoiceSession } from "@back/voice/realtime";
+import { runAgentChat } from "#back/agent/runtime.js";
+import { callTool } from "#back/bridge/client.js";
+import { deleteChat, ensureChat } from "#back/db/chats.js";
+import { betterAuth } from "#back/lib/auth-plugin.js";
+import { VoiceConversation } from "#back/voice/conversation.js";
+import { bridgeVoiceEvents, bridgeVoiceStatus } from "#back/voice/events.js";
+import { VoiceLoop } from "#back/voice/loop.js";
+import { RealtimeVoiceSession } from "#back/voice/realtime.js";
 
 const newId = createIdGenerator();
 

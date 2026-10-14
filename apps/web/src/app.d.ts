@@ -1,6 +1,9 @@
-import type { getCookieCache } from "better-auth/cookies";
+import type { authClient } from "#lib/auth-client.js";
 
-type CookieSession = NonNullable<Awaited<ReturnType<typeof getCookieCache>>>;
+// The client's inferred session, not `getCookieCache`'s return type: since
+// better-auth 1.7 that is the plugin-agnostic payload, where `user.role`
+// (admin plugin) is `unknown`. hooks.server.ts reads the cookie with it.
+type CookieSession = typeof authClient.$Infer.Session;
 
 declare global {
   namespace App {

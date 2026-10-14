@@ -1,8 +1,8 @@
 <script lang="ts">
   import { resolve } from "$app/paths";
-  import AuthShell from "$lib/components/auth-shell.svelte";
-  import Callout from "$lib/components/callout.svelte";
-  import SignupForm from "$lib/components/signup-form.svelte";
+  import AuthShell from "#lib/components/auth-shell.svelte";
+  import Callout from "#lib/components/callout.svelte";
+  import SignupForm from "#lib/components/signup-form.svelte";
 
   // The "already signed in" redirect is the page load's alone (see /login).
   let { data } = $props();
@@ -39,7 +39,7 @@
   {#snippet footer()}
     ¿Ya tenés cuenta?
     <a
-      href="{resolve('/login')}{carry}"
+      href="{resolve('login')}{carry}"
       class="text-ink underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
     >
       Ingresar

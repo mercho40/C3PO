@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { ScrollArea } from "$lib/components/ui/scroll-area/index.js";
-  import { cn } from "$lib/utils";
+  import { ScrollArea } from "#lib/components/ui/scroll-area/index.js";
+  import { cn } from "#lib/utils.js";
   import type { Snippet } from "svelte";
 
   interface Props {

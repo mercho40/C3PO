@@ -1,7 +1,7 @@
 /**
  * Keeps a voice transcript in /chat current while its realtime session runs.
  *
- * See `$lib/chat/transcript.ts` for why this exists and why it is safe. It
+ * See `#lib/chat/transcript.ts` for why this exists and why it is safe. It
  * extends the shared Poller, so it inherits the console's rules: one request in
  * flight, a timeout on every request, a 401 goes to the login page (never
  * "robot offline"), and it pauses while the tab is hidden — a background tab
@@ -9,9 +9,9 @@
  */
 
 import type { UIMessage } from "ai";
-import { createApi } from "$lib/api";
-import { Poller, type PollResult } from "$lib/robot/poller.svelte";
-import { transcriptSignature } from "$lib/chat/transcript";
+import { createApi } from "#lib/api.js";
+import { Poller, type PollResult } from "#lib/robot/poller.svelte.js";
+import { transcriptSignature } from "#lib/chat/transcript.js";
 
 type TranscriptMessage = { id: string; role: string; parts: unknown };
 

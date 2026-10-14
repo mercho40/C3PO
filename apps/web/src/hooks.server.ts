@@ -1,7 +1,13 @@
 import { getCookieCache } from "better-auth/cookies";
-import { BETTER_AUTH_SECRET } from "$env/static/private";
-import { authClient } from "$lib/auth-client";
-import type { Handle } from "@sveltejs/kit";
+import { BETTER_AUTH_SECRET } from "$app/env/private";
+import { authClient } from "#lib/auth-client.js";
+import type { Handle } from "@sveltejs/kit/hooks";
+
+// The cookie as written by the backend, whose plugins add `user.role` and
+// `session.activeOrganizationId`. better-auth 1.7 types the bare payload
+// without them; the client's inferred session knows the plugins.
+type CookieSession = NonNullable<Awaited<ReturnType<typeof getCookieCache>>> &
+  typeof authClient.$Infer.Session;
 
 export const handle: Handle = async ({ event, resolve }) => {
   // Fast path: Better Auth's signed cookie cache (5-min TTL) — no backend call.
@@ -10,9 +16,9 @@ export const handle: Handle = async ({ event, resolve }) => {
   // does not copy `.env` into `process.env`, so a library reading it directly
   // sees nothing under Node — this worked only while the dev script forced
   // Bun's runtime, which auto-loads `.env`, and broke the moment that flag was
-  // removed. `$env/static/private` is resolved at build time and behaves the
+  // removed. `$app/env/private` is read by SvelteKit itself and behaves the
   // same under every runtime and in production.
-  let session = await getCookieCache(event.request, {
+  let session = await getCookieCache<CookieSession>(event.request, {
     secret: BETTER_AUTH_SECRET,
   });
   let refreshedCookies: string[] = [];

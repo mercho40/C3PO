@@ -25,7 +25,7 @@
  */
 
 import type { SkillCatalogueEntry } from "./define";
-import { listTools } from "@back/bridge/client";
+import { listTools } from "#back/bridge/client.js";
 import { type SkillMeta, parseSkillMeta } from "./meta";
 
 export interface CatalogueSnapshot {

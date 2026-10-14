@@ -1,9 +1,9 @@
 <script lang="ts">
   import { Loader2 } from "@lucide/svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Label } from "$lib/components/ui/label/index.js";
-  import { Separator } from "$lib/components/ui/separator/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import { Label } from "#lib/components/ui/label/index.js";
+  import { Separator } from "#lib/components/ui/separator/index.js";
   import Callout from "./callout.svelte";
   import SocialAuthButtons, {
     type SocialProvider,
@@ -14,7 +14,7 @@
     authErrorField,
     authErrorMessage,
     type AuthErrorField,
-  } from "$lib/auth-client";
+  } from "#lib/auth-client.js";
 
   let {
     redirectTo,

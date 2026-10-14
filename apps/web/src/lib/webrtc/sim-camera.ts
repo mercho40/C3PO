@@ -29,7 +29,7 @@
 // is the browser saying no packets are arriving), and it returns to "live" on
 // "connected" / unmute.
 
-import { SIM_OFFER_TIMEOUT_MS } from "$lib/robot/camera-copy";
+import { SIM_OFFER_TIMEOUT_MS } from "#lib/robot/camera-copy.js";
 
 export type SimCamState = "connecting" | "live" | "stale" | "error" | "closed";
 

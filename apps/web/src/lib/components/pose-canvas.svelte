@@ -8,7 +8,7 @@
   and both projected x and y to percentages of width and height with
   `preserveAspectRatio="none"` — two scales on any non-square canvas.
 
-  Geometry rules live in `$lib/robot/map-geometry.ts` (tested): one
+  Geometry rules live in `#lib/robot/map-geometry.ts` (tested): one
   pixels-per-metre scale for both axes, REP-103 frame (+x right, +y up,
   yaw counter-clockwise), world (x, y) drawn at SVG (x, −y). Things that must
   keep a constant on-screen size (the marker, stroke widths) are divided by
@@ -21,9 +21,9 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { ArrowRight } from "@lucide/svelte";
-  import type { PoseXY } from "$lib/robot/live-state.svelte";
-  import type { CostmapPlacement } from "$lib/robot/costmap.svelte";
-  import { LOAD_VAR, type Load } from "$lib/robot/posture";
+  import type { PoseXY } from "#lib/robot/live-state.svelte.js";
+  import type { CostmapPlacement } from "#lib/robot/costmap.svelte.js";
+  import { LOAD_VAR, type Load } from "#lib/robot/posture.js";
   import {
     costmapSvgRect,
     edgeMarker,
@@ -37,8 +37,8 @@
     zoomAt,
     type View,
     type XY,
-  } from "$lib/robot/map-geometry";
-  import { cn } from "$lib/utils";
+  } from "#lib/robot/map-geometry.js";
+  import { cn } from "#lib/utils.js";
 
   type RobotPose = {
     x_meters_world: number;

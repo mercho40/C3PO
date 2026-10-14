@@ -54,14 +54,14 @@ import {
   type UIMessage,
 } from "ai";
 
-import { listSkills } from "@back/skills";
-import { logToolCall } from "@back/db/chats";
-import type { ToolCallSource } from "@back/db/schema";
+import { listSkills } from "#back/skills/index.js";
+import { logToolCall } from "#back/db/chats.js";
+import type { ToolCallSource } from "#back/db/schema.js";
 import {
   callTool,
   BridgeToolError,
   BridgeUnavailableError,
-} from "@back/bridge/client";
+} from "#back/bridge/client.js";
 
 const BASE_URL = process.env.AGENT_BASE_URL ?? "https://ia.ort.edu.ar/api/v1";
 /** `tic-chat` is the gateway's tool-calling chat model. Its site advertises

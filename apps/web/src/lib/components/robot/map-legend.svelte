@@ -11,7 +11,7 @@
   encoder's palette, so each key is exactly the colour drawn on the map.
 -->
 <script lang="ts">
-  import { LOAD_FILL, LOAD_LABEL, type Load } from "$lib/robot/posture";
+  import { LOAD_FILL, LOAD_LABEL, type Load } from "#lib/robot/posture.js";
 
   let {
     costmap = true,

@@ -2,6 +2,12 @@
   "name": "@repo/back",
   "version": "1.0.50",
   "type": "module",
+  "imports": {
+    "#back/*": "./src/*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "test": "bun test",
     "build": "bun build --compile --minify --target bun --outfile server src/index.ts",
@@ -14,23 +20,23 @@
     "check-types": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^3.0.31",
-    "@elysiajs/cors": "^1.4.1",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@sinclair/typebox": "^0.34.49",
-    "ai": "^7.0.67",
+    "@ai-sdk/openai-compatible": "^3.0.68",
+    "@elysiajs/cors": "^1.4.2",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@sinclair/typebox": "^0.34.52",
+    "ai": "^7.0.140",
     "ajv": "^8.20.0",
-    "better-auth": "^1.5.5",
-    "drizzle-orm": "^0.45.1",
-    "elysia": "^1.4.28",
-    "ws": "^8.21.3",
-    "zod": "^4.4.3"
+    "better-auth": "^1.7.7",
+    "drizzle-orm": "^0.45.4",
+    "elysia": "^1.4.30",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.1",
-    "bun-types": "latest",
-    "drizzle-kit": "^0.31.10",
+    "@types/ws": "^8.18.2",
+    "bun-types": "^1.4.3",
+    "drizzle-kit": "^0.31.11",
     "postgres": "^3.4.9",
-    "typescript": "^5.9.3"
+    "typescript": "~6.0.3"
   }
 }

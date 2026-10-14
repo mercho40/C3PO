@@ -23,15 +23,15 @@
   import type { Component } from "svelte";
   import { onDestroy } from "svelte";
   import { Check } from "@lucide/svelte";
-  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Badge } from "#lib/components/ui/badge/index.js";
   import OutcomeLine from "./outcome-line.svelte";
-  import { LOAD_BORDER, LOAD_FILL, type Load } from "$lib/robot/posture";
+  import { LOAD_BORDER, LOAD_FILL, type Load } from "#lib/robot/posture.js";
   import {
     HOLD_CONFIRM_MS,
     type StampedOutcome,
     type StepMark,
-  } from "$lib/robot/vr-logic";
-  import { cn } from "$lib/utils";
+  } from "#lib/robot/vr-logic.js";
+  import { cn } from "#lib/utils.js";
 
   let {
     label,

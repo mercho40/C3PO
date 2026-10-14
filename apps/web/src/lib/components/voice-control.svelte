@@ -32,9 +32,9 @@
 <script lang="ts">
   import { ExternalLink, Mic, MicOff, X } from "@lucide/svelte";
   import { resolve } from "$app/paths";
-  import Callout from "$lib/components/callout.svelte";
-  import { getRobotLive, getVoiceLoop } from "$lib/robot/context";
-  import { LINK } from "$lib/robot/link-copy";
+  import Callout from "#lib/components/callout.svelte";
+  import { getRobotLive, getVoiceLoop } from "#lib/robot/context.js";
+  import { LINK } from "#lib/robot/link-copy.js";
   import {
     ENGINE_LABEL,
     counters,
@@ -46,7 +46,7 @@
     phaseView,
     sessionStatus,
     type StatusTone,
-  } from "$lib/components/voice/voice-view";
+  } from "#lib/components/voice/voice-view.js";
 
   const voice = getVoiceLoop();
   const live = getRobotLive();
@@ -286,7 +286,7 @@
          would 404 and silently open a blank chat. -->
     {#if s?.chatId && owner !== "other"}
       <a
-        href={resolve(`/chat?id=${encodeURIComponent(s.chatId)}`)}
+        href={resolve(`chat?id=${encodeURIComponent(s.chatId)}`)}
         class="inline-flex h-10 items-center gap-1.5 rounded-lg border border-hairline-strong px-3 text-sm text-ink-dim transition-colors hover:border-accent-edge hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none"
       >
         Ver transcripción

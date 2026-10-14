@@ -14,10 +14,10 @@
 -->
 <script lang="ts">
   import { Crosshair, LogOut } from "@lucide/svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { LOAD_TEXT, type PostureInfo } from "$lib/robot/posture";
-  import { teleopShort } from "$lib/robot/vr-logic";
-  import { MAX_HOLD_S, type VrControl } from "$lib/robot/vr-control.svelte";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { LOAD_TEXT, type PostureInfo } from "#lib/robot/posture.js";
+  import { teleopShort } from "#lib/robot/vr-logic.js";
+  import { MAX_HOLD_S, type VrControl } from "#lib/robot/vr-control.svelte.js";
 
   let { ctl, posture }: { ctl: VrControl; posture: PostureInfo } = $props();
 </script>

@@ -12,7 +12,7 @@
    * only animation on the page; both are reserved for "this thing is moving
    * right now" so that signal never has to compete with decoration.
    */
-  import type { Load, Pose } from "$lib/robot/posture";
+  import type { Load, Pose } from "#lib/robot/posture.js";
 
   let {
     pose = "unknown",

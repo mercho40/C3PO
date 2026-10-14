@@ -11,7 +11,7 @@
    * The heading is an h2: the topbar's h1 already names the error.
    */
   import { page } from "$app/state";
-  import { invalidateAll } from "$app/navigation";
+  import { refreshAll } from "$app/navigation";
   import { resolve } from "$app/paths";
   import { RotateCw } from "@lucide/svelte";
 
@@ -29,7 +29,7 @@
   async function retry() {
     retrying = true;
     try {
-      await invalidateAll();
+      await refreshAll();
     } finally {
       retrying = false;
     }
@@ -65,7 +65,7 @@
     {/if}
     <div class="flex flex-wrap items-center gap-2.5 pt-1">
       <a
-        href={resolve("/dashboard")}
+        href={resolve("dashboard")}
         class="inline-flex h-10 items-center rounded-lg cta px-4 text-sm font-medium focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none"
       >
         Volver al inicio

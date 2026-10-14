@@ -1,4 +1,4 @@
-// The REAL G1's camera. Sibling of `$lib/webrtc/sim-camera.ts`, and the two are
+// The REAL G1's camera. Sibling of `#lib/webrtc/sim-camera.ts`, and the two are
 // different on purpose — the robot and the simulator do not serve video the same
 // way, and pretending they do is what left `/live-camera` dead on hardware.
 //

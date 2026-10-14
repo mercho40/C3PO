@@ -34,9 +34,9 @@
  */
 
 import { eq, inArray, sql } from "drizzle-orm";
-import { db } from "@back/db/drizzle";
-import { user } from "@back/db/schema";
-import { env } from "@back/lib/env";
+import { db } from "#back/db/drizzle.js";
+import { user } from "#back/db/schema.js";
+import { env } from "#back/lib/env.js";
 
 export function adminEmails(): string[] {
   return env.ADMIN_EMAILS.split(",")

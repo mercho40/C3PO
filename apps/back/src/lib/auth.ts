@@ -1,8 +1,8 @@
 import { betterAuth } from "better-auth/minimal";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { db } from "@back/db/drizzle";
+import { db } from "#back/db/drizzle.js";
 import { admin, organization } from "better-auth/plugins";
-import { env } from "@back/lib/env";
+import { env } from "#back/lib/env.js";
 
 /**
  * Which social providers actually have credentials.
@@ -46,7 +46,8 @@ export const auth = betterAuth({
   },
   trustedOrigins: [env.WEB_URL],
   // Joined session reads — one query instead of N on getSession.
-  experimental: { joins: true },
+  // Lives under advanced.database; better-auth 1.7 dropped `experimental.joins`.
+  advanced: { database: { joins: true } },
   session: {
     cookieCache: {
       enabled: true,

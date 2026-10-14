@@ -1,4 +1,4 @@
-import { bridgeSiblingUrl } from "@back/bridge/url";
+import { bridgeSiblingUrl } from "#back/bridge/url.js";
 
 export type VoiceStatus = {
   mic_ever_open?: boolean;

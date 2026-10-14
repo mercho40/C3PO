@@ -32,14 +32,14 @@
 import { Elysia, t } from "elysia";
 import { and, desc, eq, lt, sql, type SQL } from "drizzle-orm";
 
-import { db } from "@back/db/drizzle";
+import { db } from "#back/db/drizzle.js";
 import {
   chat,
   toolCallLog,
   user as userTable,
   type ToolCallSource,
-} from "@back/db/schema";
-import { betterAuth } from "@back/lib/auth-plugin";
+} from "#back/db/schema.js";
+import { betterAuth } from "#back/lib/auth-plugin.js";
 
 export const AUDIT_DEFAULT_LIMIT = 50;
 export const AUDIT_MAX_LIMIT = 200;

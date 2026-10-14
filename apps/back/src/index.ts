@@ -1,17 +1,17 @@
 import { Elysia } from "elysia";
-import { betterAuth } from "@back/lib/auth-plugin";
+import { betterAuth } from "#back/lib/auth-plugin.js";
 import { cors } from "@elysiajs/cors";
-import { skillsRoutes } from "@back/routes/skills";
-import { tasksRoutes } from "@back/routes/tasks";
-import { stateRoutes } from "@back/routes/state";
-import { mapRoutes } from "@back/routes/map";
-import { telemetryRoutes } from "@back/routes/telemetry";
-import { agentRoutes } from "@back/routes/agent";
-import { chatsRoutes } from "@back/routes/chats";
-import { voiceRoutes } from "@back/routes/voice";
-import { auditRoutes } from "@back/routes/audit";
-import { enabledSocialProviders } from "@back/lib/auth";
-import { reconcileAdmins } from "@back/lib/admin-bootstrap";
+import { skillsRoutes } from "#back/routes/skills.js";
+import { tasksRoutes } from "#back/routes/tasks.js";
+import { stateRoutes } from "#back/routes/state.js";
+import { mapRoutes } from "#back/routes/map.js";
+import { telemetryRoutes } from "#back/routes/telemetry.js";
+import { agentRoutes } from "#back/routes/agent.js";
+import { chatsRoutes } from "#back/routes/chats.js";
+import { voiceRoutes } from "#back/routes/voice.js";
+import { auditRoutes } from "#back/routes/audit.js";
+import { enabledSocialProviders } from "#back/lib/auth.js";
+import { reconcileAdmins } from "#back/lib/admin-bootstrap.js";
 
 // Before listening: make sure the accounts that are supposed to be able to
 // drive the robot actually can. Awaited so the first request after boot sees
@@ -87,3 +87,4 @@ console.log(
   `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`,
 );
 export type App = typeof app;
+export type { RobotState } from "#back/routes/state.js";
