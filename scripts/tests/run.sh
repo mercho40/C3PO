@@ -343,6 +343,15 @@ check_contains "the bridge permits the local web dev origins" \
     "Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001" \
     "$bridge_unit_source"
 check_not_contains "the bridge has no pidfile" "PIDFile=" "$bridge_unit_source"
+
+# The teleop socket takes live arm and walk setpoints with no authentication of
+# its own — the same risk class as /mcp above — so it binds loopback by default
+# too, and is reached through the same tunnel (`-L 8767:127.0.0.1:8767`).
+run_teleop_source="$(cat "$repo/scripts/robot/run_teleop")"
+check_contains "the teleop server binds loopback by default" \
+    'export TELEOP_HOST="${TELEOP_HOST:-127.0.0.1}"' "$run_teleop_source"
+check_not_contains "the teleop server does not default to a wildcard bind" \
+    'TELEOP_HOST:-0.0.0.0' "$run_teleop_source"
 check_not_contains "the bridge unit does not call run_c3po" "ExecStart=/home/unitree/c3po/scripts/robot/run_c3po" "$bridge_unit_source"
 
 stop_stack_source="$(cat "$repo/scripts/robot/stop_c3po")"

@@ -42,6 +42,7 @@ __all__ = [
     "bridge_finding",
     "console_camera_finding",
     "reads_through_back",
+    "teleop_finding",
 ]
 
 OK, WARN, BAD = "ok", "warn", "bad"
@@ -217,9 +218,11 @@ def camera_url_from_env(env_text: Optional[str], shell_value: str = "") -> Tuple
 #: Same default as apps/back/src/bridge/url.ts: the robot's port, over the tunnel.
 DEFAULT_BRIDGE_BASE = "http://127.0.0.1:8001"
 
-#: The tunnel apps/back reaches the bridge through. The bridge listens on the
-#: robot's loopback only (since 2026-09-06, scripts/robot/c3po-bridge.service).
-TUNNEL = "ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po"
+#: The tunnel to the robot's two loopback-only services: the bridge (since
+#: 2026-09-06, scripts/robot/c3po-bridge.service) and the teleop stream.
+TUNNEL = (
+    "ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 c3po"
+)
 
 
 def bridge_base_from_env(env_text: Optional[str], shell_value: str = "") -> str:
@@ -283,6 +286,28 @@ def origin_of(url: str) -> str:
 def reads_through_back(console_url: str, api_url: str) -> bool:
     """Is the console's camera URL apps/back itself (`PUBLIC_API_URL`)?"""
     return bool(api_url) and origin_of(console_url) == origin_of(api_url)
+
+
+def teleop_finding(base: str, state: str) -> Finding:
+    """The teleop stream, on this machine's end of the tunnel."""
+    if state == "alive":
+        return Finding(OK, "teleop stream at {} — answering".format(base))
+    if state == "nothing":
+        return Finding(
+            BAD,
+            "teleop stream at {} — nothing listening: the 8767 tunnel is not open".format(base),
+            [
+                "it listens on the robot's loopback only. Add to the tunnel:",
+                "  -L 8767:127.0.0.1:8767",
+            ],
+        )
+    if state == "empty":
+        return Finding(
+            BAD,
+            "teleop stream at {} — tunnel up, nothing behind it".format(base),
+            ["on the robot:  c3po teleop start"],
+        )
+    return Finding(BAD, "teleop stream at {} — timed out".format(base), [])
 
 
 def console_camera_finding(
@@ -892,14 +917,14 @@ def _http_code(url: str, timeout: int = 4) -> int:
 def _robot_section(repo_root: str) -> Section:
     import os
 
-    # The teleop stream is the one robot service the headset dials DIRECTLY,
-    # on the LAN. The bridge is not: it listens on the robot's loopback, and
-    # apps/back reaches it through the tunnel — so it is checked there, where
-    # back will actually dial it. Probing g1-orin.local:8001 instead failed on
-    # every correctly deployed robot.
-    host = os.environ.get("C3PO_ROBOT_HOST", "g1-orin.local")
-    state, _ = _probe("http://{}:8767/".format(host), timeout=4)
-    teleop = direct_service_finding(host, 8767, "teleop stream", True, "c3po up teleop", state)
+    # Both robot services listen on the robot's loopback and are reached
+    # through the tunnel, so both are checked on THIS machine's end of it —
+    # where back, the console and (via adb reverse) the headset dial them.
+    # Probing g1-orin.local directly failed on every correctly deployed robot.
+    # C3PO_TELEOP_URL overrides, for a deliberate LAN bind.
+    teleop_base = os.environ.get("C3PO_TELEOP_URL", "http://127.0.0.1:8767").rstrip("/")
+    state, _ = _probe(teleop_base + "/", timeout=4)
+    teleop = teleop_finding(teleop_base, state)
     base = _bridge_base(repo_root)
     bridge_state, _ = _probe(base + "/", timeout=4)
     return Section("2. Robot services", [bridge_finding(base, bridge_state), teleop])
