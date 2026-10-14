@@ -32,12 +32,17 @@ git status -sb               # WHICH BRANCH is this checkout on?
 git pull
 ```
 
-If the robot is on `main`, the work must be merged first (PR #2). If you want it
-without merging, check out the branch explicitly:
+If the robot is on `main`, the work must be merged first (PR #3). If you want it
+without merging — only with the repo owner's OK — check out the branch
+explicitly, after noting what to roll back to:
 
 ```bash
-git checkout worktree-vr-stereo-and-camera && git pull
+git rev-parse HEAD | tee ~/.c3po/previous-deploy
+git checkout integrate/october && git pull
 ```
+
+What that branch needs proven on hardware, in order, is in
+[BRANCH-TEST-PLAN.md](BRANCH-TEST-PLAN.md).
 
 **Then prove the file actually changed before restarting anything:**
 
@@ -117,16 +122,20 @@ journalctl -u c3po-bridge -n 200 | grep dds.init
 The last one matters more once perception is up, because containers raise
 `docker0` — which is precisely when arbitrary selection starts picking wrong.
 
-### 2b. The camera — CORS, and a stream that no longer leaks
+### 2b. The camera — through apps/back, and a stream that no longer leaks
+
+The console and the headset read the picture from apps/back (`/camera/*`,
+behind the login), and back relays it from the bridge. Check both hops from the
+Mac:
 
 ```bash
-curl -sS -D- -o /dev/null http://127.0.0.1:8001/camera/status \
-     -H 'Origin: http://localhost:3001' | grep -i access-control
+curl -s http://127.0.0.1:8001/camera/status                  # bridge, via the tunnel: JSON
+curl -s -o /dev/null -w '%{http_code}\n' \
+     http://localhost:3000/camera/status                     # back: 401 without a session is correct
 ```
 
-Expect `access-control-allow-origin: http://localhost:3001`. No header means the
-headset's `crossOrigin="anonymous"` image cannot load and you get SIN IMAGEN
-with everything else looking healthy.
+`./scripts/preflight.sh` checks the same two hops. The bridge's own CORS no
+longer matters for the normal setup.
 
 ```bash
 curl -s http://127.0.0.1:8081/status      # vision container, if perception is up
