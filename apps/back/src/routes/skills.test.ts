@@ -16,12 +16,15 @@
 import { describe, expect, test, mock, beforeEach } from "bun:test";
 
 let sessionUser: { id: string; role: string | null } | null = null;
+//: Simulates the session database being unreachable: getSession THROWS.
+let sessionLookupFails = false;
 
 mock.module("@back/lib/auth", () => ({
   auth: {
     handler: async () => new Response("not mocked", { status: 404 }),
     api: {
       getSession: async () => {
+        if (sessionLookupFails) throw new Error("connect ECONNREFUSED :5432");
         if (!sessionUser) return null;
         return { user: sessionUser, session: { id: "sess_1" } };
       },
@@ -360,5 +363,75 @@ describe("POST /skills/:name/invoke writes the audit trail", () => {
     expect((await invoke("walk_velocity", { vx: "fast" })).status).toBe(422);
     expect((await invoke("not_a_real_skill", {})).status).toBe(404);
     expect(inserted.length).toBe(0);
+  });
+});
+
+describe("PARAR when the session database is down", () => {
+  const secret = process.env.BETTER_AUTH_SECRET ?? "";
+
+  async function signedCookie(token: string, key = secret): Promise<string> {
+    const k = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(key),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const sig = await crypto.subtle.sign(
+      "HMAC",
+      k,
+      new TextEncoder().encode(token),
+    );
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(sig)));
+    return `better-auth.session_token=${encodeURIComponent(`${token}.${b64}`)}`;
+  }
+
+  function stop(cookie?: string) {
+    return skillsRoutes.handle(
+      new Request("http://localhost/skills/stop_everything/invoke", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(cookie ? { cookie } : {}),
+        },
+        body: "{}",
+      }),
+    );
+  }
+
+  beforeEach(() => {
+    sessionUser = null;
+    sessionLookupFails = false;
+    catalogueSkills = FIXTURE_SKILLS;
+  });
+
+  test("a signed session cookie still gets the stop out", async () => {
+    sessionLookupFails = true;
+    const res = await stop(await signedCookie("tok123"));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { called: string }).called).toBe(
+      "stop_everything",
+    );
+  });
+
+  test("a cookie signed with another secret does not", async () => {
+    sessionLookupFails = true;
+    const res = await stop(await signedCookie("tok123", "x".repeat(40)));
+    expect(res.status).toBe(500);
+  });
+
+  test("no cookie at all does not", async () => {
+    sessionLookupFails = true;
+    expect((await stop()).status).toBe(500);
+  });
+
+  test("with the database up, nothing changes: no session is still 401", async () => {
+    expect((await stop(await signedCookie("tok123"))).status).toBe(401);
+  });
+
+  test("the fallback is the stop's alone — any other skill still fails", async () => {
+    sessionLookupFails = true;
+    const res = await invoke("wave", {});
+    expect(res.status).not.toBe(200);
   });
 });

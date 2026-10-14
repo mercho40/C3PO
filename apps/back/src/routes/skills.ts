@@ -55,6 +55,9 @@ import {
   BridgeToolError,
 } from "../bridge/client";
 import { betterAuth } from "@back/lib/auth-plugin";
+import { auth } from "@back/lib/auth";
+import { env } from "@back/lib/env";
+import { hasSignedSessionCookie } from "@back/lib/stop-auth";
 import { logToolCall } from "@back/db/chats";
 
 //: Skills that must dispatch even when the catalogue cannot be read.
@@ -69,8 +72,162 @@ export const SAFETY_SKILLS = new Set(["stop_everything"]);
 /** How long PARAR waits for the bridge before answering 504 (the stop keeps running). */
 const SAFETY_TIMEOUT_MS = 8000;
 
+type StatusFn = (code: number, body: unknown) => unknown;
+
+/**
+ * Dispatch one skill, audit it when it settles, and answer.
+ *
+ * Shared by `/:name/invoke` and the dedicated `/stop_everything/invoke`, so the
+ * two cannot drift in how a stop is timed, audited or reported. `userId` is
+ * null only on the stop's database-down path (see that route).
+ */
+async function dispatchAudited({
+  name,
+  args,
+  userId,
+  isSafety,
+  status,
+}: {
+  name: string;
+  args: Record<string, unknown>;
+  userId: string | null;
+  isSafety: boolean;
+  status: StatusFn;
+}): Promise<unknown> {
+  // Audited whatever happens next. `void`, never `await`: an audit
+  // row is not allowed to sit between an operator and PARAR.
+  // `logToolCall` never throws, and reads a 200 body that reports a
+  // failure (`status: "failed"`, a non-empty `error`) as `error`.
+  const startedAt = Date.now();
+  const audit = (
+    outcome:
+      | { result: unknown }
+      | { error: string; body: Record<string, unknown> },
+  ) =>
+    void logToolCall({
+      userId,
+      source: "direct",
+      skillName: name,
+      params: args,
+      ...("result" in outcome
+        ? { result: outcome.result, status: "ok" as const }
+        : {
+            result: outcome.body,
+            status: "error" as const,
+            error: outcome.error,
+          }),
+      durationMs: Date.now() - startedAt,
+    });
+
+  const failureBody = (err: unknown) =>
+    err instanceof BridgeUnavailableError
+      ? { error: "bridge_unavailable", name }
+      : err instanceof BridgeToolError
+        ? { error: "tool_error", name, detail: err.detail }
+        : { error: "bridge_error", name };
+  const auditFailure = (err: unknown) => {
+    const body = failureBody(err);
+    audit({
+      error: "detail" in body ? `${body.error}: ${body.detail}` : body.error,
+      body,
+    });
+    return body;
+  };
+
+  // The dispatch, audited when it SETTLES — however long that takes —
+  // so the log records what really happened, not when we stopped
+  // waiting.
+  const dispatch = callTool(name, args).then(
+    (result) => {
+      audit({ result });
+      return { ok: true as const, result };
+    },
+    (err: unknown) => ({ ok: false as const, body: auditFailure(err) }),
+  );
+
+  // A stop must answer quickly or not at all: unbounded, a hung bridge
+  // held PARAR on "Parando…" for the MCP SDK's 60 s default. But the
+  // bound is on our WAITING, not on the call: the SDK's own timeout
+  // sends `notifications/cancelled`, which made the bridge cancel the
+  // stop_everything it was in the middle of — zero velocity may already
+  // have gone out and a damp may still land. So the call keeps running
+  // and the operator is told the truth: no answer yet (504), not "the
+  // order never left". Other skills keep the default — gestures and
+  // walks legitimately run for tens of seconds.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = await (isSafety
+    ? Promise.race([
+        dispatch,
+        new Promise<{ ok: "timeout" }>((resolve) => {
+          timer = setTimeout(
+            () => resolve({ ok: "timeout" }),
+            SAFETY_TIMEOUT_MS,
+          );
+        }),
+      ])
+    : dispatch);
+  if (timer) clearTimeout(timer);
+
+  if (settled.ok === "timeout") {
+    return status(504, { error: "bridge_timeout", name });
+  }
+  if (settled.ok) return settled.result;
+  return status(502, settled.body);
+}
+
 export const skillsRoutes = new Elysia({ prefix: "/skills" })
   .use(betterAuth)
+  // PARAR, on its own route so it survives a database outage.
+  //
+  // Every other route resolves the session through the `auth` macro, which
+  // needs Postgres once the 5-minute cookie cache is stale — and a lookup that
+  // THROWS (database down, Neon waking up past the deadline) became a 500, so
+  // the console's stop never reached the robot. Here the lookup runs the same
+  // way; only if it throws does the stop fall back to a session cookie this
+  // server signed (`lib/stop-auth.ts`). No cookie, or a bad one: the original
+  // error stands. "No session" is still a 401, as before. Nothing else is
+  // allowed this path — a stale cookie can at worst stop the robot.
+  //
+  // The router prefers this static path over `/:name/invoke`, so this is the
+  // only route a stop takes; the dispatch itself is the shared one.
+  .post(
+    "/stop_everything/invoke",
+    async ({ request, status }) => {
+      let userId: string | null;
+      try {
+        const session = await auth.api.getSession({ headers: request.headers });
+        if (!session) return status(401);
+        userId = session.user.id;
+      } catch (err) {
+        const signed = await hasSignedSessionCookie(
+          request.headers.get("cookie"),
+          env.BETTER_AUTH_SECRET,
+        );
+        if (!signed) throw err;
+        console.error(
+          "[skills] session lookup failed; PARAR dispatched on the signed session cookie",
+          err,
+        );
+        // Unknown WHO: the user row is in the database that just failed.
+        userId = null;
+      }
+      return dispatchAudited({
+        name: "stop_everything",
+        args: {},
+        userId,
+        isSafety: true,
+        status,
+      });
+    },
+    {
+      body: t.Record(t.String(), t.Any()),
+      detail: {
+        summary:
+          "PARAR. Dispatched even when the session database is unreachable, on a signed session cookie.",
+        tags: ["skills"],
+      },
+    },
+  )
   .guard({ auth: true }, (app) =>
     app
       .get(
@@ -184,86 +341,13 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
             args = validated.value;
           }
 
-          // Audited whatever happens next. `void`, never `await`: an audit
-          // row is not allowed to sit between an operator and PARAR.
-          // `logToolCall` never throws, and reads a 200 body that reports a
-          // failure (`status: "failed"`, a non-empty `error`) as `error`.
-          const startedAt = Date.now();
-          const audit = (
-            outcome:
-              | { result: unknown }
-              | { error: string; body: Record<string, unknown> },
-          ) =>
-            void logToolCall({
-              userId: user.id,
-              source: "direct",
-              skillName: name,
-              params: args,
-              ...("result" in outcome
-                ? { result: outcome.result, status: "ok" as const }
-                : {
-                    result: outcome.body,
-                    status: "error" as const,
-                    error: outcome.error,
-                  }),
-              durationMs: Date.now() - startedAt,
-            });
-
-          const failureBody = (err: unknown) =>
-            err instanceof BridgeUnavailableError
-              ? { error: "bridge_unavailable", name }
-              : err instanceof BridgeToolError
-                ? { error: "tool_error", name, detail: err.detail }
-                : { error: "bridge_error", name };
-          const auditFailure = (err: unknown) => {
-            const body = failureBody(err);
-            audit({
-              error:
-                "detail" in body ? `${body.error}: ${body.detail}` : body.error,
-              body,
-            });
-            return body;
-          };
-
-          // The dispatch, audited when it SETTLES — however long that takes —
-          // so the log records what really happened, not when we stopped
-          // waiting.
-          const dispatch = callTool(name, args).then(
-            (result) => {
-              audit({ result });
-              return { ok: true as const, result };
-            },
-            (err: unknown) => ({ ok: false as const, body: auditFailure(err) }),
-          );
-
-          // A stop must answer quickly or not at all: unbounded, a hung bridge
-          // held PARAR on "Parando…" for the MCP SDK's 60 s default. But the
-          // bound is on our WAITING, not on the call: the SDK's own timeout
-          // sends `notifications/cancelled`, which made the bridge cancel the
-          // stop_everything it was in the middle of — zero velocity may already
-          // have gone out and a damp may still land. So the call keeps running
-          // and the operator is told the truth: no answer yet (504), not "the
-          // order never left". Other skills keep the default — gestures and
-          // walks legitimately run for tens of seconds.
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          const settled = await (isSafety
-            ? Promise.race([
-                dispatch,
-                new Promise<{ ok: "timeout" }>((resolve) => {
-                  timer = setTimeout(
-                    () => resolve({ ok: "timeout" }),
-                    SAFETY_TIMEOUT_MS,
-                  );
-                }),
-              ])
-            : dispatch);
-          if (timer) clearTimeout(timer);
-
-          if (settled.ok === "timeout") {
-            return status(504, { error: "bridge_timeout", name });
-          }
-          if (settled.ok) return settled.result;
-          return status(502, settled.body);
+          return dispatchAudited({
+            name,
+            args,
+            userId: user.id,
+            isSafety,
+            status,
+          });
         },
         {
           params: t.Object({ name: t.String() }),
