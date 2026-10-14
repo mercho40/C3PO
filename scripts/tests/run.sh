@@ -448,19 +448,32 @@ _classify() {
     esac
 }
 
-# A listener started from INSIDE the repo is ours.
-( cd "$repo" && python3 -m http.server 39311 >/dev/null 2>&1 ) &
+# Wait for a listener rather than sleeping a fixed time: on a slow CI runner
+# python had not bound the port after 2 s, `_classify` read "nothing", and the
+# test failed for a reason that had nothing to do with the classifier.
+_await_listen() {
+    local port="$1" _
+    for _ in $(seq 1 50); do
+        [ -n "$(_owner_pid "$port")" ] && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
+# A listener started from INSIDE the repo is ours. `exec`, so `$!` is the
+# server itself and the `kill` below stops it rather than its wrapper shell.
+( cd "$repo" && exec python3 -m http.server 39311 >/dev/null 2>&1 ) &
 _ours_job=$!
 disown "$_ours_job" 2>/dev/null || true
-sleep 2
+_await_listen 39311 || true
 check "a port served from inside the checkout is accepted" "ours" "$(_classify 39311)"
 kill "$_ours_job" 2>/dev/null || true
 
 # A listener started from OUTSIDE it is not, however healthy it looks.
-( cd /tmp && python3 -m http.server 39312 >/dev/null 2>&1 ) &
+( cd /tmp && exec python3 -m http.server 39312 >/dev/null 2>&1 ) &
 _them_job=$!
 disown "$_them_job" 2>/dev/null || true
-sleep 2
+_await_listen 39312 || true
 check "a port served from outside the checkout is rejected" "stranger" "$(_classify 39312)"
 kill "$_them_job" 2>/dev/null || true
 
