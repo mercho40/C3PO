@@ -7,12 +7,12 @@
   cookie cache makes necessary), what this console is pointed at, and — for
   admins — user management.
 
-  The page title comes from the topbar (`$lib/nav.ts`).
+  The page title comes from the topbar (`#lib/nav.ts`).
 -->
 <script lang="ts">
-  import AccountPanel from "$lib/components/settings/account-panel.svelte";
-  import ConsolePanel from "$lib/components/settings/console-panel.svelte";
-  import UsersPanel from "$lib/components/settings/users-panel.svelte";
+  import AccountPanel from "#lib/components/settings/account-panel.svelte";
+  import ConsolePanel from "#lib/components/settings/console-panel.svelte";
+  import UsersPanel from "#lib/components/settings/users-panel.svelte";
 
   let { data } = $props();
 </script>

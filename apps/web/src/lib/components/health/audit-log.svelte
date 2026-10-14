@@ -18,11 +18,11 @@
   import { ChevronDown, RefreshCw } from "@lucide/svelte";
   import { page } from "$app/state";
   import { resolve } from "$app/paths";
-  import Callout from "$lib/components/callout.svelte";
-  import { createApi } from "$lib/api";
-  import { redirectToLogin } from "$lib/robot/poller.svelte";
-  import { formatSince } from "$lib/robot/format";
-  import { OUTCOME_TONE } from "$lib/robot/skill-outcome";
+  import Callout from "#lib/components/callout.svelte";
+  import { createApi } from "#lib/api.js";
+  import { redirectToLogin } from "#lib/robot/poller.svelte.js";
+  import { formatSince } from "#lib/robot/format.js";
+  import { OUTCOME_TONE } from "#lib/robot/skill-outcome.js";
   import {
     auditErrorText,
     auditQuery,
@@ -34,7 +34,7 @@
     type AuditError,
     type AuditFilters,
     type AuditRow,
-  } from "$lib/admin/audit";
+  } from "#lib/admin/audit.js";
 
   let { now }: { now: number } = $props();
 
@@ -355,7 +355,7 @@
                   {#if row.user && row.user.id === myId}
                     <a
                       href={resolve(
-                        `/chat?id=${encodeURIComponent(row.chatId)}`,
+                        `chat?id=${encodeURIComponent(row.chatId)}`,
                       )}
                       class="self-start text-xs text-ink-dim underline hover:text-ink"
                     >

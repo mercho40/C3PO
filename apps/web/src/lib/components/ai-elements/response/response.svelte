@@ -20,7 +20,7 @@
   // are periwinkle, not cyan — cyan means "moving under power" in this console.
   import Markdown from "svelte-exmarkdown";
   import { gfmPlugin } from "svelte-exmarkdown/gfm";
-  import { cn } from "$lib/utils";
+  import { cn } from "#lib/utils.js";
 
   let { content = "", class: className }: { content?: string; class?: string } =
     $props();

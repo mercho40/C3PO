@@ -1,10 +1,10 @@
 <script lang="ts">
   import { resolve } from "$app/paths";
-  import AuthShell from "$lib/components/auth-shell.svelte";
-  import Callout from "$lib/components/callout.svelte";
-  import LoginForm from "$lib/components/login-form.svelte";
-  import { titleFor } from "$lib/nav";
-  import { estop } from "$lib/robot/estop.svelte";
+  import AuthShell from "#lib/components/auth-shell.svelte";
+  import Callout from "#lib/components/callout.svelte";
+  import LoginForm from "#lib/components/login-form.svelte";
+  import { titleFor } from "#lib/nav.js";
+  import { estop } from "#lib/robot/estop.svelte.js";
 
   // No client-side "already signed in" redirect here any more: the page load
   // owns it. The old `$effect` fired on a STALE `data.user` after logout (which
@@ -63,7 +63,7 @@
   {#snippet footer()}
     ¿No tenés cuenta?
     <a
-      href="{resolve('/signup')}{carry}"
+      href="{resolve('signup')}{carry}"
       class="text-ink underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
     >
       Crear cuenta

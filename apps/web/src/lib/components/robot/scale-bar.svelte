@@ -7,7 +7,7 @@
   round length (0.5 / 1 / 2 / 5 / 10 m) at exactly `length × ppm` pixels.
 -->
 <script lang="ts">
-  import { gridStep, niceScale } from "$lib/robot/map-geometry";
+  import { gridStep, niceScale } from "#lib/robot/map-geometry.js";
 
   let {
     ppm,

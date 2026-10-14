@@ -16,7 +16,7 @@
  * Counters are the loop's own, as it reported them. Nothing is recomputed.
  */
 
-import type { VoiceLoopState } from "$lib/robot/voice-loop";
+import type { VoiceLoopState } from "#lib/robot/voice-loop.js";
 
 export type Engine = "legacy" | "realtime";
 

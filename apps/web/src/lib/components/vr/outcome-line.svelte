@@ -8,10 +8,10 @@
   age is the honest half of the line.
 -->
 <script lang="ts">
-  import { OUTCOME_TONE } from "$lib/robot/skill-outcome";
-  import { formatSince } from "$lib/robot/format";
-  import { outcomeDetail, type StampedOutcome } from "$lib/robot/vr-logic";
-  import { cn } from "$lib/utils";
+  import { OUTCOME_TONE } from "#lib/robot/skill-outcome.js";
+  import { formatSince } from "#lib/robot/format.js";
+  import { outcomeDetail, type StampedOutcome } from "#lib/robot/vr-logic.js";
+  import { cn } from "#lib/utils.js";
 
   let {
     stamped,

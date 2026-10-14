@@ -1,20 +1,20 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import { navigating } from "$app/state";
-  import AppSidebar from "$lib/components/app-sidebar.svelte";
-  import DashboardTopbar from "$lib/components/dashboard-topbar.svelte";
-  import EstopBanner from "$lib/components/shell/estop-banner.svelte";
-  import NavProgress from "$lib/components/shell/nav-progress.svelte";
-  import * as Sidebar from "$lib/components/ui/sidebar/index.js";
-  import { PUBLIC_API_URL } from "$env/static/public";
-  import { RobotLive } from "$lib/robot/live-state.svelte";
-  import { VoiceLoopControl } from "$lib/robot/voice-loop.svelte";
-  import { Gate } from "$lib/robot/gate.svelte";
-  import { setGate, setRobotLive, setVoiceLoop } from "$lib/robot/context";
-  import { readPosture } from "$lib/robot/posture";
-  import { staleness } from "$lib/robot/faults";
-  import { estop } from "$lib/robot/estop.svelte";
-  import { isStopHotkey } from "$lib/robot/estop";
+  import AppSidebar from "#lib/components/app-sidebar.svelte";
+  import DashboardTopbar from "#lib/components/dashboard-topbar.svelte";
+  import EstopBanner from "#lib/components/shell/estop-banner.svelte";
+  import NavProgress from "#lib/components/shell/nav-progress.svelte";
+  import * as Sidebar from "#lib/components/ui/sidebar/index.js";
+  import { PUBLIC_API_URL } from "$app/env/public";
+  import { RobotLive } from "#lib/robot/live-state.svelte.js";
+  import { VoiceLoopControl } from "#lib/robot/voice-loop.svelte.js";
+  import { Gate } from "#lib/robot/gate.svelte.js";
+  import { setGate, setRobotLive, setVoiceLoop } from "#lib/robot/context.js";
+  import { readPosture } from "#lib/robot/posture.js";
+  import { staleness } from "#lib/robot/faults.js";
+  import { estop } from "#lib/robot/estop.svelte.js";
+  import { isStopHotkey } from "#lib/robot/estop.js";
 
   let { children, data } = $props();
 

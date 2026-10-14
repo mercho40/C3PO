@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { cn } from "$lib/utils";
+  import { cn } from "#lib/utils.js";
   import { codeVariants } from ".";
   import type { CodeRootProps } from "./types";
-  import { useCode } from "./code.svelte.js";
+  import { useCode } from "./code-state.svelte.js";
   import { box } from "svelte-toolbelt";
   // import '../../../../routes/layout.css'
 

@@ -12,12 +12,12 @@
 -->
 <script lang="ts">
   import { Hand, Link2, Link2Off } from "@lucide/svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import Callout from "$lib/components/callout.svelte";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import Callout from "#lib/components/callout.svelte";
   import DetailsNote from "./details-note.svelte";
-  import { armReadiness, handsLabel } from "$lib/robot/vr-logic";
-  import type { VrControl } from "$lib/robot/vr-control.svelte";
-  import { cn } from "$lib/utils";
+  import { armReadiness, handsLabel } from "#lib/robot/vr-logic.js";
+  import type { VrControl } from "#lib/robot/vr-control.svelte.js";
+  import { cn } from "#lib/utils.js";
 
   let { ctl }: { ctl: VrControl } = $props();
 

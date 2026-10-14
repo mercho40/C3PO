@@ -11,10 +11,10 @@
    * It is quiet while the robot is stationary and asserts itself the moment the
    * robot is under power, which is the only time it is urgent.
    *
-   * THE PRESS IS NOT THIS COMPONENT'S. It lives in `$lib/robot/estop.svelte`, so
+   * THE PRESS IS NOT THIS COMPONENT'S. It lives in `#lib/robot/estop.svelte`, so
    * the topbar's button and the one /vr-control mounts inside the headset's
    * dom-overlay show the same press. What the press means — and when "Parando…"
-   * may become "Detenido" — is decided in `$lib/robot/estop.ts`: only a
+   * may become "Detenido" — is decided in `#lib/robot/estop.ts`: only a
    * telemetry reading taken after the order confirms it, offline is never
    * confirmation, and only a confirmed stop clears itself.
    *
@@ -23,10 +23,10 @@
    * the same press twice.
    */
   import { Square, Check, TriangleAlert, Loader2 } from "@lucide/svelte";
-  import { getRobotLive } from "$lib/robot/context";
-  import { readPosture } from "$lib/robot/posture";
-  import { estop } from "$lib/robot/estop.svelte";
-  import { estopView, STOP_HOTKEY_LABEL } from "$lib/robot/estop";
+  import { getRobotLive } from "#lib/robot/context.js";
+  import { readPosture } from "#lib/robot/posture.js";
+  import { estop } from "#lib/robot/estop.svelte.js";
+  import { estopView, STOP_HOTKEY_LABEL } from "#lib/robot/estop.js";
 
   const live = getRobotLive();
   // "Under power and free to move": a gait controller is loaded (it takes a

@@ -2,7 +2,7 @@
   /*
    * One tool call in an agent transcript.
    *
-   * What the card says comes from `classifyToolPart` — see `$lib/chat/tool-part.ts`
+   * What the card says comes from `classifyToolPart` — see `#lib/chat/tool-part.ts`
    * for the two lies it exists to stop telling (a forever-"Ejecutando" on an
    * interrupted call, and a green "Completado" on a walk that never arrived).
    *
@@ -12,12 +12,12 @@
    * stays collapsed, but its "may have run" line sits under the header where it
    * can't be missed.
    */
-  import * as Tool from "$lib/components/ai-elements/tool/index.js";
+  import * as Tool from "#lib/components/ai-elements/tool/index.js";
   import {
     classifyToolPart,
     toolName,
     type ToolPartLike,
-  } from "$lib/chat/tool-part";
+  } from "#lib/chat/tool-part.js";
 
   let {
     part,

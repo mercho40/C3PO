@@ -1,11 +1,11 @@
 import WebSocket, { type RawData } from "ws";
 import { createIdGenerator } from "ai";
 
-import { callTool } from "@back/bridge/client";
-import { bridgeSiblingUrl } from "@back/bridge/url";
-import { appendMessage, logToolCall } from "@back/db/chats";
-import { buildSystemPrompt } from "@back/agent/runtime";
-import { listSkills } from "@back/skills";
+import { callTool } from "#back/bridge/client.js";
+import { bridgeSiblingUrl } from "#back/bridge/url.js";
+import { appendMessage, logToolCall } from "#back/db/chats.js";
+import { buildSystemPrompt } from "#back/agent/runtime.js";
+import { listSkills } from "#back/skills/index.js";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
 const messageId = createIdGenerator({ prefix: "msg", size: 16 });

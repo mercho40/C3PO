@@ -54,8 +54,8 @@ import {
   BridgeUnavailableError,
   BridgeToolError,
 } from "../bridge/client";
-import { betterAuth } from "@back/lib/auth-plugin";
-import { logToolCall } from "@back/db/chats";
+import { betterAuth } from "#back/lib/auth-plugin.js";
+import { logToolCall } from "#back/db/chats.js";
 
 //: Skills that must dispatch even when the catalogue cannot be read.
 //:

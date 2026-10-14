@@ -48,7 +48,7 @@ export class VoiceLoopControl extends Poller {
   /** Which command is in flight, for "Iniciando…" / "Terminando…". */
   pending = $state<"start" | "stop" | null>(null);
 
-  /** Where `back` lives. Injected: `$env/static/public` is a build-time import
+  /** Where `back` lives. Injected: `$app/env/public` is a build-time import
    *  and pulling it in here is what would make this module unloadable in a test. */
   readonly #base: string;
   /**

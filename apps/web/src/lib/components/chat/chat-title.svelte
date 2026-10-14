@@ -14,10 +14,10 @@
   import { tick } from "svelte";
   import { Check, Pencil, X } from "@lucide/svelte";
   import { toast } from "svelte-sonner";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { createApi } from "$lib/api";
-  import { redirectToLogin } from "$lib/robot/poller.svelte";
-  import { normalizeTitle, TITLE_MAX, titleOf } from "$lib/chat/title";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { createApi } from "#lib/api.js";
+  import { redirectToLogin } from "#lib/robot/poller.svelte.js";
+  import { normalizeTitle, TITLE_MAX, titleOf } from "#lib/chat/title.js";
 
   let {
     id,

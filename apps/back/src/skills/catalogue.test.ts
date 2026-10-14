@@ -14,7 +14,7 @@ import { describe, expect, test, mock, beforeEach } from "bun:test";
 
 let toolsToReturn: unknown[] = [];
 
-mock.module("@back/bridge/client", () => ({
+mock.module("#back/bridge/client.js", () => ({
   listTools: async () => toolsToReturn,
   callTool: async () => ({}),
   BridgeUnavailableError: class extends Error {},

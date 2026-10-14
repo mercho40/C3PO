@@ -12,11 +12,11 @@
   import { goto } from "$app/navigation";
   import { resolve } from "$app/paths";
   import { page } from "$app/state";
-  import { authClient } from "$lib/auth-client";
-  import * as Avatar from "$lib/components/ui/avatar/index.js";
-  import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
-  import * as Sidebar from "$lib/components/ui/sidebar/index.js";
-  import { useSidebar } from "$lib/components/ui/sidebar/index.js";
+  import { authClient } from "#lib/auth-client.js";
+  import * as Avatar from "#lib/components/ui/avatar/index.js";
+  import * as DropdownMenu from "#lib/components/ui/dropdown-menu/index.js";
+  import * as Sidebar from "#lib/components/ui/sidebar/index.js";
+  import { useSidebar } from "#lib/components/ui/sidebar/index.js";
 
   const sidebar = useSidebar();
 
@@ -35,9 +35,9 @@
         });
         return;
       }
-      // invalidateAll: re-run the root layout load so `user` clears before
+      // refreshAll: re-run the root layout load so `user` clears before
       // /login renders.
-      await goto(resolve("/login"), { invalidateAll: true });
+      await goto(resolve("login"), { refreshAll: true });
     } catch {
       toast.error("No se pudo cerrar la sesión", {
         description:
@@ -142,7 +142,7 @@
         <DropdownMenu.Separator />
         <DropdownMenu.Item>
           {#snippet child({ props })}
-            <a href={resolve("/settings")} {...props}>
+            <a href={resolve("settings")} {...props}>
               <Settings />
               Configuración
             </a>

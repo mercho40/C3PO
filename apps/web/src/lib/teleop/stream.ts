@@ -122,7 +122,7 @@ export type TeleopInput = {
   armsRequested: boolean;
 };
 
-/** A wrist as `$lib/webxr/xr-teleop.ts` reports it. */
+/** A wrist as `#lib/webxr/xr-teleop.ts` reports it. */
 export type HandSample = {
   position: [number, number, number];
   orientation: [number, number, number, number];

@@ -20,11 +20,11 @@
     PartyPopper,
     RotateCcw,
   } from "@lucide/svelte";
-  import Callout from "$lib/components/callout.svelte";
+  import Callout from "#lib/components/callout.svelte";
   import SkillTile from "./skill-tile.svelte";
   import LockLine from "./lock-line.svelte";
   import DetailsNote from "./details-note.svelte";
-  import { formatAge } from "$lib/robot/format";
+  import { formatAge } from "#lib/robot/format.js";
   import {
     gestureCaveat,
     moreGestures,
@@ -32,8 +32,8 @@
     realBadge,
     type CatalogueHealth,
     type PostureGate,
-  } from "$lib/robot/vr-logic";
-  import type { VrControl } from "$lib/robot/vr-control.svelte";
+  } from "#lib/robot/vr-logic.js";
+  import type { VrControl } from "#lib/robot/vr-control.svelte.js";
 
   let {
     ctl,

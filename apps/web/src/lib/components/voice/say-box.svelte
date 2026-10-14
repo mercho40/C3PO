@@ -18,14 +18,14 @@
   always-present `min-h-5` row padded the bottom of the panel for nothing.
 -->
 <script lang="ts">
-  import Callout from "$lib/components/callout.svelte";
-  import { createApi } from "$lib/api";
-  import { redirectToLogin } from "$lib/robot/poller.svelte";
+  import Callout from "#lib/components/callout.svelte";
+  import { createApi } from "#lib/api.js";
+  import { redirectToLogin } from "#lib/robot/poller.svelte.js";
   import {
     classifyInvoke,
     OUTCOME_TONE,
     type SkillOutcome,
-  } from "$lib/robot/skill-outcome";
+  } from "#lib/robot/skill-outcome.js";
   import { LANGUAGE_LABEL, detailLang, readSaySpec } from "./say";
 
   let {

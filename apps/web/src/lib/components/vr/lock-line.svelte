@@ -7,7 +7,7 @@
 -->
 <script lang="ts">
   import { Loader2 } from "@lucide/svelte";
-  import { BRING_UP_STEPS, SAFE_STEP } from "$lib/robot/vr-logic";
+  import { BRING_UP_STEPS, SAFE_STEP } from "#lib/robot/vr-logic.js";
 
   let {
     lock,

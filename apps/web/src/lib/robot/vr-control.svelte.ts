@@ -5,7 +5,7 @@
  *
  * This used to live inline in a 1460-line `+page.svelte`. It moved here intact:
  * every safety rule below is one a headset session found the hard way, and the
- * comments explaining them came with it. The page and `$lib/components/vr/*`
+ * comments explaining them came with it. The page and `#lib/components/vr/*`
  * only render this; the decisions that can be tested without a browser live in
  * `./vr-logic.ts`.
  *
@@ -15,9 +15,13 @@
  */
 
 import { untrack } from "svelte";
-import { browser } from "$app/environment";
-import { env } from "$env/dynamic/public";
-import { createApi } from "$lib/api";
+import { browser } from "$app/env";
+import {
+  PUBLIC_ROBOT_CAM_URL,
+  PUBLIC_TELEOP_HOST,
+  PUBLIC_TELEOP_PORT,
+} from "$app/env/public";
+import { createApi } from "#lib/api.js";
 import { redirectToLogin } from "./poller.svelte";
 import { estop } from "./estop.svelte";
 import type { EstopPhase } from "./estop";
@@ -46,7 +50,7 @@ import {
   checkXrSupport,
   type HandSample,
   type XrTeleopSupport,
-} from "$lib/webxr/xr-teleop";
+} from "#lib/webxr/xr-teleop.js";
 import {
   buildFrame,
   connectTeleop,
@@ -54,7 +58,7 @@ import {
   type TeleopHandle,
   type TeleopState,
   type TeleopStatus,
-} from "$lib/teleop/stream";
+} from "#lib/teleop/stream.js";
 import {
   connectRobotCamera,
   type RobotCamHandle,
@@ -188,7 +192,7 @@ export class VrControl {
   // A second, deliberately separate transport: a WebSocket straight to
   // `apps/bridge/src/bridge/teleop/server.py` (port 8767), carrying head
   // yaw + both wrists + finger closure at ~30Hz. See that module and
-  // `$lib/teleop/stream.ts` for why this does not go through apps/back.
+  // `#lib/teleop/stream.ts` for why this does not go through apps/back.
   //
   // While it is open it becomes the ONLY commander of locomotion: the
   // `walk_velocity` loop below is suspended, and the walk buttons feed the
@@ -262,7 +266,7 @@ export class VrControl {
    * configuration, not the robot's vision process.
    */
   get camConfigured(): boolean {
-    return (env.PUBLIC_ROBOT_CAM_URL ?? "").trim() !== "";
+    return PUBLIC_ROBOT_CAM_URL.trim() !== "";
   }
 
   // --- plain fields: hot-path or non-rendered state ------------------------
@@ -875,7 +879,7 @@ export class VrControl {
     // reconnects with a fresh URL, which the vision server requires because it
     // CLOSES the stream whenever it goes stale. Two independent connections
     // would also mean two MJPEG streams over the same robot Wi-Fi link.
-    const camBase = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
+    const camBase = PUBLIC_ROBOT_CAM_URL.trim();
     const session = new XrTeleopSession(
       {
         onSample: (s) => {
@@ -987,7 +991,7 @@ export class VrControl {
 
   /**
    * Build the frame the sender is about to transmit. Pulled ~30 times a
-   * second by `$lib/teleop/stream.ts`, never cached — see `buildFrame`, which
+   * second by `#lib/teleop/stream.ts`, never cached — see `buildFrame`, which
    * holds the freshness policy and its tests.
    */
   #buildTeleopFrame(): TeleopFramePayload {
@@ -1018,8 +1022,8 @@ export class VrControl {
   connectStream(): void {
     this.#teleop?.close();
     this.teleopStatus = null;
-    const host = env.PUBLIC_TELEOP_HOST || location.hostname;
-    const port = env.PUBLIC_TELEOP_PORT || "8767";
+    const host = PUBLIC_TELEOP_HOST || location.hostname;
+    const port = PUBLIC_TELEOP_PORT || "8767";
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     this.#teleop = connectTeleop(`${protocol}://${host}:${port}`, {
       getFrame: () => this.#buildTeleopFrame(),
@@ -1119,7 +1123,7 @@ export class VrControl {
   connectCamera(): void {
     this.#camHandle?.close();
     this.#camHandle = null;
-    const base = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
+    const base = PUBLIC_ROBOT_CAM_URL.trim();
     if (!base) {
       this.camState = "error";
       this.camDetail = "PUBLIC_ROBOT_CAM_URL no está configurado.";

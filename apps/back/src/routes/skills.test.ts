@@ -7,17 +7,17 @@
  * and, at the end, the audit row every dispatch writes (fire-and-forget —
  * the stop must never wait on the database).
  *
- * `@back/lib/auth`'s `auth.api.getSession` normally hits Postgres; mocked
+ * `#back/lib/auth`'s `auth.api.getSession` normally hits Postgres; mocked
  * here so these are fast unit tests that don't need a live DB. The mock
  * must be registered before `./skills` is imported (it transitively pulls
- * in the real `@back/lib/auth-plugin`, which imports `@back/lib/auth`),
+ * in the real `#back/lib/auth-plugin`, which imports `#back/lib/auth`),
  * hence the dynamic import after `mock.module`.
  */
 import { describe, expect, test, mock, beforeEach } from "bun:test";
 
 let sessionUser: { id: string; role: string | null } | null = null;
 
-mock.module("@back/lib/auth", () => ({
+mock.module("#back/lib/auth.js", () => ({
   auth: {
     handler: async () => new Response("not mocked", { status: 404 }),
     api: {
@@ -46,7 +46,7 @@ mock.module("../bridge/client", () => {
     })),
     // Not used directly by these tests (`../skills` is mocked below instead),
     // but `bun test` shares one module registry across every test file in
-    // the run -- another file's `mock.module("@back/bridge/client", ...)`
+    // the run -- another file's `mock.module("#back/bridge/client.js", ...)`
     // (the alias form, same resolved file as this relative one) would
     // otherwise "win" or lose the race depending on run order, and a mock
     // missing an export the real module has throws at import time for
@@ -134,7 +134,7 @@ function thenable(result: unknown) {
   });
 }
 
-mock.module("@back/db/drizzle", () => ({
+mock.module("#back/db/drizzle.js", () => ({
   db: {
     insert: () => ({
       values: (row: Record<string, unknown>) => {

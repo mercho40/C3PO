@@ -10,17 +10,20 @@
   config guess — and when the link is down it says it is the last answer.
 -->
 <script lang="ts">
-  import { PUBLIC_API_URL } from "$env/static/public";
-  import { env } from "$env/dynamic/public";
-  import { getRobotLive, getVoiceLoop } from "$lib/robot/context";
-  import { LINK } from "$lib/robot/link-copy";
-  import { ENGINE_LABEL, engineOf } from "$lib/components/voice/voice-view";
+  import {
+    PUBLIC_API_URL,
+    PUBLIC_ROBOT_CAM_URL,
+    PUBLIC_SIM_CAM_HOST,
+  } from "$app/env/public";
+  import { getRobotLive, getVoiceLoop } from "#lib/robot/context.js";
+  import { LINK } from "#lib/robot/link-copy.js";
+  import { ENGINE_LABEL, engineOf } from "#lib/components/voice/voice-view.js";
 
   const live = getRobotLive();
   const voice = getVoiceLoop();
 
-  const robotCam = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
-  const simHost = (env.PUBLIC_SIM_CAM_HOST ?? "").trim();
+  const robotCam = PUBLIC_ROBOT_CAM_URL.trim();
+  const simHost = PUBLIC_SIM_CAM_HOST.trim();
 
   const ENV_LABEL: Record<string, string> = {
     stub: "Stub — datos ficticios, sin robot",

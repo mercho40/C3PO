@@ -22,7 +22,7 @@
     Info,
     TriangleAlert,
   } from "@lucide/svelte";
-  import { cn } from "$lib/utils";
+  import { cn } from "#lib/utils.js";
 
   let {
     tone = "info",

@@ -1,6 +1,6 @@
 <!--
   One subsystem on /health. Everything it says was decided in
-  `$lib/robot/health.ts`; this only lays it out.
+  `#lib/robot/health.ts`; this only lays it out.
 
   Bridge text (hints, errors, notes) is shown verbatim and tagged English, so a
   screen reader pronounces "perception_up nav2" as what it is — after its
@@ -18,7 +18,7 @@
     TONE_TEXT,
     type HealthRow,
     type HealthTone,
-  } from "$lib/robot/health";
+  } from "#lib/robot/health.js";
 
   let { row }: { row: HealthRow } = $props();
 

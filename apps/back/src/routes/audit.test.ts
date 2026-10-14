@@ -8,7 +8,7 @@
  * silently ignored, and pagination never invents a "next page" that is not
  * there.
  *
- * No database: `@back/db/drizzle` is replaced with a chain that records what
+ * No database: `#back/db/drizzle` is replaced with a chain that records what
  * the route asked for and answers from a queue. `bun test` shares one module
  * registry across files, so this mock's surface (`db`) is complete — see the
  * note in skills.test.ts.
@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 let sessionUser: { id: string; role: string | null } | null = null;
 
-mock.module("@back/lib/auth", () => ({
+mock.module("#back/lib/auth.js", () => ({
   auth: {
     handler: async () => new Response("not mocked", { status: 404 }),
     api: {
@@ -51,7 +51,7 @@ function chain(record: { calls: [string, unknown[]][] }, result: unknown[]) {
   return proxy;
 }
 
-mock.module("@back/db/drizzle", () => ({
+mock.module("#back/db/drizzle.js", () => ({
   db: {
     select: (...args: unknown[]) => {
       const record = { calls: [["select", args]] as [string, unknown[]][] };

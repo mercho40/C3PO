@@ -1,51 +1,51 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
-  import { afterNavigate, invalidateAll, replaceState } from "$app/navigation";
-  import { createApi } from "$lib/api";
+  import { afterNavigate, goto, refreshAll } from "$app/navigation";
+  import { createApi } from "#lib/api.js";
   import { Chat } from "@ai-sdk/svelte";
   import { isToolUIPart, DefaultChatTransport, type UIMessage } from "ai";
   import { resolve } from "$app/paths";
-  import { PUBLIC_API_URL } from "$env/static/public";
+  import { PUBLIC_API_URL } from "$app/env/public";
   import { MessagesSquare, Plus } from "@lucide/svelte";
   import { toast } from "svelte-sonner";
 
-  import { Button } from "$lib/components/ui/button/index.js";
-  import * as Sheet from "$lib/components/ui/sheet/index.js";
-  import * as Conversation from "$lib/components/ai-elements/conversation/index.js";
-  import * as Message from "$lib/components/ai-elements/message/index.js";
-  import * as PromptInput from "$lib/components/ai-elements/prompt-input/index.js";
-  import * as Reasoning from "$lib/components/ai-elements/reasoning/index.js";
-  import { Response } from "$lib/components/ai-elements/response/index.js";
-  import { Suggestion } from "$lib/components/ai-elements/suggestion/index.js";
-  import { Loader } from "$lib/components/ai-elements/loader/index.js";
-  import { CopyButton } from "$lib/components/ai-elements/copy-button/index.js";
-  import ChatHistory from "$lib/components/chat-history.svelte";
-  import Callout from "$lib/components/callout.svelte";
-  import ToolCard from "$lib/components/chat/tool-card.svelte";
-  import ChatTitle from "$lib/components/chat/chat-title.svelte";
-  import ChatErrorBanner from "$lib/components/chat/chat-error-banner.svelte";
-  import { redirectToLogin } from "$lib/robot/poller.svelte";
-  import { LINK } from "$lib/robot/link-copy";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import * as Sheet from "#lib/components/ui/sheet/index.js";
+  import * as Conversation from "#lib/components/ai-elements/conversation/index.js";
+  import * as Message from "#lib/components/ai-elements/message/index.js";
+  import * as PromptInput from "#lib/components/ai-elements/prompt-input/index.js";
+  import * as Reasoning from "#lib/components/ai-elements/reasoning/index.js";
+  import { Response } from "#lib/components/ai-elements/response/index.js";
+  import { Suggestion } from "#lib/components/ai-elements/suggestion/index.js";
+  import { Loader } from "#lib/components/ai-elements/loader/index.js";
+  import { CopyButton } from "#lib/components/ai-elements/copy-button/index.js";
+  import ChatHistory from "#lib/components/chat-history.svelte";
+  import Callout from "#lib/components/callout.svelte";
+  import ToolCard from "#lib/components/chat/tool-card.svelte";
+  import ChatTitle from "#lib/components/chat/chat-title.svelte";
+  import ChatErrorBanner from "#lib/components/chat/chat-error-banner.svelte";
+  import { redirectToLogin } from "#lib/robot/poller.svelte.js";
+  import { LINK } from "#lib/robot/link-copy.js";
   import {
     awaitingModel,
     continuationPrompt,
     planRecovery,
     replyText,
     type RecoveryPlan,
-  } from "$lib/chat/turn";
-  import { describeChatError } from "$lib/chat/chat-error";
+  } from "#lib/chat/turn.js";
+  import { describeChatError } from "#lib/chat/chat-error.js";
   import {
     shouldPollTranscript,
     transcriptFreshness,
     TRANSCRIPT_POLL_MS,
-  } from "$lib/chat/transcript";
+  } from "#lib/chat/transcript.js";
   import {
     canLoadMoreHistory,
     HISTORY_MAX,
     HISTORY_PAGE,
     shouldPinDraft,
-  } from "$lib/chat/history";
-  import { newId } from "$lib/chat/ids";
+  } from "#lib/chat/history.js";
+  import { newId } from "#lib/chat/ids.js";
   import { TranscriptPoller } from "./transcript-poller.svelte";
   import type { PageData } from "./$types";
 
@@ -180,7 +180,7 @@
 
   // A voice chat is written by the realtime engine while its session runs; a
   // load-once copy is stale the moment the robot says anything else. Re-fetch
-  // it while visible (see `$lib/chat/transcript.ts` for why this is safe).
+  // it while visible (see `#lib/chat/transcript.ts` for why this is safe).
   const isVoice = $derived(data.selected?.channel === "voice");
   const transcript = $derived.by(() => {
     const selected = data.selected;
@@ -392,8 +392,8 @@
       params.set("id", chatId);
     }
     const query = params.toString();
-    if (query) replaceState(resolve(`/chat?${query}`), {});
-    else replaceState(resolve("/chat"), {});
+    const url = resolve(query ? `chat?${query}` : "chat");
+    void goto(url, { shallow: true, replace: true });
   }
 
   // Hand-off from the dashboard command box / quick controls: an initial prompt
@@ -402,7 +402,7 @@
   // turn — not here, before anyone knows whether it will.
   //
   // The rewrite waits a task: on a direct load this runs during hydration,
-  // before SvelteKit's router has started, and `replaceState` throws there.
+  // before SvelteKit's router has started, and a shallow `goto` throws there.
   onMount(() => {
     const q = new URLSearchParams(window.location.search).get("q")?.trim();
     if (q && !isVoice) {
@@ -428,8 +428,13 @@
   // the draft is brand new — or a `?q=` hand-off spent it a moment ago, on
   // purpose, in onMount, which runs before this. Minting there threw the
   // dashboard's command away into a Chat nobody could see.
+  //
+  // And never on `rewriteUrl`'s own shallow `goto`: SvelteKit 3 reports those
+  // to afterNavigate too, and the `?q=` hand-off spends the draft right before
+  // rewriting, so minting there would throw its command away the same way.
   let arrived = false;
-  afterNavigate(() => {
+  afterNavigate(({ shallow }) => {
+    if (shallow) return;
     if (!arrived) {
       arrived = true;
       return;
@@ -596,7 +601,7 @@
                   <Button
                     variant="outline"
                     size="sm"
-                    onclick={() => invalidateAll()}
+                    onclick={() => refreshAll()}
                   >
                     Reintentar
                   </Button>
@@ -746,7 +751,7 @@
         Para escribirle al robot, empezá un chat nuevo.
         {#snippet action()}
           <Button
-            href={resolve("/chat")}
+            href={resolve("chat")}
             variant="outline"
             size="sm"
             class="gap-1.5"
