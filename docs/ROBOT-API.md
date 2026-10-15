@@ -749,9 +749,10 @@ stateDiagram-v2
 **Damp is the hub**: `ZeroTorque`, `Preparation`, `SquatUp`, `LieUp` are reachable only
 from `Damp`; `Preparation` (4) is the sole gateway into locomotion; every
 locomotion-active mode drops straight back to `Damp` — the same edge `stop_everything`'s
-real-hardware fallback dispatches (`SET_VELOCITY(0,0,0)` then damp, selected per
-`SIM_MODE`). Whether that fallback has ever been exercised live is still open —
-smoke-test it before relying on it. Legality beyond these edges (Seating, Dance, Climb,
+real-hardware fallback dispatches (`SET_VELOCITY(0,0,0)`, then damp only if no zero
+setpoint was acknowledged — since 2026-10-15; `STOP_EVERYTHING_DAMP=always` damps every
+time). The damp edge was exercised live on 2026-10-15 (code 0, first attempt, from a
+walk mode). Legality beyond these edges (Seating, Dance, Climb,
 SquatUp onward) is the firmware's call, not confirmed. Note `Mode.SQUAT` (2) is never
 actually sent: the `squat` skill dispatches `SQUAT_UP` (706), matching the reference
 implementation.
