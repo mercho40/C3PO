@@ -1,7 +1,7 @@
 import { redirect } from "@sveltejs/kit";
 import type { PageServerLoad } from "./$types";
-import { createApi } from "$lib/api";
-import type { SelectedStatus } from "$lib/chat/transcript";
+import { createApi } from "#lib/api.js";
+import type { SelectedStatus } from "#lib/chat/transcript.js";
 
 /**
  * Chat history for the console.
@@ -13,7 +13,7 @@ import type { SelectedStatus } from "$lib/chat/transcript";
  *
  * The cookie header is forwarded explicitly: SvelteKit's server `fetch` does
  * not send cookies cross-origin (web :3001 → back :3000), so Better Auth
- * wouldn't see the session otherwise (see `$lib/api`).
+ * wouldn't see the session otherwise (see `#lib/api`).
  */
 export const load: PageServerLoad = async ({ fetch, request, url }) => {
   const api = createApi(fetch, request.headers.get("cookie"));

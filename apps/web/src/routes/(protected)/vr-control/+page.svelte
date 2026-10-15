@@ -7,34 +7,34 @@
    * reachable in-session, and the whole page doubles as a WebXR `dom-overlay`
    * root so the controls stay usable while a VR session is active.
    *
-   * The state and the dispatch live in `$lib/robot/vr-control.svelte.ts` (the
+   * The state and the dispatch live in `#lib/robot/vr-control.svelte.ts` (the
    * safety rules and their history came with them); the decisions that can be
-   * tested without a browser live in `$lib/robot/vr-logic.ts`; the panels are
-   * `$lib/components/vr/*`. This file wires them to the shared robot state.
+   * tested without a browser live in `#lib/robot/vr-logic.ts`; the panels are
+   * `#lib/components/vr/*`. This file wires them to the shared robot state.
    *
    * `/invoke` is admin-only for every non-safety skill (`apps/back/src/
    * routes/skills.ts`), so whoever logs in here needs `role: "admin"` — except
    * for walking and head-yaw over the teleop stream, which bypass apps/back.
    */
   import { onDestroy, onMount, untrack } from "svelte";
-  import StopButton from "$lib/components/stop-button.svelte";
-  import Callout from "$lib/components/callout.svelte";
-  import RobotCameraView from "$lib/components/robot-camera-view.svelte";
-  import AdminBanner from "$lib/components/vr/admin-banner.svelte";
-  import BringUpPanel from "$lib/components/vr/bring-up-panel.svelte";
-  import GesturePanel from "$lib/components/vr/gesture-panel.svelte";
-  import TeleopPanel from "$lib/components/vr/teleop-panel.svelte";
-  import VrHero from "$lib/components/vr/vr-hero.svelte";
-  import VrEstopLine from "$lib/components/vr/vr-estop-line.svelte";
-  import VrStrip from "$lib/components/vr/vr-strip.svelte";
-  import WalkPanel from "$lib/components/vr/walk-panel.svelte";
-  import XrAlerts from "$lib/components/vr/xr-alerts.svelte";
-  import { getRobotLive } from "$lib/robot/context";
-  import { readPosture } from "$lib/robot/posture";
-  import { MotionTracker } from "$lib/robot/motion";
-  import { staleness } from "$lib/robot/faults";
-  import { VrControl } from "$lib/robot/vr-control.svelte";
-  import { readinessFor } from "$lib/webxr/menu-layer";
+  import StopButton from "#lib/components/stop-button.svelte";
+  import Callout from "#lib/components/callout.svelte";
+  import RobotCameraView from "#lib/components/robot-camera-view.svelte";
+  import AdminBanner from "#lib/components/vr/admin-banner.svelte";
+  import BringUpPanel from "#lib/components/vr/bring-up-panel.svelte";
+  import GesturePanel from "#lib/components/vr/gesture-panel.svelte";
+  import TeleopPanel from "#lib/components/vr/teleop-panel.svelte";
+  import VrHero from "#lib/components/vr/vr-hero.svelte";
+  import VrEstopLine from "#lib/components/vr/vr-estop-line.svelte";
+  import VrStrip from "#lib/components/vr/vr-strip.svelte";
+  import WalkPanel from "#lib/components/vr/walk-panel.svelte";
+  import XrAlerts from "#lib/components/vr/xr-alerts.svelte";
+  import { getRobotLive } from "#lib/robot/context.js";
+  import { readPosture } from "#lib/robot/posture.js";
+  import { MotionTracker } from "#lib/robot/motion.js";
+  import { staleness } from "#lib/robot/faults.js";
+  import { VrControl } from "#lib/robot/vr-control.svelte.js";
+  import { readinessFor } from "#lib/webxr/menu-layer.js";
   import {
     GESTURE_FSM,
     WALK_FSM,
@@ -45,7 +45,7 @@
     isRealHardware,
     postureGate,
     realBadge,
-  } from "$lib/robot/vr-logic";
+  } from "#lib/robot/vr-logic.js";
 
   let { data } = $props();
 
@@ -234,7 +234,7 @@
     <VrHero
       {ctl}
       {posture}
-      onenter={(observe) => void ctl.enterVr(overlayRoot, observe)}
+      onenter={(observe: boolean) => void ctl.enterVr(overlayRoot, observe)}
     />
   {/if}
 

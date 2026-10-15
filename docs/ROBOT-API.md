@@ -403,7 +403,7 @@ for a G1 and are wrong on the wire: **[web]**
 | 7107   | `SET_SPEED_MODE`           | `{"data": <int>}` — **0/1/2/3 only** (below)     | "                        |
 
 **[src]** for the api*ids and every `SET*_`parameter shape — read verbatim from`g1_loco_client.hpp`. The getter rows carry two caveats: the header passes an **empty**
-parameter string (the _"empty string (C++) / `{}` (Python) — both accepted"* line is
+parameter string (the \_"empty string (C++) / `{}` (Python) — both accepted"* line is
 community `[web]`, untested here — send the empty string), and the getter *response\* types
 beyond `{"data": <int>}` are **[web]** — no client on this robot parses them.
 

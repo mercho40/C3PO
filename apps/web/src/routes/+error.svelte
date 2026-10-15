@@ -68,14 +68,14 @@
       {/if}
       <div class="flex flex-wrap items-center justify-center gap-2.5 pt-1">
         <a
-          href={resolve(signedIn ? "/dashboard" : "/")}
+          href={resolve(signedIn ? "dashboard" : "/")}
           class="inline-flex h-10 items-center rounded-lg cta px-4 text-sm font-medium focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none"
         >
           {signedIn ? "Ir a la consola" : "Volver al inicio"}
         </a>
         {#if !signedIn}
           <a
-            href={resolve("/login")}
+            href={resolve("login")}
             class="inline-flex h-10 items-center tile-interactive px-4 text-sm text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none"
           >
             Ingresar

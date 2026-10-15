@@ -23,9 +23,9 @@
 import { Elysia, t } from "elysia";
 import { createIdGenerator, type UIMessage } from "ai";
 
-import { runAgentChat } from "@back/agent/runtime";
-import { appendMessage, ensureChat, titleFromParts } from "@back/db/chats";
-import { betterAuth } from "@back/lib/auth-plugin";
+import { runAgentChat } from "#back/agent/runtime.js";
+import { appendMessage, ensureChat, titleFromParts } from "#back/db/chats.js";
+import { betterAuth } from "#back/lib/auth-plugin.js";
 
 /**
  * Ids for the assistant messages we persist.

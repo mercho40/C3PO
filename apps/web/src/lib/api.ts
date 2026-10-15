@@ -1,6 +1,6 @@
 import { treaty } from "@elysiajs/eden";
-import type { App } from "@back/index";
-import { PUBLIC_API_URL } from "$env/static/public";
+import type { App } from "@repo/back";
+import { PUBLIC_API_URL } from "$app/env/public";
 
 /**
  * Eden Treaty client — end-to-end typed against the backend's `App` type.

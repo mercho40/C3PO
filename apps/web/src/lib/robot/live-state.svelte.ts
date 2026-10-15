@@ -16,10 +16,10 @@
  * anything rendering it must check `online` before presenting it as live.
  */
 
-import { createApi } from "$lib/api";
+import { createApi } from "#lib/api.js";
 import { linkFromError, type LinkProblem } from "./link-copy";
 import { Poller, type PollResult } from "./poller.svelte";
-import type { RobotState } from "@back/routes/state";
+import type { RobotState } from "@repo/back";
 
 export type PoseXY = { x: number; y: number };
 

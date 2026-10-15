@@ -205,11 +205,7 @@ export function advance(
 }
 
 export type EstopTone =
-  | "idle"
-  | "pending"
-  | "stopped"
-  | "unconfirmed"
-  | "failed";
+  "idle" | "pending" | "stopped" | "unconfirmed" | "failed";
 
 export type EstopView = {
   /** Visible label from `sm` up — also the accessible name. */

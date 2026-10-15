@@ -22,9 +22,9 @@
   import { onMount } from "svelte";
   import { resolve } from "$app/paths";
   import { ChevronRight, Square } from "@lucide/svelte";
-  import Callout from "$lib/components/callout.svelte";
-  import { Awareness } from "$lib/robot/awareness.svelte";
-  import { formatAge } from "$lib/robot/format";
+  import Callout from "#lib/components/callout.svelte";
+  import { Awareness } from "#lib/robot/awareness.svelte.js";
+  import { formatAge } from "#lib/robot/format.js";
   import {
     FREE_SPACE_SECTORS,
     bearingWords,
@@ -35,7 +35,7 @@
     sourceTone,
     sourceWord,
     type SourceTone,
-  } from "$lib/robot/awareness-copy";
+  } from "#lib/robot/awareness-copy.js";
 
   let {
     section = "all",
@@ -275,7 +275,7 @@
           </div>
           {#if section === "all"}
             <a
-              href={resolve("/voice")}
+              href={resolve("voice")}
               class="inline-flex min-h-8 items-center gap-0.5 rounded text-xs text-ink-mute transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none"
             >
               Control por voz

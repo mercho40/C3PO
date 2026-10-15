@@ -26,5 +26,5 @@ export type ToolSchema = {
 // The registry also shipped a `ToolClass` + Svelte context here, but no
 // component in the set ever read it — the parts come straight off
 // `chat.messages`. It carried its own English status labels, and status
-// wording now lives in `$lib/chat/tool-part.ts` (which reads the RESULT, not
+// wording now lives in `#lib/chat/tool-part.ts` (which reads the RESULT, not
 // just the part state), so it is deliberately not vendored.

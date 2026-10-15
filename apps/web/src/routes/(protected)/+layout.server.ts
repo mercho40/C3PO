@@ -1,6 +1,6 @@
 import { redirect } from "@sveltejs/kit";
-import { SIDEBAR_COOKIE_NAME } from "$lib/components/ui/sidebar/constants.js";
-import { createApi } from "$lib/api";
+import { SIDEBAR_COOKIE_NAME } from "#lib/components/ui/sidebar/constants.js";
+import { createApi } from "#lib/api.js";
 import type { LayoutServerLoad } from "./$types";
 
 /**
@@ -8,7 +8,7 @@ import type { LayoutServerLoad } from "./$types";
  *
  * The robot state seed lives here rather than in each page's load: the topbar
  * shows connection status on every console route, and the layout owns the one
- * `RobotLive` poller all pages share (see `$lib/robot/context`). Fetching it
+ * `RobotLive` poller all pages share (see `#lib/robot/context`). Fetching it
  * once at the layout means a page transition doesn't re-seed — or reset — that
  * shared state.
  *

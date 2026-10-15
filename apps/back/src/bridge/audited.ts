@@ -12,8 +12,8 @@
  * text keeps the bridge's own reason.
  */
 
-import { logToolCall } from "@back/db/chats";
-import type { ToolCallSource } from "@back/db/schema";
+import { logToolCall } from "#back/db/chats.js";
+import type { ToolCallSource } from "#back/db/schema.js";
 
 import { BridgeToolError, BridgeUnavailableError, callTool } from "./client";
 

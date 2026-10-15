@@ -1,12 +1,12 @@
 # C3PO Web (`apps/web`)
 
-SvelteKit 5 operator console (Svelte runes, Tailwind CSS 4): login/signup and
+SvelteKit 3 operator console (Svelte 5 runes, Tailwind CSS 4): login/signup and
 a `(protected)` group with the dashboard, live map, cameras, agent chat with
 history, voice control, VR control, a health board and settings. The page list
 lives once, in `src/lib/nav.ts` — sidebar entries, topbar titles and browser-tab
 titles all come from it. Talks to `apps/back` via Eden Treaty — the backend's `App`
-type is imported through the `@back/*` alias (defined in `svelte.config.js`;
-the generated `.svelte-kit/tsconfig.json` picks it up), so API calls like
+type is imported from the `@repo/back` workspace package (its `exports` point
+at `src/index.ts`; types only, nothing is bundled), so API calls like
 `api.health.get()` are typed end to end.
 
 ## Develop
@@ -51,7 +51,7 @@ are two different transports, not two addresses for one (below).
   "offline". `redirectTo` is sanitised server-side (`login/auth-params.ts`,
   tested against open-redirect forms).
 - Login/signup are server-rendered and redirect already-authenticated visitors
-  in their `+page.server.ts`. Logout navigates with `invalidateAll`, which is
+  in their `+page.server.ts`. Logout navigates with `refreshAll`, which is
   what keeps the root layout's `data.user` from bouncing `/login` →
   `/dashboard` → `/login`.
 - Social buttons render only for providers `back` reports as configured on
@@ -66,21 +66,21 @@ are two different transports, not two addresses for one (below).
 Everything that must be true on every page lives in the `(protected)` layout,
 which owns one instance each of `RobotLive` (`/state`), `VoiceLoopControl`
 (`/voice/status`) and `Gate` (`/telemetry/gate`) and hands them down through
-`$lib/robot/context.ts`.
+`#lib/robot/context.ts`.
 
-- **Polling follows one policy** (`$lib/robot/poller.svelte.ts`): never two
+- **Polling follows one policy** (`#lib/robot/poller.svelte.ts`): never two
   requests in flight, every request carries a timeout, a 401 goes to login,
   and optional pause while the tab is hidden. `/state` had no timeout once, and
   a bridge that stalled instead of refusing kept the topbar on "En línea" for
   the MCP SDK's 60 s default. Any new poller extends `Poller`. Eden Treaty
   never throws on a failed fetch — it returns `{status: 503, value: Error}` —
   so an `Error` value means "could not reach back", not a bridge 503.
-- **One vocabulary for a missing link** (`$lib/robot/link-copy.ts`): "Sin
+- **One vocabulary for a missing link** (`#lib/robot/link-copy.ts`): "Sin
   conexión" (no answer), "Sin puente" (back says the bridge is down), "Sin
   acceso a la API", "Sesión vencida". "En vivo"/"Sin señal" are media words and
   never describe the robot link.
 - **The e-stop is one press, wherever it is pressed.** Its state lives in
-  `$lib/robot/estop.svelte.ts`, so the topbar button, the in-headset button on
+  `#lib/robot/estop.svelte.ts`, so the topbar button, the in-headset button on
   `/vr-control` (the only stop visible inside the WebXR dom-overlay — keep it)
   and the global **Shift+Space** hotkey always agree. Only telemetry read
   _after_ the 200 can confirm a stop, and only a posture the bridge can vouch
@@ -97,7 +97,7 @@ which owns one instance each of `RobotLive` (`/state`), `VoiceLoopControl`
   voice session runs, and "NAV ARMADO · N s" while Nav2 is armed to drive. An
   armed gate that can no longer be read keeps its chip and says "sin datos" —
   unknown is not closed.
-- **Skill results have one meaning** (`$lib/robot/skill-outcome.ts`). The
+- **Skill results have one meaning** (`#lib/robot/skill-outcome.ts`). The
   bridge never raises: a firmware refusal is a 200 with `status: "failed"`, a
   bring-up step can be acked without happening, a stub only logs. Every
   surface — chat tool cards, VR tiles and walk loop, the stop — classifies
@@ -212,7 +212,7 @@ on synthetic odom and scan — **no sensors, nothing taken from the other team.*
 
 `@sveltejs/adapter-vercel`, pinned to the `nodejs22.x` runtime (not edge)
 because `getCookieCache` needs Node crypto — see the comment in
-`svelte.config.js`.
+`vite.config.ts`.
 
 ## UI conventions
 

@@ -41,7 +41,7 @@
  * while the document holds a reference.
  */
 
-import { PUBLIC_API_URL } from "$env/static/public";
+import { PUBLIC_API_URL } from "$app/env/public";
 import { LINK_DETAIL, linkFromError } from "./link-copy";
 import { Poller, type PollResult } from "./poller.svelte";
 
@@ -68,11 +68,7 @@ export type CostmapPlacement = {
  *  - `unreachable`  back, or the bridge behind it, did not answer
  */
 export type CostmapStatus =
-  | "loading"
-  | "live"
-  | "noCostmap"
-  | "noPlacement"
-  | "unreachable";
+  "loading" | "live" | "noCostmap" | "noPlacement" | "unreachable";
 
 const DEFAULT_POLL_MS = 1000;
 /** Non-live answers tolerated at full rate before backing off. */

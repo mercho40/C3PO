@@ -32,7 +32,7 @@
  * Plain module, no runes, so `bun test` can load it.
  */
 
-import type { RobotState } from "@back/routes/state";
+import type { RobotState } from "@repo/back";
 import type { GateStatus } from "./gate.svelte";
 import type { VoiceLoopState } from "./voice-loop";
 import { readFaults, type Fault } from "./faults";

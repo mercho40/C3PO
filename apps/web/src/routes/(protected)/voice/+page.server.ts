@@ -1,5 +1,5 @@
 import { redirect } from "@sveltejs/kit";
-import { createApi } from "$lib/api";
+import { createApi } from "#lib/api.js";
 import type { PageServerLoad } from "./$types";
 
 /**
@@ -8,7 +8,7 @@ import type { PageServerLoad } from "./$types";
  * Both server-side so the first paint already has them, with the cookie
  * forwarded explicitly: SvelteKit's server `fetch` does not send cookies
  * cross-origin (web :3001 → back :3000), so Better Auth would not see the
- * session otherwise (see `$lib/api`).
+ * session otherwise (see `#lib/api`).
  *
  * Failures are reported, never flattened into an empty list: "you have no
  * voice transcripts" and "the history could not be read" are different facts.

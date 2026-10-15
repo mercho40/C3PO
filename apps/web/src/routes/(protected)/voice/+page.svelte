@@ -12,15 +12,15 @@
   as the last reading — the hero dims and labels itself, and "Decir" words its
   overlap warning as last known — never as current.
 
-  The page title comes from the topbar (`$lib/nav.ts`).
+  The page title comes from the topbar (`#lib/nav.ts`).
 -->
 <script lang="ts">
-  import AwarenessPanel from "$lib/components/awareness-panel.svelte";
-  import VoiceControl from "$lib/components/voice-control.svelte";
-  import SayBox from "$lib/components/voice/say-box.svelte";
-  import Transcripts from "$lib/components/voice/transcripts.svelte";
-  import { engineOf } from "$lib/components/voice/voice-view";
-  import { getVoiceLoop } from "$lib/robot/context";
+  import AwarenessPanel from "#lib/components/awareness-panel.svelte";
+  import VoiceControl from "#lib/components/voice-control.svelte";
+  import SayBox from "#lib/components/voice/say-box.svelte";
+  import Transcripts from "#lib/components/voice/transcripts.svelte";
+  import { engineOf } from "#lib/components/voice/voice-view.js";
+  import { getVoiceLoop } from "#lib/robot/context.js";
 
   let { data } = $props();
 

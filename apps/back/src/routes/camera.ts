@@ -33,7 +33,7 @@
 
 import { Elysia } from "elysia";
 
-import { bridgeSiblingUrl } from "@back/bridge/url";
+import { bridgeSiblingUrl } from "#back/bridge/url.js";
 
 /** How long to wait for the bridge to START answering. Not a stream limit. */
 export const CONNECT_TIMEOUT_MS = 3000;

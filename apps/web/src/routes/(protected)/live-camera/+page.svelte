@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { env } from "$env/dynamic/public";
+  import { PUBLIC_ROBOT_CAM_URL, PUBLIC_SIM_CAM_HOST } from "$app/env/public";
   import {
     Camera,
     ExternalLink,
@@ -9,20 +9,20 @@
     RotateCw,
   } from "@lucide/svelte";
   import { toast } from "svelte-sonner";
-  import RobotCameraView from "$lib/components/robot-camera-view.svelte";
-  import CamOverlay from "$lib/components/robot/cam-overlay.svelte";
+  import RobotCameraView from "#lib/components/robot-camera-view.svelte";
+  import CamOverlay from "#lib/components/robot/cam-overlay.svelte";
   import {
     connectSimCamera,
     type SimCamHandle,
     type SimCamState,
-  } from "$lib/webrtc/sim-camera";
+  } from "#lib/webrtc/sim-camera.js";
   import {
     connectRobotCamera,
     endpoint,
     type RobotCamHandle,
     type RobotCamState,
     type RobotCamStatus,
-  } from "$lib/robot/mjpeg-camera";
+  } from "#lib/robot/mjpeg-camera.js";
   import {
     CAM_BADGE_LABEL,
     CAM_BADGE_TONE,
@@ -34,8 +34,8 @@
     snapshotFailure,
     cameraHint,
     type SnapshotFailure,
-  } from "$lib/robot/camera-copy";
-  import { formatAge } from "$lib/robot/format";
+  } from "#lib/robot/camera-copy.js";
+  import { formatAge } from "#lib/robot/format.js";
 
   // TWO SOURCES, AND THEY ARE NOT INTERCHANGEABLE.
   //
@@ -52,7 +52,7 @@
   // simulation. Read at the top level, not in onMount: dynamic public env is
   // available during SSR, and reading it late rendered the sim layout
   // (":60001", two wrist tiles) on the robot console until hydration.
-  const robotBase = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
+  const robotBase = PUBLIC_ROBOT_CAM_URL.trim();
   const robotMode = robotBase !== "";
 
   // The sim's teleimager image servers — one aiortc WebRTC server per camera.
@@ -86,7 +86,7 @@
   // Default to the host serving the console (browser runs on the sim box), so no
   // config is needed in the co-located setup; override with PUBLIC_SIM_CAM_HOST.
   // `location` only exists in the browser, so the fallback lands in onMount.
-  let host = $state((env.PUBLIC_SIM_CAM_HOST ?? "").trim());
+  let host = $state(PUBLIC_SIM_CAM_HOST.trim());
   const videoEls: Partial<Record<CamId, HTMLVideoElement>> = {};
   // Fullscreen takes the whole canvas, never the bare <img>/<video>: the
   // state badge and the overlays have to go with the picture — a full-screen

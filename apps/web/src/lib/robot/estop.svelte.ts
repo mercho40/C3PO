@@ -17,7 +17,7 @@
  */
 
 import { untrack } from "svelte";
-import { createApi } from "$lib/api";
+import { createApi } from "#lib/api.js";
 import type { SkillOutcome } from "./skill-outcome";
 import {
   advance,

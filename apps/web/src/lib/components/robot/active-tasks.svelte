@@ -17,9 +17,9 @@
   import { onMount } from "svelte";
   import { toast } from "svelte-sonner";
   import { X } from "@lucide/svelte";
-  import { createApi } from "$lib/api";
-  import { Poller, type PollResult } from "$lib/robot/poller.svelte";
-  import { LINK_DETAIL, linkFromError } from "$lib/robot/link-copy";
+  import { createApi } from "#lib/api.js";
+  import { Poller, type PollResult } from "#lib/robot/poller.svelte.js";
+  import { LINK_DETAIL, linkFromError } from "#lib/robot/link-copy.js";
 
   const TIMEOUT = "El servidor tardó demasiado en responder.";
 

@@ -25,7 +25,7 @@
  * Decision logic lives in `health.ts`; this file only fetches.
  */
 
-import { PUBLIC_API_URL } from "$env/static/public";
+import { PUBLIC_API_URL } from "$app/env/public";
 import { Poller, type PollResult } from "./poller.svelte";
 import { sameOrigin } from "./health";
 

@@ -9,15 +9,15 @@
   is already fixed, in a headset, with no terminal.
 
   `disableCookieCache` asks the server directly, skipping the cookie; the
-  reply refreshes it. `invalidateAll` then re-runs the load functions so the
+  reply refreshes it. `refreshAll` then re-runs the load functions so the
   layout's `isAdmin` — which is what the page reads — picks the new role up.
 -->
 <script lang="ts">
-  import { invalidateAll } from "$app/navigation";
+  import { refreshAll } from "$app/navigation";
   import { RefreshCw } from "@lucide/svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import Callout from "$lib/components/callout.svelte";
-  import { authClient } from "$lib/auth-client";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import Callout from "#lib/components/callout.svelte";
+  import { authClient } from "#lib/auth-client.js";
 
   let refreshing = $state(false);
   /** `raw` is Better Auth's own message (English), shown verbatim. */
@@ -38,7 +38,7 @@
         };
         return;
       }
-      await invalidateAll();
+      await refreshAll();
       result =
         data?.user?.role === "admin"
           ? { text: "Listo — la cuenta es admin.", raw: null }

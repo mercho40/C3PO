@@ -23,9 +23,9 @@
     Video,
   } from "@lucide/svelte";
   import { toast } from "svelte-sonner";
-  import { invalidateAll } from "$app/navigation";
+  import { refreshAll } from "$app/navigation";
   import { resolve } from "$app/paths";
-  import { authClient } from "$lib/auth-client";
+  import { authClient } from "#lib/auth-client.js";
 
   const REPO = "https://github.com/mercho40/C3PO";
 
@@ -47,7 +47,7 @@
         return;
       }
       // Re-run the layout load so data.user clears and the nav flips back.
-      await invalidateAll();
+      await refreshAll();
     } catch {
       toast.error("No se pudo cerrar la sesión", {
         description:
@@ -262,14 +262,14 @@
         </button>
       {:else}
         <a
-          href={resolve("/login")}
+          href={resolve("login")}
           class="rounded-full px-3 py-2 text-sm text-ink-dim transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none sm:px-4"
         >
           Ingresar
         </a>
       {/if}
       <a
-        href={resolve(data.user ? "/dashboard" : "/signup")}
+        href={resolve(data.user ? "dashboard" : "signup")}
         class="flex items-center gap-2 rounded-full cta px-4 py-2 text-sm font-medium focus-visible:ring-2 focus-visible:ring-cyan-hot/60 focus-visible:outline-none sm:px-5"
       >
         {data.user ? "Ir a la consola" : "Crear cuenta"}
@@ -299,7 +299,7 @@
 
       {#if data.user}
         <a
-          href={resolve("/dashboard")}
+          href={resolve("dashboard")}
           class="mt-10 flex items-center gap-2.5 rounded-full cta px-6 py-3 text-sm font-medium focus-visible:ring-2 focus-visible:ring-cyan-hot/60 focus-visible:outline-none"
         >
           Ir a la consola
@@ -316,7 +316,7 @@
              screen reader reads it when the field takes focus. -->
         <form
           method="GET"
-          action={resolve("/signup")}
+          action={resolve("signup")}
           class="mt-10 flex w-full max-w-[520px] items-center gap-2 rounded-full border border-hairline-strong bg-panel p-[7px] shadow-(--c3-shadow-float) focus-within:border-accent-edge focus-within:ring-2 focus-within:ring-cyan-hot/50"
         >
           <label for="hero-email" class="sr-only">Tu email</label>
@@ -517,7 +517,7 @@
             </li>
             <li>
               <a
-                href={resolve(data.user ? "/dashboard" : "/login")}
+                href={resolve(data.user ? "dashboard" : "login")}
                 class="transition-colors hover:text-ink"
                 >{data.user ? "Consola" : "Ingresar"}</a
               >

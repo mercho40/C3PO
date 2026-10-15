@@ -183,9 +183,9 @@ attached rather than ever inventing a default.
 
 **Console ↔ control plane typing** needs no shared package: `apps/back`
 exports its Elysia router type (`App`) from `src/index.ts`, and `apps/web`
-imports it through the `@back/*` path alias for full end-to-end inference via
-Eden Treaty. The rejected `packages/shared` design is a closed decision —
-`docs/DECISIONS.md`.
+imports it from the `@repo/back` workspace package for full end-to-end
+inference via Eden Treaty. The rejected `packages/shared` design is a closed
+decision — `docs/DECISIONS.md`.
 
 **Operational schema — mostly planned, not built.** Of the designed
 memory/audit tables, only `tool_call_log` (the skill audit trail) exists in
