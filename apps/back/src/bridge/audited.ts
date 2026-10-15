@@ -34,6 +34,7 @@ export async function auditedCall(
       result,
       status: "ok",
       durationMs: Date.now() - startedAt,
+      startedAt,
     });
     return result;
   } catch (err) {
@@ -51,6 +52,7 @@ export async function auditedCall(
       status: "error",
       error,
       durationMs: Date.now() - startedAt,
+      startedAt,
     });
     throw err;
   }

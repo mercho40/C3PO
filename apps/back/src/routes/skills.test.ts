@@ -305,6 +305,10 @@ describe("POST /skills/:name/invoke writes the audit trail", () => {
     expect(row.skillName).toBe("wave");
     expect(row.status).toBe("ok");
     expect(typeof row.durationMs).toBe("number");
+    // Stamped when it was SENT: the row is written on settle, and a finish
+    // time made a press and its stop look like duplicates (2026-10-15).
+    const sent = (row.createdAt as Date).getTime();
+    expect(sent + (row.durationMs as number)).toBeLessThanOrEqual(Date.now());
   });
 
   test("a non-admin's PARAR is logged too, under their name", async () => {

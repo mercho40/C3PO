@@ -207,6 +207,7 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
                     error: outcome.error,
                   }),
               durationMs: Date.now() - startedAt,
+              startedAt,
             });
 
           const failureBody = (err: unknown) =>

@@ -10,12 +10,27 @@
  * Adding a tool (or a rolling restart with version skew) is enough to trigger
  * it, which is exactly when you least want the stop button gone.
  */
-import { describe, expect, test, mock, beforeEach } from "bun:test";
+import {
+  describe,
+  expect,
+  test,
+  mock,
+  beforeEach,
+  afterEach,
+  spyOn,
+} from "bun:test";
 
 let toolsToReturn: unknown[] = [];
+let listCalls = 0;
+/** When set, `listTools` waits for it — a bridge that is slow to answer. */
+let gate: Promise<void> | null = null;
 
 mock.module("#back/bridge/client.js", () => ({
-  listTools: async () => toolsToReturn,
+  listTools: async () => {
+    listCalls++;
+    if (gate) await gate;
+    return toolsToReturn;
+  },
   callTool: async () => ({}),
   BridgeUnavailableError: class extends Error {},
   BridgeToolError: class extends Error {},
@@ -100,5 +115,70 @@ describe("catalogue resilience", () => {
     // something that can move a humanoid. Dropping it preserves that.
     expect(snap.skills.map((s) => s.name)).not.toContain("sketchy");
     expect(snap.rejected).toEqual(["sketchy"]);
+  });
+});
+
+describe("invokes do not wait on a stale catalogue", () => {
+  // 2026-10-15, on the robot: every 5 s the walk pad's next command waited
+  // behind a `tools/list`, so presses reached the robot late and bunched, and
+  // one held there could land after the stop that followed it.
+  let now = 1_000_000;
+  let release: () => void = () => {};
+
+  beforeEach(async () => {
+    spyOn(Date, "now").mockImplementation(() => now);
+    gate = null;
+    toolsToReturn = [goodMeta("walk_velocity", "locomotion")];
+    const { invalidateCatalogue, getSkill } = await import("./catalogue");
+    invalidateCatalogue();
+    await getSkill("walk_velocity"); // a fresh answer, cached
+    listCalls = 0;
+    now += 10_000; // ...and now stale
+    gate = new Promise<void>((resolve) => (release = resolve));
+  });
+
+  afterEach(() => {
+    release();
+    gate = null;
+    mock.restore();
+  });
+
+  test("a stale answer is served at once, refreshed behind it", async () => {
+    const { getSkill } = await import("./catalogue");
+    const timeout = new Promise<"waited">((r) =>
+      setTimeout(() => r("waited"), 50),
+    );
+
+    const skill = await Promise.race([getSkill("walk_velocity"), timeout]);
+
+    expect(skill).not.toBe("waited");
+    expect((skill as { name: string }).name).toBe("walk_velocity");
+    expect(listCalls).toBe(1);
+  });
+
+  test("concurrent lookups share one tools/list", async () => {
+    const { getSkill, getCatalogue } = await import("./catalogue");
+
+    await Promise.all([
+      getSkill("walk_velocity"),
+      getSkill("walk_velocity"),
+      getSkill("walk_velocity"),
+    ]);
+    const listing = getCatalogue(); // stale too: joins the same refresh
+    release();
+    await listing;
+
+    expect(listCalls).toBe(1);
+  });
+
+  test("after invalidateCatalogue the lookup waits for the bridge", async () => {
+    const { getSkill, invalidateCatalogue } = await import("./catalogue");
+    invalidateCatalogue();
+    toolsToReturn = [goodMeta("walk_velocity"), goodMeta("wave")];
+
+    const pending = getSkill("wave");
+    release();
+
+    expect((await pending)?.name).toBe("wave");
   });
 });
