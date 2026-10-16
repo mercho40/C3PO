@@ -29,14 +29,14 @@
     BatteryWarning,
     TriangleAlert,
   } from "@lucide/svelte";
-  import { getRobotLive } from "$lib/robot/context";
-  import { LINK, type LinkProblem } from "$lib/robot/link-copy";
+  import { getRobotLive } from "#lib/robot/context.js";
+  import { LINK, type LinkProblem } from "#lib/robot/link-copy.js";
   import {
     BATTERY_TONE,
     batteryLevel,
     batteryPct,
     type BatteryLevel,
-  } from "$lib/robot/format";
+  } from "#lib/robot/format.js";
 
   const live = getRobotLive();
 

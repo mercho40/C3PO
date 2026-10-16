@@ -13,10 +13,10 @@
   ONE announcer for the press. Two would announce every stop twice.
 -->
 <script lang="ts">
-  import { Button } from "$lib/components/ui/button/index.js";
-  import Callout from "$lib/components/callout.svelte";
-  import { estop } from "$lib/robot/estop.svelte";
-  import { estopMessage } from "$lib/robot/estop";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import Callout from "#lib/components/callout.svelte";
+  import { estop } from "#lib/robot/estop.svelte.js";
+  import { estopMessage } from "#lib/robot/estop.js";
 
   const message = $derived(
     estopMessage(estop.phase, estop.outcome?.code ?? null),

@@ -15,17 +15,17 @@
 -->
 <script lang="ts">
   import { ArrowDown, ArrowUp, Link2 } from "@lucide/svelte";
-  import { Badge } from "$lib/components/ui/badge/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import Callout from "$lib/components/callout.svelte";
+  import { Badge } from "#lib/components/ui/badge/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import Callout from "#lib/components/callout.svelte";
   import HoldButton from "./hold-button.svelte";
   import OutcomeLine from "./outcome-line.svelte";
-  import type { PostureGate } from "$lib/robot/vr-logic";
+  import type { PostureGate } from "#lib/robot/vr-logic.js";
   import {
     MAX_HOLD_S,
     WALK_VX,
     type VrControl,
-  } from "$lib/robot/vr-control.svelte";
+  } from "#lib/robot/vr-control.svelte.js";
 
   let {
     ctl,

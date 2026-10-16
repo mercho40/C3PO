@@ -19,7 +19,7 @@
  *  - optionally pause while the tab is hidden, and refresh on return.
  */
 
-import { browser } from "$app/environment";
+import { browser } from "$app/env";
 import { goto } from "$app/navigation";
 
 /** What one poll concluded. Subclasses map their response onto this. */
@@ -45,7 +45,7 @@ export function redirectToLogin(reason: "expired" | null = "expired"): void {
   const here = window.location.pathname + window.location.search;
   const params = new URLSearchParams({ redirectTo: here });
   if (reason) params.set("reason", reason);
-  void goto(`/login?${params}`, { invalidateAll: true }).finally(() => {
+  void goto(`/login?${params}`, { refreshAll: true }).finally(() => {
     redirecting = false;
   });
 }

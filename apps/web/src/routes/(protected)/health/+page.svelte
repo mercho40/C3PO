@@ -4,7 +4,7 @@
   The data was already flowing and being thrown away: get_state's `raw` block,
   the catalogue envelope, the telemetry routes, the camera's /status, the
   costmap's headers, the Nav2 gate. Classification lives in
-  `$lib/robot/health.ts` (tested); this page composes it.
+  `#lib/robot/health.ts` (tested); this page composes it.
 
   Sources: the console's shared pollers for the link, battery, faults, gate
   and voice loop (re-polling /state here would double the get_state load on the
@@ -15,16 +15,16 @@
   orden" while any row is unknown — a subsystem nobody could read is a gap,
   not a pass.
 
-  The page title comes from the topbar (`$lib/nav.ts`).
+  The page title comes from the topbar (`#lib/nav.ts`).
 -->
 <script lang="ts">
   import { onMount } from "svelte";
   import { RefreshCw } from "@lucide/svelte";
-  import { env } from "$env/dynamic/public";
-  import HealthRowView from "$lib/components/health/health-row.svelte";
-  import AuditLog from "$lib/components/health/audit-log.svelte";
-  import { getGate, getRobotLive, getVoiceLoop } from "$lib/robot/context";
-  import { HealthProbe } from "$lib/robot/health.svelte";
+  import { PUBLIC_ROBOT_CAM_URL, PUBLIC_SIM_CAM_HOST } from "$app/env/public";
+  import HealthRowView from "#lib/components/health/health-row.svelte";
+  import AuditLog from "#lib/components/health/audit-log.svelte";
+  import { getGate, getRobotLive, getVoiceLoop } from "#lib/robot/context.js";
+  import { HealthProbe } from "#lib/robot/health.svelte.js";
   import {
     TONE_LABEL,
     TONE_RANK,
@@ -41,8 +41,8 @@
     classifyVoice,
     overall,
     type LinkInput,
-  } from "$lib/robot/health";
-  import { formatSince } from "$lib/robot/format";
+  } from "#lib/robot/health.js";
+  import { formatSince } from "#lib/robot/format.js";
 
   let { data } = $props();
 
@@ -50,8 +50,8 @@
   const gate = getGate();
   const voice = getVoiceLoop();
 
-  const cameraUrl = (env.PUBLIC_ROBOT_CAM_URL ?? "").trim();
-  const simHost = (env.PUBLIC_SIM_CAM_HOST ?? "").trim();
+  const cameraUrl = PUBLIC_ROBOT_CAM_URL.trim();
+  const simHost = PUBLIC_SIM_CAM_HOST.trim();
   const probe = new HealthProbe(cameraUrl);
 
   // Ages are worded relative to now, so the page needs a clock. One second is

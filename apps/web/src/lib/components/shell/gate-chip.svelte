@@ -18,7 +18,7 @@
   import { Navigation } from "@lucide/svelte";
   import { createSubscriber } from "svelte/reactivity";
   import { resolve } from "$app/paths";
-  import { getGate } from "$lib/robot/context";
+  import { getGate } from "#lib/robot/context.js";
 
   const gate = getGate();
 
@@ -69,7 +69,7 @@
 
 {#if gate.armed}
   <a
-    href={resolve("/health")}
+    href={resolve("health")}
     title={sentence}
     class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-danger/45 bg-danger/10 px-2 text-xs text-danger-soft transition-colors hover:bg-danger/20 focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none focus-visible:ring-inset sm:px-2.5"
   >

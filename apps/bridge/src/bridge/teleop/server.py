@@ -26,7 +26,8 @@ What a session does, per frame
 The e-stop reaches this, and that took doing
 --------------------------------------------
 `stop_everything` cancels every task in the `TaskRegistry`, sends a
-zero-velocity burst and (on real) Damps. A teleop session is not a skill
+zero-velocity burst and (on real, only if the robot did not acknowledge that
+burst) Damps. A teleop session is not a skill
 invocation, so at first it appeared in none of that — and the burst was useless
 against it, because this dispatch loop re-issues velocity 50 ms later. Pressing
 PARAR while someone wore the headset produced a brief stutter and nothing else.

@@ -1,19 +1,19 @@
 <script lang="ts">
   import { resolve } from "$app/paths";
   import { ArrowRight, ChevronRight, MapPin } from "@lucide/svelte";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import PostureFigure from "$lib/components/posture-figure.svelte";
-  import PoseCanvas from "$lib/components/pose-canvas.svelte";
-  import FaultList from "$lib/components/fault-list.svelte";
-  import ScaleBar from "$lib/components/robot/scale-bar.svelte";
-  import AwarenessPanel from "$lib/components/awareness-panel.svelte";
-  import ActiveTasks from "$lib/components/robot/active-tasks.svelte";
-  import { getRobotLive } from "$lib/robot/context";
-  import { readPosture, fsmReadout, LOAD_TEXT } from "$lib/robot/posture";
-  import { MotionTracker } from "$lib/robot/motion";
-  import { staleness } from "$lib/robot/faults";
-  import { LINK } from "$lib/robot/link-copy";
-  import { fitView } from "$lib/robot/map-geometry";
+  import { Input } from "#lib/components/ui/input/index.js";
+  import PostureFigure from "#lib/components/posture-figure.svelte";
+  import PoseCanvas from "#lib/components/pose-canvas.svelte";
+  import FaultList from "#lib/components/fault-list.svelte";
+  import ScaleBar from "#lib/components/robot/scale-bar.svelte";
+  import AwarenessPanel from "#lib/components/awareness-panel.svelte";
+  import ActiveTasks from "#lib/components/robot/active-tasks.svelte";
+  import { getRobotLive } from "#lib/robot/context.js";
+  import { readPosture, fsmReadout, LOAD_TEXT } from "#lib/robot/posture.js";
+  import { MotionTracker } from "#lib/robot/motion.js";
+  import { staleness } from "#lib/robot/faults.js";
+  import { LINK } from "#lib/robot/link-copy.js";
+  import { fitView } from "#lib/robot/map-geometry.js";
   import {
     UNIT_ID,
     batteryPct,
@@ -22,7 +22,7 @@
     formatLatency,
     formatPose,
     yawDegrees,
-  } from "$lib/robot/format";
+  } from "#lib/robot/format.js";
 
   // Shared with the map and the topbar — see `(protected)/+layout.svelte`.
   const live = getRobotLive();
@@ -262,7 +262,7 @@
     <!-- What you can do about it. -->
     <section class="flex flex-col gap-5 panel p-5">
       <form
-        action={resolve("/chat")}
+        action={resolve("chat")}
         method="GET"
         onsubmit={runCommand}
         class="flex flex-col gap-2"
@@ -319,7 +319,7 @@
           {pose && poseOld ? "Última ubicación conocida" : "Ubicación"}
         </h2>
         <a
-          href={resolve("/live-map")}
+          href={resolve("live-map")}
           class="flex min-h-8 items-center gap-1 rounded text-xs text-ink-mute transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none"
         >
           Mapa completo

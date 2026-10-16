@@ -1,11 +1,11 @@
 import { redirect } from "@sveltejs/kit";
 import type { PageServerLoad } from "./$types";
-import { createApi } from "$lib/api";
+import { createApi } from "#lib/api.js";
 import {
   GESTURE_CATALOGUE_FALLBACK,
   catalogueHealth,
   gestureNamesFromSchema,
-} from "$lib/robot/vr-logic";
+} from "#lib/robot/vr-logic.js";
 
 /**
  * Seeds each preset skill's live `works.real` flag from the catalogue, so the

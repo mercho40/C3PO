@@ -34,7 +34,7 @@
  * headset is worse than showing nothing.
  *
  * Rather than reimplement the recovery, this takes its URL and its liveness
- * from `$lib/robot/mjpeg-camera.ts`, which already polls `/status`, tracks
+ * from `#lib/robot/mjpeg-camera.ts`, which already polls `/status`, tracks
  * live/stale, and reconnects with a cache-busted URL (the browser will happily
  * reuse a dead MJPEG response, so a retry that does not change the src is a
  * retry that does nothing). One implementation of that logic, used by both the

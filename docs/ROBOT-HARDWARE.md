@@ -1003,8 +1003,8 @@ returns **nothing** — no Dex3 service binary, no systemd unit, no `/unitree/mo
 ⚠️ **The conclusion once drawn from that had to be withdrawn.** An earlier version of this
 survey read _"even if a Dex3 were plugged in, nothing on this Jetson would publish
 `rt/dex3/_/state`"* and used it as evidence against Dex3. Unitree states plainly:
-*"**Unitree does not deploy services on the NVIDIA Jetson Orin module.**"* **[web]** The
-Dex3 driver is *"a resident service program"* the robot provides itself — i.e. it runs on
+_"**Unitree does not deploy services on the NVIDIA Jetson Orin module.**"_ **[web]** The
+Dex3 driver is _"a resident service program"_ the robot provides itself — i.e. it runs on
 the control board at `192.168.123.161`, which has no SSH. **The search was aimed at the
 wrong host.** The observation stands; the inference does not. (The 2026-08-15 silent-topic
 probe above is the _right_-host version of the same test, and it too came back empty.)
@@ -1201,8 +1201,8 @@ Our Isaac sim profile's `rt/dex1/{left,right}/{cmd,state}` with `MotorCmds_` is 
 - ✅ **Applied 2026-08-20.** `apps/bridge/src/bridge/sdk/g1_protocol.py` (`REAL_TOPICS`)
   carried `dex_left_cmd="rt/api/dex3/left/request"` / `dex_right_cmd=…`. **The hands are
   not an RPC service** — no api*id, no JSON envelope, and no `rt/api/dex3/*`topic in any
-vendor source on this robot nor in any of the six official hand-related pages. Now`rt/brainco/{left,right}/{cmd,state}`, carrying bare
-`unitree_go::msg::dds*::MotorCmds*`/`MotorStates\*` sequences. **[src]**
+  vendor source on this robot nor in any of the six official hand-related pages. Now`rt/brainco/{left,right}/{cmd,state}`, carrying bare
+  `unitree_go::msg::dds*::MotorCmds*`/`MotorStates\*` sequences. **[src]**
 - **`/api/dex3_msg_controller`**, which earlier inventories cited, appears in **no**
   vendor source, binary or config anywhere on this robot. Its only occurrences were our
   own doc files. Unsourced; struck. **[live]**

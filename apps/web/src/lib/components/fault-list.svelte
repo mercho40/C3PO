@@ -5,13 +5,13 @@
   the same markup printing raw tokens —
   `fsm_rpc_failing_12_polls__restart_the_bridge_if_this_persists` — with the
   one piece of advice buried in an underscore-joined identifier. Translation
-  lives in `$lib/robot/faults.ts`; the raw token stays underneath as a readout,
+  lives in `#lib/robot/faults.ts`; the raw token stays underneath as a readout,
   because whoever is debugging the bridge needs the exact string.
 -->
 <script lang="ts">
   import { ShieldCheck, TriangleAlert, CircleAlert } from "@lucide/svelte";
-  import { readFaults } from "$lib/robot/faults";
-  import { LINK, type LinkProblem } from "$lib/robot/link-copy";
+  import { readFaults } from "#lib/robot/faults.js";
+  import { LINK, type LinkProblem } from "#lib/robot/link-copy.js";
 
   let {
     faults,

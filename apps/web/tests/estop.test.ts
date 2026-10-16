@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   advance,
+  stopHeldGait,
   classifyStopResponse,
   estopMessage,
   estopView,
@@ -175,6 +176,38 @@ describe("advance", () => {
     expect(advance("accepted", T0, walking, T0 + STILL_MOVING_MS + 1)).toBe(
       "stillMoving",
     );
+  });
+
+  test("a real robot that took the stop stays in its gait — not an alarm", () => {
+    // 2026-10-15: the bridge no longer damps a robot that acknowledged the
+    // zero-velocity burst; it stands in 501 at zero velocity on purpose.
+    const walking = tele({ moving: true, sampledAt: T0 + STILL_MOVING_MS });
+    expect(
+      advance("accepted", T0, walking, T0 + STILL_MOVING_MS + 1, true),
+    ).toBe("holdingGait");
+  });
+
+  test("stopHeldGait reads only a stop that landed and did not damp", () => {
+    expect(
+      stopHeldGait({ stop_burst_acked: 20, real_damp_fallback_reason: null }),
+    ).toBe(true);
+    // The burst was never heard: the bridge damped, nothing is held.
+    expect(
+      stopHeldGait({
+        stop_burst_acked: 0,
+        real_damp_fallback_reason: "burst_unacknowledged",
+      }),
+    ).toBe(false);
+    expect(
+      stopHeldGait({
+        stop_burst_acked: 20,
+        real_damp_fallback_reason: "policy_always",
+      }),
+    ).toBe(false);
+    // A bridge from before the change, sim, or no body at all.
+    expect(stopHeldGait({ real_damp_fallback_succeeded: true })).toBe(false);
+    expect(stopHeldGait({ stop_burst_acked: null })).toBe(false);
+    expect(stopHeldGait(null)).toBe(false);
   });
 
   test("sim keeps its walking controller after a stop — not an alarm", () => {

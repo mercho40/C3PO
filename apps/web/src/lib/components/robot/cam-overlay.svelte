@@ -4,12 +4,12 @@
   One renderer for the robot's MJPEG feed and the simulator's WebRTC feeds, so
   "congelado", "sin señal" and "conectando" look and read the same whichever
   robot the console is attached to. The words come from
-  `$lib/robot/camera-copy.ts`; this only lays them out.
+  `#lib/robot/camera-copy.ts`; this only lays them out.
 -->
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { VideoOff } from "@lucide/svelte";
-  import type { CamOverlay } from "$lib/robot/camera-copy";
+  import type { CamOverlay } from "#lib/robot/camera-copy.js";
 
   let {
     overlay,

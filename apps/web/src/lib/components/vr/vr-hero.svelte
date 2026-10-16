@@ -9,12 +9,12 @@
 -->
 <script lang="ts">
   import { Eye, Glasses } from "@lucide/svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import Callout from "$lib/components/callout.svelte";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import Callout from "#lib/components/callout.svelte";
   import DetailsNote from "./details-note.svelte";
-  import { LOAD_TEXT, type PostureInfo } from "$lib/robot/posture";
-  import { teleopShort } from "$lib/robot/vr-logic";
-  import type { VrControl } from "$lib/robot/vr-control.svelte";
+  import { LOAD_TEXT, type PostureInfo } from "#lib/robot/posture.js";
+  import { teleopShort } from "#lib/robot/vr-logic.js";
+  import type { VrControl } from "#lib/robot/vr-control.svelte.js";
 
   let {
     ctl,

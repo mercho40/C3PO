@@ -14,7 +14,7 @@
 <script lang="ts">
   import { ChevronRight } from "@lucide/svelte";
   import { resolve } from "$app/paths";
-  import Callout from "$lib/components/callout.svelte";
+  import Callout from "#lib/components/callout.svelte";
   import { transcriptsCopy, type Engine } from "./voice-view";
 
   type Transcript = {
@@ -81,7 +81,7 @@
       {#each transcripts as t (t.id)}
         <li>
           <a
-            href={resolve(`/chat?id=${encodeURIComponent(t.id)}`)}
+            href={resolve(`chat?id=${encodeURIComponent(t.id)}`)}
             class="group flex items-center gap-3 tile-interactive px-3 py-2.5 focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none"
           >
             <span class="flex min-w-0 flex-1 flex-col gap-0.5">

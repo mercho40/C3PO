@@ -183,9 +183,9 @@ attached rather than ever inventing a default.
 
 **Console ↔ control plane typing** needs no shared package: `apps/back`
 exports its Elysia router type (`App`) from `src/index.ts`, and `apps/web`
-imports it through the `@back/*` path alias for full end-to-end inference via
-Eden Treaty. The rejected `packages/shared` design is a closed decision —
-`docs/DECISIONS.md`.
+imports it from the `@repo/back` workspace package for full end-to-end
+inference via Eden Treaty. The rejected `packages/shared` design is a closed
+decision — `docs/DECISIONS.md`.
 
 **Operational schema — mostly planned, not built.** Of the designed
 memory/audit tables, only `tool_call_log` (the skill audit trail) exists in
@@ -359,11 +359,14 @@ Five layers, outermost first. Each is independent — that is the point.
    (`duration=864000`) would instead leave a crashed bridge's robot walking
    with its last setpoint — never use it. (Constant and rationale live in
    `apps/bridge/src/bridge/skills/_locomotion.py`.)
-3. **`stop_everything`.** Cancels every running task, sends a zero-velocity
-   burst (dispatched per target, so it is real on hardware too), then damps.
-   Damp is not redundant with zero velocity: zero velocity stops the gait,
-   damp zeroes joint stiffness. Synchronous by design — it never yields the
-   event loop while halting the robot.
+3. **`stop_everything`.** Cancels every running task and sends a
+   zero-velocity burst (dispatched per target, so it is real on hardware too).
+   On real hardware it damps **only if the robot acknowledged none of that
+   burst** (or the burst raised): zero velocity stops the gait and leaves the
+   robot balanced, damp zeroes joint stiffness and drops a standing robot.
+   Until 2026-10-15 it damped after every stop; `STOP_EVERYTHING_DAMP=always`
+   restores that. Its blocking RPCs run off the event loop, so a second press
+   or a state poll is still answered while it works.
 4. **Cooperative cancellation.** Long-running skills check
    `task.cancel_event` between iterations and run their own stop sequence.
    Cooperative, not preemptive — a skill stuck in a blocking call won't

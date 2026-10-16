@@ -159,8 +159,9 @@ intentionally managed separately:
 | `perception` | + detector + world model               | Livox + RealSense             |
 | `nav2`       | + Nav2 (lifecycle **not** autostarted) | Livox + RealSense             |
 
-Stages that claim sensors stop gemm first; `c3po perception up` says exactly what it
-is taking before it takes it, and rolls back (containers removed, sensors freed)
+Stages that claim sensors need gemm stopped first, and only stop it with
+`C3PO_TAKE_OVER=1` (the other team's stack — ask them); without it they refuse and print
+the command. `c3po perception up` says exactly what it is taking before it takes it, and rolls back (containers removed, sensors freed)
 if `/c3po/world_summary` does not appear.
 
 On the Mac, the Stage 0 harness runs with no robot, no DDS, no ROS:

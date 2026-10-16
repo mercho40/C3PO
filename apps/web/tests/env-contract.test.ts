@@ -3,11 +3,11 @@
  *
  * WHY THIS IS A TEST AND NOT A CONVENTION
  *
- * `$env/static/public` is not a runtime lookup. SvelteKit GENERATES that module
- * from the environment at `svelte-kit sync` time, so importing a name that is
- * not set is not `undefined` at runtime — it is a TYPE ERROR at build time:
- *
- *     Module '"$env/static/public"' has no exported member 'PUBLIC_API_URL'
+ * `$app/env/public` is not a free-form lookup. Since SvelteKit 3 every name it
+ * exports is declared in `src/env.ts` (`defineEnvVars`), and the static ones
+ * are inlined at build time, so importing a name that is not declared, or not
+ * set, is a TYPE ERROR or a build failure — not `undefined` at runtime.
+ * (Before SvelteKit 3 the same was true of `$env/static/public`.)
  *
  * `.env` is gitignored. That means the only environment a fresh clone or a CI
  * runner has is whatever `.env.example` describes — and until 2026-08-27 CI had
@@ -23,7 +23,7 @@
  * So: check it here, where the message can say so.
  *
  * Text parsing rather than importing anything, on purpose — importing
- * `$env/static/*` outside a SvelteKit build is exactly the thing that does not
+ * `$app/env/*` outside a SvelteKit build is exactly the thing that does not
  * work, and this test has to run in plain `bun test`.
  */
 
@@ -50,13 +50,13 @@ function sourceFiles(dir: string, found: string[] = []): string[] {
   return found;
 }
 
-/** The names imported from `$env/static/<which>` anywhere under src/. */
+/** The names imported from `$app/env/<which>` anywhere under src/. */
 function importedNames(which: "public" | "private"): Map<string, string> {
-  // `import { A, B } from "$env/static/public"` — the only form in use, and
-  // the only one SvelteKit's static modules support (a namespace import of a
-  // generated module would defeat the tree-shaking that makes them static).
+  // `import { A, B } from "$app/env/public"` — the only form in use, and the
+  // one that keeps static variables inlinable (a namespace import would
+  // defeat the tree-shaking that makes them static).
   const pattern = new RegExp(
-    String.raw`import\s*\{([^}]*)\}\s*from\s*["']\$env/static/${which}["']`,
+    String.raw`import\s*\{([^}]*)\}\s*from\s*["']\$app/env/${which}["']`,
     "g",
   );
   const out = new Map<string, string>();
@@ -101,6 +101,20 @@ describe("apps/web env contract", () => {
     const missing: string[] = [];
     for (const [name, file] of importedNames("public")) {
       if (!example.has(name)) missing.push(`${name} (imported by ${file})`);
+    }
+    expect(missing).toEqual([]);
+  });
+
+  test("every name the code imports is declared in src/env.ts", () => {
+    // SvelteKit 3 only exports what `defineEnvVars` declares. Text match on
+    // the key, which is how every entry in that file is written.
+    const declared = readFileSync(join(ROOT, "src", "env.ts"), "utf8");
+    const missing: string[] = [];
+    for (const which of ["public", "private"] as const) {
+      for (const [name, file] of importedNames(which)) {
+        if (!new RegExp(String.raw`^\s*${name}\s*:`, "m").test(declared))
+          missing.push(`${name} (imported by ${file})`);
+      }
     }
     expect(missing).toEqual([]);
   });

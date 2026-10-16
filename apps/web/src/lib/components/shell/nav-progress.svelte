@@ -12,7 +12,7 @@
    * Periwinkle, not cyan: cyan means "moving under power" and nothing else.
    */
   import { navigating } from "$app/state";
-  import { navItemFor } from "$lib/nav";
+  import { navItemFor } from "#lib/nav.js";
 
   const target = $derived(
     navigating.to

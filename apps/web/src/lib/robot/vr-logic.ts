@@ -11,12 +11,12 @@
  * somebody in a headset to debug a robot that is fine.
  *
  * Plain module, no runes, so `bun test` can load it (tests/vr-logic.test.ts).
- * Type-only imports are erased, so `$lib` paths are safe here.
+ * Type-only imports are erased, so `#lib` paths are safe here.
  */
 
 import type { SkillOutcome } from "./skill-outcome";
 import type { EstopPhase } from "./estop";
-import type { TeleopStatus } from "$lib/teleop/stream";
+import type { TeleopStatus } from "#lib/teleop/stream.js";
 
 // ---------------------------------------------------------------------------
 // Posture gates
@@ -134,7 +134,7 @@ export const BRING_UP_STEPS: readonly BringUpStep[] = [
   {
     name: "start_walking_waist",
     label: "3 · Habilitar marcha",
-    hint: "FSM 501, el programa de marcha de ESTE cuerpo. Habilita caminar, girar y los gestos.",
+    hint: "FSM 501. Antes: los dos pies apoyados cargando peso (arnés flojo) y ~5 s quieto después de Preparar. Habilita caminar, girar y los gestos.",
   },
 ];
 

@@ -13,9 +13,10 @@ looping on something other than velocity, a gesture the agent kicked off before
 the link died. This watchdog covers those, and re-asserts the velocity stop for
 good measure.
 
-**It stops; it does not damp.** `stop_everything` damps because an operator
-pressing it has decided the robot should go limp. A dropped Wi-Fi packet has
-decided nothing — and damping a standing robot drops it on the floor. Link loss
+**It stops; it does not damp.** Neither does `stop_everything` any more,
+unless the robot never acknowledged its zero-velocity burst — damping a
+standing robot drops it on the floor. A dropped Wi-Fi packet has decided
+nothing at all. Link loss
 is the *graceful* case: cancel the work, ramp velocity to zero, leave it
 standing. Anything more aggressive turns a network blip into a fall.
 

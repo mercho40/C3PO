@@ -54,11 +54,11 @@ import {
   BridgeUnavailableError,
   BridgeToolError,
 } from "../bridge/client";
-import { betterAuth } from "@back/lib/auth-plugin";
-import { auth } from "@back/lib/auth";
-import { env } from "@back/lib/env";
-import { hasSignedSessionCookie } from "@back/lib/stop-auth";
-import { logToolCall } from "@back/db/chats";
+import { betterAuth } from "#back/lib/auth-plugin.js";
+import { auth } from "#back/lib/auth.js";
+import { env } from "#back/lib/env.js";
+import { hasSignedSessionCookie } from "#back/lib/stop-auth.js";
+import { logToolCall } from "#back/db/chats.js";
 
 //: Skills that must dispatch even when the catalogue cannot be read.
 //:
@@ -101,8 +101,7 @@ async function dispatchAudited({
   const startedAt = Date.now();
   const audit = (
     outcome:
-      | { result: unknown }
-      | { error: string; body: Record<string, unknown> },
+      { result: unknown } | { error: string; body: Record<string, unknown> },
   ) =>
     void logToolCall({
       userId,
@@ -117,6 +116,7 @@ async function dispatchAudited({
             error: outcome.error,
           }),
       durationMs: Date.now() - startedAt,
+      startedAt,
     });
 
   const failureBody = (err: unknown) =>

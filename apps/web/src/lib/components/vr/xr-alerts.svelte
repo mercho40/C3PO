@@ -13,9 +13,9 @@
   whoever fixes it, and are folded under "Detalles".
 -->
 <script lang="ts">
-  import Callout from "$lib/components/callout.svelte";
+  import Callout from "#lib/components/callout.svelte";
   import DetailsNote from "./details-note.svelte";
-  import type { VrControl } from "$lib/robot/vr-control.svelte";
+  import type { VrControl } from "#lib/robot/vr-control.svelte.js";
 
   let { ctl, realHardware }: { ctl: VrControl; realHardware: boolean } =
     $props();

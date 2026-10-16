@@ -8,25 +8,25 @@
     Navigation2,
     Plus,
   } from "@lucide/svelte";
-  import PostureFigure from "$lib/components/posture-figure.svelte";
-  import PoseCanvas from "$lib/components/pose-canvas.svelte";
-  import FaultList from "$lib/components/fault-list.svelte";
-  import ScaleBar from "$lib/components/robot/scale-bar.svelte";
-  import MapLegend from "$lib/components/robot/map-legend.svelte";
-  import { Costmap } from "$lib/robot/costmap.svelte";
-  import { getRobotLive } from "$lib/robot/context";
-  import { readPosture, LOAD_TEXT } from "$lib/robot/posture";
-  import { MotionTracker } from "$lib/robot/motion";
-  import { staleness } from "$lib/robot/faults";
-  import { LINK } from "$lib/robot/link-copy";
-  import { describeCostmap } from "$lib/robot/map-copy";
+  import PostureFigure from "#lib/components/posture-figure.svelte";
+  import PoseCanvas from "#lib/components/pose-canvas.svelte";
+  import FaultList from "#lib/components/fault-list.svelte";
+  import ScaleBar from "#lib/components/robot/scale-bar.svelte";
+  import MapLegend from "#lib/components/robot/map-legend.svelte";
+  import { Costmap } from "#lib/robot/costmap.svelte.js";
+  import { getRobotLive } from "#lib/robot/context.js";
+  import { readPosture, LOAD_TEXT } from "#lib/robot/posture.js";
+  import { MotionTracker } from "#lib/robot/motion.js";
+  import { staleness } from "#lib/robot/faults.js";
+  import { LINK } from "#lib/robot/link-copy.js";
+  import { describeCostmap } from "#lib/robot/map-copy.js";
   import {
     SPAN_MAX,
     SPAN_MIN,
     clampSpan,
     compassCssRotation,
     type XY,
-  } from "$lib/robot/map-geometry";
+  } from "#lib/robot/map-geometry.js";
   import {
     UNIT_ID,
     batteryLevel,
@@ -35,7 +35,7 @@
     formatDistance,
     formatPose,
     yawDegrees,
-  } from "$lib/robot/format";
+  } from "#lib/robot/format.js";
 
   // Shared with the dashboard and the topbar — see `(protected)/+layout.svelte`.
   // Reusing it is what lets the travelled path survive the trip from /dashboard.
