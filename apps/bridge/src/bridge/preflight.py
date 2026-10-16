@@ -26,6 +26,7 @@ no venv — which is a state a preflight check should survive rather than trip o
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from bridge.env_file import parse_env_file
@@ -38,6 +39,7 @@ __all__ = [
     "best_state",
     "is_back_health",
     "port_owner_finding",
+    "bun_finding",
     "bridge_base_from_env",
     "bridge_finding",
     "console_camera_finding",
@@ -337,9 +339,7 @@ def console_camera_finding(
             )
         return Finding(
             OK,
-            "the console reads the camera through apps/back ({}), behind the login".format(
-                source
-            ),
+            "the console reads the camera through apps/back ({}), behind the login".format(source),
         )
     return Finding(
         WARN,
@@ -766,9 +766,16 @@ def _camera_allows_console(url: str, origin: str = CONSOLE_ORIGIN) -> Optional[b
     try:
         proc = subprocess.run(
             [
-                "curl", "-sS", "--max-time", "6",
-                "-o", "/dev/null", "-D", "-",
-                "-H", "Origin: " + origin,
+                "curl",
+                "-sS",
+                "--max-time",
+                "6",
+                "-o",
+                "/dev/null",
+                "-D",
+                "-",
+                "-H",
+                "Origin: " + origin,
                 url,
             ],
             stdout=subprocess.PIPE,
@@ -818,17 +825,59 @@ def _port_owner(port: int) -> Optional[Tuple[str, str, str]]:
     if not pid:
         return None
     _, cwd_out = _run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"])
-    cwd = next(
-        (line[1:] for line in cwd_out.splitlines() if line.startswith("n")), ""
-    )
+    cwd = next((line[1:] for line in cwd_out.splitlines() if line.startswith("n")), "")
     if not cwd:
         return None
     _, command = _run(["ps", "-o", "command=", "-p", pid])
     return pid, cwd, command.strip()
 
 
+def _version_tuple(text: str) -> Optional[Tuple[int, ...]]:
+    import re
+
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(g) for g in match.groups()) if match else None
+
+
+def bun_finding(installed: Optional[str], package_json: Optional[str]) -> Finding:
+    """Is the Bun on PATH the one package.json names?
+
+    Since the SvelteKit 3 update apps/back imports `#back/x.js`, which Bun
+    1.3.x cannot resolve to `src/x.ts`: on an older Bun, back dies at boot with
+    "Cannot find module '#back/...'" and the console is simply not there.
+    """
+    required = None
+    if package_json:
+        try:
+            manager = json.loads(package_json).get("packageManager", "")
+        except ValueError:
+            manager = ""
+        if manager.startswith("bun@"):
+            required = manager[len("bun@") :]
+    if installed is None:
+        return Finding(BAD, "bun — not on PATH", ["https://bun.sh, then `bun install`"])
+    have, want = _version_tuple(installed), _version_tuple(required or "")
+    if have is None or want is None:
+        return Finding(
+            WARN, "bun {} — could not compare with package.json".format(installed.strip())
+        )
+    if have < want:
+        return Finding(
+            BAD,
+            "bun {} — package.json needs {}".format(installed.strip(), required),
+            [
+                "bun upgrade   (older Bun cannot start apps/back: \"Cannot find module '#back/...'\")"
+            ],
+        )
+    return Finding(OK, "bun {}".format(installed.strip()))
+
+
 def _local_section(repo_root: str) -> Section:
     findings: List[Finding] = []
+    exists, out = _run(["bun", "--version"])
+    findings.append(
+        bun_finding(out if exists else None, _read(os.path.join(repo_root, "package.json")))
+    )
     for port, label in ((3000, "apps/back"), (3001, "apps/web")):
         state = best_state(
             [
@@ -849,8 +898,7 @@ def _local_section(repo_root: str) -> Section:
             findings.append(stranger or Finding(OK, "{}  {}".format(port, label)))
 
     probes = [
-        _probe("http://{}:3000/health".format(h), timeout=3)
-        for h in ("localhost", "127.0.0.1")
+        _probe("http://{}:3000/health".format(h), timeout=3) for h in ("localhost", "127.0.0.1")
     ]
     state = best_state([p[0] for p in probes])
     if any(is_back_health(body) for _, body in probes):
@@ -900,8 +948,17 @@ def _http_code(url: str, timeout: int = 4) -> int:
 
     try:
         proc = subprocess.run(
-            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-             "--max-time", str(timeout), url],
+            [
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "--max-time",
+                str(timeout),
+                url,
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -934,9 +991,7 @@ def _camera_section(repo_root: str) -> Section:
     import os
 
     web_env = _read(os.path.join(repo_root, "apps", "web", ".env"))
-    console_url, source = camera_url_from_env(
-        web_env, os.environ.get("PUBLIC_ROBOT_CAM_URL", "")
-    )
+    console_url, source = camera_url_from_env(web_env, os.environ.get("PUBLIC_ROBOT_CAM_URL", ""))
     api_url = (
         os.environ.get("PUBLIC_API_URL", "")
         or parse_env_file(web_env or "").get("PUBLIC_API_URL", "")

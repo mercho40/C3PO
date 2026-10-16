@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { CollapsibleTrigger } from "$lib/components/ui/collapsible/index.js";
-  import { cn } from "$lib/utils";
+  import { CollapsibleTrigger } from "#lib/components/ui/collapsible/index.js";
+  import { cn } from "#lib/utils.js";
 
   import CheckCircleIcon from "@lucide/svelte/icons/check-circle";
   import ChevronDownIcon from "@lucide/svelte/icons/chevron-down";
@@ -9,14 +9,14 @@
   import TriangleAlertIcon from "@lucide/svelte/icons/triangle-alert";
   import WrenchIcon from "@lucide/svelte/icons/wrench";
   import XCircleIcon from "@lucide/svelte/icons/x-circle";
-  import type { ToolTone } from "$lib/chat/tool-part";
+  import type { ToolTone } from "#lib/chat/tool-part.js";
 
   /*
    * The header no longer maps the AI SDK's part state to a label itself. That
    * mapping said "Completado" for anything that came back and "Ejecutando" for
    * anything that hadn't — including a walk that timed out, a stub that only
    * logged, and a call interrupted an hour ago. The caller now decides what the
-   * call MEANT (`$lib/chat/tool-part.ts`, on top of the shared skill-outcome
+   * call MEANT (`#lib/chat/tool-part.ts`, on top of the shared skill-outcome
    * classifier) and hands down the words and the tone.
    *
    * The registry's `durationMs` prop is gone: nothing ever passed it.

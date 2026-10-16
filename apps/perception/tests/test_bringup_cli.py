@@ -88,6 +88,8 @@ class FakeRunner:
 
 
 ENV = {"HOME": "/home/unitree", "C3PO_DIR": "/home/unitree/c3po"}
+# The operator said, with the other team's OK, that gemm may be stopped.
+TAKE = dict(ENV, C3PO_TAKE_OVER="1")
 
 
 def created(runner: FakeRunner) -> List[str]:
@@ -151,9 +153,23 @@ def test_a_camera_stage_stops_gemm_and_then_takes_the_camera():
     reported success with the device still held.
     """
     runner = FakeRunner(gemm=["gemm-bringup"])
-    bring_up("nav2", runner, env=ENV, scripts_dir="/s")
+    bring_up("nav2", runner, env=TAKE, scripts_dir="/s")
     ran = [path for path, _ in runner.scripts]
     assert ran == ["/s/stop_gemm", "/s/take_camera"]
+
+
+def test_gemm_is_never_stopped_unasked(capsys):
+    """2026-10-15: our bring-up stopped gemm-bringup while the other team used it.
+
+    Without C3PO_TAKE_OVER=1 a stage that needs gemm's sensor refuses, starts
+    nothing, and prints the command to run once they have agreed.
+    """
+    runner = FakeRunner(gemm=["gemm-bringup"])
+    assert bring_up("nav2", runner, env=ENV, scripts_dir="/s") == 1
+    assert runner.scripts == []
+    assert created(runner) == []
+    printed = capsys.readouterr()
+    assert "C3PO_TAKE_OVER=1" in printed.out + printed.err
 
 
 def test_taking_the_camera_is_confirmed_because_the_stage_was_chosen():
@@ -165,7 +181,7 @@ def test_taking_the_camera_is_confirmed_because_the_stage_was_chosen():
 
 def test_the_lidar_driver_override_makes_an_otherwise_free_stage_claim():
     runner = FakeRunner(gemm=["gemm-bringup"])
-    bring_up("odometry", runner, env=dict(ENV, C3PO_LIDAR_SOURCE="driver"), scripts_dir="/s")
+    bring_up("odometry", runner, env=dict(TAKE, C3PO_LIDAR_SOURCE="driver"), scripts_dir="/s")
     assert "/s/stop_gemm" in [path for path, _ in runner.scripts]
 
 
@@ -309,7 +325,7 @@ def test_a_missing_stop_gemm_refuses_rather_than_starting_anyway():
     refusal that names the missing file.
     """
     runner = FakeRunner(gemm=["gemm-ai"], script_rc={"stop_gemm": 127})
-    assert bring_up("perception", runner, env=ENV, scripts_dir="/s") == 1
+    assert bring_up("perception", runner, env=TAKE, scripts_dir="/s") == 1
     assert created(runner) == [], "nothing may start while gemm holds the device"
 
 
@@ -323,7 +339,7 @@ def test_the_refusal_names_the_containers_it_actually_found(capsys):
     stop a voice assistant while the containers keep the camera.
     """
     runner = FakeRunner(gemm=["gemm-bringup", "gemm-slam"], script_rc={"stop_gemm": 127})
-    bring_up("perception", runner, env=ENV, scripts_dir="/s")
+    bring_up("perception", runner, env=TAKE, scripts_dir="/s")
     printed = capsys.readouterr()
     text = printed.out + printed.err
     assert "docker stop gemm-bringup gemm-slam" in text

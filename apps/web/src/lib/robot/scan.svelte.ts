@@ -22,8 +22,8 @@
  * it is; the layer dims it and labels it rather than dropping it.
  */
 
-import { PUBLIC_API_URL } from "$env/static/public";
-import { parseRing, type ScanRing } from "$lib/webxr/scan-layer";
+import { PUBLIC_API_URL } from "$app/env/public";
+import { parseRing, type ScanRing } from "#lib/webxr/scan-layer.js";
 
 /** 4 Hz at the publisher; polling faster only re-fetches the same ring. */
 const DEFAULT_POLL_MS = 250;

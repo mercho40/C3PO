@@ -403,7 +403,7 @@ for a G1 and are wrong on the wire: **[web]**
 | 7107   | `SET_SPEED_MODE`           | `{"data": <int>}` — **0/1/2/3 only** (below)     | "                        |
 
 **[src]** for the api*ids and every `SET*_`parameter shape — read verbatim from`g1_loco_client.hpp`. The getter rows carry two caveats: the header passes an **empty**
-parameter string (the _"empty string (C++) / `{}` (Python) — both accepted"* line is
+parameter string (the \_"empty string (C++) / `{}` (Python) — both accepted"* line is
 community `[web]`, untested here — send the empty string), and the getter *response\* types
 beyond `{"data": <int>}` are **[web]** — no client on this robot parses them.
 
@@ -749,9 +749,10 @@ stateDiagram-v2
 **Damp is the hub**: `ZeroTorque`, `Preparation`, `SquatUp`, `LieUp` are reachable only
 from `Damp`; `Preparation` (4) is the sole gateway into locomotion; every
 locomotion-active mode drops straight back to `Damp` — the same edge `stop_everything`'s
-real-hardware fallback dispatches (`SET_VELOCITY(0,0,0)` then damp, selected per
-`SIM_MODE`). Whether that fallback has ever been exercised live is still open —
-smoke-test it before relying on it. Legality beyond these edges (Seating, Dance, Climb,
+real-hardware fallback dispatches (`SET_VELOCITY(0,0,0)`, then damp only if no zero
+setpoint was acknowledged — since 2026-10-15; `STOP_EVERYTHING_DAMP=always` damps every
+time). The damp edge was exercised live on 2026-10-15 (code 0, first attempt, from a
+walk mode). Legality beyond these edges (Seating, Dance, Climb,
 SquatUp onward) is the firmware's call, not confirmed. Note `Mode.SQUAT` (2) is never
 actually sent: the `squat` skill dispatches `SQUAT_UP` (706), matching the reference
 implementation.

@@ -20,7 +20,7 @@
  * rendered as a reassuring empty state.
  */
 
-import { PUBLIC_API_URL } from "$env/static/public";
+import { PUBLIC_API_URL } from "$app/env/public";
 import { LINK_DETAIL, linkFromError } from "./link-copy";
 import { Poller, type PollResult } from "./poller.svelte";
 

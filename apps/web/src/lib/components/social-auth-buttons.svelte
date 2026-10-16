@@ -19,12 +19,12 @@
   //  - The promise was never awaited: no pending state, and a failure did
   //    nothing visible.
   import { Loader2 } from "@lucide/svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import {
     AUTH_NETWORK_ERROR,
     authClient,
     authErrorMessage,
-  } from "$lib/auth-client";
+  } from "#lib/auth-client.js";
 
   let {
     providers,

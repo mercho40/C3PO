@@ -1,10 +1,10 @@
 <script lang="ts">
   import { navigating, page } from "$app/state";
   import { resolve } from "$app/paths";
-  import type { Pathname } from "$app/types";
-  import * as Sidebar from "$lib/components/ui/sidebar/index.js";
-  import { useSidebar } from "$lib/components/ui/sidebar/index.js";
-  import { isActive, type NavGroup } from "$lib/nav";
+  import type { Path } from "$app/types";
+  import * as Sidebar from "#lib/components/ui/sidebar/index.js";
+  import { useSidebar } from "#lib/components/ui/sidebar/index.js";
+  import { isActive, type NavGroup } from "#lib/nav.js";
 
   let { group }: { group: NavGroup } = $props();
 
@@ -51,7 +51,7 @@
         >
           {#snippet child({ props })}
             <a
-              href={resolve(item.href as Pathname)}
+              href={resolve(item.href.slice(1) as Path)}
               {...props}
               aria-current={active ? "page" : undefined}
               data-pending={pending || undefined}

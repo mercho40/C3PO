@@ -26,9 +26,9 @@
     BRING_UP_STEPS,
     bringUpProgress,
     needsHoldConfirm,
-  } from "$lib/robot/vr-logic";
-  import type { VrControl } from "$lib/robot/vr-control.svelte";
-  import type { Load } from "$lib/robot/posture";
+  } from "#lib/robot/vr-logic.js";
+  import type { VrControl } from "#lib/robot/vr-control.svelte.js";
+  import type { Load } from "#lib/robot/posture.js";
 
   let {
     ctl,

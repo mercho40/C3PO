@@ -1,16 +1,16 @@
 <script lang="ts">
-  import { cn } from "$lib/utils";
+  import { cn } from "#lib/utils.js";
   import { mergeProps } from "bits-ui";
   import type { ChatStatus } from "../context/types.js";
   import CircleStopIcon from "@lucide/svelte/icons/circle-stop";
   import SendIcon from "@lucide/svelte/icons/send";
-  import * as Tooltip from "$lib/components/ui/tooltip/index.js";
+  import * as Tooltip from "#lib/components/ui/tooltip/index.js";
 
   import {
     buttonVariants,
     type ButtonSize,
     type ButtonVariant,
-  } from "$lib/components/ui/button/index.js";
+  } from "#lib/components/ui/button/index.js";
 
   import type { HTMLButtonAttributes } from "svelte/elements";
 

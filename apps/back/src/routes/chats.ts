@@ -17,8 +17,8 @@ import {
   getChatWithMessages,
   listChats,
   renameChat,
-} from "@back/db/chats";
-import { betterAuth } from "@back/lib/auth-plugin";
+} from "#back/db/chats.js";
+import { betterAuth } from "#back/lib/auth-plugin.js";
 
 export const chatsRoutes = new Elysia({ prefix: "/chats" })
   .use(betterAuth)

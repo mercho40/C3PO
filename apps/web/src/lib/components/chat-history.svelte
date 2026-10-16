@@ -25,12 +25,12 @@
     Trash2,
   } from "@lucide/svelte";
   import { toast } from "svelte-sonner";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
-  import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
-  import { createApi } from "$lib/api";
-  import { redirectToLogin } from "$lib/robot/poller.svelte";
-  import { normalizeTitle, TITLE_MAX, titleOf } from "$lib/chat/title";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import * as AlertDialog from "#lib/components/ui/alert-dialog/index.js";
+  import * as DropdownMenu from "#lib/components/ui/dropdown-menu/index.js";
+  import { createApi } from "#lib/api.js";
+  import { redirectToLogin } from "#lib/robot/poller.svelte.js";
+  import { normalizeTitle, TITLE_MAX, titleOf } from "#lib/chat/title.js";
 
   type ChatSummary = {
     id: string;
@@ -233,7 +233,7 @@
       ondeleted(target.id);
       // Deleting the conversation you're reading would leave the page showing
       // messages that no longer exist — start a fresh one instead.
-      if (target.id === activeId) await goto(resolve("/chat"));
+      if (target.id === activeId) await goto(resolve("chat"));
     } catch {
       deleteError =
         "No se pudo eliminar la conversación: el servidor no respondió.";
@@ -245,7 +245,7 @@
 
 <div class="flex min-h-0 flex-col gap-3">
   <Button
-    href={resolve("/chat")}
+    href={resolve("chat")}
     variant="outline"
     aria-disabled={busy ? "true" : undefined}
     onclick={(e: MouseEvent) => guardNavigation(e, null)}
@@ -315,7 +315,7 @@
                   />
                 {:else}
                   <a
-                    href={resolve(`/chat?id=${encodeURIComponent(item.id)}`)}
+                    href={resolve(`chat?id=${encodeURIComponent(item.id)}`)}
                     onclick={(e) => guardNavigation(e, item.id)}
                     title={titleOf(item)}
                     aria-current={active ? "page" : undefined}

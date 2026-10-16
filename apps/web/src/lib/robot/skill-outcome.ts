@@ -174,10 +174,23 @@ export function classifySkillResult(body: unknown): SkillOutcome {
   // so a zero code proves nothing about a bring-up step. The bridge checks
   // afterwards and says so.
   if (phase === "acked_no_transition" || result.transitioned === false) {
-    return make("error", "Aceptado, pero el robot NO cambió de estado", {
-      detail: note,
-      code: "acked_no_transition",
-    });
+    // 2026-10-15: 501 from FSM 4 on the hanger, feet not loaded. The fix is
+    // physical, so say it in the operator's language, not the bridge's.
+    const walkRefused =
+      (result.fsm_target === 501 || result.fsm_target === 500) &&
+      result.fsm_after === 4;
+    return make(
+      "error",
+      walkRefused
+        ? "No pasó a marcha: apoyá los pies en el piso"
+        : "Aceptado, pero el robot NO cambió de estado",
+      {
+        detail: walkRefused
+          ? "El robot quedó en FSM 4 (preparado). Para caminar los dos pies tienen que cargar peso: bajá el arnés hasta que apoye (cuerda floja pero enganchada), esperá ~5 s después de Preparar y volvé a probar."
+          : note,
+        code: "acked_no_transition",
+      },
+    );
   }
 
   if (result.arrived === false) {

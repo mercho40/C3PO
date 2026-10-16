@@ -8,7 +8,7 @@
  *
  * This module never talks to the network. It samples pose and hands it to a
  * callback; the throttling, the wire format and the dead-man policy live in
- * `$lib/teleop/stream.ts` and in the page, so the geometry here stays
+ * `#lib/teleop/stream.ts` and in the page, so the geometry here stays
  * independently testable and the transport can change without touching it.
  *
  * Coordinate system: WebXR is Y-up, right-handed, -Z forward, metres,

@@ -10,12 +10,12 @@
   recovery /vr-control offers, for the same reason.
 -->
 <script lang="ts">
-  import { goto, invalidateAll } from "$app/navigation";
+  import { goto, refreshAll } from "$app/navigation";
   import { resolve } from "$app/paths";
   import { page } from "$app/state";
   import { toast } from "svelte-sonner";
-  import { authClient } from "$lib/auth-client";
-  import { isAdminRole, roleLabel } from "$lib/admin/users";
+  import { authClient } from "#lib/auth-client.js";
+  import { isAdminRole, roleLabel } from "#lib/admin/users.js";
 
   const user = $derived(page.data.user);
   const admin = $derived(isAdminRole(user?.role));
@@ -42,7 +42,7 @@
         });
         return;
       }
-      await invalidateAll();
+      await refreshAll();
       toast.success(`Rol verificado: ${roleLabel(data.user.role)}`, {
         description: isAdminRole(data.user.role)
           ? undefined
@@ -68,9 +68,9 @@
         });
         return;
       }
-      // `invalidateAll`: without it the root layout keeps the stale user and
+      // `refreshAll`: without it the root layout keeps the stale user and
       // /login bounces straight back to /dashboard.
-      await goto(resolve("/login"), { invalidateAll: true });
+      await goto(resolve("login"), { refreshAll: true });
     } catch (err) {
       toast.error("No se pudo cerrar la sesión", {
         description:

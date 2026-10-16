@@ -1,13 +1,13 @@
 <script lang="ts">
   import { page } from "$app/state";
-  import * as Sidebar from "$lib/components/ui/sidebar/index.js";
-  import { titleFor } from "$lib/nav";
+  import * as Sidebar from "#lib/components/ui/sidebar/index.js";
+  import { titleFor } from "#lib/nav.js";
   import RobotStatus from "./robot-status.svelte";
   import StopButton from "./stop-button.svelte";
   import VoiceChip from "./shell/voice-chip.svelte";
   import GateChip from "./shell/gate-chip.svelte";
 
-  // From `$lib/nav`, the one list of console pages — this used to be a private
+  // From `#lib/nav`, the one list of console pages — this used to be a private
   // map of four routes, so /vr-control got an empty <h1>. An error page is
   // titled as the error, not as the page that failed to load.
   const title = $derived(

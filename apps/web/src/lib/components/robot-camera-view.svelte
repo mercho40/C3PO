@@ -19,21 +19,24 @@
   labelling SIN SEÑAL. The page derives `failedUrl === url` exactly as `broken`
   is derived below; pages that do not bind it lose nothing.
 
-  Copy lives in `$lib/robot/camera-copy.ts` (tested), not here.
+  Copy lives in `#lib/robot/camera-copy.ts` (tested), not here.
 -->
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { browser } from "$app/environment";
+  import { browser } from "$app/env";
   import { RotateCw } from "@lucide/svelte";
-  import CamOverlay from "$lib/components/robot/cam-overlay.svelte";
-  import type { RobotCamState, RobotCamStatus } from "$lib/robot/mjpeg-camera";
+  import CamOverlay from "#lib/components/robot/cam-overlay.svelte";
+  import type {
+    RobotCamState,
+    RobotCamStatus,
+  } from "#lib/robot/mjpeg-camera.js";
   import {
     CAM_BADGE_LABEL,
     CAM_BADGE_TONE,
     SOURCE_LABEL,
     describeRobotCam,
-  } from "$lib/robot/camera-copy";
-  import { cn } from "$lib/utils";
+  } from "#lib/robot/camera-copy.js";
+  import { cn } from "#lib/utils.js";
 
   // `state` is the prop's public name (the contract /vr-control imports); the
   // local binding is renamed because a variable called `state` would collide

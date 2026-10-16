@@ -197,7 +197,7 @@ src/bridge/
     walk_to.py, turn.py cancellable locomotion tasks
     landmarks.py        remember/recall/list named poses
     task_runtime.py     Task records + registry, cooperative cancellation
-    stop_everything.py  cancel-all + arm/hand release + zero-velocity burst (+ damp on real)
+    stop_everything.py  cancel-all + arm/hand release + zero-velocity burst (+ damp on real if unacknowledged)
     walk_velocity.py    open-loop velocity, real hardware only — no pose needed
     dance.py            choreographed gesture sequence via call_arm()
     gesture.py          any preset action from the firmware's own 23-entry catalogue, by name

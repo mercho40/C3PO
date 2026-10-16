@@ -1,4 +1,4 @@
-import { createApi } from "$lib/api";
+import { createApi } from "#lib/api.js";
 import {
   oauthErrorMessage,
   readProviders,

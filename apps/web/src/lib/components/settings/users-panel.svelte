@@ -22,9 +22,9 @@
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import { toast } from "svelte-sonner";
-  import { authClient } from "$lib/auth-client";
-  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
-  import Callout from "$lib/components/callout.svelte";
+  import { authClient } from "#lib/auth-client.js";
+  import * as AlertDialog from "#lib/components/ui/alert-dialog/index.js";
+  import Callout from "#lib/components/callout.svelte";
   import {
     USERS_PAGE,
     adminErrorText,
@@ -33,7 +33,7 @@
     selfActionBlock,
     selfRowNote,
     type SelfAction,
-  } from "$lib/admin/users";
+  } from "#lib/admin/users.js";
 
   type AdminUser = {
     id: string;

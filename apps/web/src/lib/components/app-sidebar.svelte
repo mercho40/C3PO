@@ -2,9 +2,9 @@
   import type { ComponentProps } from "svelte";
   import { afterNavigate } from "$app/navigation";
   import { resolve } from "$app/paths";
-  import * as Sidebar from "$lib/components/ui/sidebar/index.js";
-  import { useSidebar } from "$lib/components/ui/sidebar/index.js";
-  import { NAV } from "$lib/nav";
+  import * as Sidebar from "#lib/components/ui/sidebar/index.js";
+  import { useSidebar } from "#lib/components/ui/sidebar/index.js";
+  import { NAV } from "#lib/nav.js";
   import NavMain from "./nav-main.svelte";
   import NavUser from "./nav-user.svelte";
 
@@ -22,7 +22,11 @@
   // Belt and braces with nav-main's onclick: whatever navigated (a link inside
   // the sheet, the logo, the browser's back button), the phone's modal sheet
   // must not stay over the page — or over the e-stop.
-  afterNavigate(() => sidebar.setOpenMobile(false));
+  // Shallow `goto`s (/chat rewriting its own query) are not the operator
+  // picking a page, so they leave the sheet alone.
+  afterNavigate(({ shallow }) => {
+    if (!shallow) sidebar.setOpenMobile(false);
+  });
 </script>
 
 <Sidebar.Root bind:ref collapsible="icon" {...restProps}>
@@ -31,7 +35,7 @@
       <Sidebar.MenuItem>
         <Sidebar.MenuButton size="lg">
           {#snippet child({ props })}
-            <a href={resolve("/dashboard")} {...props}>
+            <a href={resolve("dashboard")} {...props}>
               <div
                 class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary/10 ring-1 ring-sidebar-border"
               >

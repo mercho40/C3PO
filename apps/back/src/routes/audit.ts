@@ -32,14 +32,14 @@
 import { Elysia, t } from "elysia";
 import { and, desc, eq, lt, sql, type SQL } from "drizzle-orm";
 
-import { db } from "@back/db/drizzle";
+import { db } from "#back/db/drizzle.js";
 import {
   chat,
   toolCallLog,
   user as userTable,
   type ToolCallSource,
-} from "@back/db/schema";
-import { betterAuth } from "@back/lib/auth-plugin";
+} from "#back/db/schema.js";
+import { betterAuth } from "#back/lib/auth-plugin.js";
 
 export const AUDIT_DEFAULT_LIMIT = 50;
 export const AUDIT_MAX_LIMIT = 200;
@@ -53,8 +53,7 @@ const SOURCES = [
 
 /** A cursor: rows strictly older than an instant, or than a known row. */
 export type AuditCursor =
-  | { kind: "time"; at: Date }
-  | { kind: "id"; id: string };
+  { kind: "time"; at: Date } | { kind: "id"; id: string };
 
 export type AuditQuery = {
   skill: string | null;
@@ -65,8 +64,7 @@ export type AuditQuery = {
 };
 
 export type AuditQueryResult =
-  | { ok: true; value: AuditQuery }
-  | { ok: false; message: string };
+  { ok: true; value: AuditQuery } | { ok: false; message: string };
 
 /** ISO-8601 date prefix. A row id is a UUID, whose first group is 8 hex chars, so the two cannot collide. */
 const ISO_PREFIX = /^\d{4}-\d{2}-\d{2}/;

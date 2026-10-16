@@ -291,6 +291,16 @@ check_contains "restart ties HTTP readiness to a stable MainPID socket" \
 start_source="$(cat "$repo/scripts/robot/run_c3po")"
 check_contains "start ties HTTP readiness to a stable MainPID socket" \
     'bridge_http_ready 8001' "$start_source"
+# 2026-10-15: run_c3po stopped the other team's gemm-bringup on every start.
+# Stopping gemm is now opt-in, and the only stop_gemm call sits behind it.
+check_contains "start stops gemm only on an explicit take-over" \
+    'if [ "${C3PO_TAKE_OVER:-0}" = "1" ]; then' "$start_source"
+check_contains "start calls stop_gemm exactly once (the take-over branch)" \
+    "stop_gemm calls: 1." "stop_gemm calls: $(grep -c '"$here/stop_gemm"' "$repo/scripts/robot/run_c3po")."
+# ...and a sudo that needs a password with no terminal fails with the fix,
+# not with sudo's own "a terminal is required".
+check_contains "start explains a sudo that cannot prompt" \
+    'if ! sudo -n true 2>/dev/null && ! [ -t 0 ]; then' "$start_source"
 common_source="$(cat "$repo/scripts/robot/_common.sh")"
 check_contains "socket ownership uses the explicit deployed LAN bind" \
     '0.0.0.0)   address_hex="00000000"' "$common_source"

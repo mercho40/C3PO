@@ -14,7 +14,7 @@
  * "Unknown" is a first-class answer. A gate we cannot read is NOT a closed gate.
  */
 
-import { PUBLIC_API_URL } from "$env/static/public";
+import { PUBLIC_API_URL } from "$app/env/public";
 import { linkFromError, LINK_DETAIL } from "./link-copy";
 import { Poller, type PollResult } from "./poller.svelte";
 

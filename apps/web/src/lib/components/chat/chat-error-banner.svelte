@@ -19,10 +19,10 @@
    */
   import { RotateCw, StepForward, Plus } from "@lucide/svelte";
   import { resolve } from "$app/paths";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import Callout from "$lib/components/callout.svelte";
-  import type { ChatErrorView } from "$lib/chat/chat-error";
-  import type { RecoveryPlan } from "$lib/chat/turn";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import Callout from "#lib/components/callout.svelte";
+  import type { ChatErrorView } from "#lib/chat/chat-error.js";
+  import type { RecoveryPlan } from "#lib/chat/turn.js";
 
   let {
     view,
@@ -88,7 +88,7 @@
     <div class="flex flex-wrap items-center gap-2 pt-1">
       {#if view.suggestNewChat}
         <Button
-          href={resolve("/chat")}
+          href={resolve("chat")}
           variant="outline"
           size="sm"
           class="gap-1.5"

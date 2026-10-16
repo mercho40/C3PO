@@ -12,8 +12,8 @@
  * text keeps the bridge's own reason.
  */
 
-import { logToolCall } from "@back/db/chats";
-import type { ToolCallSource } from "@back/db/schema";
+import { logToolCall } from "#back/db/chats.js";
+import type { ToolCallSource } from "#back/db/schema.js";
 
 import { BridgeToolError, BridgeUnavailableError, callTool } from "./client";
 
@@ -34,6 +34,7 @@ export async function auditedCall(
       result,
       status: "ok",
       durationMs: Date.now() - startedAt,
+      startedAt,
     });
     return result;
   } catch (err) {
@@ -51,6 +52,7 @@ export async function auditedCall(
       status: "error",
       error,
       durationMs: Date.now() - startedAt,
+      startedAt,
     });
     throw err;
   }

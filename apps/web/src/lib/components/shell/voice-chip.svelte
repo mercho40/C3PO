@@ -12,7 +12,7 @@
    */
   import { Mic } from "@lucide/svelte";
   import { resolve } from "$app/paths";
-  import { getVoiceLoop } from "$lib/robot/context";
+  import { getVoiceLoop } from "#lib/robot/context.js";
 
   const voice = getVoiceLoop();
 
@@ -42,7 +42,7 @@
 
 {#if voice.running}
   <a
-    href={resolve("/voice")}
+    href={resolve("voice")}
     title={sentence}
     class={[
       "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-accent-edge bg-wash px-2 text-xs text-ink-dim transition-colors hover:bg-wash-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none focus-visible:ring-inset sm:px-2.5",
