@@ -4,7 +4,7 @@ Run this with the Quest ON somebody's head and /vr-control open in it, against
 a bridge already running onboard and reached over the SSH tunnel:
 
     scripts/quest_setup.sh                                   # forwards the ports
-    ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po    # another terminal
+    ssh -N -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 -o ControlMaster=no c3po    # another terminal
     uv run python scripts/headset_check.py
 
 WHY THIS EXISTS

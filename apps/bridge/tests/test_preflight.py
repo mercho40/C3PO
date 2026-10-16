@@ -474,6 +474,19 @@ def test_the_bridges_no_camera_reply_is_reported_in_its_own_words():
     assert "arrived and then stopped" not in text
 
 
+# --- the teleop stream, on this machine's end of the tunnel ------------------
+
+
+def test_a_closed_teleop_tunnel_names_the_missing_forward():
+    from bridge.preflight import teleop_finding
+
+    f = teleop_finding("http://127.0.0.1:8767", "nothing")
+    assert f.level == BAD and "8767 tunnel is not open" in f.text
+    assert any("-L 8767:127.0.0.1:8767" in n for n in f.notes)
+    assert teleop_finding("http://127.0.0.1:8767", "alive").level == OK
+    assert "c3po teleop start" in " ".join(teleop_finding("http://127.0.0.1:8767", "empty").notes)
+
+
 # --- the Bun the repo needs --------------------------------------------------
 
 PACKAGE_JSON = '{"packageManager": "bun@1.4.3"}'

@@ -4,8 +4,9 @@ Run beside the MCP server, as its own process:
 
     uv run python -m bridge.teleop.server
 
-Binds loopback by default for ad-hoc runs; the onboard `c3po` launcher overrides
-that to a direct LAN bind. It has no authentication of its own. Port 8767, chosen
+Binds loopback, for ad-hoc runs and under the onboard `c3po` launcher alike —
+it has no authentication of its own, so it is reached through the SSH tunnel
+(`-L 8767:127.0.0.1:8767`), never over the LAN. Port 8767, chosen
 around everything already spoken for on that Jetson — 8000 `gemm-ai.service`,
 8001 this bridge's MCP, 8081 perception's vision MJPEG, 8765 the colleague's
 foxglove bridge, 55555/60000 teleimager (`docs/ROBOT-HARDWARE.md`).
