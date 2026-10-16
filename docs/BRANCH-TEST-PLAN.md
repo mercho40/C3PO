@@ -86,6 +86,32 @@ Run everything that may need sudo **from a terminal** (`ssh -t c3po-wire`):
 `run_c3po`'s `sudo systemctl start c3po-bridge.service` cannot prompt over a
 plain `ssh host 'cmd'`.
 
+**Before the deploy, on the robot** (robot on the hanger, not moving):
+
+```bash
+systemctl is-enabled c3po-bridge; systemctl is-active c3po-bridge
+journalctl -u c3po-bridge -b -1 --no-pager | tail -30   # why it did not come up after the last reboot
+ss -ltnp | grep ':8001'                                  # who holds 8001
+pgrep -af 'bridge\.mcp_server'                           # a bridge started by hand? (uv parent + python child)
+pgrep -af 'xr_teleoperate|teleop_hand_and_arm'           # gemm's XR teleop — a second commander; c3po up refuses
+systemctl cat g1-xr-debug 2>/dev/null | grep -i exec      # what their boot XR service runs
+```
+
+On 2026-10-15 the bridge ran **by hand on 0.0.0.0:8001**, outside systemd.
+`c3po restart` and `run_c3po` refuse while it does ("bridge process exists
+outside c3po-bridge.service"). Stop it by explicit pid — killing it sends no
+stop to the robot, so only with the robot idle — and never with `pkill -f`,
+which over ssh matches your own shell:
+
+```bash
+kill -TERM <pids>; sleep 3; pgrep -af 'bridge\.mcp_server' && kill -KILL <pids>
+ss -ltnp | grep ':8001' || echo "8001 free"
+```
+
+`c3po install` starts nothing; `c3po restart` then brings the unit up. Without
+an image rebuild (`c3po perception build nav|vision`, long) the perception
+changes on this branch are absent; old images work with the new bridge.
+
 ```bash
 ssh c3po-wire true || ssh c3po true          # cable (192.168.77.1) or Wi-Fi (g1-orin.local)
 ssh c3po                                     # or c3po-wire; the rest runs on the robot
@@ -96,7 +122,7 @@ git fetch origin && git checkout integrate/october && git pull
 grep BRIDGE_HOST scripts/robot/c3po-bridge.service  # must say 127.0.0.1
 ./scripts/robot/c3po install && c3po restart
 c3po status                                  # read it, don't skim it
-c3po up operator   # perception + world model, only once the other team agrees; E1's radar needs it
+c3po up operator   # perception + world model (E1's radar). While gemm runs it refuses: with their OK, C3PO_TAKE_OVER=1 c3po up operator
 ```
 
 | #   | Pass                                                                                                                                                         |
@@ -156,8 +182,20 @@ psql -d c3po_integrate -Atc "select result from tool_call_log where skill_name='
 ## E. Headset — supervised, robot standing
 
 ```bash
-scripts/quest_setup.sh          # all ✓, then open http://localhost:3001/vr-control in the Quest
+scripts/quest_setup.sh          # ✓ for 3001, 3000 and the bridge; 8767 may warn (teleop off: no arm mirroring, everything below still works)
 ```
+
+In the Quest browser, open **`http://localhost:3001`** — not `127.0.0.1`: the
+session cookie and CORS are tied to `localhost` — and **log in there**: the
+headset has its own cookies. The account must be admin for the preset menu
+(E4). During the session:
+
+- start the console with **`bun run dev`**, not `dev:robot` (that one points
+  the teleop host at the LAN, around the adb tunnel);
+- **edit no file and no `.env`** on the Mac, and keep the USB cable seated: Vite
+  reloads the page on a server restart or a lost websocket, which ends the XR
+  session;
+- load `/vr-control` once in the Quest before pressing "Entrar".
 
 | #   | What it proves (commit)               | How                                                               | Pass                                                                                                                                                                   |
 | --- | ------------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -177,12 +215,12 @@ until both feet bear weight (rope slack, still attached), wait ~5 s** →
 | --- | ---------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | F0  | Walk enable from the console | the sequence above | posture reads walk (501). If it stays at 4, the console now says "No pasó a marcha: apoyá los pies en el piso" — load the feet; if R1+Y on the remote also fails, it is the robot, not our code |
 
-| #   | What it proves (commit)                  | How                                                        | Pass                                                                      |
-| --- | ---------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------- |
-| F1  | Stick walk                               | push the stick gently forward, then let go                 | walks forward; stops on release                                           |
-| F2  | Stale tracking stops it                  | while walking, cover the headset's sensor / take it off    | walking stops within the staleness timeout                                |
-| F3  | No re-arm after PARAR (`a47428a`)        | hold the stick forward, press PARAR, keep holding past 8 s | robot stays stopped until the stick returns to centre and is pushed again |
-| F4  | Long command not cut at 60 s (`11c55d7`) | optional, only with space: a `walk_to` that takes > 60 s   | it completes or fails on its own terms; **not** a timeout at exactly 60 s |
+| #   | What it proves (commit)                  | How                                                        | Pass                                                                                                                                                                           |
+| --- | ---------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| F1  | Stick walk                               | push the stick gently forward, then let go                 | walks forward; stops on release                                                                                                                                                |
+| F2  | Stale tracking stops it                  | while walking, cover the headset's sensor / take it off    | walking stops within the staleness timeout. Taking the headset off may suspend the page instead, and then only the 1 s duration of each walk command stops it — e-stop in hand |
+| F3  | No re-arm after PARAR (`a47428a`)        | hold the stick forward, press PARAR, keep holding past 8 s | robot stays stopped until the stick returns to centre and is pushed again                                                                                                      |
+| F4  | Long command not cut at 60 s (`11c55d7`) | optional, only with space: a `walk_to` that takes > 60 s   | it completes or fails on its own terms; **not** a timeout at exactly 60 s                                                                                                      |
 
 ## G. Rollback
 
@@ -191,6 +229,10 @@ cd ~/c3po
 git checkout "$(cat ~/.c3po/previous-deploy)"
 ./scripts/robot/c3po install && c3po restart
 ```
+
+After a rollback the **old** `run_c3po` is back, and it stops gemm unasked:
+no `c3po up` / `c3po start` without the other team's OK. The bridge also binds
+`0.0.0.0` again.
 
 ## H. Optional: the proposal PRs
 
