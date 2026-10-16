@@ -70,7 +70,10 @@ if ! bridge_running; then
 fi
 
 ready=0
-for _ in $(seq 1 30); do
+# 45 s: the bridge's own boot (imports, DDS init) on the Jetson, not the venv
+# sync — systemctl already waited for that. The loop still ends at once on a
+# failed unit or a dead process, so the length only matters when it is slow.
+for _ in $(seq 1 90); do
     if ready_pid="$(bridge_http_ready 8001)"; then
         ready=1
         break
