@@ -22,6 +22,7 @@ from bridge.preflight import (
     direct_service_finding,
     bridge_base_from_env,
     bridge_finding,
+    bun_finding,
     console_camera_finding,
     estop_finding,
     reads_through_back,
@@ -145,9 +146,7 @@ def test_frames_arriving_is_no_longer_reported_as_proof_the_rest_is_fine():
 
 def test_frames_arriving_without_cors_is_a_failure_and_names_the_fix():
     # The exact 2026-08-28 state: a live feed the console cannot read.
-    findings = camera_findings(
-        "http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=False
-    )
+    findings = camera_findings("http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=False)
     text = text_of(findings)
     assert BAD in levels(findings)
     # It must say WHY the on-page panel looks fine while the headset does not,
@@ -159,9 +158,7 @@ def test_frames_arriving_without_cors_is_a_failure_and_names_the_fix():
 
 
 def test_frames_plus_cors_is_the_clean_pass():
-    findings = camera_findings(
-        "http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=True
-    )
+    findings = camera_findings("http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=True)
     assert BAD not in levels(findings)
     assert "the headset can load it" in text_of(findings)
 
@@ -170,9 +167,7 @@ def test_an_unaskable_cors_probe_neither_passes_nor_fails_it():
     # `None` means curl could not run or the request failed outright. That is
     # not evidence either way, and inventing a verdict from it would be the
     # same mistake as calling a missing ring a rendering bug.
-    findings = camera_findings(
-        "http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=None
-    )
+    findings = camera_findings("http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=None)
     text = text_of(findings)
     assert BAD not in levels(findings)
     assert "Access-Control-Allow-Origin" not in text
@@ -477,3 +472,29 @@ def test_the_bridges_no_camera_reply_is_reported_in_its_own_words():
     text = text_of(camera_findings("http://127.0.0.1:8001/camera", "env", "alive", body, None))
     assert "real-hardware only" in text and "use the sim feeds" in text
     assert "arrived and then stopped" not in text
+
+
+# --- the Bun the repo needs --------------------------------------------------
+
+PACKAGE_JSON = '{"packageManager": "bun@1.4.3"}'
+
+
+def test_an_older_bun_is_a_failure_that_names_the_fix():
+    """1.3.x cannot resolve `#back/x.js`: apps/back dies at boot (2026-10-15)."""
+    f = bun_finding("1.3.14\n", PACKAGE_JSON)
+    assert f.level == BAD
+    assert "1.4.3" in f.text
+    assert any("bun upgrade" in n for n in f.notes)
+
+
+def test_the_named_bun_or_newer_passes():
+    assert bun_finding("1.4.3", PACKAGE_JSON).level == OK
+    assert bun_finding("1.10.0", PACKAGE_JSON).level == OK
+
+
+def test_no_bun_at_all_is_a_failure():
+    assert bun_finding(None, PACKAGE_JSON).level == BAD
+
+
+def test_an_unreadable_requirement_is_a_warning_not_a_pass():
+    assert bun_finding("1.4.3", None).level == WARN
