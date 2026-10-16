@@ -115,10 +115,15 @@ ssh session if you want to test it, otherwise skip §D3.
 ## C. Mac: tunnel, console, preflight (~5 min)
 
 ```bash
-ssh -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 c3po   # keep running
-bun run dev                     # from ../c3po-integrate: back :3000 + web :3001
-./scripts/preflight.sh
+./scripts/robot_tunnel.sh c3po-wire   # terminal 1: 8001 + 8767, reconnects by itself, says if the bridge answers
+bun run dev                            # terminal 2, from ../c3po-integrate: back :3000 + web :3001
+./scripts/preflight.sh                 # terminal 3
+./scripts/audit_watch.sh               # terminal 3 afterwards: every command the robot is sent, live
 ```
+
+Open `http://localhost:3001/vr-control` once on the Mac before the headset: the
+first load makes Vite build its dependencies, and doing that mid-session in the
+Quest reloads the page.
 
 | #   | Pass                                                                                                           |
 | --- | -------------------------------------------------------------------------------------------------------------- |
