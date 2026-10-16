@@ -78,7 +78,9 @@ case "$command" in
         fi
 
         sudo systemctl restart c3po-bridge.service
-        for _ in $(seq 1 30); do
+        # 45 s of bridge boot (imports, DDS init); `systemctl restart` already
+        # waited for the venv sync. Ends at once on a failed/inactive unit.
+        for _ in $(seq 1 90); do
             state="$(systemctl is-active c3po-bridge.service 2>/dev/null || true)"
             if [ "$state" = "active" ] && ready_pid="$(bridge_http_ready 8001)"; then
                 strays="$(bridge_process_pids | grep -vx "$ready_pid" || true)"

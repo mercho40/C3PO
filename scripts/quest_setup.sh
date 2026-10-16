@@ -113,7 +113,12 @@ done
 PORTS=(
     "3001:web console (vite):yes"
     "3000:apps/back API:yes"
-    "8767:teleop stream (tunnel to robot):yes"
+    # Optional since 2026-10-15: the stick walk, the preset menu, the camera and
+    # PARAR all go through apps/back (3000). Only arm mirroring needs the teleop
+    # server on the robot, which no step of the hardware test plan starts — and
+    # a fatal 8767 stopped this script before it forwarded anything at all.
+    # Still forwarded either way, so starting teleop later just works.
+    "8767:teleop stream (tunnel to robot):no"
 )
 # `.env.example` is the fallback, and running on it means the console was
 # started without a real `.env` — worth seeing before putting the headset on.
@@ -263,7 +268,13 @@ for entry in "${PORTS[@]}"; do
         fi
         fatal=1
     else
-        if [ "${tunnel_empty:-0}" = "1" ]; then
+        if [ "$port" = "8767" ]; then
+            # Not a camera: say what is actually lost, and what is not.
+            warn "$port  $label — teleop not running on the robot: no arm mirroring"
+            echo "     walking, presets, camera and PARAR go through 3000 and still work."
+            echo "     For the arms: on the robot, TELEOP_HOST=127.0.0.1 c3po teleop start"
+            tunnel_empty=0
+        elif [ "${tunnel_empty:-0}" = "1" ]; then
             warn "$port  $label — forwarded, but nothing running on the robot (no picture)"
             tunnel_empty=0
         else

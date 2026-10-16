@@ -421,6 +421,26 @@ check_not_contains "teleop start no longer reports success on a bare sleep" \
 
 if sidecar_pid' "$run_teleop_src"
 
+echo "== robot tunnel =="
+# The reconnecting tunnel (2026-10-15: it dropped twice in one session).
+tunnel_cmd="$("$repo/scripts/robot_tunnel.sh" --print)"
+check_contains "the tunnel forwards the bridge to the robot's loopback" \
+    "-L 8001:127.0.0.1:8001" "$tunnel_cmd"
+check_contains "the tunnel forwards teleop to the robot's loopback" \
+    "-L 8767:127.0.0.1:8767" "$tunnel_cmd"
+check_contains "a taken local port fails the tunnel instead of a silent no-op" \
+    "ExitOnForwardFailure=yes" "$tunnel_cmd"
+check_contains "the tunnel defaults to the c3po ssh alias" " c3po" "$tunnel_cmd"
+check_contains "the tunnel takes the host as an argument" \
+    " c3po-wire" "$("$repo/scripts/robot_tunnel.sh" --print c3po-wire)"
+
+echo "== audit watch =="
+watch_query="$("$repo/scripts/audit_watch.sh" --print)"
+check_contains "the audit watch prints each row once, by id" "select id," "$watch_query"
+check_contains "the audit watch shows whether a stop damped" \
+    "real_damp_fallback_reason" "$watch_query"
+check_not_contains "the audit watch only reads" "insert" "$watch_query"
+
 echo "== quest port ownership =="
 #
 # THE FAILURE THIS SECTION EXISTS FOR, 2026-09-08.
