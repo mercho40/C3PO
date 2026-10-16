@@ -264,6 +264,8 @@
         // the reason ("no frame yet") and the hint.
         const res = await fetch(endpoint(robotBase, "frame.jpg"), {
           cache: "no-store",
+          // Served by apps/back behind Better Auth, like /status.
+          credentials: "include",
           signal: AbortSignal.timeout(5000),
         });
         if (!res.ok) {

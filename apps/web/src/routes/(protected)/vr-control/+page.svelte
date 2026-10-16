@@ -34,11 +34,13 @@
   import { MotionTracker } from "#lib/robot/motion.js";
   import { staleness } from "#lib/robot/faults.js";
   import { VrControl } from "#lib/robot/vr-control.svelte.js";
+  import { readinessFor } from "#lib/webxr/menu-layer.js";
   import {
     GESTURE_FSM,
     WALK_FSM,
     envBanner,
     envLabel,
+    headsetMenu,
     isAdbLink,
     isRealHardware,
     postureGate,
@@ -82,6 +84,24 @@
 
   const ctl = new VrControl({
     posture: () => (live.online ? (live.state?.posture ?? null) : null),
+    menuItems: () => headsetMenu(data.worksReal, data.catalogue.failed),
+  });
+
+  // Whether the robot can act at all, pushed to the ONE place the operator is
+  // actually looking. `bridgeHolds`, not `streaming`: a socket that is open
+  // but stalled is not commanding anything, and the operator needs to know
+  // that as much as about one that was never opened.
+  const readiness = $derived(
+    readinessFor(
+      live.state?.posture,
+      live.online,
+      live.state?.faults,
+      ctl.bridgeHolds,
+    ),
+  );
+  $effect(() => {
+    const r = readiness;
+    untrack(() => ctl.setReadiness(r));
   });
 
   // The bridge's mode, LIVE. This used to be `data.env` from a one-shot
@@ -211,7 +231,11 @@
   {#if ctl.vrActive}
     <XrAlerts {ctl} {realHardware} />
   {:else}
-    <VrHero {ctl} {posture} onenter={() => void ctl.enterVr(overlayRoot)} />
+    <VrHero
+      {ctl}
+      {posture}
+      onenter={(observe: boolean) => void ctl.enterVr(overlayRoot, observe)}
+    />
   {/if}
 
   {#if banner?.kind === "offline"}

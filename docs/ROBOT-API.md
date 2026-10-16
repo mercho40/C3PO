@@ -403,7 +403,7 @@ for a G1 and are wrong on the wire: **[web]**
 | 7107   | `SET_SPEED_MODE`           | `{"data": <int>}` — **0/1/2/3 only** (below)     | "                        |
 
 **[src]** for the api*ids and every `SET*_`parameter shape — read verbatim from`g1_loco_client.hpp`. The getter rows carry two caveats: the header passes an **empty**
-parameter string (the _"empty string (C++) / `{}` (Python) — both accepted"* line is
+parameter string (the \_"empty string (C++) / `{}` (Python) — both accepted"* line is
 community `[web]`, untested here — send the empty string), and the getter *response\* types
 beyond `{"data": <int>}` are **[web]** — no client on this robot parses them.
 
@@ -749,9 +749,10 @@ stateDiagram-v2
 **Damp is the hub**: `ZeroTorque`, `Preparation`, `SquatUp`, `LieUp` are reachable only
 from `Damp`; `Preparation` (4) is the sole gateway into locomotion; every
 locomotion-active mode drops straight back to `Damp` — the same edge `stop_everything`'s
-real-hardware fallback dispatches (`SET_VELOCITY(0,0,0)` then damp, selected per
-`SIM_MODE`). Whether that fallback has ever been exercised live is still open —
-smoke-test it before relying on it. Legality beyond these edges (Seating, Dance, Climb,
+real-hardware fallback dispatches (`SET_VELOCITY(0,0,0)`, then damp only if no zero
+setpoint was acknowledged — since 2026-10-15; `STOP_EVERYTHING_DAMP=always` damps every
+time). The damp edge was exercised live on 2026-10-15 (code 0, first attempt, from a
+walk mode). Legality beyond these edges (Seating, Dance, Climb,
 SquatUp onward) is the firmware's call, not confirmed. Note `Mode.SQUAT` (2) is never
 actually sent: the `squat` skill dispatches `SQUAT_UP` (706), matching the reference
 implementation.
@@ -1932,21 +1933,42 @@ Our reader depth of 10 is legal but buys nothing. (The colleague's prose calls t
 `utlidar` topics BEST_EFFORT while their own bag metadata records RELIABLE. **Settled 2026-08-21: the publishers are RELIABLE** (`ROBOT-HARDWARE.md` §4.5). Historically — trust the
 metadata, but verify.)
 
-⚠️ **Our CycloneDDS config is never actually applied — the vendor SDK overrides it.**
+⚠️ **Our CycloneDDS config file is never read by the SDK's domain.**
 `connection.py` writes a unicast-peer/interface XML and sets `CYCLONEDDS_URI`, but
 `ChannelFactoryInitialize` then creates the domain with its **own inline config**
 (`ChannelConfigAutoDetermine` when no interface argument is passed), and a domain
 created with an inline config ignores `CYCLONEDDS_URI` — verified empirically
 2026-08-19 against cyclonedds 0.10.2 (a `Domain(id, inline_config)` succeeds even with
-`CYCLONEDDS_URI` pointing at invalid XML). **[live]** So the bridge actually runs
-vendor-style autodetermine + default multicast everywhere: onboard it works because
-autodetermine lands on `eth0` while `docker0` is down, and both the intended macOS
-unicast workaround and `DDS_INTERFACE` pinning are currently no-ops. The fix (pass the
-interface through to `ChannelFactoryInitialize`, scope the XML's `<Domain id="any">` to
-`id="0"`) is a supervised-window change — `apps/perception/README.md`, decisions list.
-If our XML ever _does_ take effect, its `AllowMulticast=false` + single `<Peer>` would
-hide every other 192.168.123.x publisher with no error — make it `SIM_MODE`-conditional
-at the same time. The vendor's own config is plain multicast on a named interface
+`CYCLONEDDS_URI` pointing at invalid XML), and confirmed against the SDK source
+2026-08-29 (`unitree_sdk2py/core/channel.py:212-215` — the config argument is never
+`None`). **[live]** + **[src]**
+
+**Resolved 2026-08-29**, except for the part that cannot be:
+
+- **`DDS_INTERFACE` now works.** The name is passed to `ChannelFactoryInitialize`,
+  which swaps in `ChannelConfigHasInterface` — the one channel that does reach the
+  SDK's domain. It was previously inert, which was the worst of the three possible
+  behaviours: the operator followed the documented remedy for `selected arbitrarily
+from: eth0, docker0, wlan0` and got arbitrary selection anyway. A name that is not
+  a NIC on this host falls back to autodetermine with a loud log line rather than
+  being handed to CycloneDDS, so a stale value costs nothing beyond the warning.
+- **The XML is scoped to the domain being initialized**, not `id="any"`. `any`
+  applied to every domain created without its own config, so a bare
+  `DomainParticipant(42)` would silently inherit "multicast off, unicast to the
+  control board" — the trap `perception_link.py` documents and defends itself
+  against.
+- **The unicast workaround is now `SIM_MODE`-conditional.** Under `SIM_MODE=real`
+  the config asks for multicast and writes no `<Peers>`. Done while it was still
+  inert, because if it ever did take effect onboard, `AllowMulticast=false` + a
+  single `<Peer>` would hide every other 192.168.123.x publisher with no error.
+- **The `<Peers>` block still cannot reach the SDK's domain, and never will.**
+  `ChannelConfigHasInterface` has no Peers element and no seam to add one, so the
+  macOS "unicast across LAN" workaround is undeliverable without patching the vendor
+  SDK. It is kept because it still describes the intent and is what a bare
+  participant on this domain would want.
+
+Not yet confirmed on hardware: the first robot session should check that `dds.init`
+logs `interface_reason=pinned` rather than `missing`. The vendor's own config is plain multicast on a named interface
 (`videohub_pc4`'s on-robot `cyclonedds.xml` is exactly that); no official page mentions
 `AllowMulticast`, `NetworkInterface` or `<Peer>`. (The
 exact vendor `CYCLONEDDS_URI` XML body was stripped by the docs' HTML→markdown
@@ -2188,15 +2210,15 @@ Ordered by how much each unblocks.
 Corrections this document establishes that are **not yet applied in the repo** — tracked
 here so they are actionable rather than scattered:
 
-| Where                              | Divergence                                                                                                                                                                                                                                                                                                                                                                     |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `g1_protocol.REAL_TOPICS`          | `sportmodestate` is `rt/lf/sportmodestate`; the vendor documents bare `rt/sportmodestate` (§9.2)                                                                                                                                                                                                                                                                               |
-| `g1_protocol.REAL_TOPICS`          | `dex_left_cmd`/`dex_right_cmd` are `rt/api/dex3/*/request` — an unsourced RPC spelling; the real path is a raw `HandCmd_` on `rt/dex3/*/cmd` (§6.7)                                                                                                                                                                                                                            |
-| `g1_protocol`                      | `Mode.RUN = 801` remains sendable via `_PREPARATION_TARGETS`, and the 802 label still carries a "suspect" comment — 802 **is** Run on this chassis and 801 should never be sent (§4.1). Comments around 500/501 still describe §12's investigation as unresolved                                                                                                               |
-| `state.py::_on_lowstate`           | Discards `motor_state[i].motorstate` — the vendor bit table (§9.6) makes a decoder cheap and high-value                                                                                                                                                                                                                                                                        |
-| `state.py::_on_odom`               | Drops `velocity[3]` and `yaw_speed` — the instrument for the sign-convention question (§5.3)                                                                                                                                                                                                                                                                                   |
-| `state.py` / `mcp_server`          | `mode_machine` surfaced as a bare int; decode it (23/29/27-DoF) (§4.2)                                                                                                                                                                                                                                                                                                         |
-| bridge (anywhere)                  | No 7401 holding-latch handling — a second gesture after a held one fails unexplained (§6.4)                                                                                                                                                                                                                                                                                    |
-| `connection.py`                    | Its peer/interface XML is **never applied** — the SDK's inline config overrides `CYCLONEDDS_URI` (§10), so `DDS_INTERFACE` pinning and the macOS unicast workaround are both no-ops today; fix = pass the interface to `ChannelFactoryInitialize` + scope `<Domain id="any">` to `id="0"`, and make the unicast workaround `SIM_MODE`-conditional when it starts taking effect |
-| `scripts/robot/_common.sh`         | `OTHER_COMMANDER_PATTERNS` covers `cmd_vel_to_loco\|xr_teleoperate\|brainco_hand_server` but not `unitree_slam` or the returning gemm container's `gemm_robot_server` (§10; details in `docs/OPERATIONS.md`)                                                                                                                                                                   |
-| any future `SET_SPEED_MODE` wiring | must clamp to 0..3 and default 0 (§2.1)                                                                                                                                                                                                                                                                                                                                        |
+| Where                              | Divergence                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `g1_protocol.REAL_TOPICS`          | `sportmodestate` is `rt/lf/sportmodestate`; the vendor documents bare `rt/sportmodestate` (§9.2)                                                                                                                                                                                                                                                                                                                                                                      |
+| `g1_protocol.REAL_TOPICS`          | `dex_left_cmd`/`dex_right_cmd` are `rt/api/dex3/*/request` — an unsourced RPC spelling; the real path is a raw `HandCmd_` on `rt/dex3/*/cmd` (§6.7)                                                                                                                                                                                                                                                                                                                   |
+| `g1_protocol`                      | `Mode.RUN = 801` remains sendable via `_PREPARATION_TARGETS`, and the 802 label still carries a "suspect" comment — 802 **is** Run on this chassis and 801 should never be sent (§4.1). Comments around 500/501 still describe §12's investigation as unresolved                                                                                                                                                                                                      |
+| `state.py::_on_lowstate`           | Discards `motor_state[i].motorstate` — the vendor bit table (§9.6) makes a decoder cheap and high-value                                                                                                                                                                                                                                                                                                                                                               |
+| `state.py::_on_odom`               | Drops `velocity[3]` and `yaw_speed` — the instrument for the sign-convention question (§5.3)                                                                                                                                                                                                                                                                                                                                                                          |
+| `state.py` / `mcp_server`          | `mode_machine` surfaced as a bare int; decode it (23/29/27-DoF) (§4.2)                                                                                                                                                                                                                                                                                                                                                                                                |
+| bridge (anywhere)                  | No 7401 holding-latch handling — a second gesture after a held one fails unexplained (§6.4)                                                                                                                                                                                                                                                                                                                                                                           |
+| `connection.py`                    | **Mostly resolved 2026-08-29** (§10): `DDS_INTERFACE` now reaches the SDK via `ChannelFactoryInitialize`, the XML is scoped to one domain instead of `id="any"`, and the unicast workaround is `SIM_MODE`-conditional. Still true, and unfixable without patching the vendor SDK: the `<Peers>` block cannot reach the SDK's domain, so the macOS unicast workaround remains undeliverable. Unconfirmed on hardware — check `dds.init` logs `interface_reason=pinned` |
+| `scripts/robot/_common.sh`         | `OTHER_COMMANDER_PATTERNS` covers `cmd_vel_to_loco\|xr_teleoperate\|brainco_hand_server` but not `unitree_slam` or the returning gemm container's `gemm_robot_server` (§10; details in `docs/OPERATIONS.md`)                                                                                                                                                                                                                                                          |
+| any future `SET_SPEED_MODE` wiring | must clamp to 0..3 and default 0 (§2.1)                                                                                                                                                                                                                                                                                                                                                                                                                               |

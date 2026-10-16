@@ -44,7 +44,8 @@
   const needsStream = $derived(!isAdmin && !ctl.bridgeHolds);
   // PARAR is still going out: no press may race it (`VrControl.startWalking`
   // refuses too — this is what makes the refusal visible before the press).
-  const blocked = $derived(needsStream || ctl.stopInFlight);
+  // An observer walks nothing (`VrControl.startWalking` refuses as well).
+  const blocked = $derived(needsStream || ctl.stopInFlight || ctl.viewOnly);
   const dirLabel = $derived(ctl.walking === "forward" ? "adelante" : "atrás");
   const notice = $derived(ctl.currentWalkNotice);
 </script>
@@ -71,6 +72,7 @@
           variant="outline"
           size="lg"
           class="min-h-12 gap-2 px-4"
+          disabled={ctl.viewOnly}
           onclick={() => ctl.connectStream()}
         >
           <Link2 class="size-4" aria-hidden="true" />

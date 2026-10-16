@@ -540,3 +540,46 @@ def test_scan_is_subscribed_with_sensor_data_qos():
     assert "qos_profile_sensor_data" in sub, (
         "/scan must be subscribed with sensor-data QoS — a bare depth is "
         "RELIABLE and will silently receive nothing from the real driver")
+
+
+def test_lidar_online_is_arrival_only_never_whether_free_space_is_empty():
+    """The file's own rule, in the one place it was broken.
+
+    `world_model_publisher.py` states it at the top: "Absent is not empty.
+    Every *_online flag is computed from message ARRIVAL, never from a list
+    being empty." `detector_online` obeys it. `lidar_online` did not — it was
+    published as `lidar_online and self._free_space is not None`.
+
+    `_free_space` is None whenever no sector held a finite in-range return, and
+    an all-`inf` scan is exactly that: the legal way to say "clear to range_max
+    in every direction". So an open room reported a working Livox as OFFLINE —
+    sensor silence and a genuinely clear scan collapsed into one value, which
+    is the confusion this entire contract exists to prevent.
+
+    Nothing downstream depended on the conflation: `world_model.build()`
+    degrades on `not lidar_online or free_space is None`, treating the two
+    independently already. Removing the AND changes only what an operator is
+    told about the sensor — from "offline" to "online, no usable returns".
+
+    Asserted on the AST rather than by calling `_emit`, for the reason this
+    module's header gives: the publisher needs rclpy, which is not installable
+    on the machine this suite runs on.
+    """
+    from conftest import NAV_PKG
+
+    tree = _parse(NAV_PKG / "c3po_perception" / "world_model_publisher.py")
+    report = _report_dict_node(tree)
+
+    value = None
+    for key, val in zip(report.keys, report.values):
+        if isinstance(key, ast.Constant) and key.value == "lidar_online":
+            value = val
+            break
+    assert value is not None, "the report no longer carries lidar_online"
+
+    assert isinstance(value, ast.Name), (
+        "lidar_online must be published as the bare arrival-based flag; it is "
+        f"a {type(value).__name__}. Something is being folded into it again, "
+        "and an empty free_space is not an offline LiDAR."
+    )
+    assert value.id == "lidar_online"

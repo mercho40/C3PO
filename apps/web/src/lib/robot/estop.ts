@@ -34,9 +34,12 @@ import { classifyInvoke, type SkillOutcome } from "./skill-outcome";
  *                   anything: unknown (no FSM id — the post-reboot race),
  *                   stale (`stale_fsm_*`), or fabricated (stub). Not moving
  *                   is not the same as known to be stopped.
- * - `holdingGait` — sim only: zero velocity went out, and the robot is still in
- *                   its walking controller BY DESIGN (no damp off real hardware),
- *                   so posture cannot confirm the stop. Not an alarm; not a pass.
+ * - `holdingGait` — zero velocity went out, and the robot is still in its
+ *                   walking controller BY DESIGN: in sim (no damp there), and on
+ *                   real hardware when the robot acknowledged the zero-velocity
+ *                   burst, so the bridge left it standing instead of damping it
+ *                   (`stopHeldGait`). Posture cannot confirm the stop. Not an
+ *                   alarm; not a pass.
  * - `stillMoving` — real hardware, still in a locomotion mode well after the 200.
  * - `notDamped`   — 200, but the bridge says the damp fallback failed.
  * - `unreachable` — the order never left: bridge down, back down, network.
@@ -153,6 +156,26 @@ export function classifyStopResponse(res: {
 }
 
 /**
+ * Whether the bridge kept the robot in its walking controller on purpose.
+ *
+ * Since 2026-10-15 stop_everything damps a real robot only when it did not
+ * acknowledge the zero-velocity burst — damping drops a standing robot. A stop
+ * that landed reports `stop_burst_acked > 0` and no damp reason, and the robot
+ * stays in its walk mode at zero velocity, so "still in a locomotion mode" is
+ * the expected reading, not "Sigue en movimiento". A bridge older than that
+ * change sends neither field, and its stop is judged as before.
+ */
+export function stopHeldGait(data: unknown): boolean {
+  if (!data || typeof data !== "object") return false;
+  const b = data as Record<string, unknown>;
+  return (
+    typeof b.stop_burst_acked === "number" &&
+    b.stop_burst_acked > 0 &&
+    b.real_damp_fallback_reason == null
+  );
+}
+
+/**
  * Where an accepted press goes as telemetry arrives. Pure: the store calls it on
  * every reading and on a timer, and nothing else moves the phase forward.
  */
@@ -161,6 +184,8 @@ export function advance(
   acceptedAt: number | null,
   t: Telemetry,
   now: number,
+  /** `stopHeldGait` of the stop's answer. */
+  heldGait = false,
 ): EstopPhase {
   if (acceptedAt == null) return phase;
 
@@ -198,18 +223,16 @@ export function advance(
   if (!t.moving) return "stopped";
   if (now - acceptedAt < STILL_MOVING_MS) return "accepted";
   // Off real hardware stop_everything sends zero velocity but no damp, so the
-  // walking controller keeps running and the posture keeps saying "walk". That
-  // is the design, not a failed stop — calling it "Sigue en movimiento" would be
-  // an alarm that is wrong every time, and alarms that are wrong get ignored.
-  return t.env === "real" ? "stillMoving" : "holdingGait";
+  // walking controller keeps running and the posture keeps saying "walk". On
+  // real hardware the same is true once the robot acknowledged the burst
+  // (`heldGait`). That is the design, not a failed stop — calling it "Sigue en
+  // movimiento" would be an alarm that is wrong every time, and alarms that are
+  // wrong get ignored.
+  return t.env === "real" && !heldGait ? "stillMoving" : "holdingGait";
 }
 
 export type EstopTone =
-  | "idle"
-  | "pending"
-  | "stopped"
-  | "unconfirmed"
-  | "failed";
+  "idle" | "pending" | "stopped" | "unconfirmed" | "failed";
 
 export type EstopView = {
   /** Visible label from `sm` up — also the accessible name. */
@@ -345,7 +368,7 @@ export function estopMessage(
       return {
         level: "warn",
         title: "Velocidad cero enviada",
-        body: "En simulación la parada manda velocidad cero sin amortiguar, así que el robot sigue en modo de marcha y la postura no confirma que se haya detenido.",
+        body: "La parada mandó velocidad cero sin amortiguar, así que el robot queda de pie en modo de marcha y la postura no puede confirmar que esté quieto. Miralo. Para dejarlo sin fuerza, Amortiguar — solo con el robot sostenido.",
       };
     case "stillMoving":
       return {

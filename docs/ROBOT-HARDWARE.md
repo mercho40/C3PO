@@ -94,6 +94,10 @@ name in `~/.ssh/config`, `BRIDGE_URL`, and anywhere else the robot needs naming.
 DHCP reservation for `14:0a:02:f0:63:f6` would work too, but mDNS needs no cooperation from
 the school's network team.
 
+**2026-10-13:** the operator reported the robot at `192.168.77.1`, reached by cable
+(`c3po-wire`). Not yet reached from the Mac — record which interface owns it, and
+whether `g1-orin.local` resolves over the cable, the first time it is. **[?]**
+
 The SSH user is **`unitree`** (home `/home/unitree`). `c3po` (Wi-Fi/mDNS) and `c3po-wire`
 (cabled path) are `Host` aliases in the Mac's `~/.ssh/config`, not accounts on the robot.
 **[live]**
@@ -137,10 +141,13 @@ Consequences:
   arbitrarily among `eth0`, `docker0`, `wlan0` — logged verbatim as
   `selected arbitrarily from: eth0, docker0, wlan0`. Unpinned, the bridge may see none of
   the robot. Hence `DDS_INTERFACE=eth0` onboard (the env var and its comment live in
-  `apps/bridge/.env.example`). ⚠️ The pinning **currently does not reach CycloneDDS** —
-  the vendor SDK's inline config overrides the bridge's `CYCLONEDDS_URI`; it has worked
-  only because autodetermine lands on `eth0` while `docker0` is down. The pending fix is
-  tracked in `docs/ROBOT-API.md` (known divergences). The vendor independently
+  `apps/bridge/.env.example`). Since 2026-08-29 the pin **reaches the SDK's domain**: the
+  bridge passes the name to `ChannelFactoryInitialize` (`bridge/sdk/connection.py`), because the vendor SDK's inline config overrides the bridge's
+  `CYCLONEDDS_URI` — before that the variable was logged and inert, and the bridge worked
+  only because autodetermine landed on `eth0` while `docker0` was down. The XML file still
+  does not reach that domain (its unicast `<Peers>` block cannot), and the pin is
+  unconfirmed on hardware: check that `dds.init` logs `interface_reason=pinned`
+  (`docs/ROBOT-API.md`, known divergences). The vendor independently
   corroborates the choice: their own `videohub_pc4` CycloneDDS config pins `eth0` with
   the 0.10.2 schema (§6.5).
 
@@ -843,9 +850,9 @@ depth will not resolve, still needs the device.
 
 **The two routes are mutually exclusive, and that decides a run before it starts:**
 
-| `videohub_pc4` | `:8001/camera` | our detector | who typically causes it           |
-| -------------- | -------------- | ------------ | --------------------------------- |
-| alive          | **works**      | cannot start | nobody has taken the camera       |
+| `videohub_pc4` | `:8001/camera` | our detector | who typically causes it                |
+| -------------- | -------------- | ------------ | -------------------------------------- |
+| alive          | **works**      | cannot start | nobody has taken the camera            |
 | killed         | dark, says why | **works**    | `c3po camera take`, or gemm's bring-up |
 
 `scripts/robot/take_camera` is the one place that performs the swap, because stopping
@@ -996,8 +1003,8 @@ returns **nothing** — no Dex3 service binary, no systemd unit, no `/unitree/mo
 ⚠️ **The conclusion once drawn from that had to be withdrawn.** An earlier version of this
 survey read _"even if a Dex3 were plugged in, nothing on this Jetson would publish
 `rt/dex3/_/state`"* and used it as evidence against Dex3. Unitree states plainly:
-*"**Unitree does not deploy services on the NVIDIA Jetson Orin module.**"* **[web]** The
-Dex3 driver is *"a resident service program"* the robot provides itself — i.e. it runs on
+_"**Unitree does not deploy services on the NVIDIA Jetson Orin module.**"_ **[web]** The
+Dex3 driver is _"a resident service program"_ the robot provides itself — i.e. it runs on
 the control board at `192.168.123.161`, which has no SSH. **The search was aimed at the
 wrong host.** The observation stands; the inference does not. (The 2026-08-15 silent-topic
 probe above is the _right_-host version of the same test, and it too came back empty.)
@@ -1194,8 +1201,8 @@ Our Isaac sim profile's `rt/dex1/{left,right}/{cmd,state}` with `MotorCmds_` is 
 - ✅ **Applied 2026-08-20.** `apps/bridge/src/bridge/sdk/g1_protocol.py` (`REAL_TOPICS`)
   carried `dex_left_cmd="rt/api/dex3/left/request"` / `dex_right_cmd=…`. **The hands are
   not an RPC service** — no api*id, no JSON envelope, and no `rt/api/dex3/*`topic in any
-vendor source on this robot nor in any of the six official hand-related pages. Now`rt/brainco/{left,right}/{cmd,state}`, carrying bare
-`unitree_go::msg::dds*::MotorCmds*`/`MotorStates\*` sequences. **[src]**
+  vendor source on this robot nor in any of the six official hand-related pages. Now`rt/brainco/{left,right}/{cmd,state}`, carrying bare
+  `unitree_go::msg::dds*::MotorCmds*`/`MotorStates\*` sequences. **[src]**
 - **`/api/dex3_msg_controller`**, which earlier inventories cited, appears in **no**
   vendor source, binary or config anywhere on this robot. Its only occurrences were our
   own doc files. Unsourced; struck. **[live]**

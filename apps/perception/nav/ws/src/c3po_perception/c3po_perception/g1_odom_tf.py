@@ -86,6 +86,28 @@ class G1OdomTf(Node):
         # base_link origin expressed in the `body` (inverted IMU) frame, i.e.
         # x forward, y RIGHT, z DOWN. Pelvis below and behind a head-mounted
         # sensor => negative x, positive z. PLACEHOLDERS.
+        # ⚠️ BOTH OF THESE REACH THE STATIC `body -> base_link` TRANSFORM ONLY.
+        # `on_odom` — which publishes the dynamic `odom -> base_footprint` and
+        # the `/odom` that Nav2's controller_server actually reads — never
+        # consults either one. So `base_footprint` is currently the ground
+        # projection of `body` (the sensor), not of `base_link`, even though
+        # this module's header calls it "a PROJECTION of base_link".
+        #
+        # Consequences, and why this is a note rather than a change:
+        #   * mount_yaw_deg is 0.0, so its half is dormant. Set it to a real
+        #     measured value and `base_link` rotates while `base_footprint`'s
+        #     yaw and /odom's orientation do not — the robot would believe a
+        #     heading it is not holding. The warning below exists so that
+        #     calibrating this cannot be silent.
+        #   * base_in_body_xyz's horizontal term (0.10 m) is NOT zero, so
+        #     base_footprint sits ~10 cm from the base_link projection, in a
+        #     direction that rotates with yaw.
+        #
+        # Fixing it means composing the mount offset into the dynamic path, and
+        # that changes what a walking biped believes about where it is. It
+        # wants the robot in front of you and a tape measure, not a refactor
+        # from a laptop — the values are labelled PLACEHOLDERS precisely
+        # because nobody has measured them yet.
         self.declare_parameter("base_in_body_xyz", [-0.10, 0.0, 0.45])
         self.declare_parameter("mount_yaw_deg", 0.0)
         # If the FAST-LIO twist patch is not applied, set this to "differentiate"
@@ -104,7 +126,7 @@ class G1OdomTf(Node):
             Odometry, "/Odometry", self.on_odom,
             QoSProfile(depth=20, reliability=ReliabilityPolicy.RELIABLE),
         )
-        self._last = None
+        self._last: tuple[float, float, float, float] | None = None
         self._v = [0.0, 0.0, 0.0]
 
         if self.twist_source != "fastlio":
@@ -126,6 +148,18 @@ class G1OdomTf(Node):
         h = self.h
         mount = [float(v) for v in self.get_parameter("base_in_body_xyz").value]
         myaw = math.radians(float(self.get_parameter("mount_yaw_deg").value))
+
+        # Somebody calibrating this deserves to know it only lands here. Silence
+        # would mean measuring a real mount yaw, setting it, and getting a
+        # base_link that rotates while base_footprint and /odom do not.
+        if abs(myaw) > 1e-9:
+            self.get_logger().warn(
+                f"mount_yaw_deg={math.degrees(myaw):.3f} applies to the STATIC "
+                "body->base_link transform ONLY. The dynamic "
+                "odom->base_footprint TF and the republished /odom (what Nav2 "
+                "steers on) do not use it, so this calibration is HALF "
+                "APPLIED. See the note beside the parameter declaration."
+            )
 
         t1 = TransformStamped()
         t1.header.stamp = self.get_clock().now().to_msg()
@@ -191,6 +225,24 @@ class G1OdomTf(Node):
                 self._v[0] += a * (((x - x0) * c + (y - y0) * s) / dt - self._v[0])
                 self._v[1] += a * ((-(x - x0) * s + (y - y0) * c) / dt - self._v[1])
                 self._v[2] += a * (dyaw / dt - self._v[2])
+            elif dt >= 0.5:
+                # A GAP LONGER THAN HALF A SECOND MAKES THE OLD VELOCITY A LIE.
+                #
+                # This used to leave `self._v` untouched, so the estimate from
+                # before the stall went out on a message stamped NOW and
+                # Nav2's controller_server read it as the robot's present
+                # velocity. That is "a failed tick republishing the last good
+                # value without ageing it" — the rule `detector.py` and
+                # `stream.py` both state, applied to a number instead of a
+                # picture.
+                #
+                # Zero rather than hold: SET_VELOCITY carries a 1 s firmware
+                # deadman, so after a gap this long the robot has almost
+                # certainly stopped, and zero is the closer estimate. `dt` too
+                # SMALL is left alone deliberately — that is two samples in the
+                # same millisecond, where the old estimate is still the best
+                # one available and dividing by dt would explode.
+                self._v = [0.0, 0.0, 0.0]
         self._last = (now, x, y, yaw)
 
         tf = TransformStamped()

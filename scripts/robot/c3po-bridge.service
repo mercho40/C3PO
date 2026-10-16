@@ -18,11 +18,32 @@ WorkingDirectory=/home/unitree/c3po/apps/bridge
 
 # systemd does not source ~/.profile. The bridge loads apps/bridge/.env itself;
 # these three values define the daemon transport and cannot accidentally fall
-# back to stdio. The LAN bind is deliberate: see docs/OPERATIONS.md.
+# back to stdio.
+#
+# BRIDGE_HOST WAS `0.0.0.0` HERE, ABOVE A COMMENT CALLING THAT DELIBERATE.
+# It was not. docs/OPERATIONS.md says the opposite in as many words — "the
+# bridge can command the legs and has no authentication of its own, so it must
+# never bind to the school LAN" — and `apps/bridge/.env.example`, the code
+# default in `mcp_server.py`, `run_c3po` and `apps/back/src/routes/telemetry.ts`
+# all say loopback too. Five places agreed and the one that actually ran did
+# not, which made `http://10.10.32.19:8001/mcp` — the tool surface that can
+# WALK THE ROBOT, unauthenticated — reachable from anywhere on the school
+# Wi-Fi. It arrived with the unit taken wholesale from main in 06e5ea9.
+#
+# Reach it through the tunnel that is already documented and already printed by
+# `scripts/quest_setup.sh`:
+#
+#     ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po
+#
+# ⚠️ A back-end whose BRIDGE_URL names the robot's LAN address (e.g.
+# `http://10.10.32.19:8001/mcp`) must move to `http://127.0.0.1:8001/mcp` with
+# that tunnel up, or it will report `bridge_unavailable` against a healthy
+# bridge. `apps/back` now prints the tunnel command when that happens rather
+# than leaving it to be guessed.
 Environment=HOME=/home/unitree
 Environment=PATH=/home/unitree/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=BRIDGE_TRANSPORT=http
-Environment=BRIDGE_HOST=0.0.0.0
+Environment=BRIDGE_HOST=127.0.0.1
 Environment=BRIDGE_PORT=8001
 Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
 

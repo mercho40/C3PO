@@ -314,6 +314,42 @@ def test_apps_back_does_not_reintroduce_a_second_catalogue():
     )
 
 
+def test_exactly_one_tool_is_classified_safety(tools):
+    """`classification="safety"` BYPASSES THE ADMIN GATE IN apps/back.
+
+    `apps/back/src/routes/skills.ts` decides who may invoke a skill directly:
+
+        const isSafety = skill ? skill.classification === "safety" : knownSafety;
+        if (!isSafety && user.role !== "admin") return 403;
+
+    That is correct and deliberate — an e-stop must not be admin-gated, and it
+    must not stop working because the catalogue could not be fetched. But it
+    means this string, set HERE, decides authorization THERE: marking any other
+    tool `safety` silently makes it invocable by every authenticated
+    non-admin, straight past the reasoning agent, with no change in apps/back
+    and nothing in its diff to review.
+
+    `damp` is the tempting one — it is a safety transition in the FSM sense —
+    and it moves a 35 kg biped. The FSM meaning of "safety" and the
+    authorization meaning are not the same word, and only one of them belongs
+    in this field.
+
+    apps/back pins its own half in `SAFETY_SKILLS` (`skills.test.ts`). This is
+    the other half of that contract; the two are meant to name the same single
+    tool.
+    """
+    safety = sorted(
+        name
+        for name, tool in tools.items()
+        if (tool.meta or {}).get("c3po", {}).get("classification") == "safety"
+    )
+    assert safety == ["stop_everything"], (
+        f"tools classified 'safety': {safety}. Anything on this list bypasses "
+        "the admin gate in apps/back/src/routes/skills.ts. If a tool genuinely "
+        "belongs here, add it to SAFETY_SKILLS there in the same change."
+    )
+
+
 def test_every_tool_carries_complete_safety_metadata(tools):
     """`_meta` is how safety information reaches clients — including Claude Code.
 
@@ -358,14 +394,13 @@ def test_untested_motion_is_not_advertised_as_working(tools):
       walk_to                  — moved 0.17 m and stopped inside tolerance
       wave (26)                — 7.3 s, arm service acked on completion
       say                      — audible speech, confirmed by the operator
+      turn                     — +40° twice, reached in 4.9 s and 4.0 s
 
     Still unverified, and each for its own reason.
     """
     never_run_on_hardware = {
         # Accepted with rpc code 0 and no observed effect, twice.
         "balance_stand",
-        # Yaw sign convention is unverified — it may rotate the wrong way.
-        "turn",
         # Accepted from damp with code 0 and NO transition (2026-08-15),
         # contradicting Unitree's own example, which bring-ups through it.
         "squat",
@@ -378,6 +413,15 @@ def test_untested_motion_is_not_advertised_as_working(tools):
         "set_hand",
         "open_hands",
     }
+    # `turn` GRADUATED 2026-08-26 and is deliberately no longer listed here.
+    # Two supervised runs, operator watching, feet down and the gantry slack:
+    # +40° commanded, +37.48 / +36.67 achieved, reached=true both times, in
+    # 4.9 s and 4.0 s. Its entry above ALSO carried a stale reason — the yaw
+    # sign was settled on 2026-08-20, six days before anyone watched the loop.
+    #
+    # This test is what caught the flip and demanded evidence in the commit,
+    # which is exactly its job, so the graduation is recorded rather than
+    # quietly deleted. See turn's docstring for what the claim does not cover.
     for name in never_run_on_hardware:
         works = tools[name].meta["c3po"]["works"]
         assert works["real"] is False, (

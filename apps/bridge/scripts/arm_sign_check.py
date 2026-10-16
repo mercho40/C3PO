@@ -167,13 +167,19 @@ async def main_async(args) -> int:
     if args.dry:
         print("\n*** DRY RUN — no DDS, no publisher, nothing moves. ***")
         print("*** Answers are not recorded as signs; this only rehearses the script. ***\n")
-        driver = DryDriver()
+        # Named apart from the real `driver` below rather than reusing the
+        # name. `DryDriver` is deliberately NOT a mock of the whole
+        # `ArmSdkDriver` surface (see its docstring), so they are genuinely
+        # different types on two paths that never meet — this branch returns.
+        # One name for both made that look like a single variable holding
+        # either, which is the one thing it must not be.
+        dry_driver = DryDriver()
         results: dict[str, str] = {}
         try:
             for index, name in enumerate(JOINTS):
                 if args.joints and name not in args.joints:
                     continue
-                sign = await probe_joint(driver, args.side, index, name)
+                sign = await probe_joint(dry_driver, args.side, index, name)
                 if sign is not None:
                     results[name] = sign
         except KeyboardInterrupt:
@@ -236,7 +242,9 @@ async def main_async(args) -> int:
         print(f"\nrefused to engage: {exc}")
         return 1
 
-    results: dict[str, str] = {}
+    # Annotated once, in the dry branch above; re-annotating the same name in
+    # one function is what mypy objects to, not the assignment.
+    results = {}
     try:
         # Let the blend weight finish ramping in before moving anything, so
         # the first probe is a joint move and not a weight change.

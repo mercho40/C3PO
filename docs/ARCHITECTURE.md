@@ -41,11 +41,16 @@ A fifth component sits beside the bridge rather than above or below it:
 the LiDAR/camera and hand the bridge a world summary (§8). It observes and
 proposes; the bridge alone actuates.
 
-**Video is the one thing the console fetches directly**, rather than through
-`apps/back`. Proxying ~1.5 Mbit/s of frames through the control plane to
-re-authenticate a picture the operator is already authorised to see would buy
-nothing; the browser reaches the bridge's camera relay directly over the robot
-LAN. Everything that _commands_ the robot still goes console → control plane →
+**Video goes through `apps/back` too**, behind the same Better Auth session as
+everything else: `apps/back/src/routes/camera.ts` relays the bridge's
+`/camera/status`, `/camera/frame.jpg` and `/camera/stream.mjpg`, and the
+console's `PUBLIC_ROBOT_CAM_URL` is `http://localhost:3000/camera`. It used to
+be fetched straight from the bridge, on the argument that re-authenticating
+~1.5 Mbit/s of frames bought nothing — but the bridge's port also serves
+`/mcp`, unauthenticated, and listens on the robot's loopback only, so a browser
+that can reach the picture there can reach the tool surface too. The headset's
+WebGL layer loads the stream with `crossOrigin="use-credentials"` for the same
+cookie. Everything that _commands_ the robot goes console → control plane →
 bridge, and that is the invariant the layer table is about.
 
 On the real robot there are **two** servers for the one camera, and which is
@@ -101,8 +106,8 @@ flowchart LR
   CTRL["G1 control board<br/>(internal wired LAN)"]
 
   CC -.->|"MCP stdio (spawned child)"| BRIDGE_S
-  CC -.->|"MCP over HTTP (Wi-Fi)"| BRIDGE_R
-  BACK -->|"MCP over HTTP (Wi-Fi)"| BRIDGE_R
+  CC -.->|"MCP over HTTP (SSH tunnel)"| BRIDGE_R
+  BACK -->|"MCP over HTTP (SSH tunnel)"| BRIDGE_R
   BRIDGE_S <==>|"DDS unicast peer"| SIM
   BRIDGE_R <==>|"DDS, eth0 pinned"| CTRL
   PERC -.->|"own DDS domain"| BRIDGE_R
@@ -111,9 +116,11 @@ flowchart LR
 - **`SIM_MODE=isaac`** — the bridge runs on the Mac and reaches the simulator
   over LAN DDS (unicast peer config; see `apps/bridge/README.md`).
 - **`SIM_MODE=real`** — the bridge runs onboard the Jetson as a streamable-HTTP
-  MCP daemon, bound to the robot LAN. It can command the legs and has no
-  authentication of its own, so this is a trusted-network deployment. Ports,
-  addressing and the daemon lifecycle: `docs/OPERATIONS.md`.
+  MCP daemon, bound to the Jetson's **loopback** (`127.0.0.1:8001`, since
+  2026-09-06). It can command the legs and has no authentication of its own,
+  so it is not on the LAN at all: off-robot clients reach it through an SSH
+  tunnel (`-L 8001:127.0.0.1:8001 c3po`). Ports, addressing and the daemon
+  lifecycle: `docs/OPERATIONS.md`.
 
 `apps/back`, Postgres and `apps/web` stay off-robot in **both** cases. The
 test for "does this belong onboard?" is: _must it keep working when the
@@ -143,8 +150,8 @@ agent required removing nothing, and both can run forever:
 
 1. **External MCP client → bridge, directly.** Claude Code (or any MCP client)
    speaks MCP to the bridge — stdio when it spawns the bridge as a child (the
-   sim entry in `.mcp.json`), streamable HTTP against the onboard daemon (the
-   real entry). This was the bootstrap path — it validated the skill ABI
+   sim entry in a local, gitignored `.mcp.json`), streamable HTTP against the
+   onboard daemon over the SSH tunnel (the real entry). This was the bootstrap path — it validated the skill ABI
    against a frontier LLM before any agent runtime existed — and it remains
    the developer path.
 2. **Internal agent in `apps/back`.** The agent runtime
@@ -352,11 +359,14 @@ Five layers, outermost first. Each is independent — that is the point.
    (`duration=864000`) would instead leave a crashed bridge's robot walking
    with its last setpoint — never use it. (Constant and rationale live in
    `apps/bridge/src/bridge/skills/_locomotion.py`.)
-3. **`stop_everything`.** Cancels every running task, sends a zero-velocity
-   burst (dispatched per target, so it is real on hardware too), then damps.
-   Damp is not redundant with zero velocity: zero velocity stops the gait,
-   damp zeroes joint stiffness. Synchronous by design — it never yields the
-   event loop while halting the robot.
+3. **`stop_everything`.** Cancels every running task and sends a
+   zero-velocity burst (dispatched per target, so it is real on hardware too).
+   On real hardware it damps **only if the robot acknowledged none of that
+   burst** (or the burst raised): zero velocity stops the gait and leaves the
+   robot balanced, damp zeroes joint stiffness and drops a standing robot.
+   Until 2026-10-15 it damped after every stop; `STOP_EVERYTHING_DAMP=always`
+   restores that. Its blocking RPCs run off the event loop, so a second press
+   or a state poll is still answered while it works.
 4. **Cooperative cancellation.** Long-running skills check
    `task.cancel_event` between iterations and run their own stop sequence.
    Cooperative, not preemptive — a skill stuck in a blocking call won't

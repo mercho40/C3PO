@@ -39,6 +39,42 @@ export const WALK_FSM = ["walk", "walk_waist", "run"] as const;
 export const GESTURE_FSM = WALK_FSM;
 
 /**
+ * The one-shot gestures, each its own bridge tool. ONE list for the page's
+ * tiles and the headset's menu, so the two cannot offer different things.
+ * `dance` (apps/bridge/src/bridge/skills/dance.py) is, like walk_velocity, not
+ * yet live-tested — the catalogue's `works.real` flag drives the badge rather
+ * than hiding the button.
+ */
+export const PRESETS = [
+  { name: "wave", label: "Saludar" },
+  { name: "dance", label: "Bailar" },
+  { name: "shake_hand", label: "Dar la mano" },
+  { name: "hug", label: "Abrazar" },
+  { name: "clap", label: "Aplaudir" },
+  { name: "release_arm", label: "Relajar brazos" },
+] as const;
+
+export type PresetName = (typeof PRESETS)[number]["name"];
+
+/**
+ * The headset menu's entries. `catalogueFailed` is why this is not just
+ * `worksReal[name] === true`: an unreadable catalogue leaves the map empty,
+ * and treating empty as "nothing is verified" is the safe reading — the menu
+ * shows everything struck through and fires nothing, rather than quietly
+ * offering skills whose status could not be checked.
+ */
+export function headsetMenu(
+  worksReal: Record<string, boolean>,
+  catalogueFailed: boolean,
+): { name: string; label: string; verified: boolean }[] {
+  return PRESETS.map((p) => ({
+    name: p.name,
+    label: p.label,
+    verified: !catalogueFailed && worksReal[p.name] === true,
+  }));
+}
+
+/**
  * Whether the robot is in a posture an action needs.
  *
  * `offline` is its own answer, not a "no": `RobotLive.state` is KEPT across
@@ -98,7 +134,7 @@ export const BRING_UP_STEPS: readonly BringUpStep[] = [
   {
     name: "start_walking_waist",
     label: "3 · Habilitar marcha",
-    hint: "FSM 501, el programa de marcha de ESTE cuerpo. Habilita caminar, girar y los gestos.",
+    hint: "FSM 501. Antes: los dos pies apoyados cargando peso (arnés flojo) y ~5 s quieto después de Preparar. Habilita caminar, girar y los gestos.",
   },
 ];
 

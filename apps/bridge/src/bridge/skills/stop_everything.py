@@ -10,8 +10,19 @@ Safety-critical, and fast in the common case (<1s). Two parts:
      the registry is out of sync with what's actually publishing. This
      goes out `rt/run_command/cmd` in sim, or as a real `SET_VELOCITY` RPC
      burst on real hardware (`_locomotion.send_velocity` dispatches on
-     `SIM_MODE` — see that module) — real mode gets this AND the Damp
-     fallback below, not just one or the other.
+     `SIM_MODE` — see that module).
+
+**It stops; it damps only when the stop did not land.** On real hardware Damp
+used to follow every burst. That made sense on 2026-08-07, when the burst went
+to a topic the real G1 ignores and Damp was the only thing that stopped it; it
+stopped making sense once the burst became a real SET_VELOCITY (b48e7c6). On
+2026-10-15 PARAR damped a walking robot with the burst acknowledged — a robot
+standing on the floor would have fallen. Now Damp runs only if no zero
+setpoint was acknowledged (or the burst raised): the robot never heard the
+stop, so going limp is the only stop left. A robot that did hear it stays in
+its walk mode at zero velocity, balanced, like the watchdog leaves it.
+`STOP_EVERYTHING_DAMP=always` restores the old behaviour; the `damp` tool is
+still there for an operator who wants the robot limp.
 
 **Cancellation happens synchronously, before anything can block.** Every
 `cancel_event` is set at the top of `run()` with no awaits in between, so the
@@ -31,7 +42,7 @@ event loop for ~30 s. During that window a second stop press and every
 precisely when the operator was pressing it again. The RPCs now go through
 `asyncio.to_thread`, and the retry loop carries a total time budget on top.
 
-The real-hardware Damp fallback retries up to REAL_DAMP_MAX_ATTEMPTS times on
+When it runs, the real-hardware Damp fallback retries up to REAL_DAMP_MAX_ATTEMPTS times on
 RPC failure (a dropped packet shouldn't mean a silently-failed e-stop), but
 stops retrying once REAL_DAMP_TOTAL_BUDGET_S has elapsed. The sim-mode path
 (task cancellation + zero-velocity burst) stays fast and single-shot.
@@ -68,6 +79,9 @@ REAL_DAMP_RETRY_DELAY_S = 0.15
 REAL_DAMP_TOTAL_BUDGET_S = 4.0
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
+# "on_failure" (default): damp only when the zero-velocity burst was not
+# acknowledged. "always": damp after every stop, the pre-2026-10-15 behaviour.
+DAMP_POLICY = os.environ.get("STOP_EVERYTHING_DAMP", "on_failure").strip().lower()
 
 
 async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
@@ -153,17 +167,35 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     # is an event loop that can still answer a second stop press or a state
     # poll while these blocking DDS calls are in flight.
     start = time.time()
-    await asyncio.to_thread(stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S)
+    burst_sent = burst_acked = 0
+    burst_error: str | None = None
+    try:
+        burst_sent, burst_acked = await asyncio.to_thread(
+            stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S
+        )
+    except Exception as exc:
+        # Not fatal, and not the end of the stop: a burst that raised is a
+        # burst the robot may never have heard, which is exactly when the
+        # Damp fallback below has to run. It used to propagate and skip it.
+        burst_error = f"{type(exc).__name__}: {exc}"
+        log.exception("stop_everything.burst_failed")
     duration = time.time() - start
 
-    # `stop_motion_sync` above now dispatches per SIM_MODE, so on real hardware
-    # it issues SET_VELOCITY(0,0,0) rather than the old sim-only no-op. Damp is
-    # still sent after it, and is not redundant: zero velocity stops the gait,
-    # whereas damp (verified live, see g1_rpc) zeroes joint stiffness. Belt and
-    # braces on the one call that exists to make the robot stop.
+    # Zero velocity stops the gait and leaves the robot balanced; damp zeroes
+    # joint stiffness, which drops a standing robot. So damp only when the
+    # robot did not acknowledge a single zero setpoint (or the burst raised),
+    # unless STOP_EVERYTHING_DAMP=always — see the module docstring.
     real_damp_rpc_code: int | None = None
     real_damp_attempts = 0
+    damp_reason: str | None = None
     if SIM_MODE == "real":
+        if DAMP_POLICY == "always":
+            damp_reason = "policy_always"
+        elif burst_error is not None:
+            damp_reason = "burst_failed"
+        elif burst_acked == 0:
+            damp_reason = "burst_unacknowledged"
+    if damp_reason is not None:
         from bridge.sdk import g1_protocol, g1_rpc
 
         deadline = time.time() + REAL_DAMP_TOTAL_BUDGET_S
@@ -193,6 +225,7 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
                 await asyncio.sleep(REAL_DAMP_RETRY_DELAY_S)
         log.warning(
             "stop_everything.real_damp_fallback",
+            reason=damp_reason,
             rpc_code=real_damp_rpc_code,
             attempts=real_damp_attempts,
             succeeded=real_damp_rpc_code == 0,
@@ -203,9 +236,17 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
         "cancelled_task_ids": cancelled_ids,
         "cancelled_count": len(cancelled_ids),
         "stop_burst_duration_s": round(duration, 3),
+        "stop_burst_sent": burst_sent,
+        "stop_burst_acked": burst_acked if SIM_MODE == "real" else None,
+        "stop_burst_error": burst_error,
         "arm_sdk_release_requested": arm_sdk_release_requested,
         "hands_relaxed": hands_relaxed,
         "real_damp_fallback_rpc_code": real_damp_rpc_code,
         "real_damp_fallback_attempts": real_damp_attempts,
-        "real_damp_fallback_succeeded": (real_damp_rpc_code == 0) if SIM_MODE == "real" else None,
+        # None when Damp did not run (sim, or the stop landed): the console
+        # reads only `False` as a failed stop.
+        "real_damp_fallback_succeeded": (
+            (real_damp_rpc_code == 0) if damp_reason is not None else None
+        ),
+        "real_damp_fallback_reason": damp_reason,
     }

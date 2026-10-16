@@ -30,6 +30,13 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 __all__ = ["Check", "Report", "assess", "render"]
 
+#: Stages that launch `world_model_publisher`, and therefore owe a /c3po/scan.
+#: `nav2-fake` and `nav2` get one by including fake.launch.py / perception.
+#: launch.py; `odometry` and `stt` legitimately publish none. Keep in step with
+#: apps/perception/bringup/spec.py — test_health asserts the names still exist.
+RING_STAGES = ("fake", "nav2-fake", "nav2", "perception")
+
+
 class Check:
     """One line of the report."""
 
@@ -75,19 +82,73 @@ def assess(
     *,
     bridge_pid: Optional[int],
     gate_json: Optional[str],
+    scan_json: Optional[str],
+    enabled_stage: Optional[str],
     perception_containers: Sequence[str],
     gemm_containers: Sequence[str],
     port: int = 8001,
+    bind_hosts: Sequence[str] = (),
 ) -> Report:
-    """Pure. Probe results in, a report out."""
+    """Pure. Probe results in, a report out.
+
+    `bind_hosts` are the addresses the bridge is actually listening on, read
+    from the socket rather than from configuration — see `_bind_hosts`.
+    """
     checks: List[Check] = []
 
+    gate = _parse(gate_json)
+
+    # A PIDFILE IS NOT THE ONLY WAY TO BE ALIVE, and believing otherwise made
+    # this report call a working bridge DOWN on 2026-08-27 while it was serving
+    # requests. The unit has had two shapes: `Type=forking` via run_c3po, which
+    # writes ~/.c3po/run/bridge.pid, and `Type=exec` starting the interpreter
+    # directly, which writes nothing. Under the second, the pidfile is whatever
+    # a previous forking run happened to leave behind — three days stale, in
+    # the case that caught this.
+    #
+    # So the pidfile is used when it is TRUSTWORTHY (it names a live process)
+    # and otherwise the answer comes from the bridge itself: a parsed reply on
+    # /telemetry/gate is proof of life that no lifecycle bookkeeping can argue
+    # with. Saying DOWN for a process that just answered is the same class of
+    # error as this module's original sin — a confident wrong reading of the
+    # one field somebody checks before trusting the stack.
     if bridge_pid:
         checks.append(Check("bridge", "running (pid {})".format(bridge_pid)))
+    elif gate is not None:
+        checks.append(Check("bridge", "running (answering, no pidfile)"))
     else:
         checks.append(Check("bridge", "DOWN", problem=True))
 
-    gate = _parse(gate_json)
+    # WHERE IT IS LISTENING, NOT WHERE THE CONFIG SAYS IT SHOULD BE.
+    #
+    # Read from the socket because the four places that describe this port do
+    # not agree. `apps/bridge/.env.example` says 127.0.0.1, the code default is
+    # 127.0.0.1, `docs/OPERATIONS.md` and `apps/back/src/routes/telemetry.ts`
+    # both say loopback — and `scripts/robot/c3po-bridge.service` sets
+    # BRIDGE_HOST=0.0.0.0, which is what was actually running when this was
+    # checked on 2026-08-28.
+    #
+    # A wildcard bind is reported as a PROBLEM because of what is behind it:
+    # `/mcp` is the tool surface that can walk the robot and has no
+    # authentication of its own, so on a shared school LAN this is a machine
+    # anybody can drive. That may still be a deliberate trade — reaching the
+    # bridge without a tunnel is genuinely more convenient — but it should be
+    # a trade somebody re-makes on purpose, not one a health check stays quiet
+    # about.
+    wildcards = [h for h in bind_hosts if h in ("0.0.0.0", "::", "*")]
+    if wildcards:
+        checks.append(
+            Check(
+                "bridge bind",
+                "{} — reachable from the LAN, and /mcp has no auth".format(
+                    ", ".join(wildcards)
+                ),
+                problem=True,
+            )
+        )
+    elif bind_hosts:
+        checks.append(Check("bridge bind", "{} (loopback)".format(", ".join(bind_hosts))))
+
     if gate is None:
         checks.append(Check("bridge http", "NOT ANSWERING on :{}".format(port), problem=True))
     else:
@@ -118,11 +179,107 @@ def assess(
                 )
             )
 
-    running = [c for c in perception_containers if c]
-    if running:
-        # Perception has no systemd lifecycle: every stage is an explicit
-        # foreground operator window, and STT may compose with another stage.
-        checks.append(Check("perception", "running: {}".format(" ".join(running))))
+    # --- the lidar ring -----------------------------------------------------
+    #
+    # WHY IT IS HERE AND NOT ONLY IN THE HEADSET. The ring is drawn to an
+    # operator whose eyes are covered, so "is it arriving" is a question they
+    # cannot answer from inside the session — the empty dial says why, but only
+    # for the causes a browser can see. This is the reading from the robot's
+    # own side, in the command somebody already types.
+    #
+    # A MISSING RING IS ONLY A FAULT WHEN A RING WAS PROMISED. Just two of the
+    # six stages launch `world_model_publisher`, which is what derives
+    # /c3po/scan: `fake` directly and `perception` via nav2.launch.py's
+    # sources:=real (so `fake`, `nav2-fake` and `nav2` all have one). `stt`
+    # opens no sensor at all and `odometry` runs FAST-LIO with no world model —
+    # calling either of those broken would put a red line on a correctly
+    # running stack, and this file already argues, about the enabled-unit
+    # check, that doing so trains people to ignore the report.
+    #
+    # So the three states are kept apart:
+    #
+    #   a ring-publishing stage, no ring   a real fault — something IS running
+    #                                      and the ring is not reaching here
+    #   nav up, stage not known            a NOTE. `perception_up` by hand
+    #                                      enables no unit, which is exactly how
+    #                                      Stage 3 is run, so we cannot tell
+    #                                      `fake` from `odometry` and must not
+    #                                      guess
+    #   nothing running                    expected, every day
+    running_now = [c for c in perception_containers if c]
+    nav_up = any("-nav" in c for c in running_now)
+    scan = _parse(scan_json)
+    raw = scan.get("r_cm") if scan else None
+    # A 503 body is valid JSON, so `_parse` returns a dict for it. Without this
+    # the hint payload reads as a ring with zero bearings — "the room is
+    # clear", which is the single most dangerous thing this display can say and
+    # the reason the whole feature refuses to draw an unexplained empty dial.
+    ring = raw if isinstance(raw, list) else None
+
+    if scan is None or ring is None:
+        if enabled_stage in RING_STAGES:
+            checks.append(
+                Check(
+                    "lidar ring",
+                    "NO SCAN on stage {} — check `ros2 topic hz /scan`".format(
+                        enabled_stage
+                    ),
+                    problem=True,
+                )
+            )
+        elif nav_up:
+            checks.append(
+                Check(
+                    "lidar ring",
+                    "none (nav is up; expected on {})".format("/".join(RING_STAGES)),
+                )
+            )
+        else:
+            checks.append(Check("lidar ring", "none (no perception stage running)"))
+    else:
+        # `is True`, for the same reason the gate uses it: a string "false" is
+        # truthy, and this decides whether an operator is being shown the room
+        # or a memory of it.
+        stale = scan.get("stale") is True
+        seen = sum(1 for v in ring if v is not None)
+        where = scan.get("frame") or "?"
+        if stale:
+            checks.append(
+                Check(
+                    "lidar ring",
+                    "STALE ({}s old) — the headset is showing a memory".format(
+                        scan.get("age_s")
+                    ),
+                    problem=True,
+                )
+            )
+        else:
+            checks.append(
+                Check("lidar ring", "{}/{} bearings in {}".format(seen, len(ring), where))
+            )
+
+    running = running_now
+    if enabled_stage:
+        if running:
+            checks.append(
+                Check(
+                    "perception ({})".format(enabled_stage),
+                    "running: {}".format(" ".join(running)),
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    "perception ({})".format(enabled_stage),
+                    "unit active but NO CONTAINERS",
+                    problem=True,
+                )
+            )
+    elif running:
+        # Containers with no enabled unit is not a fault: somebody ran
+        # `perception_up` by hand, which is the normal way to open a sensor
+        # window. Reporting it as a problem would train people to ignore this.
+        checks.append(Check("perception", "running by hand: {}".format(" ".join(running))))
     else:
         checks.append(Check("perception", "off (no sensor is claimed by C3PO)"))
 
@@ -154,14 +311,33 @@ def probe_and_assess(
     http_get: Callable[[str], Optional[str]],
     docker_ps: Callable[[str], Sequence[str]],
     port: int = 8001,
+    list_binds: Optional[Callable[[int], Sequence[str]]] = None,
 ) -> Report:
     """Run the probes, then assess. The only place the two are joined."""
     return assess(
         bridge_pid=read_pid(),
         gate_json=http_get("http://127.0.0.1:{}/telemetry/gate".format(port)),
+        # 503 with a hint is the normal answer when nothing is publishing, and
+        # `_parse` turns any non-JSON into None — so a hint body reads as "no
+        # ring", which is exactly right. The 503's own reason is for the
+        # console, which has room to print it.
+        scan_json=http_get("http://127.0.0.1:{}/telemetry/scan".format(port)),
+        # None, and correctly so on this architecture. The stage used to be
+        # read back from an enabled `c3po-perception@<stage>.service`; main
+        # moved perception off per-stage units (2026-09), so there is no unit
+        # to ask and nothing here can know which stage is running.
+        #
+        # That lands the ring check in its "nav up, stage not known" branch,
+        # which is a NOTE rather than a fault — the branch written for exactly
+        # this case, because `perception_up` by hand enables no unit either and
+        # calling a correctly-running `odometry` broken would put a red line on
+        # a healthy stack. `assess()` keeps the parameter: the tests exercise
+        # every branch through it, and a caller that does know can pass it.
+        enabled_stage=None,
         perception_containers=docker_ps("^c3po-perception"),
         gemm_containers=docker_ps("^gemm"),
         port=port,
+        bind_hosts=list_binds(port) if list_binds else (),
     )
 
 
@@ -204,6 +380,29 @@ def _run(argv: Sequence[str]) -> str:
     return out.stdout.decode("utf-8", "replace") if out.stdout else ""
 
 
+def _bind_hosts(port: int) -> Sequence[str]:
+    """Addresses the bridge is listening on, from `ss`. Empty if it cannot ask.
+
+    The socket, not the configuration — this exists precisely because the two
+    disagree. Empty means unknown, and `assess` reports nothing rather than
+    guessing loopback: a silent pass would be the same wrong-and-confident
+    answer this module was written to stop giving.
+    """
+    out = _run(["ss", "-ltnH"])
+    hosts = []
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        local = fields[3]
+        host, _, listening = local.rpartition(":")
+        if listening != str(port):
+            continue
+        # `ss` renders IPv6 as [::]:8001 and "any" as 0.0.0.0 or *.
+        hosts.append(host.strip("[]") or "*")
+    return hosts
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import os
     import sys
@@ -225,6 +424,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if name.strip()
         ],
         port=port,
+        list_binds=_bind_hosts,
     )
 
     print(render(report, colour=sys.stdout.isatty()))

@@ -59,11 +59,12 @@ numpy are therefore imported inside the encoder, never at module scope.
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import threading
 import time
 from collections import namedtuple
-from typing import Any, Callable
+from typing import Any, Callable, Dict, Optional, Tuple
 
 # The multipart boundary. Arbitrary, but it must not appear in JPEG payloads —
 # it does not, since every part carries an explicit Content-Length and the
@@ -77,6 +78,40 @@ BOUNDARY = "c3poframe"
 # consecutive failures, so a truly dead D435i ends the connection well before
 # the container exits.
 STALE_AFTER_S = 1.0
+
+#: Socket timeout on a client connection. THE FIX FOR A STREAM THAT REPORTS
+#: HEALTHY AND SENDS NOTHING.
+#:
+#: Observed on the robot 2026-08-29: `clients` climbed 0 -> 12 -> 14 across an
+#: evening of page reloads and never came down, and at 14 the stream accepted
+#: connections and delivered ZERO BYTES IN FIVE SECONDS while `/status` still
+#: said `live: true`. The headset showed SIN IMAGEN while every check said the
+#: camera was fine.
+#:
+#: The accounting was never wrong. `_stream` increments on entry and
+#: decrements in a `finally`, and catches BrokenPipeError — but a browser that
+#: navigates away without closing cleanly leaves a HALF-OPEN connection, and a
+#: write to one of those does not raise. It BLOCKS, until the OS gives up
+#: minutes later. So the `finally` never runs, the thread never exits, and the
+#: count only ever goes up.
+#:
+#: This container is pinned to a single core (`--cpuset-cpus 5` in
+#: `perception_up`), so a dozen threads parked in `write()` are not free: they
+#: contend with the JPEG encoder on the one CPU the detector also needs.
+#:
+#: Five seconds is far longer than a loopback write to a live peer and far
+#: shorter than the kernel's default. It applies to reads too, which is
+#: harmless: HTTP/1.0 means one request per connection, and the only sizeable
+#: read is `/transcribe`'s PCM upload on loopback.
+CLIENT_TIMEOUT_S = 5.0
+
+#: Concurrent MJPEG clients. Beyond this, refuse and SAY SO.
+#:
+#: Defence in depth behind the timeout. Even with dead peers now cleaned up, a
+#: cap turns "the stream mysteriously stopped serving" into a 503 that names
+#: the reason — and this feed has exactly one legitimate consumer at a time
+#: (the console, or the headset), so four is already generous.
+MAX_STREAM_CLIENTS = 4
 
 # How long a blocked MJPEG writer waits on the condition before re-checking
 # whether the server is shutting down. Only affects `docker stop` latency.
@@ -100,7 +135,7 @@ def _log(event: str, **fields: Any) -> None:
     sys.stderr.flush()
 
 
-def encode_jpeg(frame: Any, quality: int, scale: float) -> tuple[bytes, int, int]:
+def encode_jpeg(frame: Any, quality: int, scale: float) -> Tuple[bytes, int, int]:
     """A colour frame -> JPEG bytes, (width, height) of what was encoded.
 
     Accepts either the detector's numpy BGR array (HxWx3 uint8, the pyrealsense2
@@ -185,11 +220,11 @@ class _Latest:
             self.closed = True
             self._cv.notify_all()
 
-    def snapshot(self) -> tuple[int, Any, float]:
+    def snapshot(self) -> Tuple[int, Any, float]:
         with self._cv:
             return self._seq, self._frame, self._stamp
 
-    def wait_for_newer(self, seq: int, deadline: float) -> tuple[int, Any, float]:
+    def wait_for_newer(self, seq: int, deadline: float) -> Tuple[int, Any, float]:
         """Block until a frame newer than `seq` exists, or the deadline passes.
 
         Returns the frame with seq 0 on timeout, which the caller reads as "the
@@ -218,7 +253,7 @@ class _Latest:
             self._encoded_dims = (w, h)
         return data
 
-    def status(self, now: float) -> dict[str, Any]:
+    def status(self, now: float) -> Dict[str, Any]:
         with self._cv:
             seq, stamp = self._seq, self._stamp
             dims, encoded = self._dims, self._encoded_dims
@@ -232,6 +267,15 @@ class _Latest:
             "frame_age_s": age,
             "frames": offered,
             "clients": clients,
+            # SATURATION IS A STATE THE CONSOLE MUST BE ABLE TO SEE.
+            #
+            # On 2026-08-29 this endpoint reported `live: true` with 14 clients
+            # while serving zero bytes, and there was no field that said so —
+            # so every check said the camera was healthy while the headset
+            # showed nothing. `clients` alone did not help: nobody knows what
+            # number is too many. These two say it outright.
+            "clients_max": MAX_STREAM_CLIENTS,
+            "at_capacity": clients >= MAX_STREAM_CLIENTS,
             # What the camera produces, and what actually goes down the wire —
             # they differ whenever C3PO_VISION_STREAM_SCALE is not 1.0, and a
             # console that shows the first while sending the second is lying
@@ -254,13 +298,22 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
         protocol_version = "HTTP/1.0"
         server_version = "c3po-vision"
 
+        def setup(self) -> None:
+            # The one line that stops a vanished browser parking a thread in
+            # `write()` forever. See CLIENT_TIMEOUT_S.
+            super().setup()
+            try:
+                self.connection.settimeout(CLIENT_TIMEOUT_S)
+            except OSError:  # pragma: no cover - a socket that is already gone
+                pass
+
         def log_message(self, fmt: str, *args: Any) -> None:
             # BaseHTTPRequestHandler logs every request to stderr in Apache
             # format. At 5 Hz for /status that would bury the detector's own
             # lines; failures still surface through the handlers below.
             pass
 
-        def _headers(self, ctype: str, extra: dict[str, str] | None = None) -> None:
+        def _headers(self, ctype: str, extra: Optional[Dict[str, str]] = None) -> None:
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -361,10 +414,34 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
             self.wfile.write(data)
 
         def _stream(self) -> None:
-            self._headers("multipart/x-mixed-replace; boundary=" + BOUNDARY)
+            # CLAIM THE SLOT BEFORE SENDING ANY HEADERS. Sending 200 and the
+            # multipart content-type and THEN discovering we cannot serve is
+            # the failure this endpoint already had: a socket that opens,
+            # announces a picture, and delivers nothing. A 503 before the
+            # headers is a refusal the client can read.
             with latest._cv:
-                latest.clients += 1
+                at_capacity = latest.clients >= MAX_STREAM_CLIENTS
+                if not at_capacity:
+                    latest.clients += 1
+            if at_capacity:
+                self.send_error(
+                    503,
+                    f"too many stream clients (max {MAX_STREAM_CLIENTS})",
+                )
+                return
+
+            # INSIDE the try, not before it. `_headers` ends in `end_headers()`,
+            # which flushes to the socket and raises BrokenPipeError /
+            # ConnectionResetError if the client went away in the window
+            # between claiming the slot above and writing the first byte. With
+            # the call outside, that exception escaped before the `finally`
+            # below was ever entered: the slot was taken and never given back.
+            # Four of those and this endpoint answers 503 forever while
+            # `/status` reports four clients that do not exist — which is the
+            # same "reports healthy, serves nothing" failure the client cap was
+            # added to end, reached by a different route.
             try:
+                self._headers("multipart/x-mixed-replace; boundary=" + BOUNDARY)
                 seq = 0
                 while True:
                     seq, frame, _stamp = latest.wait_for_newer(
@@ -384,8 +461,13 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                     )
                     self.wfile.write(data)
                     self.wfile.write(b"\r\n")
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # the operator closed the tab; not an error
+            except (BrokenPipeError, ConnectionResetError, socket.timeout):
+                # The operator closed the tab, or walked away and left a
+                # half-open socket. `socket.timeout` is the one that was
+                # missing: without the timeout above it never arrived, and
+                # without catching it here it would escape as an unhandled
+                # error instead of being the ordinary end of a stream.
+                pass
             finally:
                 with latest._cv:
                     latest.clients -= 1
@@ -454,7 +536,11 @@ class FrameStream:
                 scale=self.scale,
                 bind="loopback" if self.host in ("127.0.0.1", "localhost") else self.host,
             )
-        except Exception as exc:  # noqa: BLE001 - optional video must not stop detection
+        # BLIND EXCEPT, DELIBERATE: the operator's video is the LEAST important thing this
+        # container does. A port already bound, a permission error, a socket
+        # the kernel will not give us — none of them justify taking the
+        # detector and the world model down with them, and the log says so.
+        except Exception as exc:  # noqa: BLE001
             _log(
                 "start.failed",
                 host=self.host,
@@ -464,7 +550,7 @@ class FrameStream:
             )
             self.running = False
 
-    def offer(self, frame: Any, stamp: float | None = None) -> None:
+    def offer(self, frame: Any, stamp: Optional[float] = None) -> None:
         """Hand over a colour frame from a tick that SUCCEEDED. Never raises."""
         if not self.running or frame is None:
             return
@@ -474,10 +560,10 @@ class FrameStream:
         self._next_at = now + self._min_interval
         try:
             self._latest.offer(frame, now)
-        except Exception as exc:  # noqa: BLE001 - video bugs must not stop detection
+        except Exception as exc:  # noqa: BLE001 — a video bug must not stop the detector
             _log("offer.failed", error=repr(exc))
 
-    def status(self) -> dict[str, Any]:
+    def status(self) -> Dict[str, Any]:
         return self._latest.status(time.time())
 
     def close(self) -> None:
@@ -485,10 +571,14 @@ class FrameStream:
             return
         self.running = False
         self._latest.close()
+        # Shutdown path, same reasoning as the detector's RealSense close():
+        # the process is going away, and an error raised while tearing down the
+        # video server would replace whatever we were actually shutting down
+        # for. `stopped` still gets logged below either way.
         try:
             self._server.shutdown()
             self._server.server_close()
-        except Exception:  # noqa: BLE001, S110 - best-effort optional server shutdown
+        except Exception:  # noqa: BLE001, S110
             pass
         _log("stopped", frames=self._latest.offered)
 
@@ -516,7 +606,7 @@ def test_pattern(width: int, height: int, phase: int) -> RawFrame:
     return RawFrame(width=width, height=height, rgb=rolled * height)
 
 
-def from_env(getenv: Callable[[str, str], str]) -> FrameStream | None:
+def from_env(getenv: Callable[[str, str], str]) -> Optional[FrameStream]:
     """Build a FrameStream from C3PO_VISION_STREAM* env, or None if disabled.
 
     Takes `getenv` rather than reading os.environ so the Stage 0 suite can drive
