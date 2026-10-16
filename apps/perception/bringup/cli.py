@@ -239,7 +239,8 @@ def bring_up(
     if lidar_source == "driver":
         warn("C3PO_LIDAR_SOURCE=driver — claiming the Livox device itself")
 
-    if not _arbitrate(stage, runner, scripts_dir, dry_run, lidar_source):
+    take_over = env.get("C3PO_TAKE_OVER", "0") == "1"
+    if not _arbitrate(stage, runner, scripts_dir, dry_run, lidar_source, take_over):
         return 1
 
     digest = "" if dry_run else nav_image_digest(runner, "c3po/perception-nav:humble")
@@ -298,8 +299,14 @@ def _arbitrate(
     scripts_dir: str,
     dry_run: bool,
     lidar_source: str,
+    take_over: bool = False,
 ) -> bool:
-    """Stop what has to be stopped, and only that."""
+    """Stop what has to be stopped, and only that — and gemm only when told to.
+
+    gemm is the other team's stack. A stage that needs a sensor gemm holds used
+    to stop it unasked; now it refuses and names the command, and only
+    `C3PO_TAKE_OVER=1` (said with the other team's OK) stops it.
+    """
     claims_device = stage.claims_camera or lidar_source == "driver"
     if not claims_device:
         info(f"stage '{stage.name}' claims no device — gemm is left alone")
@@ -309,10 +316,15 @@ def _arbitrate(
         # A dry run asks nothing and stops nothing. Querying docker here made
         # `--dry-run` fail outright on a machine with no docker, which is
         # exactly the machine it is most useful on.
-        info("would stop gemm if running, then take the camera")
+        info("would stop gemm if running (only with C3PO_TAKE_OVER=1), then take the camera")
         return True
 
     holders = gemm_running(runner)
+    if holders and not take_over:
+        err(f"stage '{stage.name}' claims a sensor gemm is holding ({', '.join(holders)})")
+        err("  gemm is the other team's stack, so it is not stopped unasked.")
+        err("  with their OK:  C3PO_TAKE_OVER=1 c3po perception up " + stage.name)
+        return False
     if holders:
         warn(f"stage '{stage.name}' claims a shared sensor")
         info("stopping gemm to release it")

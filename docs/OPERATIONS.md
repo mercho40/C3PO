@@ -689,13 +689,17 @@ systemctl is-active c3po-bridge   # the boot-started bridge; it stops no one
 c3po status
 ```
 
-**Not `c3po up fake`.** Every `c3po up` profile, and `c3po start`, goes through
-`run_c3po`, which stops gemm if it is running — interactive start means take
-ownership — so there is no profile that keeps gemm up. What does is the bridge
-systemd starts at boot (`c3po install` enables it), which claims no sensor and
-stops nothing. If it is not active, `sudo systemctl start c3po-bridge.service`
-starts it the same way. (`C3PO_NO_TAKEOVER=1`, which this block used to set, is
-read by nothing.)
+**gemm is never stopped unasked (since 2026-10-15).** `run_c3po` — every
+`c3po up` profile and `c3po start` — used to stop gemm's containers whenever
+they ran; on 2026-10-15 that took `gemm-bringup` down after a reboot while the
+other team was using the robot. Now it leaves gemm running and says so, and a
+perception stage that needs a sensor gemm holds refuses with the command to
+run. Only `C3PO_TAKE_OVER=1 c3po up <profile>` (or `c3po gemm stop`) stops
+gemm — said with the other team's OK. The motion-commander check
+(`OTHER_COMMANDER_PATTERNS`) still refuses a second commander either way. The
+bridge systemd starts at boot (`c3po install` enables it) claims no sensor; if
+it is not active, start it from a terminal (`ssh -t`): sudo needs a password,
+and `run_c3po` now says so instead of failing on "a terminal is required".
 
 `c3po status` is the whole Stage 3 crossing in one line:
 
@@ -738,7 +742,7 @@ one thing this display must never say by accident.
 Stage 4 adds Nav2 over the same synthetic sources, brought up **unconfigured**:
 
 ```bash
-c3po perception up nav2-fake      # not `c3po up nav2-fake`: that stops gemm
+c3po perception up nav2-fake      # claims no sensor: gemm keeps running
 docker exec c3po-perception-nav ros2 service call \
   /lifecycle_manager_navigation/manage_nodes \
   nav2_msgs/srv/ManageLifecycleNodes "{command: 0}"
