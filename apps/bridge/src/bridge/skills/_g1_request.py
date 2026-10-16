@@ -81,6 +81,21 @@ async def _await_fsm(target: int, timeout_s: float) -> int | None:
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
 
+# The walk programs a refused enable is explained for (500 is a no-op on this
+# chassis, but asks for the same preconditions).
+WALK_FSM_IDS = (500, 501)
+
+
+def _read_fsm_mode() -> int | None:
+    """The FSM's static/dynamic flag (7002), for a refusal's note. Never raises."""
+    try:
+        from bridge.sdk.state import get_sampler
+
+        value = get_sampler().get_arm_state().get("fsm_mode")
+        return value if isinstance(value, int) else None
+    except Exception:
+        return None
+
 
 async def run_g1_request(
     skill_name: g1_protocol.SkillName,
@@ -205,13 +220,29 @@ async def run_g1_request(
             task.result["transitioned"] = None if reached is None else reached == int(request.data)
             if reached is not None and reached != int(request.data):
                 task.phase = "acked_no_transition"
-                task.result["note"] = (
-                    f"the sport service acked (code 0) but the robot is in FSM {reached}, "
-                    f"not {request.data}. This firmware acks impossible transitions: "
-                    "check that a motion controller is loaded "
-                    "(scripts/select_motion_mode.py --check-only), and note that some "
-                    "transitions are refused from a walk program — damp first."
-                )
+                fsm_mode = _read_fsm_mode()
+                task.result["fsm_mode"] = fsm_mode
+                if int(request.data) in WALK_FSM_IDS and reached == g1_protocol.Mode.PREPARATION:
+                    # 2026-10-15: prepare reached 4, then 501 acked and stayed
+                    # at 4 for 9 s — on the hanger, feet not loaded. The one
+                    # recorded success (2026-08-15) had the feet bearing weight,
+                    # and the vendor's procedure lowers the rope before R1+Y.
+                    task.result["note"] = (
+                        f"the robot acked (code 0) but stayed in FSM 4 (preparation), not "
+                        f"{request.data}. Walking needs both feet on the ground bearing "
+                        "weight: lower the hanger until the feet are loaded (rope slack but "
+                        "attached), wait ~5 s after prepare, then try again. "
+                        f"fsm_mode={fsm_mode} (0 = settled; 1 = still moving, transitions "
+                        "are refused)."
+                    )
+                else:
+                    task.result["note"] = (
+                        f"the sport service acked (code 0) but the robot is in FSM {reached}, "
+                        f"not {request.data}. This firmware acks impossible transitions: "
+                        "check that a motion controller is loaded "
+                        "(scripts/select_motion_mode.py --check-only), and note that some "
+                        "transitions are refused from a walk program — damp first."
+                    )
                 log.warning(
                     "g1_request.acked_no_transition",
                     skill_name=skill_name,

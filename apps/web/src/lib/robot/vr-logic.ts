@@ -134,7 +134,7 @@ export const BRING_UP_STEPS: readonly BringUpStep[] = [
   {
     name: "start_walking_waist",
     label: "3 · Habilitar marcha",
-    hint: "FSM 501, el programa de marcha de ESTE cuerpo. Habilita caminar, girar y los gestos.",
+    hint: "FSM 501. Antes: los dos pies apoyados cargando peso (arnés flojo) y ~5 s quieto después de Preparar. Habilita caminar, girar y los gestos.",
   },
 ];
 
