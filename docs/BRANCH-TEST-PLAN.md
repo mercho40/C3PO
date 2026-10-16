@@ -14,12 +14,32 @@ refusal is a result, not an obstacle.
 People: one operator beside the robot with the physical e-stop in reach, one at
 the Mac. Motion steps need the floor clear and the other team's agreement.
 
+## What changed since the first session (2026-10-15)
+
+The first hardware session ran **main @ 73d56a0 on the robot** (this branch was
+not deployed) with this branch's console on the Mac. What it showed, and what
+this branch now does about it:
+
+| Seen on 2026-10-15                                                                                          | Now (commit)                                                                                                                                                                                          | Proven by |
+| ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| PARAR **damped** a walking robot (`real_damp_fallback_succeeded: true`) — on the floor it would have fallen | damp only if the robot did not acknowledge the zero-velocity burst; it stays standing in 501 at zero velocity. `STOP_EVERYTHING_DAMP=always` restores the old behaviour (`1e91aad`)                   | D7        |
+| `start_walking_waist` acked and stayed in FSM 4 — robot on the hanger, feet not loaded                      | the refusal now says to lower the hanger until the feet bear weight, and reports `fsm_mode`; the tile says it up front (`7cba1e2`)                                                                    | F0        |
+| walk_velocity rows "duplicated" in the same millisecond, a forward 12 ms after a stop                       | not duplicates: rows were stamped on finish. But a press **could** wait ~0.9 s behind a skill-list refresh and land after its stop. Lookups no longer wait; rows are stamped at send time (`dc11842`) | D8        |
+| after a reboot, `run_c3po` **stopped gemm-bringup** unasked, then failed on sudo's "a terminal is required" | gemm is never stopped without `C3PO_TAKE_OVER=1`; perception stages that need gemm's sensor refuse and print the command; no-TTY sudo fails with `ssh -t …` (`f0a47ff`)                               | B4        |
+| —                                                                                                           | main's SvelteKit 3 update merged in; **needs Bun ≥ 1.4.3** on the Mac, and the preflight checks it (`ccd7d7d`, `52669da`)                                                                             | A0, C1    |
+
+Already passed on 2026-10-15 (robot on main, console from this branch): login
+and `/dashboard` (C2/C3); camera through back (D1, source `vision`); walking
+from the console pad, ±0.2 m/s; `wave`, `shake_hand`; PARAR audited with the
+user (D4 — but it damped); `damp` and `prepare` transitioned.
+
 ---
 
 ## A. Before leaving (Mac, ~10 min, no robot needed)
 
 | #   | Check                           | Command                                             | Pass                                                                                                                                                                    |
 | --- | ------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A0  | Bun is new enough               | `bun upgrade && bun --version`                      | ≥ 1.4.3 (package.json's `packageManager`). On 1.3.x apps/back dies with "Cannot find module '#back/...'"                                                                |
 | A1  | Branch is current               | `git -C ../c3po-integrate pull`                     | fast-forward or "Already up to date"                                                                                                                                    |
 | A2  | Dependencies                    | `bun install` (repo root)                           | no errors                                                                                                                                                               |
 | A3  | `apps/back/.env`                | open the file                                       | `PORT=3000`, `BRIDGE_URL=http://127.0.0.1:8001/mcp`, your email in `ADMIN_EMAILS`                                                                                       |
@@ -33,13 +53,38 @@ A5 matters: this branch writes `tool_call_log.user_id` and `source`, and reads
 `chat.channel`. Against an older database the audit rows are silently dropped
 (the insert fails, by design never blocking the command) and `/chat` errors.
 
-The school AI (`ia.ort.edu.ar`) only resolves on the school network, so chat
-and voice can only be checked there.
+The school AI (`https://ia-tic.ort.edu.ar/api/v1`, https — http answers a 301) only resolves on the school network, so chat and voice can only be
+checked there. A VPN such as Cloudflare WARP hides the school DNS: on
+2026-10-15 the AI failed until WARP was disconnected.
+
+Network that worked on 2026-10-15: the Mac on the robot's Wi-Fi
+(`g1-robot`, robot at 192.168.77.1, ssh alias `c3po-wire`) and internet over
+the Ethernet adapter on DHCP. Turn off auto-join for the school Wi-Fi, or the
+Mac hops networks and the tunnel drops.
 
 ## B. On arrival: network and deploy (~10 min)
 
+**First, agree with the other team** (gemm) who drives and for how long. Their
+services start at boot (`g1-dashboard` on :8080, `g1-webrtc`, `g1-xr-debug`,
+the `gemm-bringup` container). Since `f0a47ff` our scripts leave all of them
+running. Two things genuinely cannot be shared:
+
+- **a second motion commander** — `c3po up` refuses while one runs
+  (`OTHER_COMMANDER_PATTERNS`); stopping it is their call;
+- **the head camera** — `gemm-bringup`'s RealSense node holds `/dev/video4`, and
+  then neither our perception (`vision`) nor Unitree's `videohub` feed has a
+  picture. Without the camera the console still drives; for the headset demo,
+  ask them to stop `gemm-bringup` for the slot, or with their OK run
+  `C3PO_TAKE_OVER=1 c3po up operator`. Afterwards, `c3po gemm start` gives it
+  back.
+
 Only check out the branch on the robot if mercho40 has said yes to testing it
-before the merge. Rollback is in §G.
+before the merge. **Without the deploy the robot keeps main's bridge, and PARAR
+still damps** — keep it on the hanger for any stop test. Rollback is in §G.
+
+Run everything that may need sudo **from a terminal** (`ssh -t c3po-wire`):
+`run_c3po`'s `sudo systemctl start c3po-bridge.service` cannot prompt over a
+plain `ssh host 'cmd'`.
 
 ```bash
 ssh c3po-wire true || ssh c3po true          # cable (192.168.77.1) or Wi-Fi (g1-orin.local)
@@ -54,11 +99,13 @@ c3po status                                  # read it, don't skim it
 c3po up operator   # perception + world model, only once the other team agrees; E1's radar needs it
 ```
 
-| #   | Pass                                                                               |
-| --- | ---------------------------------------------------------------------------------- |
-| B1  | `c3po restart` prints "answers on port 8001"                                       |
-| B2  | `c3po status`: bridge bind is `127.0.0.1:8001`, gate closed, no problem lines      |
-| B3  | `journalctl -u c3po-bridge -n 200 \| grep dds.init` says `interface_reason=pinned` |
+| #   | Pass                                                                                                                                                         |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| B1  | `c3po restart` prints "answers on port 8001"                                                                                                                 |
+| B2  | `c3po status`: bridge bind is `127.0.0.1:8001`, gate closed, no problem lines                                                                                |
+| B3  | `journalctl -u c3po-bridge -n 200 \| grep dds.init` says `interface_reason=pinned`                                                                           |
+| B4  | with gemm running, `c3po up core` says "gemm is running … left alone" and `docker ps` still lists `gemm-bringup`                                             |
+| B5  | after a reboot, `systemctl is-active c3po-bridge` is `active` without anyone starting it (on 2026-10-15 it was not — if not, `journalctl -u c3po-bridge -b`) |
 
 `apps/perception/vision/c3po_vision/stream.py` changed in this branch, and it
 is built into the image: the camera client-leak fix only runs after
@@ -90,8 +137,13 @@ bun run dev                     # from ../c3po-integrate: back :3000 + web :3001
 | D5  | Voice can't enable walking (`9591464`)     | dashboard voice loop (school network): say "habilitá la marcha"                    | **no** `start_walking_waist` row in the audit log (high-danger skills are not offered to voice)                               |
 | D6  | Spoken stop is audited (`49f6528`)         | voice loop: say the stop phrase                                                    | a `stop_everything` row with `source` = `voice`                                                                               |
 
+| D7 | PARAR keeps the robot standing (`1e91aad`) — **only with this branch deployed, on the hanger, rope slack** | robot in 501, standing still; press PARAR | robot stays standing (does not go limp); button shows **"Velocidad cero"**, not "Sigue en movimiento"; the row's result has `stop_burst_acked` > 0 and `real_damp_fallback_reason` null. Then walk again: no re-prepare needed |
+| D8 | Walk pad order (`dc11842`) | hold ▲ for ~3 s, release; repeat 3× | robot stops on release every time; in the query below the rows are in send order, each press's stop is the last row of its group, and no forward row comes after its stop |
+
 ```bash
 psql -d c3po_integrate -c "select created_at, skill_name, source, user_id is not null as has_user, status, error from tool_call_log order by created_at desc limit 8"
+# D7: what the stop did
+psql -d c3po_integrate -Atc "select result from tool_call_log where skill_name='stop_everything' order by created_at desc limit 1"
 ```
 
 (Use the database named in `apps/back/.env`.)
@@ -112,8 +164,13 @@ scripts/quest_setup.sh          # all ✓, then open http://localhost:3001/vr-co
 
 ## F. Walking from the headset — last, floor clear, e-stop in hand
 
-Sequence first, from the console: `damp` → `prepare` → `start_walking_waist`
-(mode 501).
+Sequence first, from the console: `damp` → `prepare` → **lower the hanger
+until both feet bear weight (rope slack, still attached), wait ~5 s** →
+`start_walking_waist` (mode 501).
+
+| #   | What it proves (commit)      | How                | Pass                                                                                                                                                                                            |
+| --- | ---------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F0  | Walk enable from the console | the sequence above | posture reads walk (501). If it stays at 4, the console now says "No pasó a marcha: apoyá los pies en el piso" — load the feet; if R1+Y on the remote also fails, it is the robot, not our code |
 
 | #   | What it proves (commit)                  | How                                                        | Pass                                                                      |
 | --- | ---------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -141,12 +198,18 @@ git checkout "$(cat ~/.c3po/previous-deploy)"
 
 ## Results (paste into PR #3)
 
+2026-10-15 (robot on main @ 73d56a0, console on this branch): C2 ✓ C3 ✓
+D1 ✓ (vision) D4 ✓ audited, **damped** · walk pad ✓ · wave/shake_hand ✓ ·
+damp/prepare ✓ · start_walking_waist ✗ (acked, stayed at 4 — hanger) · robot
+rebooted mid-session; gemm-bringup stopped by run_c3po (fixed in `f0a47ff`).
+E/F not reached.
+
 ```
 Date / people:
 Robot commit before: ________   Branch tested: integrate/october @ ________
-A ok? __  B1 __ B2 __ B3 __  C1 __ C2 __ C3 __
-D1 __ D2 __ D3 __ D4 __ D5 __ D6 __
+A ok? __  B1 __ B2 __ B3 __ B4 __ B5 __  C1 __ C2 __ C3 __
+D1 __ D2 __ D3 __ D4 __ D5 __ D6 __ D7 __ D8 __
 E1 __ E2 __ E3 __ E4 __ E5 __
-F1 __ F2 __ F3 __ F4 __
+F0 __ F1 __ F2 __ F3 __ F4 __
 Rolled back? __   Notes:
 ```
