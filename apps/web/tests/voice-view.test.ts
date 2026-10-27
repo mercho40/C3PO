@@ -13,6 +13,8 @@ import { describe, expect, test } from "bun:test";
 import {
   counters,
   countersScope,
+  defaultEngineOf,
+  engineOptions,
   lastTurnMetrics,
   micWarning,
   ownership,
@@ -284,5 +286,53 @@ describe("lastTurnMetrics", () => {
     );
     expect(m.find((x) => x.label === "Primera voz")?.value).toBe("—");
     expect(m.find((x) => x.label === "Turno completo")?.value).toBe("2300 ms");
+  });
+});
+
+describe("engineOptions", () => {
+  const unavailable = (st: VoiceLoopState | null) =>
+    Object.fromEntries(engineOptions(st).map((o) => [o.key, o.unavailable]));
+
+  test("realtime without a key is shown, disabled, with the reason", () => {
+    const u = unavailable(state({ availableEngines: ["legacy"] }));
+    expect(u.legacy).toBeNull();
+    expect(u.realtime).toContain("OPENAI_API_KEY");
+  });
+
+  test("both are offered when back can start both", () => {
+    const u = unavailable(
+      state({ availableEngines: ["legacy", "openai-realtime"] }),
+    );
+    expect(u).toEqual({ legacy: null, realtime: null });
+  });
+
+  test("a back without the choice offers only the engine it reports", () => {
+    // An older back ignores the requested engine; offering the other one
+    // would start something the operator did not pick.
+    const u = unavailable(state({ engine: "openai-realtime" }));
+    expect(u.legacy).not.toBeNull();
+    expect(u.realtime).toBeNull();
+  });
+
+  test("each option says where the audio goes", () => {
+    const [local, realtime] = engineOptions(state());
+    expect(local!.detail).toContain("no sale del robot");
+    expect(realtime!.detail).toContain("OpenAI");
+  });
+});
+
+describe("defaultEngineOf", () => {
+  test("back's default, not the last session's engine", () => {
+    expect(
+      defaultEngineOf(
+        state({ engine: "openai-realtime", defaultEngine: "legacy" }),
+      ),
+    ).toBe("legacy");
+  });
+
+  test("falls back to the reported engine on a back without the field", () => {
+    expect(defaultEngineOf(state({ engine: "openai-realtime" }))).toBe(
+      "realtime",
+    );
   });
 });

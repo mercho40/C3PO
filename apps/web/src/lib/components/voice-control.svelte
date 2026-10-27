@@ -26,6 +26,13 @@
   held — not on every Escuchando ↔ Hablando turn, which used to be announced
   every few seconds. The explanatory callouts are not live either.
 
+  THE ENGINE IS CHOSEN PER SESSION, before starting. The picker shows where the
+  audio goes for each one — that is what the choice is about — and offers only
+  what back says it can start (`engineOptions`): Realtime without a key is shown
+  disabled with the reason, not offered and then refused. While a session runs
+  the picker is gone and the readout names the running engine; switching means
+  ending it first, which back enforces too (409).
+
   Shared instance from the protected layout (the topbar's listening chip reads
   the same one) — never construct a second.
 -->
@@ -37,9 +44,13 @@
   import { LINK } from "#lib/robot/link-copy.js";
   import {
     ENGINE_LABEL,
+    ENGINE_WIRE,
     counters,
     countersScope,
+    defaultEngineOf,
     engineOf,
+    engineOptions,
+    type Engine,
     lastTurnMetrics,
     micWarning,
     ownership,
@@ -53,6 +64,18 @@
 
   const s = $derived(voice.state);
   const engine = $derived(engineOf(s));
+  const defaultEngine = $derived(defaultEngineOf(s));
+  const options = $derived(engineOptions(s));
+  /** The operator's pick; null until they touch the picker. */
+  let chosen = $state<Engine | null>(null);
+  // The pick, else back's default — and never an option back cannot start.
+  const selected = $derived.by(() => {
+    const usable = options.filter((o) => o.unavailable === null);
+    const want = chosen ?? defaultEngine;
+    return usable.some((o) => o.key === want) ? want : (usable[0]?.key ?? want);
+  });
+  // The engine the privacy sentence is about: the running one, else the pick.
+  const shown = $derived(s?.running ? engine : selected);
   const owner = $derived(ownership(s));
   const phase = $derived(phaseView(s));
   const counts = $derived(counters(s));
@@ -104,7 +127,7 @@
   <p class="text-sm leading-relaxed text-ink-dim">
     Mientras esté activa, lo que se diga cerca del robot se vuelve un turno de
     conversación, y un pedido físico claro puede moverlo.
-    {#if engine === "realtime"}
+    {#if shown === "realtime"}
       El audio se envía a OpenAI Realtime.
     {/if}
   </p>
@@ -255,7 +278,50 @@
       </div>
     {/if}
 
-    <p class="readout">Motor · {ENGINE_LABEL[engine]}</p>
+    {#if s.running}
+      <p class="readout">Motor · {ENGINE_LABEL[engine]}</p>
+    {:else}
+      <fieldset
+        class="@container flex min-w-0 flex-col gap-2"
+        disabled={voice.busy}
+      >
+        <legend class="mb-2 eyebrow">Motor</legend>
+        <div class="grid grid-cols-1 gap-2 @min-[27rem]:grid-cols-2">
+          {#each options as o (o.key)}
+            <label
+              class={[
+                "flex min-w-0 flex-col gap-1 px-3 py-2.5 has-focus-visible:ring-2 has-focus-visible:ring-cyan-hot/50",
+                o.unavailable
+                  ? "cursor-not-allowed tile opacity-50"
+                  : "cursor-pointer tile-interactive",
+                selected === o.key && "border-accent-edge",
+              ]}
+            >
+              <span
+                class="flex items-center gap-2 text-sm font-medium text-ink"
+              >
+                <input
+                  type="radio"
+                  name="voice-engine"
+                  value={o.key}
+                  checked={selected === o.key}
+                  disabled={o.unavailable !== null}
+                  onchange={() => (chosen = o.key)}
+                  class="accent-cyan-hot"
+                />
+                {o.label}
+                {#if o.key === defaultEngine}
+                  <span class="readout">predeterminado</span>
+                {/if}
+              </span>
+              <span class="text-xs leading-relaxed text-ink-dim">
+                {o.unavailable ?? o.detail}
+              </span>
+            </label>
+          {/each}
+        </div>
+      </fieldset>
+    {/if}
   {/if}
 
   <div class="flex flex-wrap items-center gap-2">
@@ -275,7 +341,7 @@
       <button
         type="button"
         disabled={voice.busy}
-        onclick={() => voice.startLoop()}
+        onclick={() => voice.startLoop(s ? ENGINE_WIRE[selected] : undefined)}
         class="inline-flex h-10 items-center justify-center rounded-lg cta px-4 text-sm font-semibold focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none disabled:opacity-50"
       >
         {voice.pending === "start" ? "Iniciando…" : "Iniciar conversación"}

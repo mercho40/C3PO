@@ -26,6 +26,7 @@ import {
   voiceStatus,
   type VoiceLoopState,
   type VoiceResult,
+  type WireEngine,
 } from "./voice-loop";
 import { Poller, type PollResult } from "./poller.svelte";
 
@@ -81,8 +82,9 @@ export class VoiceLoopControl extends Poller {
     super.start(intervalMs);
   }
 
-  async startLoop(): Promise<void> {
-    await this.#command("start");
+  /** Omit `engine` to let back use its default. */
+  async startLoop(engine?: WireEngine): Promise<void> {
+    await this.#command("start", engine);
   }
 
   async stopLoop(): Promise<void> {
@@ -93,12 +95,12 @@ export class VoiceLoopControl extends Poller {
     this.commandError = null;
   }
 
-  async #command(which: "start" | "stop"): Promise<void> {
+  async #command(which: "start" | "stop", engine?: WireEngine): Promise<void> {
     if (this.busy) return;
     this.busy = true;
     this.pending = which;
     try {
-      const result = await voiceCommand(this.#base, which);
+      const result = await voiceCommand(this.#base, which, { engine });
       this.#commandSeq += 1;
       if (result.ok) {
         // The reply IS the new state — no optimistic flip.

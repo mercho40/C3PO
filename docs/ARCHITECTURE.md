@@ -155,11 +155,13 @@ agent required removing nothing, and both can run forever:
    the next turn, and the console consumes the run as a token/tool-call
    stream. Provider and gateway facts: `apps/back/.env.example`; the
    provider-choice rationale: `docs/DECISIONS.md` D5.
-3. **Voice** (co-located human) is live behind an explicit dashboard switch.
-   `VOICE_ENGINE=legacy` uses local transcription + the text agent + Piper;
-   `VOICE_ENGINE=realtime` keeps the OpenAI key and session in `back`, streams
-   PCM to/from the bridge, persists final transcripts, and dispatches function
-   calls through the same bridge registry.
+3. **Voice** (co-located human) is live behind an explicit dashboard switch,
+   and the operator picks the engine per session (`VOICE_ENGINE` is only the
+   default; one engine runs at a time). The local engine uses local
+   transcription + the text agent + Piper; the Realtime engine keeps the OpenAI
+   key and session in `back`, streams PCM to/from the bridge, persists final
+   transcripts, and dispatches function calls through the same bridge registry.
+   Realtime is offered only when `back` has `OPENAI_API_KEY`.
 
 An earlier design had `apps/back` also _serving_ MCP to external clients
 (Claude Desktop through the control plane, with tokens and auditing). That
