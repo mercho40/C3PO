@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { RealtimeVoiceSession, realtimeSessionUpdate, realtimeTools } from "./realtime";
+import {
+  RealtimeVoiceSession,
+  realtimeSessionUpdate,
+  realtimeTools,
+} from "./realtime";
 
 const skill = (name: string, dangerLevel: "low" | "medium" | "high") =>
   ({
@@ -17,7 +21,8 @@ describe("OpenAI Realtime session contract", () => {
       skill("walk_to", "medium"),
       skill("dangerous_posture", "high"),
     ]);
-    expect(tools.map((tool) => tool.name)).toEqual(["walk_to"]);
+    // `look` is back's own tool, appended after the bridge's.
+    expect(tools.map((tool) => tool.name)).toEqual(["walk_to", "look"]);
   });
 
   test("refuses to start without putting a missing API key on another machine", async () => {
@@ -25,7 +30,10 @@ describe("OpenAI Realtime session contract", () => {
     delete process.env.OPENAI_API_KEY;
     try {
       await expect(
-        new RealtimeVoiceSession().start({ chatId: "chat", ownerId: "operator" }),
+        new RealtimeVoiceSession().start({
+          chatId: "chat",
+          ownerId: "operator",
+        }),
       ).rejects.toThrow("OPENAI_API_KEY");
     } finally {
       if (previous === undefined) delete process.env.OPENAI_API_KEY;
@@ -37,7 +45,10 @@ describe("OpenAI Realtime session contract", () => {
     const event = realtimeSessionUpdate("instructions", [skill("wave", "low")]);
     expect(event.type).toBe("session.update");
     expect(event.session.output_modalities).toEqual(["audio"]);
-    expect(event.session.audio.input.format).toEqual({ type: "audio/pcm", rate: 24_000 });
+    expect(event.session.audio.input.format).toEqual({
+      type: "audio/pcm",
+      rate: 24_000,
+    });
     expect(event.session.audio.input.transcription.language).toBe("es");
     expect(event.session.audio.input.turn_detection).toMatchObject({
       type: "semantic_vad",

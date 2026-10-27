@@ -4,7 +4,8 @@ import { createIdGenerator } from "ai";
 import { callTool } from "#back/bridge/client.js";
 import { bridgeSiblingUrl } from "#back/bridge/url.js";
 import { appendMessage, logToolCall } from "#back/db/chats.js";
-import { buildSystemPrompt } from "#back/agent/runtime.js";
+import { buildSystemPrompt, lookAtRobot } from "#back/agent/runtime.js";
+import { LOOK_TOOL } from "#back/agent/look.js";
 import { listSkills } from "#back/skills/index.js";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
@@ -42,7 +43,7 @@ type RealtimeEvent = {
 type RealtimeSkill = Awaited<ReturnType<typeof listSkills>>[number];
 
 export function realtimeTools(skills: RealtimeSkill[]) {
-  return skills
+  const bridgeTools = skills
     .filter(
       (skill) =>
         skill.name !== "listen" &&
@@ -53,8 +54,19 @@ export function realtimeTools(skills: RealtimeSkill[]) {
       type: "function" as const,
       name: skill.name,
       description: skill.description,
-      parameters: skill.parameters,
+      parameters: skill.parameters as Record<string, unknown>,
     }));
+  // `look` runs here in back, not on the bridge — see agent/look.ts. The frame
+  // goes to the agent's vision model, never into the Realtime session.
+  return [
+    ...bridgeTools,
+    {
+      type: "function" as const,
+      name: LOOK_TOOL.name,
+      description: LOOK_TOOL.description,
+      parameters: LOOK_TOOL.parameters as Record<string, unknown>,
+    },
+  ];
 }
 
 export function realtimeSessionUpdate(
@@ -388,7 +400,15 @@ export class RealtimeVoiceSession {
     let status: "ok" | "error" = "ok";
     let error: string | null = null;
     try {
-      result = await callTool(name, args);
+      if (name === LOOK_TOOL.name) {
+        result = await lookAtRobot(args);
+        if ((result as { status?: string }).status === "error") {
+          status = "error";
+          error = (result as { error?: string }).error ?? "look failed";
+        }
+      } else {
+        result = await callTool(name, args);
+      }
     } catch (cause) {
       status = "error";
       error = cause instanceof Error ? cause.message : String(cause);
