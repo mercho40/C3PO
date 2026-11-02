@@ -321,6 +321,13 @@ class PerceptionLink:
             gate="closed",
         )
 
+    @property
+    def participant(self) -> Any:
+        """The domain-42 participant, or None before start(). nav_link.py
+        builds its goal writer on it: a second Domain(42) would be a second
+        config to keep matching, and a bare participant discovers nothing."""
+        return self._participant
+
     def stop(self) -> None:
         """Signal both threads to exit. The DDS objects stay alive on purpose.
 

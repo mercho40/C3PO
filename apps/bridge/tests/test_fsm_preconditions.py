@@ -133,6 +133,10 @@ class TestTheVocabularyIsReal:
             # free-form hand control
             "TELEOP_HAND_ENABLED=1",
             "TELEOP_HAND_TYPE_configured",
+            # Nav2 goals: checked inside navigate_to*, which refuse with the fix
+            "nav2_active",
+            "nav_gate_armed",
+            "landmark_has_nav_pose",
         }
         for name, tool in tools.items():
             for precondition in preconditions_of(tool):

@@ -29,10 +29,12 @@ class FakeRunner:
         http_ready=True,
         logs=None,
         script_rc=None,
+        files=(),
     ):
         #: Exit code per helper script, by basename. 127 is "not on disk" —
         #: see `Runner.run_script`. Defaults to 0 for anything unlisted.
         self._script_rc = dict(script_rc or {})
+        self._files = set(files)
         self.calls: List[List[str]] = []
         self.scripts: List[Tuple[str, dict]] = []
         self.slept = 0.0
@@ -81,6 +83,9 @@ class FakeRunner:
 
     def makedirs(self, path: str) -> None:
         self.dirs.append(path)
+
+    def exists(self, path: str) -> bool:
+        return path in self._files
 
     def run_script(self, path, env=None):
         self.scripts.append((path, dict(env or {})))
@@ -388,3 +393,28 @@ def test_run_script_reports_127_instead_of_raising():
     from bringup.cli import Runner
 
     assert Runner().run_script("/nonexistent/definitely-not-a-real-helper") == 127
+
+
+# --- Phase 3 nav flags --------------------------------------------------------
+
+
+def test_a_mistyped_nav_flag_is_refused_before_gemm_is_touched():
+    runner = FakeRunner(gemm=["gemm-bringup"])
+    assert bring_up("nav2", runner, env=dict(TAKE, C3PO_NAV_SLAM="localisation"),
+                    scripts_dir="/s") == 2
+    assert runner.scripts == [] and created(runner) == []
+
+
+def test_localization_without_a_saved_map_is_refused(capsys):
+    runner = FakeRunner()
+    env = dict(ENV, C3PO_NAV_SLAM="localization")
+    assert bring_up("nav2", runner, env=env, scripts_dir="/s") == 1
+    assert created(runner) == []
+    assert "nav_map_save" in capsys.readouterr().err
+
+
+def test_localization_with_a_saved_map_comes_up():
+    runner = FakeRunner(files={"/home/unitree/.c3po/maps/c3po.yaml"})
+    env = dict(ENV, C3PO_NAV_SLAM="localization")
+    assert bring_up("nav2", runner, env=env, scripts_dir="/s") == 0
+    assert "/home/unitree/.c3po/maps" in runner.dirs

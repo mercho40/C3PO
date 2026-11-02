@@ -264,3 +264,45 @@ def test_it_says_the_detector_will_be_offline():
     text = " ".join(STAGES["lidar"].summary).lower()
     assert "detector" in text
     assert "offline" in text
+
+
+# --- Phase 3 nav flags ------------------------------------------------------
+
+
+def test_unset_nav_flags_reproduce_the_previous_argv_exactly():
+    """Unsetting every C3PO_NAV_* is the whole rollback, so the default must
+    pass no new launch argument and mount nothing new."""
+    nav = by_name(build("nav2"))[NAV]
+    assert not any(a.startswith(("slam:=", "controller:=", "collision_monitor:=", "map:="))
+                   for a in nav.command)
+    assert not any("/opt/c3po/maps" in v for v in nav.volumes)
+
+
+def test_localization_reaches_the_launch_file_and_mounts_the_maps():
+    env = {"C3PO_NAV_SLAM": "localization", "C3PO_NAV_MAP": "lab"}
+    nav = by_name(build("nav2", env=env))[NAV]
+    assert "slam:=localization" in nav.command
+    assert "map:=lab" in nav.command
+    assert "/home/unitree/.c3po/maps:/opt/c3po/maps" in nav.volumes
+
+
+def test_controller_and_monitor_flags_reach_the_launch_file():
+    env = {"C3PO_NAV_CONTROLLER": "mppi", "C3PO_NAV_COLLISION_MONITOR": "0"}
+    args = by_name(build("nav2-fake", env=env))[NAV].command
+    assert "controller:=mppi" in args
+    assert "collision_monitor:=false" in args
+
+
+def test_nav_flags_never_reach_a_launch_file_that_does_not_declare_them():
+    args = by_name(build("perception", env={"C3PO_NAV_SLAM": "mapping"}))[NAV].command
+    assert not any(a.startswith("slam:=") for a in args)
+
+
+@pytest.mark.parametrize("env", [
+    {"C3PO_NAV_SLAM": "localisation"},
+    {"C3PO_NAV_CONTROLLER": "teb"},
+    {"C3PO_NAV_SLAM": "mapping", "C3PO_NAV_MAP": "../etc"},
+])
+def test_a_mistyped_nav_flag_is_refused_not_defaulted(env):
+    with pytest.raises(ValueError):
+        build("nav2", env=env)

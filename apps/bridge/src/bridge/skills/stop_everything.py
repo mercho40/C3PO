@@ -169,6 +169,21 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     except Exception:
         log.exception("stop_everything.gate_close_failed")
 
+    # ...AND CANCEL THE NAV2 GOAL. The closed gate already stops the legs; this
+    # stops Nav2 wanting to move. A goal left active would walk the robot again
+    # the moment somebody re-arms the gate, toward a target set before the stop.
+    # Ahead of every await, never fatal, like the gate. The navigate_to monitors
+    # cancel too (their tasks are cancelled below); this does not depend on a
+    # monitor still being alive.
+    try:
+        from bridge.sdk.nav_link import get_nav_link
+
+        nav = get_nav_link()
+        if nav.can_publish:
+            nav.cancel(None)
+    except Exception:
+        log.exception("stop_everything.nav_cancel_failed")
+
     # LET GO OF THE ARMS, synchronously. If move_arm (or anything else in this
     # process) has the rt/arm_sdk driver engaged, its 50 Hz loop is actively
     # holding a pose — cancelling the task alone starts a ramp-down, but only

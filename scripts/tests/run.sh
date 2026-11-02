@@ -253,6 +253,12 @@ check_contains "the CLI exposes integrated profiles" "c3po up [operator|core|tel
 check_contains "the CLI exposes complete shutdown" "c3po down | restart | status | logs" "$out"
 check_contains "the CLI exposes explicit perception stages" "c3po perception up <stage>" "$out"
 check_contains "the CLI exposes the deliberate camera takeover" "c3po camera take" "$out"
+check_contains "the CLI exposes the map session" "c3po map start [name] | save [name]" "$out"
+if out="$(bash "$repo/scripts/robot/c3po" map save a b 2>&1)"; then
+    fail=$((fail + 1)); failed_names+=("map save rejects a second name")
+else
+    check_contains "map save rejects a second name" "takes at most a map name" "$out"
+fi
 
 if out="$(bash "$repo/scripts/robot/c3po" up unknown 2>&1)"; then
     fail=$((fail + 1)); failed_names+=("the CLI rejects unknown integrated profiles")
