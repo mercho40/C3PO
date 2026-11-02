@@ -2758,8 +2758,10 @@ def recall_object(
     Returns matching remembered objects, most recently seen first, each with
     `distance_m` and `bearing_deg` from where the robot is NOW (bearing: 0 ahead,
     positive LEFT, so `turn` can face it directly), `last_seen_s_ago` and
-    `seen_count`. `x_m`/`y_m` are in `frame` (perception's odometry), which is
-    NOT the frame `walk_to` uses — navigate by distance/bearing.
+    `seen_count`. `x_m`/`y_m` are in `frame` (perception's odometry — the same
+    frame Nav2 calls `odom`), which is NOT the frame `walk_to` uses: pass them as
+    `navigate_to(x, y, frame=frame)` when navigation is armed, otherwise turn by
+    `bearing_deg` and walk by `distance_m`.
 
     `not_found` comes with `known_labels`: everything in memory. If one of them
     is what was asked for under another name, call again with that label. Not
