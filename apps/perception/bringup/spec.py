@@ -19,6 +19,24 @@ from typing import Dict, List, Optional, Sequence, Tuple
 NAV_IMAGE = "c3po/perception-nav:humble"
 VISION_IMAGE = "c3po/perception-vision:r35.3.1"
 
+# Operator env vars copied into the vision container when set in the shell that
+# runs perception_up. Without this a model swap or a tape-measured extrinsic
+# meant editing this file; with it, it is `C3PO_ENGINE=... perception_up nav2`.
+# An explicit list, not a prefix match: a stale `C3PO_VISION_FAKE=1` in someone's
+# shell must not quietly turn the robot's detector into a synthetic one.
+VISION_ENV_PASSTHROUGH = (
+    "C3PO_ENGINE", "C3PO_ONNX", "C3PO_LABELS",
+    "C3PO_VISION_CONF", "C3PO_VISION_IOU", "C3PO_VISION_HZ",
+    "C3PO_VISION_MAX_OBJECTS", "C3PO_VISION_BEHIND_M",
+    "C3PO_CAMERA_X_M", "C3PO_CAMERA_Y_M", "C3PO_CAMERA_Z_M",
+    "C3PO_CAMERA_PITCH_DEG", "C3PO_CAMERA_YAW_DEG",
+)
+
+
+def vision_env_passthrough(env: Dict[str, str]) -> Dict[str, str]:
+    return {k: env[k] for k in VISION_ENV_PASSTHROUGH if env.get(k)}
+
+
 # The container names are a contract: `_common.sh`, `stop_c3po` and the health
 # check all match on the `c3po-perception` prefix.
 NAV = "c3po-perception-nav"
@@ -358,6 +376,7 @@ def containers_for(
                     "C3PO_VISION_STREAM_HOST": env.get("C3PO_VISION_STREAM_HOST", "127.0.0.1"),
                     "C3PO_VISION_STREAM_PORT": env.get("C3PO_VISION_STREAM_PORT", "8081"),
                     "C3PO_VISION_STREAM_HZ": env.get("C3PO_VISION_STREAM_HZ", "5"),
+                    **vision_env_passthrough(env),
                 },
                 device_cgroup_rules=("c 81:* rmw", "c 189:* rmw"),
                 # The /dev/bus/usb DIRECTORY, never `--device /dev/bus/usb/003/004`:
