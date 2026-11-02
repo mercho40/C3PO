@@ -41,6 +41,11 @@ EXPECTED_TOOLS = {
     "check_motion_mode",
     "list_active_tasks",
     "describe_surroundings",
+    # vision (Gemini Robotics-ER 2, read-only) and clarification
+    "look",
+    "find_object",
+    "verify",
+    "ask_user",
     # postures and mode
     "damp",
     "zero_torque",
