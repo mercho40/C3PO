@@ -1831,6 +1831,404 @@ def disarm_navigation(
     }
 
 
+# ===========================================================================
+# BEGIN auto/nav — Nav2 goals: navigate_to / navigate_to_landmark /
+# navigation_status / cancel_navigation (docs/autonomy/PLAN.md Phase 3, D4).
+# One block on purpose, so parallel branches merge around it.
+# ===========================================================================
+#
+# The agent issues GOALS; Nav2 owns the velocity loop; the bridge's gate still
+# decides whether any of it reaches the legs (D2.1). These tools never open
+# that gate. They refuse while it is shut and say how a person opens it,
+# because "arm the robot so I can drive it" is a human decision, and a goal
+# planned against a closed gate only runs Nav2's progress checker out.
+#
+# Long-running the way research 03 §6 asks: the tool returns a task_id at once
+# and a background monitor follows the goal through the existing TaskRegistry,
+# so `cancel_task`, `list_active_tasks` and `stop_everything` all reach it.
+
+NAV_POLL_S = 0.25
+# The relay answers a goal within one heartbeat (0.5 s). Three seconds of
+# silence about OUR goal id means it never arrived.
+NAV_ACK_TIMEOUT_S = 3.0
+NAV_MAX_DURATION_S = 300.0
+# The asyncio tasks, held so the loop cannot garbage-collect a running monitor.
+_nav_monitors: set[asyncio.Task] = set()
+
+_NAV_FIX = {
+    "nav_relay_offline": (
+        "No heartbeat from the nav container's goal_relay. Start the stack: "
+        "`c3po up nav2` on the robot (docs/autonomy/test-day/nav.md)."
+    ),
+    "nav2_inactive": (
+        "Nav2 is up but its lifecycle is not active (autostart is off on purpose). "
+        "On the robot: docker exec c3po-perception-nav /entrypoint.sh ros2 service call "
+        "/lifecycle_manager_navigation/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "
+        '"{command: 0}"'
+    ),
+    "gate_closed": (
+        "The cmd_vel gate is closed, so nothing Nav2 plans can move the robot. A person "
+        "watching the robot, with the e-stop in hand, must open it with "
+        "arm_navigation(reason, seconds) for the length of this manoeuvre. This tool "
+        "does not open it, and you should not open it on your own initiative."
+    ),
+}
+
+
+def _nav_refusal() -> dict | None:
+    """Why a goal must not be sent right now, or None if it may."""
+    from bridge.sdk.nav_link import get_nav_link
+    from bridge.sdk.perception_link import get_link
+
+    status, _ = get_nav_link().latest_status()
+    if status is None:
+        reason = "nav_relay_offline"
+    elif not status.get("nav2_ready"):
+        reason = "nav2_inactive"
+    elif not get_link().is_enabled():
+        reason = "gate_closed"
+    else:
+        return None
+    return {"status": "refused", "reason": reason, "how_to_fix": _NAV_FIX[reason]}
+
+
+def _nav_cancel_quiet(goal_id: str | None) -> None:
+    try:
+        from bridge.sdk.nav_link import get_nav_link
+
+        get_nav_link().cancel(goal_id)
+    except Exception:
+        log.exception("nav.cancel_failed", goal_id=goal_id)
+
+
+def _current_nav_pose() -> dict | None:
+    """The robot in Nav2's global frame, for remember_landmark. None if unknown."""
+    if SIM_MODE == "stub":
+        return None
+    try:
+        from bridge.sdk.nav_link import get_nav_link
+        from bridge.skills.landmarks import nav_pose_from_status
+
+        return nav_pose_from_status(get_nav_link().latest_status()[0])
+    except Exception as exc:
+        log.warning("nav_pose.unavailable", error=str(exc))
+        return None
+
+
+async def _monitor_navigation(task, goal_id: str) -> None:
+    """Follow one goal to a terminal state, mirroring it into `task`."""
+    from bridge.sdk.nav_link import get_nav_link
+    from bridge.sdk.perception_link import get_link
+
+    nav, gate = get_nav_link(), get_link()
+    started = time.monotonic()
+    seen = False
+    first_distance: float | None = None
+
+    def end(status: str, phase: str, error: str | None = None) -> None:
+        task.status, task.phase, task.error = status, phase, error
+        task.ended_at = time.time()
+        log.info("navigate_to.ended", task_id=task.task_id, goal_id=goal_id, phase=phase)
+
+    try:
+        while True:
+            # Cancel first: stop_everything sets this AND closes the gate, and
+            # it should read as the cancel it was, not as a gate failure.
+            if task.cancel_event.is_set():
+                _nav_cancel_quiet(goal_id)
+                return end("cancelled", "cancelled")
+            if not gate.is_enabled():
+                # Cancel in Nav2 too. A goal left active there resumes walking
+                # the moment somebody re-arms the gate for something else.
+                _nav_cancel_quiet(goal_id)
+                return end("failed", "gate_closed", "gate_closed: the arm TTL ran out or "
+                           "the gate was disarmed mid-goal; the goal was cancelled")
+            now = time.monotonic()
+            goal = nav.goal(goal_id)
+            if goal is None:
+                if nav.latest_status()[0] is None:
+                    _nav_cancel_quiet(goal_id)
+                    return end("failed", "nav_relay_offline", _NAV_FIX["nav_relay_offline"])
+                if seen:
+                    return end("cancelled", "superseded")  # someone sent a newer goal
+                if now - started > NAV_ACK_TIMEOUT_S:
+                    _nav_cancel_quiet(goal_id)
+                    return end("failed", "goal_not_acknowledged",
+                               "the relay never reported this goal")
+            else:
+                seen = True
+                state = goal["state"]
+                task.phase = state
+                dist = goal.get("distance_remaining_m")
+                if dist is not None and dist > 0 and first_distance is None:
+                    first_distance = dist
+                if dist is not None and first_distance:
+                    task.progress = min(1.0, max(0.0, 1.0 - dist / first_distance))
+                task.result = {**(task.result or {}), "feedback": {
+                    k: goal.get(k)
+                    for k in ("distance_remaining_m", "eta_s", "recoveries", "nav_time_s")
+                }}
+                if state == "succeeded":
+                    task.progress = 1.0
+                    return end("completed", "succeeded")
+                if state == "canceled":
+                    return end("cancelled", "canceled")
+                if state in ("aborted", "rejected"):
+                    return end("failed", state, goal.get("reason") or state)
+            if now - started > NAV_MAX_DURATION_S:
+                _nav_cancel_quiet(goal_id)
+                return end("failed", "timeout", f"no result in {NAV_MAX_DURATION_S:.0f}s")
+            await asyncio.sleep(NAV_POLL_S)
+    except Exception as exc:
+        log.exception("navigate_to.monitor_failed", goal_id=goal_id)
+        _nav_cancel_quiet(goal_id)
+        end("failed", "monitor_failed", f"{type(exc).__name__}: {exc}")
+
+
+async def _start_navigation(
+    x: float, y: float, yaw: float | None, frame: str | None, target: dict
+) -> dict:
+    """Refuse, or send one goal and return its task_id immediately."""
+    from bridge.sdk.nav_link import get_nav_link
+    from bridge.skills.task_runtime import get_registry
+
+    refusal = _nav_refusal()
+    if refusal is not None:
+        log.warning("navigate_to.refused", reason=refusal["reason"], target=target)
+        return {**refusal, "target": target, "env": SIM_MODE}
+
+    nav = get_nav_link()
+    status, _ = nav.latest_status()
+    if yaw is None:
+        # Face the direction of travel. A default of 0 would make the robot
+        # turn to face +x on arrival, which nobody asked for.
+        pose = (status or {}).get("pose")
+        yaw = math.atan2(y - pose["y_m"], x - pose["x_m"]) if pose else 0.0
+
+    registry = get_registry()
+    # One goal at a time. Nav2 preempts on its own; this keeps our tasks honest.
+    for old in registry.list_active():
+        if old.skill_name == "navigate_to":
+            registry.cancel(old.task_id)
+
+    goal_id = nav.send_goal(x, y, yaw, frame or "")
+    task = registry.create("navigate_to")
+    task.phase = "sent"
+    task.result = {"goal_id": goal_id, "target": {**target, "x": x, "y": y, "yaw": yaw,
+                                                  "frame": frame or (status or {}).get("global_frame")}}
+    monitor = asyncio.create_task(_monitor_navigation(task, goal_id))
+    _nav_monitors.add(monitor)
+    monitor.add_done_callback(_nav_monitors.discard)
+    return {
+        "status": "started",
+        "task_id": task.task_id,
+        "goal_id": goal_id,
+        "target": task.result["target"],
+        "next": "Poll navigation_status() for progress; cancel_navigation() or "
+        "stop_everything to stop.",
+        "env": SIM_MODE,
+    }
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="medium",
+        status="real",
+        cancellable=True,
+        expected_duration_s=30.0,
+        works_sim=False,
+        works_real=False,
+        preconditions=["nav2_active", "nav_gate_armed"],
+        typical_failure_modes=[
+            "nav_relay_offline", "nav2_inactive", "gate_closed", "aborted", "timeout",
+        ],
+    )
+)
+async def navigate_to(
+    x: Annotated[float, Field(ge=-100.0, le=100.0, description="Goal X, metres, in `frame`.")],
+    y: Annotated[float, Field(ge=-100.0, le=100.0, description="Goal Y, metres, in `frame`.")],
+    yaw: Annotated[
+        float | None,
+        Field(ge=-math.pi, le=math.pi, description=(
+            "Final heading, radians, CCW from +x. Omit to arrive facing the direction "
+            "of travel."
+        )),
+    ] = None,
+    frame: Annotated[
+        Literal["map", "odom"] | None,
+        Field(description=(
+            "Nav2's frame for x/y. Omit for Nav2's global frame (`map` when the saved "
+            "map is loaded, else `odom`). NOT get_state's world frame — that is the "
+            "vendor leg odometry, a different origin."
+        )),
+    ] = None,
+) -> dict:
+    """Walk the robot to a pose with Nav2: planned path, obstacle avoidance, recovery.
+
+    The robot physically walks there — a 1.3 m humanoid moving on its own path,
+    up to ~0.35 m/s. Returns a `task_id` IMMEDIATELY; the walk continues in the
+    background. Follow it with `navigation_status()`; stop it with
+    `cancel_navigation()` or `stop_everything`.
+
+    Coordinates are in Nav2's frame: read the robot's current Nav2 pose from
+    `navigation_status().pose` and offset from that (e.g. 0.5 m ahead is
+    x + 0.5·cos(yaw), y + 0.5·sin(yaw)). For named places prefer
+    `navigate_to_landmark`.
+
+    Refuses (status=refused, with `how_to_fix`) unless all three hold: the nav
+    container is reporting, Nav2's lifecycle is active, and a human has opened
+    the cmd_vel gate with `arm_navigation`. It never opens the gate itself. If
+    the gate closes mid-walk (TTL, disarm, stop) the goal is cancelled.
+    """
+    target = {"kind": "pose"}
+    log.warning("navigate_to.called", x=x, y=y, yaw=yaw, frame=frame, sim_mode=SIM_MODE)
+    if SIM_MODE == "stub":
+        return {"status": "stub", "message": f"[STUB] Would navigate to ({x:.2f}, {y:.2f}).",
+                "env": SIM_MODE, "stub": True}
+    return await _start_navigation(x, y, yaw, frame, target)
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="medium",
+        status="real",
+        cancellable=True,
+        expected_duration_s=30.0,
+        works_sim=False,
+        works_real=False,
+        preconditions=["nav2_active", "nav_gate_armed", "landmark_has_nav_pose"],
+        typical_failure_modes=[
+            "not_found", "no_nav_pose", "map_not_loaded", "odom_frame_restarted",
+            "gate_closed", "aborted",
+        ],
+    )
+)
+async def navigate_to_landmark(
+    name: Annotated[str, Field(min_length=1, max_length=64, description="Saved landmark name.")],
+) -> dict:
+    """Walk the robot to a saved landmark with Nav2 ("andá a la cocina").
+
+    The robot physically walks there on a planned path. Same contract as
+    `navigate_to`: returns a `task_id` immediately, refuses while the nav gate
+    is closed, and is stopped by `cancel_navigation()` or `stop_everything`.
+
+    Uses the pose `remember_landmark` stored in Nav2's frame, never the vendor
+    odometry pose. Refuses when that pose cannot be trusted: saved without the
+    nav stack up (`no_nav_pose`), saved in the map while no map is loaded
+    (`map_not_loaded`), or saved in odom before the nav container restarted
+    (`odom_frame_restarted`). Re-save it with `remember_landmark` standing there.
+    """
+    from bridge.skills.landmarks import get_store as get_landmark_store
+    from bridge.skills.landmarks import nav_target
+
+    log.warning("navigate_to_landmark.called", name=name, sim_mode=SIM_MODE)
+    landmark = get_landmark_store().recall(name)
+    if landmark is None:
+        return {"status": "not_found", "name": name, "env": SIM_MODE}
+    if SIM_MODE == "stub":
+        return {"status": "stub", "message": f"[STUB] Would navigate to landmark {name!r}.",
+                "env": SIM_MODE, "stub": True}
+
+    from bridge.sdk.nav_link import get_nav_link
+
+    pose, why = nav_target(landmark, get_nav_link().latest_status()[0])
+    if pose is None:
+        fix = _NAV_FIX.get(why or "") or (
+            "Walk the robot to that place with the nav stack up and call "
+            f"remember_landmark({name!r}) again."
+        )
+        return {"status": "refused", "reason": why, "name": name, "how_to_fix": fix,
+                "env": SIM_MODE}
+    return await _start_navigation(
+        pose["x"], pose["y"], pose["yaw"], pose["frame"], {"kind": "landmark", "name": name}
+    )
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="introspection",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=False,
+        works_real=False,
+    )
+)
+def navigation_status() -> dict:
+    """Where Nav2 is, and how the current goal is going. Read-only; moves nothing.
+
+    `relay_online` / `nav2_ready` / `gate.enabled` are the three things a goal
+    needs. `pose` is the robot in Nav2's `global_frame` — the frame
+    `navigate_to` takes. `goal` carries state (pending / accepted / active /
+    succeeded / aborted / canceled / rejected), distance_remaining_m, eta_s and
+    recoveries. `task` is the newest navigate_to task from the task registry.
+    """
+    if SIM_MODE == "stub":
+        return {"relay_online": False, "env": SIM_MODE, "stub": True}
+    from bridge.sdk.nav_link import get_nav_link
+    from bridge.sdk.perception_link import get_link
+    from bridge.skills.task_runtime import get_registry
+
+    status, age = get_nav_link().latest_status()
+    gate = get_link().status()
+    nav_tasks = [t for t in get_registry().list_recent(50) if t.skill_name == "navigate_to"]
+    return {
+        "relay_online": status is not None,
+        "status_age_s": None if age is None else round(age, 2),
+        "nav2_ready": bool(status and status.get("nav2_ready")),
+        "global_frame": (status or {}).get("global_frame"),
+        "localized": (status or {}).get("global_frame") == "map",
+        "pose": (status or {}).get("pose"),
+        "goal": (status or {}).get("goal"),
+        "gate": {"enabled": gate["enabled"], "disabled_reason": gate["disabled_reason"],
+                 "arm_expires_in_s": gate["arm_expires_in_s"]},
+        "task": nav_tasks[0].to_dict() if nav_tasks else None,
+        "link": get_nav_link().diagnostics(),
+        "env": SIM_MODE,
+    }
+
+
+@mcp.tool(
+    meta=skill_meta(
+        # Not "safety": in apps/back that word bypasses the admin gate, and
+        # only stop_everything may carry it (test_mcp_catalogue).
+        classification="locomotion",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=False,
+        works_real=False,
+    )
+)
+def cancel_navigation() -> dict:
+    """Cancel the active Nav2 goal and every navigate_to task. Always safe to call.
+
+    Nav2 stops planning toward the goal and its velocity ramps to zero. The
+    cmd_vel gate is left as it is; `stop_everything` is the harder stop — it
+    also cancels the goal, closes the gate and halts the gait.
+    """
+    from bridge.skills.task_runtime import get_registry
+
+    log.warning("cancel_navigation.called", sim_mode=SIM_MODE)
+    registry = get_registry()
+    cancelled = [
+        t.task_id for t in registry.list_active()
+        if t.skill_name == "navigate_to" and registry.cancel(t.task_id)
+    ]
+    if SIM_MODE != "stub":
+        _nav_cancel_quiet(None)
+    return {"status": "ok", "cancelled_task_ids": cancelled, "env": SIM_MODE}
+
+
+# ===========================================================================
+# END auto/nav
+# ===========================================================================
+
+
 # ---------------------------------------------------------------------------
 # Tool: listen
 # ---------------------------------------------------------------------------
@@ -2019,6 +2417,9 @@ def remember_landmark(
     reboot: odometry re-origins, so the coordinates stop referring to the same
     physical place. `recall_landmark` and `list_landmarks` report that as
     `frame_stale` — check it before walking anywhere.
+
+    With the nav stack up it also stores `nav_pose`, the pose in Nav2's frame
+    that `navigate_to_landmark` walks to (`map` when the saved map is loaded).
     """
     from bridge.skills.landmarks import get_store as get_landmark_store
 
@@ -2027,7 +2428,9 @@ def remember_landmark(
     if pose is None:
         return {"status": "failed", "name": name, "error": "no_pose"}
 
-    landmark = get_landmark_store().remember(name, pose, frame_tick=_current_frame_tick())
+    landmark = get_landmark_store().remember(
+        name, pose, frame_tick=_current_frame_tick(), nav_pose=_current_nav_pose()
+    )
     log.info("remember_landmark.saved", name=name, pose=landmark.to_dict())
     return {"status": "ok", **landmark.to_dict()}
 
@@ -3130,6 +3533,16 @@ def main() -> None:
             log.info("perception.link.started", domain=42, gate="closed")
         except Exception:
             log.exception("perception.link.start_failed")
+
+        # Nav2 goals ride the same participant, so this must follow it. Starting
+        # it sends nothing: goals only leave through navigate_to*, which refuse
+        # while the gate is shut.
+        try:
+            from bridge.sdk.nav_link import get_nav_link
+
+            get_nav_link().start()
+        except Exception:
+            log.exception("nav.link.start_failed")
 
         # START LISTENING AT BOOT, not on the first `listen` call. Otherwise the
         # first thing anyone says is the one thing the robot cannot hear: the

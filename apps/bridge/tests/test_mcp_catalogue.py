@@ -87,6 +87,12 @@ EXPECTED_TOOLS = {
     # happen without somebody looking at that sentence again.
     "arm_navigation",
     "disarm_navigation",
+    # Nav2 goals (D4). Neither opens the gate above; both refuse while it is
+    # shut, and stop_everything cancels what they started.
+    "navigate_to",
+    "navigate_to_landmark",
+    "navigation_status",
+    "cancel_navigation",
 }
 
 
@@ -167,6 +173,8 @@ def test_motion_tools_say_what_they_do_to_a_real_robot(tools):
         "gesture",
         "move_arm",
         "set_hand",
+        "navigate_to",
+        "navigate_to_landmark",
     }
     for name in movers:
         desc = (tools[name].description or "").lower()
