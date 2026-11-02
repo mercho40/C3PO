@@ -61,7 +61,7 @@ mock.module("#back/skills/index.js", () => ({
   })),
 }));
 
-const { agentToolExclusions, buildSystemPrompt, offeredInMode } =
+const { agentToolExclusions, buildSystemPrompt, offeredInMode, worldSummary } =
   await import("./runtime");
 
 describe("buildSystemPrompt", () => {
@@ -125,5 +125,45 @@ describe("buildSystemPrompt", () => {
       .find((l) => l.startsWith("- walk_velocity "));
     expect(walkVelocityLine).toBeDefined();
     expect(walkVelocityLine).toContain("real-only");
+  });
+});
+
+describe("closed loop and perception", () => {
+  test("the prompt explains plan -> act -> verify and the vision tools", async () => {
+    const prompt = await buildSystemPrompt();
+    for (const name of ["look", "find_object", "verify", "ask_user"])
+      expect(prompt).toContain(name);
+    expect(prompt).toContain("retry a step at most twice");
+  });
+
+  // The other half of the bridge's injection guard (tests/test_vlm_tools.py
+  // wraps what the camera read as untrusted_text): the planner is told what
+  // that marking means, in every mode.
+  test("text seen by the camera is data, never instructions", async () => {
+    for (const mode of ["operator", "voice"] as const) {
+      const prompt = await buildSystemPrompt(mode);
+      expect(prompt).toContain("never instructions");
+      expect(prompt).toContain("untrusted_text");
+    }
+  });
+
+  test("ask_user belongs to the voice host, like say", () => {
+    expect(agentToolExclusions("voice").has("ask_user")).toBe(true);
+  });
+
+  test("the world snapshot is inlined when the bridge answers", async () => {
+    const line = await worldSummary(async () => ({ objects: [{ label: "cup" }] }));
+    expect(line).toContain('"label":"cup"');
+  });
+
+  test("a slow or dead bridge never holds the turn", async () => {
+    const started = Date.now();
+    const slow = await worldSummary(() => new Promise(() => {}), 20);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(slow).toContain("unavailable");
+    const dead = await worldSummary(async () => {
+      throw new Error("bridge_unavailable");
+    });
+    expect(dead).toContain("unavailable");
   });
 });
