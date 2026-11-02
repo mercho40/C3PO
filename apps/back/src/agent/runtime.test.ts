@@ -109,6 +109,14 @@ describe("buildSystemPrompt", () => {
     expect(offeredInMode(high, "operator")).toBe(true);
   });
 
+  test("voice is never offered a T2 skill, whatever its danger level", () => {
+    const t2 = { name: "set_hand", dangerLevel: "medium", tier: "T2" };
+    expect(offeredInMode(t2, "voice")).toBe(false);
+    expect(offeredInMode({ ...t2, tier: "T1" }, "voice")).toBe(true);
+    // The bridge still gates it; operator turns see it and get told why.
+    expect(offeredInMode(t2, "operator")).toBe(true);
+  });
+
   test("every skill is listed with its actual sim/real availability tag", async () => {
     const prompt = await buildSystemPrompt();
     // walk_to is sim-only (works.real: false) -- catalogue tag must say so,

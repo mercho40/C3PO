@@ -54,6 +54,7 @@ import {
   BridgeUnavailableError,
   BridgeToolError,
 } from "../bridge/client";
+import { bridgeSiblingUrl } from "../bridge/url";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 import { logToolCall } from "#back/db/chats.js";
 
@@ -64,7 +65,7 @@ import { logToolCall } from "#back/db/chats.js";
 //: skill?" is exactly what has failed. It is checked against the catalogue's
 //: own classification whenever the catalogue IS available, so the two cannot
 //: drift silently — see the test.
-export const SAFETY_SKILLS = new Set(["stop_everything"]);
+export const SAFETY_SKILLS = new Set(["stop_everything", "soft_stop"]);
 
 /** How long PARAR waits for the bridge before answering 504 (the stop keeps running). */
 const SAFETY_TIMEOUT_MS = 8000;
@@ -272,6 +273,65 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
           detail: {
             summary:
               "Invoke a skill on the bridge (typed, validated dispatch). Admin-only.",
+            tags: ["skills"],
+          },
+        },
+      )
+      .post(
+        "/:name/confirm",
+        async ({ params: { name }, status, user }) => {
+          // The operator's confirmation for ONE call of a T2 skill, within
+          // 30 s (bridge/safety.py). It is a route and not a tool so that no
+          // model can reach it, and it lives here so the bridge's secret
+          // stays on this server, never in a browser. The bridge checks the
+          // tier itself and refuses anything that is not T2.
+          if (user.role !== "admin") {
+            return status(403, { error: "admin_required" });
+          }
+          const secret = process.env.SAFETY_CONFIRM_SECRET;
+          if (!secret) {
+            return status(503, { error: "confirmation_not_configured" });
+          }
+          const startedAt = Date.now();
+          let upstream: Response;
+          try {
+            upstream = await fetch(bridgeSiblingUrl("/safety/confirm"), {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-c3po-confirm-secret": secret,
+              },
+              body: JSON.stringify({ tool: name }),
+              signal: AbortSignal.timeout(5000),
+            });
+          } catch {
+            return status(502, { error: "bridge_unavailable", name });
+          }
+          const body = (await upstream.json().catch(() => ({}))) as Record<
+            string,
+            unknown
+          >;
+          // Who authorised arm motion is the row worth having after the fact.
+          void logToolCall({
+            userId: user.id,
+            source: "direct",
+            skillName: "safety_confirm",
+            params: { tool: name },
+            result: body,
+            status: upstream.ok ? "ok" : "error",
+            ...(upstream.ok
+              ? {}
+              : { error: String(body.error ?? upstream.status) }),
+            durationMs: Date.now() - startedAt,
+            startedAt,
+          });
+          return upstream.ok ? body : status(upstream.status, body);
+        },
+        {
+          params: t.Object({ name: t.String() }),
+          detail: {
+            summary:
+              "Confirm one call of a T2 (arm/hand) skill within 30 s. Admin-only.",
             tags: ["skills"],
           },
         },

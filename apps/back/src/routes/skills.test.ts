@@ -366,3 +366,61 @@ describe("POST /skills/:name/invoke writes the audit trail", () => {
     expect(inserted.length).toBe(0);
   });
 });
+
+/**
+ * The console's half of the T2 gate. The bridge owns the grant and the tier
+ * check; this route owns who may ask (admins) and keeps the secret off the
+ * browser. Every confirmation is audited: who authorised arm motion is the
+ * row worth having afterwards.
+ */
+describe("POST /skills/:name/confirm", () => {
+  const realFetch = globalThis.fetch;
+  let forwarded: { url: string; init: RequestInit }[] = [];
+
+  function confirm(name: string) {
+    return skillsRoutes.handle(
+      new Request(`http://localhost/skills/${name}/confirm`, {
+        method: "POST",
+      }),
+    );
+  }
+
+  beforeEach(() => {
+    forwarded = [];
+    inserted = [];
+    process.env.SAFETY_CONFIRM_SECRET = "s3cret";
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      forwarded.push({ url: String(url), init });
+      return Response.json({ granted: true, tool: "move_arm" });
+    }) as typeof fetch;
+  });
+
+  test("a non-admin cannot confirm", async () => {
+    sessionUser = { id: "u2", role: null };
+    expect((await confirm("move_arm")).status).toBe(403);
+    expect(forwarded.length).toBe(0);
+  });
+
+  test("no secret configured: refused, nothing forwarded", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    delete process.env.SAFETY_CONFIRM_SECRET;
+    expect((await confirm("move_arm")).status).toBe(503);
+    expect(forwarded.length).toBe(0);
+  });
+
+  test("an admin's confirmation reaches the bridge with the secret, and is audited", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    const res = await confirm("move_arm");
+    globalThis.fetch = realFetch;
+
+    expect(res.status).toBe(200);
+    expect(forwarded[0].url).toEndWith("/safety/confirm");
+    const headers = forwarded[0].init.headers as Record<string, string>;
+    expect(headers["x-c3po-confirm-secret"]).toBe("s3cret");
+    expect(JSON.parse(String(forwarded[0].init.body))).toEqual({
+      tool: "move_arm",
+    });
+    await Bun.sleep(0);
+    expect(inserted.some((r) => r.skillName === "safety_confirm")).toBe(true);
+  });
+});

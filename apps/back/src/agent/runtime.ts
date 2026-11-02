@@ -146,13 +146,21 @@ export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
  * robot, a video playing in the room — and the legacy engine (the default)
  * offered it everything: `arm_navigation`, `start_walking_waist`, `move_arm`.
  * The realtime engine already filtered them; the two now cannot disagree.
+ *
+ * T2 is dropped too. The bridge refuses a T2 call without an operator's
+ * console confirmation anyway, so offering one to a voice turn only buys a
+ * refusal read aloud. Once the spoken "sí, confirmo" check exists (PLAN 0.2)
+ * this clause is what changes. `high` stays until Nav2 has driven the robot
+ * under the governor: it is what keeps `arm_navigation` off voice.
  */
 export function offeredInMode(
-  skill: { name: string; dangerLevel?: string },
+  skill: { name: string; dangerLevel?: string; tier?: string },
   mode: AgentMode,
 ): boolean {
   if (agentToolExclusions(mode).has(skill.name)) return false;
-  return mode !== "voice" || skill.dangerLevel !== "high";
+  return (
+    mode !== "voice" || (skill.dangerLevel !== "high" && skill.tier !== "T2")
+  );
 }
 
 const VOICE_PREAMBLE = [
@@ -195,7 +203,9 @@ export async function buildSystemPrompt(
           : s.works.sim
             ? "sim-only"
             : "unavailable";
-    return `- ${s.name} [${s.classification}/${s.status}/${where}/danger:${s.dangerLevel}] — ${s.description}`;
+    // T2 is named so the model knows to ask the operator, not retry.
+    const tier = s.tier === "T2" ? "/T2:needs-operator-confirmation" : "";
+    return `- ${s.name} [${s.classification}/${s.status}/${where}/danger:${s.dangerLevel}${tier}] — ${s.description}`;
   });
   const modePrompt = mode === "voice" ? `\n\n${VOICE_PREAMBLE}` : "";
   return `${SYSTEM_PREAMBLE}${modePrompt}\n\nAvailable skills:\n${lines.join("\n")}`;
