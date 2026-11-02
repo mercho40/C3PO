@@ -24,6 +24,13 @@ its walk mode at zero velocity, balanced, like the watchdog leaves it.
 `STOP_EVERYTHING_DAMP=always` restores the old behaviour; the `damp` tool is
 still there for an operator who wants the robot limp.
 
+**Two tiers, and `soft_stop` is the first one on its own.** The zero burst
+(`_zero_burst`) is the soft stop: velocity to zero, the robot left standing.
+`soft_stop` runs just that tier — close the nav gate, cancel tasks, burst —
+for "stop walking" without a latch or a fall risk. `stop_everything` runs the
+same burst and keeps everything that makes it the e-stop: the cross-process
+sentinel, arms and hands let go, and Damp when the burst was not heard.
+
 **Cancellation happens synchronously, before anything can block.** Every
 `cancel_event` is set at the top of `run()` with no awaits in between, so the
 skills begin stopping themselves immediately regardless of what the RPC path
@@ -82,6 +89,54 @@ SIM_MODE = os.environ.get("SIM_MODE", "stub")
 # "on_failure" (default): damp only when the zero-velocity burst was not
 # acknowledged. "always": damp after every stop, the pre-2026-10-15 behaviour.
 DAMP_POLICY = os.environ.get("STOP_EVERYTHING_DAMP", "on_failure").strip().lower()
+
+
+async def _zero_burst(height: float) -> tuple[int, int, str | None, float]:
+    """The soft-stop tier: `(sent, acked, error, duration_s)` of a zero burst."""
+    start = time.time()
+    try:
+        sent, acked = await asyncio.to_thread(
+            stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S
+        )
+        return sent, acked, None, time.time() - start
+    except Exception as exc:
+        # Not fatal, and not the end of the stop: a burst that raised is a
+        # burst the robot may never have heard, which is exactly when the
+        # Damp fallback in `run` has to run. It used to propagate and skip it.
+        log.exception("stop_everything.burst_failed")
+        return 0, 0, f"{type(exc).__name__}: {exc}", time.time() - start
+
+
+async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
+    """Halt the base and stay standing. Never damps, never latches.
+
+    Same order as `run` for the parts it shares: gate first, synchronously,
+    so Nav2's next tick cannot undo the burst; then cancellation; then zeros.
+    Arms and hands are left alone — `stop_everything` is the stop for those.
+    """
+    try:
+        from bridge.sdk.perception_link import get_link
+
+        get_link().disable(reason="soft_stop")
+    except Exception:
+        log.exception("soft_stop.gate_close_failed")
+
+    registry = get_registry()
+    cancelled_ids = [t.task_id for t in registry.list_active() if registry.cancel(t.task_id)]
+    log.warning("soft_stop.requested", cancelled_task_ids=cancelled_ids)
+
+    sent, acked, error, duration = await _zero_burst(height)
+    return {
+        "cancelled_task_ids": cancelled_ids,
+        "cancelled_count": len(cancelled_ids),
+        "stop_burst_duration_s": round(duration, 3),
+        "stop_burst_sent": sent,
+        "stop_burst_acked": acked if SIM_MODE == "real" else None,
+        "stop_burst_error": error,
+        # Read by the caller: a soft stop the robot never heard is no stop.
+        # The answer then is stop_everything, which damps in exactly this case.
+        "heard": error is None and (acked > 0 if SIM_MODE == "real" else sent > 0),
+    }
 
 
 async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
@@ -166,20 +221,7 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     # the skills are stopping themselves whatever happens next; what this buys
     # is an event loop that can still answer a second stop press or a state
     # poll while these blocking DDS calls are in flight.
-    start = time.time()
-    burst_sent = burst_acked = 0
-    burst_error: str | None = None
-    try:
-        burst_sent, burst_acked = await asyncio.to_thread(
-            stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S
-        )
-    except Exception as exc:
-        # Not fatal, and not the end of the stop: a burst that raised is a
-        # burst the robot may never have heard, which is exactly when the
-        # Damp fallback below has to run. It used to propagate and skip it.
-        burst_error = f"{type(exc).__name__}: {exc}"
-        log.exception("stop_everything.burst_failed")
-    duration = time.time() - start
+    burst_sent, burst_acked, burst_error, duration = await _zero_burst(height)
 
     # Zero velocity stops the gait and leaves the robot balanced; damp zeroes
     # joint stiffness, which drops a standing robot. So damp only when the

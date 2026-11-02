@@ -52,9 +52,9 @@ from bridge.env_file import load_env_file
 # this file.
 load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
-# These three must follow load_env_file above; ruff's E402 is silenced per
-# import rather than for the file, so a genuinely misplaced import still fails.
-from bridge import watchdog  # noqa: E402
+# These must follow load_env_file above; ruff's E402 is silenced per import
+# rather than for the file, so a genuinely misplaced import still fails.
+from bridge import safety, watchdog  # noqa: E402
 from bridge.skill_meta import meta as skill_meta  # noqa: E402
 from bridge.watchdog import get_watchdog  # noqa: E402
 
@@ -106,7 +106,28 @@ if SIM_MODE != "stub":
     # Warm the subscriber singleton so messages start flowing immediately.
     get_sampler()
 
-mcp = FastMCP(
+
+class GovernedMCP(FastMCP):
+    """FastMCP whose every tool call passes the risk-tier gate first.
+
+    Here and not in each tool so a T2 tool cannot be added without its gate:
+    the tier comes from the tool's own `_meta` (skill_meta.derive_tier), and
+    this is the method both transports dispatch through — apps/back over HTTP
+    and Claude Code over stdio alike. Direct Python calls into the tool
+    functions skip it; nothing that speaks MCP can.
+    """
+
+    async def call_tool(self, name, arguments):  # noqa: ANN001, ANN201 - FastMCP's signature
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        tool = self._tool_manager.get_tool(name)
+        refusal = safety.tool_refusal(name, tool.meta if tool else None)
+        if refusal is not None:
+            raise ToolError(refusal)
+        return await super().call_tool(name, arguments)
+
+
+mcp = GovernedMCP(
     name="c3po-bridge",
     instructions=(
         "Tools for controlling a Unitree G1 humanoid robot (or its Isaac Sim "
@@ -477,8 +498,9 @@ async def walk_velocity(
 
     Unlike walk_to/turn (blocked on real hardware — no world-frame pose
     source wired yet), this is open-loop: same fire-and-forget pattern
-    xr_teleoperate's own controller-button locomotion uses. The G1 firmware
-    sustains the velocity for duration_s and stops on its own.
+    xr_teleoperate's own controller-button locomotion uses: short setpoints
+    re-issued for duration_s, then zero. Speed is also capped by the safety
+    governor, which slows or stops the base when a person is close.
 
     Isaac Sim: not applicable — walk_to/turn already give closed-loop
     pose-based control there, which is strictly better than this open-loop
@@ -577,6 +599,37 @@ async def stop_everything() -> dict:
 
     result = await run_stop()
     return {**result, "env": SIM_MODE}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="safety",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.5,
+        works_sim=True,
+        works_real=False,  # The burst is stop_everything's, observed on the
+        # robot; this tool as a whole has not been run there yet.
+        typical_failure_modes=["burst_unacknowledged", "bridge_disconnected"],
+    )
+)
+async def soft_stop() -> dict:
+    """Stop walking and stay standing — zero velocity, never goes limp.
+
+    Closes the Nav2 gate, cancels running tasks and sends a ~0.4 s zero-velocity
+    burst. Unlike stop_everything it does not latch the e-stop, does not let go
+    of the arms or hands, and never damps — so it cannot drop the robot. Use it
+    to end a walk. If the result says `heard: false`, the robot did not
+    acknowledge the stop: call stop_everything.
+    """
+    log.warning("soft_stop.called", sim_mode=SIM_MODE)
+    if SIM_MODE == "stub":
+        return {"cancelled_task_ids": [], "cancelled_count": 0, "env": SIM_MODE, "stub": True}
+
+    from bridge.skills.stop_everything import soft_stop as run_soft_stop
+
+    return {**await run_soft_stop(), "env": SIM_MODE}
 
 
 # ---------------------------------------------------------------------------
@@ -2515,6 +2568,49 @@ async def gate_status(request):  # noqa: ANN001, ANN201 - starlette types
         "reports_received": diag.get("reports_received"),
     }
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/safety/status", methods=["GET"])
+async def safety_status(request):  # noqa: ANN001, ANN201 - starlette types
+    """The governor's caps, flags, last command and the nearest person. Read-only."""
+    from starlette.responses import JSONResponse
+
+    return JSONResponse(safety.status(), headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/safety/confirm", methods=["POST"])
+async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
+    """The operator's confirmation for ONE call of a T2 tool. Not an MCP tool.
+
+    That is the whole point: a model only ever sees the tool list, and nothing
+    on it can reach this. apps/back's admin-only `POST /skills/:name/confirm`
+    forwards here with SAFETY_CONFIRM_SECRET in `X-C3PO-Confirm-Secret`; the
+    secret also keeps out an agent that has a shell on a machine with the
+    tunnel (Claude Code), as long as it cannot read the robot's .env. With no
+    secret configured nothing can be confirmed, so T2 stays refused.
+    """
+    from starlette.responses import JSONResponse
+
+    if not safety.confirm_secret_ok(request.headers.get("x-c3po-confirm-secret")):
+        configured = bool(safety.CONFIRM_SECRET)
+        return JSONResponse(
+            {"error": "forbidden" if configured else "confirmation_not_configured"},
+            status_code=403 if configured else 503,
+        )
+    try:
+        tool = str((await request.json()).get("tool") or "")
+    except Exception:
+        tool = ""
+    listed = mcp._tool_manager.get_tool(tool)
+    tier = ((listed.meta or {}).get("c3po") or {}).get("tier") if listed else None
+    if tier != "T2":
+        # Only T2 tools take a grant; anything else is a typo or a probe.
+        return JSONResponse({"error": "not_a_t2_tool", "tool": tool}, status_code=400)
+    safety.grant_confirmation(tool, via="console")
+    return JSONResponse(
+        {"granted": True, "tool": tool, "expires_in_s": safety.CONFIRM_TTL_S},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @mcp.custom_route("/telemetry/scan", methods=["GET"])

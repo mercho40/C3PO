@@ -58,3 +58,15 @@ def fresh_hand_driver():
     hands.reset_driver()
     yield
     hands.reset_driver()
+
+
+@pytest.fixture(autouse=True)
+def fresh_safety_governor():
+    """The governor remembers the last setpoint (for its acceleration cap) and
+    holds T2 grants. Both are process state that one test must not hand the next.
+    """
+    from bridge import safety
+
+    safety.reset()
+    yield
+    safety.reset()

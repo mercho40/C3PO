@@ -16,8 +16,9 @@ call `send_velocity` and never learn which one they're driving.
 Velocity caps and gains come from `unitree_sim_isaaclab/send_commands_keyboard.py`
 and are fitted to the *sim* walk policy, which runs at ~10-15% of commanded
 velocity. **They will not transfer to real hardware** and need measuring on
-the robot before `walk_to` can close a distance accurately there. The caps
-are still applied on real as a safety clamp, which is the conservative
+the robot before `walk_to` can close a distance accurately there. On real,
+every setpoint then passes `bridge.safety.govern` — tighter caps, the
+person-distance rule and an acceleration limit — which is the conservative
 direction to be wrong in.
 
 `_` prefix on the module: skills inside `bridge.skills` import freely; this
@@ -63,8 +64,8 @@ PROGRESS_NOTIFY_DELTA = 0.05  # only emit MCP progress when delta >= 5%
 # vetted against this physical robot (walk_velocity.py's 0.3 / 0.3, which
 # come from xr_teleoperate's own controller-button safety cap). They stay as
 # the *sim* caps because they are tuned and exercised there — but they are no
-# longer what reaches real hardware: `send_velocity` re-clamps to the
-# hardware-vetted set below whenever SIM_MODE == "real".
+# longer what reaches real hardware: `send_velocity` re-clamps through the
+# safety governor (bridge/safety.py) whenever SIM_MODE == "real".
 #
 # Previously these were the only clamp on either target, which meant wiring
 # real-mode odom silently gave walk_to/turn permission to command 1.0 m/s and
@@ -96,10 +97,14 @@ def _get_publisher() -> Any:
     return _publisher
 
 
-def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> int | None:
+def send_velocity(
+    vx: float, vy: float, vyaw: float, height: float, *, autonomous: bool = False
+) -> int | None:
     """Send one body-frame velocity setpoint, by whatever channel this target uses.
 
     `height` applies to the sim channel only; see the module docstring.
+    `autonomous` marks a source with no person in its loop (Nav2): it gets the
+    safety governor's stale-perception policy on top of the shared rules.
 
     Returns the robot's RPC code on real hardware (0 = acknowledged), and None
     in sim, where the setpoint is a fire-and-forget publish with no ack.
@@ -107,25 +112,18 @@ def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> int | Non
     heard; the control loops ignore it.
     """
     if SIM_MODE == "real":
+        from bridge import safety
         from bridge.sdk import g1_rpc
 
-        # Re-clamp to the hardware-vetted envelope at the dispatch point, not
-        # at each caller's own computation. walk_to/turn size their setpoints
-        # against the sim caps above (MAX_FWD_VEL=1.0, MAX_YAW_VEL=1.57), and
-        # their proportional controllers saturate those on any target more
-        # than a metre or so away -- so without this, reaching real hardware
-        # means commanding 3-5x the only speeds ever measured on this robot.
-        # Clamping here covers every current and future caller by
-        # construction; the controllers still converge, just more slowly.
-        # Imported from walk_velocity so there is exactly one definition of
-        # "safe on this hardware" (local import mirrors g1_rpc above and
-        # keeps this module free of an import-order dependency).
-        from bridge.skills.walk_velocity import MAX_LINEAR_VEL
-        from bridge.skills.walk_velocity import MAX_YAW_VEL as REAL_MAX_YAW_VEL
-
-        vx = max(-MAX_LINEAR_VEL, min(MAX_LINEAR_VEL, vx))
-        vy = max(-MAX_LINEAR_VEL, min(MAX_LINEAR_VEL, vy))
-        vyaw = max(-REAL_MAX_YAW_VEL, min(REAL_MAX_YAW_VEL, vyaw))
+        # THE ONE GOVERNOR, at the dispatch point rather than in each caller:
+        # walk_to/turn size their setpoints against the sim caps above
+        # (MAX_FWD_VEL=1.0, MAX_YAW_VEL=1.57) and saturate them on any target
+        # more than a metre away, Nav2 against its own YAML, the headset
+        # against its stick. Governing here covers every current and future
+        # caller by construction — speed and yaw caps, the person-distance
+        # rule, acceleration — see bridge/safety.py. The controllers still
+        # converge, just more slowly.
+        vx, vy, vyaw = safety.govern(vx, vy, vyaw, autonomous=autonomous)
 
         code, _ = g1_rpc.call_set_velocity(vx, vy, vyaw, VELOCITY_DURATION_S)
         if code != 0:
@@ -144,7 +142,7 @@ def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> int | Non
     return None
 
 
-async def send_velocity_async(vx: float, vy: float, vyaw: float, height: float) -> None:
+async def send_velocity_async(vx: float, vy: float, vyaw: float, height: float) -> int | None:
     """`send_velocity`, but without blocking the event loop on real hardware.
 
     On real, `send_velocity` makes a synchronous DDS RPC that waits for an ack
@@ -163,9 +161,8 @@ async def send_velocity_async(vx: float, vy: float, vyaw: float, height: float) 
     path that never needed it.
     """
     if SIM_MODE == "real":
-        await asyncio.to_thread(send_velocity, vx, vy, vyaw, height)
-    else:
-        send_velocity(vx, vy, vyaw, height)
+        return await asyncio.to_thread(send_velocity, vx, vy, vyaw, height)
+    return send_velocity(vx, vy, vyaw, height)
 
 
 async def stop_motion(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> None:

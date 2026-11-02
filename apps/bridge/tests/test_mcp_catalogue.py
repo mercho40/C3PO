@@ -77,6 +77,7 @@ EXPECTED_TOOLS = {
     # control
     "cancel_task",
     "stop_everything",
+    "soft_stop",
     # voice — both halves. `listen` is push-to-talk by necessity, not by design:
     # the mic is gated on a remote button nobody in software can press.
     "say",
@@ -335,15 +336,16 @@ def test_exactly_one_tool_is_classified_safety(tools):
     in this field.
 
     apps/back pins its own half in `SAFETY_SKILLS` (`skills.test.ts`). This is
-    the other half of that contract; the two are meant to name the same single
-    tool.
+    the other half of that contract; the two are meant to name the same tools.
+    `soft_stop` joined on 2026-11-02: it is the first stop tier, never damps,
+    and an operator must not need admin rights to end a walk.
     """
     safety = sorted(
         name
         for name, tool in tools.items()
         if (tool.meta or {}).get("c3po", {}).get("classification") == "safety"
     )
-    assert safety == ["stop_everything"], (
+    assert safety == ["soft_stop", "stop_everything"], (
         f"tools classified 'safety': {safety}. Anything on this list bypasses "
         "the admin gate in apps/back/src/routes/skills.ts. If a tool genuinely "
         "belongs here, add it to SAFETY_SKILLS there in the same change."
@@ -379,6 +381,7 @@ def test_every_tool_carries_complete_safety_metadata(tools):
         assert set(c3po["works"]) == {"sim", "real"}, f"{name}: malformed works"
         assert c3po["danger_level"] in {"low", "medium", "high"}, name
         assert c3po["status"] in {"real", "stub", "planned"}, name
+        assert c3po["tier"] in {"T0", "T1", "T2"}, name
 
 
 def test_untested_motion_is_not_advertised_as_working(tools):

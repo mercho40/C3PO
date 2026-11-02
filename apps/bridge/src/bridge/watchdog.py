@@ -41,6 +41,12 @@ polls are a genuine liveness signal whose absence means something. That is
 already the plan for the HTTP transport (see `skills/task_runtime`), and this
 module is ready for it.
 
+Re-checked 2026-11-02 (autonomy PLAN 0.2, "arm the watchdog"): still true, so
+still off. Fire-and-forget is not built; Claude Code's stdio session blocks on
+every call; and the console's `get_state` poll runs every 2 s, longer than
+LINK_TIMEOUT_S, so even a watched session would trip between polls. Arm it in
+the same change that makes long skills return a task_id.
+
 Until then `LINK_WATCHDOG=on` is required to arm it, and what actually protects
 a real robot is:
 

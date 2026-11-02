@@ -13,7 +13,7 @@ import time
 import pytest
 
 from bridge.sdk import g1_rpc
-from bridge.skills import stop_everything, walk_velocity
+from bridge.skills import _locomotion, stop_everything, walk_velocity
 from bridge.skills.task_runtime import get_registry
 
 
@@ -41,6 +41,8 @@ async def test_stop_everything_cancels_in_flight_walk_velocity(monkeypatch):
         lambda vx, vy, vyaw, duration: velocity_calls.append((vx, vy, vyaw, duration)) or (0, ""),
     )
     monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
+    # walk_velocity dispatches through _locomotion, which is real-only here.
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
 
     # Start a long-ish walk_velocity task in the background, same as a real
     # in-flight command would be.
@@ -54,11 +56,11 @@ async def test_stop_everything_cancels_in_flight_walk_velocity(monkeypatch):
     assert result["cancelled_count"] == 1
     walk_result = await task_future
     assert walk_result["status"] == "cancelled"
-    # First call was the real command; stop_everything's cancellation should
-    # have made walk_velocity's own loop notice and send a zero-velocity stop
-    # well before the original 2s duration elapsed.
-    assert len(velocity_calls) == 2
+    # The walk re-issues its setpoint until stop_everything's cancellation
+    # makes its loop notice and send zero — well before the original 2 s.
+    assert velocity_calls[0][0] == 0.1
     assert velocity_calls[-1][:3] == (0.0, 0.0, 0.0)
+    assert walk_result["duration_s"] < 1.0
 
 
 async def test_an_acknowledged_stop_does_not_damp(monkeypatch):

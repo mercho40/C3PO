@@ -77,6 +77,11 @@ def test_real_mode_clamps_to_hardware_vetted_caps(monkeypatch):
     assert seen["omega"] == MAX_YAW_VEL
 
     # ...and in the negative direction, where MAX_BACK_VEL is the sim cap.
+    # From rest: straight after the forward command this is a reversal, which
+    # the governor's acceleration cap ramps (test_safety.py covers that).
+    from bridge import safety
+
+    safety.reset()
     _locomotion.send_velocity(
         _locomotion.MAX_BACK_VEL, -_locomotion.MAX_LAT_VEL, -_locomotion.MAX_YAW_VEL, height=0.78
     )

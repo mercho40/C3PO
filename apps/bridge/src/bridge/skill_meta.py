@@ -44,6 +44,32 @@ Classification = Literal[
 # deciding to.
 DangerLevel = Literal["low", "medium", "high"]
 
+# Risk tier (docs/autonomy/PLAN.md 0.2). DERIVED from classification and
+# danger_level by `derive_tier`, never declared per tool, so a new tool cannot
+# forget it or contradict its own danger level.
+#   T0 — talk, look, read state, stop: free.
+#   T1 — base motion, posture, firmware preset gestures: free, inside the
+#        governor's limits (bridge/safety.py).
+#   T2 — free-form arm/hand motion: needs an operator confirmation the LLM
+#        cannot produce, and is refused with a person in arm's reach.
+# Preset gestures (wave, hug, ...) are danger "low" and so T1: they are vendor
+# trajectories, several observed on this robot. Raising one's danger_level is
+# how it becomes T2.
+Tier = Literal["T0", "T1", "T2"]
+
+_T0_CLASSIFICATIONS = frozenset(
+    {"introspection", "perception", "speech", "memory", "safety", "task"}
+)
+
+
+def derive_tier(classification: str, danger_level: str) -> Tier:
+    if classification in _T0_CLASSIFICATIONS:
+        return "T0"
+    if classification == "gesture" and danger_level != "low":
+        return "T2"
+    return "T1"
+
+
 # Where the implementation actually stands, as opposed to where we would like
 # it to be. `stub` means the tool returns success without doing anything, which
 # an agent cannot otherwise detect.
@@ -74,6 +100,7 @@ class SkillMeta:
             "c3po": {
                 "classification": self.classification,
                 "danger_level": self.danger_level,
+                "tier": derive_tier(self.classification, self.danger_level),
                 "status": self.status,
                 "cancellable": self.cancellable,
                 "expected_duration_s": self.expected_duration_s,

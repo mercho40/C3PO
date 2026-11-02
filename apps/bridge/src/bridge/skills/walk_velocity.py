@@ -2,11 +2,16 @@
 
 Unlike walk_to/turn (blocked on real hardware — no world-frame pose source
 wired yet, see README "Phase 1b"), this doesn't need pose at all. It's the
-same fire-and-forget pattern xr_teleoperate's own controller-button
-locomotion uses: send a body-frame (vx, vy, vyaw) for `duration_s`, the
-firmware sustains it and stops on its own when the duration elapses
+same pattern xr_teleoperate's own controller-button locomotion uses: a
+body-frame (vx, vy, vyaw) held for `duration_s` by re-issuing short setpoints
 (confirmed via `unitree_sdk2py`'s LocoClient.Move()/SetVelocity — repeated
 calls are how continuous motion is built up, not a single unbounded one).
+
+Re-issued, not sent once with `duration=duration_s`: one 3 s setpoint was a 3 s
+deadman, so a bridge that died mid-call left the robot walking for up to three
+seconds. Every setpoint now goes through `_locomotion.send_velocity` — the 1 s
+firmware duration and the safety governor (bridge/safety.py) — like every other
+velocity on this robot.
 
 Deliberately conservative: no pose feedback means no way to detect "did it
 actually go where I meant" or "did it hit something" — so both velocity
@@ -23,8 +28,7 @@ from typing import Any
 
 import structlog
 
-from bridge.sdk import g1_rpc
-from bridge.skills._locomotion import teleop_conflict
+from bridge.skills._locomotion import DEFAULT_HEIGHT, send_velocity_async, teleop_conflict
 from bridge.skills.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
@@ -48,6 +52,10 @@ MAX_YAW_VEL = 0.3  # rad/s
 # and its own judgement between calls, not issue one long blind command.
 MAX_DURATION_S = 3.0
 
+# How often the setpoint is re-issued. Well inside the firmware's 1 s duration,
+# and the same tick the loop already used to watch for cancellation.
+REISSUE_PERIOD_S = 0.05
+
 
 def _clamp(value: float, limit: float) -> float:
     return max(-limit, min(limit, value))
@@ -64,7 +72,8 @@ async def run(
 
     Returns the full task dict. Cancellable: `cancel_task`/`stop_everything`
     can interrupt mid-wait, in which case a zero-velocity SetVelocity is sent
-    immediately rather than waiting out the original duration.
+    immediately. A walk that runs its course ends on a zero setpoint too, so
+    the robot stops at `duration_s` rather than coasting on the last one.
     """
     task = get_registry().create("walk_velocity")
 
@@ -92,9 +101,9 @@ async def run(
             log.warning("walk_velocity.teleop_active", task_id=task.task_id)
             return task.to_dict()
 
-        code, data = await asyncio.to_thread(
-            g1_rpc.call_set_velocity, clamped_vx, clamped_vy, clamped_vyaw, clamped_duration
-        )
+        setpoint = (clamped_vx, clamped_vy, clamped_vyaw, DEFAULT_HEIGHT)
+        code = await send_velocity_async(*setpoint)
+        data = None
         if code != 0:
             task.status = "failed"
             task.phase = "rpc_error"
@@ -109,21 +118,21 @@ async def run(
             return task.to_dict()
 
         task.phase = "moving"
-        deadline = time.time() + clamped_duration
+        # Monotonic: an NTP step mid-walk must not stretch or cut the walk.
+        deadline = time.monotonic() + clamped_duration
         cancelled = False
-        while time.time() < deadline:
+        while (remaining := deadline - time.monotonic()) > 0:
             if task.cancel_event.is_set():
                 cancelled = True
                 break
-            task.progress = max(
-                0.0, min(0.999, 1.0 - (deadline - time.time()) / max(clamped_duration, 1e-6))
-            )
-            await asyncio.sleep(0.05)
+            task.progress = max(0.0, min(0.999, 1.0 - remaining / max(clamped_duration, 1e-6)))
+            await asyncio.sleep(min(REISSUE_PERIOD_S, remaining))
+            if deadline - time.monotonic() > 0 and not task.cancel_event.is_set():
+                await send_velocity_async(*setpoint)
 
+        # Zero now rather than letting the last setpoint run out its 1 s.
+        await send_velocity_async(0.0, 0.0, 0.0, DEFAULT_HEIGHT)
         if cancelled:
-            # Firmware would stop on its own once clamped_duration elapses, but
-            # don't wait it out — command zero velocity immediately.
-            await asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5)
             task.status = "cancelled"
             task.phase = "cancelled"
         else:
@@ -162,9 +171,9 @@ async def run(
         # CancelledError at once, but the shielded thread call survives that
         # and completes on its own. Safe for this to fail either way: the
         # firmware's own `duration` deadman already guarantees a halt within
-        # clamped_duration (<=3s); this only makes it stop sooner.
+        # VELOCITY_DURATION_S (1 s); this only makes it stop sooner.
         try:
-            await asyncio.shield(asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5))
+            await asyncio.shield(send_velocity_async(0.0, 0.0, 0.0, DEFAULT_HEIGHT))
         except (Exception, asyncio.CancelledError):
             # Not dangerous — the firmware deadman above still halts this — but
             # not nothing either. Swallowed silently, a stop path that fails
@@ -181,7 +190,7 @@ async def run(
         task.ended_at = time.time()
         log.exception("walk_velocity.failed", task_id=task.task_id)
         try:
-            await asyncio.to_thread(g1_rpc.call_set_velocity, 0.0, 0.0, 0.0, 0.5)
+            await send_velocity_async(0.0, 0.0, 0.0, DEFAULT_HEIGHT)
         except Exception:
             log.warning("walk_velocity.failure_stop_failed", task_id=task.task_id, exc_info=True)
         return task.to_dict()
