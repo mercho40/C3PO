@@ -28,6 +28,7 @@ LAN HTTP on port 8001 — i.e. the REAL robot.
 from __future__ import annotations
 
 import asyncio
+import functools
 import math
 import os
 import time
@@ -2202,8 +2203,282 @@ def cancel_task(
     return {"task_id": task_id, "ok": True}
 
 
+# ===========================================================================
+# BEGIN object memory — recall_object / list_objects / forget_object /
+# look_around (docs/autonomy/PLAN.md Phase 4.1-4.2). Kept in one block so the
+# parallel autonomy branches merge cleanly. Risk tier: the three memory tools
+# are T0 (read/forget a table, no motion); look_around is T1 (turns in place,
+# through `turn` and its checks).
+# ===========================================================================
+
+# look_around: 60 deg steps overlap the D435i's ~69 deg view, and the pause
+# after each turn gives the 4 Hz reports time to land while the body is still
+# (object_memory ignores frames taken mid-turn).
+LOOK_STEP_DEG = 60.0
+LOOK_DWELL_S = 2.0
+# How many remembered objects ride along in describe_surroundings.
+MEMORY_SUMMARY_MAX = 6
+
+
+def _memory_pose() -> tuple[dict | None, str | None]:
+    """The pose memory entries are measured against: the perception report's.
+
+    Not the bridge's vendor odometry — that is a different frame (see
+    object_memory's docstring). None when no fresh report has a pose.
+    """
+    from bridge.object_memory import DEFAULT_FRAME
+
+    try:
+        from bridge.sdk.perception_link import get_link
+
+        report, _ = get_link().latest_report()
+    except Exception:
+        log.exception("object_memory.pose_failed")
+        return None, None
+    if not report or not isinstance(report.get("pose"), dict):
+        return None, None
+    return report["pose"], str(report.get("pose_frame") or DEFAULT_FRAME)
+
+
+def _with_object_memory(build):  # noqa: ANN001, ANN202
+    """Add a short `memory` section to the D7 snapshot, so the agent sees what
+    it remembers without asking. Objects seen once are left out (a single
+    frame is as likely a false positive); recall_object still has them."""
+
+    @functools.wraps(build)
+    def wrapper() -> dict:
+        snapshot = build()
+        try:
+            from bridge.object_memory import get_object_memory
+
+            pose, frame = _memory_pose()
+            now = time.time()
+            entries = [e for e in get_object_memory().list_all() if e.seen_count >= 2]
+            if entries:
+                shown = []
+                for e in entries[:MEMORY_SUMMARY_MAX]:
+                    d = e.describe(pose, frame, now)
+                    shown.append(
+                        {k: d[k] for k in ("id", "label", "distance_m", "bearing_deg",
+                                           "last_seen_s_ago") if k in d}
+                    )
+                snapshot["memory"] = {"objects": shown}
+                if len(entries) > MEMORY_SUMMARY_MAX:
+                    snapshot["memory"]["omitted"] = len(entries) - MEMORY_SUMMARY_MAX
+        except Exception:
+            log.exception("describe_surroundings.memory_failed")
+        return snapshot
+
+    return wrapper
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=False,
+        typical_failure_modes=["not_found", "pose_unavailable"],
+    )
+)
+def recall_object(
+    query: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=64,
+            description=(
+                "What to look for, in Spanish or English: 'billetera', 'la tele', "
+                "'cup'. Matched against the detector's English labels."
+            ),
+        ),
+    ],
+) -> dict:
+    """Where the robot last SAW an object — memory, not a live look.
+
+    Returns matching remembered objects, most recently seen first, each with
+    `distance_m` and `bearing_deg` from where the robot is NOW (bearing: 0 ahead,
+    positive LEFT, so `turn` can face it directly), `last_seen_s_ago` and
+    `seen_count`. `x_m`/`y_m` are in `frame` (perception's odometry), which is
+    NOT the frame `walk_to` uses — navigate by distance/bearing.
+
+    `not_found` comes with `known_labels`: everything in memory. If one of them
+    is what was asked for under another name, call again with that label. Not
+    in memory means not seen yet, not "absent": use look_around to look.
+    """
+    from bridge.object_memory import get_object_memory
+
+    memory = get_object_memory()
+    pose, frame = _memory_pose()
+    found = memory.recall(query)
+    if not found:
+        return {"status": "not_found", "query": query, "known_labels": memory.labels()}
+    now = time.time()
+    result: dict = {
+        "status": "ok",
+        "query": query,
+        "count": len(found),
+        "objects": [e.describe(pose, frame, now) for e in found],
+    }
+    if pose is None:
+        result["note"] = (
+            "Perception pose unavailable: distance/bearing from here cannot be given."
+        )
+    return result
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=False,
+    )
+)
+def list_objects() -> dict:
+    """Everything in object memory, most recently seen first, with distance and
+    bearing from the robot now (positive bearing = LEFT) and last-seen age."""
+    from bridge.object_memory import get_object_memory
+
+    pose, frame = _memory_pose()
+    now = time.time()
+    entries = get_object_memory().list_all()
+    return {"count": len(entries), "objects": [e.describe(pose, frame, now) for e in entries]}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="memory",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=False,
+        typical_failure_modes=["not_found"],
+    )
+)
+def forget_object(
+    object_id: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=32,
+            description="An `id` from recall_object/list_objects (e.g. 'obj_3'), or 'all'.",
+        ),
+    ],
+) -> dict:
+    """Delete one remembered object by id, or the whole memory with 'all'.
+
+    Use 'all' after the perception container restarts: its odometry re-origins
+    and every remembered position then points somewhere else."""
+    from bridge.object_memory import get_object_memory
+
+    removed = get_object_memory().forget(object_id)
+    return {"status": "ok" if removed else "not_found", "object_id": object_id, "removed": removed}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="perception",
+        danger_level="low",
+        status="real",
+        cancellable=True,
+        expected_duration_s=45.0,
+        works_sim=False,
+        works_real=False,
+        preconditions=["robot_upright", "no_active_turn_task"],
+        typical_failure_modes=["perception_offline", "turn_failed", "stopped"],
+    )
+)
+async def look_around(
+    ctx: Context,
+    total_degrees: Annotated[
+        float,
+        Field(
+            ge=60.0,
+            le=360.0,
+            description="How far to sweep, to the LEFT (counterclockwise). 360 = full circle.",
+        ),
+    ] = 360.0,
+) -> dict:
+    """Turn in place in 60° steps, pausing after each so the camera can update
+    object memory, and report what was seen.
+
+    THE ROBOT PHYSICALLY ROTATES: each step is a `turn` call with all of its
+    checks (teleop conflict, pose, cancel). A full circle takes ~45 s. Stops at
+    the first failed turn or as soon as stop_everything is pressed. Refuses
+    without moving when perception is offline — turning blind updates nothing.
+
+    Returns `new_objects` (first seen during this sweep), `seen_again`, and
+    `forgotten` (remembered here but now looked at and absent), each with
+    distance/bearing from the final heading.
+    """
+    from bridge import estop
+    from bridge.object_memory import get_object_memory
+
+    if _memory_pose()[0] is None:
+        return {
+            "status": "failed",
+            "error": "perception_offline",
+            "message": "No fresh perception report with a pose: nothing to look with.",
+            "env": SIM_MODE,
+        }
+
+    memory = get_object_memory()
+    before = {e.id: e.last_seen for e in memory.list_all()}
+    started = time.time()
+    dwell = 0.0 if SIM_MODE == "stub" else LOOK_DWELL_S
+    steps = max(1, round(total_degrees / LOOK_STEP_DEG))
+    step_rad = math.radians(total_degrees / steps)
+
+    turned = 0.0
+    stopped: str | None = None
+    await asyncio.sleep(dwell)  # look before the first turn, too
+    for _ in range(steps):
+        if estop.last_stop_at() > started:
+            stopped = "stop_everything"
+            break
+        result = await turn(ctx, delta_yaw_radians=step_rad, timeout_s=30.0, tolerance_degrees=5.0)
+        if result.get("status") not in ("ok", "completed"):
+            stopped = f"turn_{result.get('status')}: {result.get('error') or result.get('phase')}"
+            break
+        turned += math.degrees(step_rad)
+        await asyncio.sleep(dwell)
+
+    pose, frame = _memory_pose()
+    now = time.time()
+    after = memory.list_all()
+    after_ids = {e.id for e in after}
+    return {
+        "status": "stopped" if stopped else "ok",
+        **({"stopped_reason": stopped} if stopped else {}),
+        "turned_degrees": round(turned, 1),
+        "new_objects": [e.describe(pose, frame, now) for e in after if e.id not in before],
+        "seen_again": [
+            e.describe(pose, frame, now)
+            for e in after
+            if e.id in before and e.last_seen > before[e.id]
+        ],
+        "forgotten": sorted(set(before) - after_ids),
+        "env": SIM_MODE,
+    }
+
+
+# ===========================================================================
+# END object memory
+# ===========================================================================
+
+
 # ---------------------------------------------------------------------------
 # Tool: describe_surroundings
+@_with_object_memory
 def surroundings_snapshot() -> dict:
     """The D7 world-model snapshot, as a plain dict.
 
@@ -2330,6 +2605,10 @@ def describe_surroundings() -> dict:
     nothing: an absent `objects` list with `detector: offline` does not mean
     the path is clear, it means nothing looked. `objects_omitted` counts
     obstacles that exist but were not listed.
+
+    `memory`, when present, lists objects seen EARLIER (seen at least twice),
+    with distance/bearing from here; they may be out of view now. Ask
+    `recall_object` for anything not listed.
 
     Today the perception stack (LiDAR/camera/detector) is not deployed, so this
     honestly reports everything offline rather than an empty scene. Pose comes
@@ -3125,7 +3404,11 @@ def main() -> None:
         # stay free of CycloneDDS so the bridge imports on a laptop.
         from bridge.sdk.perception_link import get_link
 
+        from bridge.object_memory import get_object_memory
+
         try:
+            # Every accepted report also feeds the object memory (Phase 4.1).
+            get_link().on_report = get_object_memory().observe_report
             get_link().start()
             log.info("perception.link.started", domain=42, gate="closed")
         except Exception:
