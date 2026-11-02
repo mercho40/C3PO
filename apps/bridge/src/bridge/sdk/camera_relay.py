@@ -300,3 +300,21 @@ def relay_headers(kind: str, origin: Optional[str] = None) -> Tuple[str, Dict[st
             camera_headers(origin),
         )
     return "image/jpeg", camera_headers(origin)
+
+
+def latest_frame(timeout: float = 5.0) -> Tuple[Optional[bytes], Optional[str]]:
+    """(jpeg, source) from whichever feed is live; (None, source) if none is.
+
+    The same choice `/camera/frame.jpg` makes, for in-process callers (the VLM
+    tools). Blocking — call it through `asyncio.to_thread`.
+    """
+    from bridge.sdk.videohub import get_camera
+
+    camera = get_camera()
+    source = choose_source(camera.status(), upstream_status())
+    if source == "videohub":
+        return camera.snapshot()[1], source
+    if source == "vision":
+        with urllib.request.urlopen(vision_url("frame.jpg"), timeout=timeout) as resp:
+            return bytes(resp.read()), source
+    return None, source
