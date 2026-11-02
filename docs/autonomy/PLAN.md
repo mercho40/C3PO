@@ -52,16 +52,17 @@ hardware ordered (lead times are the long pole).
 
 ### 0.2 Safety governor (before anything new moves) — [05 §C.2](research/05-references-voice-safety.md), [03 §5](research/03-mapping-navigation.md), [04 §7](research/04-manipulation.md)
 
-- [ ] One `safety` module in `apps/bridge` that every motion skill passes through:
+- [x] One `safety` module in `apps/bridge` that every motion skill passes through:
       base speed ≤ 0.5 m/s, yaw/accel caps, short `SetVelocity` durations so a dead bridge stops the robot.
-- [ ] **Risk tiers** on every MCP tool: T0 talk/look (free), T1 navigate in mapped area (free within limits),
+- [x] **Risk tiers** on every MCP tool: T0 talk/look (free), T1 navigate in mapped area (free within limits),
       T2 grasp/handover/near-person (needs confirmation from the console button or a locally-checked
       spoken "sí" — never from the LLM itself). Replaces [integrate]'s blanket voice block on `move_arm`.
-- [ ] Person-distance rule fed by detector `person` + depth: slow < 1.5 m, stop < 0.5 m, no arm motion within reach unless skill is `handover`.
-- [ ] **Soft stop** tier (zero velocity + stand) before damping — L2+B makes the robot fall.
-- [ ] Arm the link watchdog (currently disarmed, [00 §2.5](research/00-current-state.md)).
+- [x] Person-distance rule fed by detector `person` + depth: slow < 1.5 m, stop < 0.5 m, no arm motion within reach unless skill is `handover`.
+- [x] **Soft stop** tier (zero velocity + stand) before damping — L2+B makes the robot fall.
+- [ ] Arm the link watchdog (currently disarmed, [00 §2.5](research/00-current-state.md)). Re-checked: still blocked on fire-and-forget skills (`watchdog.py`).
 - [ ] Wireless dead-man e-stop (e.g. RoboSavvy G1-EStop) — order it.
-- [ ] Tests: every gate has a pytest that proves the LLM path cannot bypass it.
+- [x] Tests: every gate has a pytest that proves the LLM path cannot bypass it (`apps/bridge/tests/test_safety.py`).
+- [ ] Hardware checks: [test-day/safety.md](test-day/safety.md). Spoken T2 confirmation and a console Confirm button are still open.
 
 ### 0.3 G1 security — [05 §C.4](research/05-references-voice-safety.md)
 
