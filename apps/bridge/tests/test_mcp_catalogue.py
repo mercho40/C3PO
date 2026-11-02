@@ -79,6 +79,11 @@ EXPECTED_TOOLS = {
     "recall_landmark",
     "list_landmarks",
     "forget_landmark",
+    # object memory (PLAN Phase 4.1-4.2) — look_around physically turns
+    "recall_object",
+    "list_objects",
+    "forget_object",
+    "look_around",
     # control
     "cancel_task",
     "stop_everything",
@@ -168,6 +173,8 @@ def test_motion_tools_say_what_they_do_to_a_real_robot(tools):
         "zero_torque",
         "walk_to",
         "turn",
+        # Turns in place in steps, through `turn`.
+        "look_around",
         # The free-form movers: a gesture plays a whole-arm animation, move_arm
         # drives raw joints, set_hand closes real fingers with no dead-man.
         "gesture",
@@ -195,7 +202,13 @@ def test_read_only_tools_take_no_required_arguments(tools):
     check_motion_mode in particular is the first call when the robot accepts
     commands and does nothing, so it has to be trivially callable.
     """
-    for name in ("get_state", "check_motion_mode", "list_active_tasks", "list_landmarks"):
+    for name in (
+        "get_state",
+        "check_motion_mode",
+        "list_active_tasks",
+        "list_landmarks",
+        "list_objects",
+    ):
         schema = tools[name].inputSchema or {}
         assert not schema.get("required"), f"{name} should take no required arguments"
 
@@ -420,6 +433,8 @@ def test_untested_motion_is_not_advertised_as_working(tools):
         # is unconfirmed until TELEOP_BRAINCO_OPEN_AT is settled by watching.
         "set_hand",
         "open_hands",
+        # Sweeps with `turn` and needs live perception; never run on the robot.
+        "look_around",
     }
     # `turn` GRADUATED 2026-08-26 and is deliberately no longer listed here.
     # Two supervised runs, operator watching, feet down and the gantry slack:

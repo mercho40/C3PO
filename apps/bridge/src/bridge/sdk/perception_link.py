@@ -238,6 +238,10 @@ class PerceptionLink:
         self.scans_rejected = 0
         self.reports_received = 0
         self.reports_rejected = 0
+        # Called with every ACCEPTED report, on the reader thread. main() points
+        # it at the object memory (bridge/object_memory.py). Read-only: nothing
+        # hung here can actuate.
+        self.on_report: Callable[[dict[str, Any]], None] | None = None
 
         # --- the gate
         self._enabled = False
@@ -358,6 +362,12 @@ class PerceptionLink:
             self._report = report
             self._report_at = self._clock()
             self.reports_received += 1
+        if self.on_report is not None:
+            try:
+                self.on_report(report)
+            except Exception:
+                # A listener bug must not cost us the world summary itself.
+                log.exception("perception.report.listener_failed")
         return True
 
     def latest_report(self) -> tuple[dict[str, Any] | None, float | None]:
