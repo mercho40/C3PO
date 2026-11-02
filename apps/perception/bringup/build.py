@@ -222,6 +222,15 @@ def run_build(
     perception_dir = os.path.join(c3po_dir, "apps", "perception")
     models_dir = env.get("C3PO_MODELS_DIR", os.path.join(home, ".c3po", "models"))
     engine_volume = env.get("C3PO_ENGINE_VOLUME", "c3po-trt-engines")
+    # Which model: the same three env vars the vision container reads, so the
+    # engine built here is the one perception_up then loads (test-day doc).
+    onnx = env.get("C3PO_ONNX", "/opt/c3po/models/yolo11n.onnx")
+    labels = env.get("C3PO_LABELS", "/opt/c3po/models/labels.txt")
+    engine = env.get("C3PO_ENGINE", "/opt/c3po/engines/yolo11n.fp16.plan")
+    model_env: List[str] = []
+    for key in ("C3PO_ONNX", "C3PO_ENGINE"):
+        if env.get(key):
+            model_env += ["-e", f"{key}={env[key]}"]
 
     allowed, lines = precheck(
         arch=env.get("C3PO_FAKE_ARCH") or os.uname().machine,
@@ -257,7 +266,7 @@ def run_build(
 
         elif step == "engine":
             if not dry_run:
-                for required in ("yolo11n.onnx", "labels.txt"):
+                for required in (os.path.basename(onnx), os.path.basename(labels)):
                     if not os.path.exists(os.path.join(models_dir, required)):
                         err(f"no {required} in {models_dir}")
                         err("export it off-robot with opset<=17 — ultralytics defaults to 20,")
@@ -269,6 +278,7 @@ def run_build(
                 "run", "--rm", "--runtime", "nvidia",
                 "-v", f"{models_dir}:/opt/c3po/models:ro",
                 "-v", f"{engine_volume}:/opt/c3po/engines",
+                *model_env,
                 VISION_IMAGE, "true",
             ]
             if dry_run:
@@ -284,7 +294,7 @@ def run_build(
                 "-v", f"{engine_volume}:/opt/c3po/engines",
                 VISION_IMAGE,
                 "/usr/src/tensorrt/bin/trtexec",
-                "--loadEngine=/opt/c3po/engines/yolo11n.fp16.plan",
+                f"--loadEngine={engine}",
                 "--iterations=200", "--avgRuns=100", "--noDataTransfers",
             ]
             if dry_run:
