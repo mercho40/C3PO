@@ -160,7 +160,9 @@ describe("closed loop and perception", () => {
   });
 
   test("the world snapshot is inlined when the bridge answers", async () => {
-    const line = await worldSummary(async () => ({ objects: [{ label: "cup" }] }));
+    const line = await worldSummary(async () => ({
+      objects: [{ label: "cup" }],
+    }));
     expect(line).toContain('"label":"cup"');
   });
 

@@ -108,7 +108,7 @@ def generate(jpeg: bytes, prompt: str) -> str:
         {"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(jpeg).decode()}},
         {"text": f"{prompt}\n\n{_DATA_NOT_ORDERS}"},
     ]
-    attempts = [
+    attempts: list[tuple[str, dict[str, Any]]] = [
         (
             f"{API_BASE}/interactions",
             {

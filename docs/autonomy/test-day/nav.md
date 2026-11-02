@@ -15,13 +15,13 @@ reaches the robot. Shell lines run on the robot (`ssh c3po`, then `bash -l`).
 
 ## What is new, and the flags that turn it off
 
-| Piece | Default | Rollback |
-| --- | --- | --- |
-| `goal_relay` node (`/c3po/nav_goal` → NavigateToPose → `/c3po/nav_status`) | on, in every `nav2*` stage | none needed. It only relays goals, and goals only move the robot through an armed gate |
-| Collision Monitor after the velocity smoother (stop box 0.6 m ahead, slow box 1.0 m) | **on** | `C3PO_NAV_COLLISION_MONITOR=0` (smoother publishes `/c3po/cmd_vel` as before) |
-| slam_toolbox mapping / localization + map_server | **off** | leave `C3PO_NAV_SLAM` unset |
-| MPPI (Omni) controller | **off**, DWB stays | leave `C3PO_NAV_CONTROLLER` unset |
-| MCP tools `navigate_to`, `navigate_to_landmark`, `navigation_status`, `cancel_navigation` | present | they refuse while the gate is closed. `stop_everything` cancels the goal |
+| Piece                                                                                     | Default                    | Rollback                                                                               |
+| ----------------------------------------------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------- |
+| `goal_relay` node (`/c3po/nav_goal` → NavigateToPose → `/c3po/nav_status`)                | on, in every `nav2*` stage | none needed. It only relays goals, and goals only move the robot through an armed gate |
+| Collision Monitor after the velocity smoother (stop box 0.6 m ahead, slow box 1.0 m)      | **on**                     | `C3PO_NAV_COLLISION_MONITOR=0` (smoother publishes `/c3po/cmd_vel` as before)          |
+| slam_toolbox mapping / localization + map_server                                          | **off**                    | leave `C3PO_NAV_SLAM` unset                                                            |
+| MPPI (Omni) controller                                                                    | **off**, DWB stays         | leave `C3PO_NAV_CONTROLLER` unset                                                      |
+| MCP tools `navigate_to`, `navigate_to_landmark`, `navigation_status`, `cancel_navigation` | present                    | they refuse while the gate is closed. `stop_everything` cancels the goal               |
 
 With every flag unset, `c3po up nav2` passes the same launch arguments it
 always did. The only differences are the monitor and the relay.
@@ -85,6 +85,7 @@ nav ros2 topic echo --once /c3po/nav_status          # goal.state canceled
 ```
 
 **Failure readings:**
+
 - `activate` fails and `docker logs c3po-perception-nav` names `collision_monitor`: a parameter spelling mismatch (Humble uses `max_points` and a flat `points` list). Rerun with `C3PO_NAV_COLLISION_MONITOR=0 c3po up nav2-fake` and note the error.
 - `nav2_ready: false` after `activate` succeeded: bt_navigator is not active. Check the logs.
 - No `/c3po/nav_status` at all: `goal_relay` crashed. Check `docker logs c3po-perception-nav | grep goal_relay`.
@@ -151,6 +152,7 @@ ls -l ~/.c3po/maps/                        # lab.posegraph lab.data lab.yaml lab
 ```
 
 **Failure readings:**
+
 - `LaserRangeScan contains N range readings, expected M` in the logs: the 360° scan's bin count. Note it and stop. The fix is in `pointcloud_to_laserscan.yaml` `angle_max`, which also changes the costmap's input, so it needs its own step.
 - The map smears when the robot walks: sway is tilting the scan. Note it. Research 03 §2 step 2 (3D localization) is the documented next move, not tuning.
 

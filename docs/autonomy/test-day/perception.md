@@ -10,12 +10,12 @@ shapes and ops, the detector's decoding and masks on real ONNX Runtime outputs, 
 grounding/plane/tracker maths, and both tools end to end. **Nothing has run on TensorRT
 8.5 or on the D435i yet** — §3 is the first time.
 
-| export (all opset 16, input `[1,3,640,640]`)         | outputs                               | classes |
-| ---------------------------------------------------- | ------------------------------------- | ------- |
-| `yoloe-26s-seg.onnx` (default, NMS-free)             | `[1,300,38]` + protos `[1,32,160,160]` | 1,223   |
-| `yoloe-26s-seg-pf.onnx` (prompt-free)                | `[1,300,38]` + protos                  | 4,585   |
-| `yoloe-26s-seg.onnx --raw-head` (fallback, §3)       | `[1,1259,8400]` + protos               | 1,223   |
-| `yolo11n.onnx` (today's, the baseline)               | `[1,84,8400]`                          | 80      |
+| export (all opset 16, input `[1,3,640,640]`)   | outputs                                | classes |
+| ---------------------------------------------- | -------------------------------------- | ------- |
+| `yoloe-26s-seg.onnx` (default, NMS-free)       | `[1,300,38]` + protos `[1,32,160,160]` | 1,223   |
+| `yoloe-26s-seg-pf.onnx` (prompt-free)          | `[1,300,38]` + protos                  | 4,585   |
+| `yoloe-26s-seg.onnx --raw-head` (fallback, §3) | `[1,1259,8400]` + protos               | 1,223   |
+| `yolo11n.onnx` (today's, the baseline)         | `[1,84,8400]`                          | 80      |
 
 CPU decode on an M3, real outputs: NMS-free 0.2 ms; raw head 10 ms (and 42 MB/frame off
 the GPU). The Orin's A78 cores are slower — expect roughly 2-4x.

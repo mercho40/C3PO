@@ -67,16 +67,16 @@ Write down the real time; nobody has measured it yet.
 
 Ask Claude Code to call each tool and paste the raw result:
 
-| Call                                                   | Expect                                                                                                                                                                                                   |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `look()`                                               | `scene.untrusted_text` describes the room; `objects` = detector list (empty when the detector is down: see `sources.detector`); `frame_source` = `videohub` or `vision`; `latency_s` a few seconds |
-| `look(question="¿Cuántas personas hay?")`              | answers the count first, in Spanish                                                                                                                                                                      |
-| `find_object(query="silla")` with a chair 1–2 m ahead  | `count ≥ 1`, `bearing_deg` near 0 for a centred chair, **positive when the chair is on the robot's left**                                                                                                |
-| same, with the vision container running                | `range_m` filled from the `chair` detector object (`range_from` names it), `map_xy_m` present when pose is known                                                                                         |
-| `find_object(query="billetera")` with a wallet on a table | finds it even though COCO has no wallet class; `range_m` probably null (no detector match). That is honest, not a bug                                                                                   |
-| `verify(question="¿hay una silla delante?")`           | `answer: yes`, `reason.untrusted_text` mentions the chair                                                                                                                                                |
-| `verify(question="is the door open?")` with no door in view | `answer: unsure`                                                                                                                                                                                         |
-| `ask_user(question="¿Cuál taza querés?")`              | robot says it aloud in Spanish; result has `speech.status: ok`                                                                                                                                           |
+| Call                                                        | Expect                                                                                                                                                                                             |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `look()`                                                    | `scene.untrusted_text` describes the room; `objects` = detector list (empty when the detector is down: see `sources.detector`); `frame_source` = `videohub` or `vision`; `latency_s` a few seconds |
+| `look(question="¿Cuántas personas hay?")`                   | answers the count first, in Spanish                                                                                                                                                                |
+| `find_object(query="silla")` with a chair 1–2 m ahead       | `count ≥ 1`, `bearing_deg` near 0 for a centred chair, **positive when the chair is on the robot's left**                                                                                          |
+| same, with the vision container running                     | `range_m` filled from the `chair` detector object (`range_from` names it), `map_xy_m` present when pose is known                                                                                   |
+| `find_object(query="billetera")` with a wallet on a table   | finds it even though COCO has no wallet class; `range_m` probably null (no detector match). That is honest, not a bug                                                                              |
+| `verify(question="¿hay una silla delante?")`                | `answer: yes`, `reason.untrusted_text` mentions the chair                                                                                                                                          |
+| `verify(question="is the door open?")` with no door in view | `answer: unsure`                                                                                                                                                                                   |
+| `ask_user(question="¿Cuál taza querés?")`                   | robot says it aloud in Spanish; result has `speech.status: ok`                                                                                                                                     |
 
 **Bearing check.** Put an object at the very left edge of the image. `bearing_deg`
 should be about +34° on videohub (1920×1080, half of 69.4° HFOV) or about +27° on the
@@ -99,13 +99,13 @@ Check the tool-call log (`tool_call_log` / the console's tool parts) for any
 First check that the deployed `apps/back/.env` does not still say `AGENT_MAX_STEPS=12`.
 The default is now 40, plus `AGENT_TURN_BUDGET_S=240`.
 
-| Say / type                                                    | Expect                                                                                                                                              |
-| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| "¿Qué ves?"                                                   | one `look` call, a short Spanish answer                                                                                                             |
-| "Decime si hay una taza en la mesa"                           | `verify` (or `look` with a question), answered from the tool result                                                                                 |
-| "¿Dónde está mi billetera?"                                   | `find_object("billetera")`, then the bearing in words ("a tu izquierda, a unos 30°")                                                                |
-| "Girá hasta encontrar una botella"                            | loop of `turn` → `find_object` → … until `count ≥ 1`, then `verify`; at most a few retries, then it reports failure instead of looping on |
-| "Traeme la taza" with two cups in view                        | `ask_user` (or a clarifying reply in chat) instead of guessing                                                                                      |
+| Say / type                             | Expect                                                                                                                                    |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| "¿Qué ves?"                            | one `look` call, a short Spanish answer                                                                                                   |
+| "Decime si hay una taza en la mesa"    | `verify` (or `look` with a question), answered from the tool result                                                                       |
+| "¿Dónde está mi billetera?"            | `find_object("billetera")`, then the bearing in words ("a tu izquierda, a unos 30°")                                                      |
+| "Girá hasta encontrar una botella"     | loop of `turn` → `find_object` → … until `count ≥ 1`, then `verify`; at most a few retries, then it reports failure instead of looping on |
+| "Traeme la taza" with two cups in view | `ask_user` (or a clarifying reply in chat) instead of guessing                                                                            |
 
 Also check that the first request of a turn includes the world snapshot. The system
 prompt ends with `World snapshot (describe_surroundings, start of turn): {…}`. With
