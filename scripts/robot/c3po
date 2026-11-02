@@ -16,10 +16,13 @@ Usage:
   c3po gemm start | stop
   c3po teleop start | stop
   c3po camera take
+  c3po map start [name] | save [name]
 
 Default profile: operator (bridge + camera perception + world model).
 Compatibility aliases: start = up core, stop = down.
 Perception stages: fake, odometry, perception, nav2, nav2-fake, stt
+Nav2 opt-ins (env): C3PO_NAV_SLAM=mapping|localization, C3PO_NAV_MAP=<name>,
+  C3PO_NAV_CONTROLLER=mppi, C3PO_NAV_COLLISION_MONITOR=0 (unset = previous stack)
 No profile arms Nav2 or bypasses preflight/motion gates.
 EOF
 }
@@ -132,6 +135,15 @@ case "$command" in
             start) require_no_args "teleop start" "$@"; exec "$here/run_teleop" ;;
             stop)  require_no_args "teleop stop" "$@"; exec "$here/stop_teleop" ;;
             *)     die_usage "teleop needs start or stop" ;;
+        esac
+        ;;
+    map)
+        sub="${1:-}"; shift || true
+        [ "$#" -le 1 ] || die_usage "map $sub takes at most a map name"
+        case "$sub" in
+            start) exec "$here/nav_map_start" "$@" ;;
+            save)  exec "$here/nav_map_save" "$@" ;;
+            *)     die_usage "map needs start or save" ;;
         esac
         ;;
     camera)

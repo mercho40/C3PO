@@ -407,8 +407,11 @@ error. **The rebuild carrying that pin has not run yet.**
 ```
 nav/            Dockerfile + entrypoint, fastlio-publish-twist.patch,
                 ws/src/c3po_perception: g1_odom_tf.py, world_model_publisher.py,
-                configs (MID360, FAST-LIO, Nav2, pointcloud_to_laserscan),
+                goal_relay.py + nav_goal.py (bridge JSON goals -> NavigateToPose),
+                configs (MID360, FAST-LIO, Nav2 + mppi/map-frame overlays,
+                slam_toolbox, pointcloud_to_laserscan),
                 launch/{fake,odometry,perception,nav2}.launch.py
+                (nav2 opt-ins: C3PO_NAV_* — docs/autonomy/test-day/nav.md)
 vision/         Dockerfile + entrypoint (builds the TRT engine on first start),
                 c3po_vision: detector.py, grounding.py, ros_idl.py, stream.py
 config/         cyclonedds-domain42.xml — shared by both containers and the bridge

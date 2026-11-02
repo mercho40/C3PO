@@ -225,6 +225,45 @@ def stage_names() -> List[str]:
     return list(STAGES)
 
 
+# --- Phase 3 nav flags --------------------------------------------------------
+
+#: env var -> (launch argument, allowed values, default). The default is what
+#: nav2.launch.py declares, and a default is NEVER passed: an unset environment
+#: produces the exact argv every run before these flags produced, which is what
+#: makes "unset it" a complete rollback.
+NAV_FLAGS = (
+    ("C3PO_NAV_SLAM", "slam", ("off", "mapping", "localization"), "off"),
+    ("C3PO_NAV_CONTROLLER", "controller", ("dwb", "mppi"), "dwb"),
+    ("C3PO_NAV_COLLISION_MONITOR", "collision_monitor", ("1", "0"), "1"),
+)
+
+#: Host side of nav2.launch.py's MAPS_DIR. Read-write: mapping saves into it.
+MAPS_SUBDIR = ".c3po/maps"
+
+
+def nav_options(env: Dict[str, str], home: str) -> Tuple[List[str], List[str]]:
+    """(launch args, volumes) for nav2.launch.py from C3PO_NAV_*. Raises ValueError."""
+    args: List[str] = []
+    for var, arg, allowed, default in NAV_FLAGS:
+        value = env.get(var, default).strip().lower() or default
+        if value not in allowed:
+            raise ValueError(f"{var}={value!r}: expected one of {', '.join(allowed)}")
+        if value != default:
+            if arg == "collision_monitor":
+                value = "true" if value == "1" else "false"
+            args.append(f"{arg}:={value}")
+
+    volumes: List[str] = []
+    if env.get("C3PO_NAV_SLAM", "off").strip().lower() not in ("", "off"):
+        name = env.get("C3PO_NAV_MAP", "c3po").strip() or "c3po"
+        if not name.replace("_", "").replace("-", "").isalnum():
+            raise ValueError(f"C3PO_NAV_MAP={name!r}: letters, digits, '_' and '-' only")
+        if name != "c3po":
+            args.append(f"map:={name}")
+        volumes.append(f"{home}/{MAPS_SUBDIR}:/opt/c3po/maps")
+    return args, volumes
+
+
 # --- building the containers for a stage ------------------------------------
 
 
@@ -252,6 +291,10 @@ def containers_for(
             # Livox, and then run the republish path anyway — a stolen sensor
             # nothing reads, with every log line still saying "republish".
             launch_args.append("lidar_source:=driver")
+        nav_volumes: List[str] = []
+        if stage.launch_file == "nav2.launch.py":
+            nav_args, nav_volumes = nav_options(env, home)
+            launch_args += nav_args
         labels = {"c3po.stage": stage.name}
         if nav_digest:
             labels["c3po.image"] = nav_digest
@@ -266,7 +309,7 @@ def containers_for(
                     "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
                     "CYCLONEDDS_URI": "file:///opt/c3po/config/cyclonedds-domain42.xml",
                 },
-                volumes=(config_mount, logs_mount),
+                volumes=(config_mount, logs_mount, *nav_volumes),
                 labels=labels,
                 command=("ros2", "launch", "c3po_perception", stage.launch_file) + tuple(launch_args),
             )

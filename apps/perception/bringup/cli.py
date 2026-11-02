@@ -19,7 +19,17 @@ import sys
 import time
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from bringup.spec import NAV, STAGES, STT, VISION, Stage, containers_for, containers_to_replace
+from bringup.spec import (
+    MAPS_SUBDIR,
+    NAV,
+    STAGES,
+    STT,
+    VISION,
+    Stage,
+    containers_for,
+    containers_to_replace,
+    nav_options,
+)
 
 PREFIX = "c3po-perception"
 
@@ -87,6 +97,9 @@ class Runner:
 
     def makedirs(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
+
+    def exists(self, path: str) -> bool:
+        return os.path.exists(path)
 
     def shell(self, argv: Sequence[str]) -> Tuple[int, str]:
         """A non-docker command. Same shape as `docker`, same reason."""
@@ -239,6 +252,24 @@ def bring_up(
     if lidar_source == "driver":
         warn("C3PO_LIDAR_SOURCE=driver — claiming the Livox device itself")
 
+    if stage.launch_file == "nav2.launch.py":
+        # Validated BEFORE anything is taken: a typo in a flag must not cost
+        # the other team their sensors for a launch that was never going to run.
+        try:
+            nav_args, _ = nav_options(env, home)
+        except ValueError as exc:
+            err(str(exc))
+            return 2
+        for arg in nav_args:
+            warn(f"nav flag: {arg}")
+        if "slam:=localization" in nav_args:
+            map_yaml = os.path.join(
+                home, MAPS_SUBDIR, (env.get("C3PO_NAV_MAP", "") or "c3po") + ".yaml")
+            if not dry_run and not runner.exists(map_yaml):
+                err(f"no saved map at {map_yaml} — run a mapping session and "
+                    "scripts/robot/nav_map_save first, or unset C3PO_NAV_SLAM")
+                return 1
+
     take_over = env.get("C3PO_TAKE_OVER", "0") == "1"
     if not _arbitrate(stage, runner, scripts_dir, dry_run, lidar_source, take_over):
         return 1
@@ -266,6 +297,9 @@ def bring_up(
         # on a laptop — the seam is only worth having if nothing routes around it.
         runner.makedirs(log_dir)
         runner.makedirs(os.path.join(home, ".c3po", "models"))
+        # Before `docker create`: a bind source that does not exist is created
+        # by the daemon, as root, and the save script can then not write to it.
+        runner.makedirs(os.path.join(home, MAPS_SUBDIR))
 
     for container in wanted:
         args = container.create_args()

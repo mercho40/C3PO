@@ -180,6 +180,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       || (echo "FATAL: domain_bridge did not install" && false) \
  && rm -rf /var/lib/apt/lists/*
 
+# --- Phase 3: a saved map, and the hop after the smoother --------------------
+#
+# Its own layer, AFTER the expensive colcon build above, so adding it costs one
+# apt install and not the 8-minute PCL rebuild. slam_toolbox is not pulled in by
+# ros-humble-navigation2. nav2_collision_monitor and nav2_map_server are, but
+# nav2.launch.py now launches both, so they are asserted rather than assumed: a
+# missing one aborts the lifecycle sequence at activation, long after a green
+# build. MPPI is NOT asserted — it is opt-in, and a check belongs to whoever
+# selects it (docs/autonomy/test-day/nav.md).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-humble-slam-toolbox \
+ && test -d /opt/ros/humble/share/slam_toolbox \
+      || (echo "FATAL: slam_toolbox did not install" && false) \
+ && test -d /opt/ros/humble/share/nav2_collision_monitor \
+      || (echo "FATAL: nav2_collision_monitor missing from ros-humble-navigation2" && false) \
+ && test -d /opt/ros/humble/share/nav2_map_server \
+      || (echo "FATAL: nav2_map_server missing from ros-humble-navigation2" && false) \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY ws/src/c3po_perception src/c3po_perception
 
 # Our package alone, so this is the only layer a launch/config/python edit
