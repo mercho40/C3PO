@@ -12,10 +12,17 @@
     "start": "turbo run start"
   },
   "devDependencies": {
+<<<<<<< Updated upstream
     "prettier": "^3.8.3",
     "prettier-plugin-svelte": "^3.5.1",
     "prettier-plugin-tailwindcss": "^0.7.2",
     "turbo": "^2.9.6"
+=======
+    "prettier": "^3.9.10",
+    "prettier-plugin-svelte": "^4.1.1",
+    "prettier-plugin-tailwindcss": "^0.8.1",
+    "turbo": "^2.11.10"
+>>>>>>> Stashed changes
   },
   "engines": {
     "node": ">=18"
