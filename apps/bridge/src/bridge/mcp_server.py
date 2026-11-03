@@ -4136,12 +4136,19 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
-async def _relay_stream(url: str):
+async def _relay_stream(url: str, request):  # noqa: ANN001 - starlette Request
     """Pipe an upstream MJPEG response straight through to the client.
 
     Reads in a thread: `urllib` is blocking, and blocking the event loop here
     would stall every other route — `stop_everything` among them, which is the
     one that must never wait behind a video frame.
+
+    ASKS WHETHER THE VIEWER IS STILL THERE, every chunk. Nothing else ends this
+    loop when they leave: the upstream never stops sending, and the generator is
+    only finalized when the server cancels it or the GC gets to it. Until then it
+    holds one of the vision server's four stream slots — four abandoned viewers
+    (a reload, a dropped tunnel) and it refuses everyone with 503, the bridge's
+    own next relay included. Seen 2026-10-27: a live camera, a black headset.
     """
     import urllib.request
 
@@ -4152,6 +4159,8 @@ async def _relay_stream(url: str):
         return
     try:
         while True:
+            if await request.is_disconnected():
+                return
             chunk = await asyncio.to_thread(resp.read, 8192)
             if not chunk:
                 return
@@ -4218,7 +4227,7 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
         # JPEG decode per frame on the bridge, which owns stop_everything.
         media_type, headers = camera_relay.relay_headers("stream", origin)
         return StreamingResponse(
-            _relay_stream(camera_relay.vision_url("stream.mjpg")),
+            _relay_stream(camera_relay.vision_url("stream.mjpg"), request),
             media_type=media_type,
             headers=headers,
         )
