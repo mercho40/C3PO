@@ -16,6 +16,7 @@ parallel research passes (one over our own code, five over the field as of late 
 | [`research/03-mapping-navigation.md`](research/03-mapping-navigation.md)           | Saved map, object memory, find / explore / follow-me, Nav2 tuning                       |
 | [`research/04-manipulation.md`](research/04-manipulation.md)                       | Arms + BrainCo hands: IK, teleop data, imitation learning, whole-body                   |
 | [`research/05-references-voice-safety.md`](research/05-references-voice-safety.md) | Systems to copy (HomeBody, Unitree RobotSkills), voice, safety, evaluation              |
+| [`audit/README.md`](audit/README.md)                                               | 2026-11-03 deep audit: bugs, security, fixes before the robot moves, tech to adopt      |
 
 Every external claim in `research/` carries a URL. Items the researchers could not verify
 are listed at the end of each file — read those before committing money or a reflash.
