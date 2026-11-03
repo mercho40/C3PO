@@ -16,8 +16,8 @@ WHAT THIS PUBLISHES, AND WHY EVERY TICK
      "unranged": [...]}
 
 `objects` are ALREADY EGOCENTRIC — label, range_m, bearing_deg, confidence,
-exactly `world_model.Observation`'s keyword arguments — plus two ADDITIVE
-fields older consumers ignore: `track_id` (tracking.py) and `depth_source`
+exactly `world_model.Observation`'s keyword arguments — plus three ADDITIVE
+fields older consumers ignore: `track_id` (tracking.py), `cam_xyz` (optical-frame point, m) and `depth_source`
 ("direct" | "plane", grounding.ground_box). `unranged` (also additive) holds
 what was SEEN but could not be ranged — label, bearing_deg, confidence,
 track_id, depth_source "invalid" — kept out of `objects` because a thing with
@@ -1026,6 +1026,8 @@ def ground_all(
             continue
         obj = to_observation(label, g, confidence)
         obj["depth_source"] = g.depth_source
+        if g.p_opt is not None:
+            obj["cam_xyz"] = [round(v, 3) for v in g.p_opt]
         if track_id is not None:
             obj["track_id"] = track_id
         grounded.append((g.range_m, obj))

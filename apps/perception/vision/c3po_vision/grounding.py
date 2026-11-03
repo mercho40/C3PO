@@ -214,6 +214,9 @@ class Grounded:
     # THROUGH the object (glass) or not at all, so depth came from the support
     # surface under it — see `ground_box`. Published, so the planner knows.
     depth_source: str = "direct"
+    # The deprojected point in the colour-optical frame (x right, y down, z forward), before any
+    # extrinsic. The bridge's arm IK maps it through the URDF's CAD mount instead of ours.
+    p_opt: tuple[float, float, float] | None = None
 
 
 def norm180(deg: float) -> float:
@@ -661,6 +664,7 @@ def ground_box(
         depth_m=z_m,
         depth_samples=n,
         depth_source=source,
+        p_opt=(float(p_opt[0]), float(p_opt[1]), float(p_opt[2])),
     )
 
 

@@ -184,6 +184,9 @@ def test_every_ranged_object_carries_a_track_id_and_a_depth_source():
     assert by_label["drinking glass"]["depth_source"] == "plane"
     assert by_label["backpack"]["depth_source"] == "direct"
     assert {o["track_id"] for o in objects} == {1, 2}
+    # The optical-frame point the bridge's arm IK uses: z is the depth that was ranged.
+    bag = by_label["backpack"]["cam_xyz"]
+    assert len(bag) == 3 and abs(bag[2] - 1.5) < 1e-6 and bag[0] > 0
 
 
 def test_a_detection_with_no_depth_is_reported_unranged_never_at_range_zero():
