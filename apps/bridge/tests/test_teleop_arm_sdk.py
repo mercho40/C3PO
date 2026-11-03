@@ -281,6 +281,23 @@ async def test_request_release_returns_immediately_and_finishes_on_its_own(drive
     assert driver.published_frames[-1]["weight"] == pytest.approx(0.0)
 
 
+async def test_request_release_freezes_a_move_in_progress(driver, enabled):
+    # An abort mid-slew must stop the arm where it is, not finish the move
+    # during the 2 s ramp-down.
+    await driver.engage()
+    await asyncio.sleep(0.05)
+    for _ in range(arm_sdk.JUMP_CONFIRM_FRAMES + 1):  # past the jump guard
+        driver.command(None, ArmAngles(*([0.8] * 7)))
+    await asyncio.sleep(0.1)
+    assert max(abs(q) for q in driver.target_angles[7:]) > 0.5  # a move is in flight
+    driver.request_release()
+    frozen = list(driver.target_angles)
+    await asyncio.sleep(0.2)
+    assert list(driver.current_angles) == pytest.approx(frozen, abs=1e-9)
+    assert max(abs(q) for q in frozen[7:]) < 0.5  # stopped well short of 0.8
+    await driver.release()
+
+
 async def test_repeated_release_requests_are_idempotent(driver, enabled):
     await driver.engage()
     await asyncio.sleep(0.05)

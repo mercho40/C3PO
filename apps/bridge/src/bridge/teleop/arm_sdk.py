@@ -343,6 +343,9 @@ class ArmSdkDriver:
         """
         if not self._engaged or self._releasing:
             return
+        # Freeze where the arm IS: the loop keeps slewing toward _target while
+        # it ramps down, so an abort mid-motion would otherwise finish the move.
+        self._target = list(self._current)
         self._releasing = True
         log.info("arm_sdk.releasing", weight=round(self._weight, 3))
 
