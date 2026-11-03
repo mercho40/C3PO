@@ -76,3 +76,14 @@ rule and arm-reach rule both depend on it.
 - A stuck **PARAR ACTIVO**: **Reanudar** (admin). Without a confirm secret: re-engage the headset.
 - Tools refused with "needs an operator's confirmation": that is the T2 gate, press the card's
   **Confirmar**.
+
+## Later (to-do)
+
+- **Voice through the Meta Quest.** The operator speaks into the Quest's microphone and
+  watches the robot do it, from the headset (camera view already reaches it through
+  apps/back). Sketch: the headset page captures the mic with `getUserMedia` and streams it
+  to apps/back's voice session (the realtime engine already takes raw PCM from a source;
+  the legacy one listens on the robot's own mic), the transcript and the agent's tool calls
+  show as a small panel in the immersive view, and **Confirmar** for T2 is a button there
+  too. Needs: an in-headset PARAR (audit §1.4, there is none in immersive-vr today), the
+  PARAR latch chip in the headset, and a push-to-talk so the room is not the prompt.
