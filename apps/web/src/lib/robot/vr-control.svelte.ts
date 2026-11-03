@@ -103,6 +103,7 @@ const YAW_DEADZONE_RAD = (6 * Math.PI) / 180; // ignore natural head wobble
 const YAW_FULL_SCALE_RAD = (30 * Math.PI) / 180; // head turn that saturates vyaw
 const YAW_MAX_RAD_S = 0.3; // below the bridge's 0.3 hard cap
 const VR_STALE_MS = 800; // no fresh pose sample in this long -> treat as 0
+export const STOP_CHORD_MS = 300; // both grips this long = PARAR; a relaxed hold is shorter-lived
 
 // USB link probe cadence. See `#startLinkWatch`.
 const LINK_PROBE_MS = 5000;
@@ -402,6 +403,9 @@ export class VrControl {
     grips: 0,
   };
   #voice: VrControlOptions["voice"];
+  // The PARAR chord's hold (see `#applyStopChord`).
+  #chordSince: number | null = null;
+  #chordFired = false;
 
   // Raw pose, updated at XR frame rate (~72-120Hz) -- kept as plain fields
   // rather than $state so looking around doesn't force a Svelte re-render
@@ -1152,15 +1156,30 @@ export class VrControl {
    * `runSkill`, so the headset obeys the same lock and outcome rules as the
    * tiles on the page.
    */
+  /**
+   * IN-HEADSET PARAR: both grips held for STOP_CHORD_MS. Called FIRST in
+   * `onSample`, before anything that could throw, and before the observer
+   * guard: a stop is never anyone's to withhold. Same `estop.press()` as the
+   * page's button (it also ends agent turns). The hold is what keeps a relaxed
+   * grip on both controllers from stopping the robot; one hand never counts.
+   */
+  // shortcut: the press goes through apps/back; if back is down this does nothing. Add a direct teleop-channel stop.
+  #applyStopChord(grips: number, now: number): void {
+    if (grips < 2) {
+      this.#chordSince = null;
+      this.#chordFired = false;
+      return;
+    }
+    this.#chordSince ??= now;
+    if (!this.#chordFired && now - this.#chordSince >= STOP_CHORD_MS) {
+      this.#chordFired = true;
+      void estop.press();
+    }
+  }
+
   #applyMenuButtons(b: XrButtons): void {
     const prev = this.#prevButtons;
     this.#prevButtons = { ...b };
-    // IN-HEADSET PARAR: both grips at once. Before the observer guard — a stop
-    // is never anyone's to withhold — and on the press edge of the chord, the
-    // same `estop.press()` the page's button calls (it also ends agent turns).
-    // Nothing else uses the grips, and one hand's squeeze is not the chord; a
-    // startled operator grabbing both controllers is exactly who it is for.
-    if (b.grips >= 2 && prev.grips < 2) void estop.press();
     // Observers cycle the highlight — reading the list is not commanding — but
     // the trigger does nothing.
     if (b.primary && !prev.primary) this.#vr?.advanceMenu();
@@ -1227,6 +1246,7 @@ export class VrControl {
     const session = new XrTeleopSession(
       {
         onSample: (s) => {
+          this.#applyStopChord(s.buttons.grips, Date.now());
           this.#yawErrorRadians = s.yawErrorRadians;
           this.#headPosition = s.headPosition;
           this.#handLeft = s.left;

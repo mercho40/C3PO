@@ -89,11 +89,23 @@ describe("observe-only commands nothing", () => {
     );
   });
 
-  test("the in-headset PARAR fires before the observer guard; talk only after it", () => {
+  test("the in-headset PARAR has no observer guard, needs a 300 ms hold, and runs first", () => {
+    const chord = body("#applyStopChord(grips: number, now: number): void {");
+    expect(chord).toContain("estop.press()");
+    expect(chord).toContain("STOP_CHORD_MS");
+    expect(chord).not.toContain("viewOnly");
+    // First in onSample: nothing that can throw (walk axis, menu) runs before it.
+    const sample = controller.slice(controller.indexOf("onSample: (s) => {"));
+    expect(sample.indexOf("this.#applyStopChord(")).toBeLessThan(
+      sample.indexOf("this.#applyWalkAxis("),
+    );
+    expect(sample.indexOf("this.#applyStopChord(")).toBeLessThan(
+      sample.indexOf("this.#yawErrorRadians"),
+    );
+    // Talk and voice items stay behind the observer guard.
     const menu = body("#applyMenuButtons(b: XrButtons): void {");
     const guard = menu.indexOf("if (this.viewOnly) return;");
-    expect(menu.indexOf("estop.press()")).toBeGreaterThan(-1);
-    expect(menu.indexOf("estop.press()")).toBeLessThan(guard);
+    expect(menu).not.toContain("estop.press()");
     expect(menu.indexOf("this.#voice?.onTalk(")).toBeGreaterThan(guard);
     expect(menu.indexOf("this.#voice?.onItem(")).toBeGreaterThan(guard);
   });

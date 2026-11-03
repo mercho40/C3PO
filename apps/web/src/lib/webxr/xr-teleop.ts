@@ -1113,14 +1113,18 @@ export class XrTeleopSession {
     let primary = false;
     let secondary = false;
     let grips = 0;
+    let controllers = 0;
     for (const source of session.inputSources) {
       const gp = controllerGamepad(source);
       if (!gp) continue;
+      controllers += 1;
       if (buttonPressed(gp, BUTTON_TRIGGER)) trigger = true;
       if (buttonPressed(gp, BUTTON_PRIMARY)) primary = true;
       if (buttonPressed(gp, BUTTON_SECONDARY)) secondary = true;
       if (buttonPressed(gp, BUTTON_GRIP)) grips += 1;
     }
+    // Hand tracking: no gamepad, so no grip chord; the panel says so.
+    this.#menu?.setControllers(controllers > 0);
     return { trigger, primary, secondary, grips };
   }
 

@@ -37,6 +37,8 @@ export function resumeError(httpStatus: number, body: unknown): string {
   const code = (body as { error?: string } | null)?.error;
   if (httpStatus === 403 && code === "admin_required")
     return "Solo un administrador puede reanudar.";
+  if (httpStatus === 409 && code === "newer_stop")
+    return "Hubo un PARAR más nuevo: revisá y volvé a reanudar.";
   if (httpStatus === 503)
     return "Reanudar no está configurado (falta SAFETY_CONFIRM_SECRET).";
   if (httpStatus === 502) return "El puente no responde: no se pudo reanudar.";

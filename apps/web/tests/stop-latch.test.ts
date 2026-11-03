@@ -27,6 +27,9 @@ describe("PARAR latch view", () => {
     );
     expect(resumeError(503, {})).toContain("SAFETY_CONFIRM_SECRET");
     expect(resumeError(502, null)).toContain("puente");
+    expect(resumeError(409, { error: "newer_stop" })).toContain(
+      "PARAR más nuevo",
+    );
     expect(resumeError(500, { error: "x" })).toBe(
       "No se pudo reanudar (500: x).",
     );

@@ -10,6 +10,7 @@ import {
   voiceMenu,
   withVoiceEntry,
 } from "../src/lib/robot/voice-panel";
+import { reselect } from "../src/lib/webxr/menu-layer";
 
 describe("WAV for /voice/transcribe", () => {
   test("downsamples 48 kHz to 16 kHz by averaging", () => {
@@ -106,13 +107,14 @@ describe("the headset conversation panel", () => {
   test("a refused T2 call offers Confirmar; a standing PARAR offers Reanudar instead", () => {
     const msgs = [user("Extendé la mano"), assistant(refused)];
     expect(pendingConfirmation(msgs)).toBe("reach");
+    // Volver first: index 0 is never the item that grants T2 or resumes.
     expect(voiceMenu("reach", false).map((i) => i.label)).toEqual([
-      "Confirmar reach",
       "Volver a gestos",
+      "Confirmar reach",
     ]);
     expect(voiceMenu("reach", true).map((i) => i.name)).toEqual([
-      VOICE_RESUME,
       VOICE_CLOSE,
+      VOICE_RESUME,
     ]);
     expect(pendingConfirmation([...msgs, user("otra cosa")])).toBeNull();
   });
@@ -125,5 +127,40 @@ describe("the headset conversation panel", () => {
     expect(
       items.every((i) => i.name === "wave" || i.name.startsWith("voice:")),
     ).toBe(true);
+  });
+});
+
+describe("VR menu reselection after a list swap (R5)", () => {
+  const item = (name: string) => ({ name, label: name, verified: true });
+  const voice = voiceMenu(null, false); // [Volver]
+  const withConfirm = voiceMenu("move_arm", false); // [Volver, Confirmar]
+  const gestures = withVoiceEntry([item("wave"), item("hug")]);
+
+  test("the highlight follows the item by name, so Volver stays Volver", () => {
+    const r = reselect(voice[0], true, withConfirm);
+    expect(withConfirm[r.selected].name).toBe(VOICE_CLOSE);
+    expect(r.armed).toBe(true);
+  });
+
+  test("a vanished item falls back to a harmless one and disarms the trigger", () => {
+    // Confirmar was highlighted, then the PARAR menu replaced it.
+    const r = reselect(withConfirm[1], true, voiceMenu(null, true));
+    expect(voiceMenu(null, true)[r.selected].name).toBe(VOICE_CLOSE);
+    expect(r.armed).toBe(false);
+  });
+
+  test("returning to gestures never lands armed on a preset", () => {
+    const r = reselect(voice[0], true, gestures);
+    expect(gestures[r.selected].name).toBe(VOICE_OPEN);
+    expect(r.armed).toBe(false);
+  });
+
+  test("a disarmed highlight stays disarmed across a swap that keeps it", () => {
+    const r = reselect(withConfirm[0], false, voice);
+    expect(r.armed).toBe(false);
+  });
+
+  test("the first list ever arms as before", () => {
+    expect(reselect(null, true, gestures).armed).toBe(true);
   });
 });

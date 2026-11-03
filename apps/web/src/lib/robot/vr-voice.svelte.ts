@@ -57,6 +57,8 @@ export class VrVoice {
       transport: new DefaultChatTransport({
         api: `${PUBLIC_API_URL}/agent`,
         credentials: "include",
+        // Spoken, so voice mode: the voice exclusions (damp, high danger) apply.
+        body: { mode: "voice" },
         fetch: async (input, init) => {
           const res = await fetch(input, init);
           if (res.status === 401) redirectToLogin("expired");

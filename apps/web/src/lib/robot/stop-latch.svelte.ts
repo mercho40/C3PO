@@ -38,9 +38,12 @@ export class StopLatch extends Poller {
     this.resuming = true;
     this.error = null;
     try {
+      // The stop we showed: the bridge refuses (409) if a newer one landed since.
       const res = await fetch(`${PUBLIC_API_URL}/safety/ack`, {
         method: "POST",
         credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stopped_at: this.status?.stopped_at ?? null }),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) this.error = resumeError(res.status, body);

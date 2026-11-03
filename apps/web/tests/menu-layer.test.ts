@@ -16,6 +16,7 @@ import { describe, expect, test } from "bun:test";
 import {
   alertFor,
   firstSelectable,
+  NO_CONTROLLER_STOP_HINT,
   nextSelectable,
   paintMenu,
   readinessFor,
@@ -169,6 +170,15 @@ describe("paintMenu — voice mode", () => {
     const { ctx, texts } = stub2d();
     paintMenu(ctx, REAL, 0, null, null);
     expect(texts().some((x) => x.includes("2 grips PARAR"))).toBe(true);
+  });
+
+  test("under hand tracking it never advertises a chord that cannot fire", () => {
+    for (const voice of [null, [{ text: "Vos: hola", kind: "you" as const }]]) {
+      const { ctx, texts } = stub2d();
+      paintMenu(ctx, REAL, 0, null, null, null, null, voice, false);
+      expect(texts()).toContain(NO_CONTROLLER_STOP_HINT);
+      expect(texts().some((x) => x.includes("grips"))).toBe(false);
+    }
   });
 });
 

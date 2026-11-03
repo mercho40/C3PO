@@ -101,7 +101,10 @@ export function voiceMenu(
   pending: string | null,
   stopStanding: boolean,
 ): MenuItem[] {
-  const items: MenuItem[] = [];
+  // "Volver" first: index 0 must never be the item that grants T2 or resumes.
+  const items: MenuItem[] = [
+    { name: VOICE_CLOSE, label: "Volver a gestos", verified: true },
+  ];
   if (stopStanding)
     items.push({
       name: VOICE_RESUME,
@@ -115,7 +118,6 @@ export function voiceMenu(
       verified: true,
     });
   }
-  items.push({ name: VOICE_CLOSE, label: "Volver a gestos", verified: true });
   return items;
 }
 
