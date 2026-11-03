@@ -62,6 +62,7 @@ import {
   BridgeToolError,
   BridgeUnavailableError,
 } from "#back/bridge/client.js";
+import { beginTurn } from "./turns";
 
 const BASE_URL = process.env.AGENT_BASE_URL ?? "https://ia.ort.edu.ar/api/v1";
 /** `tic-chat` is the gateway's tool-calling chat model. Its site advertises
@@ -392,6 +393,7 @@ export async function runAgentChat(
   ]);
   const system = `${basePrompt}\n\n${world}`;
   const deadline = Date.now() + TURN_BUDGET_MS;
+  const { signal: abortSignal, done } = beginTurn(opts.abortSignal);
 
   return streamText({
     model: provider.chatModel(MODEL),
@@ -407,6 +409,8 @@ export async function runAgentChat(
     tools,
     // Whichever comes first: a step cap (never unbounded) or the wall clock.
     stopWhen: [stepCountIs(MAX_STEPS), () => Date.now() > deadline],
-    abortSignal: opts.abortSignal,
+    abortSignal,
+    onEnd: done,
+    onAbort: done,
   });
 }

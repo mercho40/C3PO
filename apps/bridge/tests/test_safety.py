@@ -188,7 +188,12 @@ async def _tools(mcp):
 async def test_free_form_arm_and_hand_are_t2_and_stops_are_t0(mcp):
     tiers = await _tools(mcp)
     assert {n for n, t in tiers.items() if t == "T2"} == {
-        "move_arm", "set_hand", "reach", "pick", "place", "handover"
+        "move_arm",
+        "set_hand",
+        "reach",
+        "pick",
+        "place",
+        "handover",
     }
     for name in ("stop_everything", "soft_stop", "get_state", "say", "describe_surroundings"):
         assert tiers[name] == "T0", name
@@ -291,6 +296,61 @@ async def test_confirm_route_checks_secret_and_tier(monkeypatch):
     ok = await mcp_server.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="s3cret"))
     assert ok.status_code == 200
     assert safety.status()["pending_confirmations"] == ["set_hand"]
+
+
+# -- the PARAR latch -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_standing_stop_refuses_motion_until_an_operator_resumes(mcp, link, monkeypatch):
+    from bridge import estop, mcp_server
+
+    estop.signal_stop()
+    assert safety.status()["stop_standing"] is True
+    for name, args in (("walk_velocity", {"vx": 0.1}), ("wave", {})):
+        with pytest.raises(ToolError, match="PARAR"):
+            await mcp.call_tool(name, args)
+    await mcp.call_tool("get_state", {})  # T0 still answers: the agent can see why
+
+    monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
+    denied = await mcp_server.safety_ack(FakeRequest({}, secret="nope"))
+    assert denied.status_code == 403 and safety.status()["stop_standing"] is True
+    ok = await mcp_server.safety_ack(FakeRequest({}, secret="s3cret"))
+    assert ok.status_code == 200 and safety.status()["stop_standing"] is False
+    await mcp.call_tool("walk_velocity", {"vx": 0.1})
+
+
+def test_damp_is_allowed_while_stopped_and_a_new_stop_latches_again(monkeypatch):
+    from bridge import estop
+
+    estop.signal_stop()
+    assert safety.tool_refusal("damp", {"c3po": {"tier": "T1"}}) is None
+    assert "PARAR" in safety.tool_refusal("prepare", {"c3po": {"tier": "T1"}})
+    assert "PARAR" in safety.tool_refusal("move_arm", {"c3po": {"tier": "T2"}})
+    estop.record_ack()
+    assert safety.tool_refusal("prepare", {"c3po": {"tier": "T1"}}) is None
+    now = safety.time.time()
+    estop.sentinel_path().touch()
+    import os
+
+    os.utime(estop.sentinel_path(), (now + 1, now + 1))  # a later PARAR
+    assert "PARAR" in safety.tool_refusal("prepare", {"c3po": {"tier": "T1"}})
+
+
+def test_nothing_on_the_tool_surface_can_clear_a_stop():
+    """record_ack is reachable from the console route and the headset only."""
+    src = Path(safety.__file__).with_name("mcp_server.py").read_text()
+    callers = [
+        node.name
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(c, ast.Call)
+            and getattr(c.func, "attr", getattr(c.func, "id", "")) == "record_ack"
+            for c in ast.walk(node)
+        )
+    ]
+    assert callers == ["safety_ack"]
 
 
 # -- soft stop ----------------------------------------------------------------

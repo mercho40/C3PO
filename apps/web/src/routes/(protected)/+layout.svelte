@@ -10,7 +10,13 @@
   import { RobotLive } from "#lib/robot/live-state.svelte.js";
   import { VoiceLoopControl } from "#lib/robot/voice-loop.svelte.js";
   import { Gate } from "#lib/robot/gate.svelte.js";
-  import { setGate, setRobotLive, setVoiceLoop } from "#lib/robot/context.js";
+  import { StopLatch } from "#lib/robot/stop-latch.svelte.js";
+  import {
+    setGate,
+    setRobotLive,
+    setStopLatch,
+    setVoiceLoop,
+  } from "#lib/robot/context.js";
   import { readPosture } from "#lib/robot/posture.js";
   import { staleness } from "#lib/robot/faults.js";
   import { estop } from "#lib/robot/estop.svelte.js";
@@ -30,10 +36,14 @@
   // And whether Nav2 is armed to drive it — the other state that must be
   // visible everywhere, because the agent can arm it from a chat.
   const gate = setGate(new Gate());
+  // And whether a PARAR still stands: the bridge refuses all motion until an
+  // operator resumes, so «Reanudar» has to be reachable from every page.
+  const latch = setStopLatch(new StopLatch());
   onMount(() => {
     live.start();
     voice.start();
     gate.start(2000);
+    latch.start(2000);
     // The e-stop store is module-level (every StopButton shows the same press),
     // so it is handed telemetry here, in the browser only — never during SSR,
     // where module state would be shared between requests.
@@ -66,6 +76,7 @@
       live.stop();
       voice.stop();
       gate.stop();
+      latch.stop();
     };
   });
 

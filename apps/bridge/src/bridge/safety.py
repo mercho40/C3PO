@@ -276,9 +276,25 @@ def confirm_secret_ok(presented: str | None) -> bool:
     )
 
 
+# Allowed while a PARAR stands: damp is the state a stop itself falls back to,
+# and the first step of every bring-up, so refusing it only blocks recovery.
+STOP_STANDING_ALLOWED = frozenset({"damp"})
+
+
 def tool_refusal(name: str, meta: dict[str, Any] | None) -> str | None:
     """Why this MCP call must not run, or None. Runs before every tool call."""
+    from bridge import estop
+
     tier = ((meta or {}).get("c3po") or {}).get("tier")
+    if tier != "T0" and name not in STOP_STANDING_ALLOWED and estop.stop_is_standing():
+        # The latch every client hits, the agent's next step included: before
+        # this, PARAR stopped the robot and the model's next tool call moved it.
+        log.warning("safety.refused_stop_standing", tool=name, tier=tier)
+        return (
+            f"refused: PARAR (stop_everything) is standing, so {name} does not run. "
+            "Only an operator can resume: «Reanudar» on the console, or "
+            "re-engaging the headset. Tell the operator the robot is stopped and wait."
+        )
     if tier != "T2":
         return None
     if PERSON_RULE and name not in HANDOVER_TOOLS:
@@ -330,4 +346,17 @@ def status() -> dict[str, Any]:
         "last_command": list(last),
         "last_command_age_s": None if last_at is None else round(time.monotonic() - last_at, 2),
         "last_reason": reason,
+        **stop_latch(),
+    }
+
+
+def stop_latch() -> dict[str, Any]:
+    """The PARAR latch as the console shows it: standing or not, and since when."""
+    from bridge import estop
+
+    stopped_at, acked_at = estop.last_stop_at(), estop.last_ack_at()
+    return {
+        "stop_standing": stopped_at > 0.0 and stopped_at > acked_at,
+        "stopped_at": stopped_at or None,
+        "acknowledged_at": acked_at or None,
     }

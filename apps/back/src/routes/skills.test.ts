@@ -195,6 +195,16 @@ describe("POST /skills/:name/invoke", () => {
     expect(json.called).toBe("stop_everything");
   });
 
+  test("PARAR aborts every agent turn in flight before the stop is sent", async () => {
+    const { beginTurn, activeTurnCount } = await import("../agent/turns");
+    const turn = beginTurn();
+    sessionUser = { id: "u1", role: null };
+    const res = await invoke("stop_everything", {});
+    expect(res.status).toBe(200);
+    expect(turn.signal.aborted).toBe(true);
+    expect(activeTurnCount()).toBe(0);
+  });
+
   test("404 for an unknown skill even as admin", async () => {
     sessionUser = { id: "u1", role: "admin" };
     const res = await invoke("not_a_real_skill", {});

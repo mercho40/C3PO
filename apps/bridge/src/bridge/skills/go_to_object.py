@@ -51,7 +51,11 @@ def resolve(
             "source": "live",
         }
     if mem_pose is not None:
-        recent = [e for e in memory if label_matches(e.label, query) and now - e.last_seen < MEMORY_MAX_AGE_S]
+        recent = [
+            e
+            for e in memory
+            if label_matches(e.label, query) and now - e.last_seen < MEMORY_MAX_AGE_S
+        ]
         if recent:
             entry = max(recent, key=lambda e: e.last_seen)
             rng, bearing = _relative_from_memory(entry, mem_pose)
@@ -73,7 +77,9 @@ def resolve(
     }
 
 
-def world_target(robot_x: float, robot_y: float, robot_yaw_rad: float, range_m: float, bearing_deg: float) -> tuple[float, float]:
+def world_target(
+    robot_x: float, robot_y: float, robot_yaw_rad: float, range_m: float, bearing_deg: float
+) -> tuple[float, float]:
     """The object's point in the frame walk_to steers in (positive bearing = LEFT)."""
     heading = robot_yaw_rad + math.radians(bearing_deg)
     return robot_x + range_m * math.cos(heading), robot_y + range_m * math.sin(heading)

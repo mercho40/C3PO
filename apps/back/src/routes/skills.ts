@@ -57,6 +57,7 @@ import {
 import { bridgeSiblingUrl } from "../bridge/url";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 import { logToolCall } from "#back/db/chats.js";
+import { abortAllTurns } from "#back/agent/turns.js";
 
 //: Skills that must dispatch even when the catalogue cannot be read.
 //:
@@ -226,6 +227,14 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
             });
             return body;
           };
+
+          // PARAR also ends every agent turn in flight, before the stop is
+          // even sent: the model must not plan a next step around it.
+          if (name === "stop_everything") {
+            const aborted = abortAllTurns("PARAR");
+            if (aborted)
+              console.warn(`[skills] PARAR aborted ${aborted} agent turn(s)`);
+          }
 
           // The dispatch, audited when it SETTLES — however long that takes —
           // so the log records what really happened, not when we stopped

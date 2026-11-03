@@ -3800,6 +3800,34 @@ async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
+@mcp.custom_route("/safety/ack", methods=["POST"])
+async def safety_ack(request):  # noqa: ANN001, ANN201 - starlette types
+    """The operator clears a standing PARAR («Reanudar»). Not an MCP tool.
+
+    Same guard as /safety/confirm and for the same reason: a model must never
+    be able to un-stop the robot it was stopped from driving. apps/back's
+    admin-only `POST /safety/ack` forwards here with the secret. With no secret
+    configured the stop can still be cleared from the headset (teleop server).
+    """
+    from starlette.responses import JSONResponse
+
+    from bridge import estop
+
+    if not safety.confirm_secret_ok(request.headers.get("x-c3po-confirm-secret")):
+        configured = bool(safety.CONFIRM_SECRET)
+        return JSONResponse(
+            {"error": "forbidden" if configured else "confirmation_not_configured"},
+            status_code=403 if configured else 503,
+        )
+    was = safety.stop_latch()
+    estop.record_ack()
+    log.warning("safety.stop_acknowledged", via="console", was_standing=was["stop_standing"])
+    return JSONResponse(
+        {"acknowledged": True, "was_standing": was["stop_standing"], **safety.stop_latch()},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @mcp.custom_route("/telemetry/scan", methods=["GET"])
 async def scan_json(request):  # noqa: ANN001, ANN201 - starlette types
     """The lidar ring: ~120 bearings of centimetres, for the headset surround.

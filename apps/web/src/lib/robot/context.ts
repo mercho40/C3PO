@@ -16,10 +16,12 @@ import { getContext, setContext } from "svelte";
 import type { RobotLive } from "./live-state.svelte";
 import type { VoiceLoopControl } from "./voice-loop.svelte";
 import type { Gate } from "./gate.svelte";
+import type { StopLatch } from "./stop-latch.svelte";
 
 const KEY = Symbol("robot-live");
 const VOICE_KEY = Symbol("voice-loop");
 const GATE_KEY = Symbol("nav-gate");
+const LATCH_KEY = Symbol("stop-latch");
 
 export function setRobotLive(live: RobotLive): RobotLive {
   return setContext(KEY, live);
@@ -62,4 +64,19 @@ export function getGate(): Gate {
     );
   }
   return gate;
+}
+
+export function setStopLatch(latch: StopLatch): StopLatch {
+  return setContext(LATCH_KEY, latch);
+}
+
+/** The PARAR latch poller — «Reanudar» is offered on every page while a stop stands. */
+export function getStopLatch(): StopLatch {
+  const latch = getContext<StopLatch | undefined>(LATCH_KEY);
+  if (!latch) {
+    throw new Error(
+      "getStopLatch() must be called under the (protected) layout, which provides it.",
+    );
+  }
+  return latch;
 }

@@ -95,7 +95,7 @@ describe("self-guarded modules are mounted outside the outer guard", () => {
     expect(outerGuard).toBeGreaterThan(0);
   });
 
-  for (const symbol of ["skillsRoutes", "auditRoutes"]) {
+  for (const symbol of ["skillsRoutes", "auditRoutes", "safetyRoutes"]) {
     test(`${symbol} is mounted before (outside) the outer guard`, () => {
       const at = index.indexOf(`.use(${symbol})`);
       expect(at).toBeGreaterThan(0);

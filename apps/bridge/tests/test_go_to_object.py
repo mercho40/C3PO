@@ -25,14 +25,26 @@ def test_a_spanish_query_finds_the_live_detection():
 
 def test_memory_is_converted_to_range_and_bearing_from_where_the_robot_is():
     # Robot at (1, 1) facing +y (90 deg); chair remembered 2 m straight ahead of it.
-    t = g.resolve("chair", [], [entry("chair", 1.0, 3.0)], {"x_m": 1.0, "y_m": 1.0, "yaw_deg": 90.0}, now=110.0)
+    t = g.resolve(
+        "chair",
+        [],
+        [entry("chair", 1.0, 3.0)],
+        {"x_m": 1.0, "y_m": 1.0, "yaw_deg": 90.0},
+        now=110.0,
+    )
     assert t["source"] == "memory"
     assert t["range_m"] == pytest.approx(2.0)
     assert t["bearing_deg"] == pytest.approx(0.0, abs=1e-9)
 
 
 def test_old_memories_and_missing_objects_are_not_targets():
-    t = g.resolve("chair", [], [entry("chair", 1.0, 3.0, seen=0.0)], {"x_m": 0, "y_m": 0, "yaw_deg": 0}, now=10_000.0)
+    t = g.resolve(
+        "chair",
+        [],
+        [entry("chair", 1.0, 3.0, seen=0.0)],
+        {"x_m": 0, "y_m": 0, "yaw_deg": 0},
+        now=10_000.0,
+    )
     assert t["error"] == "not_found"
 
 

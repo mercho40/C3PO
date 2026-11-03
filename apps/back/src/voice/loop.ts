@@ -21,6 +21,8 @@
  */
 
 /** One thing the robot heard, as `listen` reports it. */
+import { abortAllTurns } from "../agent/turns";
+
 export type Heard = { text: string; age_s: number };
 
 /** The shape of `listen`'s result that this loop depends on. */
@@ -188,6 +190,7 @@ export class VoiceLoop {
       if (!this.actOnStopPhrase) return;
       this.state.stopsTriggered += 1;
       this.log("voice.stop_phrase", { phrase: event.text, seq: event.seq });
+      abortAllTurns("PARAR (voice)");
       await this.deps.callTool("stop_everything", {});
       return;
     }
@@ -218,6 +221,7 @@ export class VoiceLoop {
     if (result?.stop_heard && this.actOnStopPhrase) {
       this.state.stopsTriggered += 1;
       this.log("voice.stop_phrase", { phrase: result.stop_heard });
+      abortAllTurns("PARAR (voice)");
       await this.deps.callTool("stop_everything", {});
     }
 
