@@ -373,3 +373,68 @@ async def test_soft_stop_closes_the_gate_and_never_damps(sent, monkeypatch):
     assert damp == []
     assert result["heard"] is False
     assert sent and all(a[:3] == (0.0, 0.0, 0.0) for a in sent)
+
+
+# -- review 2026-11-03: the latch cannot be walked around ---------------------
+
+#: T0 passes the PARAR latch, so every T0 tool must move nothing (or only stop).
+#: Adding a tool here is a claim about the robot: check its body calls no mover.
+T0_MOVES_NOTHING = {
+    "arm_state", "ask_user", "cancel_task", "check_motion_mode", "describe_surroundings",
+    "find_object", "forget_landmark", "forget_object", "get_state", "list_active_tasks",
+    "list_landmarks", "list_objects", "listen", "look", "navigation_status",
+    "recall_landmark", "recall_object", "remember_landmark", "say", "soft_stop",
+    "stop_everything", "verify",
+}  # fmt: skip
+
+
+@pytest.mark.asyncio
+async def test_every_t0_tool_is_known_to_move_nothing(mcp):
+    t0 = {n for n, tier in (await _tools(mcp)).items() if tier == "T0"}
+    assert t0 <= T0_MOVES_NOTHING, f"new T0 tools, check they cannot move: {t0 - T0_MOVES_NOTHING}"
+    assert (await _tools(mcp))["look_around"] == "T1"  # it turns the robot (C2)
+
+
+def test_no_velocity_leaves_the_bridge_while_parar_stands(sent, link):
+    from bridge import estop
+
+    estop.signal_stop()
+    _locomotion.send_velocity(0.2, 0.0, 0.3, height=0.78)  # e.g. look_around -> turn, internally
+    assert sent[-1][:3] == (0.0, 0.0, 0.0)
+    estop.record_ack()
+    _locomotion.send_velocity(0.2, 0.0, 0.0, height=0.78)
+    assert sent[-1][0] > 0.0
+
+
+@pytest.mark.asyncio
+async def test_the_arms_are_not_taken_while_parar_stands(monkeypatch):
+    from bridge import estop
+    from bridge.teleop import arm_sdk
+
+    estop.signal_stop()
+    with pytest.raises(arm_sdk.ArmSdkUnavailable, match="PARAR"):
+        await arm_sdk.ArmSdkDriver().engage()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_voids_pending_confirmations(sent, monkeypatch):
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real", raising=False)
+    safety.grant_confirmation("move_arm", via="console")
+    await stop_everything.run()
+    assert safety.status()["pending_confirmations"] == []
+
+
+@pytest.mark.asyncio
+async def test_resume_refuses_a_stop_newer_than_the_one_the_operator_saw(monkeypatch):
+    import os
+
+    from bridge import estop, mcp_server
+
+    monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
+    now = estop.signal_stop()
+    seen, later = now - 10.0, now - 5.0  # the stop the operator saw, then someone else's
+    os.utime(estop.sentinel_path(), (later, later))
+    stale = await mcp_server.safety_ack(FakeRequest({"stopped_at": seen}, secret="s3cret"))
+    assert stale.status_code == 409 and safety.status()["stop_standing"] is True
+    ok = await mcp_server.safety_ack(FakeRequest({"stopped_at": later}, secret="s3cret"))
+    assert ok.status_code == 200 and safety.status()["stop_standing"] is False

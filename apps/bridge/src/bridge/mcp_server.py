@@ -358,9 +358,14 @@ async def go_to_object(
     if SIM_MODE != "real":
         return {"error": "not_applicable", "detail": f"real hardware only (SIM_MODE={SIM_MODE})"}
     world = surroundings_snapshot()
-    mem_pose, _frame = _memory_pose()
+    mem_pose, frame = _memory_pose()
     target = g.resolve(
-        query, world.get("objects") or [], get_object_memory().list_all(), mem_pose, _time.time()
+        query,
+        world.get("objects") or [],
+        get_object_memory().list_all(),
+        mem_pose,
+        _time.time(),
+        frame=frame,
     )
     if "error" in target:
         return target
@@ -379,8 +384,14 @@ async def go_to_object(
     log.info("go_to_object.called", query=query, target=target, world_target=(tx, ty))
     from bridge.skills.walk_to import run as run_walk_to
 
+    # autonomous: a model-chosen open-loop walk, so stale perception slows it (person rule).
     result = await run_walk_to(
-        target_x=tx, target_y=ty, stop_distance_m=stop_distance_m, timeout_s=60.0, ctx=ctx
+        target_x=tx,
+        target_y=ty,
+        stop_distance_m=stop_distance_m,
+        timeout_s=60.0,
+        ctx=ctx,
+        autonomous=True,
     )
     rounded = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in target.items()}
     return {**result, "target": rounded, "env": SIM_MODE}
@@ -2929,7 +2940,7 @@ def forget_object(
 
 @mcp.tool(
     meta=skill_meta(
-        classification="perception",
+        classification="locomotion",
         danger_level="low",
         status="real",
         cancellable=True,
@@ -3806,8 +3817,9 @@ async def safety_ack(request):  # noqa: ANN001, ANN201 - starlette types
 
     Same guard as /safety/confirm and for the same reason: a model must never
     be able to un-stop the robot it was stopped from driving. apps/back's
-    admin-only `POST /safety/ack` forwards here with the secret. With no secret
-    configured the stop can still be cleared from the headset (teleop server).
+    admin-only `POST /safety/ack` forwards here with the secret (the console chip and
+    the headset menu's «Reanudar»); with no secret configured nothing clears it.
+    Body `{"stopped_at": <the stamp the operator saw>}` refuses (409) a newer stop.
     """
     from starlette.responses import JSONResponse
 
@@ -3819,8 +3831,16 @@ async def safety_ack(request):  # noqa: ANN001, ANN201 - starlette types
             {"error": "forbidden" if configured else "confirmation_not_configured"},
             status_code=403 if configured else 503,
         )
+    try:
+        shown = (await request.json()).get("stopped_at")
+    except Exception:
+        shown = None
+    if isinstance(shown, (int, float)) and estop.last_stop_at() > float(shown) + 1e-3:
+        # A newer PARAR landed after the operator read the latch: they have not seen it.
+        return JSONResponse({"error": "newer_stop", **safety.stop_latch()}, status_code=409)
     was = safety.stop_latch()
     estop.record_ack()
+    safety.clear_confirmations("ack")
     log.warning("safety.stop_acknowledged", via="console", was_standing=was["stop_standing"])
     return JSONResponse(
         {"acknowledged": True, "was_standing": was["stop_standing"], **safety.stop_latch()},

@@ -330,6 +330,12 @@ class ArmSdkDriver:
         """Take the arms, starting from wherever they currently are."""
         if self._engaged:
             return
+        from bridge import estop
+
+        if estop.stop_is_standing():
+            raise ArmSdkUnavailable(
+                "PARAR is standing: the arms are not taken until an operator resumes (Reanudar)."
+            )
         arm_q, waist_q, mode_machine = self._check_preconditions()
 
         self._mode_machine = mode_machine

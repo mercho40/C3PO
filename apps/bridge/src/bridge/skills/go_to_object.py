@@ -31,6 +31,7 @@ def resolve(
     memory: list[Any],
     mem_pose: dict[str, float] | None,
     now: float,
+    frame: str | None = None,
 ) -> dict[str, Any]:
     """Pick the target. Returns {range_m, bearing_deg, label, source} or {error, ...}."""
     from bridge.object_memory import label_matches
@@ -54,7 +55,10 @@ def resolve(
         recent = [
             e
             for e in memory
-            if label_matches(e.label, query) and now - e.last_seen < MEMORY_MAX_AGE_S
+            if label_matches(e.label, query)
+            and now - e.last_seen < MEMORY_MAX_AGE_S
+            # Another frame (perception restarted, odometry reset) is another origin.
+            and (frame is None or getattr(e, "frame", frame) == frame)
         ]
         if recent:
             entry = max(recent, key=lambda e: e.last_seen)

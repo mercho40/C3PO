@@ -263,6 +263,16 @@ def grant_confirmation(tool: str, *, via: str) -> float:
     return expires
 
 
+def clear_confirmations(reason: str) -> None:
+    """Drop every pending T2 grant: a confirmation given before PARAR must not
+    survive into what comes after it."""
+    with _lock:
+        n = len(_grants)
+        _grants.clear()
+    if n:
+        log.warning("safety.confirmations_cleared", count=n, reason=reason)
+
+
 def _consume_confirmation(tool: str) -> bool:
     with _lock:
         expires = _grants.pop(tool, None)
@@ -292,8 +302,8 @@ def tool_refusal(name: str, meta: dict[str, Any] | None) -> str | None:
         log.warning("safety.refused_stop_standing", tool=name, tier=tier)
         return (
             f"refused: PARAR (stop_everything) is standing, so {name} does not run. "
-            "Only an operator can resume: «Reanudar» on the console, or "
-            "re-engaging the headset. Tell the operator the robot is stopped and wait."
+            "Only an operator can resume: «Reanudar» on the console or in the "
+            "headset menu. Tell the operator the robot is stopped and wait."
         )
     if tier != "T2":
         return None

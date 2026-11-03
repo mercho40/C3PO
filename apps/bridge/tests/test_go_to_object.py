@@ -54,3 +54,14 @@ def test_positive_bearing_is_left_in_the_walk_frame():
     assert (x, y) == pytest.approx((0.0, 2.0), abs=1e-9)
     x, y = g.world_target(1.0, 1.0, math.pi, 1.0, 0.0)
     assert (x, y) == pytest.approx((0.0, 1.0), abs=1e-9)
+
+
+def test_memory_from_another_frame_is_not_a_target():
+    e = entry("chair", 1.0, 3.0)
+    e.frame = "odom_before_restart"
+    pose = {"x_m": 1.0, "y_m": 1.0, "yaw_deg": 90.0}
+    assert g.resolve("chair", [], [e], pose, now=110.0, frame="odom")["error"] == "not_found"
+    assert (
+        g.resolve("chair", [], [e], pose, now=110.0, frame="odom_before_restart")["source"]
+        == "memory"
+    )

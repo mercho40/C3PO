@@ -28,6 +28,7 @@ isn't part of the bridge's public API.
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import time
 from typing import Any
@@ -35,6 +36,7 @@ from typing import Any
 import structlog
 
 from bridge.skills.task_runtime import Task
+from bridge import estop
 
 log = structlog.get_logger(__name__)
 
@@ -123,6 +125,12 @@ def send_velocity(
         # caller by construction — speed and yaw caps, the person-distance
         # rule, acceleration — see bridge/safety.py. The controllers still
         # converge, just more slowly.
+        if (vx or vy or vyaw) and estop.stop_is_standing():
+            # The last line under the MCP gate: an internal call that skips
+            # GovernedMCP (look_around -> turn, a skill calling a skill, the
+            # headset, Nav2) still cannot move the robot while PARAR stands.
+            log.warning("locomotion.refused_stop_standing", vx=vx, vy=vy, vyaw=vyaw)
+            vx = vy = vyaw = 0.0
         vx, vy, vyaw = safety.govern(vx, vy, vyaw, autonomous=autonomous)
 
         code, _ = g1_rpc.call_set_velocity(vx, vy, vyaw, VELOCITY_DURATION_S)
@@ -142,7 +150,9 @@ def send_velocity(
     return None
 
 
-async def send_velocity_async(vx: float, vy: float, vyaw: float, height: float) -> int | None:
+async def send_velocity_async(
+    vx: float, vy: float, vyaw: float, height: float, *, autonomous: bool = False
+) -> int | None:
     """`send_velocity`, but without blocking the event loop on real hardware.
 
     On real, `send_velocity` makes a synchronous DDS RPC that waits for an ack
@@ -161,8 +171,10 @@ async def send_velocity_async(vx: float, vy: float, vyaw: float, height: float) 
     path that never needed it.
     """
     if SIM_MODE == "real":
-        return await asyncio.to_thread(send_velocity, vx, vy, vyaw, height)
-    return send_velocity(vx, vy, vyaw, height)
+        return await asyncio.to_thread(
+            functools.partial(send_velocity, vx, vy, vyaw, height, autonomous=autonomous)
+        )
+    return send_velocity(vx, vy, vyaw, height, autonomous=autonomous)
 
 
 async def stop_motion(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> None:

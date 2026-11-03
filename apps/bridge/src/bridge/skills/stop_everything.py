@@ -146,6 +146,9 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     # reach it. Found on the robot when PARAR left it turning for another 27
     # degrees. See bridge/estop.py.
     signal_stop()
+    from bridge import safety
+
+    safety.clear_confirmations("stop_everything")
 
     # CLOSE THE NAV GATE, and do it here — synchronously, before any await.
     #

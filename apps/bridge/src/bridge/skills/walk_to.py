@@ -43,6 +43,7 @@ async def run(
     timeout_s: float = 60.0,
     height: float = DEFAULT_HEIGHT,
     ctx: Any | None = None,
+    autonomous: bool = False,
 ) -> dict[str, Any]:
     """Drive the G1 to (target_x, target_y) world-frame and stop near it.
 
@@ -172,7 +173,7 @@ async def run(
             vx = max(MAX_BACK_VEL, min(MAX_FWD_VEL, KP_LIN * dx_body * gate))
             vy = max(-MAX_LAT_VEL, min(MAX_LAT_VEL, KP_LIN * dy_body * gate))
 
-            await send_velocity_async(vx, vy, vyaw, height)
+            await send_velocity_async(vx, vy, vyaw, height, autonomous=autonomous)
             await asyncio.sleep(LOOP_PERIOD_S)
 
         task.phase = "stopping"

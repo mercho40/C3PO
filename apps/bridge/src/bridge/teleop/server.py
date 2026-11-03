@@ -76,7 +76,6 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from bridge.estop import (
     last_stop_at,
-    record_ack,
     release_teleop_lease,
     renew_teleop_lease,
     stop_is_standing,
@@ -433,8 +432,12 @@ class TeleopSession:
         self.stopped = False
         self._release_since = None
         self.task.cancel_event.clear()
-        record_ack()
-        log.info("teleop.estop.cleared", task_id=self.task.task_id)
+        # Session latch only. It used to call record_ack(), which also cleared
+        # the bridge-wide PARAR the agent gate reads: an idle connected headset
+        # (dead-man released = resting) unlocked every tool ~1 s after any stop.
+        # Resuming the robot is /safety/ack's alone (console or headset menu);
+        # until then _locomotion zeroes this session's velocity too.
+        log.info("teleop.estop.cleared", task_id=self.task.task_id, scope="session")
         return False
 
     def stale(self, now: float) -> bool:
