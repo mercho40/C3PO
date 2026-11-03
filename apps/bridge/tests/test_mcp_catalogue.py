@@ -64,6 +64,7 @@ EXPECTED_TOOLS = {
     "lie_up",
     # locomotion
     "walk_to",
+    "go_to_object",
     "turn",
     "walk_velocity",
     # gestures
@@ -184,6 +185,7 @@ def test_motion_tools_say_what_they_do_to_a_real_robot(tools):
         "lie_up",
         "zero_torque",
         "walk_to",
+        "go_to_object",
         "turn",
         # Turns in place in steps, through `turn`.
         "look_around",

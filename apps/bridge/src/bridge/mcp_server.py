@@ -306,6 +306,87 @@ async def walk_to(
 
 
 # ---------------------------------------------------------------------------
+# Tool: go_to_object
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="locomotion",
+        danger_level="medium",
+        status="real",
+        cancellable=True,
+        expected_duration_s=20.0,
+        works_sim=False,
+        # Composed of walk_to (works_real) and the detector; not yet watched end to end.
+        works_real=True,
+        preconditions=["robot_upright", "battery_pct_gt_15", "no_active_walk_task"],
+        typical_failure_modes=["not_found", "too_far", "no_pose", "drift"],
+    )
+)
+async def go_to_object(
+    ctx: Context,
+    query: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=100,
+            description="What to walk to, any language: 'silla', 'the chair', 'mochila', 'persona'.",
+        ),
+    ],
+    stop_distance_m: Annotated[
+        float,
+        Field(ge=0.5, le=2.0, description="Stop this far from the object, metres."),
+    ] = 0.7,
+) -> dict:
+    """Walk to an object the camera sees now, or saw in the last 10 minutes.
+
+    Use this for "andá hasta la silla" / "go to the backpack". It needs NO
+    map and NO Nav2: it takes the object's range and bearing from the detector
+    (or from object memory, so `look_around` first helps), turns toward it
+    while walking, and stops `stop_distance_m` short. No obstacle avoidance —
+    it walks straight at the target; the person rule still slows and stops
+    it. Refuses targets over 4 m. Returns the walk_to task dict plus
+    `target` (label, range, bearing, live or memory).
+    """
+    import time as _time
+
+    from bridge.object_memory import get_object_memory
+    from bridge.sdk.state import get_sampler
+    from bridge.skills import go_to_object as g
+
+    if SIM_MODE != "real":
+        return {"error": "not_applicable", "detail": f"real hardware only (SIM_MODE={SIM_MODE})"}
+    world = surroundings_snapshot()
+    mem_pose, _frame = _memory_pose()
+    target = g.resolve(
+        query, world.get("objects") or [], get_object_memory().list_all(), mem_pose, _time.time()
+    )
+    if "error" in target:
+        return target
+    if target["range_m"] > g.MAX_RANGE_M:
+        return {
+            "error": "too_far",
+            "detail": f"{target['label']} is {target['range_m']:.1f} m away; walk closer first (max {g.MAX_RANGE_M} m).",
+            "target": target,
+        }
+    pose = (get_sampler().get_state() or {}).get("pose") or {}
+    try:
+        x, y, yaw = (float(pose[k]) for k in ("x_meters_world", "y_meters_world", "yaw_radians_world"))
+    except (KeyError, TypeError, ValueError):
+        return {"error": "no_pose", "detail": "the bridge has no odometry pose to steer by"}
+    tx, ty = g.world_target(x, y, yaw, target["range_m"], target["bearing_deg"])
+    log.info("go_to_object.called", query=query, target=target, world_target=(tx, ty))
+    from bridge.skills.walk_to import run as run_walk_to
+
+    result = await run_walk_to(
+        target_x=tx, target_y=ty, stop_distance_m=stop_distance_m, timeout_s=60.0, ctx=ctx
+    )
+    rounded = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in target.items()}
+    return {**result, "target": rounded, "env": SIM_MODE}
+
+
+# ---------------------------------------------------------------------------
 # Tool: turn
 # ---------------------------------------------------------------------------
 
