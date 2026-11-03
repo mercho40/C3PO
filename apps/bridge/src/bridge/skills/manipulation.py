@@ -242,7 +242,10 @@ def _abort_reason(allow_person: bool) -> str | None:
         return "base_moving"
     if safety.PERSON_RULE and not allow_person:
         nearest, fresh = safety.person_proximity()
-        if fresh and nearest is not None and nearest < safety.PERSON_REACH_M:
+        if not fresh:
+            # A dead or lagging detector cannot see someone step in.
+            return "perception_stale"
+        if nearest is not None and nearest < safety.PERSON_REACH_M:
             return "person_in_reach"
     return None
 
@@ -315,18 +318,25 @@ async def execute(
         for i, (kind, phase, value) in enumerate(steps):
             task.phase = phase
             task.progress = i / len(steps)
-            if kind == "hand":
-                await asyncio.to_thread(hand_driver.send_shape, side, hands.SHAPES[value])
-                hand_closed = value != "open"
-                continue
-            if kind == "wait":
-                await asyncio.sleep(float(value))
-                continue
-            angles = ArmAngles(*value)
-            left, right = (angles, None) if side == "left" else (None, angles)
-            failure = await arm_pose.slew(
-                driver, task, left, right, ctx, abort=lambda: _abort_reason(allow_person)
-            )
+            if kind in ("hand", "wait"):
+                why = _abort_reason(allow_person)
+                if why is None:
+                    if kind == "hand":
+                        await asyncio.to_thread(hand_driver.send_shape, side, hands.SHAPES[value])
+                        hand_closed = value != "open"
+                    else:
+                        await asyncio.sleep(float(value))
+                    why = _abort_reason(allow_person)
+                if why is None:
+                    continue
+                driver.request_release()
+                failure: str | None = f"aborted:{why}"
+            else:
+                angles = ArmAngles(*value)
+                left, right = (angles, None) if side == "left" else (None, angles)
+                failure = await arm_pose.slew(
+                    driver, task, left, right, ctx, abort=lambda: _abort_reason(allow_person)
+                )
             if failure == "driver_failed":
                 return done(
                     "failed",

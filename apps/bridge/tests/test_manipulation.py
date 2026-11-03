@@ -196,6 +196,33 @@ async def test_a_person_stepping_into_reach_aborts_mid_motion(monkeypatch, real)
 
 
 @pytest.mark.asyncio
+async def test_perception_going_stale_aborts_mid_motion(monkeypatch, real):
+    arm, _hand = real
+    see(monkeypatch, cup())
+    arm.on_command = lambda: see(monkeypatch, cup(), age=5.0)
+    out = await m.pick("cup")
+    assert out["phase"] == "aborted:perception_stale"
+    assert arm.release_requested and len(arm.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_person_arriving_during_the_grasp_close_aborts(monkeypatch, real):
+    arm, hand = real
+    see(monkeypatch, cup())
+    real_send = hand.send_shape
+
+    def send_then_person(side, closures):
+        real_send(side, closures)
+        if len(hand.shapes) == 2:  # the close, after the open
+            see(monkeypatch, cup(), person(0.4))
+
+    hand.send_shape = send_then_person
+    out = await m.pick("cup")
+    assert out["phase"] == "aborted:person_in_reach"
+    assert arm.release_requested and out["result"]["hand_closed"] is True
+
+
+@pytest.mark.asyncio
 async def test_handover_is_allowed_with_a_person_close(monkeypatch, real):
     arm, _hand = real
     see(monkeypatch, person(0.4))
