@@ -203,6 +203,20 @@ def _power_mode(runner) -> str:
     return text if text.strip() else runner.shell(["nvpmodel", "-q"])[1]
 
 
+_PROXY_KEYS = ("http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+
+
+def proxy_build_args(env: "dict[str, str] | os._Environ[str]") -> list[str]:
+    """`docker build` flags for building through a proxy, or [] when none is set.
+
+    The robot has no internet of its own; scripts/robot_internet.py lends it the
+    Mac's on 127.0.0.1:18899. A build container only reaches the host's loopback
+    on the host network, hence `--network host` (the classic builder takes it).
+    """
+    args = [a for k in _PROXY_KEYS if env.get(k) for a in ("--build-arg", f"{k}={env[k]}")]
+    return ["--network", "host", *args] if args else []
+
+
 def run_build(
     target: str,
     runner,
@@ -257,7 +271,9 @@ def run_build(
             if dry_run:
                 say(f"docker build -t {image} {context}")
                 continue
-            code, _ = runner.docker(["build", "-t", image, context], capture=False)
+            code, _ = runner.docker(
+                ["build", *proxy_build_args(os.environ), "-t", image, context], capture=False
+            )
             if code != 0:
                 err("build failed — the reason is usually one of the Dockerfile's own")
                 err("assertions, not the last line. Search the output for ASSERT/Error.")

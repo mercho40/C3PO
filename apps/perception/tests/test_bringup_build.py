@@ -219,3 +219,12 @@ def test_bench_loads_the_engine_the_env_names_and_yolo11n_by_default():
     assert "--loadEngine=/opt/c3po/engines/yolo11n.fp16.plan" in default
     (swapped,) = _dry("bench", {"C3PO_ENGINE": "/opt/c3po/engines/yoloe-26s-seg.fp16.plan"})
     assert "--loadEngine=/opt/c3po/engines/yoloe-26s-seg.fp16.plan" in swapped
+
+
+def test_a_proxy_reaches_the_build_only_when_one_is_set():
+    from bringup.build import proxy_build_args
+
+    assert proxy_build_args({}) == []
+    args = proxy_build_args({"https_proxy": "http://127.0.0.1:18899", "PATH": "/bin"})
+    assert args[:2] == ["--network", "host"]
+    assert args[2:] == ["--build-arg", "https_proxy=http://127.0.0.1:18899"]
