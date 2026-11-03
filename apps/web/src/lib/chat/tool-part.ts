@@ -189,6 +189,27 @@ export function classifyToolPart(
         });
       }
       const toolError = /^tool_error:\s*/.exec(wrapped);
+      const words = toolError ? wrapped.slice(toolError[0].length) : wrapped;
+      // Two refusals are the safety gate working, not a failure: shown amber,
+      // with what the operator can do about it.
+      if (words.includes("needs an operator's confirmation")) {
+        return base({
+          label: "Requiere confirmación",
+          tone: "warn",
+          note: "Movimiento de brazo o mano: un operador debe confirmarlo.",
+          detail: words,
+          defaultOpen: false,
+        });
+      }
+      if (words.startsWith("refused: PARAR")) {
+        return base({
+          label: "Detenido (PARAR)",
+          tone: "warn",
+          note: "PARAR sigue activo: «Reanudar» en la barra superior.",
+          detail: words,
+          defaultOpen: false,
+        });
+      }
       return base({
         label: "Error",
         tone: "error",

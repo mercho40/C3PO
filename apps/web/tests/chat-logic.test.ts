@@ -46,6 +46,33 @@ const tool = (state: string, extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+describe("safety refusals read as the gate working, not as errors", () => {
+  const card = (error: string) =>
+    classifyToolPart(
+      { type: "tool-reach", state: "output-available", output: { error } },
+      { live: false },
+    );
+  test("waiting for a confirmation is amber and says who acts", () => {
+    const d = card(
+      "tool_error: refused: reach is a T2 tool and needs an operator's confirmation first.",
+    );
+    expect(d.label).toBe("Requiere confirmación");
+    expect(d.tone).toBe("warn");
+  });
+  test("a standing PARAR is amber and points at Reanudar", () => {
+    const d = card(
+      "tool_error: refused: PARAR (stop_everything) is standing, so turn does not run.",
+    );
+    expect(d.label).toBe("Detenido (PARAR)");
+    expect(d.note).toContain("Reanudar");
+  });
+  test("any other bridge refusal is still an error", () => {
+    expect(card("tool_error: refused: a person is 0.40 m away").tone).toBe(
+      "error",
+    );
+  });
+});
+
 describe("needsConfirmation", () => {
   const refused = {
     error:
