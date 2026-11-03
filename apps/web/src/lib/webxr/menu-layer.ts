@@ -46,6 +46,20 @@ export type MenuItem = {
   verified: boolean;
 };
 
+/** One line of the "Hablar con el robot" panel (see robot/voice-panel.ts). */
+export type VoiceLine = {
+  text: string;
+  kind: "you" | "robot" | "tool" | "info" | "warn";
+};
+
+const VOICE_COLOUR: Record<VoiceLine["kind"], string> = {
+  you: "rgba(255,255,255,0.97)",
+  robot: "rgba(150, 220, 255, 0.99)",
+  tool: "rgba(200, 200, 210, 0.92)",
+  info: "rgba(255,255,255,0.60)",
+  warn: "rgba(255, 190, 140, 0.99)",
+};
+
 /** Status line under the list — the result of the last thing fired. */
 export type MenuStatus = { text: string; kind: "ok" | "warn" | "error" } | null;
 
@@ -218,6 +232,7 @@ export function paintMenu(
   busy: string | null,
   readiness: Readiness | null = null,
   alert: MenuAlert = null,
+  voice: readonly VoiceLine[] | null = null,
 ): void {
   ctx.clearRect(0, 0, W, H);
 
@@ -235,7 +250,7 @@ export function paintMenu(
   // --- header: title left, readiness right -------------------------------
   ctx.font = "600 26px system-ui, -apple-system, sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.92)";
-  ctx.fillText("Gestos", 26, 36);
+  ctx.fillText(voice ? "Hablar con el robot" : "Gestos", 26, 36);
 
   if (readiness) {
     ctx.font = "600 17px system-ui, -apple-system, sans-serif";
@@ -268,6 +283,19 @@ export function paintMenu(
     ctx.fillStyle = "rgba(255, 190, 190, 0.92)";
     ctx.fillText(alert.hint, 28, top + 38);
     top += 64;
+  }
+
+  // --- the conversation, in voice mode ------------------------------------
+  // Above the list, so the confirm/resume items sit right under what asked for
+  // them. Capped so the (at most three) voice items still clear the footer.
+  if (voice) {
+    ctx.font = "500 18px system-ui, -apple-system, sans-serif";
+    for (const line of voice.slice(-(alert ? 4 : 5))) {
+      ctx.fillStyle = VOICE_COLOUR[line.kind];
+      ctx.fillText(line.text, 26, top + 13);
+      top += 26;
+    }
+    top += 8;
   }
 
   // --- the list ------------------------------------------------------------
@@ -323,8 +351,12 @@ export function paintMenu(
 
   ctx.font = "500 16px system-ui, -apple-system, sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.55)";
+  // The PARAR chord is on both screens: a stop has to be findable without
+  // having opened anything first.
   ctx.fillText(
-    "A  siguiente     gatillo  ejecutar     joystick  caminar",
+    voice
+      ? "B/Y mantener: hablar · A/gatillo: menú · 2 grips: PARAR"
+      : "A siguiente · gatillo ejecutar · joystick caminar · 2 grips PARAR",
     26,
     footY + 4,
   );
@@ -386,6 +418,7 @@ export class MenuLayer {
   #busy: string | null = null;
   #readiness: Readiness | null = null;
   #alert: MenuAlert = null;
+  #voice: readonly VoiceLine[] | null = null;
 
   constructor(gl: WebGLRenderingContext) {
     this.#gl = gl;
@@ -439,6 +472,22 @@ export class MenuLayer {
     const prev = this.#readiness;
     if (prev?.text === readiness?.text && prev?.ok === readiness?.ok) return;
     this.#readiness = readiness;
+    this.#dirty = true;
+  }
+
+  /** The conversation panel; null is the gestures menu. */
+  setVoice(lines: readonly VoiceLine[] | null): void {
+    const prev = this.#voice;
+    const same =
+      prev === lines ||
+      (prev !== null &&
+        lines !== null &&
+        prev.length === lines.length &&
+        prev.every(
+          (l, i) => l.text === lines[i].text && l.kind === lines[i].kind,
+        ));
+    if (same) return;
+    this.#voice = lines;
     this.#dirty = true;
   }
 
@@ -522,6 +571,7 @@ export class MenuLayer {
         this.#busy,
         this.#readiness,
         this.#alert,
+        this.#voice,
       );
       this.#dirty = false;
       gl.bindTexture(gl.TEXTURE_2D, this.#texture);

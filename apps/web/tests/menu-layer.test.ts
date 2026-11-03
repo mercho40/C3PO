@@ -141,6 +141,37 @@ function stub2d() {
   return { ctx: ctx as unknown as CanvasRenderingContext2D, calls, texts };
 }
 
+describe("paintMenu — voice mode", () => {
+  test("draws the conversation above the items, and the talk/PARAR hint", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(
+      ctx,
+      [{ name: "voice:close", label: "Volver a gestos", verified: true }],
+      0,
+      null,
+      null,
+      null,
+      null,
+      [
+        { text: "Vos: Andá hasta la silla", kind: "you" },
+        { text: "Robot: Listo.", kind: "robot" },
+      ],
+    );
+    const t = texts();
+    expect(t).toContain("Hablar con el robot");
+    expect(t.indexOf("Vos: Andá hasta la silla")).toBeLessThan(
+      t.findIndex((x) => x.startsWith("Volver a gestos")),
+    );
+    expect(t.some((x) => x.includes("B/Y") && x.includes("PARAR"))).toBe(true);
+  });
+
+  test("the gestures footer names the PARAR chord too", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, null);
+    expect(texts().some((x) => x.includes("2 grips PARAR"))).toBe(true);
+  });
+});
+
 describe("paintMenu — what the operator is shown", () => {
   test("draws every item's label", () => {
     const { ctx, texts } = stub2d();

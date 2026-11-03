@@ -32,6 +32,7 @@ import {
   type MenuAlert,
   type MenuStatus,
   type Readiness,
+  type VoiceLine,
 } from "./menu-layer";
 import { ScanLayer, type ScanRing } from "./scan-layer";
 import { eyeOffset, type EyePose } from "./stereo";
@@ -78,14 +79,25 @@ export type XrSample = {
    * from a released one for any consumer that wanted the difference.
    *
    * `trigger` is buttons[0] and `primary` is buttons[4] (A/X) in the
-   * xr-standard mapping. Both false when there is no controller.
+   * xr-standard mapping; `secondary` is buttons[5] (B/Y), push-to-talk.
+   * `grips` counts the controllers whose grip (buttons[1]) is squeezed: two
+   * at once is the in-headset PARAR. All false/0 when there is no controller.
    */
-  buttons: { trigger: boolean; primary: boolean };
+  buttons: XrButtons;
+};
+
+export type XrButtons = {
+  trigger: boolean;
+  primary: boolean;
+  secondary: boolean;
+  grips: number;
 };
 
 /** Index in the `xr-standard` gamepad mapping. */
 const BUTTON_TRIGGER = 0;
+const BUTTON_GRIP = 1;
 const BUTTON_PRIMARY = 4; // A on the right controller, X on the left
+const BUTTON_SECONDARY = 5; // B on the right controller, Y on the left
 
 /**
  * The gamepad of a Touch controller, or null for anything else.
@@ -658,6 +670,11 @@ export class XrTeleopSession {
     this.#menu?.setAlert(alert);
   }
 
+  /** "Hablar con el robot": the conversation lines, or null for gestures. */
+  setMenuVoice(lines: readonly VoiceLine[] | null): void {
+    this.#menu?.setVoice(lines);
+  }
+
   /**
    * The lidar ring, or null when none is arriving.
    *
@@ -1091,16 +1108,20 @@ export class XrTeleopSession {
   }
 
   /** Buttons from any controller. Either hand works — see `#sampleWalkAxis`. */
-  #sampleButtons(session: XRSession): { trigger: boolean; primary: boolean } {
+  #sampleButtons(session: XRSession): XrButtons {
     let trigger = false;
     let primary = false;
+    let secondary = false;
+    let grips = 0;
     for (const source of session.inputSources) {
       const gp = controllerGamepad(source);
       if (!gp) continue;
       if (buttonPressed(gp, BUTTON_TRIGGER)) trigger = true;
       if (buttonPressed(gp, BUTTON_PRIMARY)) primary = true;
+      if (buttonPressed(gp, BUTTON_SECONDARY)) secondary = true;
+      if (buttonPressed(gp, BUTTON_GRIP)) grips += 1;
     }
-    return { trigger, primary };
+    return { trigger, primary, secondary, grips };
   }
 
   #makeOverlayTransparent(root: HTMLElement): void {

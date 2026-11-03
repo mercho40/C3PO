@@ -77,9 +77,7 @@ describe("observe-only commands nothing", () => {
   });
 
   test("the trigger fires nothing, and neither does the stick", () => {
-    const menu = body(
-      "#applyMenuButtons(b: { trigger: boolean; primary: boolean }): void {",
-    );
+    const menu = body("#applyMenuButtons(b: XrButtons): void {");
     expect(menu.indexOf("if (this.viewOnly) return;")).toBeLessThan(
       menu.indexOf("this.runSkill("),
     );
@@ -89,6 +87,15 @@ describe("observe-only commands nothing", () => {
     expect(body("startWalking(dir: WalkDir): void {")).toContain(
       "if (this.viewOnly) return;",
     );
+  });
+
+  test("the in-headset PARAR fires before the observer guard; talk only after it", () => {
+    const menu = body("#applyMenuButtons(b: XrButtons): void {");
+    const guard = menu.indexOf("if (this.viewOnly) return;");
+    expect(menu.indexOf("estop.press()")).toBeGreaterThan(-1);
+    expect(menu.indexOf("estop.press()")).toBeLessThan(guard);
+    expect(menu.indexOf("this.#voice?.onTalk(")).toBeGreaterThan(guard);
+    expect(menu.indexOf("this.#voice?.onItem(")).toBeGreaterThan(guard);
   });
 
   test("no tile runs for an observer — lockedOut is what every tile reads", () => {
@@ -114,7 +121,7 @@ describe("a held stick cannot re-arm its own latch", () => {
     expect(release).toContain("this.#stickNeedsNeutral = true;");
     // Buttons are assumed HELD after a reset, so a trigger still down is not
     // a new press.
-    expect(release).toContain("{ trigger: true, primary: true }");
+    expect(/trigger: true,\s*primary: true/.test(release)).toBe(true);
     expect(body("#refreshReadouts(): void {")).toContain(
       "this.#stickNeedsNeutral = true;",
     );

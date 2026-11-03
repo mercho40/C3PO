@@ -29,11 +29,14 @@
   import VrStrip from "#lib/components/vr/vr-strip.svelte";
   import WalkPanel from "#lib/components/vr/walk-panel.svelte";
   import XrAlerts from "#lib/components/vr/xr-alerts.svelte";
-  import { getRobotLive } from "#lib/robot/context.js";
+  import { getRobotLive, getStopLatch } from "#lib/robot/context.js";
   import { readPosture } from "#lib/robot/posture.js";
   import { MotionTracker } from "#lib/robot/motion.js";
   import { staleness } from "#lib/robot/faults.js";
   import { VrControl } from "#lib/robot/vr-control.svelte.js";
+  import { VrVoice } from "#lib/robot/vr-voice.svelte.js";
+  import { withVoiceEntry } from "#lib/robot/voice-panel.js";
+  import { Button } from "#lib/components/ui/button/index.js";
   import { readinessFor } from "#lib/webxr/menu-layer.js";
   import {
     GESTURE_FSM,
@@ -82,9 +85,28 @@
   // admin banner's "Volver a verificar el rol" (invalidateAll).
   const isAdmin = $derived(data.isAdmin === true);
 
+  // "Hablar con el robot": push-to-talk in the headset, the agent drives.
+  const voice = new VrVoice(getStopLatch());
   const ctl = new VrControl({
     posture: () => (live.online ? (live.state?.posture ?? null) : null),
-    menuItems: () => headsetMenu(data.worksReal, data.catalogue.failed),
+    menuItems: () =>
+      voice.open
+        ? voice.menuItems
+        : withVoiceEntry(headsetMenu(data.worksReal, data.catalogue.failed)),
+    voice: {
+      onItem: (name) => voice.onItem(name),
+      onTalk: (down) => voice.onTalk(down),
+      cancelTalk: () => voice.cancelTalk(),
+    },
+  });
+  // Push the conversation and its menu into the headset whenever they change.
+  $effect(() => {
+    const lines = voice.open ? voice.lines : null;
+    void (voice.open ? voice.menuItems : null);
+    untrack(() => {
+      ctl.setMenuVoice(lines);
+      ctl.refreshMenu();
+    });
   });
 
   // Whether the robot can act at all, pushed to the ONE place the operator is
@@ -136,7 +158,10 @@
     return ctl.mount();
   });
 
-  onDestroy(() => ctl.destroy());
+  onDestroy(() => {
+    ctl.destroy();
+    voice.destroy();
+  });
 
   // An $effect rather than a one-shot in onMount, because `realHardware` can
   // become true LATER and something has to notice: open the page while the
@@ -236,6 +261,30 @@
       {posture}
       onenter={(observe: boolean) => void ctl.enterVr(overlayRoot, observe)}
     />
+    <!-- Before entering VR: Quest Browser asks for the microphone in 2D. -->
+    <section
+      class="flex flex-wrap items-center gap-3 panel p-4"
+      aria-labelledby="vr-voice-title"
+    >
+      <h2 id="vr-voice-title" class="w-full eyebrow">Hablar con el robot</h2>
+      <Button
+        variant={voice.micReady ? "outline" : "default"}
+        disabled={voice.micReady}
+        onclick={() => void voice.enableMic()}
+      >
+        {voice.micReady
+          ? "Micrófono activo"
+          : "Activar micrófono para hablar con el robot"}
+      </Button>
+      <p class="text-sm text-ink-mute">
+        En VR: mantené <strong>B</strong> o <strong>Y</strong>, hablá y soltá.
+        Apretá los
+        <strong>dos grips</strong> a la vez para PARAR.
+      </p>
+      {#if voice.micError}
+        <p role="alert" class="text-sm text-danger-soft">{voice.micError}</p>
+      {/if}
+    </section>
   {/if}
 
   {#if banner?.kind === "offline"}

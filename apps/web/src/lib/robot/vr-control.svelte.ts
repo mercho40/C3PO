@@ -49,6 +49,7 @@ import {
   XrTeleopSession,
   checkXrSupport,
   type HandSample,
+  type XrButtons,
   type XrTeleopSupport,
 } from "#lib/webxr/xr-teleop.js";
 import {
@@ -71,6 +72,7 @@ import {
   alertFor,
   type MenuAlert,
   type MenuItem,
+  type VoiceLine,
   type Readiness,
 } from "#lib/webxr/menu-layer.js";
 import { cameraReasonFor, type CameraReason } from "#lib/webxr/camera-layer.js";
@@ -119,6 +121,16 @@ export type VrControlOptions = {
    * catalogue. Read when a session starts.
    */
   menuItems?: () => readonly MenuItem[];
+  /**
+   * "Hablar con el robot" (vr-voice.svelte.ts). `onItem` gets every `voice:*`
+   * menu selection and says whether it took it; `onTalk` is push-to-talk
+   * (B/Y held / released); `cancelTalk` drops a recording without sending it.
+   */
+  voice?: {
+    onItem: (name: string) => boolean;
+    onTalk: (down: boolean) => void;
+    cancelTalk: () => void;
+  };
 };
 
 export class VrControl {
@@ -383,7 +395,13 @@ export class VrControl {
   //: held-state at display rate, so without this a single press of A would
   //: cycle the highlight through the whole list in under a tenth of a second
   //: and the trigger would fire the same skill 70 times.
-  #prevButtons = { trigger: false, primary: false };
+  #prevButtons: XrButtons = {
+    trigger: false,
+    primary: false,
+    secondary: false,
+    grips: 0,
+  };
+  #voice: VrControlOptions["voice"];
 
   // Raw pose, updated at XR frame rate (~72-120Hz) -- kept as plain fields
   // rather than $state so looking around doesn't force a Svelte re-render
@@ -413,7 +431,20 @@ export class VrControl {
   constructor(opts: VrControlOptions) {
     this.#posture = opts.posture;
     this.#menuItems = opts.menuItems ?? (() => []);
+    this.#voice = opts.voice;
   }
+
+  /** Re-read `menuItems` into a running session (voice mode swaps the list). */
+  refreshMenu(): void {
+    this.#vr?.setMenuItems(this.#menuItems());
+  }
+
+  /** The conversation panel in the headset, or null for the gestures menu. */
+  setMenuVoice(lines: readonly VoiceLine[] | null): void {
+    this.#menuVoice = lines;
+    this.#vr?.setMenuVoice(lines);
+  }
+  #menuVoice: readonly VoiceLine[] | null = null;
 
   /**
    * Browser-only setup. Returns the teardown. Call from `onMount`.
@@ -746,7 +777,15 @@ export class VrControl {
     // Same rule for the buttons: assume HELD, so a trigger still down from
     // before is not mistaken for a new press that fires a preset. The cost is
     // one release before the next press counts, which is the deliberate act.
-    this.#prevButtons = { trigger: true, primary: true };
+    // B/Y too (a held talk button is not a new utterance; the recording is
+    // dropped), but NOT the grips: a PARAR chord still held should fire.
+    this.#prevButtons = {
+      trigger: true,
+      primary: true,
+      secondary: true,
+      grips: 0,
+    };
+    this.#voice?.cancelTalk();
     if (this.walking !== null) {
       this.walking = null;
       if (!this.bridgeHolds && !this.#loopShouldRun()) {
@@ -1113,18 +1152,31 @@ export class VrControl {
    * `runSkill`, so the headset obeys the same lock and outcome rules as the
    * tiles on the page.
    */
-  #applyMenuButtons(b: { trigger: boolean; primary: boolean }): void {
+  #applyMenuButtons(b: XrButtons): void {
     const prev = this.#prevButtons;
     this.#prevButtons = { ...b };
+    // IN-HEADSET PARAR: both grips at once. Before the observer guard — a stop
+    // is never anyone's to withhold — and on the press edge of the chord, the
+    // same `estop.press()` the page's button calls (it also ends agent turns).
+    // Nothing else uses the grips, and one hand's squeeze is not the chord; a
+    // startled operator grabbing both controllers is exactly who it is for.
+    if (b.grips >= 2 && prev.grips < 2) void estop.press();
     // Observers cycle the highlight — reading the list is not commanding — but
     // the trigger does nothing.
     if (b.primary && !prev.primary) this.#vr?.advanceMenu();
     if (this.viewOnly) return;
+    // Push-to-talk on B/Y: an utterance commands the robot, so observers get
+    // none (the guard above).
+    if (b.secondary !== prev.secondary) this.#voice?.onTalk(b.secondary);
     if (!(b.trigger && !prev.trigger)) return;
     // `menuSelection` returns null for anything unverified, so this cannot
     // dispatch untested motion even if the highlight somehow sat on it.
     const item = this.#vr?.menuSelection;
     if (!item) return;
+    if (item.name.startsWith("voice:")) {
+      this.#voice?.onItem(item.name);
+      return;
+    }
     void this.runSkill(item.name, item.label, item.name);
   }
 
@@ -1186,6 +1238,8 @@ export class VrControl {
         },
         onEnd: () => {
           this.vrActive = false;
+          // A recording still held when the headset came off is not a command.
+          this.#voice?.cancelTalk();
           // Back to commanding by default. Observe-only is a property of ONE
           // session, chosen on the way in; leaving it latched would mean the
           // next operator's "Entrar en VR" silently did nothing to the robot
@@ -1264,6 +1318,7 @@ export class VrControl {
     session.setCameraReason(this.#cameraReason());
     // The preset list, each entry's verification status from the catalogue.
     session.setMenuItems(this.#menuItems());
+    session.setMenuVoice(this.#menuVoice);
     session.setMenuVisible(true);
     // The watchers keep these current, but they cannot fire just because a
     // session now exists — the first values go in here.
