@@ -252,7 +252,7 @@ async def main() -> int:
     print("\n" + "=" * 60)
     print("Ladder complete. Everything above was watched by a human.")
     print("Update apps/bridge/README.md's Phase status to record what now")
-    print("has a verified works_real -- and flip works_real in mcp_server.py")
+    print("has a verified works_real -- and flip works_real in bridge/tools/")
     print("ONLY for the skills you actually saw run.")
     print("=" * 60)
     return 0

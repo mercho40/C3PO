@@ -469,7 +469,7 @@ def test_diagnostics_carries_the_keys_the_gate_route_reads():
 
     assert "gate" in diag, (
         "diagnostics() no longer embeds the gate — /telemetry/gate in "
-        "mcp_server.py builds its whole body from this key"
+        "routes/telemetry.py builds its whole body from this key"
     )
     for key in ("started", "domain_id", "reports_received"):
         assert key in diag, f"/telemetry/gate reports link.{key}"
@@ -553,7 +553,7 @@ def test_describe_surroundings_actually_consumes_the_perception_report():
     None of that fails a unit test, because every piece works in isolation. What
     catches it is asserting the CONNECTION exists.
     """
-    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "mcp_server.py"
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "tools" / "surroundings.py"
     body = src.read_text()
     # The snapshot logic lives in surroundings_snapshot(), shared by the tool
     # and the read-only /telemetry/surroundings route so the console and the

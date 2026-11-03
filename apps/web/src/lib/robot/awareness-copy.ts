@@ -89,7 +89,7 @@ export const FREE_SPACE_SECTORS = [
 //
 // The fix is NOT to paraphrase whatever arrives: an unknown sentence stays
 // verbatim, because a guess at its meaning is worse than the original. The
-// KNOWN sentences (copied from apps/bridge — world_model.py, mcp_server.py,
+// KNOWN sentences (copied from apps/bridge — world_model.py, tools/, routes/,
 // sdk/camera_relay.py, sdk/videohub.py) get a Spanish line shown first, with
 // the English kept underneath as a secondary `lang="en"` readout so whoever
 // greps the bridge for it still finds it. Prefix matches, so a reworded tail

@@ -15,7 +15,7 @@
  * The bridge's English strings an operator actually meets on this page, each
  * with its Spanish rendering. Sources, so a reworded bridge string can be
  * found: `bridge/sdk/perception_link.py` (gate `disabled_reason`),
- * `mcp_server.py` (costmap/camera/snapshot/voice bodies),
+ * `routes/*.py` + `tools/surroundings.py` (costmap/camera/snapshot/voice bodies),
  * `sdk/videohub.py` + `sdk/camera_relay.py` (camera `hint`), back's own codes
  * (`bridge_error`, `unavailable`, the probe's `unreadable_body`) and the
  * transport errors Bun puts in `bridge_error`.

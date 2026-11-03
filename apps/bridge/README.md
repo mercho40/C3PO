@@ -131,7 +131,7 @@ Skills are async — call them with `asyncio.run`:
 ```python
 # from apps/bridge/, with env set
 import asyncio
-import bridge.mcp_server   # initialises DDS + state subscribers at import
+import bridge.server       # initialises DDS + state subscribers at import
 from bridge.skills.walk_to import run
 print(asyncio.run(run(target_x=1.0, target_y=0.0, stop_distance_m=0.4, timeout_s=60)))
 ```
@@ -173,7 +173,13 @@ No DDS/hardware needed — everything that touches DDS is monkeypatched (`unitre
 
 ```
 src/bridge/
-  mcp_server.py         FastMCP server — the skill catalogue as MCP tools; stdio or http transport
+  mcp_server.py         entrypoint — boot-time workers, then stdio or http transport
+  config.py             environment, read once at import (loads the bridge's .env) — import it first
+  server.py             the FastMCP instance; DDS init outside stub
+  tools/                the skill catalogue as MCP tools, one module per domain
+                        (state, locomotion, safety, posture, gestures, arms, speech,
+                        navigation, landmarks, tasks, surroundings)
+  routes/               plain-HTTP routes on the same port: telemetry, voice, camera
   skill_meta.py         safety/capability metadata attached to every tool (MCP _meta)
   watchdog.py           operator-link watchdog — safe the robot when the link drops
   world_model.py        world-model contract: what perception hands the agent

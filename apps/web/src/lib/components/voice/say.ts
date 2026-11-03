@@ -1,7 +1,7 @@
 /**
  * The `say` skill's limits, read from the bridge's own JSON Schema.
  *
- * The bridge declares them (`mcp_server.py`: text 1..500 chars, language one of
+ * The bridge declares them (`tools/speech.py`: text 1..500 chars, language one of
  * spanish | english | chinese, default spanish) and the console reads them from
  * GET /skills/say instead of hardcoding a copy that would drift. Back validates
  * against the same schema on /invoke, so a form built from it cannot send what

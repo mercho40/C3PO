@@ -167,7 +167,7 @@ def test_a_lagging_waiter_resumes_at_the_oldest_retained_sequence():
 
 
 async def test_voice_pcm_body_streams_raw_audio_and_stops_on_disconnect():
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
 
     class Request:
         disconnected = False
@@ -177,7 +177,7 @@ async def test_voice_pcm_body_streams_raw_audio_and_stops_on_disconnect():
 
     lis, *_ = make([])
     request = Request()
-    body = mcp_server._voice_pcm_body(request, lis)
+    body = voice_routes._voice_pcm_body(request, lis)
     next_chunk = asyncio.create_task(anext(body))
     await asyncio.sleep(0.02)
     lis._publish_audio(b"pcm")
@@ -188,14 +188,14 @@ async def test_voice_pcm_body_streams_raw_audio_and_stops_on_disconnect():
 
 
 async def test_voice_pcm_cancellation_does_not_close_a_generator_running_in_a_worker():
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
 
     class Request:
         async def is_disconnected(self):
             return False
 
     lis, *_ = make([])
-    body = mcp_server._voice_pcm_body(Request(), lis)
+    body = voice_routes._voice_pcm_body(Request(), lis)
     pending = asyncio.create_task(anext(body))
     await asyncio.sleep(0.02)
     pending.cancel()
@@ -208,7 +208,7 @@ async def test_voice_pcm_cancellation_does_not_close_a_generator_running_in_a_wo
 
 
 async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeypatch):
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
     from bridge.skills import listen as listen_mod
 
     class Request:
@@ -220,7 +220,7 @@ async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeyp
     lis, *_ = make([])
     request = Request()
     monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
-    response = await mcp_server.voice_events(request)
+    response = await voice_routes.voice_events(request)
     assert response.media_type == "text/event-stream"
     assert response.headers["x-accel-buffering"] == "no"
     body = response.body_iterator
@@ -233,13 +233,13 @@ async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeyp
     assert lis.poll()[0]["text"] == "spoken"
     await body.aclose()
 
-    monkeypatch.setattr(mcp_server, "_VOICE_KEEPALIVE_S", 0.0)
-    keepalive_body = mcp_server._voice_event_body(request, lis)
+    monkeypatch.setattr(voice_routes, "_VOICE_KEEPALIVE_S", 0.0)
+    keepalive_body = voice_routes._voice_event_body(request, lis)
     assert await anext(keepalive_body) == b": keepalive\n\n"
     await keepalive_body.aclose()
 
     request.disconnected = True
-    disconnected_body = mcp_server._voice_event_body(request, lis)
+    disconnected_body = voice_routes._voice_event_body(request, lis)
     try:
         await anext(disconnected_body)
     except StopAsyncIteration:

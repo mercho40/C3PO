@@ -2,13 +2,14 @@
 
 Nothing else in this package imports `bridge.mcp_server`. That is a problem
 worth a dedicated test: every tool is registered by an `@mcp.tool()` decorator
+in one of the `bridge.tools.*` modules
 and invoked by name over the wire, so a tool that gets renamed, or lost to a bad
 merge, or accidentally dropped out of the module, breaks a robot capability
 without failing anything. `apps/back` binds to these names as strings from
 TypeScript, so nothing on that side catches it either.
 
 Importing this module is safe only because `SIM_MODE=stub` short-circuits the
-DDS init at import time (`mcp_server.py`, the `if SIM_MODE != "stub"` guard).
+DDS init at import time (`server.py`, the `if SIM_MODE != "stub"` guard).
 The fixture sets it before the first import for that reason — under any other
 mode, importing would open DDS sockets.
 """
@@ -200,7 +201,7 @@ def test_stub_get_state_declares_its_env(tools):
     A caller that cannot tell stub data from robot data will eventually treat
     one as the other. Both `env` and `stub` are part of that contract.
     """
-    from bridge.mcp_server import get_state
+    from bridge.tools.state import get_state
 
     payload = get_state()
     assert payload["env"] == "stub"
@@ -220,7 +221,7 @@ def test_stub_get_state_shape_drift_is_recorded():
     than as a side effect of a test. If you do fix it, this test should fail and
     be deleted.
     """
-    from bridge.mcp_server import get_state
+    from bridge.tools.state import get_state
 
     payload = get_state()
     assert "z_meters_world" not in payload["pose"], "stub pose gained z — update the contract note"
@@ -234,7 +235,7 @@ async def test_say_is_no_longer_a_stub_on_real(monkeypatch):
     It was a logging stub for a long time while its description promised TTS —
     the kind of gap an agent cannot detect, because a stub returns success.
     """
-    import bridge.mcp_server as server
+    import bridge.tools.speech as server
     from bridge.sdk import g1_protocol, g1_rpc
 
     monkeypatch.setattr(server, "SIM_MODE", "real")

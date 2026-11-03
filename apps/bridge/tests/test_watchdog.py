@@ -206,7 +206,9 @@ def test_poll_tools_record_operator_contact(monkeypatch):
     `_tripped` with nothing left to clear it. The poll-shaped tools are the
     liveness signal this module's own docstring nominates.
     """
-    from bridge import mcp_server, watchdog
+    from bridge import watchdog
+    from bridge.tools import state as state_tools
+    from bridge.tools import tasks as task_tools
 
     touched: list[str] = []
 
@@ -214,14 +216,15 @@ def test_poll_tools_record_operator_contact(monkeypatch):
         def touch(self) -> None:
             touched.append("touch")
 
-    monkeypatch.setattr(mcp_server, "get_watchdog", lambda: FakeWatchdog())
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "stub")
+    monkeypatch.setattr(state_tools, "get_watchdog", lambda: FakeWatchdog())
+    monkeypatch.setattr(task_tools, "get_watchdog", lambda: FakeWatchdog())
+    monkeypatch.setattr(state_tools, "SIM_MODE", "stub")
 
-    mcp_server.get_state()
+    state_tools.get_state()
     assert touched, "get_state must record operator contact"
 
     touched.clear()
-    mcp_server.list_active_tasks()
+    task_tools.list_active_tasks()
     assert touched, "list_active_tasks must record operator contact"
 
     # And the real object still exposes the method the tools rely on.

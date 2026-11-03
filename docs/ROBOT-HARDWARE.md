@@ -330,7 +330,7 @@ control board with the vendor `lidar_driver` owning it, or `point_send_en` (regi
 `0x0003`) disabled outright. Unresolved (§12 Q1). No FAST-LIO2, Point-LIO or FAST-LIVO2
 exists anywhere on this robot — an exhaustive search over `/home/unitree`, `/unitree` and
 `/opt` returned zero — so LiDAR integration is greenfield. **[live]** (Our bridge does not
-consume the LiDAR at all today; `mcp_server.py` passes `lidar_online=False` unconditionally
+consume the LiDAR at all today; `tools/surroundings.py` passes `lidar_online=False` unconditionally
 and `world_model.py` refuses honestly.)
 
 ### 4.5 Two integration routes: the DDS republish, and our own driver
@@ -1419,7 +1419,7 @@ stuck playback"_ is second-hand evidence that `PlayStream` genuinely drives this
 speaker. **[src]** For anything non-Chinese/English: external synthesis → PCM16 @16 kHz →
 `PlayStream`.
 
-The bridge's `say` tool implements this path (see `apps/bridge/src/bridge/mcp_server.py`
+The bridge's `say` tool implements this path (see `apps/bridge/src/bridge/tools/speech.py`
 and the voice client in `apps/bridge/src/bridge/sdk/g1_rpc.py`); the api-level details and
 vendor defects to code around are in `docs/ROBOT-API.md` §7. Verified 2026-08-15:
 `GET_VOLUME` answered `{"volume":100}` — the service is alive on this unit and the volume

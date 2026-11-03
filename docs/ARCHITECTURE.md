@@ -200,7 +200,7 @@ gets built, mind the pgvector `CREATE EXTENSION` gotcha in
 
 **Isaac Sim** (`walk_to(3, 2)`):
 
-1. The MCP tool call arrives at `mcp_server.walk_to`.
+1. The MCP tool call arrives at `walk_to` (`bridge/tools/locomotion.py`).
 2. `task_runtime` creates a `Task` (id, status, progress, phase, cancel event).
 3. `walk_to` reads pose from the state sampler (`sdk/state.py`) and computes
    the world→body error.

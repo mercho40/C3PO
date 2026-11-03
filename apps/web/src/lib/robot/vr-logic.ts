@@ -818,7 +818,7 @@ export function gestureCaveat(gate: PostureGate): string | null {
 /**
  * Firmware actions that already have a dedicated tile in the preset grid,
  * mapped from the tool that dispatches them (each tool's docstring in
- * apps/bridge/src/bridge/mcp_server.py names its id). Listing them again under
+ * apps/bridge/src/bridge/tools/gestures.py names its id). Listing them again under
  * "Más gestos" would put two "Abrazar" buttons on one screen with no way to tell
  * them apart.
  */
