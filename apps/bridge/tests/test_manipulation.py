@@ -124,13 +124,87 @@ def test_workspace_is_per_side():
     assert "x=" in m.in_workspace("right", (0.05, -0.2, 0.0))
 
 
+def phases(steps):
+    """Phase names with a line's sub-waypoints collapsed."""
+    out = []
+    for s in steps:
+        if not out or out[-1] != s[1]:
+            out.append(s[1])
+    return out
+
+
+def last_q(steps, phase):
+    return [s[2] for s in steps if s[1] == phase][-1]
+
+
 def test_a_pick_plan_opens_first_and_lifts_last():
     steps = m.plan_pick("right", REACHABLE, "power", None)
-    assert [s[1] for s in steps] == ["open", "pre_grasp", "grasp", "close", "closing", "lift"]
-    grasp = kinematics.forward("right", steps[2][2]).position
-    lift = kinematics.forward("right", steps[5][2]).position
+    assert phases(steps) == ["open", "pre_grasp", "grasp", "close", "closing", "lift"]
+    grasp = kinematics.forward("right", last_q(steps, "grasp")).position
+    lift = kinematics.forward("right", last_q(steps, "lift")).position
     assert lift[2] - grasp[2] == pytest.approx(m.LIFT_M, abs=0.02)
     assert math.dist(grasp, REACHABLE) < 0.04  # within the depth offset + IK tolerance
+
+
+def slewed_tcp(q_from, q_to):
+    """Hand positions while arm_sdk slews q_from -> q_to, each joint on its own (its _slew)."""
+    step = arm_sdk.MAX_JOINT_RATE_RAD_S * arm_sdk.CONTROL_PERIOD_S
+    cur, out = list(q_from), []
+    while any(abs(t - c) > 1e-9 for t, c in zip(q_to, cur)):
+        cur = [c + max(-step, min(step, t - c)) for c, t in zip(cur, q_to)]
+        out.append(kinematics.forward("right", cur).position)
+    return out
+
+
+def off_line(p, a, b):
+    ab = [b[i] - a[i] for i in range(3)]
+    t = max(0.0, min(1.0, sum((p[i] - a[i]) * ab[i] for i in range(3)) / sum(v * v for v in ab)))
+    return math.dist(p, [a[i] + ab[i] * t for i in range(3)])
+
+
+def max_deviation(steps, line_phase, from_phase):
+    qs = [last_q(steps, from_phase)] + [s[2] for s in steps if s[1] == line_phase]
+    a = kinematics.forward("right", qs[0]).position
+    b = kinematics.forward("right", qs[-1]).position
+    return max(off_line(p, a, b) for q0, q1 in zip(qs, qs[1:]) for p in slewed_tcp(q0, q1))
+
+
+@pytest.mark.parametrize(
+    "target", [REACHABLE, (0.36, -0.25, 0.0), (0.28, -0.05, 0.10), (0.26, -0.30, -0.05)]
+)
+def test_approach_and_lift_follow_a_straight_line(target):
+    # Audit §4: one joint-space move pre-grasp -> grasp swept the hand up to 24 cm sideways.
+    steps = m.plan_pick("right", target, "power", None)
+    assert max_deviation(steps, "grasp", "pre_grasp") < 0.01
+    assert max_deviation(steps, "lift", "grasp") < 0.01
+
+
+def test_place_lowers_and_retreats_in_straight_lines():
+    steps = m.plan_place("right", REACHABLE, None)
+    assert phases(steps) == ["above", "down", "open", "opening", "retreat"]
+    assert max_deviation(steps, "down", "above") < 0.01
+    assert max_deviation(steps, "retreat", "down") < 0.01
+
+
+def test_every_planned_pose_is_inside_the_urdf_limits():
+    lim = kinematics.limits("right")
+    for s in m.plan_pick("right", (0.36, -0.25, 0.0), "power", None):
+        if s[0] == "arm":
+            assert all(lo <= v <= hi for v, (lo, hi) in zip(s[2], lim))
+
+
+def test_a_pose_outside_the_joint_limits_is_a_plan_error(monkeypatch):
+    # Pretend the solver returned an over-limit pose: the planner must refuse, not clamp.
+    bad = kinematics.IKResult((0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0), True, 0.0, 0.0, 1)
+    monkeypatch.setattr(kinematics, "solve", lambda *a, **k: bad)
+    with pytest.raises(m.PlanError, match="outside its limits"):
+        m.plan_pick("right", REACHABLE, "power", None)
+
+
+def test_the_plan_summary_collapses_each_line_into_one_entry():
+    plan = m._plan_dict(m.plan_pick("right", REACHABLE, "power", None))
+    assert [e["phase"] for e in plan] == ["open", "pre_grasp", "grasp", "close", "closing", "lift"]
+    assert plan[2]["waypoints"] >= 10  # 10 cm approach at 1 cm
 
 
 def test_an_unreachable_target_never_produces_a_plan():

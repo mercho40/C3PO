@@ -70,6 +70,18 @@ CLOSE_SETTLE_S = 0.8
 HANDOVER_POINT = (0.38, 0.12, 0.18)  # y mirrored for the right arm
 #: Fingers horizontal first, then tipped down: side grasp of an upright object, then from above.
 APPROACH_TILTS_DEG = (0.0, 30.0, 60.0)
+#: Approach, lift, lower and retreat are straight Cartesian lines, cut into sub-waypoints this
+#: far apart. arm_sdk slews each joint on its own, so ONE joint-space move from pre-grasp to
+#: grasp swept the hand sideways (audit §4: median 5 cm, max 24 cm). Over 1 cm it cannot.
+LINE_STEP_M = 0.01
+#: Largest joint change allowed between two 1 cm sub-waypoints. A smooth line moves a joint a
+#: few hundredths of a radian per cm; an IK branch flip (elbow up <-> down) moves it ~1 rad.
+LINE_MAX_DQ_RAD = 0.25
+#: Largest joint change between two COMMANDED poses on a line. Near a straight elbow 1 cm of
+#: hand travel takes ~0.2 rad of elbow against opposite shoulder motion; slewed joint by joint
+#: that swings the hand ~3 cm off the line. Joint-interpolating in 0.03 rad steps keeps the
+#: joints moving together.
+LINE_JOINT_STEP_RAD = 0.03
 
 
 class PlanError(Exception):
@@ -122,7 +134,55 @@ def _solve(
             f"{name}: out of reach (closest {r.position_error_m * 100:.0f} cm off, "
             f"fingers {math.degrees(r.direction_error_rad):.0f}° off)"
         )
+    # Bound = URDF limits minus kinematics.LIMIT_MARGIN_RAD, NOT retarget.LIMITS: that box is
+    # teleop's sign-error guard ("NOT the hardware limits", tighter by design) and rejects
+    # 122/162 poses these plans need (limits_check.py); speed is bounded by the 0.6 rad/s slew.
+    # IK already clips to this bound; checked again so a future solver change cannot slip past.
+    for j, (v, (lo, hi)) in enumerate(zip(r.q, kinematics.limits(side), strict=True)):
+        if not lo - 1e-9 <= v <= hi + 1e-9:
+            raise PlanError(f"{name}: joint {j} at {math.degrees(v):.0f}° is outside its limits")
     return r.q
+
+
+def _line(
+    side: Side,
+    name: str,
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    pointing: tuple[float, float, float] | None,
+    q_start: tuple[float, ...],
+) -> list[tuple[float, ...]]:
+    """IK for every LINE_STEP_M along start -> end, each seeded by the last; ends at `end`.
+
+    PlanError if any point is unreachable or IK jumps branch between neighbours: a branch
+    flip is the arm swinging through a different elbow pose, which is exactly the sideways
+    sweep this exists to prevent.
+    """
+    n = max(1, math.ceil(math.dist(start, end) / LINE_STEP_M))
+    out: list[tuple[float, ...]] = []
+    prev = q_start
+    for i in range(1, n + 1):
+        k = i / n
+        p = (
+            start[0] + (end[0] - start[0]) * k,
+            start[1] + (end[1] - start[1]) * k,
+            start[2] + (end[2] - start[2]) * k,
+        )
+        q = _solve(side, f"{name} {i}/{n}", p, pointing, list(prev))
+        jump = max(abs(a - b) for a, b in zip(q, prev, strict=True))
+        if jump > LINE_MAX_DQ_RAD:
+            raise PlanError(
+                f"{name} {i}/{n}: IK jumped {math.degrees(jump):.0f}° in one joint over "
+                f"{LINE_STEP_M * 100:.0f} cm (elbow branch flip), the line is not followable"
+            )
+        pieces = max(1, math.ceil(jump / LINE_JOINT_STEP_RAD))
+        out += [
+            tuple(a + (b - a) * j / pieces for a, b in zip(prev, q, strict=True))
+            for j in range(1, pieces)
+        ]
+        out.append(q)
+        prev = q
+    return out
 
 
 def _approach(side: Side, p: tuple[float, float, float], tilt_deg: float) -> kinematics.Vec3:
@@ -149,20 +209,22 @@ def plan_pick(
     for tilt in APPROACH_TILTS_DEG:
         d = _approach(side, target, tilt)
         grasp = _offset(target, d, GRASP_DEPTH_OFFSET_M)
+        pre = _offset(grasp, d, -PREGRASP_BACK_M)
+        lifted = (grasp[0], grasp[1], grasp[2] + LIFT_M)
         try:
-            q_pre = _solve(side, "pre-grasp", _offset(grasp, d, -PREGRASP_BACK_M), d, seed)
-            q_grasp = _solve(side, "grasp", grasp, d, list(q_pre))
-            q_lift = _solve(side, "lift", (grasp[0], grasp[1], grasp[2] + LIFT_M), d, list(q_grasp))
+            q_pre = _solve(side, "pre-grasp", pre, d, seed)
+            approach = _line(side, "grasp", pre, grasp, d, q_pre)
+            lift = _line(side, "lift", grasp, lifted, d, approach[-1])
         except PlanError as exc:
             errors.append(f"tilt {tilt:.0f}°: {exc}")
             continue
         return [
             ("hand", "open", "open"),
             ("arm", "pre_grasp", q_pre),
-            ("arm", "grasp", q_grasp),
+            *(("arm", "grasp", q) for q in approach),
             ("hand", "close", shape),
             ("wait", "closing", CLOSE_SETTLE_S),
-            ("arm", "lift", q_lift),
+            *(("arm", "lift", q) for q in lift),
         ]
     raise PlanError("; ".join(errors))
 
@@ -172,15 +234,16 @@ def plan_place(
 ) -> list[Step]:
     """Lower onto `target`, open, back away."""
     d = _approach(side, target, 0.0)
-    q_above = _solve(side, "above", (target[0], target[1], target[2] + LIFT_M), d, seed)
-    q_down = _solve(side, "down", target, d, list(q_above))
-    q_back = _solve(side, "retreat", _offset(target, d, -RETREAT_M), d, list(q_down))
+    above = (target[0], target[1], target[2] + LIFT_M)
+    q_above = _solve(side, "above", above, d, seed)
+    down = _line(side, "down", above, target, d, q_above)
+    back = _line(side, "retreat", target, _offset(target, d, -RETREAT_M), d, down[-1])
     return [
         ("arm", "above", q_above),
-        ("arm", "down", q_down),
+        *(("arm", "down", q) for q in down),
         ("hand", "open", "open"),
         ("wait", "opening", CLOSE_SETTLE_S),
-        ("arm", "retreat", q_back),
+        *(("arm", "retreat", q) for q in back),
     ]
 
 
@@ -251,10 +314,16 @@ def _abort_reason(allow_person: bool) -> str | None:
 
 
 def _plan_dict(steps: list[Step]) -> list[dict[str, Any]]:
-    out = []
+    """One entry per phase: a line's sub-waypoints collapse into its final pose + a count."""
+    out: list[dict[str, Any]] = []
     for kind, phase, value in steps:
         if kind == "arm":
-            out.append({"phase": phase, "q_deg": [round(math.degrees(v), 1) for v in value]})
+            q_deg = [round(math.degrees(v), 1) for v in value]
+            if out and out[-1].get("phase") == phase and "q_deg" in out[-1]:
+                out[-1]["q_deg"] = q_deg
+                out[-1]["waypoints"] += 1
+            else:
+                out.append({"phase": phase, "q_deg": q_deg, "waypoints": 1})
         else:
             out.append({"phase": phase, kind: value})
     return out
