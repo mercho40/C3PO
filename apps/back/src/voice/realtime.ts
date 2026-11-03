@@ -146,6 +146,9 @@ class RobotAudioSink {
         );
       }
     });
+    // Marks this link handled so a failed POST cannot crash the process (and
+    // console PARAR with it); finish() still rejects for whoever awaits it.
+    this.tail.catch(() => {});
   }
 }
 

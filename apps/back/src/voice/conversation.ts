@@ -155,6 +155,9 @@ export class VoiceConversation {
           await this.deps.speak(chunk);
         };
         speechTail = speechTail ? speechTail.then(speak) : speak();
+        // Not awaited until the stream ends: unhandled until then, and an
+        // unhandled rejection kills apps/back. The await below still throws.
+        speechTail.catch(() => {});
       }
     };
 
