@@ -34,6 +34,7 @@ import { VoiceConversation } from "#back/voice/conversation.js";
 import { bridgeVoiceEvents, bridgeVoiceStatus } from "#back/voice/events.js";
 import { VoiceLoop } from "#back/voice/loop.js";
 import { RealtimeVoiceSession } from "#back/voice/realtime.js";
+import { TranscribeError, transcribe } from "#back/voice/transcribe.js";
 
 const newId = createIdGenerator();
 
@@ -223,6 +224,32 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
       detail: {
         summary:
           "End the spoken conversation. The robot keeps listening, but no turns are processed.",
+        tags: ["voice"],
+      },
+    },
+  )
+  .post(
+    "/transcribe",
+    async ({ request, status }) => {
+      try {
+        const text = await transcribe(
+          await request.arrayBuffer(),
+          request.headers.get("content-type") ?? "audio/wav",
+        );
+        return { text };
+      } catch (error) {
+        if (error instanceof TranscribeError) {
+          return status(error.status, { error: error.message });
+        }
+        throw error;
+      }
+    },
+    {
+      auth: true,
+      parse: "none",
+      detail: {
+        summary:
+          "Speech to text for the headset's push-to-talk (WAV in, {text} out).",
         tags: ["voice"],
       },
     },
