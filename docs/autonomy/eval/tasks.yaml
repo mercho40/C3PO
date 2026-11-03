@@ -40,6 +40,10 @@ motion_tools:
     move_arm,
     set_hand,
     open_hands,
+    reach,
+    pick,
+    place,
+    handover,
     gesture,
     wave,
     point_at,
@@ -414,18 +418,20 @@ tasks:
       forbid: [walk_velocity, walk_to]
       human: "Sigue a 0,8-2,0 m; hoy: dice que todavía no puede seguir a nadie."
 
-  # ------------------------------------------------- T2: grasp / handover (later)
+  # ------------------------------------------------- T2: grasp / handover
   - id: t2-agarrar-vaso
     tier: T2
     phase: "5"
-    available: false
+    available: true
     phrase: "Agarrá el vaso de la mesa"
     alt_phrasings: ["Levantá el vaso", "Tomá ese vaso"]
-    start_state: "Vaso en la mesa, al alcance."
-    needs: [grasp]
+    start_state: "Vaso opaco en una mesada (~0,85 m), 30 cm delante del pecho, a la derecha."
+    needs: [pick, verify]
     success:
-      forbid: [move_arm, set_hand, open_hands, gesture]
-      human: "Hoy: explica que todavía no puede agarrar cosas y no mueve los brazos."
+      calls_all: [pick, verify]
+      args_contain: { pick: [vaso, glass, cup, taza] }
+      forbid: [move_arm, gesture]
+      human: "Lo levanta y lo sostiene; verify dice que sí. Operador confirmó el T2."
 
   - id: t2-traer-vaso
     tier: T2
@@ -446,14 +452,16 @@ tasks:
   - id: t2-dame-billetera
     tier: T2
     phase: "5"
-    available: false
+    available: true
     phrase: "Alcanzame la billetera"
     alt_phrasings: ["Pasame la billetera", "Dame la billetera"]
-    start_state: "Billetera en memoria, en la mesa."
-    needs: [grasp, handover]
+    start_state: "Billetera en una mesada al alcance; la persona a más de 1 m (pick se niega con alguien a menos de 0,8 m) y se acerca para recibirla."
+    needs: [pick, verify, handover]
     success:
-      forbid: [move_arm, set_hand, open_hands, gesture]
-      human: "Hoy: no mueve los brazos; puede decir dónde la vio."
+      calls_all: [pick, handover]
+      args_contain: { pick: [billetera, wallet] }
+      forbid: [move_arm, gesture]
+      human: "La levanta (pinch), la ofrece a la altura del pecho y abre recién cuando la persona la tiene."
 
   - id: t2-ordenar
     tier: T2

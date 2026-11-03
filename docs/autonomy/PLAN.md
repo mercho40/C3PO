@@ -212,13 +212,13 @@ send it a goal. — [03 §7 build order](research/03-mapping-navigation.md)
 **Goal:** "agarrá la taza" for upright rigid objects, standing still, no learned policy.
 — [04 §8 Phase 0 + 2](research/04-manipulation.md), [02 §5](research/02-perception.md)
 
-1. [ ] **One arm-control process** owning `rt/arm_sdk`: weight ramp in/out from measured pose (blend weight in motor slot 29), joint velocity/torque caps, workspace box, watchdog. Mutually exclusive with the stock arm-action client. Regular mode only.
-2. [ ] **IK:** copy Unitree's Pinocchio/CasADi `robot_arm_ik.py` from `xr_teleoperate`; bring the G1 + BrainCo URDF into the repo (none today).
-3. [ ] **BrainCo:** install `brainco_hand_service` (serial → DDS, 6 joints per hand). Verify polarity and whether state includes current/force. Script **open / power / pinch / hook** primitives.
+1. [x] **One arm-control process** owning `rt/arm_sdk`: weight ramp in/out from measured pose (blend weight in motor slot 29), joint velocity/torque caps, workspace box, watchdog. Mutually exclusive with the stock arm-action client. Regular mode only. _Exists: `teleop/arm_sdk.py` (VR teleop + `move_arm`); workspace box and per-tick person/walking abort added in `skills/manipulation.py`._
+2. [x] **IK:** ~~copy Pinocchio/CasADi~~ pure-Python damped-least-squares IK over the vendored G1 rev 1.0 URDF (`bridge/kinematics.py`, ~2 ms/solve, no new dependency in the stop process). BrainCo geometry is one TCP offset (measure it: test-day `manipulation.md` §4).
+3. [ ] **BrainCo:** install `brainco_hand_service` (serial → DDS, 6 joints per hand). Verify polarity and whether state includes current/force. Script **open / power / pinch / hook** primitives. _Primitives done (`hands.SHAPES`, `set_hand(shape=)`); polarity and `Thumb_aux` direction still to watch on the robot._
 4. [ ] Sim twin: `unitree_mujoco` (arms) with the BrainCo URDF; every arm skill passes sim first.
 5. [ ] Mount the wrist cameras; hand-eye calibration.
-6. [ ] **Classical pick** (HomeBody / HERO pattern): `point(query)` or `find_object` → SAM mask → depth point cloud → analytic side grasp (rotate ~45° so the thumb opposes) → IK → close → `verify()`.
-7. [ ] `place(target)` and `handover()` (stop in front of the person, extend, open on a confirmed tug or a spoken "listo").
+6. [x] **Classical pick** (HomeBody / HERO pattern): `point(query)` or `find_object` → SAM mask → depth point cloud → analytic side grasp (rotate ~45° so the thumb opposes) → IK → close → `verify()`. _Built as `pick`: detector `cam_xyz` → URDF camera mount → side grasp (tilting to 30°/60° if needed) → IK for every waypoint before moving. No SAM mask yet (box centre + median depth); `find_object` points are not graspable yet (no depth in the bridge)._
+7. [x] `place(target)` and `handover()` (stop in front of the person, extend, open on a confirmed tug or a spoken "listo"). _Built; handover opens only when the planner calls `set_hand(shape="open")`, no tug detection._
 
 **Exit:** pick an opaque cup from a table at 5 positions, ≥ 70 % over 20 trials; handover ≥ 80 %; zero gate violations.
 

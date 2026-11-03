@@ -16,6 +16,7 @@ its own before it has moved on the gantry.
 | 4   | YOLOE engine, speed, sanity                     | [`perception.md`](perception.md) §2–4                                        | no                    |
 | 5   | Object memory + `look_around`                   | [`memory-eval.md`](memory-eval.md) §1–6                                      | turns in place        |
 | 6   | Nav2 goals, map, landmark                       | [`nav.md`](nav.md) §2–7                                                      | gantry → 0.5 m → room |
+| 6b  | Arms: URDF check, reach, shapes, pick, handover | [`manipulation.md`](manipulation.md)                                         | arms (gantry → stand) |
 | 7   | **Put together:** "buscá la billetera"          | this file §7                                                                 | yes                   |
 | 8   | Measure: eval T0 subset, YOLOE test-set capture | [`memory-eval.md`](memory-eval.md) §7, [`perception.md`](perception.md) §5–7 | little                |
 
@@ -78,6 +79,7 @@ Record: success, wall time, number of LLM steps, any intervention. Try 3 phrasin
 | T2 confirmation gate                    | `SAFETY_T2_CONFIRM=off` (only with e-stop in hand)                    | bridge `.env`                             |
 | Collision Monitor (if Nav2 won't start) | `C3PO_NAV_COLLISION_MONITOR=0`                                        | prefix on `c3po up nav2…`                 |
 | Saved map / localization                | unset `C3PO_NAV_SLAM`                                                 | prefix on `c3po up nav2…`                 |
+| Arm skills                              | `TELEOP_ARM_ENABLED=0` (hands: `TELEOP_HAND_ENABLED=0`)               | bridge `.env`                             |
 | MPPI                                    | `C3PO_NAV_CONTROLLER=dwb` (default)                                   | prefix on `c3po up nav2…`                 |
 | YOLOE → YOLO11n                         | `C3PO_ENGINE` / `C3PO_LABELS` back to the yolo11n plan + `labels.txt` | vision container env (`perception.md` §8) |
 
@@ -90,4 +92,5 @@ Record: success, wall time, number of LLM steps, any intervention. Try 3 phrasin
 - `ask_user` speaks the question but does not wait for the answer.
 - MPPI is configured for vy 0.3 but the bridge clamps vy to ±0.20.
 - Never `arm_navigation` while running `nav2-fake` — the fake never moves, Nav2 keeps commanding, and an open gate sends that to the real legs.
-- Arms/hands (Phases 5–6) are not part of this branch beyond the T2 gate.
+- Arms: `reach`/`pick`/`place`/`handover` exist but have never moved an arm; `manipulation.md` §1 must pass before any of them runs. Learned skills (Phase 6) are not built.
+- The vision container's camera extrinsic defaults to pitch 0°; the URDF mounts the D435 47.6° nose-down. Every detector `range_m` depends on it: `manipulation.md` §6 / `perception.md` §4.

@@ -121,6 +121,12 @@ agent what it sees (or read `/c3po/objects`). Expected labels are the vocab name
 `drinking glass`. The glass should come back with `"depth_source":"plane"` and a range
 close to the tape measure — that is the transparent-object fallback working.
 
+**Camera pitch (2 min, do it first).** The URDF mounts the D435 **47.6° nose-down**; the
+vision container's default extrinsic says **0°** and nothing on the robot overrides it. Put
+one object on the floor 1.0 m ahead (tape) and read its `range_m`. If it is far off, set
+`C3PO_CAMERA_PITCH_DEG=47.6` on the vision container (no rebuild) and read it again. Write
+down both. This changes every range: person rule, object memory, `find_object`.
+
 ## 5. Capture the test set (~50 classes x 0.5 / 1.5 / 3 m, ~10 frames each)
 
 The capture opens the camera itself, so stop the detector first (`c3po perception stop`).
