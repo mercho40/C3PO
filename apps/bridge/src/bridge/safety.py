@@ -116,8 +116,7 @@ T2_CONFIRM = _env_on("SAFETY_T2_CONFIRM")
 # can be issued, so T2 is refused outright: fail closed, never open.
 CONFIRM_SECRET = os.environ.get("SAFETY_CONFIRM_SECRET", "")
 CONFIRM_TTL_S = 30.0
-# T2 skills that exist to be near a person. None yet: a `handover` skill joins
-# this set when it is written (PLAN Phase 5).
+# T2 skills that exist to be near a person (skills/manipulation.py).
 HANDOVER_TOOLS: frozenset[str] = frozenset({"handover"})
 
 
@@ -229,6 +228,21 @@ def govern(
         # Transitions only: this runs at up to 50 Hz.
         log.warning("safety.speed_factor", factor=factor, reason=reason, autonomous=autonomous)
     return out
+
+
+def base_moving() -> bool:
+    """True while the last governed velocity is non-zero and unexpired: the legs are walking.
+
+    Arm skills refuse then: driving rt/arm_sdk while walking bent a G1 at the waist
+    (unitree_sdk2_python #146).
+    """
+    with _lock:
+        last, at = _last, _last_at
+    return (
+        at is not None
+        and time.monotonic() - at <= SETPOINT_EXPIRES_S
+        and any(abs(v) > 1e-3 for v in last)
+    )
 
 
 # -- risk tiers and confirmation ----------------------------------------------

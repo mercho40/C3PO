@@ -46,6 +46,12 @@ EXPECTED_TOOLS = {
     "find_object",
     "verify",
     "ask_user",
+    # manipulation (IK over the URDF; arm_state is read-only)
+    "reach",
+    "pick",
+    "place",
+    "handover",
+    "arm_state",
     # postures and mode
     "damp",
     "zero_torque",

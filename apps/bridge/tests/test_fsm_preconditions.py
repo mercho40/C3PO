@@ -130,6 +130,8 @@ class TestTheVocabularyIsReal:
             "fresh_rt_lowstate",
             "no_gesture_task_running",
             "TELEOP_ARM_ENABLED=1",
+            # reach / pick / place / handover: refused while the base walks
+            "standing_still",
             # free-form hand control
             "TELEOP_HAND_ENABLED=1",
             "TELEOP_HAND_TYPE_configured",

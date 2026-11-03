@@ -90,6 +90,22 @@ BRAINCO_SPEED = 1.0
 # cap always means "never quite fully closed" regardless of wire direction.
 BRAINCO_CLOSURE_CAPS = (0.98, 0.70, 0.98, 0.98, 0.98, 0.98)
 
+# Named grasp shapes, per-channel closure in the same order (0 open .. 1 closed), BEFORE the caps.
+# For grasping (skills/manipulation.py) and `set_hand(shape=...)`. Drivers without per-finger
+# control (Dex3 here) get the shape's mean as one scalar.
+# shortcut: Thumb_aux's direction (does closure swing the thumb across the palm?) is unobserved;
+# these assume it does. Watch one `power` close and fix channel 1 here if the thumb goes outward.
+SHAPES: dict[str, tuple[float, ...]] = {
+    "open": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    # Wrap a cup, bottle, remote: thumb opposed, all fingers round it.
+    "power": (0.55, 0.70, 0.85, 0.85, 0.85, 0.85),
+    # Thin or small things (keys, wallet edge, watch): thumb and index meet, the rest tucked.
+    "pinch": (0.55, 0.70, 0.60, 0.60, 0.95, 0.95),
+    # Bag handles: fingers curled, thumb out of the way.
+    "hook": (0.0, 0.0, 0.70, 0.70, 0.70, 0.70),
+    "point": (0.60, 0.70, 0.0, 0.95, 0.95, 0.95),
+}
+
 # --- Dex3-1 ------------------------------------------------------------------
 # 7 motors, radians. IDL order is `thumb_0, thumb_1, thumb_2, middle_0,
 # middle_1, index_0, index_1` for BOTH hands — two official pages agree, and
@@ -141,6 +157,10 @@ class HandDriver:
     def send(self, side: Side, grip: float) -> None:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def send_shape(self, side: Side, closures: tuple[float, ...]) -> None:
+        """Per-finger closure (SHAPES order). Single-scalar hands close to the shape's mean."""
+        self.send(side, sum(closures) / len(closures))
+
     def relax(self) -> None:
         """Open every driven hand. Called on release and on the dead-man."""
         for side in self.sides:
@@ -188,21 +208,24 @@ class BrainCoHandDriver(HandDriver):
         return self._publishers[side]
 
     def send(self, side: Side, grip: float) -> None:
+        self.send_shape(side, (_clamp01(grip),) * BRAINCO_MOTORS)
+
+    def send_shape(self, side: Side, closures: tuple[float, ...]) -> None:
         if side not in self.sides:
             return
+        if len(closures) != BRAINCO_MOTORS:
+            raise ValueError(f"BrainCo takes {BRAINCO_MOTORS} closures, got {len(closures)}")
         from unitree_sdk2py.idl.default import unitree_go_msg_dds__MotorCmd_
         from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorCmds_
 
         # `open_at` is the wire value meaning "open", so closure runs from it
         # toward the other end. Written this way rather than as an `if` so the
         # polarity stays one number, not two code paths.
-        closure = _clamp01(grip)
-
         cmds = []
-        for cap in BRAINCO_CLOSURE_CAPS:
+        for closure, cap in zip(closures, BRAINCO_CLOSURE_CAPS, strict=True):
             # Cap the CLOSURE, then map to the wire — so "thumb never quite
             # fully closed" holds on either polarity.
-            position = self.open_at + (1.0 - 2.0 * self.open_at) * min(closure, cap)
+            position = self.open_at + (1.0 - 2.0 * self.open_at) * min(_clamp01(closure), cap)
             cmd = unitree_go_msg_dds__MotorCmd_()
             cmd.q = float(position)
             cmd.dq = float(BRAINCO_SPEED)

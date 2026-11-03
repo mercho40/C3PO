@@ -187,7 +187,9 @@ async def _tools(mcp):
 @pytest.mark.asyncio
 async def test_free_form_arm_and_hand_are_t2_and_stops_are_t0(mcp):
     tiers = await _tools(mcp)
-    assert {n for n, t in tiers.items() if t == "T2"} == {"move_arm", "set_hand"}
+    assert {n for n, t in tiers.items() if t == "T2"} == {
+        "move_arm", "set_hand", "reach", "pick", "place", "handover"
+    }
     for name in ("stop_everything", "soft_stop", "get_state", "say", "describe_surroundings"):
         assert tiers[name] == "T0", name
     for name in ("walk_to", "walk_velocity", "turn", "arm_navigation", "wave"):

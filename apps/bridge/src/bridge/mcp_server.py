@@ -1452,6 +1452,10 @@ async def set_hand(
             description="0.0 = fully open, 1.0 = fully closed. Intermediate values are partial grips.",
         ),
     ] = 0.0,
+    shape: Annotated[
+        Literal["open", "power", "pinch", "hook", "point"] | None,
+        Field(description="A named grasp instead of `closure`: power = wrap, pinch = thumb+index, hook = handles."),
+    ] = None,
 ) -> dict:
     """Set a dexterous hand's grip — physical fingers move (BrainCo Revo2).
 
@@ -1468,7 +1472,7 @@ async def set_hand(
     """
     from bridge.skills.hand import run_set
 
-    return {**await run_set(side, closure), "env": SIM_MODE}
+    return {**await run_set(side, closure, shape=shape), "env": SIM_MODE}
 
 
 @mcp.tool(
@@ -3381,6 +3385,159 @@ async def ask_user(
 
 # ===========================================================================
 # END auto/vlm
+# ===========================================================================
+
+
+# BEGIN auto/manipulation — reach / pick / place / handover / arm_state
+# ===========================================================================
+#
+# PLAN Phase 5, classical (no learned policy): IK over the vendored URDF
+# (bridge/kinematics.py) and the same rt/arm_sdk driver move_arm uses. All but
+# arm_state are T2 (gesture + high danger): an operator confirms each call, and
+# safety.tool_refusal blocks them with a person in reach, except `handover`,
+# whose point is a person. skills/manipulation.py documents the rest.
+
+_ARM_META: dict[str, Any] = dict(
+    classification="gesture",
+    danger_level="high",
+    status="real",
+    cancellable=True,
+    works_sim=False,
+    # NEVER LIVE-TESTED. docs/autonomy/test-day/manipulation.md first.
+    works_real=False,
+    preconditions=[
+        "real_hardware_only",
+        "TELEOP_ARM_ENABLED=1",
+        "fsm_state_in_{preparation,walk,walk_waist}",
+        "standing_still",
+        "fresh_rt_lowstate",
+        "no_gesture_task_running",
+    ],
+    typical_failure_modes=[
+        "out_of_reach",
+        "outside_workspace",
+        "person_in_reach",
+        "base_moving",
+        "settle_timeout",
+        "hand_unavailable",
+    ],
+)
+
+_SideAuto = Annotated[
+    Literal["auto", "left", "right"],
+    Field(description="Which arm. auto = the arm on the object's side whose hand is configured."),
+]
+_Side = Annotated[Literal["left", "right"], Field(description="Which arm.")]
+
+
+@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 15.0}))
+async def pick(
+    ctx: Context,
+    label: Annotated[
+        str | None,
+        Field(description="What to pick, as the detector names it ('cup', 'remote', 'wallet'). Spanish works too."),
+    ] = None,
+    side: _SideAuto = "auto",
+    shape: Annotated[
+        Literal["power", "pinch", "hook"],
+        Field(description="power = wrap (cup, bottle, remote); pinch = small/thin (keys, watch, wallet); hook = handles."),
+    ] = "power",
+    track_id: Annotated[
+        int | None, Field(description="Pick this exact detection (track_id from describe_surroundings).")
+    ] = None,
+) -> dict:
+    """Pick up an object the head camera sees right now — a physical arm and hand move.
+
+    Needs a FRESH detection of it with depth (turn toward it / look first). Plans the
+    whole motion before moving: open hand, pre-grasp 10 cm short, grasp, close, lift
+    8 cm, then HOLD. Refuses without moving if any pose is out of reach — the G1 arm
+    is short: objects ~25-40 cm in front of the chest, at counter height. There is no
+    touch sensing: call verify('¿tenés X en la mano?') afterwards. Then place,
+    handover, or open_hands.
+    """
+    from bridge.skills import manipulation
+
+    return {**await manipulation.pick(label, side, shape, track_id, ctx=ctx), "env": SIM_MODE}
+
+
+@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 12.0}))
+async def place(
+    ctx: Context,
+    side: _Side = "right",
+    onto: Annotated[
+        str | None,
+        Field(description="A detected surface/object to put it on ('table', 'plate'). Omit to set it down right below the hand."),
+    ] = None,
+    drop_m: Annotated[
+        float, Field(ge=0.0, le=0.15, description="Without `onto`: how far to lower before opening.")
+    ] = 0.05,
+) -> dict:
+    """Put down what the hand holds: lower, open, back away, and hand the arm back."""
+    from bridge.skills import manipulation
+
+    return {**await manipulation.place(side, onto, drop_m, ctx=ctx), "env": SIM_MODE}
+
+
+@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 8.0}))
+async def handover(ctx: Context, side: _Side = "right") -> dict:
+    """Hold the hand out at chest height so a person can take what it holds.
+
+    The only arm skill allowed with a person in reach. It does NOT open the hand: when
+    the person says they have it, call set_hand(side, shape='open'), then
+    release_arm_control.
+    """
+    from bridge.skills import manipulation
+
+    return {**await manipulation.handover(side, ctx=ctx), "env": SIM_MODE}
+
+
+@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 8.0}))
+async def reach(
+    ctx: Context,
+    x_m: Annotated[float, Field(ge=-1.0, le=1.5, description="Forward (torso frame) or optical z (camera frame).")],
+    y_m: Annotated[float, Field(ge=-1.0, le=1.0)],
+    z_m: Annotated[float, Field(ge=-1.0, le=1.5)],
+    side: _Side = "right",
+    frame: Annotated[
+        Literal["torso", "camera"],
+        Field(description="torso: +x forward, +y left, +z up from torso_link. camera: D435 optical (x right, y down, z ahead)."),
+    ] = "torso",
+    fingers: Annotated[Literal["forward", "down", "free"], Field(description="Which way the fingers point.")] = "forward",
+    hold: bool = True,
+) -> dict:
+    """Move one hand to a 3-D point by inverse kinematics — a physical arm moves.
+
+    For pointing at / touching things and for calibration. Refuses without moving if
+    the point is out of reach or outside the workspace box in front of the chest.
+    """
+    from bridge.skills import manipulation
+
+    return {
+        **await manipulation.reach(side, (x_m, y_m, z_m), frame, fingers, hold, ctx=ctx),
+        "env": SIM_MODE,
+    }
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="introspection",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.1,
+        works_sim=False,
+        works_real=False,
+    )
+)
+async def arm_state() -> dict:
+    """Where each hand is (forward kinematics of the measured joints, torso frame). Moves nothing."""
+    from bridge.skills import manipulation
+
+    return {**manipulation.arm_state(), "env": SIM_MODE}
+
+
+# ===========================================================================
+# END auto/manipulation
 # ===========================================================================
 
 
