@@ -27,6 +27,7 @@ def enabled(monkeypatch):
 
     state = {
         "arm_q": tuple(0.0 for _ in range(14)),
+        "waist_q": (0.0, 0.0, 0.0),
         "mode_machine": 5,
         "lowstate_age_s": 0.01,
         "fsm_id": 500,
@@ -106,6 +107,28 @@ async def test_refuses_on_a_variant_with_the_wrong_joint_count(driver, enabled):
     enabled["arm_q"] = tuple(0.0 for _ in range(10))
     with pytest.raises(ArmSdkUnavailable, match="expected 14"):
         await driver.engage()
+
+
+async def test_refuses_without_a_measured_waist(driver, enabled):
+    # Holding the waist needs its measured pose; guessing one would move the torso.
+    enabled["waist_q"] = ()
+    with pytest.raises(ArmSdkUnavailable, match="waist"):
+        await driver.engage()
+
+
+async def test_the_waist_is_held_where_it_was_measured_at_engage(driver, enabled):
+    pytest.importorskip("unitree_sdk2py.idl.default")
+    enabled["waist_q"] = (0.05, -0.02, 0.10)
+    await driver.engage()
+    try:
+        enabled["waist_q"] = (0.5, 0.5, 0.5)  # later readings must not move it
+        cmd = driver._build_command()
+        for slot, q in zip(arm_sdk.WAIST_SLOTS, (0.05, -0.02, 0.10)):
+            m = cmd.motor_cmd[slot]
+            assert (m.mode, m.kp, m.kd) == (1, arm_sdk.KP, arm_sdk.KD)
+            assert m.q == pytest.approx(q)
+    finally:
+        await driver.release()
 
 
 async def test_refuses_while_a_gesture_is_running(driver, enabled):
@@ -231,11 +254,12 @@ async def test_stale_frames_freeze_the_target(driver, enabled, monkeypatch):
 # -- wire shape -------------------------------------------------------------
 
 
-def test_command_writes_only_arm_slots_and_the_weight(enabled):
+def test_command_writes_the_arms_the_waist_hold_and_the_weight(enabled):
     pytest.importorskip("unitree_sdk2py.idl.default")
     d = ArmSdkDriver()
     d._mode_machine = 5
     d._current = [0.25] * 14
+    d._waist_hold = [0.1, 0.2, 0.3]
     d._weight = 0.5
 
     cmd = d._build_command()
@@ -249,11 +273,15 @@ def test_command_writes_only_arm_slots_and_the_weight(enabled):
             assert motor.mode == 1
             assert motor.q == pytest.approx(0.25)
             assert motor.kp == arm_sdk.KP and motor.kd == arm_sdk.KD
+        elif slot in arm_sdk.WAIST_SLOTS:
+            # Held, not left at kp=0: the blend covers the waist (sdk2_python #146).
+            assert motor.mode == 1
+            assert motor.q == pytest.approx(0.1 * (slot - 11))
+            assert motor.kp == arm_sdk.KP and motor.kd == arm_sdk.KD
         elif slot == arm_sdk.WEIGHT_SLOT:
             assert motor.q == pytest.approx(0.5)
         else:
-            # Legs and waist are untouched: this path blends into the running
-            # controller, it does not take the body.
+            # Legs are untouched: they stay under the locomotion controller.
             assert motor.mode == 0
             assert motor.q == 0.0
     assert cmd.crc != 0

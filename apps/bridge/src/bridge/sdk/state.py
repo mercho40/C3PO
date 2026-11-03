@@ -48,6 +48,7 @@ LOWSTATE_TOPIC = _TOPICS.lowstate
 # Arm joints in the fixed 35-slot motor array: 15-21 left, 22-28 right, in the
 # order shoulder pitch/roll/yaw, elbow, wrist roll/pitch/yaw. Index 29 is not a
 # joint at all — it is the `rt/arm_sdk` blend weight. See docs/ROBOT-API.md §9.3.
+WAIST_JOINT_START = 12
 ARM_JOINT_START = 15
 ARM_JOINT_END = 29
 SIM_STATE_TOPIC = _TOPICS.sportmodestate
@@ -78,6 +79,10 @@ class _LowStateSnapshot:
     # is explicit that a position gap plus a moving weight "may cause the
     # robotic arm to move at high speed" (`docs/ROBOT-API.md`).
     arm_q: tuple[float, ...] = ()
+    # Measured waist yaw/roll/pitch (G1JointIndex 12-14), radians, from the same
+    # message. `teleop.arm_sdk` holds these while engaged: the arm_sdk blend
+    # covers the waist too, and an uncommanded waist slot at full weight is kp=0.
+    waist_q: tuple[float, ...] = ()
 
 
 @dataclass
@@ -281,8 +286,10 @@ class StateSampler:
         # array, and this runs in a DDS callback where an IndexError would be
         # swallowed by the SDK's reader thread rather than surfacing.
         arm_q: tuple[float, ...] = ()
+        waist_q: tuple[float, ...] = ()
         if len(motors) >= ARM_JOINT_END:
             arm_q = tuple(float(motors[i].q) for i in range(ARM_JOINT_START, ARM_JOINT_END))
+            waist_q = tuple(float(motors[i].q) for i in range(WAIST_JOINT_START, ARM_JOINT_START))
         with self._lock:
             self._lowstate = _LowStateSnapshot(
                 received_at=time.time(),
@@ -292,6 +299,7 @@ class StateSampler:
                 has_imu=msg.imu_state is not None,
                 raw_message_count=self._lowstate.raw_message_count + 1,
                 arm_q=arm_q,
+                waist_q=waist_q,
             )
 
     def get_arm_state(self) -> dict[str, Any]:
@@ -308,6 +316,7 @@ class StateSampler:
             fsm = self._fsm
         return {
             "arm_q": low.arm_q,
+            "waist_q": low.waist_q,
             "mode_machine": low.mode_machine,
             "lowstate_age_s": (time.time() - low.received_at) if low.received_at else None,
             "fsm_id": fsm.fsm_id,
