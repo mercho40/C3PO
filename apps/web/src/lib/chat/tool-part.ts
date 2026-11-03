@@ -108,6 +108,18 @@ function runtimeFailure(output: unknown): string | null {
 }
 
 /**
+ * The tool to offer a "Confirmar" button for, or null: a T2 call the bridge
+ * refused only because no operator confirmed it (bridge/safety.py's wording).
+ */
+export function needsConfirmation(part: ToolPartLike): string | null {
+  if (part.state !== "output-available") return null;
+  const failure = runtimeFailure(part.output);
+  return failure?.includes("needs an operator's confirmation")
+    ? toolName(part)
+    : null;
+}
+
+/**
  * Classify one tool part for display.
  *
  * `live` is true only for parts of the last message while the chat is busy —

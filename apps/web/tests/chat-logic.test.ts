@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyToolPart,
   INTERRUPTED_NOTE,
+  needsConfirmation,
   toolName,
 } from "../src/lib/chat/tool-part";
 import {
@@ -43,6 +44,45 @@ const tool = (state: string, extra: Record<string, unknown> = {}) => ({
   type: "tool-walk_to",
   state,
   ...extra,
+});
+
+describe("needsConfirmation", () => {
+  const refused = {
+    error:
+      "tool_error: refused: move_arm is a T2 tool and needs an operator's confirmation first. ...",
+  };
+  test("a T2 refusal for want of confirmation offers the button", () => {
+    const part = {
+      type: "tool-move_arm",
+      state: "output-available",
+      output: refused,
+    };
+    expect(needsConfirmation(part)).toBe("move_arm");
+  });
+  test("other refusals and results do not", () => {
+    const person = {
+      error: "tool_error: refused: a person is 0.40 m away, inside arm's reach",
+    };
+    expect(
+      needsConfirmation({
+        type: "tool-move_arm",
+        state: "output-available",
+        output: person,
+      }),
+    ).toBeNull();
+    expect(
+      needsConfirmation({
+        type: "tool-move_arm",
+        state: "input-available",
+        output: refused,
+      }),
+    ).toBeNull();
+    expect(
+      needsConfirmation(
+        tool("output-available", { output: { status: "completed" } }),
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("classifyToolPart — liveness", () => {

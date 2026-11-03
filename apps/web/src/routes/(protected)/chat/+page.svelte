@@ -689,7 +689,19 @@
                           <Reasoning.Content content={part.text} />
                         </Reasoning.Root>
                       {:else if isToolUIPart(part)}
-                        <ToolCard {part} {live} />
+                        <ToolCard
+                          {part}
+                          {live}
+                          onconfirmed={(t: string) =>
+                            // A voice transcript is read-only: the speaker asks again.
+                            isVoice
+                              ? toast.success(
+                                  `${t} confirmado: pedíselo de nuevo por voz (30 s).`,
+                                )
+                              : send(
+                                  `Confirmado: podés ejecutar ${t} ahora.`,
+                                ).catch((e: Error) => toast.error(e.message))}
+                        />
                       {/if}
                     {/each}
                   </Message.Content>

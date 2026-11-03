@@ -109,11 +109,19 @@ describe("buildSystemPrompt", () => {
     expect(offeredInMode(high, "operator")).toBe(true);
   });
 
-  test("voice is never offered a T2 skill, whatever its danger level", () => {
-    const t2 = { name: "set_hand", dangerLevel: "medium", tier: "T2" };
-    expect(offeredInMode(t2, "voice")).toBe(false);
-    expect(offeredInMode({ ...t2, tier: "T1" }, "voice")).toBe(true);
-    // The bridge still gates it; operator turns see it and get told why.
+  test("voice is offered T2 skills: the bridge's console confirmation gates them", () => {
+    const t2 = { name: "move_arm", dangerLevel: "high", tier: "T2" };
+    expect(offeredInMode(t2, "voice")).toBe(true);
+    expect(
+      offeredInMode(
+        { ...t2, name: "set_hand", dangerLevel: "medium" },
+        "voice",
+      ),
+    ).toBe(true);
+    // A high-danger T1 (arm_navigation) has no such gate and stays off voice.
+    expect(
+      offeredInMode({ ...t2, name: "arm_navigation", tier: "T1" }, "voice"),
+    ).toBe(false);
     expect(offeredInMode(t2, "operator")).toBe(true);
   });
 

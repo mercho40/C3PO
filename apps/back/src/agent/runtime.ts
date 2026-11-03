@@ -181,11 +181,11 @@ export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
  * offered it everything: `arm_navigation`, `start_walking_waist`, `move_arm`.
  * The realtime engine already filtered them; the two now cannot disagree.
  *
- * T2 is dropped too. The bridge refuses a T2 call without an operator's
- * console confirmation anyway, so offering one to a voice turn only buys a
- * refusal read aloud. Once the spoken "sí, confirmo" check exists (PLAN 0.2)
- * this clause is what changes. `high` stays until Nav2 has driven the robot
- * under the governor: it is what keeps `arm_navigation` off voice.
+ * T2 (arm/hand) IS offered, whatever its danger level: the bridge refuses
+ * every T2 call until an operator presses "Confirmar" on the console, so that
+ * gate — not this list — decides whether an overheard request moves an arm.
+ * `high` stays for T1 until Nav2 has driven the robot under the governor: it
+ * is what keeps `arm_navigation` off voice.
  */
 export function offeredInMode(
   skill: { name: string; dangerLevel?: string; tier?: string },
@@ -193,7 +193,7 @@ export function offeredInMode(
 ): boolean {
   if (agentToolExclusions(mode).has(skill.name)) return false;
   return (
-    mode !== "voice" || (skill.dangerLevel !== "high" && skill.tier !== "T2")
+    mode !== "voice" || skill.tier === "T2" || skill.dangerLevel !== "high"
   );
 }
 

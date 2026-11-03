@@ -13,8 +13,11 @@
    * can't be missed.
    */
   import * as Tool from "#lib/components/ai-elements/tool/index.js";
+  import { Button } from "#lib/components/ui/button/index.js";
+  import { createApi } from "#lib/api.js";
   import {
     classifyToolPart,
+    needsConfirmation,
     toolName,
     type ToolPartLike,
   } from "#lib/chat/tool-part.js";
@@ -22,11 +25,42 @@
   let {
     part,
     live,
+    onconfirmed,
   }: {
     part: ToolPartLike;
     /** Part of the last message while the chat is busy. */
     live: boolean;
+    /** Called once the bridge granted the confirmation, to let the agent retry. */
+    onconfirmed?: (tool: string) => void;
   } = $props();
+
+  const confirmable = $derived(onconfirmed ? needsConfirmation(part) : null);
+  let confirming = $state(false);
+  let confirmed = $state(false);
+  let confirmError = $state<string | null>(null);
+
+  // One grant covers ONE call within 30 s (bridge/safety.py); apps/back holds
+  // the secret and checks the admin role.
+  async function confirm(tool: string) {
+    confirming = true;
+    confirmError = null;
+    try {
+      const { error } = await createApi(fetch)
+        .skills({ name: tool })
+        .confirm.post();
+      if (error) {
+        const body = error.value as { error?: string } | undefined;
+        confirmError = `No se pudo confirmar (${error.status}${body?.error ? `: ${body.error}` : ""}).`;
+        return;
+      }
+      confirmed = true;
+      onconfirmed?.(tool);
+    } catch {
+      confirmError = "No se pudo confirmar: sin respuesta del servidor.";
+    } finally {
+      confirming = false;
+    }
+  }
 
   const display = $derived(classifyToolPart(part, { live }));
   const name = $derived(toolName(part));
@@ -51,6 +85,20 @@
     >
       {display.note}
     </p>
+  {/if}
+  {#if confirmable}
+    <div class="flex flex-wrap items-center gap-2 px-3 pb-3">
+      <Button
+        size="sm"
+        disabled={confirming || confirmed}
+        onclick={() => confirm(confirmable)}
+      >
+        {confirmed ? `Confirmado: ${confirmable}` : `Confirmar ${confirmable}`}
+      </Button>
+      {#if confirmError}
+        <p class="text-xs text-warn" role="alert">{confirmError}</p>
+      {/if}
+    </div>
   {/if}
   <Tool.Content>
     {#if bodyDetail}
