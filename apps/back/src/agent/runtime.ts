@@ -166,19 +166,16 @@ type AuditContext = {
 };
 
 export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
-  // zero_torque goes limp on the spot: a standing robot falls. No sentence a
-  // model can be given makes that the right next step, and the operator keeps
-  // it on the console and the remote. Never offered.
-  const always = ["zero_torque"];
+  // zero_torque and damp go limp: a standing robot falls. No sentence a model
+  // can be given makes that the right next step (a "make it safe" after PARAR,
+  // a misheard "relajate"); the operator keeps both on the console, the
+  // headset bring-up and the remote. Never offered.
+  const always = ["zero_torque", "damp"];
   // The voice host owns both ends of the audio channel. Giving these tools to
   // the model permits duplicate speech and competing reads from one buffer.
-  // ask_user speaks too, so it is the host's as well. damp is off voice for
-  // the same reason as high danger: an overheard "relajate" must not drop the
-  // robot. Typed, it is a deliberate request and stays.
+  // ask_user speaks too, so it is the host's as well.
   return new Set(
-    mode === "voice"
-      ? [...always, "listen", "say", "ask_user", "damp"]
-      : always,
+    mode === "voice" ? [...always, "listen", "say", "ask_user"] : always,
   );
 }
 
@@ -387,6 +384,8 @@ export async function runAgentChat(
   // Both hit the bridge for the catalogue, so fetch them together rather than
   // paying two sequential round-trips before the first token.
   const mode = opts.mode ?? "operator";
+  // Registered before the prompt build, so a PARAR during it still ends the turn.
+  const { signal: abortSignal, done } = beginTurn(opts.abortSignal);
   const [basePrompt, world, tools] = await Promise.all([
     buildSystemPrompt(mode),
     worldSummary(),
@@ -403,7 +402,6 @@ export async function runAgentChat(
   ]);
   const system = `${basePrompt}\n\n${world}`;
   const deadline = Date.now() + TURN_BUDGET_MS;
-  const { signal: abortSignal, done } = beginTurn(opts.abortSignal);
 
   return streamText({
     model: provider.chatModel(MODEL),

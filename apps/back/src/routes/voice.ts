@@ -34,7 +34,11 @@ import { VoiceConversation } from "#back/voice/conversation.js";
 import { bridgeVoiceEvents, bridgeVoiceStatus } from "#back/voice/events.js";
 import { VoiceLoop } from "#back/voice/loop.js";
 import { RealtimeVoiceSession } from "#back/voice/realtime.js";
-import { TranscribeError, transcribe } from "#back/voice/transcribe.js";
+import {
+  MAX_AUDIO_BYTES,
+  TranscribeError,
+  transcribe,
+} from "#back/voice/transcribe.js";
 
 const newId = createIdGenerator();
 
@@ -231,6 +235,10 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
   .post(
     "/transcribe",
     async ({ request, status }) => {
+      const declared = Number(request.headers.get("content-length") ?? 0);
+      if (declared > MAX_AUDIO_BYTES) {
+        return status(413, { error: "audio_too_long" });
+      }
       try {
         const text = await transcribe(
           await request.arrayBuffer(),

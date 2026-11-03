@@ -42,7 +42,7 @@ export const safetyRoutes = new Elysia({ prefix: "/safety" })
       )
       .post(
         "/ack",
-        async ({ status, user }) => {
+        async ({ status, user, body: request }) => {
           if (user.role !== "admin") {
             return status(403, { error: "admin_required" });
           }
@@ -55,7 +55,18 @@ export const safetyRoutes = new Elysia({ prefix: "/safety" })
           try {
             upstream = await fetch(bridgeSiblingUrl("/safety/ack"), {
               method: "POST",
-              headers: { "x-c3po-confirm-secret": secret },
+              headers: {
+                "content-type": "application/json",
+                "x-c3po-confirm-secret": secret,
+              },
+              // The stamp the operator saw; the bridge refuses (409) a newer stop.
+              body: JSON.stringify({
+                stopped_at:
+                  typeof (request as { stopped_at?: unknown } | null)
+                    ?.stopped_at === "number"
+                    ? (request as { stopped_at: number }).stopped_at
+                    : null,
+              }),
               signal: AbortSignal.timeout(5000),
             });
           } catch {
