@@ -94,7 +94,23 @@ describe("buildSystemPrompt", () => {
     const excluded = agentToolExclusions("voice");
     expect(excluded.has("listen")).toBe(true);
     expect(excluded.has("say")).toBe(true);
-    expect(agentToolExclusions("operator").size).toBe(0);
+    // The operator's typed chat keeps say/listen; only the falls are withheld.
+    expect([...agentToolExclusions("operator")]).toEqual(["zero_torque"]);
+  });
+
+  test("the model is never handed a way to drop the robot", () => {
+    for (const mode of ["operator", "voice"] as const) {
+      expect(
+        offeredInMode({ name: "zero_torque", dangerLevel: "low" }, mode),
+      ).toBe(false);
+    }
+    // An overheard "relajate" must not damp a standing robot; a typed one may.
+    expect(offeredInMode({ name: "damp", dangerLevel: "low" }, "voice")).toBe(
+      false,
+    );
+    expect(
+      offeredInMode({ name: "damp", dangerLevel: "low" }, "operator"),
+    ).toBe(true);
   });
 
   test("overheard speech is never offered a high-danger skill", () => {

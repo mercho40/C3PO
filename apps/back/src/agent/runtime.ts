@@ -166,10 +166,20 @@ type AuditContext = {
 };
 
 export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
+  // zero_torque goes limp on the spot: a standing robot falls. No sentence a
+  // model can be given makes that the right next step, and the operator keeps
+  // it on the console and the remote. Never offered.
+  const always = ["zero_torque"];
   // The voice host owns both ends of the audio channel. Giving these tools to
   // the model permits duplicate speech and competing reads from one buffer.
-  // ask_user speaks too, so it is the host's as well.
-  return mode === "voice" ? new Set(["listen", "say", "ask_user"]) : new Set();
+  // ask_user speaks too, so it is the host's as well. damp is off voice for
+  // the same reason as high danger: an overheard "relajate" must not drop the
+  // robot. Typed, it is a deliberate request and stays.
+  return new Set(
+    mode === "voice"
+      ? [...always, "listen", "say", "ask_user", "damp"]
+      : always,
+  );
 }
 
 /**
