@@ -164,6 +164,16 @@ const SYSTEM_PREAMBLE = [
   "catalogue entry below marks where it works: a skill that does not support the",
   "current env will be constructed and logged but produce no motion.",
   "",
+  // The bridge's long skills can run in the background (`wait: false`). The
+  // tool descriptions say how; this says when, and pins the one misreading that
+  // matters: a `running` task reported to the operator as finished.
+  "Long motions (walk_to, turn, dance) accept wait=false: the call returns a",
+  "task_id at once while the robot keeps moving. Use it when you want to keep",
+  "observing (describe_surroundings, look) or may need to stop partway, then call",
+  "wait_task or get_task until done is true; cancel_task stops it. A task whose",
+  "status is 'running' has NOT finished — never report it as done. With the",
+  "default wait=true the call returns only when the motion has ended.",
+  "",
   "Report what actually happened, not what you intended. If a skill did not run",
   "on this target, say so plainly rather than describing motion that didn't",
   "occur — and equally, do not claim nothing happened when the robot did move.",

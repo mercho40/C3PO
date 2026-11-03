@@ -90,11 +90,10 @@ def main() -> None:
     # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #
-    # Short version: today's tool calls block the transport, so "operator
-    # silent while a task runs" is the normal state during any long skill, not
-    # a dead link. Arming it now would cancel every walk_to mid-stride. It
-    # becomes correct once long skills return a task_id immediately and the
-    # operator's progress polls become a real liveness signal.
+    # Short version: "operator silent while a task runs" is the normal state
+    # during a blocking long skill, and an LLM polling a background one
+    # (`wait=false`) still polls slower than the timeout. Arming it now would
+    # cancel walks mid-stride. It needs a heartbeat faster than the agent.
     if SIM_MODE == "real" and watchdog.ENABLED:
         get_watchdog().start()
     elif SIM_MODE == "real":

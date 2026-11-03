@@ -5,18 +5,21 @@ and a thread-safe `TaskRegistry` singleton. Long-running skills create a Task,
 update its fields as they progress, and check `task.cancel_event` between
 iterations so external callers can interrupt them.
 
-The current MCP transport is stdio (single-request-at-a-time), so mid-flight
-cancel via a sibling MCP tool isn't reachable from the same client session
-while the original tool is blocked. The registry is still useful for:
+Two ways to run a long skill, chosen per call by the tool's `wait` argument:
 
-- Diagnostic visibility (`list_active`, `list_recent`)
-- Direct-Python and HTTP-MCP use (Phase 5+ — cancel becomes truly external)
-- A uniform result shape across every long-running skill
+- **Blocking** (`wait=true`, the default): the tool call returns when the skill
+  ends, with the final task dict. Progress reaches the caller as MCP progress
+  notifications. Over stdio the caller cannot cancel it mid-flight — it is busy
+  waiting — though `stop_everything` from another connection still can.
+- **Background** (`wait=false`): `start_in_background` creates the run on the
+  event loop and the tool returns the `task_id` at once, with status
+  `running`. The caller polls `get_task` / `wait_task`, can observe the world
+  while the robot moves, and can `cancel_task` from the same session. This is
+  what lets an agent perceive while acting instead of being blind for the
+  length of every walk.
 
-When we move to HTTP MCP, the same shape supports true fire-and-forget
-execution: `walk_to` returns the task_id immediately, the client polls or
-subscribes to progress, and a separate `cancel_task` request actually
-interrupts the in-flight task from another connection.
+Either way the Task in the registry is the same record and ends the same way,
+so a caller never needs to know which mode produced it.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 import structlog
@@ -132,3 +136,78 @@ def get_registry() -> TaskRegistry:
     if _registry_singleton is None:
         _registry_singleton = TaskRegistry()
     return _registry_singleton
+
+
+# ---------------------------------------------------------------------------
+# Background execution
+# ---------------------------------------------------------------------------
+
+# Strong references to in-flight background runs. The event loop keeps only a
+# weak reference to a task made by `create_task`, so a run nobody holds can be
+# garbage-collected mid-walk — and a walk loop that silently vanishes stops
+# sending velocity without ever running its own stop sequence.
+_background: set[asyncio.Task[None]] = set()
+
+
+def _finish_abnormally(task: Task, phase: str, error: str) -> None:
+    if task.status != "running":
+        return
+    task.status = "failed"
+    task.phase = phase
+    task.error = error
+    task.ended_at = time.time()
+
+
+def start_in_background(task: Task, body: Callable[[], Awaitable[Any]]) -> asyncio.Task[None]:
+    """Run `body` as `task`'s execution on the running event loop; return at once.
+
+    `task` must already be in the registry — callers create it first so the
+    `task_id` exists before anything runs — and `body` is expected to drive it
+    to a terminal status, which every long skill already does on every path
+    (the blocking call returns `task.to_dict()`).
+
+    What this adds is a guarantee for the paths a skill does not plan for. An
+    exception, or the run being torn down, still ends the Task as `failed`
+    rather than leaving it `running` forever: a task stuck in `running` reads to
+    an agent as "still walking", and keeps the link watchdog believing
+    something is moving.
+    """
+
+    async def runner() -> None:
+        try:
+            await body()
+        except asyncio.CancelledError:
+            _finish_abnormally(
+                task, "torn_down", "the background run was cancelled before the skill finished"
+            )
+            raise
+        except Exception as exc:
+            log.exception(
+                "task.background.crashed", task_id=task.task_id, skill_name=task.skill_name
+            )
+            _finish_abnormally(task, "crashed", f"{type(exc).__name__}: {exc}")
+        else:
+            _finish_abnormally(task, "unfinished", "the skill returned without a terminal status")
+
+    handle = asyncio.get_running_loop().create_task(
+        runner(), name=f"{task.skill_name}:{task.task_id}"
+    )
+    _background.add(handle)
+    handle.add_done_callback(_background.discard)
+    log.info("task.background.started", task_id=task.task_id, skill_name=task.skill_name)
+    return handle
+
+
+async def wait_until_done(task: Task, timeout_s: float, poll_s: float = 0.05) -> bool:
+    """Wait for `task` to leave `running`. True if it did within `timeout_s`.
+
+    Polls rather than waiting on an event: skills set `status` directly on the
+    record from many places, and a poll cannot miss a transition that a
+    notification path forgot to signal.
+    """
+    deadline = time.monotonic() + timeout_s
+    while task.status == "running":
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(poll_s)
+    return True

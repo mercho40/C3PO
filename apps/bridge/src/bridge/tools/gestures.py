@@ -10,6 +10,7 @@ from pydantic import Field
 from bridge.config import SIM_MODE
 from bridge.server import mcp
 from bridge.skill_meta import meta as skill_meta
+from bridge.tools import _background
 
 
 @mcp.tool(
@@ -207,7 +208,10 @@ async def release_arm(ctx: Context) -> dict:
         ],
     )
 )
-async def dance(ctx: Context) -> dict:
+async def dance(
+    ctx: Context,
+    wait: Annotated[bool, Field(description=_background.WAIT_DESCRIPTION)] = True,
+) -> dict:
     """Run a short choreographed gesture sequence.
 
     Not a single firmware mode -- `Mode.DANCE` (503) is unverified and
@@ -222,8 +226,15 @@ async def dance(ctx: Context) -> dict:
 
     NOT YET LIVE-TESTED against real hardware -- the first live call should
     be watched closely, same caution as `walk_velocity`.
+
+    With `wait=false` it returns the task_id immediately and dances in the
+    background — poll `get_task` / `wait_task`, `cancel_task` between steps.
     """
     from bridge.skills.dance import run as run_dance
+
+    if not wait:
+        task = _background.create("dance")
+        return _background.start(task, lambda: run_dance(task=task))
 
     return {**await run_dance(ctx), "env": SIM_MODE}
 

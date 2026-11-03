@@ -89,6 +89,15 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("garbled or incoherent");
   });
 
+  test("explains background motion and forbids reporting a running task as done", async () => {
+    for (const mode of ["operator", "voice"] as const) {
+      const prompt = await buildSystemPrompt(mode);
+      expect(prompt).toContain("wait=false");
+      expect(prompt).toContain("wait_task or get_task");
+      expect(prompt).toContain("has NOT finished");
+    }
+  });
+
   test("the voice host exclusively owns listening and speaking", () => {
     const excluded = agentToolExclusions("voice");
     expect(excluded.has("listen")).toBe(true);

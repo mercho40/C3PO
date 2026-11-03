@@ -37,7 +37,7 @@ from typing import Any
 import structlog
 
 from bridge.sdk import g1_protocol, g1_rpc
-from bridge.skills.task_runtime import get_registry
+from bridge.skills.task_runtime import Task, get_registry
 
 log = structlog.get_logger(__name__)
 
@@ -58,14 +58,16 @@ SEQUENCE: tuple[g1_protocol.Gesture, ...] = (
 )
 
 
-async def run(ctx: Any | None = None) -> dict[str, Any]:
+async def run(ctx: Any | None = None, task: Task | None = None) -> dict[str, Any]:
     """Run the dance gesture sequence. Cancellable between steps.
 
     Returns the full task dict (see `Task.to_dict`). Mirrors
     `_g1_request.run_g1_request`'s three-way SIM_MODE branch (stub / logged
-    sim / real dispatch), generalised to a multi-step sequence.
+    sim / real dispatch), generalised to a multi-step sequence. Pass `task` to
+    run under a record the caller already created
+    (`task_runtime.start_in_background`).
     """
-    task = get_registry().create("dance")
+    task = task if task is not None else get_registry().create("dance")
 
     if SIM_MODE == "stub":
         task.status = "completed"

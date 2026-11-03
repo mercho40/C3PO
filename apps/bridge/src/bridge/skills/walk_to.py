@@ -31,7 +31,7 @@ from bridge.skills._locomotion import (
     send_velocity_async,
     stop_motion,
 )
-from bridge.skills.task_runtime import get_registry
+from bridge.skills.task_runtime import Task, get_registry
 
 log = structlog.get_logger(__name__)
 
@@ -43,16 +43,19 @@ async def run(
     timeout_s: float = 60.0,
     height: float = DEFAULT_HEIGHT,
     ctx: Any | None = None,
+    task: Task | None = None,
 ) -> dict[str, Any]:
     """Drive the G1 to (target_x, target_y) world-frame and stop near it.
 
-    Returns the full task dict (see `Task.to_dict`).
+    Returns the full task dict (see `Task.to_dict`). Pass `task` to run under a
+    record the caller already created — how `wait=false` hands out the task_id
+    before the walk starts (`task_runtime.start_in_background`).
     """
     import asyncio
 
     from bridge.sdk.state import get_sampler
 
-    task = get_registry().create("walk_to")
+    task = task if task is not None else get_registry().create("walk_to")
 
     # Checked before the sampler is built, because building one initialises
     # DDS — and a skill that is about to refuse has no business opening a

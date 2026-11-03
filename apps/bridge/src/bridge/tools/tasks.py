@@ -1,13 +1,15 @@
-"""Task-registry tools: `cancel_task` and `list_active_tasks`."""
+"""Task-registry tools: `cancel_task`, `list_active_tasks`, `get_task`, `wait_task`."""
 
 from __future__ import annotations
 
+import time
 from typing import Annotated
 
 from pydantic import Field
 
 from bridge.server import mcp
 from bridge.skill_meta import meta as skill_meta
+from bridge.skills.task_runtime import Task, get_registry, wait_until_done
 from bridge.watchdog import get_watchdog
 
 
@@ -43,14 +45,11 @@ def cancel_task(
 ) -> dict:
     """Request graceful cancellation of an in-flight task.
 
-    Note: with the stdio MCP transport (Claude Code's default), this cannot
-    interrupt a tool that the *same* session is currently waiting on — the
-    bridge is busy handling that call. Confirmed 2026-08-07: the
-    `BRIDGE_TRANSPORT=http` path apps/back uses does support this — two
-    separate client sessions can talk to the server concurrently (verified
-    against the stub bridge). Not yet confirmed against an actual in-flight
-    `walk_to`/`turn` loop — that needs live pose data (sim or real hardware)
-    to produce a task that runs long enough to interrupt.
+    Works from the same session for a skill started with `wait=false` — the
+    call that started it has already returned. A skill started with the
+    default `wait=true` is still occupying its caller, so cancelling it needs
+    another connection (over stdio, Claude Code's default, there is none);
+    `stop_everything` from anywhere always works.
     """
     from bridge.skills.task_runtime import get_registry
 
@@ -112,3 +111,97 @@ def list_active_tasks(
         recent = [t.to_dict() for t in registry.list_recent(limit=10)]
         payload["recent"] = recent
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Tools: get_task / wait_task — the other half of `wait=false`
+# ---------------------------------------------------------------------------
+
+_TASK_ID_FIELD = Field(
+    min_length=1,
+    description="Task ID returned by a long-running tool (e.g. walk_to with wait=false).",
+)
+
+
+def _unknown(task_id: str) -> dict:
+    return {
+        "task_id": task_id,
+        "ok": False,
+        "reason": "unknown_task_id",
+        "note": "Tasks are kept for 5 minutes after they end; older ones are gone.",
+    }
+
+
+def _payload(task: Task) -> dict:
+    return {**task.to_dict(), "ok": True, "done": task.status != "running"}
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="task",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=0.05,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["unknown_task_id"],
+    )
+)
+def get_task(task_id: Annotated[str, _TASK_ID_FIELD]) -> dict:
+    """Return one task's status, progress and phase now — and its result once done.
+
+    Returns immediately. `done: false` (status `running`) means the robot is
+    still executing it; any other status is final. Use this between other
+    observations; use `wait_task` when you have nothing to do until it ends.
+    """
+    # A poll is operator contact, like `get_state` and `list_active_tasks`.
+    get_watchdog().touch()
+    task = get_registry().get(task_id)
+    return _unknown(task_id) if task is None else _payload(task)
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="task",
+        danger_level="low",
+        status="real",
+        cancellable=False,
+        expected_duration_s=10.0,
+        works_sim=True,
+        works_real=True,
+        typical_failure_modes=["unknown_task_id"],
+    )
+)
+async def wait_task(
+    task_id: Annotated[str, _TASK_ID_FIELD],
+    timeout_s: Annotated[
+        float,
+        Field(
+            ge=0.5,
+            le=30.0,
+            description=(
+                "Longest to wait. Returns the moment the task ends; if it is "
+                "still running at the timeout, `done` is false — wait again, or "
+                "look around first."
+            ),
+        ),
+    ] = 10.0,
+) -> dict:
+    """Wait for a task to finish (up to `timeout_s`), then return it as `get_task` does.
+
+    The robot keeps executing while you wait, and `stop_everything` still
+    halts it immediately from any connection.
+    """
+    # Contact on entry and exit only. A wait is not a sign of life while it
+    # waits: the link can drop mid-wait and nothing here would notice, so it
+    # must not keep the watchdog quiet. With LINK_WATCHDOG=on, a wait longer
+    # than LINK_TIMEOUT_MS is silence — and that is the conservative answer.
+    get_watchdog().touch()
+    task = get_registry().get(task_id)
+    if task is None:
+        return _unknown(task_id)
+    started = time.monotonic()
+    await wait_until_done(task, timeout_s)
+    get_watchdog().touch()
+    return {**_payload(task), "waited_s": round(time.monotonic() - started, 2)}

@@ -41,6 +41,8 @@ EXPECTED_TOOLS = {
     "get_state",
     "check_motion_mode",
     "list_active_tasks",
+    "get_task",
+    "wait_task",
     "describe_surroundings",
     # postures and mode
     "damp",
@@ -399,3 +401,18 @@ def test_the_bring_up_path_that_works_is_marked_working(tools):
     for name in ("damp", "prepare", "start_walking_waist", "walk_to", "wave", "say"):
         works = tools[name].meta["c3po"]["works"]
         assert works["real"] is True, f"{name} works on hardware but is marked unavailable"
+
+
+@pytest.mark.parametrize("name", ["walk_to", "turn", "dance"])
+def test_long_skills_offer_background_mode_and_default_to_blocking(tools, name):
+    """`wait` is how an agent keeps observing while the robot moves.
+
+    It must default to true: every existing caller — the console's invoke form,
+    Claude Code, the agent's prompt — was written against a call that returns
+    when the motion ends, and a silent flip would make all of them report a
+    walk as finished the instant it started.
+    """
+    wait = tools[name].inputSchema["properties"].get("wait")
+    assert wait is not None, f"{name} lost its wait flag"
+    assert wait["type"] == "boolean"
+    assert wait["default"] is True

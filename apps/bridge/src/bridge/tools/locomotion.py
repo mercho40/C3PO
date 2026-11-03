@@ -18,6 +18,7 @@ from pydantic import Field
 from bridge.config import SIM_MODE
 from bridge.server import mcp
 from bridge.skill_meta import meta as skill_meta
+from bridge.tools import _background
 
 log = structlog.get_logger(__name__)
 
@@ -71,6 +72,7 @@ async def walk_to(
             ),
         ),
     ] = 60.0,
+    wait: Annotated[bool, Field(description=_background.WAIT_DESCRIPTION)] = True,
 ) -> dict:
     """Walk the robot toward a world-frame XY position and stop near it.
 
@@ -80,17 +82,43 @@ async def walk_to(
     notifications via `ctx.report_progress` during the walk. Returns the
     final task dict when motion finishes (arrived / timeout / cancelled / failed).
 
-    To interrupt in flight, call `cancel_task(task_id)` from another MCP
-    session or direct Python — for the current stdio transport, mid-flight
-    cancel from the same Claude session isn't possible while this tool blocks.
+    With `wait=false` it returns the task_id immediately and walks in the
+    background: poll `get_task` / `wait_task`, observe the world in between,
+    and `cancel_task(task_id)` to stop early — from the same session. With the
+    default `wait=true`, mid-flight cancel needs another connection
+    (`stop_everything` always works).
     """
     log.info(
         "walk_to.called",
         target=(target_x_meters_world_frame, target_y_meters_world_frame),
         stop_distance_m=stop_distance_m,
         timeout_s=timeout_s,
+        wait=wait,
         sim_mode=SIM_MODE,
     )
+
+    if not wait:
+        task = _background.create("walk_to")
+        if SIM_MODE == "stub":
+            message = (
+                f"[STUB] Would walk to ({target_x_meters_world_frame:.2f}, "
+                f"{target_y_meters_world_frame:.2f}) and stop within "
+                f"{stop_distance_m:.2f} m. No motion executed."
+            )
+            return _background.start(task, lambda: _background.stub_run(task, message))
+
+        from bridge.skills.walk_to import run as run_walk_to
+
+        return _background.start(
+            task,
+            lambda: run_walk_to(
+                target_x=target_x_meters_world_frame,
+                target_y=target_y_meters_world_frame,
+                stop_distance_m=stop_distance_m,
+                timeout_s=timeout_s,
+                task=task,
+            ),
+        )
 
     if SIM_MODE == "stub":
         task_id = f"tsk_{uuid.uuid4().hex[:12]}"
@@ -174,6 +202,7 @@ async def turn(
             description="Stop when within this many degrees of the target yaw.",
         ),
     ] = 3.0,
+    wait: Annotated[bool, Field(description=_background.WAIT_DESCRIPTION)] = True,
 ) -> dict:
     """Rotate the robot in place by a yaw delta.
 
@@ -181,7 +210,8 @@ async def turn(
     Isaac/real mode: creates a Task and drives `rt/run_command/cmd` with pure
     yaw velocity until error is within tolerance or timeout elapses. Reports
     progress via `ctx.report_progress`. Cancellable via `cancel_task` or
-    `stop_everything`.
+    `stop_everything`. With `wait=false` it returns the task_id immediately and
+    rotates in the background — poll `get_task` / `wait_task`.
 
     **The yaw sign is no longer the blocker.** `works_real` was set False on
     2026-08-15 because "turn's yaw sign convention is still unverified and may
@@ -208,8 +238,30 @@ async def turn(
         delta_yaw_radians=delta_yaw_radians,
         timeout_s=timeout_s,
         tolerance_degrees=tolerance_degrees,
+        wait=wait,
         sim_mode=SIM_MODE,
     )
+
+    if not wait:
+        task = _background.create("turn")
+        if SIM_MODE == "stub":
+            message = (
+                f"[STUB] Would rotate by {delta_yaw_radians:+.4f} rad "
+                f"(~{delta_yaw_radians * 180 / 3.14159:.1f}°). No motion executed."
+            )
+            return _background.start(task, lambda: _background.stub_run(task, message))
+
+        from bridge.skills.turn import run as run_turn
+
+        return _background.start(
+            task,
+            lambda: run_turn(
+                delta_yaw_radians=delta_yaw_radians,
+                timeout_s=timeout_s,
+                tolerance_radians=math.radians(tolerance_degrees),
+                task=task,
+            ),
+        )
 
     if SIM_MODE == "stub":
         task_id = f"tsk_{uuid.uuid4().hex[:12]}"

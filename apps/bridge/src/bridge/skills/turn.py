@@ -30,7 +30,7 @@ from bridge.skills._locomotion import (
     send_velocity_async,
     stop_motion,
 )
-from bridge.skills.task_runtime import get_registry
+from bridge.skills.task_runtime import Task, get_registry
 
 log = structlog.get_logger(__name__)
 
@@ -43,14 +43,16 @@ async def run(
     tolerance_radians: float = DEFAULT_TOLERANCE_RAD,
     height: float = DEFAULT_HEIGHT,
     ctx: Any | None = None,
+    task: Task | None = None,
 ) -> dict[str, Any]:
     """Rotate by `delta_yaw_radians` (positive = left/CCW) and stop.
 
-    Returns the full task dict.
+    Returns the full task dict. Pass `task` to run under a record the caller
+    already created (`task_runtime.start_in_background`).
     """
     from bridge.sdk.state import get_sampler
 
-    task = get_registry().create("turn")
+    task = task if task is not None else get_registry().create("turn")
 
     # Checked before the sampler is built, because building one initialises
     # DDS — and a skill that is about to refuse has no business opening a

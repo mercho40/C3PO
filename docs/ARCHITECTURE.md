@@ -315,16 +315,20 @@ Only what runs today. Deep robot-API detail (api_id tables, FSM, types,
 verified-live evidence) is owned by `docs/ROBOT-API.md`.
 
 **MCP tool calls** (both external clients and `apps/back`): plain MCP over
-stdio or streamable HTTP. Long-running tools (`walk_to`, `turn`) create a
-`Task` and report progress through MCP progress notifications
-(`ctx.report_progress`); the call itself blocks until the skill finishes.
-`list_active_tasks` and `cancel_task` operate on the shared registry — over
-HTTP, where requests are concurrent, cancel genuinely interrupts an in-flight
-task from another connection. A `Task` serializes as `{task_id, skill_name,
-status, progress, phase, result, error}` with `status ∈ running | completed |
-cancelled | failed`. True fire-and-forget (return the `task_id` immediately,
-poll for progress) is the planned next step — see
-`skills/task_runtime.py`.
+stdio or streamable HTTP. Long-running tools (`walk_to`, `turn`, `dance`)
+create a `Task` and run in one of two modes, chosen per call by `wait`. With
+`wait=true` (the default) the call blocks until the skill finishes and
+progress arrives as MCP progress notifications (`ctx.report_progress`). With
+`wait=false` it returns the `task_id` at once, status `running`, and the skill
+runs in the background on the bridge's event loop; the caller polls
+`get_task` / `wait_task` and can observe — `describe_surroundings`, `look` —
+while the robot moves. `list_active_tasks`, `cancel_task` and
+`stop_everything` operate on the same registry either way; a background task
+can be cancelled from the session that started it, a blocking one only from
+another connection. A `Task` serializes as `{task_id, skill_name, status,
+progress, phase, result, error}` with `status ∈ running | completed |
+cancelled | failed`, and a background run always reaches a terminal status,
+even if its skill crashes (`skills/task_runtime.start_in_background`).
 
 **Bridge → robot**:
 
@@ -376,7 +380,10 @@ Five layers, outermost first. Each is independent — that is the point.
    damping a standing robot drops it on the floor), and it only acts when
    something is actually moving. It cannot be armed usefully while tool calls
    are blocking — "operator silent for a while" is the normal state during any
-   long skill — and becomes correct once long skills are fire-and-forget. The
+   long blocking skill. Background mode (`wait=false`, §6) removes the
+   blocking, but not the cadence problem: an LLM polls every few seconds and
+   the timeout is 1.5 s, so arming it usefully still needs a liveness source
+   faster than the agent — a heartbeat from `apps/back`, not yet built. The
    full reasoning is in the module docstring; the arming flag is in
    `apps/bridge/.env.example`.
 

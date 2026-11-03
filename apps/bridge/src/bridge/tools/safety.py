@@ -40,14 +40,22 @@ async def stop_everything() -> dict:
     awaited off-thread, so a slow or degraded link cannot wedge the event loop
     and leave a second stop press unanswered (see the skill's own docstring).
 
-    Stub mode is a no-op aside from logging.
+    Stub mode cancels running (stub) tasks and sends nothing.
     """
     log.warning("stop_everything.called", sim_mode=SIM_MODE)
 
     if SIM_MODE == "stub":
+        # Stub runs started with `wait=false` are real registry entries, so a
+        # stub stop has to stop them: a stop that leaves a "walking" task
+        # running teaches every client developed against stub that stop does
+        # not work.
+        from bridge.skills.task_runtime import get_registry
+
+        registry = get_registry()
+        cancelled = [t.task_id for t in registry.list_active() if registry.cancel(t.task_id)]
         return {
-            "cancelled_task_ids": [],
-            "cancelled_count": 0,
+            "cancelled_task_ids": cancelled,
+            "cancelled_count": len(cancelled),
             "stop_burst_duration_s": 0.0,
             "env": SIM_MODE,
             "stub": True,

@@ -34,11 +34,14 @@ normal state during any long skill, not evidence of a dead link. A timeout
 watchdog cannot tell the two apart, so it would stop the robot mid-walk every
 time.
 
-It becomes correct once long skills are fire-and-forget: `walk_to` returns its
-`task_id` immediately, the operator polls or subscribes for progress, and those
-polls are a genuine liveness signal whose absence means something. That is
-already the plan for the HTTP transport (see `skills/task_runtime`), and this
-module is ready for it.
+Long skills can now run in the background (`wait=false`): `walk_to` returns
+its `task_id` immediately and the client polls `get_task`, which counts as
+contact. That removes the blocking, but not the cadence problem — an LLM
+client polls every few seconds, slower than `LINK_TIMEOUT_S`, so its polls
+alone would still trip this. What makes it correct is a liveness source faster
+than the agent: a heartbeat from `apps/back` while it holds the session, which
+is not built yet. `wait_task` deliberately does not count as contact while it
+waits (see `tools/tasks.py`).
 
 Until then `LINK_WATCHDOG=on` is required to arm it, and what actually protects
 a real robot is:
