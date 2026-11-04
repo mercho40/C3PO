@@ -64,13 +64,13 @@ const newId = createIdGenerator();
 let legacyStartedBy: string | null = null;
 
 const conversation = new VoiceConversation({
-  complete: async (messages) => {
-    const result = await runAgentChat(messages, {
+  // The whole result, not just its text: the turn also waits on toolsSettled.
+  complete: (messages, signal) =>
+    runAgentChat(messages, {
       mode: "voice",
       userId: legacyStartedBy,
-    });
-    return result.textStream;
-  },
+      abortSignal: signal,
+    }),
   speak: async (text) => {
     await auditedCall(
       "say",
@@ -81,8 +81,11 @@ const conversation = new VoiceConversation({
   newId,
 });
 
-async function runAgentOnUtterance(utterance: string): Promise<void> {
-  const metrics = await conversation.turn(utterance);
+async function runAgentOnUtterance(
+  utterance: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const metrics = await conversation.turn(utterance, signal);
   console.log("[voice] turn complete", metrics);
 }
 
@@ -112,9 +115,8 @@ function voiceStatus(userId?: string) {
       // richer Realtime state is additive.
       utterancesHeard: state.utterancesHeard,
       agentRuns: state.agentRuns,
-      // Null, not 0: the realtime session does not act on spoken stop phrases
-      // at all (only the legacy loop does), so a counter reading "0" would
-      // imply a guard that is not there.
+      // Null, not 0: in a realtime session the bridge acts on the stop phrase
+      // itself and apps/back never sees it, so "0" would read as none heard.
       stopsTriggered: null,
       micEverOpen: state.micEverOpen,
       alwaysListening: null,

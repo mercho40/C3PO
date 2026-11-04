@@ -1,9 +1,17 @@
 import type { UIMessage } from "ai";
 
+/** A model reply. `toolsSettled` covers the robot commands it sent: an abort
+ *  ends the text at once while a walk_to it sent keeps driving. */
+export type VoiceCompletion =
+  | string
+  | AsyncIterable<string>
+  | { textStream: AsyncIterable<string>; toolsSettled: () => Promise<unknown> };
+
 export type VoiceConversationDeps = {
   complete: (
     messages: UIMessage[],
-  ) => string | AsyncIterable<string> | Promise<string | AsyncIterable<string>>;
+    signal?: AbortSignal,
+  ) => VoiceCompletion | Promise<VoiceCompletion>;
   speak: (text: string) => Promise<void>;
   newId: () => string;
   now?: () => number;
@@ -97,14 +105,12 @@ function splitForSpeech(text: string): string[] {
   return chunks;
 }
 
-async function* deltasOf(
-  completion: string | AsyncIterable<string>,
-): AsyncGenerator<string> {
+async function* deltasOf(completion: VoiceCompletion): AsyncGenerator<string> {
   if (typeof completion === "string") {
     yield completion;
     return;
   }
-  yield* completion;
+  yield* "textStream" in completion ? completion.textStream : completion;
 }
 
 /** One bounded, in-memory spoken conversation.
@@ -135,7 +141,11 @@ export class VoiceConversation {
     return { phase: this.phase, lastTurn: this.lastTurn };
   }
 
-  async turn(utterance: string): Promise<VoiceTurnMetrics> {
+  /** An aborted turn is neither spoken further nor remembered: it rejects. */
+  async turn(
+    utterance: string,
+    signal?: AbortSignal,
+  ): Promise<VoiceTurnMetrics> {
     const now = this.deps.now ?? (() => performance.now());
     const startedAt = now();
     let firstDeltaAt: number | null = null;
@@ -151,6 +161,7 @@ export class VoiceConversation {
         firstSentenceAt ??= now();
         speechCalls += 1;
         const speak = async (): Promise<void> => {
+          if (signal?.aborted) return;
           firstSpeechAt ??= now();
           await this.deps.speak(chunk);
         };
@@ -169,8 +180,9 @@ export class VoiceConversation {
     const context = [...this.messages, userMessage];
 
     this.phase = "streaming";
+    let completion: VoiceCompletion | undefined;
     try {
-      const completion = await this.deps.complete(context);
+      completion = await this.deps.complete(context, signal);
       for await (const delta of deltasOf(completion)) {
         if (!delta) continue;
         firstDeltaAt ??= now();
@@ -181,6 +193,8 @@ export class VoiceConversation {
         pendingSentence = parsed.remainder;
         for (const sentence of parsed.sentences) enqueueSpeech(sentence);
       }
+      // An aborted model stream ends normally, so check before keeping it.
+      signal?.throwIfAborted();
 
       const reply = fullReply.trim();
       if (!reply) throw new Error("voice agent returned no spoken reply");
@@ -216,6 +230,10 @@ export class VoiceConversation {
       return metrics;
     } finally {
       this.phase = "idle";
+      // Over only once its robot commands are: the loop's next turn must not
+      // dispatch beside an aborted turn's walk_to.
+      if (typeof completion === "object" && "toolsSettled" in completion)
+        await completion.toolsSettled();
     }
   }
 }

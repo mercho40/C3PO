@@ -50,6 +50,7 @@ import {
   stepCountIs,
   streamText,
   tool,
+  type LanguageModel,
   type ToolSet,
   type UIMessage,
 } from "ai";
@@ -297,6 +298,7 @@ export async function worldSummary(
 async function buildTools(
   audit: AuditContext,
   mode: AgentMode,
+  inFlight: Set<Promise<unknown>>,
 ): Promise<ToolSet> {
   const tools: ToolSet = {};
   for (const skill of await listSkills()) {
@@ -307,11 +309,16 @@ async function buildTools(
       inputSchema: jsonSchema(
         skill.parameters as Parameters<typeof jsonSchema>[0],
       ),
-      execute: async (args) => {
+      execute: async (args, { abortSignal }) => {
+        // ai 7.0.140 can still start a tool after the turn is aborted, once
+        // `toolsSettled` has already been read: send the robot nothing then.
+        if (abortSignal?.aborted) return { error: "aborted" };
         const params = args as Record<string, unknown>;
         const startedAt = Date.now();
         try {
-          const result = await callTool(skill.name, params);
+          const call = callTool(skill.name, params);
+          inFlight.add(call);
+          const result = await call;
           void logToolCall({
             ...audit,
             skillName: skill.name,
@@ -373,9 +380,12 @@ export async function runAgentChat(
      * finishes — this stops the NEXT step, not the robot.
      */
     abortSignal?: AbortSignal;
+    /** Tests only: the API key and provider are fixed at module load. Never
+     *  set it from a route. */
+    model?: LanguageModel;
   } = {},
 ) {
-  if (!API_KEY) {
+  if (!opts.model && !API_KEY) {
     throw new Error(
       `AGENT_API_KEY is not set — ${BASE_URL} rejects unauthenticated requests.`,
     );
@@ -386,39 +396,56 @@ export async function runAgentChat(
   const mode = opts.mode ?? "operator";
   // Registered before the prompt build, so a PARAR during it still ends the turn.
   const { signal: abortSignal, done } = beginTurn(opts.abortSignal);
-  const [basePrompt, world, tools] = await Promise.all([
-    buildSystemPrompt(mode),
-    worldSummary(),
-    buildTools(
-      {
-        chatId: opts.chatId ?? null,
-        // Spread only when given: undefined must stay undefined so
-        // `logToolCall` falls back to the chat's owner.
-        ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
-        source: mode === "voice" ? "voice" : "agent",
-      },
-      mode,
-    ),
-  ]);
-  const system = `${basePrompt}\n\n${world}`;
-  const deadline = Date.now() + TURN_BUDGET_MS;
+  const inFlight = new Set<Promise<unknown>>();
+  try {
+    const [basePrompt, world, tools] = await Promise.all([
+      buildSystemPrompt(mode),
+      worldSummary(),
+      buildTools(
+        {
+          chatId: opts.chatId ?? null,
+          // Spread only when given: undefined must stay undefined so
+          // `logToolCall` falls back to the chat's owner.
+          ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+          source: mode === "voice" ? "voice" : "agent",
+        },
+        mode,
+        inFlight,
+      ),
+    ]);
+    const system = `${basePrompt}\n\n${world}`;
+    const deadline = Date.now() + TURN_BUDGET_MS;
 
-  return streamText({
-    model: provider.chatModel(MODEL),
-    system,
-    // `ignoreIncompleteToolCalls` matters now that assistant turns really do
-    // persist: an aborted turn leaves a tool part stuck in `input-available`,
-    // and replaying that history would send the gateway an assistant tool call
-    // with no matching tool result — which OpenAI-compatible servers reject
-    // outright, permanently bricking the recovered conversation.
-    messages: await convertToModelMessages(messages, {
-      ignoreIncompleteToolCalls: true,
-    }),
-    tools,
-    // Whichever comes first: a step cap (never unbounded) or the wall clock.
-    stopWhen: [stepCountIs(MAX_STEPS), () => Date.now() > deadline],
-    abortSignal,
-    onEnd: done,
-    onAbort: done,
-  });
+    const result = streamText({
+      model: opts.model ?? provider.chatModel(MODEL),
+      system,
+      // `ignoreIncompleteToolCalls` matters now that assistant turns really do
+      // persist: an aborted turn leaves a tool part stuck in `input-available`,
+      // and replaying that history would send the gateway an assistant tool
+      // call with no matching tool result — which OpenAI-compatible servers
+      // reject outright, permanently bricking the recovered conversation.
+      messages: await convertToModelMessages(messages, {
+        ignoreIncompleteToolCalls: true,
+      }),
+      tools,
+      // Whichever comes first: a step cap (never unbounded) or the wall clock.
+      stopWhen: [stepCountIs(MAX_STEPS), () => Date.now() > deadline],
+      abortSignal,
+      onEnd: done,
+      onAbort: done,
+    });
+    // ai 7.0.140 skips onEnd when the first step fails, so a gateway error
+    // leaked the turn; `steps` settles on success, abort and error alike.
+    // Trade-off: reading it drains a tee'd branch, so a client that stops
+    // reading no longer pauses the loop; request.signal and PARAR still end it.
+    void result.steps.then(done, done);
+    // An abort ends the text stream at once while a walk_to the turn already
+    // sent keeps driving; the voice turn waits on this before it ends.
+    return Object.assign(result, {
+      toolsSettled: () => Promise.allSettled(inFlight),
+    });
+  } catch (err) {
+    done();
+    throw err;
+  }
 }
