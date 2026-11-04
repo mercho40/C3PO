@@ -41,6 +41,7 @@ def isolated_run_dir(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(estop, "DEFAULT_RUN_DIR", run_dir)
+    monkeypatch.setattr(estop, "_signalled_at", 0.0)  # this process's own copy of a stop
     monkeypatch.setenv("C3PO_RUN_DIR", str(run_dir))
     return run_dir
 

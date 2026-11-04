@@ -263,6 +263,116 @@ async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeyp
         raise AssertionError("SSE body did not stop after client disconnect")
 
 
+class _Client:
+    async def is_disconnected(self):
+        return False
+
+
+async def test_the_legacy_event_stream_stops_the_robot_inside_the_bridge(monkeypatch):
+    """apps/back's legacy loop holds this stream open; the stop must not need it."""
+    from bridge import mcp_server
+    from bridge.skills import listen as listen_mod
+
+    stopped = asyncio.Event()
+
+    async def fake_stop_everything():
+        stopped.set()
+        return {}
+
+    monkeypatch.setattr(mcp_server, "stop_everything", fake_stop_everything)
+    lis, *_ = make([b"\xff"])
+    monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
+
+    response = await mcp_server.voice_events(_Client())
+    assert lis._on_stop is None, "armed before the body ran: a never-started body never disarms"
+    body = response.body_iterator
+    next_chunk = asyncio.create_task(anext(body))
+    assert await asyncio.to_thread(_until, lambda: lis._on_stop is not None)
+
+    lis.start()  # the real detector thread hears the phrase; a bare start() keeps the arm
+    await asyncio.wait_for(stopped.wait(), 5)
+    assert json.loads((await next_chunk).decode().removeprefix("data: "))["kind"] == "stop"
+
+    await body.aclose()
+    assert lis._on_stop is None, "a disconnected subscriber left the stop armed"
+
+
+async def test_a_stale_disconnect_does_not_disarm_a_reconnected_subscriber(monkeypatch):
+    from bridge import mcp_server
+    from bridge.skills import listen as listen_mod
+
+    lis, *_ = make([])
+    monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
+    old = (await mcp_server.voice_events(_Client())).body_iterator
+    old_next = asyncio.create_task(anext(old))
+    assert await asyncio.to_thread(_until, lambda: lis._on_stop is not None)
+    armed_by_old = lis._on_stop
+
+    new = (await mcp_server.voice_events(_Client())).body_iterator
+    new_next = asyncio.create_task(anext(new))
+    assert await asyncio.to_thread(_until, lambda: lis._on_stop is not armed_by_old)
+    armed_by_new = lis._on_stop
+
+    old_next.cancel()
+    await asyncio.gather(old_next, return_exceptions=True)
+    await old.aclose()
+    assert lis._on_stop is armed_by_new is not None
+
+    new_next.cancel()
+    await asyncio.gather(new_next, return_exceptions=True)
+    await new.aclose()
+    assert lis._on_stop is None
+
+
+async def test_the_realtime_audio_stream_arms_only_while_its_body_runs(monkeypatch):
+    from bridge import mcp_server
+    from bridge.skills import listen as listen_mod
+
+    lis, *_ = make([])
+    monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
+
+    async def streaming_body():
+        response = await mcp_server.voice_audio_input(_Client())
+        assert lis._on_stop is None, "armed before the body ran: a never-started body never disarms"
+        body = response.body_iterator
+        next_chunk = asyncio.create_task(anext(body))
+        assert await asyncio.to_thread(_until, lambda: lis._audio_subscribers)
+        assert lis._on_stop is not None
+        lis._publish_audio(b"pcm")
+        assert await next_chunk == b"pcm"
+        return body
+
+    body = await streaming_body()
+    await body.aclose()
+    assert lis._on_stop is None
+
+    body = await streaming_body()
+    newer = lis._on_stop = lambda _: None  # a newer session armed meanwhile
+    await body.aclose()
+    assert lis._on_stop is newer, "a stale realtime disconnect disarmed a newer session"
+
+
+def test_clear_on_stop_only_disarms_its_own_callback():
+    lis, *_ = make([])
+    a, b = (lambda _: None), (lambda _: None)
+    lis.set_on_stop(a)
+    lis.set_on_stop(b)
+    lis.clear_on_stop(a)
+    assert lis._on_stop is b
+    lis.clear_on_stop(b)
+    assert lis._on_stop is None
+
+
+def test_a_bare_start_keeps_an_armed_stop():
+    """The `listen` tool restarts the thread with start(); that must not disarm."""
+    lis, *_ = make([])
+    armed = lambda _: None  # noqa: E731
+    lis.set_on_stop(armed)
+    lis.start()
+    assert lis._on_stop is armed
+    drain(lis)
+
+
 def test_a_never_polling_agent_cannot_grow_the_queue_without_bound():
     frames = [b"x", b"."] * 50
     lis, *_ = make(frames, max_keep=8)

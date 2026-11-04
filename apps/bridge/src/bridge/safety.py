@@ -40,6 +40,7 @@ Fresh detections apply to every source, manual included.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import math
 import os
@@ -124,7 +125,8 @@ _lock = threading.Lock()
 _last: tuple[float, float, float] = (0.0, 0.0, 0.0)
 _last_at: float | None = None
 _last_reason: str | None = None
-_grants: dict[str, float] = {}
+# (tool, sha256 of its canonical arguments) -> expiry: a grant is for one argument set.
+_grants: dict[tuple[str, str], float] = {}
 
 
 def reset() -> None:
@@ -248,18 +250,32 @@ def base_moving() -> bool:
 # -- risk tiers and confirmation ----------------------------------------------
 
 
-def grant_confirmation(tool: str, *, via: str) -> float:
-    """Allow ONE call of `tool` within CONFIRM_TTL_S. Returns the expiry.
+def needs_confirmation(meta: dict[str, Any] | None) -> bool:
+    """Whether a call of this tool needs an operator's grant first."""
+    return ((meta or {}).get("c3po") or {}).get("tier") == "T2"
+
+
+def _grant_key(tool: str, args_key: str) -> tuple[str, str]:
+    return tool, hashlib.sha256(args_key.encode()).hexdigest()
+
+
+def grant_confirmation(tool: str, args_key: str, *, via: str) -> float:
+    """Allow ONE call of `tool` with exactly these arguments within CONFIRM_TTL_S.
+
+    `args_key` is the canonical JSON of the arguments (mcp_server._canonical_args),
+    so another caller cannot spend the operator's grant on different ones.
+    Returns the expiry.
 
     Called only from outside the MCP tool surface: the console route
     (`POST /safety/confirm`, via="console"). The spoken path — a local STT
     match on "sí"/"confirmo", checked by code and not by the model — is meant
     to call this with via="spoken"; it is not wired yet (PLAN 0.2).
     """
+    key = _grant_key(tool, args_key)
     expires = time.monotonic() + CONFIRM_TTL_S
     with _lock:
-        _grants[tool] = expires
-    log.warning("safety.t2_confirmed", tool=tool, via=via, ttl_s=CONFIRM_TTL_S)
+        _grants[key] = expires
+    log.warning("safety.t2_confirmed", tool=tool, args=key[1][:12], via=via, ttl_s=CONFIRM_TTL_S)
     return expires
 
 
@@ -273,9 +289,11 @@ def clear_confirmations(reason: str) -> None:
         log.warning("safety.confirmations_cleared", count=n, reason=reason)
 
 
-def _consume_confirmation(tool: str) -> bool:
+def _consume_confirmation(tool: str, args_key: str | None) -> bool:
+    if args_key is None:
+        return False
     with _lock:
-        expires = _grants.pop(tool, None)
+        expires = _grants.pop(_grant_key(tool, args_key), None)
     return expires is not None and time.monotonic() < expires
 
 
@@ -291,8 +309,11 @@ def confirm_secret_ok(presented: str | None) -> bool:
 STOP_STANDING_ALLOWED = frozenset({"damp"})
 
 
-def tool_refusal(name: str, meta: dict[str, Any] | None) -> str | None:
-    """Why this MCP call must not run, or None. Runs before every tool call."""
+def tool_refusal(name: str, meta: dict[str, Any] | None, args_key: str | None = None) -> str | None:
+    """Why this MCP call must not run, or None. Runs before every tool call.
+
+    `args_key` is the call's canonical arguments; None never matches a grant.
+    """
     from bridge import estop
 
     tier = ((meta or {}).get("c3po") or {}).get("tier")
@@ -322,14 +343,14 @@ def tool_refusal(name: str, meta: dict[str, Any] | None) -> str | None:
     if not T2_CONFIRM:
         log.warning("safety.t2_unconfirmed_allowed", tool=name, reason="SAFETY_T2_CONFIRM=off")
         return None
-    if _consume_confirmation(name):
+    if _consume_confirmation(name, args_key):
         return None
     log.warning("safety.t2_refused", tool=name, reason="no_confirmation")
     return (
         f"refused: {name} is a T2 tool and needs an operator's confirmation first. "
-        "You cannot give it: the operator confirms on the console "
-        f"(POST /skills/{name}/confirm), then the call may be retried once within "
-        f"{int(CONFIRM_TTL_S)} s. Tell the operator what you want to do and wait."
+        "You cannot give it: the operator confirms these exact arguments on the console "
+        f"(POST /skills/{name}/confirm), then retry once with exactly the same arguments "
+        f"within {int(CONFIRM_TTL_S)} s. Tell the operator what you want to do and wait."
     )
 
 
@@ -338,7 +359,7 @@ def status() -> dict[str, Any]:
     nearest, fresh = person_proximity()
     with _lock:
         last, last_at, reason = _last, _last_at, _last_reason
-        pending = sorted(t for t, exp in _grants.items() if time.monotonic() < exp)
+        pending = sorted({t for (t, _), exp in _grants.items() if time.monotonic() < exp})
     return {
         "caps": {
             "linear_mps": MAX_LINEAR_MPS,

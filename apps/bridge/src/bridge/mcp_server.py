@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import math
 import os
 import time
@@ -37,7 +38,8 @@ from typing import Annotated, Any, Literal
 
 import structlog
 from mcp.server.fastmcp import Context, FastMCP
-from pydantic import Field
+from mcp.server.fastmcp.tools import Tool
+from pydantic import Field, ValidationError
 
 from bridge.env_file import load_env_file
 
@@ -108,6 +110,18 @@ if SIM_MODE != "stub":
     get_sampler()
 
 
+def _canonical_args(tool: Tool, arguments: dict[str, Any] | None) -> str:
+    """The call's arguments as FastMCP will validate them, as one canonical string.
+
+    Same model and pre-parse as FuncMetadata.call_fn_with_arg_validation, so
+    defaults are filled and "0.5", 0.5, 10 and 10.0 all land on what the tool
+    receives. A grant is bound to this string. Raises pydantic's ValidationError.
+    """
+    md = tool.fn_metadata
+    parsed = md.arg_model.model_validate(md.pre_parse_json(arguments or {}))
+    return json.dumps(parsed.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+
+
 class GovernedMCP(FastMCP):
     """FastMCP whose every tool call passes the risk-tier gate first.
 
@@ -121,8 +135,20 @@ class GovernedMCP(FastMCP):
     async def call_tool(self, name, arguments):  # noqa: ANN001, ANN201 - FastMCP's signature
         from mcp.server.fastmcp.exceptions import ToolError
 
+        from bridge import estop
+
         tool = self._tool_manager.get_tool(name)
-        refusal = safety.tool_refusal(name, tool.meta if tool else None)
+        meta = tool.meta if tool else None
+        args_key = invalid = None
+        if tool is not None and safety.needs_confirmation(meta):
+            try:
+                args_key = _canonical_args(tool, arguments)
+            except ValidationError as exc:
+                invalid = f"invalid arguments for {name}: {exc}"
+        refusal = safety.tool_refusal(name, meta, args_key)
+        if invalid is not None and not estop.stop_is_standing():
+            # PARAR first; else not "get a confirmation", which /safety/confirm would refuse too.
+            refusal = invalid
         if refusal is not None:
             raise ToolError(refusal)
         return await super().call_tool(name, arguments)
@@ -2501,8 +2527,8 @@ async def listen(
         "status": "ok",
         "heard": [{"text": i["text"], "age_s": i["age_s"]} for i in speech],
         "transcript": " ".join(i["text"] for i in speech).strip(),
-        # Reported, not acted on. Whoever is holding the remote to make the robot
-        # hear at all already has a physical e-stop under their thumb.
+        # Reported here. The bridge acts on it by itself only while a voice
+        # session (realtime or legacy) is connected; see MicListener.
         "stop_heard": stops[0]["text"] if stops else None,
         "mic_ever_open": diag["mic_ever_open"],
         "seconds_since_audio": diag["seconds_since_audio"],
@@ -3781,7 +3807,11 @@ async def safety_status(request):  # noqa: ANN001, ANN201 - starlette types
 
 @mcp.custom_route("/safety/confirm", methods=["POST"])
 async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
-    """The operator's confirmation for ONE call of a T2 tool. Not an MCP tool.
+    """The operator's confirmation for ONE call of a T2 tool with ONE argument set. Not an MCP tool.
+
+    Body `{"tool": name, "args": {...}}`; args default to {} (the tool's defaults).
+    The grant is bound to the canonical form of those args (`_canonical_args`),
+    so a call with any other arguments is still refused.
 
     That is the whole point: a model only ever sees the tool list, and nothing
     on it can reach this. apps/back's admin-only `POST /skills/:name/confirm`
@@ -3799,15 +3829,21 @@ async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
             status_code=403 if configured else 503,
         )
     try:
-        tool = str((await request.json()).get("tool") or "")
+        body = await request.json()
+        tool, args = str(body.get("tool") or ""), body.get("args", {})
     except Exception:
-        tool = ""
+        tool, args = "", {}
     listed = mcp._tool_manager.get_tool(tool)
-    tier = ((listed.meta or {}).get("c3po") or {}).get("tier") if listed else None
-    if tier != "T2":
-        # Only T2 tools take a grant; anything else is a typo or a probe.
-        return JSONResponse({"error": "not_a_t2_tool", "tool": tool}, status_code=400)
-    safety.grant_confirmation(tool, via="console")
+    if listed is None or not safety.needs_confirmation(listed.meta):
+        # Only gated tools take a grant; anything else is a typo or a probe.
+        return JSONResponse({"error": "not_confirmable", "tool": tool}, status_code=400)
+    try:
+        args_key = _canonical_args(listed, args) if isinstance(args, dict) else None
+    except ValidationError:
+        args_key = None
+    if args_key is None:
+        return JSONResponse({"error": "invalid_arguments", "tool": tool}, status_code=400)
+    safety.grant_confirmation(tool, args_key, via="console")
     return JSONResponse(
         {"granted": True, "tool": tool, "expires_in_s": safety.CONFIRM_TTL_S},
         headers={"Cache-Control": "no-store"},
@@ -3842,8 +3878,12 @@ async def safety_ack(request):  # noqa: ANN001, ANN201 - starlette types
         # A newer PARAR landed after the operator read the latch: they have not seen it.
         return JSONResponse({"error": "newer_stop", **safety.stop_latch()}, status_code=409)
     was = safety.stop_latch()
-    estop.record_ack()
+    recorded = estop.record_ack()
     safety.clear_confirmations("ack")
+    if not recorded and (latch := safety.stop_latch())["stop_standing"]:
+        # The ack file did not land, so the latch still stands: never tell the console "resumed".
+        log.error("safety.stop_ack_not_recorded", via="console")
+        return JSONResponse({"error": "ack_not_recorded", **latch}, status_code=500)
     log.warning("safety.stop_acknowledged", via="console", was_standing=was["stop_standing"])
     return JSONResponse(
         {"acknowledged": True, "was_standing": was["stop_standing"], **safety.stop_latch()},
@@ -3927,13 +3967,28 @@ _VOICE_KEEPALIVE_S = 15.0
 _VOICE_DISCONNECT_POLL_S = 0.5
 
 
-async def _voice_event_body(request, listener):  # noqa: ANN001, ANN201 - starlette types
+def _local_stop(event_loop: asyncio.AbstractEventLoop, _phrase: str) -> None:
+    """A voice session's spoken-stop action: halt inside the bridge.
+
+    The detector runs in its own thread. Schedule onto the bridge's event loop;
+    no network or model round-trip sits between the phrase and the stop. Bind it
+    per subscriber with functools.partial, so each has its own identity for
+    MicListener.clear_on_stop.
+    """
+    asyncio.run_coroutine_threadsafe(stop_everything(), event_loop)
+
+
+async def _voice_event_body(request, listener, on_stop=None):  # noqa: ANN001, ANN201 - starlette types
     """Yield non-consuming voice events until the HTTP client disconnects."""
     import json
 
     sequence = listener.sequence()
     keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
     try:
+        # Armed here, not in the route: a body Starlette never starts never runs
+        # its finally either, so arm and disarm stay paired.
+        if on_stop is not None:
+            listener.set_on_stop(on_stop)
         while True:
             if await request.is_disconnected():
                 return
@@ -3960,17 +4015,28 @@ async def _voice_event_body(request, listener):  # noqa: ANN001, ANN201 - starle
         # Client disconnects normally cancel StreamingResponse's producer task.
         # There is no upstream resource to close; ending the generator is enough.
         return
+    finally:
+        listener.clear_on_stop(on_stop)
 
 
 @mcp.custom_route("/telemetry/voice/events", methods=["GET"])
 async def voice_events(request):  # noqa: ANN001, ANN201 - starlette types
-    """Live speech/stop items as SSE without consuming the agent's poll queue."""
+    """Live speech/stop items as SSE without consuming the agent's poll queue.
+
+    Its subscriber is apps/back's legacy voice loop, so while it is connected the
+    bridge acts on the stop phrase itself, as it does for realtime: the stop
+    must not depend on apps/back being alive.
+    """
     from starlette.responses import StreamingResponse
 
     from bridge.skills.listen import get_mic_listener
 
     return StreamingResponse(
-        _voice_event_body(request, get_mic_listener()),
+        _voice_event_body(
+            request,
+            get_mic_listener(),
+            on_stop=functools.partial(_local_stop, asyncio.get_running_loop()),
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-store",
@@ -3980,7 +4046,7 @@ async def voice_events(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
-async def _voice_pcm_body(request, listener):  # noqa: ANN001, ANN201 - starlette types
+async def _voice_pcm_body(request, listener, on_stop=None):  # noqa: ANN001, ANN201 - starlette types
     """Stream the listener's live 16 kHz PCM without blocking the MCP event loop."""
     import threading
 
@@ -3988,6 +4054,9 @@ async def _voice_pcm_body(request, listener):  # noqa: ANN001, ANN201 - starlett
     frames = listener.audio_frames(stop)
     waiting_for_frame = False
     try:
+        # Armed inside the body for the same pairing as _voice_event_body.
+        if on_stop is not None:
+            listener.set_on_stop(on_stop)
         while not await request.is_disconnected():
             try:
                 waiting_for_frame = True
@@ -4007,9 +4076,9 @@ async def _voice_pcm_body(request, listener):  # noqa: ANN001, ANN201 - starlett
         # the stop event lets it unwind itself on the next 500 ms queue timeout.
         if not waiting_for_frame:
             frames.close()
-        # Disarm session-scoped auto-stop while leaving the always-on detector
-        # and transcript listener running.
-        listener.set_on_stop(None)
+        # Disarm this session's auto-stop (not a newer session's) while leaving
+        # the always-on detector and transcript listener running.
+        listener.clear_on_stop(on_stop)
 
 
 @mcp.custom_route("/telemetry/voice/audio/input", methods=["GET"])
@@ -4020,16 +4089,13 @@ async def voice_audio_input(request):  # noqa: ANN001, ANN201 - starlette types
     from bridge.skills.listen import get_mic_listener
 
     listener = get_mic_listener()
-    event_loop = asyncio.get_running_loop()
-
-    def stop_locally(_phrase: str) -> None:
-        # The detector runs in its own thread. Schedule onto the bridge's event
-        # loop; no network or model round-trip sits between the phrase and stop.
-        asyncio.run_coroutine_threadsafe(stop_everything(), event_loop)
-
-    listener.start(on_stop=stop_locally)
+    listener.start()
     return StreamingResponse(
-        _voice_pcm_body(request, listener),
+        _voice_pcm_body(
+            request,
+            listener,
+            on_stop=functools.partial(_local_stop, asyncio.get_running_loop()),
+        ),
         media_type="audio/pcm;rate=16000;channels=1",
         headers={
             "Cache-Control": "no-cache, no-store",

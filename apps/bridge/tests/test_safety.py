@@ -184,6 +184,14 @@ async def _tools(mcp):
     return {t.name: t.meta["c3po"]["tier"] for t in await mcp.list_tools()}
 
 
+def _grant(tool, args):
+    """Grant the way /safety/confirm does: bound to the real canonical arguments."""
+    from bridge import mcp_server
+
+    listed = mcp_server.mcp._tool_manager.get_tool(tool)
+    return safety.grant_confirmation(tool, mcp_server._canonical_args(listed, args), via="console")
+
+
 @pytest.mark.asyncio
 async def test_free_form_arm_and_hand_are_t2_and_stops_are_t0(mcp):
     tiers = await _tools(mcp)
@@ -211,7 +219,7 @@ async def test_t2_over_mcp_is_refused_without_confirmation(mcp, link):
 
 @pytest.mark.asyncio
 async def test_a_confirmation_is_one_shot_and_per_tool(mcp, link):
-    safety.grant_confirmation("set_hand", via="console")
+    _grant("set_hand", {"side": "right", "closure": 0.5})
     with pytest.raises(ToolError):
         await mcp.call_tool("move_arm", {"elbow_deg": 10})  # not the tool confirmed
     await mcp.call_tool("set_hand", {"side": "right", "closure": 0.5})
@@ -221,7 +229,7 @@ async def test_a_confirmation_is_one_shot_and_per_tool(mcp, link):
 
 @pytest.mark.asyncio
 async def test_an_expired_confirmation_is_refused(mcp, link, monkeypatch):
-    safety.grant_confirmation("set_hand", via="console")
+    _grant("set_hand", {"side": "right", "closure": 0.5})
     now = safety.time.monotonic()
     monkeypatch.setattr(safety.time, "monotonic", lambda: now + safety.CONFIRM_TTL_S + 1)
     with pytest.raises(ToolError):
@@ -231,11 +239,34 @@ async def test_an_expired_confirmation_is_refused(mcp, link, monkeypatch):
 @pytest.mark.asyncio
 async def test_t2_is_refused_with_a_person_in_reach_even_when_confirmed(mcp, link):
     link.report = _report(person(0.6))
-    safety.grant_confirmation("set_hand", via="console")
+    _grant("set_hand", {"side": "right", "closure": 0.5})
     with pytest.raises(ToolError, match="inside arm's reach"):
         await mcp.call_tool("set_hand", {"side": "right", "closure": 0.5})
     link.report = _report(person(2.0))
     await mcp.call_tool("set_hand", {"side": "right", "closure": 0.5})  # grant was kept
+
+
+@pytest.mark.asyncio
+async def test_a_grant_is_bound_to_its_arguments(mcp, link):
+    """11.1: a grant for one argument set cannot be spent on another."""
+    _grant("set_hand", {"closure": 0.5})
+    with pytest.raises(ToolError, match="exactly the same arguments"):
+        await mcp.call_tool("set_hand", {"closure": 0.9})
+    # Same arguments in another key order, as a string, with the defaults written out: once.
+    await mcp.call_tool("set_hand", {"closure": "0.5", "side": "right", "shape": None})
+    with pytest.raises(ToolError, match="needs an operator's confirmation"):
+        await mcp.call_tool("set_hand", {"closure": 0.5})
+
+
+@pytest.mark.asyncio
+async def test_invalid_t2_arguments_are_reported_but_parar_comes_first(mcp, link):
+    from bridge import estop
+
+    with pytest.raises(ToolError, match="invalid arguments for set_hand"):
+        await mcp.call_tool("set_hand", {"closure": "abc"})
+    estop.signal_stop()
+    with pytest.raises(ToolError, match="PARAR"):
+        await mcp.call_tool("set_hand", {"closure": "abc"})
 
 
 @pytest.mark.asyncio
@@ -317,10 +348,38 @@ async def test_confirm_route_checks_secret_and_tier(monkeypatch):
     wrong = await mcp_server.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="nope"))
     assert wrong.status_code == 403
     not_t2 = await mcp_server.safety_confirm(FakeRequest({"tool": "walk_to"}, secret="s3cret"))
-    assert not_t2.status_code == 400
+    assert not_t2.status_code == 400 and b"not_confirmable" in not_t2.body
     ok = await mcp_server.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="s3cret"))
     assert ok.status_code == 200
     assert safety.status()["pending_confirmations"] == ["set_hand"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", ["x", {"closure": "abc"}, None])
+async def test_confirm_route_refuses_arguments_the_tool_would_refuse(monkeypatch, args):
+    from bridge import mcp_server
+
+    monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
+    body = {"tool": "set_hand", "args": args}
+    resp = await mcp_server.safety_confirm(FakeRequest(body, secret="s3cret"))
+    assert resp.status_code == 400 and b"invalid_arguments" in resp.body
+    assert safety.status()["pending_confirmations"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_console_grant_runs_the_call_it_was_made_for(mcp, link, monkeypatch):
+    from bridge import mcp_server
+
+    monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
+    for closure in ("0.5", 0.7):  # two grants for one tool: still one name in the list
+        body = {"tool": "set_hand", "args": {"closure": closure}}
+        resp = await mcp_server.safety_confirm(FakeRequest(body, secret="s3cret"))
+        assert resp.status_code == 200
+    assert safety.status()["pending_confirmations"] == ["set_hand"]
+    await mcp.call_tool("set_hand", {"side": "right", "closure": 0.5})
+    await mcp.call_tool("set_hand", {"closure": 0.7})
+    with pytest.raises(ToolError):
+        await mcp.call_tool("set_hand", {"closure": 0.5})
 
 
 # -- the PARAR latch -----------------------------------------------------------
@@ -444,22 +503,70 @@ async def test_the_arms_are_not_taken_while_parar_stands(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_stop_voids_pending_confirmations(sent, monkeypatch):
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real", raising=False)
-    safety.grant_confirmation("move_arm", via="console")
+    _grant("move_arm", {"elbow_deg": 10})
     await stop_everything.run()
     assert safety.status()["pending_confirmations"] == []
 
 
 @pytest.mark.asyncio
 async def test_resume_refuses_a_stop_newer_than_the_one_the_operator_saw(monkeypatch):
-    import os
+    import time
 
     from bridge import estop, mcp_server
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
-    now = estop.signal_stop()
-    seen, later = now - 10.0, now - 5.0  # the stop the operator saw, then someone else's
-    os.utime(estop.sentinel_path(), (later, later))
+    estop.signal_stop()
+    seen = estop.last_stop_at()  # the stop the operator saw
+    time.sleep(0.01)
+    estop.signal_stop()  # then someone else's
+    later = estop.last_stop_at()
     stale = await mcp_server.safety_ack(FakeRequest({"stopped_at": seen}, secret="s3cret"))
     assert stale.status_code == 409 and safety.status()["stop_standing"] is True
     ok = await mcp_server.safety_ack(FakeRequest({"stopped_at": later}, secret="s3cret"))
+    assert ok.status_code == 200 and safety.status()["stop_standing"] is False
+
+
+# -- 11.2: a stop that cannot be written still latches this process -----------
+
+
+def _unwritable_run_dir(monkeypatch, tmp_path):
+    from bridge import estop
+
+    (tmp_path / "nope").write_text("not a directory")
+    monkeypatch.setattr(estop, "DEFAULT_RUN_DIR", tmp_path / "nope" / "nested")
+
+
+def test_a_stop_that_cannot_be_written_still_latches(sent, link, monkeypatch, tmp_path):
+    from bridge import estop
+
+    writable = estop.DEFAULT_RUN_DIR
+    _unwritable_run_dir(monkeypatch, tmp_path)
+    assert estop.signal_stop() is False
+    assert safety.status()["stop_standing"] is True
+    assert "PARAR" in safety.tool_refusal("walk_velocity", {"c3po": {"tier": "T1"}})
+    _locomotion.send_velocity(0.2, 0.0, 0.3, height=0.78)
+    assert sent[-1][:3] == (0.0, 0.0, 0.0)
+    assert estop.record_ack() is False  # an ack that cannot land leaves it standing
+    assert safety.status()["stop_standing"] is True
+
+    monkeypatch.setattr(estop, "DEFAULT_RUN_DIR", writable)
+    assert estop.record_ack() is True
+    assert safety.status()["stop_standing"] is False
+    assert safety.tool_refusal("walk_velocity", {"c3po": {"tier": "T1"}}) is None
+
+
+@pytest.mark.asyncio
+async def test_resume_says_so_when_the_ack_could_not_be_recorded(monkeypatch, tmp_path):
+    from bridge import estop, mcp_server
+
+    monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
+    writable = estop.DEFAULT_RUN_DIR
+    _unwritable_run_dir(monkeypatch, tmp_path)
+    estop.signal_stop()
+    failed = await mcp_server.safety_ack(FakeRequest({}, secret="s3cret"))
+    assert failed.status_code == 500 and b"ack_not_recorded" in failed.body
+    assert safety.status()["stop_standing"] is True
+
+    monkeypatch.setattr(estop, "DEFAULT_RUN_DIR", writable)
+    ok = await mcp_server.safety_ack(FakeRequest({}, secret="s3cret"))
     assert ok.status_code == 200 and safety.status()["stop_standing"] is False

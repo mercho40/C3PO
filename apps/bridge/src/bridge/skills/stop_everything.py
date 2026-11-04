@@ -145,7 +145,7 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     # own process with its own TaskRegistry, so the cancellation below cannot
     # reach it. Found on the robot when PARAR left it turning for another 27
     # degrees. See bridge/estop.py.
-    signal_stop()
+    sentinel_written = signal_stop()
     from bridge import safety
 
     safety.clear_confirmations("stop_everything")
@@ -309,4 +309,7 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
             (real_damp_rpc_code == 0) if damp_reason is not None else None
         ),
         "real_damp_fallback_reason": damp_reason,
+        # False: this process is latched, but the teleop stream reads only the
+        # sentinel file and never heard this stop. A driving headset may still drive.
+        "sentinel_written": sentinel_written,
     }
