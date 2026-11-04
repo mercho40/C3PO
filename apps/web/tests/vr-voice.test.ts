@@ -106,7 +106,11 @@ describe("the headset conversation panel", () => {
 
   test("a refused T2 call offers Confirmar; a standing PARAR offers Reanudar instead", () => {
     const msgs = [user("Extendé la mano"), assistant(refused)];
-    expect(pendingConfirmation(msgs)).toBe("reach");
+    expect(pendingConfirmation(msgs)).toEqual({
+      tool: "reach",
+      input: refused.input,
+      id: "reach",
+    });
     // Volver first: index 0 is never the item that grants T2 or resumes.
     expect(voiceMenu("reach", false).map((i) => i.label)).toEqual([
       "Volver a gestos",
@@ -117,6 +121,26 @@ describe("the headset conversation panel", () => {
       VOICE_RESUME,
     ]);
     expect(pendingConfirmation([...msgs, user("otra cosa")])).toBeNull();
+  });
+
+  test("Confirmar names one refused call and shows the arguments it grants", () => {
+    const first = { ...refused, toolCallId: "call_1" };
+    const pending = pendingConfirmation([user("Extendé"), assistant(first)]);
+    expect(pending?.id).toBe("call_1");
+    const menu = voiceMenu(pending!.tool, false, pending!);
+    expect(menu[1].name).toBe("voice:confirm:call_1");
+    expect(menu[1].label).toBe('Confirmar reach {"side":"right","x_m":0.3}');
+
+    // A newer refusal of the same tool, other arguments: a different item, so
+    // a highlight armed on the old one disarms instead of granting the new.
+    const second = {
+      ...refused,
+      toolCallId: "call_2",
+      input: { side: "left" },
+    };
+    const next = pendingConfirmation([user("Extendé"), assistant(second)])!;
+    const swapped = voiceMenu(next.tool, false, next);
+    expect(reselect(menu[1], true, swapped).armed).toBe(false);
   });
 
   test("the gestures menu opens with the voice entry, never a skill name", () => {

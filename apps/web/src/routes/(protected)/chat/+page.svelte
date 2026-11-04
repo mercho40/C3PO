@@ -699,7 +699,7 @@
                                   `${t} confirmado: pedíselo de nuevo por voz (30 s).`,
                                 )
                               : send(
-                                  `Confirmado: podés ejecutar ${t} ahora.`,
+                                  `Confirmado: podés ejecutar ${t} ahora, con los mismos argumentos.`,
                                 ).catch((e: Error) => toast.error(e.message))}
                         />
                       {/if}

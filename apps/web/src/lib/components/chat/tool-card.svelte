@@ -39,15 +39,17 @@
   let confirmed = $state(false);
   let confirmError = $state<string | null>(null);
 
-  // One grant covers ONE call within 30 s (bridge/safety.py); apps/back holds
-  // the secret and checks the admin role.
+  // One grant covers ONE call with exactly these arguments within 30 s
+  // (bridge/safety.py); apps/back holds the secret and checks the admin role.
+  // Shown beside the button: Tool.Input is collapsed in this state.
+  const confirmArgs = $derived(JSON.stringify(part.input ?? {}));
   async function confirm(tool: string) {
     confirming = true;
     confirmError = null;
     try {
       const { error } = await createApi(fetch)
         .skills({ name: tool })
-        .confirm.post();
+        .confirm.post({ args: (part.input ?? {}) as Record<string, unknown> });
       if (error) {
         const body = error.value as { error?: string } | undefined;
         confirmError = `No se pudo confirmar (${error.status}${body?.error ? `: ${body.error}` : ""}).`;
@@ -95,6 +97,10 @@
       >
         {confirmed ? `Confirmado: ${confirmable}` : `Confirmar ${confirmable}`}
       </Button>
+      <code
+        class="max-w-full min-w-0 truncate readout text-xs text-ink-mute"
+        title={confirmArgs}>{confirmArgs}</code
+      >
       {#if confirmError}
         <p class="text-xs text-warn" role="alert">{confirmError}</p>
       {/if}

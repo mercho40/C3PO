@@ -82,24 +82,38 @@ export function voiceLines(
   return lines;
 }
 
-/** The T2 tool the last reply is waiting on, if any. */
+/** The refused T2 call the last reply is waiting on. */
+export type PendingCall = {
+  tool: string;
+  input: unknown;
+  /** The part's toolCallId, so a menu item names ONE call, not a tool. */
+  id: string;
+};
+
+/** The T2 call the last reply is waiting on, if any. */
 export function pendingConfirmation(
   messages: readonly MessageLike[],
-): string | null {
+): PendingCall | null {
   const last = messages.at(-1);
   if (!last || last.role !== "assistant") return null;
   for (const part of [...last.parts].reverse()) {
     if (!isToolPart(part)) continue;
-    const tool = needsConfirmation(part as unknown as ToolPartLike);
-    if (tool) return tool;
+    const p = part as unknown as ToolPartLike & { toolCallId?: string };
+    const tool = needsConfirmation(p);
+    if (tool) return { tool, input: p.input, id: p.toolCallId ?? tool };
   }
   return null;
 }
 
-/** The menu while talking: confirm / resume when relevant, and a way back. */
+/**
+ * The menu while talking: confirm / resume when relevant, and a way back.
+ * `call` keys Confirmar to one refused call and shows its arguments: the
+ * grant covers exactly those, so the operator must see them.
+ */
 export function voiceMenu(
   pending: string | null,
   stopStanding: boolean,
+  call?: Pick<PendingCall, "id" | "input">,
 ): MenuItem[] {
   // "Volver" first: index 0 must never be the item that grants T2 or resumes.
   const items: MenuItem[] = [
@@ -112,9 +126,15 @@ export function voiceMenu(
       verified: true,
     });
   else if (pending) {
+    const args =
+      call?.input && typeof call.input === "object"
+        ? JSON.stringify(call.input)
+        : "";
     items.push({
-      name: `${VOICE_CONFIRM}${pending}`,
-      label: `Confirmar ${pending}`,
+      name: `${VOICE_CONFIRM}${call?.id ?? pending}`,
+      label: cut(
+        `Confirmar ${pending}${args && args !== "{}" ? ` ${args}` : ""}`,
+      ),
       verified: true,
     });
   }

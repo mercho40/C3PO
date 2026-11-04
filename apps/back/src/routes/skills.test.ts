@@ -387,10 +387,16 @@ describe("POST /skills/:name/confirm", () => {
   const realFetch = globalThis.fetch;
   let forwarded: { url: string; init: RequestInit }[] = [];
 
-  function confirm(name: string) {
+  function confirm(name: string, body?: unknown) {
     return skillsRoutes.handle(
       new Request(`http://localhost/skills/${name}/confirm`, {
         method: "POST",
+        ...(body === undefined
+          ? {}
+          : {
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(body),
+            }),
       }),
     );
   }
@@ -427,10 +433,42 @@ describe("POST /skills/:name/confirm", () => {
     expect(forwarded[0].url).toEndWith("/safety/confirm");
     const headers = forwarded[0].init.headers as Record<string, string>;
     expect(headers["x-c3po-confirm-secret"]).toBe("s3cret");
+    // No body (an old console tab): the grant covers the defaults only.
     expect(JSON.parse(String(forwarded[0].init.body))).toEqual({
       tool: "move_arm",
+      args: {},
     });
     await Bun.sleep(0);
     expect(inserted.some((r) => r.skillName === "safety_confirm")).toBe(true);
+  });
+
+  test("the refused call's arguments are forwarded, and audited with the grant", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    const res = await confirm("move_arm", { args: { side: "right" } });
+    globalThis.fetch = realFetch;
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(String(forwarded[0].init.body))).toEqual({
+      tool: "move_arm",
+      args: { side: "right" },
+    });
+    await Bun.sleep(0);
+    const row = inserted.find((r) => r.skillName === "safety_confirm");
+    expect(row?.params).toEqual({ tool: "move_arm", args: { side: "right" } });
+  });
+
+  test("the bridge's refusal of the arguments reaches the console", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    globalThis.fetch = (async () =>
+      Response.json(
+        { error: "invalid_arguments", tool: "move_arm" },
+        { status: 400 },
+      )) as unknown as typeof fetch;
+    const res = await confirm("move_arm", { args: { side: 3 } });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "invalid_arguments",
+    );
   });
 });

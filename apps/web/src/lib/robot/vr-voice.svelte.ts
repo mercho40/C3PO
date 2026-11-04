@@ -88,7 +88,11 @@ export class VrVoice {
       this.#confirming || this.#busy
         ? null
         : pendingConfirmation(this.#chat.messages);
-    return voiceMenu(pending, this.#latch.standing);
+    return voiceMenu(
+      pending?.tool ?? null,
+      this.#latch.standing,
+      pending ?? undefined,
+    );
   }
 
   /** From the 2D page, before entering VR. */
@@ -211,7 +215,15 @@ export class VrVoice {
     return true;
   }
 
-  async #confirm(tool: string): Promise<void> {
+  async #confirm(key: string): Promise<void> {
+    // Re-read at click time: the menu may be older than the transcript, and
+    // a grant must cover only the call the operator was shown.
+    const pending = pendingConfirmation(this.#chat.messages);
+    if (!pending || pending.id !== key) {
+      this.error = "Esa confirmación ya no corresponde: no se envió nada.";
+      return;
+    }
+    const { tool } = pending;
     this.#confirming = true;
     try {
       const res = await fetch(
@@ -219,6 +231,8 @@ export class VrVoice {
         {
           method: "POST",
           credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ args: pending.input ?? {} }),
         },
       );
       if (!res.ok) {
@@ -227,7 +241,7 @@ export class VrVoice {
         return;
       }
       void this.#chat.sendMessage({
-        text: `Confirmado: podés ejecutar ${tool} ahora.`,
+        text: `Confirmado: podés ejecutar ${tool} ahora, con los mismos argumentos.`,
       });
     } catch {
       this.error = `No se pudo confirmar ${tool}: sin respuesta del servidor.`;

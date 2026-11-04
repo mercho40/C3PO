@@ -71,6 +71,54 @@ export const SAFETY_SKILLS = new Set(["stop_everything", "soft_stop"]);
 /** How long PARAR waits for the bridge before answering 504 (the stop keeps running). */
 const SAFETY_TIMEOUT_MS = 8000;
 
+/**
+ * Ask the bridge to grant ONE call of `name` with exactly `args`, and audit
+ * who asked. Arguments are not validated here: the bridge canonicalises them
+ * against the tool's own schema and refuses what does not fit.
+ */
+async function grantOnBridge(
+  name: string,
+  args: Record<string, unknown>,
+  userId: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const secret = process.env.SAFETY_CONFIRM_SECRET;
+  if (!secret) {
+    return { status: 503, body: { error: "confirmation_not_configured" } };
+  }
+  const startedAt = Date.now();
+  let upstream: Response;
+  try {
+    upstream = await fetch(bridgeSiblingUrl("/safety/confirm"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-c3po-confirm-secret": secret,
+      },
+      body: JSON.stringify({ tool: name, args }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    return { status: 502, body: { error: "bridge_unavailable", name } };
+  }
+  const body = (await upstream.json().catch(() => ({}))) as Record<
+    string,
+    unknown
+  >;
+  // Who authorised which arm motion is the row worth having after the fact.
+  void logToolCall({
+    userId,
+    source: "direct",
+    skillName: "safety_confirm",
+    params: { tool: name, args },
+    result: body,
+    status: upstream.ok ? "ok" : "error",
+    ...(upstream.ok ? {} : { error: String(body.error ?? upstream.status) }),
+    durationMs: Date.now() - startedAt,
+    startedAt,
+  });
+  return { status: upstream.status, body };
+}
+
 export const skillsRoutes = new Elysia({ prefix: "/skills" })
   .use(betterAuth)
   .guard({ auth: true }, (app) =>
@@ -288,59 +336,29 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
       )
       .post(
         "/:name/confirm",
-        async ({ params: { name }, status, user }) => {
-          // The operator's confirmation for ONE call of a T2 skill, within
-          // 30 s (bridge/safety.py). It is a route and not a tool so that no
-          // model can reach it, and it lives here so the bridge's secret
-          // stays on this server, never in a browser. The bridge checks the
-          // tier itself and refuses anything that is not T2.
+        async ({ params: { name }, body, status, user }) => {
+          // The operator's confirmation for ONE call of a T2 skill with ONE
+          // argument set, within 30 s (bridge/safety.py). It is a route and
+          // not a tool so that no model can reach it, and it lives here so
+          // the bridge's secret stays on this server, never in a browser. The
+          // bridge checks the tier and the arguments itself; no body grants
+          // the tool's defaults only.
           if (user.role !== "admin") {
             return status(403, { error: "admin_required" });
           }
-          const secret = process.env.SAFETY_CONFIRM_SECRET;
-          if (!secret) {
-            return status(503, { error: "confirmation_not_configured" });
-          }
-          const startedAt = Date.now();
-          let upstream: Response;
-          try {
-            upstream = await fetch(bridgeSiblingUrl("/safety/confirm"), {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                "x-c3po-confirm-secret": secret,
-              },
-              body: JSON.stringify({ tool: name }),
-              signal: AbortSignal.timeout(5000),
-            });
-          } catch {
-            return status(502, { error: "bridge_unavailable", name });
-          }
-          const body = (await upstream.json().catch(() => ({}))) as Record<
-            string,
-            unknown
-          >;
-          // Who authorised arm motion is the row worth having after the fact.
-          void logToolCall({
-            userId: user.id,
-            source: "direct",
-            skillName: "safety_confirm",
-            params: { tool: name },
-            result: body,
-            status: upstream.ok ? "ok" : "error",
-            ...(upstream.ok
-              ? {}
-              : { error: String(body.error ?? upstream.status) }),
-            durationMs: Date.now() - startedAt,
-            startedAt,
-          });
-          return upstream.ok ? body : status(upstream.status, body);
+          const granted = await grantOnBridge(name, body?.args ?? {}, user.id);
+          return granted.status < 300
+            ? granted.body
+            : status(granted.status, granted.body);
         },
         {
           params: t.Object({ name: t.String() }),
+          body: t.Optional(
+            t.Object({ args: t.Optional(t.Record(t.String(), t.Any())) }),
+          ),
           detail: {
             summary:
-              "Confirm one call of a T2 (arm/hand) skill within 30 s. Admin-only.",
+              "Confirm one call of a T2 (arm/hand) skill with these arguments, within 30 s. Admin-only.",
             tags: ["skills"],
           },
         },
