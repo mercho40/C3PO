@@ -230,6 +230,15 @@ def test_stale_or_depthless_detections_are_not_grasp_targets(monkeypatch):
         m.detected_target("cup", None)
 
 
+def test_a_fresh_report_repeating_an_old_capture_is_not_a_grasp_target(monkeypatch):
+    # The summary re-emits the last frame at 4 Hz: report age 0.1 s, capture 1.5 s old.
+    see(monkeypatch, cup(age_s=1.5))
+    with pytest.raises(m.PlanError):
+        m.detected_target("cup", None)
+    see(monkeypatch, cup(age_s=0.2))
+    assert m.detected_target("cup", None)[1]["age_s"] == 0.2
+
+
 # --- execution ----------------------------------------------------------------------------
 
 

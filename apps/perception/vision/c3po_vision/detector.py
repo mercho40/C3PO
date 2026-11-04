@@ -1212,7 +1212,10 @@ def run() -> int:
 
         failures = 0
         # THE HEARTBEAT. Unconditional, including when `objects` is empty.
-        publisher.publish(build_report(objects, omitted, time.time(), unranged))
+        # Stamped at the grab (`now` is taken just before source.read()), not
+        # the publish: the nav container ages every object from this stamp.
+        # shortcut: up to one frame period off, use the frameset's global_time if the robot shows lag.
+        publisher.publish(build_report(objects, omitted, now, unranged))
 
         ticks += 1
         busy_s += time.time() - now

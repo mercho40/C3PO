@@ -461,6 +461,19 @@ def test_a_stale_detection_is_reported_stale():
     assert any("stale" in n.lower() for n in d["notes"])
 
 
+def test_every_published_object_carries_its_capture_age():
+    # Without object_age.aged the summary re-emits the last frame at 4 Hz with
+    # no age_s, and the bridge reads a 1.4 s old detection as new.
+    node = _report_dict_node(_parse(WORLD_MODEL_PUBLISHER_PY))
+    by_key = {k.value: v for k, v in zip(node.keys, node.values) if isinstance(k, ast.Constant)}
+    calls = [
+        n.func.attr
+        for n in ast.walk(by_key["objects"])
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    ]
+    assert "aged" in calls, "the published objects must go through object_age.aged"
+
+
 def test_the_snapshot_still_fits_the_token_budget_it_was_designed_for():
     # The whole point of the layer: a few hundred tokens, not a point cloud.
     # A container that starts sending richer objects would erode this silently.

@@ -270,6 +270,9 @@ def detected_target(
     for obj in report.get("objects") or []:
         if not isinstance(obj, dict) or not isinstance(obj.get("cam_xyz"), list):
             continue
+        # The report can be fresh while the frame it repeats is not (age_s: since capture).
+        if age + float(obj.get("age_s") or 0) > FRESH_DETECTION_S:
+            continue
         if track_id is not None and obj.get("track_id") != track_id:
             continue
         if label and not label_matches(str(obj.get("label", "")), label):
