@@ -232,10 +232,10 @@ class ArmSdkDriver:
 
     # -- preconditions --------------------------------------------------
 
-    def _check_preconditions(self) -> tuple[tuple[float, ...], int]:
+    def _check_preconditions(self) -> tuple[tuple[float, ...], tuple[float, ...], int]:
         """Raise `ArmSdkUnavailable` unless it is safe to engage.
 
-        Returns the measured arm pose and `mode_machine` on success, so the
+        Returns the measured arm and waist pose and `mode_machine` on success, so the
         caller cannot engage using values read at a different instant than the
         ones that were checked.
         """

@@ -13,7 +13,7 @@ without a Jetson, an ONNX file, or a co-tenant to annoy.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from bringup.spec import NAV_IMAGE, VISION_IMAGE
 
@@ -206,7 +206,7 @@ def _power_mode(runner) -> str:
 _PROXY_KEYS = ("http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
 
 
-def proxy_build_args(env: "dict[str, str] | os._Environ[str]") -> list[str]:
+def proxy_build_args(env: Mapping[str, str]) -> list[str]:
     """`docker build` flags for building through a proxy, or [] when none is set.
 
     The robot has no internet of its own; scripts/robot_internet.py lends it the
