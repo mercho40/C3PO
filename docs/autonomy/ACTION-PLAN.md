@@ -47,10 +47,10 @@ _Why:_ A3/A5 need A2/A4's bridge contract. B7 shares skills.ts and vr-voice with
 
 ### Wave 3
 
-- ⚪ Branch go-to-object: E2 (pose at capture, reject older than 0.5 s) then E3 (closed loop, monotonic deadline) then E4 (Nav2 goal only when the gate is already armed; depends on A4)
+- 🟢 Branch go-to-object: E2 (pose at capture, reject older than 0.5 s) then E3 (closed loop, monotonic deadline) then E4 (Nav2 goal only when the gate is already armed; depends on A4)
 - ⚪ Branch nav-depth: E5 (after D5 in detector.py) and E6 in parallel, then E7, then E8 (after D1 on spec.py and scripts/robot/c3po), plus the gate failing closed on a stale depth cloud
-- ⚪ Branch headset-voice: C4 then C5 then C8 (only if the lease decision is b), then B8 (after B2 and B7)
-- ⚪ F7 robot_session.sh (after F6)
+- 🟡 Branch headset-voice: 🟢 C4, C5, C8; ⚪ B8 (needs the robot) (only if the lease decision is b), then B8 (after B2 and B7)
+- 🟢 F7 robot_session.sh (after F6)
 
 _Why:_ Capability work that rests on the wave-1/2 gate. E4 must not exist before a person is the only one who can arm Nav2 (A4). E3 builds on C7's yield. The vr-voice chain starts only after confirm-ui has finished editing that file. E5 waits for D5 to finish with detector.py.
 
@@ -549,7 +549,7 @@ Left out and not checked:
 - **Risk:** If the feed ever runs above 40 fps, the headset caps it at 40. A missed card repaint would show an old reason; the 'repaints when the reason changes' test covers that.
 - _apply (minor)_: The approach is sound. The existing test 'a real frame takes over' (camera-layer.test.ts:697-716) draws again with the implicit `now`. Under the throttle that draw does not upload, which is fine because the test only checks canvas texts. But it and other draw-twice tests now depend on wall-clock timing, which is a flake risk if the CI machine stalls for 25 ms between two calls. **Fix:** Pass an explicit `now` in every existing test that draws more than once, not only in 'counts uploads'.
 
-#### ⚪ C4: VR push-to-talk on an AudioWorklet instead of ScriptProcessor `S`
+#### 🟢 C4: VR push-to-talk on an AudioWorklet instead of ScriptProcessor `S`
 
 - **Backlog:** 6.2 · **Depends on:** —
 - **Files:** `apps/web/src/lib/robot/mic-capture.worklet.js`, `apps/web/src/lib/robot/vr-voice.svelte.ts`, `apps/web/tests/vr-voice.test.ts`
@@ -561,7 +561,7 @@ Left out and not checked:
 - _apply (major)_: The worklet as described posts `inputs[0][0].slice()`. Chromium passes an input with zero channels (inputs[0] is []) before the MediaStream delivers audio, and after the track ends or is muted. An exception in process() kills the processor for good (processorerror), and from then on capture fails silently and every utterance reads as 'Muy corto'. **Fix:** `const ch = inputs[0]?.[0]; if (this.on && ch) this.port.postMessage(ch.slice()); return true;`. Add a test that process([[]]) with recording on neither throws nor posts, and returns true.
 - _apply (minor)_: Two gaps. Port messages already in flight when #finish posts false arrive after the clip has been concatenated. And because the AudioContext is now created before getUserMedia, a denied permission leaves it open. The plan only closes it 'on any failure after getUserMedia'. **Fix:** Keep the `if (!this.#recording) return` guard in port.onmessage. Close the context in the catch block too, including when getUserMedia itself rejects.
 
-#### ⚪ C5: Mic lifecycle in the headset: resume on the «Entrar en VR» tap, drop the clip on visible-blurred, recover from an ended track `S`
+#### 🟢 C5: Mic lifecycle in the headset: resume on the «Entrar en VR» tap, drop the clip on visible-blurred, recover from an ended track `S`
 
 - **Backlog:** 6.2 · **Depends on:** C4
 - **Files:** `apps/web/src/lib/robot/vr-voice.svelte.ts`, `apps/web/src/lib/webxr/xr-teleop.ts`, `apps/web/src/lib/robot/vr-control.svelte.ts`, `apps/web/src/routes/(protected)/vr-control/+page.svelte`, `apps/web/tests/vr-session-lifecycle.test.ts`
@@ -593,7 +593,7 @@ Left out and not checked:
 - _apply (major)_: The plan skips stop_motion when a walk ends with teleop_takeover. That is unsafe when the takeover comes from the arm mirror: the plan renews the lease on get_driver().engaged even at zero velocity, and the teleop server sends velocity only while commanding or on a falling edge (server.py:575-577). In that case nobody zeroes the agent's last setpoint. On real hardware the robot keeps that setpoint for VELOCITY_DURATION_S = 1.0 s (_locomotion.py:56) while arm_sdk ramps the weight up, which is the mode-801 shuffle that BACKLOG §12 names. On sim it holds the velocity with no limit (walk_to.py:226-229 says so). A head flick that crosses the deadzone for a single tick ends the same way. **Fix:** On takeover keep the existing `task.phase = "stopping"; await stop_motion(height)` in walk_to.py and turn.py, and only add the phase and error. A 0.4 s zero burst mixed into the headset's 20 Hz commands is a stutter, which is the safe direction. Change the test to expect stop_motion to be called.
 - _apply (minor)_: Three smaller gaps. teleop_conflict()'s text (_locomotion.py:251-256) tells the model and the operator to 'disconnect the headset stream', which is wrong once idle no longer holds the lease. The new phase 'teleop_takeover' has no entry in PHASE_TEXT (apps/web/src/lib/robot/skill-outcome.ts:61), and that file is not in the plan. And the page's precautionary 0.5 s zero pulse on stream open (vr-control.svelte.ts, connectStream onState 'open') used to be refused through the lease and will now run as a walk_velocity task. It is harmless, but it is logged as a walk command, and the 'means us' comment at vr-logic.ts:375 becomes stale. **Fix:** Reword the conflict message to 'the operator is driving right now; wait until they let go'. Add `teleop_takeover: "El operador del visor tomó el control"` to PHASE_TEXT, with a skill-outcome test row. Update the vr-logic.ts:375 comment.
 
-#### ⚪ C8: (If decision D4 = b) The headset's head yaw does not steer while its own voice turn is running `S`
+#### 🟢 C8: (If decision D4 = b) The headset's head yaw does not steer while its own voice turn is running `S`
 
 - **Backlog:** 11.6 · **Depends on:** C7
 - **Files:** `apps/web/src/lib/robot/vr-voice.svelte.ts`, `apps/web/src/lib/robot/vr-control.svelte.ts`, `apps/web/src/routes/(protected)/vr-control/+page.svelte`, `apps/web/tests/vr-headset-menu.test.ts`
@@ -725,7 +725,7 @@ _Notes:_ I checked all five items against the feat/autonomy worktree (3bfd0c9). 
 - **Risk:** Takes effect only after a nav image rebuild, since the package is baked in at Dockerfile:202-216. describe_surroundings starts showing age_s per object, which is a small change in agent-visible text. Overlaps 3.6 (report stamp_unix=now): coordinate so that one change does both.
 - _apply (minor)_: Two problems. First, float(payload.get('stamp_unix')) sits outside _on_objects's try (world_model_publisher.py:180-193). A bad stamp raises inside the rclpy callback and can kill the node, which the comment at 184-190 explicitly forbids. A stamp from the future clamps age to 0, so stale objects read as fresh. Second, the stub-rclpy conftest helper goes against the suite's documented convention. **Fix:** Parse and sanity-check the stamp inside the existing try: |now - stamp| < 5 s, otherwise use the receipt time and add a note. Put _aged in a pure module (world_model_publisher already imports the pure scan_ring) and test it without stubs.
 
-#### ⚪ E2: 11.5 (bridge): reject live detections older than 0.5 s and apply the bearing to the pose at capture time `S`
+#### 🟢 E2: 11.5 (bridge): reject live detections older than 0.5 s and apply the bearing to the pose at capture time `S`
 
 - **Backlog:** 11.5 · **Depends on:** E1
 - **Files:** `apps/bridge/src/bridge/sdk/state.py`, `apps/bridge/src/bridge/skills/go_to_object.py`, `apps/bridge/src/bridge/mcp_server.py`, `apps/bridge/tests/test_state_pose.py`, `apps/bridge/tests/test_go_to_object.py`
@@ -737,7 +737,7 @@ _Notes:_ I checked all five items against the feat/autonomy worktree (3bfd0c9). 
 - _apply (major)_: LIVE_MAX_AGE_S=0.5 is too tight for this pipeline. Object age at emit can reach 0.1 s (10 Hz detector). Report age at the bridge can reach 0.25 s (4 Hz emit), and the bridge measures it from receipt (perception_link._report_at). The detector stamps at publish time, not capture (detector.py:1178 passes time.time() after inference), which hides another ~40–100 ms. That is ~0.45 s worst case with no jitter. E5 adds load to the same single core (cpuset 5). The result would be intermittent stale_detection refusals and lost E3 candidates. With pose_at correcting the motion, an age near the 2 s history is safe. **Fix:** Set LIVE_MAX_AGE_S to about 1.0 s, inside the pose history. Stamp the objects report at capture: take t right after source.read() and pass it to build_report. That is a one-line change in run() and also covers the 3.6 overlap.
 - _apply (minor)_: Three details are unstated. (a) What go_to_object does when pose_at returns None. (b) The history uses time.time(). The Jetson has no RTC, and NTP steps the wall clock, which is why perception_link uses time.monotonic. A step makes captured_at land on the wrong sample. (c) Leaving surroundings_snapshot drops build()'s detector_online check (world_model.py:206-209). **Fix:** Store time.monotonic() in the deque and set captured_at = monotonic() - total_age. When pose_at is None, return stale_detection and never fall back silently to the current pose. Require report.get('detector_online') before using raw objects, the way safety.person_proximity does. Test each case.
 
-#### ⚪ E3: 4.3: closed-loop go_to_object (re-aim about once a second, abort when the target is lost) `M`
+#### 🟢 E3: 4.3: closed-loop go_to_object (re-aim about once a second, abort when the target is lost) `M`
 
 - **Backlog:** 4.3 · **Depends on:** E2
 - **Files:** `apps/bridge/src/bridge/skills/walk_to.py`, `apps/bridge/src/bridge/skills/go_to_object.py`, `apps/bridge/src/bridge/mcp_server.py`, `apps/bridge/tests/test_walk_to.py`, `apps/bridge/tests/test_go_to_object.py`
@@ -749,7 +749,7 @@ _Notes:_ I checked all five items against the feat/autonomy worktree (3bfd0c9). 
 - _apply (minor)_: JUMP_M is measured against the CURRENT target. A chain of false detections, each within 1 m of the last, can walk the target anywhere at 1 m per update, with no obstacle avoidance on this path. Also unstated: retarget raising goes through walk_to's generic except, which ends with phase 'exception' and stop_motion. That is safe, but it should be tested. **Fix:** Also bound the total drift from the first fix (for example ≤ 1.5 m) and check MAX_RANGE_M again from the current pose on every retarget. Log go_to_object.retarget with the old and new target. Add a test where a retarget raises and stop_motion is awaited.
 - _apply (minor)_: The plan, and robot step 'never faster than 0.3 m/s', assume a 0.3 m/s cap. safety.govern clamps vx and vy separately (safety.py:209-211), and walk_to commands lateral velocity up to the cap (vy = KP_LIN*dy_body*gate, walk_to.py:174). Camera-only walks can therefore reach ~0.42 m/s diagonally, and retargeting adds more sideways motion. Nav2 is unaffected (max_vel_y 0). **Fix:** Clamp the linear vector norm in govern (scale vx and vy together to MAX_LINEAR_MPS) with one test. Or correct the claim in the plan and the acceptance criteria.
 
-#### ⚪ E4: 4.3: go_to_object prefers a Nav2 goal when Nav2 is active and a person armed the gate `S`
+#### 🟢 E4: 4.3: go_to_object prefers a Nav2 goal when Nav2 is active and a person armed the gate `S`
 
 - **Backlog:** 4.3 · **Depends on:** E2
 - **Files:** `apps/bridge/src/bridge/mcp_server.py`, `apps/bridge/tests/test_go_to_object.py`
@@ -934,7 +934,7 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 - **Done when:** The self-test passes in the shell suite. On the robot through the proxy, Gemini, apt (:80) and pip/git (:443) still work. A CONNECT to 127.0.0.1 or 192.168.x through 127.0.0.1:18899 gets 403.
 - **Risk:** Anything on the robot that needs a campus-private host through the proxy now gets 403. ia.ort.edu.ar is 'reachable from inside the ORT network only' (apps/back/.env.example:42), but only apps/back on the Mac calls it. Nothing in apps/bridge/src or apps/perception does. Egress on non-standard ports is refused; none is known.
 
-#### ⚪ F7: scripts/robot_session.sh: one Mac command for a robot session `S`
+#### 🟢 F7: scripts/robot_session.sh: one Mac command for a robot session `S`
 
 - **Backlog:** 8.2 · **Depends on:** F6
 - **Files:** `scripts/robot_session.sh`, `scripts/tests/run.sh`, `README.md`, `docs/OPERATIONS.md`
@@ -1545,9 +1545,23 @@ What I skipped or did not check:
 
 ## 6. Left over from the wave-2 review (minor, 2026-11-04)
 
-- [ ] Behavioural tests for the capture-age wiring. Two mutations survived: the publisher using arrival time, and the detector stamping at publish time.
-- [ ] With no `SAFETY_CONFIRM_SECRET`, `/invoke` of a gated tool returns 503. Map `confirmation_not_configured` to a Spanish hint in `skill-outcome.ts`, and consider making preflight treat a missing secret as a blocker.
-- [ ] A pre-grant stays pending for 30 s when the dispatch is refused right after it (battery, PARAR). Drop that tool's grant in `tool_refusal` when it refuses a gated call.
-- [ ] The teleop token is replayable for 60 s over plain `ws://` on the LAN. Bind it to one use, or move to `wss`.
-- [ ] Test hygiene: `teleop.test.ts` leaves `TELEOP_SECRET` set; the headset socket-stop and token tests only grep the source.
-- [ ] C8 (wave 3): head yaw alone ends an agent walk that the headset's own voice started.
+- [x] Behavioural tests for the capture-age wiring. Two mutations survived: the publisher using arrival time, and the detector stamping at publish time.
+- [x] With no `SAFETY_CONFIRM_SECRET`, `/invoke` of a gated tool returns 503. Map `confirmation_not_configured` to a Spanish hint in `skill-outcome.ts`, and consider making preflight treat a missing secret as a blocker.
+- [x] A pre-grant stays pending for 30 s when the dispatch is refused right after it (battery, PARAR). Drop that tool's grant in `tool_refusal` when it refuses a gated call.
+- [x] The teleop token is replayable for 60 s over plain `ws://` on the LAN. Bind it to one use, or move to `wss`.
+- [x] Test hygiene: `teleop.test.ts` leaves `TELEOP_SECRET` set; the headset socket-stop and token tests only grep the source.
+- [x] C8 (wave 3): head yaw alone ends an agent walk that the headset's own voice started.
+
+## 7. Wave 3, robot-independent part (2026-11-04)
+
+Done and committed (dac6602, e5a6f19, ef04924, d624aa2): E2, E3, E4, C4, C5, C8, F7 and every §6 leftover. Adversarial review fixed before commit: the Meta menu / headset-off return no longer steers until the head is centred; Nav2 paths (go_to_object, navigate_to, navigate_to_landmark) refuse and cancel while the headset drives; a non-finite velocity axis is 0, not the cap; walk_to's deadline is monotonic.
+
+Pending for the robot session:
+- Deploy the BRIDGE BEFORE BACK: a new back's nonce tokens are refused by an old bridge, which also drops the headset's PARAR-over-socket until the bridge is updated.
+- Rebuild the vision and nav images (capture stamp, E1 age). Until then go_to_object takes the age-less path; once deployed, consider rejecting age-less detections (decision 2).
+- E2/E3/E4 acceptance: aim after a `turn` within ~0.2 m; chair moved 0.5 m mid-walk re-aims; covered chair → target_lost in ~4 s; with the gate armed, walks around a box; headset stick mid-goal cancels it.
+- Quest: worklet push-to-talk (no ScriptProcessor warning, `AudioContext running on first talk`), Meta menu mid-talk sends nothing and stops motion, «CENTRÁ LA CABEZA» on return, voice walk survives looking around.
+- robot_session.sh with the cable: five ✓, Ctrl-C leaves no ssh/bun/python child.
+- B8 and E5–E8 (depth-only Nav2) start after the S0 robot spike.
+
+Open minors: a second `walk_to` can still start while one runs (no_active_walk_task not enforced); walk_velocity reports per-axis clamped values; Confirmar buttons show the raw `confirmation_not_configured` code; OPERATIONS.md §2 still says 192.168.77.x for the cable (H2).
