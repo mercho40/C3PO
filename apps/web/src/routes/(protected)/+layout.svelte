@@ -3,6 +3,7 @@
   import { navigating } from "$app/state";
   import AppSidebar from "#lib/components/app-sidebar.svelte";
   import DashboardTopbar from "#lib/components/dashboard-topbar.svelte";
+  import BatteryBanner from "#lib/components/shell/battery-banner.svelte";
   import EstopBanner from "#lib/components/shell/estop-banner.svelte";
   import NavProgress from "#lib/components/shell/nav-progress.svelte";
   import * as Sidebar from "#lib/components/ui/sidebar/index.js";
@@ -146,6 +147,7 @@
     >
       <DashboardTopbar />
       <EstopBanner />
+      <BatteryBanner />
       <!-- aria-busy on the page region, not the whole inset: the topbar (and
            the e-stop's announcements) must stay live while a page loads. -->
       <div
