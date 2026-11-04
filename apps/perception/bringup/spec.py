@@ -33,6 +33,11 @@ VISION_ENV_PASSTHROUGH = (
 )
 
 
+#: What `~/.c3po/perception.env` may set. An explicit list, so a persisted
+#: C3PO_TAKE_OVER=1, C3PO_VISION_FAKE=1 or C3PO_NAV_* never becomes a silent default.
+PERSISTENT_ENV_KEYS = VISION_ENV_PASSTHROUGH + ("C3PO_LIDAR_SOURCE",)
+
+
 def vision_env_passthrough(env: Dict[str, str]) -> Dict[str, str]:
     return {k: env[k] for k in VISION_ENV_PASSTHROUGH if env.get(k)}
 

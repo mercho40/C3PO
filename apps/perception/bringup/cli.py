@@ -14,14 +14,16 @@ which is how a change here gets checked before it is trusted.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import time
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from bringup.spec import (
     MAPS_SUBDIR,
     NAV,
+    PERSISTENT_ENV_KEYS,
     STAGES,
     STT,
     VISION,
@@ -32,6 +34,9 @@ from bringup.spec import (
 )
 
 PREFIX = "c3po-perception"
+
+#: Under $HOME. Model paths and a measured extrinsic, kept across shells and reboots.
+ENV_FILE = os.path.join(".c3po", "perception.env")
 
 
 #: How long ONE readiness probe may take, in seconds.
@@ -179,6 +184,51 @@ def err(msg: str) -> None:
 
 def info(msg: str) -> None:
     print(f"  {_DIM}{msg}{_RESET}")
+
+
+# --- the operator's env file ------------------------------------------------
+
+
+def read_env_file(path: str) -> Dict[str, str]:
+    """`KEY=VALUE` per line, `export` and `#` comments allowed. Missing file: {}.
+
+    Raises ValueError naming the line, so a typo refuses instead of half-applying.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        return {}
+    out: Dict[str, str] = {}
+    for number, line in enumerate(lines, 1):
+        try:
+            # shortcut: an unquoted '#' inside a word ends it (A=b#c gives b; bash
+            # keeps it). Values here are paths and numbers; quote one if that changes.
+            words = shlex.split(line, comments=True)
+        except ValueError as exc:
+            raise ValueError(f"{path}:{number}: {exc}") from None
+        if words[:1] == ["export"]:
+            words = words[1:]
+        if not words:
+            continue
+        key, sep, value = words[0].partition("=")
+        if len(words) != 1 or not sep or not key.isidentifier():
+            raise ValueError(f"{path}:{number}: expected KEY=VALUE, got {line.strip()!r}")
+        out[key] = value
+    return out
+
+
+def operator_env(environ: Mapping[str, str]) -> Dict[str, str]:
+    """`environ` over the allowlisted keys of ~/.c3po/perception.env. The shell wins."""
+    path = os.path.join(environ.get("HOME", "/home/unitree"), ENV_FILE)
+    persisted = read_env_file(path)
+    for key in sorted(set(persisted) - set(PERSISTENT_ENV_KEYS)):
+        warn(f"{path}: {key} ignored (not in bringup/spec.py PERSISTENT_ENV_KEYS)")
+    kept = {k: v for k, v in persisted.items() if k in PERSISTENT_ENV_KEYS}
+    taken = sorted(k for k in kept if k not in environ)
+    if taken:
+        info(f"from {path}: {', '.join(taken)}")
+    return {**kept, **environ}
 
 
 # --- helpers ----------------------------------------------------------------
@@ -524,7 +574,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         err("usage: perception_up {" + "|".join(STAGES) + "} [--dry-run]")
         return 2
     scripts_dir = os.environ.get("C3PO_SCRIPTS_DIR", "")
-    return bring_up(args[0], Runner(), scripts_dir=scripts_dir, dry_run=dry_run)
+    try:
+        env = operator_env(os.environ)
+    except ValueError as exc:
+        err(str(exc))
+        return 2
+    return bring_up(args[0], Runner(), env=env, scripts_dir=scripts_dir, dry_run=dry_run)
 
 
 if __name__ == "__main__":

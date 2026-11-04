@@ -334,14 +334,21 @@ def run_build(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    import os
     import sys
 
-    from bringup.cli import Runner
+    from bringup.cli import Runner, err, operator_env
 
     args = list(sys.argv[1:] if argv is None else argv)
     dry_run = "--dry-run" in args
     args = [a for a in args if a != "--dry-run"]
-    return run_build(args[0] if args else "all", Runner(), dry_run=dry_run)
+    try:
+        # The persisted model, so `build engine` builds what `perception_up` loads.
+        env = operator_env(os.environ)
+    except ValueError as exc:
+        err(str(exc))
+        return 2
+    return run_build(args[0] if args else "all", Runner(), env=env, dry_run=dry_run)
 
 
 if __name__ == "__main__":

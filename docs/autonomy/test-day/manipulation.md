@@ -90,11 +90,13 @@ head camera's view. Nobody inside 1 m.
 ## 6. If picks miss consistently: the camera mount
 
 `pick` maps the camera point through the URDF's D435 mount, which is tilted **47.6° nose-down**.
-It does not use the vision container's `C3PO_CAMERA_*` extrinsic. That extrinsic defaults to
-**pitch 0°**, which disagrees with the CAD by 47.6°. It affects every `range_m` the detector
-reports (and so the person rule and object memory), not just arms. Check it in `perception.md` §4:
-an object on the floor 1.0 m ahead (tape) should report `range_m ≈ 1.0`. If it does not, try
-`C3PO_CAMERA_PITCH_DEG=47.6` on the vision container and measure again. Write down both readings.
+It does not use the vision container's `C3PO_CAMERA_*` extrinsic. That extrinsic now defaults to
+the same CAD mount (seen from the pelvis), and a test pins the two together, so a consistent miss
+means the CAD disagrees with the robot. It affects every `range_m` the detector reports (and so
+the person rule and object memory), not just arms. Verify it in `perception.md` §4: an object on
+the floor 1.0 m ahead (tape) should report `range_m ≈ 1.0`. If it does not, measure the mount,
+put it in `~/.c3po/perception.env` (`C3PO_CAMERA_*`) and measure again. Write down both readings.
+That override moves the detector's ranges only; `pick` keeps the URDF mount.
 
 ## 7. Handover (5 min)
 

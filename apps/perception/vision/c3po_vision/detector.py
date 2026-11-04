@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -173,17 +174,22 @@ LABELS_PATH = os.environ.get("C3PO_LABELS", "/opt/c3po/models/labels.txt")
 # be told. Silently retrying a dead D435i for an hour is not.
 MAX_CONSECUTIVE_FAILURES = int(os.environ.get("C3PO_VISION_MAX_FAILURES", "20"))
 
+# How long start() waits for a hardware-reset D435 to re-enumerate. Not an env
+# var: it only bounds a one-time recovery, and a longer wait hides a dead camera.
+RESET_WAIT_S = 15.0
+
 
 def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
 def camera_extrinsic_from_env() -> CameraExtrinsic:
-    """The mount, overridable without a rebuild. UNMEASURED by default.
+    """The mount, overridable without a rebuild. URDF CAD by default.
 
-    grounding.DEFAULT_CAMERA_EXTRINSIC is a reasoned default and says so twice;
-    Stage 6 owes this project a tape measure. Until then these four env vars are
-    how a measurement gets applied at 2 a.m. without a 25-minute image build.
+    grounding.DEFAULT_CAMERA_EXTRINSIC is the URDF's d435_joint seen from the
+    pelvis, not a tape measurement. If the robot check (a floor object 1.0 m
+    ahead) disagrees, these env vars, set in ~/.c3po/perception.env, are how the
+    measured mount gets applied without a 25-minute image build.
     """
     d = DEFAULT_CAMERA_EXTRINSIC
     return CameraExtrinsic(
@@ -270,7 +276,22 @@ class RealSenseSource:
         config.enable_stream(rs.stream.depth, COLOR_W, COLOR_H, rs.format.z16, COLOR_FPS)
 
         self._pipeline = rs.pipeline()
-        profile = self._pipeline.start(config)
+        try:
+            profile = self._pipeline.start(config)
+        except RuntimeError as exc:
+            # errno=5 (EIO) on S_FMT is a D435 left wedged by its last owner; a
+            # hardware reset clears it. Kept that narrow on purpose: errno=16 is
+            # another process holding the camera, and a reset would yank it away.
+            if "VIDIOC_S_FMT" not in str(exc) or not re.search(r"errno=5\b", str(exc)):
+                raise
+            log("camera.wedged", error=str(exc))
+            devs = rs.context().query_devices()
+            if len(devs) == 0:
+                raise
+            self._reset_and_wait(rs, devs[0])
+            # Once only: a second failure propagates and the container exits.
+            self._pipeline = rs.pipeline()
+            profile = self._pipeline.start(config)
         self._align = rs.align(rs.stream.color)
 
         # Queried, never assumed. The nominal 0.001 is right on most D435i units
@@ -288,6 +309,19 @@ class RealSenseSource:
         log("camera.ready", w=intr.width, h=intr.height, fx=round(intr.fx, 1),
             fy=round(intr.fy, 1), ppx=round(intr.ppx, 1), ppy=round(intr.ppy, 1),
             depth_scale=self.depth_scale)
+
+    @staticmethod
+    def _reset_and_wait(rs: Any, dev: Any) -> None:
+        serial = dev.get_info(rs.camera_info.serial_number)
+        dev.hardware_reset()
+        time.sleep(2.0)  # let the old node drop first, or the poll finds it still listed
+        for _ in range(int(RESET_WAIT_S / 0.5)):
+            listed = rs.context().query_devices()
+            if any(d.get_info(rs.camera_info.serial_number) == serial for d in listed):
+                log("camera.reset", serial=serial)
+                return
+            time.sleep(0.5)
+        raise RuntimeError(f"D435 {serial} did not re-enumerate within {RESET_WAIT_S}s of a reset")
 
     def read(self) -> tuple[Any, Any]:
         """(colour BGR HxWx3 uint8, depth HxW uint16). Raises on timeout.
@@ -1072,7 +1106,10 @@ def run() -> int:
             f"x={extrinsic.x_m:.3f} y={extrinsic.y_m:.3f} z={extrinsic.z_m:.3f} "
             f"pitch={extrinsic.pitch_deg:.1f} yaw={extrinsic.yaw_deg:.1f}"
         ),
-        extrinsic_status="UNMEASURED — Stage 6 owes this a tape measure")
+        extrinsic_source=(
+            "env" if any(k.startswith("C3PO_CAMERA_") for k in os.environ)
+            else "URDF d435_joint (CAD)"
+        ))
 
     source = SyntheticSource() if fake else RealSenseSource()
     source.start()

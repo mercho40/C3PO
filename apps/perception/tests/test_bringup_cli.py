@@ -13,7 +13,8 @@ from typing import List, Sequence, Tuple
 
 import pytest
 
-from bringup.cli import bring_up
+from bringup import build, cli
+from bringup.cli import bring_up, operator_env, read_env_file
 from bringup.spec import NAV, STT, VISION
 
 
@@ -418,3 +419,95 @@ def test_localization_with_a_saved_map_comes_up():
     env = dict(ENV, C3PO_NAV_SLAM="localization")
     assert bring_up("nav2", runner, env=env, scripts_dir="/s") == 0
     assert "/home/unitree/.c3po/maps" in runner.dirs
+
+
+# --- ~/.c3po/perception.env ---------------------------------------------------
+#
+# A model swap or a tape-measured extrinsic used to live only in the shell that
+# exported it, so the next `c3po up` from a fresh ssh ran the old model.
+
+
+def _env_file(home, text: str) -> None:
+    (home / ".c3po").mkdir()
+    (home / ".c3po" / "perception.env").write_text(text)
+
+
+def _create_line(out: str, name: str) -> str:
+    return next(line for line in out.splitlines()
+                if line.startswith(f"docker create --name {name} "))
+
+
+def test_a_persisted_model_reaches_the_vision_container(tmp_path, capsys):
+    _env_file(tmp_path, "C3PO_ONNX=/m/y.onnx\nC3PO_ENGINE=/e/y.plan\nC3PO_LABELS=/m/y.txt\n")
+    env = operator_env({"HOME": str(tmp_path), "C3PO_DIR": "/c"})
+    assert bring_up("perception", FakeRunner(), env=env, dry_run=True) == 0
+    out = capsys.readouterr().out
+    vision = _create_line(out, VISION)
+    for flag in ("-e C3PO_ONNX=/m/y.onnx", "-e C3PO_ENGINE=/e/y.plan", "-e C3PO_LABELS=/m/y.txt"):
+        assert flag in vision
+    assert "C3PO_ENGINE, C3PO_LABELS, C3PO_ONNX" in out, "say which keys came from the file"
+
+
+def test_a_shell_export_beats_the_file(tmp_path, capsys):
+    _env_file(tmp_path, "C3PO_LABELS=/from/file\n")
+    assert operator_env({"HOME": str(tmp_path), "C3PO_LABELS": "x"})["C3PO_LABELS"] == "x"
+    assert "C3PO_LABELS" not in capsys.readouterr().out, "the file's value was not taken"
+
+
+def test_a_missing_file_is_empty(tmp_path):
+    assert read_env_file(str(tmp_path / "perception.env")) == {}
+    assert operator_env({"HOME": str(tmp_path)}) == {"HOME": str(tmp_path)}
+
+
+def test_export_comments_and_quoted_paths_parse(tmp_path):
+    path = tmp_path / "perception.env"
+    path.write_text(
+        "# measured 2026-11-03\n\n"
+        "export C3PO_CAMERA_PITCH_DEG=47.6  # URDF\n"
+        'C3PO_ONNX="/opt/c3po/models/my model.onnx"\n'
+    )
+    assert read_env_file(str(path)) == {
+        "C3PO_CAMERA_PITCH_DEG": "47.6",
+        "C3PO_ONNX": "/opt/c3po/models/my model.onnx",
+    }
+
+
+@pytest.mark.parametrize("bad", ['C3PO_LABELS="/m/y.txt', "C3PO_LABELS /m/y.txt", "=/m/y.txt"])
+def test_a_malformed_line_refuses_with_its_number_before_docker(tmp_path, monkeypatch, capsys, bad):
+    _env_file(tmp_path, f"C3PO_ONNX=/m/y.onnx\n{bad}\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runner = FakeRunner()
+    monkeypatch.setattr(cli, "Runner", lambda: runner)
+    assert cli.main(["perception"]) == 2
+    assert "perception.env:2:" in capsys.readouterr().err
+    assert runner.calls == [] and runner.scripts == []
+    assert build.main(["engine"]) == 2, "build_perception refuses the same file"
+    assert runner.calls == []
+
+
+def test_keys_outside_the_allowlist_are_ignored_with_a_warning(tmp_path, capsys):
+    """A persisted take-over or fake detector would silently change every boot."""
+    _env_file(tmp_path, "C3PO_TAKE_OVER=1\nC3PO_VISION_FAKE=1\nC3PO_ONNX=/m/y.onnx\n")
+    env = operator_env({"HOME": str(tmp_path)})
+    assert "C3PO_TAKE_OVER" not in env and "C3PO_VISION_FAKE" not in env
+    assert env["C3PO_ONNX"] == "/m/y.onnx"
+    out = capsys.readouterr().out
+    assert "C3PO_TAKE_OVER ignored" in out and "C3PO_VISION_FAKE ignored" in out
+    assert bring_up("nav2", FakeRunner(gemm=["gemm-bringup"]), env=env, scripts_dir="/s") == 1
+
+
+def test_a_persisted_lidar_source_reaches_the_launch(tmp_path, capsys):
+    _env_file(tmp_path, "C3PO_LIDAR_SOURCE=driver\n")
+    env = operator_env({"HOME": str(tmp_path)})
+    assert bring_up("odometry", FakeRunner(), env=env, dry_run=True) == 0
+    assert _create_line(capsys.readouterr().out, NAV).endswith(" lidar_source:=driver")
+
+
+def test_build_perception_builds_the_persisted_model(tmp_path, monkeypatch, capsys):
+    _env_file(tmp_path, "C3PO_ONNX=/m/y.onnx\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("C3PO_FAKE_ARCH", "aarch64")
+    monkeypatch.delenv("C3PO_ONNX", raising=False)
+    monkeypatch.setattr(cli, "Runner", FakeRunner)
+    assert build.main(["engine", "--dry-run"]) == 0
+    assert "-e C3PO_ONNX=/m/y.onnx" in capsys.readouterr().out

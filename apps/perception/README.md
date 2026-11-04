@@ -286,8 +286,10 @@ nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
   Tune `blind`, `filter_size_*`, `cube_side_length`, the laserscan height band
   and `angle_increment` fill rate, `min/max_obstacle_height`, the detector's
   confidence/depth bands — and measure the two constants currently placeholders:
-  `lidar_height_m`, `base_in_body_xyz`, plus the camera extrinsic the detector
-  holds. `docs/ROBOT-HARDWARE.md` carries the vendor-published Livox extrinsics
+  `lidar_height_m`, `base_in_body_xyz`. Verify, rather than set, the camera
+  extrinsic the detector holds: it defaults to the URDF's `d435_joint` seen from
+  the pelvis (x 0.054, y 0.018, z 0.474, pitch 47.6°, CAD), and a measured
+  value goes in `C3PO_CAMERA_*` (`~/.c3po/perception.env`). `docs/ROBOT-HARDWARE.md` carries the vendor-published Livox extrinsics
   and gemm's `base_link → lidar_link` `z = 1.0` marked _"APROXIMADA"_ — the
   vendor transform's direction is ambiguous as stated, so validate against a
   real cloud rather than trusting either number.
@@ -409,8 +411,10 @@ error. **The rebuild carrying that pin has not run yet.**
   Mac 2026-11-02; **TensorRT 8.5 has not parsed it yet.** The detector decodes
   either head by shape, uses the masks for the depth median, falls back to a
   support-plane fit for glass/holes (`depth_source`), and tags `track_id`.
-  Switching model is `C3PO_ONNX`/`C3PO_ENGINE`/`C3PO_LABELS` in the shell
-  running `perception_up`/`build_perception` — they pass through
+  Switching model is `C3PO_ONNX`/`C3PO_ENGINE`/`C3PO_LABELS` in
+  `~/.c3po/perception.env`, which `perception_up` and `build_perception` read on
+  every run (a shell export still wins; only `bringup/spec.py: PERSISTENT_ENV_KEYS`
+  are taken from the file) — they pass through
   (`bringup/spec.py: VISION_ENV_PASSTHROUGH`). Steps:
   `docs/autonomy/test-day/perception.md`.
 

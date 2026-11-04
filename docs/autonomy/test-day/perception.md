@@ -64,21 +64,33 @@ there). The export runs on the laptop (§0) and the plan is built by the image's
 
 ## 2. Build the YOLOE engine ON the Orin (5-15 min, first time)
 
-The three env vars below are read by `build_perception`, by `perception_up` (passed into
-the container — `bringup/spec.py: VISION_ENV_PASSTHROUGH`) and by the detector. Set them
-once in the shell you work from:
+The three keys below are read by `build_perception`, by `perception_up` (passed into
+the container — `bringup/spec.py: VISION_ENV_PASSTHROUGH`) and by the detector. Put them
+once in `~/.c3po/perception.env`, which both commands read on every run, so a new ssh
+session or a reboot keeps the model (a shell `export` of the same key still wins, for a
+one-off). If the robot still has an old `~/.c3po/yoloe.env`, merge its lines into
+`perception.env` once and delete it: only `perception.env` is read.
 
 ```bash
-export C3PO_ONNX=/opt/c3po/models/yoloe-26s-seg.onnx
-export C3PO_ENGINE=/opt/c3po/engines/yoloe-26s-seg.fp16.plan
-export C3PO_LABELS=/opt/c3po/models/yoloe-26s-seg.labels.txt
-c3po perception build engine
+cat >> ~/.c3po/perception.env <<'EOF'
+C3PO_ONNX=/opt/c3po/models/yoloe-26s-seg.onnx
+C3PO_ENGINE=/opt/c3po/engines/yoloe-26s-seg.fp16.plan
+C3PO_LABELS=/opt/c3po/models/yoloe-26s-seg.labels.txt
+EOF
+c3po perception build engine         # prints "from ~/.c3po/perception.env: C3PO_ENGINE, ..."
 ```
+
+The file takes `KEY=VALUE` lines (`export` and `#` comments allowed). A line it cannot
+read refuses with its line number before anything runs. Only the model, `C3PO_VISION_*`
+tuning, `C3PO_CAMERA_*` and `C3PO_LIDAR_SOURCE` keys are taken
+(`bringup/spec.py: PERSISTENT_ENV_KEYS`); anything else, `C3PO_TAKE_OVER` for one, is
+ignored with a warning.
 
 - **Pass:** `engine written to /opt/c3po/engines/yoloe-26s-seg.fp16.plan`.
 - **If trtexec rejects a node** (TopK / ArgMax / GatherElements / Where are the new ones;
-  write down the exact error), switch to the raw head and rebuild:
-  `export C3PO_ONNX=/opt/c3po/models/yoloe-26s-seg-raw.onnx C3PO_ENGINE=/opt/c3po/engines/yoloe-26s-seg-raw.fp16.plan`
+  write down the exact error), switch to the raw head and rebuild: in
+  `~/.c3po/perception.env` set `C3PO_ONNX=/opt/c3po/models/yoloe-26s-seg-raw.onnx` and
+  `C3PO_ENGINE=/opt/c3po/engines/yoloe-26s-seg-raw.fp16.plan`
   — same labels file. Its ops are YOLO11's plus ConvTranspose. The detector decodes it
   too (class-wise CPU NMS), at the CPU cost in the table above.
 - Repeat for the prompt-free model with `-pf` in all three names if time allows.
@@ -95,7 +107,7 @@ the numbers are not comparable).
 Then the real loop, with the camera (gemm stopped: `C3PO_TAKE_OVER=1` if asked):
 
 ```bash
-c3po up perception                   # env vars above still exported in this shell
+c3po up perception                   # reads ~/.c3po/perception.env (§2)
 docker logs -f c3po-perception-vision 2>&1 | grep -E "engine.ready|alive|failed"
 ```
 
@@ -121,11 +133,14 @@ agent what it sees (or read `/c3po/objects`). Expected labels are the vocab name
 `drinking glass`. The glass should come back with `"depth_source":"plane"` and a range
 close to the tape measure — that is the transparent-object fallback working.
 
-**Camera pitch (2 min, do it first).** The URDF mounts the D435 **47.6° nose-down**; the
-vision container's default extrinsic says **0°** and nothing on the robot overrides it. Put
-one object on the floor 1.0 m ahead (tape) and read its `range_m`. If it is far off, set
-`C3PO_CAMERA_PITCH_DEG=47.6` on the vision container (no rebuild) and read it again. Write
-down both. This changes every range: person rule, object memory, `find_object`.
+**Camera pitch (2 min, do it first).** The URDF mounts the D435 **47.6° nose-down**, and
+the vision container's default extrinsic is that CAD mount (x 0.054, y 0.018, z 0.474 from
+the pelvis); the start log says `extrinsic_source=URDF d435_joint (CAD)`, or `env` if a
+`C3PO_CAMERA_*` override is set. Verify it: put one object on the floor 1.0 m ahead (tape
+from the pelvis projection) and read its `range_m`, which should be within about 5 cm. If it
+is not, measure the mount and put the numbers in `~/.c3po/perception.env`
+(`C3PO_CAMERA_PITCH_DEG=…`, no rebuild), then read it again. Write down both. This changes
+every range: person rule, object memory, `find_object`.
 
 ## 5. Capture the test set (~50 classes x 0.5 / 1.5 / 3 m, ~10 frames each)
 
@@ -148,9 +163,10 @@ frames so you can move things. Each frame is `d1.5_NNN.jpg` + `d1.5_NNN.depth.pn
 http://127.0.0.1:8081/frame.jpg` grabs colour-only frames from the running detector
 instead (band then comes from the prefix).
 
-**Measure the camera extrinsic while the tape is out** (height of the lens above
-base_link, forward offset, pitch). Apply without a rebuild:
-`export C3PO_CAMERA_Z_M=… C3PO_CAMERA_X_M=… C3PO_CAMERA_PITCH_DEG=…` before `c3po up`.
+**Check the camera extrinsic while the tape is out** (height of the lens above the
+pelvis, forward offset, pitch) against the CAD default above. Only if it differs, apply
+without a rebuild: `C3PO_CAMERA_Z_M=… C3PO_CAMERA_X_M=… C3PO_CAMERA_PITCH_DEG=…` in
+`~/.c3po/perception.env` before `c3po up`.
 
 ## 6. Label it
 
@@ -193,7 +209,8 @@ Same thing on a laptop without TensorRT:
 ## 8. Rollback to YOLO11n (seconds)
 
 ```bash
-unset C3PO_ONNX C3PO_ENGINE C3PO_LABELS
+sed -i '/^\(export \)\?C3PO_\(ONNX\|ENGINE\|LABELS\)=/d' ~/.c3po/perception.env
+unset C3PO_ONNX C3PO_ENGINE C3PO_LABELS   # a shell export would still win over the file
 c3po down && c3po up perception
 docker logs c3po-perception-vision 2>&1 | grep engine.ready     # output=(1, 84, 8400)
 ```

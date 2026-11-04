@@ -7,18 +7,27 @@ The scene for the plane tests is the one that motivated it: a camera looking
 level across a table whose top is 0.30 m below the lens, and a glass standing
 on it 1.0 m away. Active-IR stereo reads THROUGH the glass to whatever is
 behind it, so the glass's own pixels say "3 m" — or nothing at all.
+`pitched_scene` repeats it at the real mount, 47.6 deg nose-down.
 """
 
 from __future__ import annotations
 
+import math
+from dataclasses import replace
+
 from c3po_vision import detector
 from c3po_vision.grounding import (
+    DEFAULT_CAMERA_EXTRINSIC,
     CameraExtrinsic,
     Intrinsics,
+    camera_to_base,
+    deproject_pixel_to_camera,
     fit_plane,
     ground_box,
     median_depth_m,
+    plane_tilt_deg,
     ray_bearing_deg,
+    support_points,
 )
 from c3po_vision.tracking import IouTracker, iou
 
@@ -125,6 +134,70 @@ def test_the_plane_fit_rejects_a_cloud_with_no_plane_in_it():
 def test_a_ray_bearing_keeps_the_sign_convention():
     assert ray_bearing_deg(100, 240, INTR, LEVEL_CAM) > 0   # left half of the image -> LEFT
     assert ray_bearing_deg(540, 240, INTR, LEVEL_CAM) < 0
+
+
+# --- the same fallback at the real mount ------------------------------------------
+#
+# The G1's D435 looks 47.6 deg down (URDF d435_joint). The scene stays at that pitch
+# whatever DEFAULT_CAMERA_EXTRINSIC says, so these fail if the default goes back to 0.
+
+REAL_PITCH_DEG = 47.6
+
+
+def pitched_scene(surface: str) -> list[list[int]]:
+    """Depth (mm) for a camera REAL_PITCH_DEG nose-down: a table 0.5 m below the lens, or a wall 1.0 m ahead.
+
+    Ray-cast by hand, not through camera_to_base, so a sign slip there cannot cancel out.
+    No roll or yaw, so the depth depends on the row only.
+    """
+    p = math.radians(REAL_PITCH_DEG)
+    rows = []
+    for v in range(480):
+        yo = (v - INTR.cy) / INTR.fy
+        # the pixel's ray at optical depth 1, in base_link axes: x forward, z up
+        xb, zb = math.cos(p) - yo * math.sin(p), -math.sin(p) - yo * math.cos(p)
+        t = 0.5 / -zb if surface == "table" else 1.0 / xb
+        assert t > 0
+        rows.append([round(t * 1000)] * 640)
+    # self-check against the module's transform: the surface is where it was put
+    x, _y, z = camera_to_base(
+        deproject_pixel_to_camera(320, 470, rows[470][320] / 1000, INTR),
+        CameraExtrinsic(0.0, 0.0, 0.0, REAL_PITCH_DEG),
+    )
+    assert abs(z + 0.5 if surface == "table" else x - 1.0) < 2e-3
+    return rows
+
+
+def test_at_the_real_pitch_a_glass_on_the_table_is_placed_on_the_table():
+    depth = pitched_scene("table")
+    contact_m = depth[GLASS[3]][320] / 1000  # the table under the box's bottom-centre pixel
+    for own_mm in (0, 3000):  # no depth at all, or read through to 3 m
+        fill(depth, GLASS, own_mm)
+        g = ground_box(GLASS, depth, INTR, extr=DEFAULT_CAMERA_EXTRINSIC)
+        assert g is not None and g.depth_source == "plane"
+        assert abs(g.depth_m - contact_m) < 0.03
+
+
+def test_at_the_real_pitch_a_wall_under_the_box_is_not_a_table():
+    # The strip under the box is vertical (tilt ~90 deg), so no plane: with no depth
+    # of its own the box is dropped, with some it keeps the direct reading.
+    depth = pitched_scene("wall")
+    fill(depth, GLASS, 0)
+    assert ground_box(GLASS, depth, INTR, extr=DEFAULT_CAMERA_EXTRINSIC) is None
+    fill(depth, GLASS, 3000)
+    g = ground_box(GLASS, depth, INTR, extr=DEFAULT_CAMERA_EXTRINSIC)
+    assert g is not None and g.depth_source == "direct" and g.depth_m == 3.0
+
+
+def test_the_plane_tilt_pins_the_inversion_the_audit_found():
+    # With the pitch left at 0 the table looks 47.6 deg tilted (refused, > 45) and
+    # the wall 42.4 deg (accepted): the fallback was upside down.
+    level = replace(DEFAULT_CAMERA_EXTRINSIC, pitch_deg=0.0)
+    for surface, at_real, at_zero in (("table", 0.0, 47.6), ("wall", 90.0, 42.4)):
+        plane = fit_plane(support_points(pitched_scene(surface), GLASS, INTR))
+        assert plane is not None
+        assert abs(plane_tilt_deg(plane[0], DEFAULT_CAMERA_EXTRINSIC) - at_real) < 1.0
+        assert abs(plane_tilt_deg(plane[0], level) - at_zero) < 1.0
 
 
 # --- the tracker ------------------------------------------------------------------

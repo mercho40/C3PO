@@ -86,10 +86,13 @@ no TF in the vision container, no TF in the bridge, and no ROS in either. The
 nav container's `g1_odom_tf.py` carries the same mount note; the number below
 must agree with the physical robot, and NOTHING will tell you if it does not.
 
-    MEASURE IT. `DEFAULT_CAMERA_EXTRINSIC` is a reasoned default, not a
-    measurement (apps/perception/README.md, decisions list). A 5 cm error in
-    `z_m` is harmless; a 10
-    degree error in `pitch_deg` puts a 4 m detection about 0.7 m off in range.
+    VERIFY IT. `DEFAULT_CAMERA_EXTRINSIC` is the URDF's `d435_joint` (CAD),
+    not a tape measurement, and it is the same mount the bridge's arm IK uses
+    (`bridge.kinematics.camera_to_torso`; test_grounding.py pins the two
+    together). A 5 cm error in `z_m` is harmless; a 10 degree error in
+    `pitch_deg` puts a 4 m detection about 0.7 m off in range. If the robot
+    disagrees, the measured numbers go in `C3PO_CAMERA_*`
+    (~/.c3po/perception.env), not here.
 """
 from __future__ import annotations
 
@@ -155,6 +158,9 @@ class Intrinsics:
 class CameraExtrinsic:
     """base_link <- camera_link, as a fixed mount. Angles are REP-103.
 
+    base_link is the URDF root `pelvis` (what the nav container's base_link
+    stands for); camera_link is the URDF `d435_link`.
+
     x_m/y_m/z_m: where the camera sits IN base_link. +x forward, +y left,
     +z up. So z_m is "how far above the robot's base frame the lens is".
 
@@ -179,17 +185,21 @@ class CameraExtrinsic:
     yaw_deg: float = 0.0
 
 
-# UNMEASURED. See the module docstring and apps/perception/README.md (decisions
-# list): the nav container's
-# g1_odom_tf.py holds the LiDAR mount numbers, this holds the camera's, and both
-# are reasoned defaults that a human with a tape measure must replace before any
-# detection is trusted for navigation. Nominal here: D435i on the G1's head,
-# roughly a hand's width forward of base_link's origin, level.
+# CAD, not a tape measure: pelvis -> d435_link in
+# apps/bridge/src/bridge/assets/g1_29dof_rev_1_0.urdf, waist joints at zero:
+#   pelvis -> waist_yaw_joint(0) -> waist_roll_joint xyz(-0.0039635, 0, 0.044)
+#   -> waist_pitch_joint(0) -> torso_link
+#   -> d435_joint xyz(0.0576235, 0.01753, 0.42987) rpy(0, 0.8307767, 0) = 47.6 deg nose-down.
+# C3PO_CAMERA_* still override it (detector.camera_extrinsic_from_env).
+# shortcut: the D435 rides torso_link above the three waist joints, so this is exact only at
+# waist (0,0,0): waist yaw adds straight onto every bearing, waist pitch adds onto the pitch and
+# moves the lens ~4 cm per 0.1 rad, and gait pitch/roll of the pelvis is not modelled. Upgrade:
+# feed waist_q from rt/lowstate if the robot shows bearing drift with the waist off zero.
 DEFAULT_CAMERA_EXTRINSIC = CameraExtrinsic(
-    x_m=0.10,
-    y_m=0.0,
-    z_m=0.55,
-    pitch_deg=0.0,
+    x_m=0.05366,
+    y_m=0.01753,
+    z_m=0.47387,
+    pitch_deg=47.6,  # the URDF's rpy pitch 0.8307767239493009 rad is radians(47.6) exactly
     yaw_deg=0.0,
 )
 
