@@ -79,9 +79,11 @@ mock.module("#back/skills/index.js", () => ({
 
 const {
   agentToolExclusions,
+  boundHistory,
   buildSystemPrompt,
   offeredInMode,
   runAgentChat,
+  turnSummary,
   worldSummary,
 } = await import("./runtime");
 
@@ -125,7 +127,7 @@ describe("buildSystemPrompt", () => {
   test("the model is never handed a way to drop the robot", () => {
     for (const mode of ["operator", "voice"] as const) {
       expect(
-        offeredInMode({ name: "zero_torque", dangerLevel: "low" }, mode),
+        offeredInMode({ name: "zero_torque", dangerLevel: "high" }, mode),
       ).toBe(false);
     }
     // Not even typed: a "make it safe" after PARAR must not collapse the robot.
@@ -157,7 +159,8 @@ describe("buildSystemPrompt", () => {
         "voice",
       ),
     ).toBe(true);
-    // A high-danger T1 (arm_navigation) has no such gate and stays off voice.
+    // A high-danger T1 (arm_navigation) is gated too, but stays off voice until
+    // Nav2 has driven the robot under the governor.
     expect(
       offeredInMode({ ...t2, name: "arm_navigation", tier: "T1" }, "voice"),
     ).toBe(false);
@@ -181,6 +184,43 @@ describe("buildSystemPrompt", () => {
     expect(walkVelocityLine).toBeDefined();
     expect(walkVelocityLine).toContain("real-only");
   });
+
+  test("tools the bridge gates are tagged: T2 and high-danger T1", async () => {
+    const entry = (name: string, tier: string, dangerLevel: string) => ({
+      ...FIXTURE_SKILLS[0]!,
+      name,
+      tier,
+      dangerLevel,
+    });
+    listSkills.mockResolvedValueOnce([
+      entry("set_hand", "T2", "medium"),
+      entry("arm_navigation", "T1", "high"),
+      entry("walk_to", "T1", "medium"),
+    ] as SkillCatalogueEntry[]);
+    const lines = (await buildSystemPrompt()).split("\n");
+    const line = (name: string) =>
+      lines.find((l) => l.startsWith(`- ${name} `)) ?? "";
+    expect(line("set_hand")).toContain("/T2:needs-operator-confirmation");
+    expect(line("arm_navigation")).toContain("/T1:needs-operator-confirmation");
+    expect(line("walk_to")).not.toContain("needs-operator-confirmation");
+  });
+});
+
+// G3: the prompt teaches which walk tool fits, says plainly when nothing avoids
+// obstacles, and what a standing PARAR means for the rest of the turn.
+test("both modes teach walking and what to do after PARAR", async () => {
+  for (const mode of ["operator", "voice"] as const) {
+    const prompt = await buildSystemPrompt(mode);
+    for (const text of [
+      "go_to_object",
+      "navigate_to_landmark",
+      "obstacle avoidance",
+      "refused: PARAR",
+      "Reanudar",
+      "start_walking_waist",
+    ])
+      expect(prompt).toContain(text);
+  }
 });
 
 describe("closed loop and perception", () => {
@@ -254,6 +294,11 @@ describe("runAgentChat releases its turn on every outcome", () => {
     new MockLanguageModelV4({
       doStream: async () => ({ stream: new ReadableStream() }),
     });
+  /** The '[agent] turn' lines a console.log spy saw, parsed. */
+  const turnLines = (log: { mock: { calls: unknown[][] } }) =>
+    log.mock.calls
+      .filter((c) => c[0] === "[agent] turn")
+      .map((c) => JSON.parse(String(c[1])) as Record<string, unknown>);
   const drain = async (stream: AsyncIterable<unknown>) => {
     const parts: unknown[] = [];
     for await (const part of stream) parts.push(part);
@@ -282,12 +327,22 @@ describe("runAgentChat releases its turn on every outcome", () => {
         return { stream: convertArrayToReadableStream(reply) };
       },
     });
-    const result = await runAgentChat(hello, { model });
-    expect(activeTurnCount()).toBe(1);
-    answer();
-    expect((await drain(result.textStream)).join("")).toBe("hola");
-    await result.steps;
-    expect(activeTurnCount()).toBe(0);
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const result = await runAgentChat(hello, { model });
+      expect(activeTurnCount()).toBe(1);
+      answer();
+      expect((await drain(result.textStream)).join("")).toBe("hola");
+      await result.steps;
+      expect(activeTurnCount()).toBe(0);
+      // G7: exactly one turn line, the summary, with no reply text in it.
+      const lines = turnLines(log);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({ steps: 1, finishReason: "stop" });
+      expect(JSON.stringify(lines[0])).not.toContain("hola");
+    } finally {
+      log.mockRestore();
+    }
   });
 
   test("a first model call that throws (the gateway's 400) releases the turn", async () => {
@@ -298,12 +353,18 @@ describe("runAgentChat releases its turn on every outcome", () => {
     });
     // streamText's default onError logs the failure; expected here.
     const quiet = spyOn(console, "error").mockImplementation(() => {});
+    const log = spyOn(console, "log").mockImplementation(() => {});
     try {
       const result = await runAgentChat(hello, { model });
       await drain(result.textStream);
       await result.steps.then(undefined, () => {});
+      // onEnd never fires here, so the failure writes the turn's one line.
+      const lines = turnLines(log);
+      expect(lines).toHaveLength(1);
+      expect(String(lines[0]?.error)).toContain("Bad Request");
     } finally {
       quiet.mockRestore();
+      log.mockRestore();
     }
     expect(activeTurnCount()).toBe(0);
   });
@@ -333,9 +394,15 @@ describe("runAgentChat releases its turn on every outcome", () => {
     listSkills.mockImplementationOnce(async () => {
       throw new Error("bridge_unavailable");
     });
-    await expect(runAgentChat(hello, { model: hanging() })).rejects.toThrow(
-      "bridge_unavailable",
-    );
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await expect(runAgentChat(hello, { model: hanging() })).rejects.toThrow(
+        "bridge_unavailable",
+      );
+      expect(turnLines(log)[0]?.error).toContain("bridge_unavailable");
+    } finally {
+      log.mockRestore();
+    }
     expect(activeTurnCount()).toBe(0);
   });
 });
@@ -458,5 +525,110 @@ describe("runAgentChat toolsSettled", () => {
     } finally {
       restore();
     }
+  });
+});
+
+// B4: a long headset session must not send the gateway the whole chat.
+describe("boundHistory", () => {
+  const user = (i: number): UIMessage => ({
+    id: `u${i}`,
+    role: "user",
+    parts: [{ type: "text", text: `m${i}` }],
+  });
+  const toolTurn = (i: number, tool = "walk_to"): UIMessage => ({
+    id: `a${i}`,
+    role: "assistant",
+    parts: [
+      { type: "text", text: `m${i}` },
+      {
+        type: `tool-${tool}`,
+        toolCallId: `c${i}`,
+        state: "output-available",
+        input: { arg: i },
+        output: { status: "ok" },
+      } as UIMessage["parts"][number],
+    ],
+  });
+  const textTurn = (i: number): UIMessage => ({
+    id: `a${i}`,
+    role: "assistant",
+    parts: [{ type: "text", text: `m${i}` }],
+  });
+  const toolIds = (msgs: Awaited<ReturnType<typeof boundHistory>>) => {
+    const calls: string[] = [];
+    const results: string[] = [];
+    for (const m of msgs)
+      if (typeof m.content !== "string")
+        for (const p of m.content) {
+          if (p.type === "tool-call") calls.push(p.toolCallId);
+          if (p.type === "tool-result") results.push(p.toolCallId);
+        }
+    return { calls, results };
+  };
+
+  test("100 messages give a window of 40, with tool parts only near the end", async () => {
+    const history = Array.from({ length: 100 }, (_, i) =>
+      i % 2 ? toolTurn(i) : user(i),
+    );
+    const out = await boundHistory(history);
+    const text = JSON.stringify(out);
+    expect(text).not.toContain('"m59"');
+    expect(text).toContain('"m60"');
+    const { calls, results } = toolIds(out);
+    // Only the last turns' pairs survive, and never half a pair.
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.length).toBeLessThan(10);
+    expect(calls).toEqual(results);
+    expect(calls).toContain("c99");
+    expect(out.length).toBeLessThan(60);
+  });
+
+  test("a refused T2 call exactly 10 model messages back keeps its arguments", async () => {
+    // tool result at -10, its call at -11: the pair survives by id.
+    const history = [user(0), toolTurn(1, "move_arm")];
+    for (let i = 2; i < 10; i++) history.push(i % 2 ? textTurn(i) : user(i));
+    history.push(user(10));
+    const out = await boundHistory(history);
+    expect(out[out.length - 10]?.role).toBe("tool");
+    expect(toolIds(out)).toEqual({ calls: ["c1"], results: ["c1"] });
+    expect(JSON.stringify(out)).toContain('{"arg":1}');
+    // One message more and it is pruned: the window is what keeps it.
+    history.push(textTurn(11));
+    expect(toolIds(await boundHistory(history)).calls).toEqual([]);
+  });
+});
+
+// G7: one stdout line per turn, with no text from the prompt, camera or speech.
+describe("turn telemetry", () => {
+  const turn = { mode: "operator" as const, chatId: "chat-1", startedAt: 0 };
+
+  test("turnSummary counts steps, tokens and tools, and carries no text", () => {
+    const event = {
+      steps: [
+        { toolCalls: [{ toolName: "walk_to", input: { secret: "silla" } }] },
+        { toolCalls: [] },
+      ],
+      finishReason: "stop",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      text: "la silla está a dos metros",
+    };
+    const s = turnSummary(event, turn);
+    expect(s).toMatchObject({
+      mode: "operator",
+      chatId: "chat-1",
+      steps: 2,
+      finishReason: "stop",
+      inputTokens: 10,
+      outputTokens: 5,
+      tools: ["walk_to"],
+    });
+    expect(typeof s.model).toBe("string");
+    expect(JSON.stringify(s)).not.toContain("silla");
+  });
+
+  test("a gateway that sends no usage gives null tokens", () => {
+    const s = turnSummary({ steps: [], finishReason: "stop" }, turn);
+    expect(s.inputTokens).toBeNull();
+    expect(s.outputTokens).toBeNull();
   });
 });

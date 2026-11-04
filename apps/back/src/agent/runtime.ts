@@ -47,10 +47,12 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   convertToModelMessages,
   jsonSchema,
+  pruneMessages,
   stepCountIs,
   streamText,
   tool,
   type LanguageModel,
+  type ModelMessage,
   type ToolSet,
   type UIMessage,
 } from "ai";
@@ -132,6 +134,22 @@ const SYSTEM_PREAMBLE = [
   "having real physical consequence: a person may be standing next to it.",
   "Keep operator-facing replies concise: say what you did and what happened.",
   "",
+  // The 'refused: PARAR' wording comes from apps/bridge/src/bridge/safety.py
+  // tool_refusal (the stop_is_standing branch); keep the two in step.
+  "If a tool result contains 'refused: PARAR', a person stopped the robot. Stop",
+  "the plan, call no other motion tool (they are refused too), tell the operator",
+  "the robot is stopped and only they can resume with «Reanudar», and end the turn.",
+  "",
+  "Walking: go_to_object(query) walks to something the camera sees now or saw in",
+  "the last 10 min, up to 4 m, in a straight line, with no map and no Nav2: use it",
+  "for 'andá hasta la silla'. navigate_to_landmark(name) is for saved places and",
+  "navigate_to(x, y) for Nav2 poses; both need Nav2 and a gate an operator opened,",
+  "and refuse otherwise. On such a refusal report it and its how_to_fix, and do",
+  "not substitute walk_to. walk_to and turn are short moves on odometry. Only Nav2",
+  "has obstacle avoidance, and only while the snapshot's sources.lidar is 'ok'.",
+  "When the lidar is offline, say there is no obstacle avoidance before walking;",
+  "go_to_object and walk_to only slow or stop for people.",
+  "",
   "Seeing: look (describe the camera view, or answer a question about it),",
   "find_object (any object by name, any language: bearing and approximate",
   "range), verify (yes/no about the current view), and describe_surroundings",
@@ -142,8 +160,9 @@ const SYSTEM_PREAMBLE = [
   "counter height; walk or turn so it is there first), place, handover (hold it",
   "out for a person; open with set_hand shape='open' when they have it), reach,",
   "and arm_state. There is no touch sensing: after pick, verify the hand holds it.",
-  "These are T2: each call needs the operator's console confirmation. Say what",
-  "you are about to do, then call it; a refusal means wait for the operator.",
+  "These are T2: each call needs the operator's console confirmation, and so do",
+  "arm_navigation and start_walking_waist. Say what you are about to do, then",
+  "call it; a refusal means wait for the operator.",
   "",
   "Work in a loop: plan the steps briefly, do ONE step, then check it worked",
   "(verify, look or describe_surroundings) before the next. If a step failed,",
@@ -246,8 +265,10 @@ export async function buildSystemPrompt(
           : s.works.sim
             ? "sim-only"
             : "unavailable";
-    // T2 is named so the model knows to ask the operator, not retry.
-    const tier = s.tier === "T2" ? "/T2:needs-operator-confirmation" : "";
+    // The bridge's needs_confirmation set, named so the model asks the operator, not retry.
+    const gated =
+      s.tier === "T2" || (s.tier === "T1" && s.dangerLevel === "high");
+    const tier = gated ? `/${s.tier}:needs-operator-confirmation` : "";
     return `- ${s.name} [${s.classification}/${s.status}/${where}/danger:${s.dangerLevel}${tier}] — ${s.description}`;
   });
   const modePrompt = mode === "voice" ? `\n\n${VOICE_PREAMBLE}` : "";
@@ -354,6 +375,61 @@ async function buildTools(
 }
 
 /**
+ * The model's view of a chat: the last 40 UI messages, with tool calls and
+ * results kept only for the last 10 model messages (old perception is stale
+ * anyway). The stored chat is untouched. Ten keeps a refused T2 call's
+ * arguments for the «Confirmado» retry; were they lost, the model would retry
+ * with arguments it made up, which the bridge's argument-bound grant refuses.
+ * shortcut: count-based window, not tokens; upgrade to a token budget if the
+ * gateway starts rejecting long chats.
+ */
+export async function boundHistory(
+  messages: UIMessage[],
+): Promise<ModelMessage[]> {
+  return pruneMessages({
+    // `ignoreIncompleteToolCalls` matters now that assistant turns really do
+    // persist: an aborted turn leaves a tool part stuck in `input-available`,
+    // and replaying that history would send the gateway an assistant tool
+    // call with no matching tool result — which OpenAI-compatible servers
+    // reject outright, permanently bricking the recovered conversation.
+    messages: await convertToModelMessages(messages.slice(-40), {
+      ignoreIncompleteToolCalls: true,
+    }),
+    reasoning: "before-last-message",
+    toolCalls: "before-last-10-messages",
+    emptyMessages: "remove",
+  });
+}
+
+/**
+ * The one stdout line a finished turn writes: counts and tool names, never
+ * prompt, camera or speech text.
+ * shortcut: stdout only; registerTelemetry(new OpenTelemetry()) from
+ * @ai-sdk/otel when a collector exists.
+ */
+export function turnSummary(
+  event: {
+    steps: { toolCalls: { toolName: string }[] }[];
+    finishReason: string;
+    usage?: { inputTokens?: number; outputTokens?: number };
+  },
+  turn: { mode: AgentMode; chatId: string | null; startedAt: number },
+) {
+  return {
+    mode: turn.mode,
+    chatId: turn.chatId,
+    model: MODEL,
+    steps: event.steps.length,
+    finishReason: event.finishReason,
+    // The gateway may send no usage at all.
+    inputTokens: event.usage?.inputTokens ?? null,
+    outputTokens: event.usage?.outputTokens ?? null,
+    ms: Date.now() - turn.startedAt,
+    tools: event.steps.flatMap((s) => s.toolCalls.map((c) => c.toolName)),
+  };
+}
+
+/**
  * Run an operator chat turn as a streaming result. `messages` is the UIMessage
  * history from the chat client. The caller returns
  * `result.toUIMessageStreamResponse()` from the Elysia route; Elysia streams it
@@ -397,6 +473,20 @@ export async function runAgentChat(
   // Registered before the prompt build, so a PARAR during it still ends the turn.
   const { signal: abortSignal, done } = beginTurn(opts.abortSignal);
   const inFlight = new Set<Promise<unknown>>();
+  const turn = { mode, chatId: opts.chatId ?? null, startedAt: Date.now() };
+  // onEnd never sees these turns, so they get their own line.
+  const failed = (err: unknown) => {
+    done();
+    console.log(
+      "[agent] turn",
+      JSON.stringify({
+        mode,
+        chatId: turn.chatId,
+        ms: Date.now() - turn.startedAt,
+        error: String(err),
+      }),
+    );
+  };
   try {
     const [basePrompt, world, tools] = await Promise.all([
       buildSystemPrompt(mode),
@@ -415,37 +505,40 @@ export async function runAgentChat(
     ]);
     const system = `${basePrompt}\n\n${world}`;
     const deadline = Date.now() + TURN_BUDGET_MS;
+    // `steps` rejects with a generic NoOutputGeneratedError; the gateway's
+    // own error reaches only onError.
+    let streamError: unknown;
 
     const result = streamText({
       model: opts.model ?? provider.chatModel(MODEL),
       system,
-      // `ignoreIncompleteToolCalls` matters now that assistant turns really do
-      // persist: an aborted turn leaves a tool part stuck in `input-available`,
-      // and replaying that history would send the gateway an assistant tool
-      // call with no matching tool result — which OpenAI-compatible servers
-      // reject outright, permanently bricking the recovered conversation.
-      messages: await convertToModelMessages(messages, {
-        ignoreIncompleteToolCalls: true,
-      }),
+      messages: await boundHistory(messages),
       tools,
       // Whichever comes first: a step cap (never unbounded) or the wall clock.
       stopWhen: [stepCountIs(MAX_STEPS), () => Date.now() > deadline],
       abortSignal,
-      onEnd: done,
+      onEnd: (e) => {
+        done();
+        console.log("[agent] turn", JSON.stringify(turnSummary(e, turn)));
+      },
       onAbort: done,
+      onError: ({ error }) => {
+        streamError = error;
+        console.error(error); // the SDK's default, kept
+      },
     });
     // ai 7.0.140 skips onEnd when the first step fails, so a gateway error
     // leaked the turn; `steps` settles on success, abort and error alike.
     // Trade-off: reading it drains a tee'd branch, so a client that stops
     // reading no longer pauses the loop; request.signal and PARAR still end it.
-    void result.steps.then(done, done);
+    void result.steps.then(done, (err) => failed(streamError ?? err));
     // An abort ends the text stream at once while a walk_to the turn already
     // sent keeps driving; the voice turn waits on this before it ends.
     return Object.assign(result, {
       toolsSettled: () => Promise.allSettled(inFlight),
     });
   } catch (err) {
-    done();
+    failed(err);
     throw err;
   }
 }
