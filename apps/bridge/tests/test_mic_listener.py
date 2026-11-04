@@ -71,15 +71,28 @@ def make(frames, whisper=True, min_seconds=0.0, monkeypatch=None, **kw):
     import bridge.skills.listen as mod
     mod.WHISPER_MIN_SECONDS = min_seconds
     det, trans, whis = FakeDetector(), FakeTranscriber(), FakeWhisper() if whisper else None
+    # Never the process-global robot playback link: tests must not depend on it.
+    kw.setdefault("playback_active", lambda: False)
     lis = MicListener(source=lambda: iter(frames), build=lambda: (det, trans, whis), **kw)
     return lis, det, trans, whis
 
 
-def drain(listener, timeout=3.0):
-    """Wait for the source to be exhausted, then read. Threads need a join."""
-    deadline = time.time() + timeout
-    while listener.is_running() and time.time() < deadline:
+def _until(cond, timeout=5.0):
+    """Poll `cond` instead of sleeping a guess. Returns its final value."""
+    deadline = time.monotonic() + timeout
+    while not cond() and time.monotonic() < deadline:
         time.sleep(0.01)
+    return cond()
+
+
+def drain(listener, timeout=10.0):
+    """Wait for the source to be exhausted, then read. Threads need a join.
+
+    `timeout` is a ceiling, not a wait: every source here is finite. A thread
+    still alive after it fails here, not as a short poll() three asserts later."""
+    assert _until(lambda: not listener.is_running(), timeout), (
+        f"listener still running after {timeout}s"
+    )
     return listener.poll()
 
 
@@ -179,7 +192,8 @@ async def test_voice_pcm_body_streams_raw_audio_and_stops_on_disconnect():
     request = Request()
     body = mcp_server._voice_pcm_body(request, lis)
     next_chunk = asyncio.create_task(anext(body))
-    await asyncio.sleep(0.02)
+    # The worker thread registers the subscriber; a frame published before then is lost.
+    assert await asyncio.to_thread(_until, lambda: lis._audio_subscribers)
     lis._publish_audio(b"pcm")
     assert await next_chunk == b"pcm"
 
@@ -197,14 +211,15 @@ async def test_voice_pcm_cancellation_does_not_close_a_generator_running_in_a_wo
     lis, *_ = make([])
     body = mcp_server._voice_pcm_body(Request(), lis)
     pending = asyncio.create_task(anext(body))
-    await asyncio.sleep(0.02)
+    # Cancel only once the worker is inside next(): that is the case under test.
+    assert await asyncio.to_thread(_until, lambda: lis._audio_subscribers)
     pending.cancel()
     try:
         await pending
     except (asyncio.CancelledError, StopAsyncIteration):
         pass
-    await asyncio.sleep(0.55)
-    assert len(lis._audio_subscribers) == 0
+    # The worker unwinds on its own 0.5 s queue timeout once it sees the stop event.
+    assert await asyncio.to_thread(_until, lambda: not lis._audio_subscribers)
 
 
 async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeypatch):
@@ -252,8 +267,7 @@ def test_a_never_polling_agent_cannot_grow_the_queue_without_bound():
     frames = [b"x", b"."] * 50
     lis, *_ = make(frames, max_keep=8)
     lis.start()
-    time.sleep(0.6)
-    assert len(lis.poll()) <= 8
+    assert len(drain(lis)) <= 8
 
 
 def test_the_stop_phrase_is_reported_and_resets_the_detector():
@@ -283,9 +297,9 @@ def test_raw_audio_subscriber_gets_live_pcm_without_consuming_transcripts():
     received: list[bytes] = []
     reader = threading.Thread(target=lambda: received.extend([next(frames), next(frames)]))
     reader.start()
-    time.sleep(0.02)  # let the generator register its bounded queue
+    assert _until(lambda: lis._audio_subscribers)  # the generator registered its bounded queue
     lis.start()
-    reader.join(timeout=1)
+    reader.join(timeout=5)
     stop.set()
     frames.close()
 
@@ -300,11 +314,11 @@ def test_raw_audio_is_suppressed_during_robot_playback():
     received: list[bytes | None] = []
     reader = threading.Thread(target=lambda: received.append(next(frames, None)))
     reader.start()
-    time.sleep(0.02)
+    assert _until(lambda: lis._audio_subscribers)
     lis.start()
-    time.sleep(0.05)
+    assert _until(lambda: not lis.is_running())
     stop.set()
-    reader.join(timeout=1)
+    reader.join(timeout=5)
     frames.close()
     assert not reader.is_alive()
     assert received == [None]
@@ -352,7 +366,7 @@ def test_a_missing_recogniser_is_recorded_not_swallowed():
         build=lambda: (_ for _ in ()).throw(ListenUnavailable("no vosk")),
     )
     lis.start()
-    time.sleep(0.3)
+    drain(lis)
     diag = lis.diagnostics()
     assert diag["error"] and "no vosk" in diag["error"]
 
@@ -364,7 +378,7 @@ def test_diagnostics_separate_a_shut_mic_from_a_quiet_room():
         source=lambda: iter(()), build=lambda: (FakeDetector(), FakeTranscriber(), None)
     )
     lis.start()
-    time.sleep(0.2)
+    drain(lis)
     assert lis.diagnostics()["mic_ever_open"] is False
 
     lis2, *_ = make([b"aa", b"."])
@@ -611,11 +625,12 @@ def test_the_listener_upgrades_without_anyone_speaking(monkeypatch):
     monkeypatch.setattr(mod, "remote_whisper_status", lambda: {"available": True, "model": "m"})
     monkeypatch.setattr(mod, "RemoteWhisper", Upgraded)
 
-    # A source that yields nothing and then blocks briefly: no frames, no
+    # A source that yields nothing until the upgrade lands: no frames, no
     # transcripts, nothing for an audio-driven probe to hook into. The timer
     # thread is the only thing that can upgrade here, which is the whole point.
+    # If it never does, the wait gives up and the speech comes back as CPU text.
     def silent_then_speak():
-        time.sleep(0.15)
+        _until(lambda: isinstance(lis._whisperer, Upgraded))
         yield b"aa"
         yield b"."
 
@@ -623,7 +638,11 @@ def test_the_listener_upgrades_without_anyone_speaking(monkeypatch):
 
     det, trans, whis = FakeDetector(), FakeTranscriber(), FakeWhisper()
     listen_mod.WHISPER_MIN_SECONDS = 0.0
-    lis = MicListener(source=silent_then_speak, build=lambda: (det, trans, whis))
+    lis = MicListener(
+        source=silent_then_speak,
+        build=lambda: (det, trans, whis),
+        playback_active=lambda: False,
+    )
     lis.start()
     items = drain(lis)
 
