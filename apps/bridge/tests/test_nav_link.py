@@ -195,6 +195,24 @@ async def test_the_gate_closing_mid_goal_cancels_it_in_nav2(rig):
     assert sent[-1] == {"v": 1, "cancel": True, "id": out["goal_id"]}
 
 
+async def test_refused_while_the_headset_drives(rig, monkeypatch):
+    server, _nav, _gate, sent, _ = await _armed(rig)
+    monkeypatch.setattr("bridge.estop.teleop_is_driving", lambda: True)
+    out = await server.navigate_to(x=1.0, y=0.0)
+    assert (out["status"], out["reason"]) == ("refused", "teleop_active")
+    assert sent == []
+
+
+async def test_the_headset_taking_over_mid_goal_cancels_it(rig, monkeypatch):
+    server, nav, _gate, sent, _ = await _armed(rig)
+    out = await server.navigate_to(x=1.0, y=0.0)
+    nav._ingest_status(status(goal_rec(out["goal_id"], "active", dist=1.0)))
+    monkeypatch.setattr("bridge.estop.teleop_is_driving", lambda: True)
+    await asyncio.sleep(0.05)
+    assert get_registry().get(out["task_id"]).phase == "teleop_takeover"
+    assert sent[-1] == {"v": 1, "cancel": True, "id": out["goal_id"]}
+
+
 async def test_cancel_navigation_cancels_the_task_and_the_goal(rig):
     server, nav, _gate, sent, _ = await _armed(rig)
     out = await server.navigate_to(x=1.0, y=0.0)

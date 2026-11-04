@@ -32,6 +32,7 @@ import math
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -168,6 +169,8 @@ class StateSampler:
         self._lock = threading.Lock()
         self._lowstate = _LowStateSnapshot()
         self._pose = _PoseSnapshot()
+        # (monotonic received_at, x, y, yaw): ~2 s at 500 Hz, for pose_at.
+        self._pose_history: deque[tuple[float, float, float, float]] = deque(maxlen=1000)
         self._fsm = _FsmSnapshot()
         self._bms = _BmsSnapshot()
         self._lowstate_sub: Any = None
@@ -281,6 +284,7 @@ class StateSampler:
                 yaw_radians_world=yaw,
                 raw_message_count=self._pose.raw_message_count + 1,
             )
+            self._pose_history.append((time.monotonic(), x, y, yaw))
 
     def _on_lowstate(self, msg: Any) -> None:
         motors = msg.motor_state
@@ -366,6 +370,18 @@ class StateSampler:
                 yaw_radians_world=yaw,
                 raw_message_count=self._pose.raw_message_count + 1,
             )
+            self._pose_history.append((time.monotonic(), x, y, yaw))
+
+    def pose_at(self, t: float) -> tuple[float, float, float] | None:
+        """(x, y, yaw) of the newest pose received at or before `t` (time.monotonic()).
+
+        None when there is no history yet or `t` is older than all of it.
+        """
+        with self._lock:
+            for at, x, y, yaw in reversed(self._pose_history):
+                if at <= t:
+                    return x, y, yaw
+        return None
 
     def battery(self) -> tuple[int | None, float | None]:
         """`(soc %, seconds since that BmsState_)`, or (None, None) before the first one."""

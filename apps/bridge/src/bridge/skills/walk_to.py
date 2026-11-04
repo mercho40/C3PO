@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -36,6 +37,8 @@ from bridge.skills.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
 
+RETARGET_PERIOD_S = 1.0
+
 
 async def run(
     target_x: float,
@@ -45,8 +48,12 @@ async def run(
     height: float = DEFAULT_HEIGHT,
     ctx: Any | None = None,
     autonomous: bool = False,
+    retarget: Callable[[], tuple[float, float] | None] | None = None,
 ) -> dict[str, Any]:
     """Drive the G1 to (target_x, target_y) world-frame and stop near it.
+
+    `retarget`, if given, is called about every RETARGET_PERIOD_S while walking:
+    a tuple is the new target, None ends the walk as failed/target_lost.
 
     Returns the full task dict (see `Task.to_dict`).
     """
@@ -127,13 +134,15 @@ async def run(
             return task.to_dict()
 
         task.phase = "walking"
-        deadline = time.time() + timeout_s
+        deadline = time.monotonic() + timeout_s
         last_reported = 0.0
         arrived = False
         cancelled = False
         taken_over = False
+        lost = False
+        next_retarget = time.monotonic() + RETARGET_PERIOD_S
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             if task.cancel_event.is_set():
                 cancelled = True
                 break
@@ -153,6 +162,14 @@ async def run(
             x = float(pose["x_meters_world"])
             y = float(pose["y_meters_world"])
             yaw = float(pose["yaw_radians_world"])
+
+            if retarget is not None and time.monotonic() >= next_retarget:
+                next_retarget = time.monotonic() + RETARGET_PERIOD_S
+                new_target = retarget()
+                if new_target is None:
+                    lost = True
+                    break
+                target_x, target_y = new_target
 
             dx_world = target_x - x
             dy_world = target_y - y
@@ -200,6 +217,10 @@ async def run(
             task.phase = "teleop_takeover"
             task.error = TELEOP_TAKEOVER
             log.warning("walk_to.teleop_takeover", task_id=task.task_id)
+        elif lost:
+            task.status = "failed"
+            task.phase = "target_lost"
+            task.error = "target_lost: the target was in view and not detected for a while"
         elif arrived:
             task.status = "completed"
             task.phase = "arrived"

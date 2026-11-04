@@ -6,8 +6,13 @@ in the perception report's frame and walk_to steers on the bridge's vendor
 odometry: the two frames differ, but a range and a bearing do not care. The
 walk itself is walk_to, so the governor's caps and the person rule apply.
 
-shortcut: open loop on one sighting, no obstacle avoidance and no re-aiming as
-it walks; replace with a Nav2 goal once the lidar and the nav image are back.
+A live detection's bearing was measured where the robot stood at capture, so
+it is applied to the odometry pose of that moment (StateSampler.pose_at). While
+walking, Follow re-aims at fresh sightings about once a second and gives up
+when the target is in view and missing for LOST_AFTER_S.
+
+shortcut: no obstacle avoidance on this camera-only walk; the tool prefers a
+Nav2 goal whenever Nav2 is active and a person armed the gate.
 """
 
 from __future__ import annotations
@@ -17,6 +22,43 @@ from typing import Any
 
 MAX_RANGE_M = 4.0  # an open-loop walk further than this drifts too far to trust
 MEMORY_MAX_AGE_S = 600.0
+# Capture-to-now age a live detection may have. pose_at corrects the motion since
+# capture, so this only has to sit inside the ~2 s pose history, with margin.
+LIVE_MAX_AGE_S = 1.0
+# Follow: a sighting further than JUMP_M from the current target is another
+# object; nor may the target creep further than DRIFT_M from the first fix.
+JUMP_M = 1.0
+DRIFT_M = 1.5
+LOST_AFTER_S = 3.0
+# Closer than this the pitched head camera cuts the object out of frame: keep the last fix.
+NEAR_M = 1.2
+
+
+def live_matches(
+    query: str, objects: list[dict[str, Any]], live_age_s: float | None
+) -> tuple[list[tuple[dict[str, Any], float | None]], bool]:
+    """Detections of `query` young enough to aim at, each with its age since capture
+    (None: no age_s on the wire, accepted as before E1), and whether one was too old."""
+    from bridge.object_memory import label_matches
+
+    fresh: list[tuple[dict[str, Any], float | None]] = []
+    stale = False
+    for o in objects:
+        if not (
+            label_matches(str(o.get("label", "")), query)
+            and isinstance(o.get("range_m"), (int, float))
+            and isinstance(o.get("bearing_deg"), (int, float))
+        ):
+            continue
+        if not isinstance(o.get("age_s"), (int, float)):
+            fresh.append((o, None))
+            continue
+        age = float(o["age_s"]) + (live_age_s or 0.0)
+        if age <= LIVE_MAX_AGE_S:
+            fresh.append((o, age))
+        else:
+            stale = True
+    return fresh, stale
 
 
 def _relative_from_memory(entry: Any, mem_pose: dict[str, float]) -> tuple[float, float]:
@@ -32,24 +74,34 @@ def resolve(
     mem_pose: dict[str, float] | None,
     now: float,
     frame: str | None = None,
+    live_age_s: float | None = None,
 ) -> dict[str, Any]:
-    """Pick the target. Returns {range_m, bearing_deg, label, source} or {error, ...}."""
+    """Pick the target. Returns {range_m, bearing_deg, label, source} or {error, ...}.
+
+    `live_age_s` is the report's own age; live targets carry `age_s` since capture
+    (None when the detector sent none).
+    """
     from bridge.object_memory import label_matches
 
-    live = [
-        o
-        for o in live_objects
-        if label_matches(str(o.get("label", "")), query)
-        and isinstance(o.get("range_m"), (int, float))
-        and isinstance(o.get("bearing_deg"), (int, float))
-    ]
-    if live:
-        best = max(live, key=lambda o: float(o.get("confidence") or 0.0))
+    seen = sorted({str(o.get("label")) for o in live_objects})
+    fresh, stale = live_matches(query, live_objects, live_age_s)
+    if fresh:
+        best, age = max(fresh, key=lambda m: float(m[0].get("confidence") or 0.0))
         return {
             "label": best["label"],
             "range_m": float(best["range_m"]),
             "bearing_deg": float(best["bearing_deg"]),
             "source": "live",
+            "age_s": age,
+        }
+    if stale:
+        return {
+            "error": "stale_detection",
+            "detail": (
+                f"the {query!r} detection is older than {LIVE_MAX_AGE_S} s. Look at it "
+                "again (turn toward it or look_around), then call go_to_object again."
+            ),
+            "in_view": seen,
         }
     if mem_pose is not None:
         recent = [
@@ -70,7 +122,6 @@ def resolve(
                 "source": "memory",
                 "seen_s_ago": round(now - entry.last_seen, 1),
             }
-    seen = sorted({str(o.get("label")) for o in live_objects})
     return {
         "error": "not_found",
         "detail": (
@@ -87,3 +138,51 @@ def world_target(
     """The object's point in the frame walk_to steers in (positive bearing = LEFT)."""
     heading = robot_yaw_rad + math.radians(bearing_deg)
     return robot_x + range_m * math.cos(heading), robot_y + range_m * math.sin(heading)
+
+
+class Follow:
+    """Re-aims a walk at fresh sightings of its target, in the frame walk_to steers in.
+
+    A miss counts only while the target should be in the camera's view (object
+    memory's rule): not looked at is not absent. Memory targets
+    (abort_when_lost=False) were out of view to begin with, so they only re-aim.
+    """
+
+    def __init__(self, target_xy: tuple[float, float], now: float, abort_when_lost: bool) -> None:
+        self.first = self.target = target_xy
+        self.last_ok = now
+        self.abort_when_lost = abort_when_lost
+
+    def update(
+        self,
+        candidates: list[tuple[float, float]],
+        pose: tuple[float, float, float],
+        now: float,
+    ) -> tuple[float, float] | None:
+        """`pose` is the robot's (x, y, yaw) now. The target to walk to, or None once lost."""
+        from bridge.object_memory import (
+            FORGET_MAX_RANGE_M,
+            FORGET_MIN_RANGE_M,
+            FOV_HALF_DEG,
+            egocentric,
+        )
+
+        here = {"x_m": pose[0], "y_m": pose[1], "yaw_deg": math.degrees(pose[2])}
+        ok = [
+            c
+            for c in candidates
+            if math.dist(c, self.target) <= JUMP_M
+            and math.dist(c, self.first) <= DRIFT_M
+            and egocentric(here, *c)[0] <= MAX_RANGE_M
+        ]
+        if ok:
+            self.target = min(ok, key=lambda c: math.dist(c, self.target))
+            self.last_ok = now
+            return self.target
+        rng, bearing = egocentric(here, *self.target)
+        in_view = abs(bearing) <= FOV_HALF_DEG and FORGET_MIN_RANGE_M <= rng <= FORGET_MAX_RANGE_M
+        if not in_view or rng <= NEAR_M:
+            self.last_ok = now
+        if self.abort_when_lost and now - self.last_ok > LOST_AFTER_S:
+            return None
+        return self.target

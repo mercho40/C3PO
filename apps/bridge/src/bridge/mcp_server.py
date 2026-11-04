@@ -339,6 +339,24 @@ async def walk_to(
 # ---------------------------------------------------------------------------
 
 
+def _live_detections() -> tuple[list[dict], float | None]:
+    """The raw report's objects and the report's age; none unless the detector is online.
+
+    Raw, not surroundings_snapshot(): the snapshot loses the difference between
+    a missing age_s and a zero one.
+    """
+    try:
+        from bridge.sdk.perception_link import get_link
+
+        report, age = get_link().latest_report()
+    except Exception:
+        log.exception("go_to_object.perception_read_failed")
+        return [], None
+    if not report or age is None or not report.get("detector_online"):
+        return [], None
+    return [o for o in report.get("objects") or [] if isinstance(o, dict)], age
+
+
 @mcp.tool(
     meta=skill_meta(
         classification="locomotion",
@@ -350,7 +368,14 @@ async def walk_to(
         # Composed of walk_to (works_real) and the detector; not yet watched end to end.
         works_real=True,
         preconditions=["robot_upright", "battery_pct_gt_15", "no_active_walk_task"],
-        typical_failure_modes=["not_found", "too_far", "no_pose", "drift"],
+        typical_failure_modes=[
+            "not_found",
+            "stale_detection",
+            "too_far",
+            "no_pose",
+            "target_lost",
+            "drift",
+        ],
     )
 )
 async def go_to_object(
@@ -371,30 +396,40 @@ async def go_to_object(
     """Walk to an object the camera sees now, or saw in the last 10 minutes.
 
     Use this for "andá hasta la silla" / "go to the backpack". It needs NO
-    map and NO Nav2: it takes the object's range and bearing from the detector
-    (or from object memory, so `look_around` first helps), turns toward it
-    while walking, and stops `stop_distance_m` short. No obstacle avoidance —
-    it walks straight at the target; the person rule still slows and stops
-    it. Refuses targets over 4 m. Returns the walk_to task dict plus
-    `target` (label, range, bearing, live or memory).
+    map: it takes the object's range and bearing from the detector (or from
+    object memory, so `look_around` first helps) and stops `stop_distance_m`
+    short. Refuses targets over 4 m, and live detections over 1 s old
+    (`stale_detection`: look again). Two result shapes:
+
+    - Nav2 active and the gate already armed by a person: status 'started',
+      `via: 'nav2'` and a task_id at once; Nav2 plans around obstacles. Poll
+      navigation_status(). This tool never arms the gate.
+    - Otherwise: a camera-only walk that blocks until it ends, the walk_to task
+      dict with `via: 'walk_to'` and `nav2_refused` (why Nav2 was not used).
+      No obstacle avoidance: it walks straight at the target, re-aiming at it
+      about once a second; the person rule still slows and stops it. Phase
+      'target_lost' when the object stayed out of the detections while in view.
+
+    Both carry `target` (label, range, bearing, live or memory).
     """
     import time as _time
 
-    from bridge.object_memory import get_object_memory
+    from bridge.object_memory import egocentric, get_object_memory
     from bridge.sdk.state import get_sampler
     from bridge.skills import go_to_object as g
 
     if SIM_MODE != "real":
         return {"error": "not_applicable", "detail": f"real hardware only (SIM_MODE={SIM_MODE})"}
-    world = surroundings_snapshot()
+    objects, report_age = _live_detections()
     mem_pose, frame = _memory_pose()
     target = g.resolve(
         query,
-        world.get("objects") or [],
+        objects,
         get_object_memory().list_all(),
         mem_pose,
         _time.time(),
         frame=frame,
+        live_age_s=report_age,
     )
     if "error" in target:
         return target
@@ -404,16 +439,91 @@ async def go_to_object(
             "detail": f"{target['label']} is {target['range_m']:.1f} m away; walk closer first (max {g.MAX_RANGE_M} m).",
             "target": target,
         }
-    pose = (get_sampler().get_state() or {}).get("pose") or {}
+    rounded = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in target.items()}
+    sampler = get_sampler()
+    pose = (sampler.get_state() or {}).get("pose") or {}
     try:
         x, y, yaw = (float(pose[k]) for k in ("x_meters_world", "y_meters_world", "yaw_radians_world"))
     except (KeyError, TypeError, ValueError):
         return {"error": "no_pose", "detail": "the bridge has no odometry pose to steer by"}
-    tx, ty = g.world_target(x, y, yaw, target["range_m"], target["bearing_deg"])
+
+    def aim_from(
+        age: float | None, now_pose: tuple[float, float, float]
+    ) -> tuple[float, float, float] | None:
+        # The bearing was measured where the robot stood at capture, not where it stands now.
+        return now_pose if age is None else sampler.pose_at(_time.monotonic() - age)
+
+    if target["source"] == "live" and target["age_s"] is None:
+        log.info("go_to_object.ageless_detection", label=target["label"])
+    at = aim_from(target.get("age_s"), (x, y, yaw))
+    if at is None:
+        return {
+            "error": "stale_detection",
+            "detail": "the detection is older than the odometry history; look at it again.",
+            "target": rounded,
+        }
+    tx, ty = g.world_target(*at, target["range_m"], target["bearing_deg"])
     log.info("go_to_object.called", query=query, target=target, world_target=(tx, ty))
+
+    # Nav2 when it is up and a person already armed the gate. Never armed here.
+    from bridge.skills.task_runtime import get_registry
+
+    refusal = _nav_refusal()
+    nav_pose = None
+    if refusal is None and any(
+        t.skill_name in ("walk_to", "turn", "walk_velocity") for t in get_registry().list_active()
+    ):
+        refusal = {"reason": "walk_task_active"}  # the no_active_walk_task precondition
+    if refusal is None:
+        from bridge.sdk.nav_link import get_nav_link
+        from bridge.skills.landmarks import nav_pose_from_status
+
+        nav_pose = nav_pose_from_status(get_nav_link().latest_status()[0])
+        if nav_pose is None:
+            refusal = {"reason": "no_nav_pose"}
+    # The object relative to the robot NOW on vendor odometry, applied to Nav2's
+    # own pose: the two frames' absolute coordinates are never mixed.
+    rng_now, brg_now = egocentric({"x_m": x, "y_m": y, "yaw_deg": math.degrees(yaw)}, tx, ty)
+    if nav_pose is not None and rng_now > stop_distance_m:
+        gx, gy = g.world_target(
+            nav_pose["x"], nav_pose["y"], nav_pose["yaw"], rng_now - stop_distance_m, brg_now
+        )
+        started = await _start_navigation(
+            gx,
+            gy,
+            None,
+            nav_pose["frame"],
+            {"kind": "object", "label": target["label"], "source": target["source"]},
+        )
+        if started.get("status") != "refused":
+            return {**started, "via": "nav2"}
+        refusal = started
+
+    follow = g.Follow((tx, ty), _time.monotonic(), abort_when_lost=target["source"] == "live")
+
+    def retarget() -> tuple[float, float] | None:
+        now_pose = sampler.pose_at(_time.monotonic())
+        if now_pose is None:
+            return follow.target  # walk_to deals with a missing pose itself
+        live, live_age = _live_detections()
+        points = []
+        for o, age in g.live_matches(target["label"], live, live_age)[0]:
+            seen_from = aim_from(age, now_pose)
+            if seen_from is not None:
+                points.append(
+                    g.world_target(*seen_from, float(o["range_m"]), float(o["bearing_deg"]))
+                )
+        old = follow.target
+        new = follow.update(points, now_pose, _time.monotonic())
+        if new is None:
+            log.warning("go_to_object.target_lost", last=old)
+        elif new != old:
+            log.info("go_to_object.retarget", old=old, new=new)
+        return new
+
     from bridge.skills.walk_to import run as run_walk_to
 
-    # autonomous: a model-chosen open-loop walk, so stale perception slows it (person rule).
+    # autonomous: a model-chosen walk with no obstacle avoidance, so stale perception slows it (person rule).
     result = await run_walk_to(
         target_x=tx,
         target_y=ty,
@@ -421,9 +531,12 @@ async def go_to_object(
         timeout_s=60.0,
         ctx=ctx,
         autonomous=True,
+        retarget=retarget,
     )
-    rounded = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in target.items()}
-    return {**result, "target": rounded, "env": SIM_MODE}
+    via: dict[str, Any] = {"via": "walk_to"}
+    if refusal is not None:
+        via["nav2_refused"] = refusal["reason"]
+    return {**result, **via, "target": rounded, "env": SIM_MODE}
 
 
 # ---------------------------------------------------------------------------
@@ -2052,6 +2165,10 @@ _NAV_FIX = {
         "arm_navigation(reason, seconds) for the length of this manoeuvre. This tool "
         "does not open it, and you should not open it on your own initiative."
     ),
+    "teleop_active": (
+        "A person in the headset is driving the robot; Nav2 would be a second commander "
+        "on the base. Wait until they let go, then try again."
+    ),
 }
 
 
@@ -2059,9 +2176,12 @@ def _nav_refusal() -> dict | None:
     """Why a goal must not be sent right now, or None if it may."""
     from bridge.sdk.nav_link import get_nav_link
     from bridge.sdk.perception_link import get_link
+    from bridge.skills._locomotion import teleop_conflict
 
     status, _ = get_nav_link().latest_status()
-    if status is None:
+    if teleop_conflict() is not None:
+        reason = "teleop_active"
+    elif status is None:
         reason = "nav_relay_offline"
     elif not status.get("nav2_ready"):
         reason = "nav2_inactive"
@@ -2097,8 +2217,10 @@ def _current_nav_pose() -> dict | None:
 
 async def _monitor_navigation(task, goal_id: str) -> None:
     """Follow one goal to a terminal state, mirroring it into `task`."""
+    from bridge.estop import teleop_is_driving
     from bridge.sdk.nav_link import get_nav_link
     from bridge.sdk.perception_link import get_link
+    from bridge.skills._locomotion import TELEOP_TAKEOVER
 
     nav, gate = get_nav_link(), get_link()
     started = time.monotonic()
@@ -2123,6 +2245,10 @@ async def _monitor_navigation(task, goal_id: str) -> None:
                 _nav_cancel_quiet(goal_id)
                 return end("failed", "gate_closed", "gate_closed: the arm TTL ran out or "
                            "the gate was disarmed mid-goal; the goal was cancelled")
+            if teleop_is_driving():
+                # The person in the headset wins, as in walk_to.
+                _nav_cancel_quiet(goal_id)
+                return end("failed", "teleop_takeover", TELEOP_TAKEOVER)
             now = time.monotonic()
             goal = nav.goal(goal_id)
             if goal is None:
