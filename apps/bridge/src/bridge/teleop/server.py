@@ -113,23 +113,37 @@ _ORIGINS = os.environ.get("TELEOP_ORIGINS", "http://localhost:3001,http://127.0.
 TELEOP_ORIGINS = frozenset(o.strip() for o in _ORIGINS.split(",") if o.strip())
 #: Shared with apps/back, which mints the tokens. Empty = no token check.
 TELEOP_SECRET = os.environ.get("TELEOP_SECRET", "")
+#: Tokens already used for a handshake -> their expiry. ws:// on the LAN can be
+#: sniffed, so a token opens the socket once; a reconnect asks apps/back again.
+_spent: dict[str, int] = {}
 
 
 def token_valid(token: str, secret: str, now: float) -> bool:
-    """`<exp unix s>.<hex HMAC-SHA256(secret, "teleop:<exp>")>`, not yet expired.
+    """`<exp unix s>.<nonce>.<hex HMAC-SHA256(secret, "teleop:<exp>.<nonce>")>`, not yet expired.
 
-    Mirrors `mintTeleopToken` in apps/back/src/routes/teleop.ts.
+    Mirrors `mintTeleopToken` in apps/back/src/routes/teleop.ts. The nonce is
+    optional (`<exp>.<sig>` still verifies), so an older back keeps working.
     """
-    exp_s, _, sig = token.partition(".")
+    body, _, sig = token.rpartition(".")
     try:
-        exp = int(exp_s)
+        exp = int(body.partition(".")[0])
     except ValueError:
         return False
     if exp < now:
         log.warning("teleop.token_expired", expired_by_s=round(now - exp, 1))  # clock skew?
         return False
-    expected = hmac.new(secret.encode(), f"teleop:{exp}".encode(), hashlib.sha256).hexdigest()
+    expected = hmac.new(secret.encode(), f"teleop:{body}".encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(sig.encode(), expected.encode())
+
+
+def spend_token(token: str, now: float) -> bool:
+    """False if this (valid) token already opened a socket; otherwise remember it until it expires."""
+    for t in [t for t, exp in _spent.items() if exp < now]:
+        del _spent[t]
+    if token in _spent:
+        return False
+    _spent[token] = int(token.partition(".")[0])
+    return True
 
 
 def authorize(connection: ServerConnection, request: Request) -> Response | None:
@@ -145,9 +159,13 @@ def authorize(connection: ServerConnection, request: Request) -> Response | None
         return connection.respond(HTTPStatus.FORBIDDEN, "origin not allowed\n")
     if TELEOP_SECRET:
         token = parse_qs(urlsplit(request.path).query).get("token", [""])[0]
-        if not token_valid(token, TELEOP_SECRET, time.time()):
+        now = time.time()
+        if not token_valid(token, TELEOP_SECRET, now):
             log.warning("teleop.refused", reason="token", remote=connection.remote_address)
             return connection.respond(HTTPStatus.UNAUTHORIZED, "missing or invalid teleop token\n")
+        if not spend_token(token, now):
+            log.warning("teleop.refused", reason="token_reused", remote=connection.remote_address)
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "teleop token already used\n")
     return None
 
 

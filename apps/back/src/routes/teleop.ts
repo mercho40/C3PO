@@ -8,22 +8,28 @@
  *                    when TELEOP_SECRET is unset: the bridge then accepts any
  *                    allowed Origin and warns loudly, so test day still works.
  */
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { Elysia } from "elysia";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 
-//: Only has to outlive the handshake; each connect asks for a fresh one.
+//: Only has to outlive the handshake; each connect asks for a fresh one, since
+//: the bridge accepts a token once.
 //: shortcut: robot and laptop clocks must agree within this, widen it if
 //: `teleop.token_expired` shows up in the teleop log.
 export const TELEOP_TOKEN_TTL_S = 60;
 
-/** `<exp>.<hex HMAC-SHA256(secret, "teleop:<exp>")>`; mirrors `token_valid`. */
-export function mintTeleopToken(secret: string, nowMs = Date.now()): string {
-  const exp = Math.floor(nowMs / 1000) + TELEOP_TOKEN_TTL_S;
+/** `<exp>.<nonce>.<hex HMAC-SHA256(secret, "teleop:<exp>.<nonce>")>`; mirrors `token_valid`. */
+export function mintTeleopToken(
+  secret: string,
+  nowMs = Date.now(),
+  // Two tokens minted in the same second must differ: each is single-use.
+  nonce = randomBytes(16).toString("hex"),
+): string {
+  const body = `${Math.floor(nowMs / 1000) + TELEOP_TOKEN_TTL_S}.${nonce}`;
   const sig = createHmac("sha256", secret)
-    .update(`teleop:${exp}`)
+    .update(`teleop:${body}`)
     .digest("hex");
-  return `${exp}.${sig}`;
+  return `${body}.${sig}`;
 }
 
 export const teleopRoutes = new Elysia({ prefix: "/teleop" })

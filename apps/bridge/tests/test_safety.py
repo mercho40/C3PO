@@ -74,9 +74,22 @@ def sent(monkeypatch):
 
 
 def test_dispatch_caps_speed_and_yaw(sent, link):
+    # Diagonal: the speed over the floor is capped, not each axis (that was 0.42 m/s).
     _locomotion.send_velocity(2.0, -2.0, 5.0, height=0.78)
-    assert sent[-1][:3] == (safety.MAX_LINEAR_MPS, -safety.MAX_LINEAR_MPS, safety.MAX_YAW_RPS)
+    edge = safety.MAX_LINEAR_MPS / 2**0.5
+    assert sent[-1][:3] == pytest.approx((edge, -edge, safety.MAX_YAW_RPS))
     assert sent[-1][3] <= 1.0  # the firmware deadman, on every setpoint
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("axis", [0, 1, 2])
+def test_a_non_finite_axis_stops_that_axis(link, axis, bad):
+    # NaN used to clamp to the full cap; a broken number must mean stop, not full speed.
+    request = [0.2, 0.1, 0.2]
+    request[axis] = bad
+    out = safety.govern(*request)
+    assert out[axis] == 0.0
+    assert all(v != 0.0 for i, v in enumerate(out) if i != axis)
 
 
 def test_no_env_value_raises_the_caps_past_the_hard_ceiling(monkeypatch):
@@ -277,7 +290,9 @@ async def test_t2_is_refused_with_a_person_in_reach_even_when_confirmed(mcp, lin
     with pytest.raises(ToolError, match="inside arm's reach"):
         await mcp.call_tool("set_hand", {"side": "right", "closure": 0.5})
     link.report = _report(person(2.0))
-    await mcp.call_tool("set_hand", {"side": "right", "closure": 0.5})  # grant was kept
+    # The refusal spent the grant: the operator confirms again once the person is clear.
+    with pytest.raises(ToolError, match="needs an operator's confirmation"):
+        await mcp.call_tool("set_hand", {"side": "right", "closure": 0.5})
 
 
 @pytest.mark.asyncio
@@ -709,10 +724,13 @@ def test_no_sampler_is_an_unknown_battery(listed, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_grant_survives_a_battery_refusal(mcp, link, monkeypatch):
+async def test_a_battery_refusal_drops_the_grant_it_was_given(mcp, link, monkeypatch):
+    # Otherwise the operator's click stays armed for 30 s after the call it was for failed.
     _battery(monkeypatch, 15)
     _grant("set_hand", {"closure": 0.5})
     with pytest.raises(ToolError, match="battery is 15%"):
         await mcp.call_tool("set_hand", {"closure": 0.5})
+    assert safety.status()["pending_confirmations"] == []
     _battery(monkeypatch, 50)
-    await mcp.call_tool("set_hand", {"closure": 0.5})
+    with pytest.raises(ToolError, match="needs an operator's confirmation"):
+        await mcp.call_tool("set_hand", {"closure": 0.5})

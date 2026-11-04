@@ -1162,6 +1162,8 @@ def run() -> int:
 
         try:
             color, depth = source.read()
+            # Capture time: read() blocks until the frame lands, so `now` would be early.
+            captured = time.time()
             # `isinstance` rather than the `fake` flag: the flag and the
             # object's type say the same thing, but only one of them says it
             # to a reader (or a type checker) looking at THIS line.
@@ -1212,10 +1214,9 @@ def run() -> int:
 
         failures = 0
         # THE HEARTBEAT. Unconditional, including when `objects` is empty.
-        # Stamped at the grab (`now` is taken just before source.read()), not
-        # the publish: the nav container ages every object from this stamp.
-        # shortcut: up to one frame period off, use the frameset's global_time if the robot shows lag.
-        publisher.publish(build_report(objects, omitted, now, unranged))
+        # Stamped at the grab, not the publish: the nav container ages every object from it.
+        # shortcut: host time at read() return, use the frameset's global_time if the robot shows lag.
+        publisher.publish(build_report(objects, omitted, captured, unranged))
 
         ticks += 1
         busy_s += time.time() - now

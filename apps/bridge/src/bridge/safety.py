@@ -221,8 +221,14 @@ def govern(
     """The velocity that may actually reach the legs for this request."""
     global _last, _last_at, _last_reason
     factor, reason = speed_factor(autonomous=autonomous)
-    tx = _clamp(vx, MAX_LINEAR_MPS) * factor
-    ty = _clamp(vy, MAX_LINEAR_MPS) * factor
+    # Non-finite is a bug upstream, never a request: _clamp would turn NaN into the full cap.
+    vx, vy, vyaw = (v if math.isfinite(v) else 0.0 for v in (vx, vy, vyaw))
+    tx, ty = _clamp(vx, MAX_LINEAR_MPS), _clamp(vy, MAX_LINEAR_MPS)
+    # The vector, not each axis: a diagonal must not reach sqrt(2) x the cap.
+    norm = math.hypot(tx, ty)
+    if norm > MAX_LINEAR_MPS:
+        tx, ty = tx * MAX_LINEAR_MPS / norm, ty * MAX_LINEAR_MPS / norm
+    tx, ty = tx * factor, ty * factor
     tw = _clamp(vyaw, MAX_YAW_RPS) * factor
 
     now = time.monotonic()
@@ -369,6 +375,14 @@ def tool_refusal(name: str, meta: dict[str, Any] | None, args_key: str | None = 
 
     `args_key` is the call's canonical arguments; None never matches a grant.
     """
+    refusal = _refusal(name, meta, args_key)
+    if refusal is not None and needs_confirmation(meta):
+        # A pre-grant for a call refused anyway (PARAR, battery, person) must not sit armed.
+        _consume_confirmation(name, args_key)
+    return refusal
+
+
+def _refusal(name: str, meta: dict[str, Any] | None, args_key: str | None) -> str | None:
     from bridge import estop
 
     tier = ((meta or {}).get("c3po") or {}).get("tier")

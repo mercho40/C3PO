@@ -20,21 +20,28 @@ from websockets.exceptions import InvalidStatus
 from bridge.teleop import server as srv
 
 SECRET = "s3cret"
-#: The same vector is pinned in apps/back/src/routes/teleop.test.ts, so the
-#: two halves cannot drift apart.
+#: The same vectors are pinned in apps/back/src/routes/teleop.test.ts, so the
+#: two halves cannot drift apart. The first is the pre-nonce format.
 VECTOR = "2000000000.ed699e91ba1f8c4d77c5c127987656732ed9ebea0ab638c9ce2937485964ff63"
+NONCE_VECTOR = (
+    "2000000000.00112233445566778899aabbccddeeff"
+    ".7d584c9233bce66c16e6bebbf5e8875eb04b0f0f9f6593f9fea1c313677920c1"
+)
 
 
-def _token(exp: int, secret: str = SECRET) -> str:
-    sig = hmac.new(secret.encode(), f"teleop:{exp}".encode(), hashlib.sha256).hexdigest()
-    return f"{exp}.{sig}"
+def _token(exp: int, secret: str = SECRET, nonce: str | None = None) -> str:
+    body = f"{exp}" if nonce is None else f"{exp}.{nonce}"
+    sig = hmac.new(secret.encode(), f"teleop:{body}".encode(), hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
 
 
 @pytest.fixture(autouse=True)
 def _no_stale_session():
     srv._active = None
+    srv._spent.clear()
     yield
     srv._active = None
+    srv._spent.clear()
 
 
 async def _serve():
@@ -52,9 +59,11 @@ async def _status(url: str, **kw) -> int:
         return exc.response.status_code
 
 
-def test_the_shared_vector_matches_back():
+def test_the_shared_vectors_match_back():
     assert _token(2_000_000_000) == VECTOR
-    assert srv.token_valid(VECTOR, SECRET, now=1_999_999_000) is True
+    assert _token(2_000_000_000, nonce="00112233445566778899aabbccddeeff") == NONCE_VECTOR
+    for token in (VECTOR, NONCE_VECTOR):
+        assert srv.token_valid(token, SECRET, now=1_999_999_000) is True
 
 
 @pytest.mark.parametrize(
@@ -65,6 +74,8 @@ def test_the_shared_vector_matches_back():
         "abc.def",
         f"{int(time.time()) + 60}.{'0' * 64}",
         _token(int(time.time()) + 60, "other"),
+        # A nonce the signature does not cover.
+        _token(int(time.time()) + 60, nonce="a")[:-64] + _token(int(time.time()) + 60)[-64:],
     ],
 )
 def test_bad_tokens_are_refused(token):
@@ -100,3 +111,22 @@ async def test_a_secret_fails_closed_without_a_valid_token(monkeypatch):
         assert await _status(good, origin="http://localhost:3001") == 101
         # A valid token does not excuse a foreign page.
         assert await _status(good, origin="http://evil.example") == 403
+
+
+async def test_a_token_opens_the_socket_once(monkeypatch):
+    # ws:// on the LAN can be sniffed: a replayed token must not open a second session.
+    monkeypatch.setattr(srv, "TELEOP_SECRET", SECRET)
+    server, url = await _serve()
+    async with server:
+        token = _token(int(time.time()) + 60, nonce="n1")
+        assert await _status(f"{url}/?token={token}") == 101
+        assert await _status(f"{url}/?token={token}") == 401
+        # A reconnect with a fresh token from back is fine.
+        assert await _status(f"{url}/?token={_token(int(time.time()) + 60, nonce='n2')}") == 101
+
+
+def test_a_spent_token_is_forgotten_once_it_has_expired():
+    assert srv.spend_token(_token(1000), now=999.0) is True
+    assert srv.spend_token(_token(1000), now=999.5) is False
+    srv.spend_token(_token(2000), now=1001.0)
+    assert _token(1000) not in srv._spent

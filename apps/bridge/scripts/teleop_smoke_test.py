@@ -61,10 +61,24 @@ except ImportError:  # pragma: no cover - dependency is declared in pyproject
     raise SystemExit(1)
 
 try:
-    from websockets.asyncio.client import connect
+    from websockets.asyncio.client import connect as _ws_connect
 except ImportError:  # pragma: no cover
     print("websockets not available -- run this via `uv run` inside apps/bridge.")
     raise SystemExit(1)
+
+
+def connect(url: str) -> Any:
+    """Each stage's socket, with its own token: the bridge accepts a token once (server.authorize).
+
+    This script holds TELEOP_SECRET, so it mints them itself.
+    """
+    secret = os.environ.get("TELEOP_SECRET")
+    if secret and "token=" not in url:
+        body = f"{int(time.time()) + 60}.{os.urandom(16).hex()}"
+        sig = hmac.new(secret.encode(), f"teleop:{body}".encode(), hashlib.sha256).hexdigest()
+        url = f"{url.rstrip('/')}/?token={body}.{sig}"
+    return _ws_connect(url)
+
 
 PROTOCOL_VERSION = 1
 
@@ -537,14 +551,6 @@ async def main() -> int:
     parser.add_argument("--teleop", default="ws://127.0.0.1:8767", help="teleop stream endpoint")
     parser.add_argument("--yaw-only", action="store_true", help="stop after the yaw-sign stage")
     args = parser.parse_args()
-    # The socket fails closed once TELEOP_SECRET is set (server.authorize). This
-    # script holds the secret, so it mints its own token, long enough for every stage.
-    secret = os.environ.get("TELEOP_SECRET")
-    if secret and "token=" not in args.teleop:
-        exp = int(time.time()) + 3600
-        sig = hmac.new(secret.encode(), f"teleop:{exp}".encode(), hashlib.sha256).hexdigest()
-        args.teleop = f"{args.teleop.rstrip('/')}/?token={exp}.{sig}"
-
     print(__doc__)
     print(f"\nbridge : {args.url}\nteleop : {args.teleop}")
     confirm("Standing next to the robot with the e-stop in reach?")

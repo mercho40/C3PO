@@ -48,11 +48,9 @@ async def test_velocity_over_limit_gets_clamped(monkeypatch):
 
     result = await walk_velocity.run(vx=5.0, vy=-5.0, vyaw=10.0, duration_s=0.05)
 
-    assert calls[0][:3] == (
-        walk_velocity.MAX_LINEAR_VEL,
-        -walk_velocity.MAX_LINEAR_VEL,
-        walk_velocity.MAX_YAW_VEL,
-    )
+    # The legs get the diagonal capped as a vector by safety.govern: cap/sqrt(2) per axis.
+    edge = walk_velocity.MAX_LINEAR_VEL / 2**0.5
+    assert calls[0][:3] == pytest.approx((edge, -edge, walk_velocity.MAX_YAW_VEL))
     assert result["result"]["clamped"]["vx"] == walk_velocity.MAX_LINEAR_VEL
     assert result["result"]["requested"]["vx"] == 5.0  # original request preserved for visibility
 

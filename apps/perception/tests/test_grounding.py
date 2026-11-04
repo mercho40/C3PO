@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import math
 import os
+import types
 
 import pytest
 from bridge import kinematics
@@ -260,6 +261,44 @@ def test_the_start_log_names_where_the_extrinsic_came_from(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "pitch=40.0" in err
     assert "extrinsic_source=env" in err
+
+
+def test_the_report_is_stamped_when_the_frame_arrives(monkeypatch):
+    # read() blocks 0.2 s for the frame, inference takes 0.1 s. The stamp is the
+    # frame's arrival: neither the tick start nor the publish.
+    clock = [1000.0]
+
+    class Published(Exception):
+        pass
+
+    class Capture:
+        def start(self):
+            pass
+
+        def publish(self, payload):
+            raise Published(payload)
+
+    real_read, real_ground_all = detector.SyntheticSource.read, detector.ground_all
+
+    def slow_read(self):
+        clock[0] += 0.2
+        return real_read(self)
+
+    def slow_ground_all(*a, **kw):
+        clock[0] += 0.1
+        return real_ground_all(*a, **kw)
+
+    monkeypatch.setenv("C3PO_VISION_FAKE", "1")
+    monkeypatch.setenv("C3PO_VISION_DRY_RUN", "1")
+    monkeypatch.delenv("C3PO_VISION_STREAM", raising=False)
+    monkeypatch.setattr(detector, "time", types.SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr(detector.SyntheticSource, "read", slow_read)
+    monkeypatch.setattr(detector, "ground_all", slow_ground_all)
+    monkeypatch.setattr(detector, "StdoutPublisher", Capture)
+    monkeypatch.setattr(detector, "_Stopper", lambda: types.SimpleNamespace(stop=False))
+    with pytest.raises(Published) as published:
+        detector.run()
+    assert published.value.args[0]["stamp_unix"] == pytest.approx(1000.2)
 
 
 def test_norm180_wraps_without_moving_a_bearing_already_in_range():

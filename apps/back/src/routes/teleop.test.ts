@@ -2,7 +2,7 @@
  * /teleop/token: admins only, and the token is the one the bridge checks.
  * Auth is mocked as in safety.test.ts.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
 let sessionUser: { id: string; role: string | null } | null = null;
 mock.module("#back/lib/auth.js", () => ({
@@ -21,10 +21,17 @@ const { teleopRoutes, mintTeleopToken, TELEOP_TOKEN_TTL_S } =
 const get = () =>
   teleopRoutes.handle(new Request("http://localhost/teleop/token"));
 
+const savedSecret = process.env.TELEOP_SECRET;
+
 describe("/teleop/token", () => {
   beforeEach(() => {
     sessionUser = null;
     process.env.TELEOP_SECRET = "s3cret";
+  });
+
+  afterAll(() => {
+    if (savedSecret === undefined) delete process.env.TELEOP_SECRET;
+    else process.env.TELEOP_SECRET = savedSecret;
   });
 
   test("401 without a session, 403 for a non-admin", async () => {
@@ -52,8 +59,14 @@ describe("/teleop/token", () => {
 
   test("matches the vector pinned in the bridge's test_teleop_auth.py", () => {
     const nowMs = (2_000_000_000 - TELEOP_TOKEN_TTL_S) * 1000;
-    expect(mintTeleopToken("s3cret", nowMs)).toBe(
-      "2000000000.ed699e91ba1f8c4d77c5c127987656732ed9ebea0ab638c9ce2937485964ff63",
+    expect(
+      mintTeleopToken("s3cret", nowMs, "00112233445566778899aabbccddeeff"),
+    ).toBe(
+      "2000000000.00112233445566778899aabbccddeeff.7d584c9233bce66c16e6bebbf5e8875eb04b0f0f9f6593f9fea1c313677920c1",
     );
+  });
+
+  test("two tokens minted in the same second differ: the bridge spends each once", () => {
+    expect(mintTeleopToken("s3cret", 0)).not.toBe(mintTeleopToken("s3cret", 0));
   });
 });
