@@ -442,6 +442,27 @@ export function estopHalts(prev: EstopPhase | null, next: EstopPhase): boolean {
 }
 
 /**
+ * Whether head yaw must come back to centre before it steers again.
+ *
+ * Set for the headset's own voice turn (decision D4 b), so looking around does
+ * not take over the agent's walk (`busy` covers every turn, questions
+ * included), and by the caller when the session leaves "visible" (Meta menu,
+ * headset off). Released only by a FRESH sample inside the deadzone: pass
+ * `freshYaw` null when there is none, because a stale yaw read at 30 Hz says
+ * nothing about where the head is now. A turn that ends with the head 30 deg
+ * left must not start the robot turning by itself. Yaw steers while false.
+ */
+export function yawNeedsCentre(
+  held: boolean,
+  busy: boolean,
+  freshYaw: number | null,
+  deadzoneRadians: number,
+): boolean {
+  if (busy) return true;
+  return held && (freshYaw === null || Math.abs(freshYaw) >= deadzoneRadians);
+}
+
+/**
  * Whether a precautionary zero velocity is worth sending — on leaving
  * /vr-control, and when the teleop stream takes over locomotion.
  *

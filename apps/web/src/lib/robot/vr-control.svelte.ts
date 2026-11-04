@@ -41,6 +41,7 @@ import {
   precautionaryStopNeeded,
   walkResultAction,
   xrErrorCopy,
+  yawNeedsCentre,
   type StampedOutcome,
   type WalkDispatch,
   type XrErrorCopy,
@@ -123,15 +124,19 @@ export type VrControlOptions = {
    * catalogue. Read when a session starts.
    */
   menuItems?: () => readonly MenuItem[];
+  /** `batteryWarning` for the live reading, shown in the headset's alert band. */
+  battery?: () => "warn" | "alert" | null;
   /**
    * "Hablar con el robot" (vr-voice.svelte.ts). `onItem` gets every `voice:*`
    * menu selection and says whether it took it; `onTalk` is push-to-talk
-   * (B/Y held / released); `cancelTalk` drops a recording without sending it.
+   * (B/Y held / released); `cancelTalk` drops a recording without sending it;
+   * `busy` is an agent turn running, during which head yaw does not steer.
    */
   voice?: {
     onItem: (name: string) => boolean;
     onTalk: (down: boolean) => void;
     cancelTalk: () => void;
+    busy: () => boolean;
   };
 };
 
@@ -211,6 +216,9 @@ export class VrControl {
   yawDisplayDeg = $state(0);
   trackingStale = $state(false);
   handsVisible = $state(false);
+  //: Head yaw is on hold until the head comes back to centre (see
+  //: `yawNeedsCentre`) and the head is outside the deadzone: the headset says so.
+  yawPaused = $state(false);
 
   //: OBSERVE-ONLY: watch the robot's view, command nothing.
   //
@@ -339,6 +347,8 @@ export class VrControl {
         (own && this.latchCause === "deadman"),
       this.teleopStatus?.stopped_by_estop === true ||
         (own && this.latchCause === "estop"),
+      this.#battery(),
+      this.yawPaused,
     );
   }
 
@@ -404,6 +414,9 @@ export class VrControl {
     grips: 0,
   };
   #voice: VrControlOptions["voice"];
+  #battery: () => "warn" | "alert" | null;
+  // See `yawNeedsCentre`. The dead-man re-arm reads the real yaw, not this.
+  #yawNeedsCentre = false;
   // The PARAR chord's hold (see `#applyStopChord`).
   #chordSince: number | null = null;
   #chordFired = false;
@@ -438,6 +451,7 @@ export class VrControl {
     this.#posture = opts.posture;
     this.#menuItems = opts.menuItems ?? (() => []);
     this.#voice = opts.voice;
+    this.#battery = opts.battery ?? (() => null);
   }
 
   /** Re-read `menuItems` into a running session (voice mode swaps the list). */
@@ -803,8 +817,21 @@ export class VrControl {
     }
   }
 
+  /** False while head yaw is held for the headset's voice turn. Updates the hold. */
+  #yawSteers(): boolean {
+    // null: this pose may be stale, so it can set the hold but never release it.
+    this.#yawNeedsCentre = yawNeedsCentre(
+      this.#yawNeedsCentre,
+      this.#voice?.busy() ?? false,
+      null,
+      YAW_DEADZONE_RAD,
+    );
+    return !this.#yawNeedsCentre;
+  }
+
   #computeVyaw(): number {
-    if (!this.vrActive || this.deadManTripped) return 0;
+    const steers = this.#yawSteers(); // first, so the hold sees every busy edge
+    if (!steers || !this.vrActive || this.deadManTripped) return 0;
     if (Date.now() - this.#lastYawSampleAt > VR_STALE_MS) return 0; // tracking stale
     const err = this.#yawErrorRadians;
     const mag = Math.abs(err);
@@ -1255,9 +1282,18 @@ export class VrControl {
           this.#handLeft = s.left;
           this.#handRight = s.right;
           this.#lastYawSampleAt = Date.now();
+          this.#noteYawHold(s.yawErrorRadians);
           this.#noteHandsVisible();
           this.#applyWalkAxis(s.walkAxis);
           this.#applyMenuButtons(s.buttons);
+        },
+        onVisibility: (v) => {
+          if (v === "visible") return;
+          // Samples stop under the overlay: zero yaw and arms now, not VR_STALE_MS later.
+          this.#lastYawSampleAt = 0;
+          // Coming back is not a deliberate act: steer again only from centre.
+          this.#yawNeedsCentre = true;
+          this.releaseAllControls();
         },
         onEnd: () => {
           this.vrActive = false;
@@ -1402,7 +1438,7 @@ export class VrControl {
       vrActive: this.vrActive,
       lastSampleAt: this.#lastYawSampleAt,
       staleAfterMs: VR_STALE_MS,
-      yawErrorRadians: this.#yawErrorRadians,
+      yawErrorRadians: this.#yawSteers() ? this.#yawErrorRadians : 0,
       yawDeadzoneRadians: YAW_DEADZONE_RAD,
       headPosition: this.#headPosition,
       left: this.#handLeft,
@@ -1410,6 +1446,22 @@ export class VrControl {
       walking: this.walking,
       armsRequested: this.armsRequested,
     });
+  }
+
+  /** The only place the centre hold is released: a fresh sample. XR loop rate. */
+  #noteYawHold(yaw: number): void {
+    const busy = this.#voice?.busy() ?? false;
+    this.#yawNeedsCentre = yawNeedsCentre(
+      this.#yawNeedsCentre,
+      busy,
+      yaw,
+      YAW_DEADZONE_RAD,
+    );
+    // Guarded: $state written at frame rate re-renders at frame rate. Not
+    // during the turn itself, where the voice panel already says what is going on.
+    const paused =
+      this.#yawNeedsCentre && !busy && Math.abs(yaw) >= YAW_DEADZONE_RAD;
+    if (paused !== this.yawPaused) this.yawPaused = paused;
   }
 
   /** Mirror hand visibility into the UI, cheaply. Called from the XR loop. */

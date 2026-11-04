@@ -82,6 +82,8 @@ export type MenuAlert = { text: string; hint: string } | null;
 export function alertFor(
   deadmanTripped: boolean,
   stoppedByEstop: boolean,
+  battery: "warn" | "alert" | null = null,
+  yawPaused = false,
 ): MenuAlert {
   // e-stop first: it outranks, and its release gesture is the opposite of the
   // hold latch's — you clear a stop by letting go and WAITING, not by pushing
@@ -95,6 +97,15 @@ export function alertFor(
   if (deadmanTripped) {
     return { text: "LÍMITE DE 8 s", hint: "soltá y volvé a empujar" };
   }
+  // The 2D battery banner is outside the dom-overlay, so the headset says it here.
+  if (battery === "alert") {
+    return { text: "BATERÍA CRÍTICA", hint: "sentá o colgá el robot ya" };
+  }
+  if (battery === "warn") {
+    return { text: "BATERÍA BAJA", hint: "cargá el robot antes de seguir" };
+  }
+  // After a voice turn or the Meta menu, head yaw waits for the head at centre.
+  if (yawPaused) return { text: "CENTRÁ LA CABEZA", hint: "giro en pausa" };
   return null;
 }
 

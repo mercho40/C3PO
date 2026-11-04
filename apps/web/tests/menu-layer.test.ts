@@ -379,6 +379,22 @@ describe("alertFor — the latch that stopped you, and how to clear it", () => {
     expect(alertFor(false, false)).toBe(null);
   });
 
+  test("a low battery shows in the band, below every latch", () => {
+    expect(alertFor(false, false, "warn")?.text).toBe("BATERÍA BAJA");
+    expect(alertFor(false, false, "alert")?.text).toBe("BATERÍA CRÍTICA");
+    expect(alertFor(true, false, "alert")?.text).toBe("LÍMITE DE 8 s");
+    expect(alertFor(false, true, "alert")?.text).toBe("PARADA DE EMERGENCIA");
+  });
+
+  test("a yaw on hold asks for the head at centre, below everything else", () => {
+    expect(alertFor(false, false, null, true)).toEqual({
+      text: "CENTRÁ LA CABEZA",
+      hint: "giro en pausa",
+    });
+    expect(alertFor(false, false, "warn", true)?.text).toBe("BATERÍA BAJA");
+    expect(alertFor(true, false, null, true)?.text).toBe("LÍMITE DE 8 s");
+  });
+
   test("the hold latch says to release and push again", () => {
     const a = alertFor(true, false)!;
     expect(a.text).toContain("8");

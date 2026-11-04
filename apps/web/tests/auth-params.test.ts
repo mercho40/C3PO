@@ -103,9 +103,13 @@ describe("oauthErrorMessage", () => {
 
 describe("authErrorMessage", () => {
   // auth-client.ts reads the API URL from SvelteKit's env module, which only
-  // exists inside a SvelteKit build.
+  // exists inside a SvelteKit build. Same keys and values as
+  // vr-control-runtime.test.ts: bun keeps the first mock's export names.
   mock.module("$app/env/public", () => ({
     PUBLIC_API_URL: "http://localhost:3000",
+    PUBLIC_ROBOT_CAM_URL: "",
+    PUBLIC_TELEOP_HOST: "",
+    PUBLIC_TELEOP_PORT: "",
   }));
 
   test("closed sign-up says who to ask, in Spanish", async () => {

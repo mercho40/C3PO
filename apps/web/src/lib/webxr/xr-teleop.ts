@@ -181,6 +181,8 @@ export type XrTeleopCallbacks = {
   onSample?: (sample: XrSample) => void;
   /** Called once the session has fully ended, for any reason. */
   onEnd?: () => void;
+  /** The session's visibility changed (Meta menu, system overlay: "visible-blurred"). */
+  onVisibility?: (state: XRVisibilityState) => void;
 };
 
 export type XrTeleopSupport = {
@@ -906,6 +908,9 @@ export class XrTeleopSession {
         this.#cameraBroken = false;
         this.#callbacks.onEnd?.();
       });
+      session.addEventListener("visibilitychange", () =>
+        this.#callbacks.onVisibility?.(session.visibilityState),
+      );
 
       const onFrame: XRFrameRequestCallback = (_time, frame) => {
         const active = this.#session;
@@ -974,6 +979,10 @@ export class XrTeleopSession {
             );
           }
         }
+
+        // Under a system overlay the inputs freeze (grips read 0, hands untracked):
+        // nothing sampled then may steer the robot, so draw but do not sample.
+        if (active.visibilityState !== "visible") return;
 
         const yaw = quaternionYaw(pose.transform.orientation);
         if (this.#needsRecenter) {

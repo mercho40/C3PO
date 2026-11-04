@@ -33,6 +33,7 @@
   import { readPosture } from "#lib/robot/posture.js";
   import { MotionTracker } from "#lib/robot/motion.js";
   import { staleness } from "#lib/robot/faults.js";
+  import { batteryWarning } from "#lib/robot/format.js";
   import { VrControl } from "#lib/robot/vr-control.svelte.js";
   import { VrVoice } from "#lib/robot/vr-voice.svelte.js";
   import { withVoiceEntry } from "#lib/robot/voice-panel.js";
@@ -97,7 +98,13 @@
       onItem: (name) => voice.onItem(name),
       onTalk: (down) => voice.onTalk(down),
       cancelTalk: () => voice.cancelTalk(),
+      busy: () => voice.busy,
     },
+    battery: () =>
+      batteryWarning(
+        live.online ? live.state?.battery_pct : null,
+        live.simulated,
+      ),
   });
   // Push the conversation and its menu into the headset whenever they change.
   $effect(() => {
@@ -259,7 +266,10 @@
     <VrHero
       {ctl}
       {posture}
-      onenter={(observe: boolean) => void ctl.enterVr(overlayRoot, observe)}
+      onenter={(observe: boolean) => {
+        voice.prime(); // same user activation as requestSession
+        void ctl.enterVr(overlayRoot, observe);
+      }}
     />
     <!-- Before entering VR: Quest Browser asks for the microphone in 2D. -->
     <section

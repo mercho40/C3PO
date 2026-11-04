@@ -22,7 +22,23 @@ declare const Bun: {
   }): { port: number; stop(closeActiveConnections?: boolean): void };
   /** Promise-based sleep, for tests that have to let real timers elapse. */
   sleep(ms: number): Promise<void>;
+  /** TS -> JS, for loading `.svelte.ts` rune modules (vr-control-runtime.test.ts). */
+  Transpiler: new (options: { loader: "ts" }) => {
+    transformSync(code: string): string;
+  };
 };
+
+declare module "bun" {
+  export function plugin(p: {
+    name: string;
+    setup(build: {
+      onLoad(
+        options: { filter: RegExp },
+        load: (args: { path: string }) => { contents: string; loader: "js" },
+      ): void;
+    }): void;
+  }): void;
+}
 
 declare module "bun:test" {
   export function describe(label: string, body: () => void): void;

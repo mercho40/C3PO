@@ -9,6 +9,7 @@
  *
  * The microphone is opened from a 2D button BEFORE entering VR: Quest Browser
  * shows its permission prompt in 2D, and the AudioContext needs a user gesture.
+ * Capture runs on an AudioWorklet (mic-capture.worklet.js).
  */
 import { Chat } from "@ai-sdk/svelte";
 import { DefaultChatTransport, type UIMessage } from "ai";
@@ -29,6 +30,8 @@ import {
   type VoicePhase,
 } from "./voice-panel";
 import { concat, downsample, encodeWav, TARGET_RATE } from "./wav";
+// no-inline: a same-origin file, not a data: URL, is what every worklet loader accepts.
+import workletUrl from "./mic-capture.worklet.js?url&no-inline";
 
 const MAX_TALK_S = 30; // the backend takes ~60 s; nobody holds B that long on purpose
 const MIN_TALK_S = 0.3; // a tap is not an utterance
@@ -46,10 +49,12 @@ export class VrVoice {
   #chat: Chat<UIMessage>;
   #ctx: AudioContext | null = null;
   #stream: MediaStream | null = null;
-  #proc: ScriptProcessorNode | null = null;
+  #node: AudioWorkletNode | null = null;
   #chunks: Float32Array[] = [];
   #recording = false;
   #startedAt = 0;
+  #stateLogged = false;
+  #opening = false; // a second tap during the permission prompt must not open a second mic
 
   constructor(latch: StopLatch) {
     this.#latch = latch;
@@ -69,14 +74,15 @@ export class VrVoice {
     });
   }
 
-  get #busy(): boolean {
+  /** An agent turn is running (submitted or streaming, tool calls included), for any utterance, questions too. */
+  get busy(): boolean {
     return (
       this.#chat.status === "submitted" || this.#chat.status === "streaming"
     );
   }
 
   get lines(): VoiceLine[] {
-    const phase = this.phase === "idle" && this.#busy ? "thinking" : this.phase;
+    const phase = this.phase === "idle" && this.busy ? "thinking" : this.phase;
     return voiceLines(this.#chat.messages, {
       phase,
       stopStanding: this.#latch.standing,
@@ -86,7 +92,7 @@ export class VrVoice {
 
   get menuItems(): MenuItem[] {
     const pending =
-      this.#confirming || this.#busy
+      this.#confirming || this.busy
         ? null
         : pendingConfirmation(this.#chat.messages);
     return voiceMenu(
@@ -98,9 +104,13 @@ export class VrVoice {
 
   /** From the 2D page, before entering VR. */
   async enableMic(): Promise<void> {
-    if (this.micReady) return;
+    if (this.micReady || this.#opening) return;
+    this.#opening = true;
     this.micError = null;
+    let ctx: AudioContext | null = null;
     try {
+      // Before any await, so it is created inside the tap's user activation.
+      ctx = new AudioContext();
       this.#stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -108,28 +118,45 @@ export class VrVoice {
           channelCount: 1,
         },
       });
-      const ctx = new AudioContext();
-      const source = ctx.createMediaStreamSource(this.#stream);
-      // shortcut: ScriptProcessor is deprecated but needs no worklet module
-      // file; move to an AudioWorklet if Quest Browser ever drops it.
-      const proc = ctx.createScriptProcessor(4096, 1, 1);
-      proc.onaudioprocess = (e) => {
-        if (!this.#recording) return;
-        this.#chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      await ctx.audioWorklet.addModule(workletUrl);
+      const node = new AudioWorkletNode(ctx, "mic-capture");
+      node.port.onmessage = (e: MessageEvent<Float32Array>) => {
+        if (!this.#recording) return; // a block in flight when #finish posted false
+        this.#chunks.push(e.data);
         if (performance.now() - this.#startedAt > MAX_TALK_S * 1000)
           void this.#finish();
       };
-      source.connect(proc);
-      proc.connect(ctx.destination); // Chromium only runs it when connected; the output stays silent
+      // A throw in the worklet kills it for good; say so instead of recording silence.
+      node.onprocessorerror = () => {
+        this.#releaseMic();
+        this.micError = "El micrófono dejó de funcionar: activalo de nuevo.";
+      };
+      ctx.createMediaStreamSource(this.#stream).connect(node);
+      node.connect(ctx.destination); // Chromium only pulls a connected node; the output stays silent
+      const track = this.#stream.getAudioTracks()[0];
+      // A dropped mic (unplugged, revoked) brings the 2D button back instead of recording silence.
+      if (track) track.onended = () => this.#releaseMic();
       this.#ctx = ctx;
-      this.#proc = proc;
+      this.#node = node;
       this.micReady = true;
     } catch (e) {
+      // Never leak a stream or a context, whichever step failed.
+      this.#stream?.getTracks().forEach((t) => t.stop());
+      this.#stream = null;
+      void ctx?.close();
       this.micError =
         e instanceof DOMException && e.name === "NotAllowedError"
           ? "Permiso de micrófono denegado."
           : "No se pudo abrir el micrófono.";
+    } finally {
+      this.#opening = false;
     }
+  }
+
+  /** On the «Entrar en VR» tap: resume inside the same user activation requestSession uses. */
+  prime(): void {
+    this.#stateLogged = false;
+    void this.#ctx?.resume();
   }
 
   /** B/Y pressed (true) or released (false). */
@@ -141,6 +168,7 @@ export class VrVoice {
   /** Drop a recording without sending it (headset off, page blurred). */
   cancelTalk(): void {
     this.#recording = false;
+    this.#node?.port.postMessage(false);
     this.#chunks = [];
     if (this.phase === "listening") this.phase = "idle";
   }
@@ -153,25 +181,36 @@ export class VrVoice {
         "Micrófono apagado: activalo en la página antes de entrar en VR.";
       return;
     }
-    if (this.#busy || this.phase !== "idle") {
+    if (this.busy || this.phase !== "idle") {
       this.error = "Esperá a que el robot termine de responder.";
       return;
+    }
+    if (!this.#stateLogged) {
+      // Evidence for 'Muy corto' reports: a suspended context records nothing.
+      console.info(`[vr-voice] AudioContext ${this.#ctx.state} on first talk`);
+      this.#stateLogged = true;
     }
     void this.#ctx.resume();
     this.#chunks = [];
     this.#startedAt = performance.now();
     this.#recording = true;
+    this.#node?.port.postMessage(true);
     this.phase = "listening";
   }
 
   async #finish(): Promise<void> {
     if (!this.#recording || !this.#ctx) return;
     this.#recording = false;
+    this.#node?.port.postMessage(false);
     const samples = concat(this.#chunks);
     this.#chunks = [];
     if (samples.length < MIN_TALK_S * this.#ctx.sampleRate) {
       this.phase = "idle";
-      this.error = "Muy corto: mantené B/Y mientras hablás.";
+      // Not one block in the whole hold: the capture is dead, not the operator too quick.
+      this.error =
+        samples.length === 0
+          ? "El micrófono no entrega audio: activalo de nuevo."
+          : "Muy corto: mantené B/Y mientras hablás.";
       return;
     }
     this.phase = "transcribing";
@@ -256,13 +295,20 @@ export class VrVoice {
     }
   }
 
-  destroy(): void {
+  /** The mic alone: a dropped track must not abort a running agent turn. */
+  #releaseMic(): void {
     this.cancelTalk();
-    void this.#chat.stop();
-    this.#proc?.disconnect();
+    this.#node?.disconnect();
+    this.#node = null;
     this.#stream?.getTracks().forEach((t) => t.stop());
+    this.#stream = null;
     void this.#ctx?.close();
     this.#ctx = null;
     this.micReady = false;
+  }
+
+  destroy(): void {
+    this.#releaseMic();
+    void this.#chat.stop();
   }
 }

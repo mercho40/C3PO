@@ -21,6 +21,7 @@ import {
   catalogueHealth,
   envBanner,
   estopHalts,
+  yawNeedsCentre,
   gestureCaveat,
   gestureNamesFromSchema,
   handsLabel,
@@ -578,5 +579,31 @@ describe("gestures", () => {
       known: false,
       hint: null,
     });
+  });
+});
+
+describe("yawNeedsCentre — the voice turn and the Meta menu hold head yaw (C5, C8)", () => {
+  const DZ = 0.1;
+  test("held while busy, whatever the head does", () => {
+    expect(yawNeedsCentre(false, true, 0, DZ)).toBe(true);
+    expect(yawNeedsCentre(false, true, 0.5, DZ)).toBe(true);
+  });
+
+  test("after the turn, held until a fresh sample is back at centre", () => {
+    let held = yawNeedsCentre(false, true, 0.5, DZ);
+    held = yawNeedsCentre(held, false, 0.5, DZ); // busy falls, head still turned
+    expect(held).toBe(true);
+    held = yawNeedsCentre(held, false, 0.05, DZ); // head centred
+    expect(held).toBe(false);
+    expect(yawNeedsCentre(held, false, 0.5, DZ)).toBe(false); // steers again
+  });
+
+  test("no fresh sample never releases, even if the last yaw was centred", () => {
+    expect(yawNeedsCentre(true, false, null, DZ)).toBe(true);
+  });
+
+  test("never held without a cause", () => {
+    expect(yawNeedsCentre(false, false, 0.5, DZ)).toBe(false);
+    expect(yawNeedsCentre(false, false, null, DZ)).toBe(false);
   });
 });

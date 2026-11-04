@@ -152,16 +152,5 @@ describe("a held stick cannot re-arm its own latch", () => {
   });
 });
 
-describe("the headset PARAR also goes down the teleop socket (C6)", () => {
-  test("#haltForEstop stops the stream directly, not only through apps/back", () => {
-    expect(body("#haltForEstop(): void {")).toContain("#teleop?.stop()");
-  });
-});
-
-describe("the stream is opened with apps/back's token (X15)", () => {
-  test("connectStream asks back for a token and puts it on the URL", () => {
-    const connect = body("async connectStream(): Promise<void> {");
-    expect(connect).toContain(".teleop.token.get(");
-    expect(connect).toContain("teleopUrl(");
-  });
-});
+// The headset PARAR down the teleop socket (C6) and the per-connect token (X15)
+// are pinned by behaviour in vr-control-runtime.test.ts.

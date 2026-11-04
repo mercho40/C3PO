@@ -69,6 +69,8 @@ const PHASE_TEXT: Record<string, string> = {
   release_failed: "Hecho, pero no logró soltar el brazo",
   exception: "Error interno del puente",
   unavailable: "No disponible en este robot",
+  target_lost: "Perdí de vista el objetivo",
+  stale_detection: "La detección es vieja; mirá de nuevo",
 };
 
 const str = (v: unknown): string | null =>
@@ -120,7 +122,7 @@ export function classifySkillResult(body: unknown): SkillOutcome {
   if (status === "failed" || err) {
     const code = err ?? (phase || null);
     const text =
-      (err && RPC_HINTS[err]) ??
+      (err && (RPC_HINTS[err] ?? PHASE_TEXT[err])) ??
       PHASE_TEXT[phase] ??
       (phase === "rpc_error" ? "El robot rechazó el pedido" : null) ??
       "Falló";
@@ -294,6 +296,12 @@ export function classifyHttpError(
     return make("error", "El puente no respondió a tiempo", {
       detail: "La orden se envió; puede seguir ejecutándose en el robot.",
       code: "bridge_timeout",
+    });
+  }
+  if (code === "confirmation_not_configured") {
+    return make("error", "Falta configurar la confirmación", {
+      detail: "SAFETY_CONFIRM_SECRET en apps/back/.env",
+      code,
     });
   }
   if (code === "tool_error") {
