@@ -59,8 +59,10 @@ warn_if_other_commander || exit 1
 if ! bridge_running; then
     # Fail with the fix, not with sudo's "a terminal is required" (2026-10-15,
     # over a non-interactive ssh). The unit is enabled at boot, so needing this
-    # at all means it did not come up: say where to look as well.
-    if ! sudo -n true 2>/dev/null && ! [ -t 0 ]; then
+    # at all means it did not come up: say where to look as well. Ask about the
+    # exact command c3po.sudoers grants, as take_camera does: `sudo -n true`
+    # stays false under a narrow grant.
+    if ! sudo -n -l /usr/bin/systemctl start c3po-bridge.service >/dev/null 2>&1 && ! [ -t 0 ]; then
         err "c3po-bridge.service is not running, and starting it needs sudo's password — no terminal here"
         err "  run with a terminal:  ssh -t <robot> 'cd ~/c3po && ./scripts/robot/c3po up core'"
         err "  why it is down:       journalctl -u c3po-bridge -b --no-pager | tail -50"

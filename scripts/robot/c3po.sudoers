@@ -1,6 +1,15 @@
-# Narrow privileges needed to release Unitree's vendor head-camera process.
+# Narrow privileges for the C3PO robot scripts. sudo matches each line as one
+# exact command line, so nothing else is authorised: no shell, no editable
+# script, no wildcard unit, and no reload, edit or boot-time change of any unit.
 #
-# No shell, editable script or wildcard unit is authorised. Starting the vendor
+# Camera: release Unitree's vendor head-camera process. Starting the vendor
 # service again remains a deliberate human/root action.
 unitree ALL=(root) NOPASSWD: /usr/bin/systemctl stop master_service
 unitree ALL=(root) NOPASSWD: /usr/bin/pkill -9 -x videohub_pc4
+
+# Bridge: `c3po up core`, `c3po down` and `c3po restart` over a non-interactive
+# ssh. The unit runs as User=unitree, so this grants nothing the user cannot
+# already do by killing their own process.
+unitree ALL=(root) NOPASSWD: /usr/bin/systemctl start c3po-bridge.service
+unitree ALL=(root) NOPASSWD: /usr/bin/systemctl stop c3po-bridge.service
+unitree ALL=(root) NOPASSWD: /usr/bin/systemctl restart c3po-bridge.service

@@ -306,7 +306,7 @@ check_contains "start calls stop_gemm exactly once (the take-over branch)" \
 # ...and a sudo that needs a password with no terminal fails with the fix,
 # not with sudo's own "a terminal is required".
 check_contains "start explains a sudo that cannot prompt" \
-    'if ! sudo -n true 2>/dev/null && ! [ -t 0 ]; then' "$start_source"
+    'if ! sudo -n -l /usr/bin/systemctl start c3po-bridge.service >/dev/null 2>&1 && ! [ -t 0 ]; then' "$start_source"
 common_source="$(cat "$repo/scripts/robot/_common.sh")"
 check_contains "socket ownership uses the explicit deployed LAN bind" \
     '0.0.0.0)   address_hex="00000000"' "$common_source"
@@ -360,6 +360,8 @@ check_contains "the bridge permits the local web dev origins" \
     "$bridge_unit_source"
 check_not_contains "the bridge has no pidfile" "PIDFile=" "$bridge_unit_source"
 check_not_contains "the bridge unit does not call run_c3po" "ExecStart=/home/unitree/c3po/scripts/robot/run_c3po" "$bridge_unit_source"
+check_contains "the robot installs exactly the committed lock" \
+    "uv sync --locked" "$(cat "$repo/scripts/robot/bridge_sync")"
 
 stop_stack_source="$(cat "$repo/scripts/robot/stop_c3po")"
 check_contains "stack stop removes teleop before the bridge" \
@@ -383,6 +385,18 @@ check_not_contains "health contains no systemd repair action" \
 sudoers_source="$(cat "$repo/scripts/robot/c3po.sudoers")"
 check_not_contains "sudoers grants no perception lifecycle command" \
     'c3po-perception@' "$sudoers_source"
+# sudo matches exact argv: the grant and its three callers must stay identical.
+for verb in start stop restart; do
+    check_contains "sudoers grants exactly: systemctl $verb c3po-bridge.service" \
+        "unitree ALL=(root) NOPASSWD: /usr/bin/systemctl $verb c3po-bridge.service" "$sudoers_source"
+done
+for forbidden in 'daemon-reload' 'systemctl edit' 'enable' '*'; do
+    check_not_contains "sudoers grants nothing with: $forbidden" "$forbidden" "$sudoers_source"
+done
+check_contains "c3po restart runs the exact granted command line" \
+    'sudo systemctl restart c3po-bridge.service' "$cli_source"
+check_contains "start runs the exact granted command line" \
+    'sudo systemctl start c3po-bridge.service' "$start_source"
 
 commander_source="$(cat "$repo/scripts/robot/_common.sh")"
 check_contains "unitree_slam is treated as a locomotion commander" \
@@ -430,6 +444,10 @@ check_contains "a taken local port fails the tunnel instead of a silent no-op" \
 check_contains "the tunnel defaults to the c3po ssh alias" " c3po" "$tunnel_cmd"
 check_contains "the tunnel takes the host as an argument" \
     " c3po-wire" "$("$repo/scripts/robot_tunnel.sh" --print c3po-wire)"
+
+echo "== robot internet =="
+check "the Mac proxy refuses loopback, private and non-web destinations" "ok" \
+    "$(python3 "$repo/scripts/robot_internet.py" --self-test 2>&1)"
 
 echo "== audit watch =="
 watch_query="$("$repo/scripts/audit_watch.sh" --print)"
