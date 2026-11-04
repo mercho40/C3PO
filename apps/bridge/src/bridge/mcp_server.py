@@ -140,6 +140,9 @@ mcp = GovernedMCP(
     ),
     host=BRIDGE_HOST,
     port=BRIDGE_PORT,
+    # No idle reaper (mcp>=1.30 defaults to 30 min): apps/back fails the first call on a
+    # reaped session, and that call can be PARAR. Loopback-only; max_sessions still bounds it.
+    session_idle_timeout=None,
 )
 
 

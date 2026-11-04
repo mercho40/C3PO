@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "C3PO bridge: Unitree G1 SDK wrapper, MCP server, voice loop."
 requires-python = ">=3.12"
 dependencies = [
-    "mcp[cli]>=1.10",
+    "mcp[cli]>=1.30,<2",
     "pydantic>=2.8",
     "structlog>=24",
     "python-dotenv>=1",

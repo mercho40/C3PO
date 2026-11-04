@@ -244,6 +244,31 @@ async def test_t0_and_t1_tools_are_not_gated(mcp, link):
     await mcp.call_tool("walk_velocity", {"vx": 0.1})
 
 
+@pytest.mark.asyncio
+async def test_the_protocol_path_still_dispatches_through_the_gate(mcp, link):
+    """Through a real ClientSession, not a Python call: an mcp upgrade that wires
+    the low-level server around GovernedMCP.call_tool would fail here."""
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from bridge import estop
+
+    async with create_connected_server_and_client_session(mcp._mcp_server) as client:
+        hand = await client.call_tool("set_hand", {"side": "right", "closure": 0.5})
+        assert hand.isError and "confirmation" in hand.content[0].text
+        estop.signal_stop()
+        assert estop.stop_is_standing()
+        walk = await client.call_tool("walk_velocity", {"vx": 0.1})
+        assert walk.isError and "PARAR" in walk.content[0].text
+
+
+def test_the_http_app_serves_mcp_and_the_operator_routes(mcp):
+    paths = {r.path for r in mcp.streamable_http_app().routes}
+    assert {
+        "/mcp", "/safety/ack", "/safety/confirm", "/safety/status",
+        "/camera/status", "/camera/frame.jpg", "/camera/stream.mjpg",
+    } <= paths  # fmt: skip
+
+
 def test_nothing_on_the_tool_surface_can_grant_a_confirmation():
     """`grant_confirmation` is called from the console route and nowhere else.
 
