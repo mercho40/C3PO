@@ -47,4 +47,9 @@ declare module "bun:test" {
   }
 
   export function expect(actual: unknown): Matchers;
+
+  /** Module mocks, for a module that only exists inside a SvelteKit build. */
+  export const mock: {
+    module(specifier: string, factory: () => Record<string, unknown>): void;
+  };
 }
