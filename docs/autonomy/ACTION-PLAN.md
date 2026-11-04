@@ -4,7 +4,7 @@ Scoped by 9 read-only agents that read the code, one per work package (WP). A, B
 
 **How to read it.** Work runs in **waves**. Inside a wave, the listed branches edit disjoint files and can run in parallel. Each subtask lands only with its tests green. A critic issue marked _apply_ is folded into the subtask when it's implemented.
 
-**Status (2026-11-03):** waves 0 and 1 done, except A4/A6, which moved to wave 2 to ship with A5. 🟢 done · 🔵 in progress · ⚪ todo. Robot-only steps are in §4.
+**Status (2026-11-04):** waves 0, 1 and 2 done. Wave 2 also closed backlog 1.5 (X15) and the cross-check's person-rule item (X16), and gated zero_torque. 🟢 done · 🔵 in progress · ⚪ todo. Robot-only steps are in §4.
 
 ## 1. Waves
 
@@ -292,7 +292,7 @@ These are the scoping agents' recommendations. **They are the defaults unless yo
 - _apply (major)_: After A3 the operator confirms exact arguments they cannot see. The plan's reason ('the card already shows part.input in Tool.Input') does not hold by default. tool-part.ts:197-201 gives the 'Requiere confirmación' state defaultOpen:false, and Tool.Input sits inside the collapsed CollapsibleContent (tool-card.svelte:104-111). The headset menu label is only 'Confirmar reach'. The audit (README.md:92) asks to 'show the pending call in the console'. **Fix:** Render a one-line summary of part.input (for example `JSON.stringify(part.input)`, truncated) next to the Confirmar button, or set defaultOpen:true for that state. In the VR menu, add a short argument summary to the label.
 - _apply (minor)_: The headset's stale-selection check compares only the tool name. If a newer refused call of the same tool with different arguments arrives between building the menu and the click, the click grants arguments the operator never saw. **Fix:** Key the menu item by toolCallId (VOICE_CONFIRM + toolCallId). At click time, look up that exact part and post its input. Grant nothing if it is no longer the last pending part.
 
-#### ⚪ A4: High-danger T1 needs a confirmation on the bridge (1.3, bridge) `S`
+#### 🟢 A4: High-danger T1 needs a confirmation on the bridge (1.3, bridge) `S`
 
 - **Backlog:** 1.3 · **Depends on:** A2
 - **Files:** `apps/bridge/src/bridge/safety.py`, `apps/bridge/src/bridge/mcp_server.py`, `apps/bridge/tests/test_safety.py`, `apps/bridge/scripts/teleop_smoke_test.py`
@@ -303,7 +303,7 @@ These are the scoping agents' recommendations. **They are the defaults unless yo
 - _apply (major)_: The plan breaks the invariant that a model can never grant itself anything. A4's risk text says Claude Code 'must confirm with the secret (curl /safety/confirm)', and A7 repeats a curl-with-secret hint in c3po_preflight. Claude Code is a model. Also, apps/back/.env on the Mac holds the same SAFETY_CONFIRM_SECRET (apps/back/.env.example:26-30), and the bridge is reachable at 127.0.0.1:8001 through the tunnel. So the protection the safety_confirm docstring relies on ('as long as it cannot read the robot's .env', mcp_server.py:3786-3788) does not hold for an agent with a shell on the Mac. The claim 'no MCP client without the secret' is weaker than stated. **Fix:** Agent-facing text and docs say only that the agent asks a human to press Confirmar. The secret curl stays in the human checklist (safety.md), marked operator-only. Add a Claude Code deny rule for reading apps/*/.env, or record this as a known limit in safety.md. Keep 'You cannot give it' in the new refusal text.
 - _apply (minor)_: Comments and tests that describe the old rule go stale: skill_meta.py:50-52 ('T1 — ... free'), the safety.py module docstring :26-30 (only T2 gated), runtime.ts:195-197 and runtime.test.ts:139 ('A high-danger T1 (arm_navigation) has no such gate'). teleop_smoke_test.ensure_walk_program (:453) has already been broken since the PARAR latch landed (prepare is refused after stage 6 until /safety/ack). Printing the refusal helps, but restoring now needs an ack and a confirm. **Fix:** Update those comments in A4. In the smoke test, say that the restore needs Reanudar and then the console bring-up (A5 path), not MCP.
 
-#### ⚪ A5: Console and headset bring-up keep working: an admin's /invoke is the confirmation (1.3, back + web copy) `S`
+#### 🟢 A5: Console and headset bring-up keep working: an admin's /invoke is the confirmation (1.3, back + web copy) `S`
 
 - **Backlog:** 1.3 · **Depends on:** A3, A4
 - **Files:** `apps/back/src/routes/skills.ts`, `apps/back/src/routes/skills.test.ts`, `apps/back/src/agent/runtime.ts`, `apps/web/src/lib/chat/tool-part.ts`
@@ -313,7 +313,7 @@ These are the scoping agents' recommendations. **They are the defaults unless yo
 - **Risk:** SAFETY_CONFIRM_SECRET becomes required in apps/back/.env for the bring-up. Without it start_walking_waist returns 503, a regression on test day if the secret is missing (it is already needed for Reanudar and T2). If the dispatch fails after a successful pre-grant, a 30 s grant bound to those exact arguments stays pending. The admin intended that call anyway, and PARAR or Reanudar clears it. The predicate is duplicated in TS and Python: a drift fails closed and visibly.
 - _apply (minor)_: The predicate `skill.tier !== 'T2' && skill.dangerLevel === 'high'` fails open: catalogue.ts:79 makes tier optional. A catalogue entry without tier would give the T2 high tools (move_arm, reach, pick, place, handover) an automatic pre-grant on /invoke, which skips the two-step Confirmar the plan says T2 keeps. The predicate is also duplicated in TS and Python. **Fix:** Use `skill.tier === 'T1' && skill.dangerLevel === 'high'`. Better: have skill_meta.to_meta emit `needs_confirmation` (one Python function, used by safety.needs_confirmation as well), and have back read that flag for both /invoke and the buildSystemPrompt tag.
 
-#### ⚪ A6: Refuse arm motion and long locomotion below 20% battery (1.10, bridge part) `S`
+#### 🟢 A6: Refuse arm motion and long locomotion below 20% battery (1.10, bridge part) `S`
 
 - **Backlog:** 1.10 · **Depends on:** A4
 - **Files:** `apps/bridge/src/bridge/sdk/state.py`, `apps/bridge/src/bridge/safety.py`, `apps/bridge/tests/test_safety.py`
@@ -324,7 +324,7 @@ These are the scoping agents' recommendations. **They are the defaults unless yo
 - _apply (major)_: The drain set leaves out `dance` (gesture/low/T1, expected_duration_s=20, a whole-body vendor routine), the longest motion in the live catalogue. Backlog 1.10 says 'refuse long tasks or arms'. The wording 'tier T2, or classification locomotion with expected_duration_s >= 15 or danger high' can also be read as including start_walking_waist (posture/high), which contradicts the plan's own test that start_walking_waist is not refused. **Fix:** State the predicate exactly, without classification: non-T0 and (tier == 'T2' or expected_duration_s >= 15 or (classification == 'locomotion' and danger_level == 'high')). Against the live catalogue that refuses the 6 T2 tools plus walk_to, go_to_object, navigate_to, navigate_to_landmark, look_around, dance and arm_navigation. It leaves start_walking_waist, turn (12 s), walk_velocity, short presets, open_hands, release_arm_control and damp free. Pin that set in the test.
 - _apply (minor)_: The plan cites state.py the wrong way round: state.py:93-95 and :452-453 say null must NOT be read as healthy, but the plan quotes them in support of allowing unknown. There is no staleness check either: _BmsSnapshot keeps the last soc forever, so a dead BMS subscription freezes battery_pct (a stale 25% allows forever, a stale 15% refuses forever). sampler.get_state() builds the whole state dict and returns battery None whenever lowstate has not arrived. **Fix:** Keep 'unknown is allowed', but say it is a decision, not something state.py backs. Log `safety.battery_unknown` when SIM_MODE=real. Read soc_pct and received_at directly (a small locked accessor on StateSampler). Treat age > 60 s as unknown and log it. Wrap the read in try/except → unknown.
 
-#### ⚪ A7: Docs and operator copy for the new gate `S`
+#### 🟢 A7: Docs and operator copy for the new gate `S`
 
 - **Backlog:** 11.1, 11.2, 1.3, 1.10 · **Depends on:** A1, A2, A3, A4, A5, A6
 - **Files:** `docs/autonomy/test-day/safety.md`, `scripts/robot/c3po_preflight`, `docs/autonomy/BACKLOG.md`
@@ -408,7 +408,7 @@ Not checked: the svelte tool-card has no component test, so the Eden body typing
 - _apply (minor)_: `result.steps` calls `this.consumeStream()` (ai dist/index.js:10185-10186), so a tee'd branch drains the model stream eagerly. The agent loop then loses backpressure from the HTTP consumer. Before, a client that stayed connected but stopped reading (for example a Quest tab suspended when the headset sleeps) paused the loop. Now the loop keeps dispatching skills. The risk note 'the turn already runs to completion unless request.signal aborts' is therefore not accurate. Also, replacing onEnd/onAbort drops a backstop: on the internal `controller.error` path (~9331), _steps may never settle. **Fix:** Keep `onEnd: done, onAbort: done` and add `result.steps.then(done, done)`; done is an idempotent Set.delete. State the backpressure trade-off in the comment. Request.signal and PARAR still abort, so this is acceptable once written down.
 - _apply (minor)_: The new tests assert `activeTurnCount() === 0` on the module-global Set in turns.ts. Bun runs all test files in one process, and turns.test.ts and the skills.test.ts PARAR test also touch that Set, so a turn leaked by another file makes these assertions flaky. **Fix:** Assert a before/after delta, or call abortAllTurns() in beforeEach.
 
-#### ⚪ B4: Bound the agent's model context (headset and console) `S`
+#### 🟢 B4: Bound the agent's model context (headset and console) `S`
 
 - **Backlog:** 7.3 · **Depends on:** B3
 - **Files:** `apps/back/src/agent/runtime.ts`, `apps/back/src/agent/runtime.test.ts`
@@ -440,7 +440,7 @@ Not checked: the svelte tool-card has no component test, so the Eden body typing
 - _apply (minor)_: The test premise is wrong. sign-up.mjs:144 wraps the disableSignUp check in runWithTransaction, which runs `runtimeSchemaCheckFor(adapter)` and `adapter.transaction(...)` before the check (@better-auth/core dist/context/transaction.mjs:54-66). So 'the check comes before any DB access' is false, and a handler test without Postgres will hang or return 500 rather than 400. **Fix:** Assert the config structurally: `auth.options.emailAndPassword.disableSignUp === true` and `disableSignUp` on github/google, with drizzle mocked the way safety.test.ts does it. Run the live 400 check by hand in the B6 robot/Mac step.
 - _apply (minor)_: admin createUser checks only `assertPasswordNotTooLong` (plugins/admin/routes.mjs ~195), not a minimum length, so the CLI can create an admin with a 1-character password. Bun's prompt() also echoes the password on screen. apps/back/README.md:59-62 still tells people to create accounts with POST /api/auth/sign-up/email. **Fix:** In create-user.ts, enforce a password of at least 8 characters, read it without echo (stdin or an env var), and map USER_ALREADY_EXISTS to a clear message. Update apps/back/README.md alongside SESSION-CHECKLIST §3c.
 
-#### ⚪ B7: Admin role on /agent and /voice `S`
+#### 🟢 B7: Admin role on /agent and /voice `S`
 
 - **Backlog:** 1.4 · **Depends on:** B6
 - **Files:** `apps/back/src/routes/agent.ts`, `apps/back/src/routes/voice.ts`, `apps/back/src/routes/skills.ts`, `apps/back/src/routes/agent-voice-admin.test.ts`, `apps/web/src/lib/chat/chat-error.ts`, `apps/web/tests/chat-logic.test.ts`, `apps/web/src/lib/robot/vr-voice.svelte.ts`
@@ -572,7 +572,7 @@ Left out and not checked:
 - _apply (major)_: Under visible-blurred, head-yaw steering and the arm mirror keep running. xr-teleop.ts onFrame (about lines 984-994) calls onSample on every frame whatever session.visibilityState is, so #lastYawSampleAt stays fresh. #computeVyaw (vr-control.svelte.ts:802) and buildFrame (stream.ts:166-185) then keep deriving `enabled` from yaw and `arms` from armsRequested. releaseAllControls (774-799) only cancels the talk and the walk. So the operator opens the Meta menu, looks across the system panels, and the robot turns. The plan claims to handle 6.2 'visible-blurred' but closes only the push-to-talk half. **Fix:** In onFrame, skip onSample when `active.visibilityState !== 'visible'` (draw first, as now). In onVisibility, also set #lastYawSampleAt = 0 so yaw and arms go to zero at once, not 800 ms later (VR_STALE_MS). The HTTP loop and the stream both stop through their existing freshness gates. Add a test: a fake session with visibilityState 'visible-blurred' produces no onSample. Keep releaseAllControls for the talk and the walk.
 - _apply (minor)_: track.onended is told to call 'the same teardown destroy() uses', but destroy() also calls #chat.stop(), which would abort a running agent turn because the mic dropped. Also, the premise that the context is suspended is unverified: Chromium's autoplay rule uses sticky activation, and the context is created after the «Activar micrófono» tap. prime() is harmless, but the acceptance should measure the state, not assume it. **Fix:** Factor out a #releaseMic() (disconnect the node, stop the tracks, close the context, micReady=false, cancelTalk()) and use it in both onended and destroy(). Log ctx.state on the first #begin in VR, as evidence.
 
-#### ⚪ C6: The headset PARAR also goes straight to the bridge over the teleop socket `M`
+#### 🟢 C6: The headset PARAR also goes straight to the bridge over the teleop socket `M`
 
 - **Backlog:** 11.3 · **Depends on:** —
 - **Files:** `apps/bridge/src/bridge/teleop/protocol.py`, `apps/bridge/src/bridge/teleop/server.py`, `apps/bridge/tests/test_teleop_protocol.py`, `apps/bridge/tests/test_teleop_estop.py`, `apps/web/src/lib/teleop/stream.ts`, `apps/web/src/lib/robot/vr-control.svelte.ts`, `apps/web/tests/stream.test.ts`, `apps/web/tests/vr-headset-menu.test.ts`
@@ -582,7 +582,7 @@ Left out and not checked:
 - **Risk:** This is a partial stop. In the MCP process, running gestures and arm skills are not cancelled until back's stop_everything lands (see decision). Without the stream there is no direct path: the shortcut comment moves to stream.ts saying so. The socket has no auth yet (1.5), so any LAN client could raise PARAR; that is the safe direction. While back is down the console says 'La orden de parada no salió' even though the teleop stop went out; changing that copy is a follow-up.
 - _apply (minor)_: The plan says `_locomotion.send_velocity:128 zeroes velocity` while the sentinel stands. That check sits inside `if SIM_MODE == "real"` (_locomotion.py:116-133). On sim and Isaac, an MCP walk keeps moving after a teleop-raised stop, and the teleop session itself drives again after the 1 s dwell even though stop_is_standing() is True. Also, connectTeleop's early-return handle `{ close: () => {} }` (stream.ts:221) needs `stop` too. And the FrameError re-parse is close to dead code: the stop frame is built from idlePayload() and always parses. **Fix:** Scope the acceptance to real hardware and note the sim gap (it predates this change and also holds for the console's PARAR). Add `stop: () => {}` to the early-return handle. Treat the FrameError fallback as optional; if kept, skip it when the error was the size cap, as planned.
 
-#### ⚪ C7: Teleop lease only while the headset is actually driving, and agent walks yield when it takes over `S`
+#### 🟢 C7: Teleop lease only while the headset is actually driving, and agent walks yield when it takes over `S`
 
 - **Backlog:** 11.6 · **Depends on:** C6
 - **Files:** `apps/bridge/src/bridge/teleop/server.py`, `apps/bridge/src/bridge/skills/walk_to.py`, `apps/bridge/src/bridge/skills/turn.py`, `apps/bridge/src/bridge/estop.py`, `apps/bridge/tests/test_teleop_lease.py`
@@ -685,7 +685,7 @@ What I skipped or did not check: svelte-check/`?url` typing, whether Chromium pr
 - **Done when:** All 5 cases pass. On the robot, a wedge after a container restart shows camera.wedged -> camera.reset -> camera.ready in `docker logs c3po-perception-vision` with no manual reset.
 - **Risk:** Re-enumeration inside the container depends on the /dev, /dev/bus/usb and /run/udev bind mounts (spec.py:385-393). It is designed for replug but has not been seen to survive a reset in-container, so the robot step must confirm it. Startup can take up to about 17 s longer, and bringup's 20 s port check (cli.py:495-517) only warns. Resetting while another process holds the camera would yank it from them. Matching only errno=5 is what prevents that: keep it narrow. Needs a vision image rebuild to ship.
 
-#### ⚪ D5: Detections carry their capture age through the nav container to the bridge `S`
+#### 🟢 D5: Detections carry their capture age through the nav container to the bridge `S`
 
 - **Backlog:** 3.6 · **Depends on:** —
 - **Files:** `apps/perception/vision/c3po_vision/detector.py`, `apps/perception/nav/ws/src/c3po_perception/c3po_perception/world_model_publisher.py`, `apps/bridge/src/bridge/skills/manipulation.py`, `apps/perception/tests/test_report_shape.py`, `apps/bridge/tests/test_manipulation.py`
@@ -715,7 +715,7 @@ _Notes:_ I checked all five items against the feat/autonomy worktree (3bfd0c9). 
 | 4.3     | yes   | apps/bridge/src/bridge/skills/go_to_object.py:9-10 says 'shortcut: open loop on one sighting, no obstacle avoidance and no re-aiming'. mcp_server.py:360-392 resolves the target once, turns it into a fixed world XY and awaits run_walk_to(timeout 60 s). skills/walk_to.py:39-47 only takes a fixed target_x/target_y, and its loop (134-177) never re-reads the target. go_to_object never checks whether Na |
 | 11.5    | yes   | go_to_object.resolve (go_to_object.py:39-53) takes the best-confidence live match whatever its age. mcp_server.py:360 reads surroundings_snapshot() objects, which carry no age: world_model_publisher.py:194-199 stores objects with no capture stamp, and :245/:256 re-emits them for up to DETECTOR_OFFLINE_AFTER_S=1.5 s (:72). The bearing is then applied to the CURRENT sampler pose (mcp_server.py:378-3 |
 
-#### ⚪ E1: 11.5 (nav side): every object in the world summary carries its age `S`
+#### 🟢 E1: 11.5 (nav side): every object in the world summary carries its age `S`
 
 - **Backlog:** 11.5 · **Depends on:** —
 - **Files:** `apps/perception/nav/ws/src/c3po_perception/c3po_perception/world_model_publisher.py`, `apps/perception/tests/conftest.py`, `apps/perception/tests/test_world_model_publisher_age.py`, `apps/bridge/tests/test_world_model_report.py`
@@ -1003,7 +1003,7 @@ What I did not check: whether /usr/bin/systemctl exists on the JetPack rootfs (r
 | 11.9    | yes   | apps/bridge/tests/test_go_to_object.py tests only the pure helpers skills/go_to_object.resolve and world_target. The tool body (mcp_server.py:327-398: SIM_MODE guard, _memory_pose frame, too_far, vendor-odometry pose read, no_pose, the walk_to.run call with autonomous=True) has no test. apps/back/src/agent/turns.test.ts tests only the registry. A read-only probe (bun -e with a stubbed fetch, real  |
 | 7.2     | yes   | runtime.ts:406-423 streamText passes no telemetry option. The installed ai 7.0.140 (node_modules/ai/dist/index.d.ts:3782-3788) offers `telemetry` (`experimental_telemetry` is a deprecated alias) and registerTelemetry(Telemetry) (d.ts:10311), with zero-dependency custom integrations (onStart, onStepEnd, onToolExecutionEnd, onEnd). OpenTelemetry spans need @ai-sdk/otel plus an OTel SDK and exporter. |
 
-#### ⚪ G1: Eval suite knows today's movers and scores go_to_object / navigate_to_landmark `S`
+#### 🟢 G1: Eval suite knows today's movers and scores go_to_object / navigate_to_landmark `S`
 
 - **Backlog:** 7.4 · **Depends on:** —
 - **Files:** `docs/autonomy/eval/tasks.yaml`, `apps/back/scripts/eval/suite.ts`, `apps/back/scripts/eval/suite.test.ts`, `apps/back/scripts/eval-agent.ts`, `docs/autonomy/eval/README.md`
@@ -1012,7 +1012,7 @@ What I did not check: whether /usr/bin/systemctl exists on the JetPack rootfs (r
 - **Done when:** motion_tools lists go_to_object, navigate_to_landmark and release_arm_control. The dry-run passes 96/96. Against the stub bridge, the real runner starts without an unlisted-movers exit. Deleting go_to_object from motion_tools makes the runner exit 1 and name it.
 - **Risk:** Stricter rules lower the measured success rate of the current model, so mark the break in the README. The landmark-task rule follows decision D2. If D2 allows a walk_to fallback, add walk_to back to calls_any for t1-ir-cocina and t1-ir-puerta.
 
-#### ⚪ G2: Cheap T0 run against the stub, guarded so it can never hit the robot `S`
+#### 🟢 G2: Cheap T0 run against the stub, guarded so it can never hit the robot `S`
 
 - **Backlog:** 7.4 · **Depends on:** G1
 - **Files:** `apps/back/scripts/eval-agent.ts`, `apps/back/scripts/eval/suite.ts`, `apps/back/scripts/eval/suite.test.ts`, `apps/back/package.json`, `docs/autonomy/eval/README.md`, `docs/autonomy/test-day/return-checklist.md`
@@ -1021,7 +1021,7 @@ What I did not check: whether /usr/bin/systemctl exists on the JetPack rootfs (r
 - **Done when:** With robot_tunnel.sh up and BRIDGE_URL=:8001, `bun run eval:t0` exits 1 before any LLM call and says the env is 'real'. Against the 8011 stub on the campus network, 54 trials write runs.jsonl and summary.md under ~/.c3po/eval/<date>, with `model` on every line.
 - **Risk:** The TIC gateway answers only on campus (eval-agent.ts:43), so a laptop 'nightly' mostly cannot reach it, and GitHub Actions or a cloud routine cannot reach it at all. Every eval tool call still writes to the tool_call_log of whatever DATABASE_URL is in apps/back/.env (chat_id NULL), which mixes stub calls into the operator audit log unless a separate DB is used.
 
-#### ⚪ G3: Prompt teaches go_to_object versus navigate_to*, honest obstacle avoidance, and what to do after 'refused: PARAR' `S`
+#### 🟢 G3: Prompt teaches go_to_object versus navigate_to*, honest obstacle avoidance, and what to do after 'refused: PARAR' `S`
 
 - **Backlog:** 7.5 · **Depends on:** —
 - **Files:** `apps/back/src/agent/runtime.ts`, `apps/back/src/agent/runtime.test.ts`
@@ -1030,7 +1030,7 @@ What I did not check: whether /usr/bin/systemctl exists on the JetPack rootfs (r
 - **Done when:** `bun test src/agent` is green. In a G1/G2 run against the stub, t1-acercate-silla calls go_to_object and t1-ir-cocina calls navigate_to_landmark.
 - **Risk:** The prompt gets a little longer for tic-chat. The PARAR sentence repeats a Python string that a TypeScript test cannot pin, so the comment has to carry it. The rest of the Walking text follows D2.
 
-#### ⚪ G4: look / find_object / verify fall back to YOLOE-only, with an honest note, when Gemini is unavailable `S`
+#### 🟢 G4: look / find_object / verify fall back to YOLOE-only, with an honest note, when Gemini is unavailable `S`
 
 - **Backlog:** 7.7 · **Depends on:** —
 - **Files:** `apps/bridge/src/bridge/mcp_server.py`, `apps/bridge/tests/test_vlm_tools.py`, `docs/autonomy/test-day/vlm.md`
@@ -1057,7 +1057,7 @@ What I did not check: whether /usr/bin/systemctl exists on the JetPack rootfs (r
 - **Done when:** All three checks exit 0. After a forced gateway failure, activeTurnCount() returns to 0, and abortAllTurns() no longer counts dead turns (routes/skills.ts:234 reports that number).
 - **Risk:** The child-process test adds about 1 s. It runs the real openai-compatible provider over a stubbed fetch, so an SDK bump that changes the stream format breaks it. That is useful: it is the 'majors move together' trap in runtime.ts:28. Ownership of the 11.8 fix follows decision D6.
 
-#### ⚪ G7: One structured log line per agent turn (zero-dependency telemetry) `S`
+#### 🟢 G7: One structured log line per agent turn (zero-dependency telemetry) `S`
 
 - **Backlog:** 7.2 · **Depends on:** G6
 - **Files:** `apps/back/src/agent/runtime.ts`, `apps/back/src/agent/runtime.test.ts`
@@ -1112,7 +1112,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 | 10 (test-day docs: today's results, and the checklist order that worked)    | yes   | return-checklist.md:74 says "Without a confirm secret: re-engage the headset." Commit 993da12 (C1) made that untrue, and apps/bridge/tests/test_teleop_estop.py:232 pins it. safety.md:74 says "The console has no Confirm button yet" (wrong since 8c623df). safety.md:48 says "`move_arm`, `set_hand` and `arm_navigation` are never offered" in voice, but apps/back/src/agent/runtime.ts:204 offers T2 to vo |
 | 10 (apps/*/README.md: WP scope, not a backlog bullet)                       | yes   | apps/back/README.md:94-105 lists routes without safety.ts (/safety/status, /safety/ack), without POST /skills/:name/confirm (skills.ts:290) and without POST /voice/transcribe (voice.ts:236). apps/perception/README.md:409 says "TensorRT 8.5 has not parsed it yet", and :21 and :63 say "Mid-360". apps/bridge/README.md:127-128 has the old arm and hand gates ("which hands are fitted is unresolved"), an |
 
-#### ⚪ H1: ROBOT-API.md §8: `switch` key, API version 1.0.0.2, the one shipped 1001 caller `S`
+#### 🟢 H1: ROBOT-API.md §8: `switch` key, API version 1.0.0.2, the one shipped 1001 caller `S`
 
 - **Backlog:** 10 · **Depends on:** —
 - **Files:** `docs/ROBOT-API.md`
@@ -1542,3 +1542,12 @@ What I skipped or did not check:
 - F9/F10 vs 8.3: 'CI on every push' does nothing while feat/autonomy has no upstream, and pushing (8.3) is in no WP.
 - E7/E8 vs the gate: the depth costmap and collision monitor arrive, but the bridge gate still ignores whether its obstacle source is alive (audit §1.4: Nav2 collision monitor fails open on stale input). Add a fail-closed check on depth-cloud freshness to E8, or the invariant 'never open the cmd_vel gate by default' holds only on paper.
 - B closes 6.8: confirmed done (vr-voice.svelte.ts:55-61 Chat id plus POST /agent, agent.ts ensureChat). But the chat is stored as channel 'text', so continuing a headset conversation from the console runs in operator mode, which offers high-danger T1. That is acceptable, but document it in H7.
+
+## 6. Left over from the wave-2 review (minor, 2026-11-04)
+
+- [ ] Behavioural tests for the capture-age wiring. Two mutations survived: the publisher using arrival time, and the detector stamping at publish time.
+- [ ] With no `SAFETY_CONFIRM_SECRET`, `/invoke` of a gated tool returns 503. Map `confirmation_not_configured` to a Spanish hint in `skill-outcome.ts`, and consider making preflight treat a missing secret as a blocker.
+- [ ] A pre-grant stays pending for 30 s when the dispatch is refused right after it (battery, PARAR). Drop that tool's grant in `tool_refusal` when it refuses a gated call.
+- [ ] The teleop token is replayable for 60 s over plain `ws://` on the LAN. Bind it to one use, or move to `wss`.
+- [ ] Test hygiene: `teleop.test.ts` leaves `TELEOP_SECRET` set; the headset socket-stop and token tests only grep the source.
+- [ ] C8 (wave 3): head yaw alone ends an agent walk that the headset's own voice started.
