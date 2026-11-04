@@ -44,6 +44,10 @@ CLAUDE.md
 .claude
 .mcp.json
 skills-lock.json
+graphify-out/
 
 # Agent/session scratch space — never a deliverable.
 .scratch/
+
+# Python bytecode (scripts/ has no per-app ignore)
+__pycache__/
