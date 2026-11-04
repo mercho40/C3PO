@@ -34,6 +34,8 @@ motion_tools:
     walk_velocity,
     look_around,
     navigate_to,
+    navigate_to_landmark,
+    go_to_object,
     explore,
     follow_person,
     arm_navigation,
@@ -52,6 +54,7 @@ motion_tools:
     clap,
     dance,
     release_arm,
+    release_arm_control,
     prepare,
     damp,
     zero_torque,
@@ -201,7 +204,14 @@ tasks:
     needs: [recall_object]
     success:
       calls_any: [recall_object, list_objects, describe_surroundings]
-      forbid: [walk_to, walk_velocity, navigate_to]
+      forbid:
+        [
+          walk_to,
+          walk_velocity,
+          navigate_to,
+          navigate_to_landmark,
+          go_to_object,
+        ]
       human: "Da la dirección correcta (izquierda/derecha/atrás)."
 
   - id: t0-que-viste
@@ -299,11 +309,10 @@ tasks:
     phrase: "Andá a la cocina"
     alt_phrasings: ["Llevame a la cocina", "Vamos para la cocina"]
     start_state: "Landmark cocina guardado a 3 m; camino libre."
-    needs: [recall_landmark, navigate_to]
+    needs: [navigate_to_landmark]
     success:
-      calls_all: [recall_landmark]
-      args_contain: { recall_landmark: [cocina] }
-      calls_any: [navigate_to, walk_to]
+      calls_any: [navigate_to_landmark, navigate_to]
+      args_contain: { navigate_to_landmark: [cocina] }
       human: "Termina a menos de 1,0 m del landmark, sin tocar nada."
 
   - id: t1-ir-puerta
@@ -312,11 +321,10 @@ tasks:
     phrase: "Andá hasta la puerta"
     alt_phrasings: ["Acercate a la puerta", "Caminá hasta la puerta"]
     start_state: "Landmark puerta guardado a 2 m."
-    needs: [recall_landmark, navigate_to]
+    needs: [navigate_to_landmark]
     success:
-      calls_all: [recall_landmark]
-      args_contain: { recall_landmark: [puerta] }
-      calls_any: [navigate_to, walk_to]
+      calls_any: [navigate_to_landmark, navigate_to]
+      args_contain: { navigate_to_landmark: [puerta] }
       human: "Termina a menos de 1,0 m de la puerta."
 
   - id: t1-girar
@@ -330,7 +338,14 @@ tasks:
     success:
       calls_all: [turn]
       args_contain: { turn: ["1.5", "1.6"] }
-      forbid: [walk_to, walk_velocity, navigate_to]
+      forbid:
+        [
+          walk_to,
+          walk_velocity,
+          navigate_to,
+          navigate_to_landmark,
+          go_to_object,
+        ]
       human: "Gira a la izquierda 80-100°."
 
   - id: t1-mirar-alrededor
@@ -343,7 +358,14 @@ tasks:
     needs: [look_around]
     success:
       calls_any: [look_around, turn]
-      forbid: [walk_to, walk_velocity, navigate_to]
+      forbid:
+        [
+          walk_to,
+          walk_velocity,
+          navigate_to,
+          navigate_to_landmark,
+          go_to_object,
+        ]
       human: "Gira 360° en pasos y nombra lo que encontró atrás."
 
   - id: t1-girar-hasta-botella
@@ -356,7 +378,14 @@ tasks:
     needs: [look_around]
     success:
       calls_any: [look_around, turn]
-      forbid: [walk_to, walk_velocity, navigate_to]
+      forbid:
+        [
+          walk_to,
+          walk_velocity,
+          navigate_to,
+          navigate_to_landmark,
+          go_to_object,
+        ]
       human: "Termina mirando la botella (±30°) y dice que la encontró."
 
   - id: t1-ir-billetera
@@ -366,10 +395,9 @@ tasks:
     alt_phrasings:
       ["Andá a donde estaba la billetera", "Acercate a la billetera"]
     start_state: "Billetera en memoria a 2,5 m; camino libre."
-    needs: [recall_object, navigate_to]
+    needs: [go_to_object]
     success:
-      calls_all: [recall_object]
-      calls_any: [navigate_to, walk_to, turn]
+      calls_any: [go_to_object, navigate_to, walk_to]
       human: "Termina a menos de 1,0 m con la billetera a la vista."
 
   - id: t1-buscar-vaso
@@ -389,9 +417,10 @@ tasks:
     phrase: "Acercate a la silla"
     alt_phrasings: ["Andá hasta la silla", "Ponete al lado de la silla"]
     start_state: "Silla a 2 m, visible."
-    needs: [describe_surroundings, navigate_to]
+    needs: [go_to_object]
     success:
-      calls_any: [navigate_to, walk_to]
+      calls_any: [go_to_object, navigate_to, walk_to]
+      args_contain: { go_to_object: [silla, chair] }
       human: "Para a menos de 1,0 m de la silla sin tocarla."
 
   - id: t1-recorrer
@@ -415,7 +444,7 @@ tasks:
     start_state: "Una persona a 1,5 m adelante."
     needs: [follow_person]
     success:
-      forbid: [walk_velocity, walk_to]
+      forbid: [walk_velocity, walk_to, go_to_object]
       human: "Sigue a 0,8-2,0 m; hoy: dice que todavía no puede seguir a nadie."
 
   # ------------------------------------------------- T2: grasp / handover

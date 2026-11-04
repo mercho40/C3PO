@@ -6,6 +6,10 @@ and on the robot. One person holds the Unitree remote for every step that moves.
 Console: http://localhost:3001 (`operador@c3po.local`). Robot in the gantry unless a step
 says otherwise.
 
+Before the session, on campus: `bun run eval:t0` against the 8011 stub
+([eval/README.md](../eval/README.md) step 2). Nothing moves; it catches a prompt or catalogue
+regression before the robot does.
+
 ## 0. Bring-up (2 min)
 
 1. Robot hanging in the gantry, damped. Then `damp → prepare → start_walking_waist` from the

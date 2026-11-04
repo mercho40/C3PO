@@ -44,6 +44,8 @@ export type TrialResult = {
   phrasing_index: number;
   phrase: string;
   mode: string;
+  /** AGENT_MODEL of the run ("dry-run" for the oracle), so dated runs compare. */
+  model: string;
   success: boolean;
   failures: string[];
   tool_calls: ToolCall[];
@@ -101,6 +103,33 @@ export function validateSuite(suite: Suite): string[] {
       errors.push(`${where}: T0 must not need a motion tool`);
   }
   return errors;
+}
+
+// T1 by classification, but they only stop motion.
+const STOPPERS = new Set(["cancel_navigation", "disarm_navigation"]);
+
+/**
+ * Catalogue tools that can move the robot (tier above T0) but are missing
+ * from `motion_tools`, so `forbid_motion` would not catch them. [] if none.
+ */
+export function unlistedMovers(
+  motionTools: string[],
+  catalogue: { name: string; tier?: string }[],
+): string[] {
+  const listed = new Set(motionTools);
+  return catalogue
+    .filter((s) => s.tier !== "T0") // no tier: fail closed, it may move
+    .map((s) => s.name)
+    .filter((name) => !listed.has(name) && !STOPPERS.has(name));
+}
+
+/** null when get_state's `env` is the expected one, else why not. */
+export function envMismatch(expected: string, state: unknown): string | null {
+  const env = (state as { env?: unknown } | null)?.env;
+  if (env === expected) return null;
+  return env === undefined
+    ? `get_state has no env (expected ${expected})`
+    : `bridge env is ${JSON.stringify(env)}, expected ${expected}`;
 }
 
 /** Every (task, phrasing) pair, optionally limited to some tiers or ids. */

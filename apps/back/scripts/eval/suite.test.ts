@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { join, resolve } from "node:path";
 
 import {
+  envMismatch,
   fold,
   loadSuite,
   oracleTrace,
   score,
   summarize,
   trialsOf,
+  unlistedMovers,
   validateSuite,
   wilson,
   type Task,
@@ -154,6 +156,29 @@ test("validateSuite catches an unsatisfiable rule", () => {
   expect(errors.some((e) => e.includes("T0 must not need"))).toBe(true);
 });
 
+test("unlistedMovers flags a mover missing from motion_tools", () => {
+  const catalogue = [
+    { name: "walk_to", tier: "T1" },
+    { name: "go_to_object", tier: "T1" },
+    { name: "pick", tier: "T2" },
+    { name: "untiered" },
+    { name: "get_state", tier: "T0" },
+    { name: "cancel_navigation", tier: "T1" },
+    { name: "disarm_navigation", tier: "T1" },
+  ];
+  expect(unlistedMovers(["walk_to", "pick"], catalogue)).toEqual([
+    "go_to_object",
+    "untiered",
+  ]);
+});
+
+test("envMismatch only passes the expected env", () => {
+  expect(envMismatch("stub", { env: "stub", stub: true })).toBeNull();
+  expect(envMismatch("stub", { env: "real" })).toContain('"real"');
+  expect(envMismatch("stub", {})).toContain("no env");
+  expect(envMismatch("stub", null)).toContain("no env");
+});
+
 test("summarize reports per-tier rates with intervals", () => {
   const r = (ok: boolean, tier: "T0" | "T1" = "T0"): TrialResult => ({
     task_id: `t-${tier}`,
@@ -163,6 +188,7 @@ test("summarize reports per-tier rates with intervals", () => {
     phrasing_index: 0,
     phrase: "x",
     mode: "dry-run",
+    model: "dry-run",
     success: ok,
     failures: ok ? [] : ["nope"],
     tool_calls: [],

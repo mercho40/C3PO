@@ -11,9 +11,14 @@ top of the file). `apps/back/scripts/eval-agent.ts` runs it and scores it.
 #    harness works end to end. Every trial should pass.
 bun apps/back/scripts/eval-agent.ts --dry-run
 
-# 2. Mock skills: the real agent and LLM against a stub bridge.
-cd apps/bridge && bun run serve:http          # stub bridge on :8001 (another terminal)
-bun apps/back/scripts/eval-agent.ts --tier T0  # BRIDGE_URL from apps/back/.env
+# 2. The T0 run (18 tasks x 3 = 54 trials, nothing moves): the real agent and
+#    LLM against a stub bridge. Port 8011, not the robot tunnel's 8001, and a
+#    temp C3PO_RUN_DIR so t0-frena's stop_everything latch stays out of
+#    ~/.c3po/run. Another terminal:
+cd apps/bridge && BRIDGE_PORT=8011 C3PO_RUN_DIR=$(mktemp -d) bun run serve:http
+# then, from apps/back. --expect-env stub (in eval:t0) exits 1 before any LLM
+# call unless get_state says env "stub", so a BRIDGE_URL at the robot is refused.
+BRIDGE_URL=http://127.0.0.1:8011/mcp bun run eval:t0 -- --out ~/.c3po/eval/$(date +%F)
 
 # 3. Robot: same command, BRIDGE_URL pointing at the robot (tunnel), with an
 #    operator setting up `start_state` and judging `success.human` per trial.
@@ -21,18 +26,39 @@ bun apps/back/scripts/eval-agent.ts --tier T0  # BRIDGE_URL from apps/back/.env
 
 Flags: `--tier T0,T1`, `--ids t0-saludo,t0-que-ves`, `--voice` (the voice
 tool set: no `say`/`listen`, no high-danger tools), `--out <dir>`,
-`--suite <file>`. Each trial has a 180 s timeout.
+`--suite <file>`, `--expect-env <stub|isaac|real>`. Each trial has a 180 s
+timeout. Outside `--dry-run` the runner also exits 1 if the bridge catalogue
+has a tool above T0 that `motion_tools` does not list (`unlistedMovers` in
+`scripts/eval/suite.ts`), so `forbid_motion` cannot miss a new mover.
+
+When: run `eval:t0` on demand before each robot session (the TIC AI gateway
+answers only on campus, so CI and cloud routines cannot reach it). On a
+machine that stays on the campus network, a nightly crontab line would be:
+
+```sh
+0 3 * * * cd ~/c3po/apps/back && BRIDGE_URL=http://127.0.0.1:8011/mcp bun run eval:t0 -- --out ~/.c3po/eval/$(date +\%F)
+```
+
+with the 8011 stub kept running. Every trial still writes to the
+`tool_call_log` of `apps/back/.env`'s `DATABASE_URL`; point it at a separate DB
+to keep stub calls out of the operator audit log.
 
 Output goes to `docs/autonomy/eval/runs/<timestamp>-<mode>/`:
 
-- `runs.jsonl`: one line per trial with `task_id`, `tier`, `phrase`,
-  `success`, `failures`, `tool_calls` (name + args), `reply`, `steps` (LLM
+- `runs.jsonl`: one line per trial with `task_id`, `tier`, `phrase`, `model`
+  (`AGENT_MODEL`, `dry-run` for the oracle), `success`, `failures`, `tool_calls` (name + args), `reply`, `steps` (LLM
   steps), `duration_ms`, `tools_missing` (tools in `needs` that the bridge
   does not offer yet).
 - `summary.md`: success rate per tier, for "available now", and overall, with
   Wilson 95 % intervals; then one row per task.
 
 Commit a run only when it backs a claim (a planner choice, a phase exit).
+
+Runs from before 2026-11-04 are not comparable with later ones: that change
+added `go_to_object`, `navigate_to_landmark` and `release_arm_control` to
+`motion_tools` and made the landmark and object tasks score
+`navigate_to_landmark` / `go_to_object` (no `recall_*` + `walk_to` detour), so
+the same model now scores lower on T0 forbids and differently on T1.
 
 ## How it calls the agent
 

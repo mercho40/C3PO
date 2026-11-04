@@ -28,7 +28,9 @@ def server(monkeypatch):
     from bridge.sdk import camera_relay
 
     monkeypatch.setattr(server, "SIM_MODE", "real")
-    monkeypatch.setattr(camera_relay, "latest_frame", lambda timeout=5.0: (b"\xff\xd8jpeg", "videohub"))
+    monkeypatch.setattr(
+        camera_relay, "latest_frame", lambda timeout=5.0: (b"\xff\xd8jpeg", "videohub")
+    )
     monkeypatch.setattr(
         server,
         "surroundings_snapshot",
@@ -111,11 +113,43 @@ async def test_verify_normalises_the_answer(server, monkeypatch):
     assert (await server.verify(question="¿hay una taza?"))["answer"] == "unsure"
 
 
-async def test_a_missing_key_is_a_clear_error_not_a_crash(server, monkeypatch):
+async def test_a_missing_key_falls_back_to_the_detector(server, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY")
     out = await server.look(question="¿qué ves?")
-    assert out["error"] == "vlm_unavailable"
+    assert out["degraded"] == "vlm_unavailable" and "error" not in out
     assert "GEMINI_API_KEY" in out["detail"]
+    assert out["scene"] is None
+    assert out["objects"] == [{"label": "cup", "range_m": 1.5, "bearing_deg": 0.5}]
+    assert "Do not describe anything" in out["note"]
+
+
+@pytest.fixture
+def offline(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    def no_uplink(url, body, key):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(vlm, "_post", no_uplink)
+
+
+async def test_offline_find_object_matches_detector_classes(server, offline):
+    out = await server.find_object(query="taza")
+    assert out["degraded"] == "vlm_unavailable" and out["count"] == 1
+    inst = out["instances"][0]
+    assert inst["label"] == "cup" and inst["range_m"] == 1.5 and inst["range_from"] == "detector"
+    # Facing +y (yaw 90) from (1, 2), 1.5 m at 0.5 deg left -> about (0.99, 3.5).
+    assert inst["map_xy_m"] == [0.99, 3.5]
+
+    none = await server.find_object(query="billetera")
+    assert none["count"] == 0 and "not that it is absent" in none["note"]
+
+
+async def test_offline_verify_stays_an_error_but_shows_the_detector(server, offline):
+    out = await server.verify(question="¿hay una taza?")
+    assert out["error"] == "vlm_unavailable" and "answer" not in out
+    assert out["objects"][0]["label"] == "cup"
+    assert out["note"].startswith("NOT verified")
 
 
 async def test_off_the_robot_there_is_no_camera(server, monkeypatch):

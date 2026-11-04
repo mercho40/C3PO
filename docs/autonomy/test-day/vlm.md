@@ -131,9 +131,14 @@ Over about 8 s each: try `THINKING_LEVEL = "low"` in `vlm.py` and compare answer
 ## 8. Failure modes are honest
 
 - Stop the vision container and take the camera away from videohub. `look` → `error: no_frame`.
-- Blank the key and restart. `look` → `vlm_unavailable` with a detail that names `GEMINI_API_KEY`.
-- Unplug the uplink. `vlm_unavailable: Gemini API unreachable` within 30 s, and the
-  agent says it cannot see. It does not invent a scene.
+- Blank the key and restart. `look` → `degraded: vlm_unavailable`, a `detail` that names
+  `GEMINI_API_KEY`, `scene: null`, and the detector's `objects` with range and bearing.
+- Unplug the uplink. Within 30 s, `look` and `find_object` answer the same way with
+  `detail: Gemini API unreachable`. `find_object("silla")` still finds a chair the detector
+  sees, with `range_from: detector`; `find_object("billetera")` gives `count: 0` and a note
+  saying the wallet is not a detector class. `verify` stays `error: vlm_unavailable`, with
+  the detector's `objects` and a note starting "NOT verified". The agent says it cannot
+  check, names only detector objects, and does not invent a scene.
 
 ## 9. After it works
 

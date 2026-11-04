@@ -5,6 +5,7 @@
  *   bun apps/back/scripts/eval-agent.ts --tier T0            # real LLM + BRIDGE_URL
  *   bun apps/back/scripts/eval-agent.ts --tier T0 --voice    # the voice tool set
  *   ... --ids t0-saludo,t0-que-ves   --out <dir>   --suite <tasks.yaml>
+ *   ... --expect-env stub     # exit 1 before any LLM call unless get_state's env matches
  *
  * --dry-run plays each task's own `needs` (scripts/eval/suite.ts oracleTrace):
  * no LLM, no bridge, no DB. It proves the suite is self-consistent and the
@@ -26,11 +27,13 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import {
+  envMismatch,
   loadSuite,
   oracleTrace,
   score,
   summarize,
   trialsOf,
+  unlistedMovers,
   validateSuite,
   type Task,
   type ToolCall,
@@ -53,6 +56,7 @@ const { values: opts } = parseArgs({
       default: join(REPO, "docs/autonomy/eval/tasks.yaml"),
     },
     out: { type: "string" },
+    "expect-env": { type: "string" },
   },
 });
 
@@ -95,6 +99,7 @@ type Runner = (
 ) => Promise<Trace & { steps: number }>;
 let run: Runner;
 let catalogue: Set<string> | null = null;
+let model = "dry-run";
 
 if (dryRun) {
   run = async (task) => {
@@ -104,7 +109,25 @@ if (dryRun) {
 } else {
   const { runAgentChat } = await import("../src/agent/runtime");
   const { listSkills } = await import("../src/skills/index");
-  catalogue = new Set((await listSkills()).map((s) => s.name));
+  const { callTool } = await import("../src/bridge/client");
+  if (opts["expect-env"]) {
+    // Before the first trial, so a wrong BRIDGE_URL never reaches the robot.
+    const wrong = envMismatch(opts["expect-env"], await callTool("get_state"));
+    if (wrong) {
+      console.error(`✗ ${wrong} (BRIDGE_URL=${process.env.BRIDGE_URL ?? ""})`);
+      process.exit(1);
+    }
+  }
+  const skills = await listSkills();
+  const movers = unlistedMovers(suite.motion_tools, skills);
+  if (movers.length) {
+    console.error(
+      `✗ ${opts.suite} motion_tools misses tools that move:\n  ${movers.join("\n  ")}`,
+    );
+    process.exit(1);
+  }
+  catalogue = new Set(skills.map((s) => s.name));
+  model = process.env.AGENT_MODEL ?? "tic-chat";
   run = async (_task, phrase) => {
     let error: string | undefined;
     const result = await runAgentChat(
@@ -165,6 +188,7 @@ for (const { task, index, phrase } of trials) {
     phrasing_index: index,
     phrase,
     mode,
+    model,
     success: failures.length === 0,
     failures,
     tool_calls: trace.calls,
@@ -185,7 +209,7 @@ for (const { task, index, phrase } of trials) {
 }
 await jsonl.end();
 
-const summary = summarize(results, `${mode}, ${stamp}`);
+const summary = summarize(results, `${mode}, ${model}, ${stamp}`);
 await Bun.write(join(outDir, "summary.md"), summary);
 console.log(`\n${summary}`);
 process.exit(0);
