@@ -49,7 +49,9 @@ DangerLevel = Literal["low", "medium", "high"]
 # forget it or contradict its own danger level.
 #   T0 — talk, look, read state, stop: free.
 #   T1 — base motion, posture, firmware preset gestures: free, inside the
-#        governor's limits (bridge/safety.py).
+#        governor's limits (bridge/safety.py). Except danger "high" T1
+#        (arm_navigation, start_walking_waist, zero_torque): those need a confirmation
+#        too (safety.needs_confirmation), but no person-in-reach rule.
 #   T2 — free-form arm/hand motion: needs an operator confirmation the LLM
 #        cannot produce, and is refused with a person in arm's reach.
 # Preset gestures (wave, hug, ...) are danger "low" and so T1: they are vendor

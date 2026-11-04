@@ -163,6 +163,9 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
   .post(
     "/start",
     async ({ user, session, status }) => {
+      // 1.4: driving the robot through a model is an admin's job, like /invoke.
+      if (user.role !== "admin")
+        return status(403, { error: "admin_required" });
       console.log(`[voice] conversation start requested by ${user.id}`);
       if (useRealtime()) {
         const active = realtime.snapshot();
@@ -236,7 +239,10 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
   )
   .post(
     "/transcribe",
-    async ({ request, status }) => {
+    async ({ request, status, user }) => {
+      // Admin only too: it spends the shared transcription key, and its text drives /agent.
+      if (user.role !== "admin")
+        return status(403, { error: "admin_required" });
       const declared = Number(request.headers.get("content-length") ?? 0);
       if (declared > MAX_AUDIO_BYTES) {
         return status(413, { error: "audio_too_long" });

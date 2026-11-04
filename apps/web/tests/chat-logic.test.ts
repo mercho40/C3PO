@@ -429,6 +429,14 @@ describe("describeChatError", () => {
     expect(describeChatError("Forbidden", 403).hint).toContain("otra cuenta");
   });
 
+  test("403 admin_required says an admin account is needed, not another chat", () => {
+    const v = describeChatError('{"error":"admin_required"}', 403);
+    expect(v.hint).toBe(
+      "Se requiere una cuenta admin para hablar con el robot.",
+    );
+    expect(v.suggestNewChat).toBe(false);
+  });
+
   test("a mid-stream gateway failure is recognised from its text", () => {
     const v = describeChatError(
       "Failed after 3 attempts. Last error: Bad Gateway",

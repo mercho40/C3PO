@@ -30,6 +30,12 @@ class FakeLink:
     def disable(self, reason=""):
         self.disabled.append(reason)
 
+    def enable(self, reason="", ttl_s=0.0):
+        self.enabled = (reason, ttl_s)  # arm_navigation's gate, never a real one
+
+    def status(self):
+        return {}
+
 
 def _report(*objects, detector_online=True, omitted=0):
     return {
@@ -155,6 +161,34 @@ def test_unknown_is_not_clear_for_nav2(sent, link, report):
     assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
 
 
+def test_a_stale_person_in_a_fresh_report_is_unknown_not_clear(sent, link):
+    """X16: world_model_publisher re-emits a detection, so its age is the capture age."""
+    link.report = _report(dict(person(3.0), age_s=2.0))  # report 0.1 s old, person 2 s
+    assert safety.person_proximity() == (3.0, False)  # range kept, not fresh
+    perception_link._default_forward(0.3, 0.0, 0.0)
+    assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
+
+
+def test_a_stale_but_close_person_still_stops_the_base_and_blocks_the_arm(sent, link):
+    """Review 2026-11-04: 'not fresh' must not read as 'clear' for someone known to be close."""
+    link.report = _report(dict(person(0.4), age_s=1.2))
+    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)  # manual driving
+    assert sent[-1][0] == 0.0
+    assert safety.status()["last_reason"] == "person_within_stop_distance"
+    link.report = _report(dict(person(0.6), age_s=1.2))
+    assert "inside arm's reach" in (safety.tool_refusal("set_hand", {"c3po": {"tier": "T2"}}) or "")
+
+
+@pytest.mark.parametrize("extra", [{"age_s": 0.2}, {}])  # fresh, and pre-D5 images without age_s
+def test_a_fresh_or_unaged_person_still_slows_and_blocks_reach(sent, link, extra):
+    link.report = _report(dict(person(1.0), **extra))
+    assert safety.person_proximity() == (1.0, True)
+    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
+    assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
+    link.report = _report(dict(person(0.6), **extra))
+    assert "inside arm's reach" in (safety.tool_refusal("set_hand", {"c3po": {"tier": "T2"}}) or "")
+
+
 def test_nav2_with_no_perception_link_at_all_is_slowed(sent, monkeypatch):
     monkeypatch.setattr(perception_link, "_link_singleton", None)
     perception_link._default_forward(0.3, 0.0, 0.0)
@@ -267,6 +301,48 @@ async def test_invalid_t2_arguments_are_reported_but_parar_comes_first(mcp, link
     estop.signal_stop()
     with pytest.raises(ToolError, match="PARAR"):
         await mcp.call_tool("set_hand", {"closure": "abc"})
+
+
+@pytest.mark.asyncio
+async def test_the_confirmable_set_is_t2_plus_high_danger_t1(mcp):
+    """1.3: pinned from the live catalogue, so a new high-danger T1 shows up in review."""
+    gated = {t.name for t in await mcp.list_tools() if safety.needs_confirmation(t.meta)}
+    assert gated == {
+        "move_arm", "set_hand", "reach", "pick", "place", "handover",
+        "arm_navigation", "start_walking_waist", "zero_torque",
+    }  # fmt: skip
+
+
+HIGH_T1 = (
+    ("start_walking_waist", {}),
+    ("arm_navigation", {"reason": "test arm", "seconds": 5}),
+    ("zero_torque", {}),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool", "args"), HIGH_T1)
+async def test_high_danger_t1_needs_a_confirmation_and_runs_once_after_one(mcp, link, tool, args):
+    with pytest.raises(ToolError, match="a high-danger tool and needs an operator's confirmation"):
+        await mcp.call_tool(tool, args)
+    _grant(tool, args)
+    await mcp.call_tool(tool, args)
+    with pytest.raises(ToolError, match="needs an operator's confirmation"):
+        await mcp.call_tool(tool, args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool", "args"), HIGH_T1)
+async def test_confirmation_off_opens_high_danger_t1_too(mcp, link, monkeypatch, tool, args):
+    monkeypatch.setattr(safety, "T2_CONFIRM", False)
+    await mcp.call_tool(tool, args)
+
+
+@pytest.mark.asyncio
+async def test_the_reach_rule_is_t2_only(mcp, link):
+    link.report = _report(person(0.6))
+    _grant("start_walking_waist", {})
+    await mcp.call_tool("start_walking_waist", {})
 
 
 @pytest.mark.asyncio
@@ -570,3 +646,73 @@ async def test_resume_says_so_when_the_ack_could_not_be_recorded(monkeypatch, tm
     monkeypatch.setattr(estop, "DEFAULT_RUN_DIR", writable)
     ok = await mcp_server.safety_ack(FakeRequest({}, secret="s3cret"))
     assert ok.status_code == 200 and safety.status()["stop_standing"] is False
+
+
+# -- low battery (1.10) --------------------------------------------------------
+
+
+def _battery(monkeypatch, soc, *, age_s=0.0):
+    """A sampler whose last BmsState_ said `soc`, `age_s` ago (as test_state_battery builds it)."""
+    import time
+
+    from bridge.sdk import state
+
+    sampler = state.StateSampler()
+    if soc is not None:
+        sampler._bms = state._BmsSnapshot(received_at=time.time() - age_s, soc_pct=soc)
+    monkeypatch.setattr(state, "_sampler_singleton", sampler)
+
+
+def _refusal(tool, mcp_tools):
+    return safety.tool_refusal(tool, mcp_tools[tool].meta, None)
+
+
+@pytest.fixture
+def listed(mcp):
+    from bridge import mcp_server
+
+    return {t.name: t for t in mcp_server.mcp._tool_manager.list_tools()}
+
+
+def test_low_battery_refuses_exactly_the_long_and_arm_tools(listed, monkeypatch):
+    """Pinned from the live catalogue: a new long tool shows up in review."""
+    _battery(monkeypatch, 15)
+    refused = {n for n in listed if "battery is 15%" in (_refusal(n, listed) or "")}
+    assert refused == {
+        "move_arm", "set_hand", "reach", "pick", "place", "handover",
+        "walk_to", "go_to_object", "navigate_to", "navigate_to_landmark",
+        "look_around", "dance", "arm_navigation",
+    }  # fmt: skip
+    for name in ("walk_velocity", "turn", "start_walking_waist", "open_hands",
+                 "release_arm_control", "damp", "stop_everything"):  # fmt: skip
+        assert "battery" not in (_refusal(name, listed) or ""), name
+
+
+def test_a_long_t0_tool_is_never_battery_refused(monkeypatch):
+    _battery(monkeypatch, 5)
+    long_t0 = {"c3po": {"tier": "T0", "classification": "speech", "expected_duration_s": 60}}
+    assert safety.tool_refusal("listen", long_t0) is None
+
+
+@pytest.mark.parametrize(("soc", "age_s"), [(25, 0.0), (20, 0.0), (None, 0.0), (15, 120.0)])
+def test_a_charged_unknown_or_stale_battery_is_allowed(listed, monkeypatch, soc, age_s):
+    _battery(monkeypatch, soc, age_s=age_s)
+    assert "battery" not in (_refusal("walk_to", listed) or "")
+
+
+def test_no_sampler_is_an_unknown_battery(listed, monkeypatch):
+    from bridge.sdk import state
+
+    monkeypatch.setattr(state, "_sampler_singleton", None)
+    assert safety.battery_pct() is None
+    assert _refusal("walk_to", listed) is None
+
+
+@pytest.mark.asyncio
+async def test_a_grant_survives_a_battery_refusal(mcp, link, monkeypatch):
+    _battery(monkeypatch, 15)
+    _grant("set_hand", {"closure": 0.5})
+    with pytest.raises(ToolError, match="battery is 15%"):
+        await mcp.call_tool("set_hand", {"closure": 0.5})
+    _battery(monkeypatch, 50)
+    await mcp.call_tool("set_hand", {"closure": 0.5})

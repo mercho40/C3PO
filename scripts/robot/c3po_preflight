@@ -100,5 +100,6 @@ fi
 warn "$warnings warning(s), no blockers"
 echo
 info "If you are satisfied, arm for the manoeuvre and not for the plan:"
-info "  arm_navigation(reason=\"<what and who>\", seconds=<just enough>)"
+info "  ask the agent in the console chat for arm_navigation(reason=\"<what and who>\","
+info "  seconds=<just enough>), and a human operator presses «Confirmar» on the refusal."
 info "The gate closes itself when it expires, and on stop_everything."

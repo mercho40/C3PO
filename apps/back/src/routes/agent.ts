@@ -65,6 +65,9 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
   .post(
     "/",
     async ({ body, user, session, status, request }) => {
+      // 1.4: driving the robot through a model is an admin's job, like /invoke.
+      if (user.role !== "admin")
+        return status(403, { error: "admin_required" });
       const messages = body.messages as UIMessage[];
       const latest = messages[messages.length - 1];
 

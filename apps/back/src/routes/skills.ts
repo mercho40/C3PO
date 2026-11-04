@@ -11,11 +11,10 @@
  * invocation) WITHOUT touching the bridge — dispatching for real would move
  * the robot. Confirmation flow per SCRUM-32.
  *
- * /invoke is a raw low-level control surface (no LLM reasoning in the loop,
- * unlike /agent) restricted to admins: any session could otherwise dispatch
- * real robot motion directly over HTTP with zero safety reasoning applied.
- * Same "tighten before multi-tenant use" gap `/agent` already documents —
- * here it's more direct, so it's enforced now rather than deferred.
+ * /invoke is a raw low-level control surface (no LLM reasoning in the loop)
+ * restricted to admins, like /agent and /voice: any session could otherwise
+ * dispatch real robot motion directly over HTTP with zero safety reasoning
+ * applied.
  *
  * Exception: `classification: "safety"` skills (today, only stop_everything)
  * skip the admin check. That's the dashboard's PARAR button's only direct
@@ -234,6 +233,19 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
             args = validated.value;
           }
 
+          // The bridge gates a high-danger T1 (start_walking_waist,
+          // arm_navigation, zero_torque) for every MCP caller. An admin's /invoke IS the
+          // confirmation, so the console and headset bring-up grant this exact
+          // call first. Only here: a grant in the agent's tool execute would
+          // let every agent turn confirm itself. T2 keeps the explicit two-step
+          // Confirmar, and `tier === "T1"` fails closed on a catalogue without
+          // tiers.
+          if (skill?.tier === "T1" && skill.dangerLevel === "high") {
+            const granted = await grantOnBridge(name, args, user.id);
+            if (granted.status >= 300)
+              return status(granted.status, granted.body);
+          }
+
           // Audited whatever happens next. `void`, never `await`: an audit
           // row is not allowed to sit between an operator and PARAR.
           // `logToolCall` never throws, and reads a 200 body that reports a
@@ -337,8 +349,8 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
       .post(
         "/:name/confirm",
         async ({ params: { name }, body, status, user }) => {
-          // The operator's confirmation for ONE call of a T2 skill with ONE
-          // argument set, within 30 s (bridge/safety.py). It is a route and
+          // The operator's confirmation for ONE call of a gated skill (T2, or
+          // high-danger T1) with ONE argument set, within 30 s (bridge/safety.py). It is a route and
           // not a tool so that no model can reach it, and it lives here so
           // the bridge's secret stays on this server, never in a browser. The
           // bridge checks the tier and the arguments itself; no body grants
@@ -358,7 +370,7 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
           ),
           detail: {
             summary:
-              "Confirm one call of a T2 (arm/hand) skill with these arguments, within 30 s. Admin-only.",
+              "Confirm one call of a T2 or high-danger T1 skill with these arguments, within 30 s. Admin-only.",
             tags: ["skills"],
           },
         },

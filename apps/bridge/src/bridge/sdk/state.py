@@ -136,6 +136,8 @@ FSM_STALE_AFTER_S = 10.0
 #: How old a pose reading can be before it is called stale. Odom publishes at
 #: ~50 Hz on this robot, so two seconds is forty missed messages.
 POSE_STALE_AFTER_S = 2.0
+# The vendor's own low-battery threshold (`soc < 20`); the safety gate refuses long and arm tools under it.
+LOW_BATTERY_PCT = 20
 
 
 @dataclass
@@ -365,6 +367,14 @@ class StateSampler:
                 raw_message_count=self._pose.raw_message_count + 1,
             )
 
+    def battery(self) -> tuple[int | None, float | None]:
+        """`(soc %, seconds since that BmsState_)`, or (None, None) before the first one."""
+        with self._lock:
+            bms = self._bms
+        if not bms.received_at:
+            return None, None
+        return bms.soc_pct, time.time() - bms.received_at
+
     def get_state(self) -> dict[str, Any]:
         """Return the current state in the shape the MCP `get_state` tool exposes."""
         with self._lock:
@@ -448,7 +458,7 @@ class StateSampler:
         pose_age = round(now - pose_snap.received_at, 3) if pose_snap.received_at else None
         # Low battery is a real fault, and the one most likely to end a session
         # mid-task. 20% is the vendor's own threshold.
-        if bms.soc_pct is not None and bms.soc_pct < 20:
+        if bms.soc_pct is not None and bms.soc_pct < LOW_BATTERY_PCT:
             faults.append(f"low_battery_{bms.soc_pct}pct")
 
         return {
@@ -487,6 +497,11 @@ class StateSampler:
 
 
 _sampler_singleton: StateSampler | None = None
+
+
+def existing_sampler() -> StateSampler | None:
+    """The singleton if this process made one, else None — never creates it (the safety gate)."""
+    return _sampler_singleton
 
 
 def get_sampler() -> StateSampler:

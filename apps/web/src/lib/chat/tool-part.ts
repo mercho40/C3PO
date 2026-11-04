@@ -108,8 +108,8 @@ function runtimeFailure(output: unknown): string | null {
 }
 
 /**
- * The tool to offer a "Confirmar" button for, or null: a T2 call the bridge
- * refused only because no operator confirmed it (bridge/safety.py's wording).
+ * The tool to offer a "Confirmar" button for, or null: a T2 or high-danger T1
+ * call the bridge refused only because no operator confirmed it (bridge/safety.py's wording).
  */
 export function needsConfirmation(part: ToolPartLike): string | null {
   if (part.state !== "output-available") return null;
@@ -196,7 +196,7 @@ export function classifyToolPart(
         return base({
           label: "Requiere confirmación",
           tone: "warn",
-          note: "Movimiento de brazo o mano: un operador debe confirmarlo.",
+          note: "Un operador debe confirmarlo (una llamada, estos argumentos, 30 s).",
           detail: words,
           defaultOpen: false,
         });

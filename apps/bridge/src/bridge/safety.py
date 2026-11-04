@@ -25,9 +25,13 @@ Two gates live here, and both sit on a path the LLM cannot route around:
 
 2. **Risk tiers** — every MCP tool carries a tier derived from its metadata
    (`skill_meta.derive_tier`). `tool_refusal()` runs inside the MCP server's
-   own `call_tool`, so a T2 tool cannot be invoked over MCP — by apps/back, by
-   Claude Code, by anything — without a one-shot operator confirmation, and
-   never with a person inside arm's reach.
+   own `call_tool`, so a T2 tool, or a T1 tool of danger "high"
+   (arm_navigation, start_walking_waist, zero_torque), cannot be invoked over MCP — by
+   apps/back, by Claude Code, by anything — without a one-shot operator
+   confirmation; T2 never with a person inside arm's reach. apps/back's
+   admin-only /invoke grants before it dispatches a high-danger T1, so the
+   admin's click is the confirmation for the console and headset bring-up.
+   Below LOW_BATTERY_PCT the long and arm tools are refused outright.
 
 WHY THE STALE POLICY IS AUTONOMOUS-ONLY. The console walk pad and the headset
 drive the robot today with no perception container running at all, with a
@@ -112,6 +116,7 @@ STALE_POLICY = os.environ.get("SAFETY_STALE_POLICY", "slow").strip().lower()
 
 # -- risk tiers ---------------------------------------------------------------
 
+# Covers T2 and high-danger T1 alike (needs_confirmation); off opens both.
 T2_CONFIRM = _env_on("SAFETY_T2_CONFIRM")
 # The console must present this to /safety/confirm. Unset = no confirmation
 # can be issued, so T2 is refused outright: fail closed, never open.
@@ -155,17 +160,23 @@ def person_proximity() -> tuple[float | None, bool]:
     if not report or age is None or age > PERCEPTION_STALE_S or not report.get("detector_online"):
         return None, False
     ranges = []
+    stale_person = False
     for obj in report.get("objects") or []:
         if isinstance(obj, dict) and obj.get("label") == "person":
             try:
                 ranges.append(float(obj["range_m"]))
+                # A fresh report can re-emit an old detection; no age_s = older images, as before.
+                if float(obj.get("age_s") or 0.0) > PERCEPTION_STALE_S:
+                    stale_person = True
             except (KeyError, TypeError, ValueError):
-                # A person whose range we cannot read could be anywhere.
+                # A person whose range or age we cannot read could be anywhere.
                 return None, False
     if not ranges and report.get("objects_omitted"):
         # Truncated on the wire: the person may be one of the dropped rows.
         return None, False
-    return (min(ranges) if ranges else None), True
+    # A stale person is not "clear": keep the range, mark the reading not fresh,
+    # so callers still stop/refuse for someone known to be close (review 2026-11-04).
+    return (min(ranges) if ranges else None), not stale_person
 
 
 def speed_factor(*, autonomous: bool) -> tuple[float, str | None]:
@@ -173,9 +184,10 @@ def speed_factor(*, autonomous: bool) -> tuple[float, str | None]:
     if not PERSON_RULE:
         return 1.0, None
     nearest, fresh = person_proximity()
+    if nearest is not None and nearest < PERSON_STOP_M:
+        # Fresh or not: a person known to be this close stops the base.
+        return 0.0, "person_within_stop_distance"
     if fresh:
-        if nearest is not None and nearest < PERSON_STOP_M:
-            return 0.0, "person_within_stop_distance"
         if nearest is not None and nearest < PERSON_SLOW_M:
             return PERSON_SLOW_FACTOR, "person_near"
         return 1.0, None
@@ -251,8 +263,51 @@ def base_moving() -> bool:
 
 
 def needs_confirmation(meta: dict[str, Any] | None) -> bool:
-    """Whether a call of this tool needs an operator's grant first."""
-    return ((meta or {}).get("c3po") or {}).get("tier") == "T2"
+    """Whether a call of this tool needs an operator's grant first: T2, and high-danger T1."""
+    c3po = (meta or {}).get("c3po") or {}
+    tier = c3po.get("tier")
+    return tier == "T2" or (tier == "T1" and c3po.get("danger_level") == "high")
+
+
+# -- battery -------------------------------------------------------------------
+
+# Seconds after which the last BmsState_ is "unknown": the snapshot keeps its
+# soc forever, so a dead subscription would otherwise freeze the gate.
+BATTERY_STALE_S = 60.0
+
+
+def drains_battery(meta: dict[str, Any] | None) -> bool:
+    """Arm motion and long motion: what a low pack can leave stopped mid-task."""
+    c3po = (meta or {}).get("c3po") or {}
+    if c3po.get("tier") in (None, "T0"):
+        return False
+    return (
+        c3po.get("tier") == "T2"
+        or float(c3po.get("expected_duration_s") or 0.0) >= 15.0
+        or (c3po.get("classification") == "locomotion" and c3po.get("danger_level") == "high")
+    )
+
+
+def battery_pct() -> int | None:
+    """The pack's state of charge, or None when unknown (no sampler, no BMS message, stale).
+
+    Never creates the sampler, like person_proximity and the perception link.
+    """
+    from bridge.sdk.state import existing_sampler
+
+    sampler = existing_sampler()
+    if sampler is None:
+        return None
+    try:
+        pct, age = sampler.battery()
+    except Exception as exc:  # noqa: BLE001 - a broken read is unknown, never a crash in the gate
+        log.warning("safety.battery_unknown", reason="read_failed", error=str(exc))
+        return None
+    if pct is None or age is None or age > BATTERY_STALE_S:
+        if os.environ.get("SIM_MODE") == "real":
+            log.warning("safety.battery_unknown", reason="stale" if pct is not None else "no_bms")
+        return None
+    return pct
 
 
 def _grant_key(tool: str, args_key: str) -> tuple[str, str]:
@@ -326,11 +381,25 @@ def tool_refusal(name: str, meta: dict[str, Any] | None, args_key: str | None = 
             "Only an operator can resume: «Reanudar» on the console or in the "
             "headset menu. Tell the operator the robot is stopped and wait."
         )
-    if tier != "T2":
-        return None
-    if PERSON_RULE and name not in HANDOVER_TOOLS:
+    if drains_battery(meta):
+        from bridge.sdk.state import LOW_BATTERY_PCT
+
+        # Unknown is allowed: a decision, so stub and Isaac (no BMS) keep working.
+        # shortcut: checked at call time only; a task already running is not
+        # stopped when the pack crosses 20%, add a check in the skill loops if that matters.
+        pct = battery_pct()
+        if pct is not None and pct < LOW_BATTERY_PCT:
+            log.warning("safety.refused_low_battery", tool=name, battery_pct=pct)
+            return (
+                f"refused: battery is {pct}% (below {LOW_BATTERY_PCT}%), so {name} does not "
+                "run: arm motion and long walks can stop mid-task. walk_velocity, turn, "
+                "open_hands, release_arm_control and stop still work. Tell the operator "
+                "to charge the robot."
+            )
+    if tier == "T2" and PERSON_RULE and name not in HANDOVER_TOOLS:
         nearest, fresh = person_proximity()
-        if fresh and nearest is not None and nearest < PERSON_REACH_M:
+        # Fresh or not: a person known to be inside reach refuses the arm.
+        if nearest is not None and nearest < PERSON_REACH_M:
             # shortcut: checked at call time only; a person stepping in while
             # move_arm holds a pose is not seen. Needs a per-tick check in
             # arm_sdk's loop once the arms run autonomously.
@@ -340,17 +409,20 @@ def tool_refusal(name: str, meta: dict[str, Any] | None, args_key: str | None = 
                 f"({PERSON_REACH_M} m). {name} is a T2 tool and does not run with "
                 "someone that close. Ask them to step back."
             )
+    if not needs_confirmation(meta):
+        return None
     if not T2_CONFIRM:
         log.warning("safety.t2_unconfirmed_allowed", tool=name, reason="SAFETY_T2_CONFIRM=off")
         return None
     if _consume_confirmation(name, args_key):
         return None
     log.warning("safety.t2_refused", tool=name, reason="no_confirmation")
+    kind = "a T2 tool" if tier == "T2" else "a high-danger tool"
     return (
-        f"refused: {name} is a T2 tool and needs an operator's confirmation first. "
-        "You cannot give it: the operator confirms these exact arguments on the console "
-        f"(POST /skills/{name}/confirm), then retry once with exactly the same arguments "
-        f"within {int(CONFIRM_TTL_S)} s. Tell the operator what you want to do and wait."
+        f"refused: {name} is {kind} and needs an operator's confirmation first. "
+        "You cannot give it: a human operator presses «Confirmar» for these exact "
+        "arguments in the console chat, then you retry once with exactly the same "
+        f"arguments within {int(CONFIRM_TTL_S)} s. Tell the operator what you want to do and wait."
     )
 
 

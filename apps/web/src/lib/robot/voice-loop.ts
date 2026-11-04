@@ -16,6 +16,8 @@
  * loop as running because a button was pressed. `back`'s reply is the state.
  */
 
+import { ADMIN_REQUIRED_HINT } from "#lib/chat/chat-error.js";
+
 /** The loop's own snapshot. Mirrors `VoiceLoopState` in apps/back. */
 export type VoiceLoopState = {
   running: boolean;
@@ -115,6 +117,9 @@ async function ask(url: string, init: RequestInit): Promise<VoiceResult> {
   }
   if (res.status === 401) {
     return { ok: false, status: 401, reason: "Sesión vencida." };
+  }
+  if (res.status === 403) {
+    return { ok: false, status: 403, reason: ADMIN_REQUIRED_HINT };
   }
   if (res.status === 409) {
     return {

@@ -472,3 +472,97 @@ describe("POST /skills/:name/confirm", () => {
     );
   });
 });
+
+/**
+ * 1.3: the bridge gates a high-danger T1 for every MCP caller, so an admin's
+ * /invoke (the console and headset bring-up) grants that exact call first.
+ * The admin's click is the confirmation; T2 keeps the two-step Confirmar.
+ */
+describe("POST /skills/:name/invoke pre-grants a high-danger T1", () => {
+  const realFetch = globalThis.fetch;
+  let forwarded: { url: string; body: unknown }[] = [];
+  let bridgeAnswer: () => Response;
+
+  const gated = (name: string, tier: string, dangerLevel: string) => ({
+    ...fixtureSkill(name, "posture"),
+    tier,
+    dangerLevel,
+    parameters: {
+      type: "object",
+      properties: { seconds: { type: "number", default: 5 } },
+    },
+  });
+
+  beforeEach(() => {
+    forwarded = [];
+    inserted = [];
+    bridge.callTool.mockClear();
+    sessionUser = { id: "u1", role: "admin" };
+    process.env.SAFETY_CONFIRM_SECRET = "s3cret";
+    bridgeAnswer = () => Response.json({ granted: true });
+    catalogueSkills = [
+      ...FIXTURE_SKILLS,
+      gated("start_walking_waist", "T1", "high"),
+      gated("prepare", "T1", "medium"),
+      gated("move_arm", "T2", "high"),
+      { ...gated("old_bridge_tool", "T1", "high"), tier: undefined },
+    ] as typeof FIXTURE_SKILLS;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      forwarded.push({ url: String(url), body: JSON.parse(String(init.body)) });
+      return bridgeAnswer();
+    }) as typeof fetch;
+  });
+
+  test("grants the exact, default-filled arguments before dispatching, and audits it", async () => {
+    const res = await invoke("start_walking_waist", {});
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(200);
+    expect(forwarded).toEqual([
+      {
+        url: expect.stringContaining("/safety/confirm"),
+        body: { tool: "start_walking_waist", args: { seconds: 5 } },
+      },
+    ]);
+    expect(bridge.callTool).toHaveBeenCalledWith("start_walking_waist", {
+      seconds: 5,
+    });
+    await Bun.sleep(0);
+    expect(inserted.some((r) => r.skillName === "safety_confirm")).toBe(true);
+  });
+
+  for (const code of [503, 403]) {
+    test(`a ${code} from the grant is passed through and nothing is dispatched`, async () => {
+      bridgeAnswer = () => Response.json({ error: "nope" }, { status: code });
+      const res = await invoke("start_walking_waist", {});
+      globalThis.fetch = realFetch;
+      expect(res.status).toBe(code);
+      expect(bridge.callTool).not.toHaveBeenCalled();
+    });
+  }
+
+  test("no secret: 503 and nothing dispatched", async () => {
+    delete process.env.SAFETY_CONFIRM_SECRET;
+    const res = await invoke("start_walking_waist", {});
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(503);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+  });
+
+  for (const name of ["prepare", "move_arm", "wave", "old_bridge_tool"]) {
+    test(`${name} is never pre-granted`, async () => {
+      await invoke(name, {});
+      globalThis.fetch = realFetch;
+      expect(forwarded.length).toBe(0);
+      expect(bridge.callTool).toHaveBeenCalled();
+    });
+  }
+
+  test("a non-admin is refused before any grant", async () => {
+    sessionUser = { id: "u2", role: null };
+    const res = await invoke("start_walking_waist", {});
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(403);
+    expect(forwarded.length).toBe(0);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+  });
+});
