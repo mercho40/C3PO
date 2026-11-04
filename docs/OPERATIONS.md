@@ -73,7 +73,7 @@ The port map, in one place:
 
 | Service                    | Host                    | Port  | Notes                                                                   |
 | -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------------- |
-| `apps/back` HTTP           | LAN box (dev: anywhere) | 3000  | Better Auth cookie                                                      |
+| `apps/back` HTTP           | **loopback** by default | 3000  | cookie auth; `BACK_HOST=0.0.0.0` only on a LAN box behind TLS (§5)      |
 | `apps/web` dev             | dev machine             | 3001  | Vite                                                                    |
 | `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it |
 | `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                         |
@@ -252,8 +252,13 @@ mv server.new server && systemctl restart c3po-back
 
 Keep the previous binary alongside for rollback. Env: see `apps/back/.env.example` — it
 is the authority for every variable, including the TIC AI gateway gotchas (HTTPS only —
-port 80 is blocked from the Wi-Fi VLAN — ORT-network-only, hand-issued keys). Two things
+port 80 is blocked from the Wi-Fi VLAN — ORT-network-only, hand-issued keys). Three things
 to verify per deploy target:
+
+- **Set `BACK_HOST=0.0.0.0` in the box's env.** `back` binds `127.0.0.1` by default, so
+  without it the binary boots, `/health` answers on the box itself, and every remote
+  console gets connection refused. Only do this behind TLS. Check with
+  `ss -ltnp | grep 3000` (expect `0.0.0.0:3000`; on a dev machine expect `127.0.0.1:3000`).
 
 - **The box must have a route to the TIC AI gateway.** Without one, `back` boots and
   serves `/health`, `/skills`, `/state` — and fails every `/agent` call. This rules out

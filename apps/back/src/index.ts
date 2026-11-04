@@ -94,7 +94,7 @@ const app = new Elysia()
       .use(chatsRoutes)
       .use(voiceRoutes),
   )
-  .listen(env.PORT);
+  .listen({ port: env.PORT, hostname: env.BACK_HOST });
 
 console.log(
   `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`,

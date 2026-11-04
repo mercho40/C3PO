@@ -37,6 +37,10 @@ export const env = {
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ?? "",
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ?? "",
   PORT: Number(process.env.PORT) || 3000,
+  //: Listen address. The IPv4 literal, not "localhost": that resolves to ::1 on
+  //: macOS, and adb reverse (the Quest) dials IPv4 only. Not HOST: zsh sets
+  //: $HOST to the machine name. 0.0.0.0 only on a LAN box (OPERATIONS.md §5).
+  BACK_HOST: process.env.BACK_HOST || "127.0.0.1",
   //: Comma-separated emails granted `role: "admin"` at boot. Empty means
   //: nobody — see admin-bootstrap.ts for why this exists at all.
   ADMIN_EMAILS: process.env.ADMIN_EMAILS ?? "",

@@ -103,3 +103,27 @@ describe("self-guarded modules are mounted outside the outer guard", () => {
     });
   }
 });
+
+/**
+ * apps/back listens on loopback unless a LAN box opts out (BACK_HOST=0.0.0.0).
+ * Elysia's bare `.listen(port)` binds every interface, which put the robot's
+ * API (cookie-guarded, but still) on the school Wi-Fi. The default
+ * must be the IPv4 literal: "localhost" binds ::1 on macOS, and adb reverse
+ * (the Quest) dials IPv4, which blanked the headset once before.
+ */
+describe("apps/back binds loopback by default", () => {
+  const index = readFileSync(INDEX, "utf8");
+  const envTs = readFileSync(join(ROUTES_DIR, "..", "lib", "env.ts"), "utf8");
+
+  test("index.ts passes the configured hostname to listen", () => {
+    expect(index).toMatch(
+      /\.listen\(\{\s*port:\s*env\.PORT,\s*hostname:\s*env\.BACK_HOST\s*\}\)/,
+    );
+  });
+
+  test("env.ts defaults BACK_HOST to 127.0.0.1", () => {
+    expect(envTs).toMatch(
+      /BACK_HOST:\s*process\.env\.BACK_HOST\s*\|\|\s*"127\.0\.0\.1"/,
+    );
+  });
+});
