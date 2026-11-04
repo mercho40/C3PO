@@ -10,14 +10,14 @@ Scoped by 9 read-only agents that read the code, one per work package (WP). A, B
 
 ### Wave 0
 
-- ⚪ F2 .gitignore graphify-out
-- ⚪ F1 make CI green (prettier fails on docs/autonomy/audit/evidence/back/{conv,rej,sink}.ts, confirmed; ruff reports 2 errors in apps/perception/bringup/build.py, confirmed; arm_sdk.py passes ruff check and ruff format, so re-check why F1 lists it)
-- ⚪ F8 test_mic_listener wall clock
-- ⚪ F4 mcp>=1.30,<2 (uv.lock has 1.27.1), uv sync --locked in bridge_sync:41
-- ⚪ F5 bun audit fix
-- ⚪ F6 robot_internet.py 80/443 only
-- ⚪ F3 c3po.sudoers
-- ⚪ G5 pin today's go_to_object tool body
+- 🟢 F2 .gitignore graphify-out
+- 🟢 F1 make CI green (prettier fails on docs/autonomy/audit/evidence/back/{conv,rej,sink}.ts, confirmed; ruff reports 2 errors in apps/perception/bringup/build.py, confirmed; arm_sdk.py passes ruff check and ruff format, so re-check why F1 lists it)
+- 🟢 F8 test_mic_listener wall clock
+- 🟢 F4 mcp>=1.30,<2 (uv.lock has 1.27.1), uv sync --locked in bridge_sync:41
+- 🟢 F5 bun audit fix
+- 🟢 F6 robot_internet.py 80/443 only
+- 🟢 F3 c3po.sudoers
+- 🟢 G5 pin today's go_to_object tool body
 - ⚪ 8.3 push feat/autonomy once the user says so
 
 _Why:_ Unblocks everything after it. A green CI and a pinned test baseline make every later change checkable. F4 must land before A2/A4 because it changes the FastMCP base class that GovernedMCP.call_tool overrides. F8 must land before B1, and G5 before E2-E4, because each pins behavior the next one changes. Every item is S, all of WP F fits on one branch (scripts/tests/run.sh is shared inside F), and none touches A, B or C files except test_safety.py, which F4 adapts first.
@@ -880,7 +880,7 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 | 9.3     | yes   | Mostly done already. .github/workflows/ci.yml has three jobs. typescript runs `bun run check-types` (back `tsc --noEmit` and web svelte-check), turbo tests for back, web and robot-scripts, a second `bun test` in apps/web (a duplicate), and prettier. perception runs `uv sync --frozen`, pytest, ruff and mypy. bridge builds CycloneDDS, then runs ruff, mypy and pytest. Still open: (1) triggers are `pu |
 | 9.4     | yes   | .gitignore has no graphify-out entry. `git check-ignore -v` resolves it to `.git/info/exclude:19` in the shared git dir. .graphifyignore (tracked) already lists graphify-out/. graphify-out is 22 MB, and `prettier --check` locally flags 159 files, 156 of them under graphify-out. Prettier 3.9 also reads ./.gitignore, so one .gitignore line covers both git and prettier.                                |
 
-#### ⚪ F1: Make the existing CI pass on feat/autonomy (fixes it would fail on today) `S`
+#### 🟢 F1: Make the existing CI pass on feat/autonomy (fixes it would fail on today) `S`
 
 - **Backlog:** 9.3 · **Depends on:** F2
 - **Files:** `docs/autonomy/audit/evidence/back/conv.ts`, `docs/autonomy/audit/evidence/back/rej.ts`, `docs/autonomy/audit/evidence/back/sink.ts`, `apps/perception/bringup/build.py`, `apps/bridge/src/bridge/teleop/arm_sdk.py`
@@ -889,7 +889,7 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 - **Done when:** Every command in the three ci.yml jobs exits 0 locally on feat/autonomy.
 - **Risk:** Low. The annotation changes are type-only. Formatting evidence files changes no code paths.
 
-#### ⚪ F2: Ignore graphify-out in the tracked .gitignore `S`
+#### 🟢 F2: Ignore graphify-out in the tracked .gitignore `S`
 
 - **Backlog:** 9.4 · **Depends on:** —
 - **Files:** `.gitignore`
@@ -898,7 +898,7 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 - **Done when:** A fresh clone with a generated graph shows graphify-out as ignored in `git status`, and prettier --check no longer lists it.
 - **Risk:** None.
 
-#### ⚪ F3: Passwordless sudo for exactly start/stop/restart of c3po-bridge.service `S`
+#### 🟢 F3: Passwordless sudo for exactly start/stop/restart of c3po-bridge.service `S`
 
 - **Backlog:** 1.11 · **Depends on:** —
 - **Files:** `scripts/robot/c3po.sudoers`, `scripts/robot/run_c3po`, `scripts/tests/run.sh`, `docs/MONDAY-RUNBOOK.md`
@@ -907,7 +907,7 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 - **Done when:** Shell suite green. After `c3po install` on the robot, `ssh c3po 'c3po restart'` (no -t) restarts the bridge without a prompt, and `sudo -n systemctl daemon-reload` is still refused.
 - **Risk:** If the L4T rootfs is not usr-merged and /usr/bin/systemctl does not exist, sudo will not match: it compares the resolved path, then stat dev/inode. The result is a password prompt as today, not a regression. The robot step checks this. Never widen the rule to a wildcard unit.
 
-#### ⚪ F4: Bridge: mcp >=1.30,<2, patched transitive deps, uv sync --locked on the robot `S`
+#### 🟢 F4: Bridge: mcp >=1.30,<2, patched transitive deps, uv sync --locked on the robot `S`
 
 - **Backlog:** 1.12 · **Depends on:** —
 - **Files:** `apps/bridge/pyproject.toml`, `apps/bridge/uv.lock`, `apps/bridge/src/bridge/mcp_server.py`, `scripts/robot/bridge_sync`, `apps/bridge/tests/test_safety.py`, `scripts/tests/run.sh`
@@ -916,7 +916,7 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 - **Done when:** uv.lock pins mcp 1.30.x and patched starlette, pyjwt, python-multipart and cryptography. pip-audit shows no mcp or starlette findings. Bridge suite green, with the 2 new tests passing on both the old lock (written first) and the new one.
 - **Risk:** (1) The idle reaper is turned off by D1(a); D1(b)/(c) change it. (2) 1.30 adds related_request_id to report_progress, so progress goes to the originating request stream. That should still reach back, but check that walk_to progress shows in the console. (3) On the robot, the first boot after deploy sees a new uv.lock hash and needs the network (the proxy, F6). Offline, it warns and keeps running the old 1.27.1 venv. (4) A robot uv older than the one that wrote the lock makes --locked fail: a warning plus the old venv, fatal only on a first install.
 
-#### ⚪ F5: JS: bun audit fix within declared ranges (undici 7.30.1, fast-uri, ...) `S`
+#### 🟢 F5: JS: bun audit fix within declared ranges (undici 7.30.1, fast-uri, ...) `S`
 
 - **Backlog:** 1.12 · **Depends on:** —
 - **Files:** `bun.lock`
@@ -925,7 +925,7 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 - **Done when:** `bun audit` drops from 79 to 4 vulnerabilities. The 4 left are blocked by dependents' ranges: deepmerge, esbuild 0.18 via @esbuild-kit/core-utils, glob and minimatch, all dev or build time. bun.lock pins undici 7.30.1.
 - **Risk:** Low. The @hono/node-server major is the MCP SDK's server side; back only uses the SDK client.
 
-#### ⚪ F6: robot_internet.py: only ports 80/443 to public addresses, no_proxy hint, self-test `S`
+#### 🟢 F6: robot_internet.py: only ports 80/443 to public addresses, no_proxy hint, self-test `S`
 
 - **Backlog:** 11.7 · **Depends on:** —
 - **Files:** `scripts/robot_internet.py`, `scripts/tests/run.sh`
@@ -943,7 +943,7 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 - **Done when:** On the Mac with the cable in: one command brings up the tunnel, proxy and console; the table shows ✓ for all five checks; Ctrl-C leaves no ssh/bun/python child (`pgrep -f 'ssh -N'` is empty). The shell suite is green.
 - **Risk:** `kill 0` also kills a parent `bun run` if someone wraps the script; acceptable. Background ssh needs key auth, because a password prompt would hang in the background; the `c3po` alias is assumed key-based. Postgres for back is not checked, only /health.
 
-#### ⚪ F8: Remove the wall-clock assumptions from test_mic_listener `S`
+#### 🟢 F8: Remove the wall-clock assumptions from test_mic_listener `S`
 
 - **Backlog:** 9.2 · **Depends on:** —
 - **Files:** `apps/bridge/tests/test_mic_listener.py`
@@ -1039,7 +1039,7 @@ What I did not check: whether /usr/bin/systemctl exists on the JetPack rootfs (r
 - **Done when:** With no GEMINI_API_KEY or no uplink, look and find_object answer from YOLOE with `degraded` set, and verify says it cannot verify and shows what the detector sees. Nothing raises.
 - **Risk:** The model may read a fixed-vocabulary 'count 0' as 'absent'; the note covers that. Detector labels are English, so the agent has to translate. The D4 flip changes how the model sees look on the real robot. It is backed by BACKLOG §0 ('Verified on the robot: ... Gemini look').
 
-#### ⚪ G5: Tests for the go_to_object tool body `S`
+#### 🟢 G5: Tests for the go_to_object tool body `S`
 
 - **Backlog:** 11.9 · **Depends on:** —
 - **Files:** `apps/bridge/tests/test_go_to_object.py`
