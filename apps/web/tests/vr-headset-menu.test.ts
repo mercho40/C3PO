@@ -65,9 +65,10 @@ describe("observe-only commands nothing", () => {
   });
 
   test("the teleop socket cannot be opened during the session", () => {
-    expect(body("connectStream(): void {")).toContain(
-      "if (this.viewOnly) return;",
-    );
+    const connect = body("async connectStream(): Promise<void> {");
+    expect(connect).toContain("if (this.viewOnly) return;");
+    // Re-checked after the token await: observe-only may start meanwhile.
+    expect(connect).toContain("|| this.viewOnly ||");
   });
 
   test("every frame the bridge pulls says observe-only", () => {
@@ -148,5 +149,19 @@ describe("a held stick cannot re-arm its own latch", () => {
 
   test("the dead-man does not re-arm while the stick is still held", () => {
     expect(body("#tick(): void {")).toContain("this.#stickWalk === null &&");
+  });
+});
+
+describe("the headset PARAR also goes down the teleop socket (C6)", () => {
+  test("#haltForEstop stops the stream directly, not only through apps/back", () => {
+    expect(body("#haltForEstop(): void {")).toContain("#teleop?.stop()");
+  });
+});
+
+describe("the stream is opened with apps/back's token (X15)", () => {
+  test("connectStream asks back for a token and puts it on the URL", () => {
+    const connect = body("async connectStream(): Promise<void> {");
+    expect(connect).toContain(".teleop.token.get(");
+    expect(connect).toContain("teleopUrl(");
   });
 });

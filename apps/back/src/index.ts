@@ -12,6 +12,7 @@ import { chatsRoutes } from "#back/routes/chats.js";
 import { voiceRoutes } from "#back/routes/voice.js";
 import { auditRoutes } from "#back/routes/audit.js";
 import { safetyRoutes } from "#back/routes/safety.js";
+import { teleopRoutes } from "#back/routes/teleop.js";
 import { enabledSocialProviders } from "#back/lib/auth.js";
 import { reconcileAdmins } from "#back/lib/admin-bootstrap.js";
 // Imported for its VALUES below, and for its import-time validation.
@@ -81,6 +82,7 @@ const app = new Elysia()
   .use(skillsRoutes)
   .use(auditRoutes)
   .use(safetyRoutes)
+  .use(teleopRoutes)
   // Everything below can read or move the robot (or use the shared TIC AI key
   // via /agent) — require a session. /health stays open for monitoring.
   .guard({ auth: true }, (app) =>

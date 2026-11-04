@@ -107,6 +107,15 @@ describe("classifySkillResult", () => {
     expect(o.text).toContain("teleoperación");
   });
 
+  test("teleop_takeover says the headset took over", () => {
+    const o = classifySkillResult({
+      status: "failed",
+      phase: "teleop_takeover",
+    });
+    expect(o.kind).toBe("error");
+    expect(o.text).toContain("El operador del visor tomó el control");
+  });
+
   test("a stub bridge's {status: ok, stub: true} is not success", () => {
     const o = classifySkillResult({ status: "ok", stub: true });
     expect(o.kind).toBe("warn");

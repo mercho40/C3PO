@@ -25,6 +25,7 @@ import {
   connectTeleop,
   idlePayload,
   type TeleopInput,
+  teleopUrl,
 } from "../src/lib/teleop/stream";
 
 const STALE_AFTER = 800;
@@ -211,6 +212,7 @@ describe("stall detection — 'Conectado' on a dead link", () => {
 
     return {
       states,
+      handle,
       socket: () => made!,
       advance: (ms: number) => {
         clock += ms;
@@ -238,6 +240,32 @@ describe("stall detection — 'Conectado' on a dead link", () => {
       await new Promise((r) => setTimeout(r, 60));
 
       expect(h.states.map((s) => s.state)).toContain("stalled");
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("stop() sends one estop frame at once, even on a backed-up link", () => {
+    const h = harness();
+    try {
+      h.socket().emit("open");
+      h.socket().bufferedAmount = 10_000; // the tick would skip; a stop must not
+      h.handle.stop();
+      const sent = h.socket().sent.map((m) => JSON.parse(m));
+      expect(sent.length).toBe(1);
+      expect(sent[0].estop).toBe(true);
+      expect(sent[0].enabled).toBe(false);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("stop() on a closed socket sends nothing", () => {
+    const h = harness();
+    try {
+      h.socket().readyState = 3;
+      h.handle.stop();
+      expect(h.socket().sent.length).toBe(0);
     } finally {
       h.restore();
     }
@@ -344,5 +372,19 @@ describe("observe-only — a headset that watches and commands nothing", () => {
     expect(
       buildFrame(input({ observeOnly: false, walking: "forward" })).walk,
     ).toBe(1);
+  });
+});
+
+describe("teleopUrl (X15)", () => {
+  test("carries apps/back's token to the bridge's handshake", () => {
+    expect(teleopUrl("ws://g1-orin.local:8767", "123.ab/c")).toBe(
+      "ws://g1-orin.local:8767/?token=123.ab%2Fc",
+    );
+  });
+
+  test("no token (no secret, or back down) leaves the URL alone", () => {
+    expect(teleopUrl("ws://g1-orin.local:8767", null)).toBe(
+      "ws://g1-orin.local:8767",
+    );
   });
 });

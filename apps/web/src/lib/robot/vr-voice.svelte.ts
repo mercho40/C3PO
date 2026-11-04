@@ -13,6 +13,7 @@
 import { Chat } from "@ai-sdk/svelte";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { PUBLIC_API_URL } from "$app/env/public";
+import { ADMIN_REQUIRED_HINT } from "#lib/chat/chat-error.js";
 import { newId } from "#lib/chat/ids.js";
 import type { MenuItem, VoiceLine } from "#lib/webxr/menu-layer.js";
 import { redirectToLogin } from "./poller.svelte";
@@ -185,6 +186,11 @@ export class VrVoice {
         body: new Blob([wav.buffer as ArrayBuffer], { type: "audio/wav" }),
       });
       if (res.status === 401) redirectToLogin("expired");
+      if (res.status === 403) {
+        this.phase = "idle";
+        this.error = ADMIN_REQUIRED_HINT;
+        return;
+      }
       const body = (await res.json().catch(() => ({}))) as {
         text?: string;
         error?: string;

@@ -26,6 +26,7 @@ from bridge.skills._locomotion import (
     MAX_FWD_VEL,
     MAX_LAT_VEL,
     MAX_YAW_VEL,
+    TELEOP_TAKEOVER,
     maybe_report_progress,
     teleop_conflict,
     send_velocity_async,
@@ -130,10 +131,17 @@ async def run(
         last_reported = 0.0
         arrived = False
         cancelled = False
+        taken_over = False
 
         while time.time() < deadline:
             if task.cancel_event.is_set():
                 cancelled = True
+                break
+            # The headset took over mid-motion: the person in the room wins.
+            # Still stopped below, not skipped: an arm-mirror takeover sends
+            # no velocity, and the robot would hold our last setpoint.
+            if teleop_conflict() is not None:
+                taken_over = True
                 break
 
             state = sampler.get_state()
@@ -187,6 +195,11 @@ async def run(
         if cancelled:
             task.status = "cancelled"
             task.phase = "cancelled"
+        elif taken_over:
+            task.status = "failed"
+            task.phase = "teleop_takeover"
+            task.error = TELEOP_TAKEOVER
+            log.warning("walk_to.teleop_takeover", task_id=task.task_id)
         elif arrived:
             task.status = "completed"
             task.phase = "arrived"

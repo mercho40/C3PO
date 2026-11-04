@@ -251,6 +251,13 @@ def teleop_conflict() -> str | None:
     return (
         "a teleoperation session is driving the robot right now. Two commanders on "
         "rt/run_command/cmd means the robot obeys whichever message landed last, so this "
-        "skill will not add itself as a second one. Ask the operator to disconnect the "
-        "headset stream, or wait for them to finish."
+        "skill will not add itself as a second one. The operator is driving right now; "
+        "wait until they let go."
     )
+
+
+#: The error a running walk or turn ends with when the headset takes over.
+TELEOP_TAKEOVER = (
+    "the operator in the headset took over and is driving the robot, so this motion "
+    "ended. Do not retry it while they drive."
+)

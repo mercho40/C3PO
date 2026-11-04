@@ -12,6 +12,7 @@ client is expected to decimate to ~30-50 Hz before sending, see
       "enabled": true,                   // dead-man held on the client
       "walk": 0.0,                       // -1 back .. +1 forward, from the buttons
       "arms": true,                      // operator wants the arms mirrored
+      "estop": true,                     // optional: the headset's PARAR
       "head": { "yaw": 0.21, "pos": [0.0, 1.62, 0.0] },
       "hands": {
         "left":  { "tracked": true, "pos": [...], "quat": [x,y,z,w], "grip": 0.0 },
@@ -24,6 +25,10 @@ forward, origin at the `local-floor` calibrated floor point. Quaternions are
 `[x, y, z, w]` — the DOMPointReadOnly field order, *not* the `[w, x, y, z]`
 that most robotics code uses. That mismatch is a classic silent-wrong-rotation
 bug, so it is stated here and converted exactly once, in `retarget.py`.
+
+`estop` is optional and stays v1 on purpose: an older bridge ignores it (the
+stop still reaches it through apps/back), while a version bump would make that
+bridge refuse every frame. Only a literal `true` is a stop.
 
 Parsing posture: **strict, and hostile.** This socket carries setpoints for a
 1.3 m humanoid's arms, so a malformed frame must be rejected rather than
@@ -140,6 +145,9 @@ class TeleopFrame:
     head_position: tuple[float, float, float]
     left: HandSample | None
     right: HandSample | None
+    #: The headset's PARAR, sent straight down this socket so it works with
+    #: apps/back down. See `TeleopSession.raise_stop`.
+    estop: bool = False
 
     @property
     def any_hand_tracked(self) -> bool:
@@ -240,4 +248,21 @@ def parse_frame(raw: str | bytes) -> TeleopFrame:
         head_position=head_position,
         left=_parse_hand(hands.get("left"), "left", head_position),
         right=_parse_hand(hands.get("right"), "right", head_position),
+        estop=payload.get("estop") is True,
     )
+
+
+def carries_estop(raw: str | bytes) -> bool:
+    """Whether a frame `parse_frame` refused still says `estop: true`.
+
+    A stop is never stale and never malformed enough to ignore: a bad hand pose
+    riding in the same frame must not swallow it. Size-capped like the parser.
+    """
+    size = len(raw) if isinstance(raw, bytes) else len(raw.encode("utf-8", "surrogatepass"))
+    if size > MAX_FRAME_BYTES:
+        return False
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("estop") is True

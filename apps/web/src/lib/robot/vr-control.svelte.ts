@@ -55,6 +55,7 @@ import {
 import {
   buildFrame,
   connectTeleop,
+  teleopUrl,
   type TeleopFramePayload,
   type TeleopHandle,
   type TeleopState,
@@ -284,8 +285,8 @@ export class VrControl {
     return this.teleopState === "open";
   }
 
-  //: The bridge holds locomotion whenever the socket is up — INCLUDING while
-  //: stalled. `streaming` goes false there, which used to re-open the door for
+  //: The bridge holds the teleop lease while this headset commands motion
+  //: (C7) — INCLUDING while stalled. `streaming` goes false there, which used to re-open the door for
   //: this page's own velocity loop: the socket is still OPEN, its 33 Hz sender
   //: is still transmitting, and the moment the bridge starts reading again
   //: both writers are live on SetVelocity. `stalled` is a diagnosis, not a
@@ -429,6 +430,7 @@ export class VrControl {
   // walk_velocity. `destroy()` stops this one too.
   #pendingVr: XrTeleopSession | null = null;
   #teleop: TeleopHandle | null = null;
+  #connectSeq = 0;
   #camHandle: RobotCamHandle | null = null;
   #destroyed = false;
 
@@ -595,6 +597,8 @@ export class VrControl {
    * power with nobody having asked again.
    */
   #haltForEstop(): void {
+    // Straight down the teleop socket too, so PARAR works with apps/back down.
+    this.#teleop?.stop();
     this.#estopEpoch++;
     this.walking = null;
     this.armsRequested = false;
@@ -1163,7 +1167,6 @@ export class VrControl {
    * page's button (it also ends agent turns). The hold is what keeps a relaxed
    * grip on both controllers from stopping the robot; one hand never counts.
    */
-  // shortcut: the press goes through apps/back; if back is down this does nothing. Add a direct teleop-channel stop.
   #applyStopChord(grips: number, now: number): void {
     if (grips < 2) {
       this.#chordSince = null;
@@ -1418,7 +1421,7 @@ export class VrControl {
     if (seen !== this.handsVisible) this.handsVisible = seen;
   }
 
-  connectStream(): void {
+  async connectStream(): Promise<void> {
     // Opening this socket is exactly what makes the headset a commander, and
     // the bridge PULLS from it — so one tap would turn a session somebody
     // entered as passive into one that drives, with nothing visible changing
@@ -1428,11 +1431,29 @@ export class VrControl {
     // commander the moment the session ended and `viewOnly` reset.
     if (this.viewOnly) return;
     this.#teleop?.close();
+    this.#teleop = null;
     this.teleopStatus = null;
+    this.teleopState = "connecting";
+    const attempt = ++this.#connectSeq;
+    // The bridge's handshake token. null (no secret configured, or back
+    // unreachable) connects without one; the bridge decides.
+    let token: string | null = null;
+    try {
+      const res = await createApi(fetch).teleop.token.get({
+        fetch: { signal: AbortSignal.timeout(3000) },
+      });
+      token = res.data?.token ?? null;
+    } catch {
+      token = null;
+    }
+    // A disconnect, a second connect, observe-only or teardown arrived meanwhile.
+    if (attempt !== this.#connectSeq || this.viewOnly || this.#destroyed)
+      return;
     const host = PUBLIC_TELEOP_HOST || location.hostname;
     const port = PUBLIC_TELEOP_PORT || "8767";
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    this.#teleop = connectTeleop(`${protocol}://${host}:${port}`, {
+    const url = teleopUrl(`${protocol}://${host}:${port}`, token);
+    this.#teleop = connectTeleop(url, {
       getFrame: () => this.#buildTeleopFrame(),
       onState: (state, detail) => {
         this.teleopState = state;
@@ -1469,6 +1490,7 @@ export class VrControl {
   }
 
   disconnectStream(): void {
+    this.#connectSeq++; // cancels a connect still waiting for its token
     this.armsRequested = false;
     this.#teleop?.close();
     this.#teleop = null;

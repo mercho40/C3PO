@@ -193,7 +193,9 @@ def stop_is_standing() -> bool:
 LEASE_NAME = "teleop_driving"
 
 #: How long a lease stays valid without renewal. The dispatch loop renews at
-#: 20-50 Hz, so this is generous by two orders of magnitude — it is sized so
+#: 20 Hz while a session commands motion (head yaw counts) or holds the arms,
+#: and drops it the tick the operator lets go. Running walks yield to it. This
+#: is generous by two orders of magnitude — it is sized so
 #: that a teleop server which dies mid-session frees locomotion in about a
 #: second, not so that a busy one keeps it by a hair.
 LEASE_TTL_S = 2.0

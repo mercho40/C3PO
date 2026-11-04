@@ -60,6 +60,7 @@ export const RPC_HINTS: Record<string, string> = {
 /** Phases whose meaning is the same wherever they appear. */
 const PHASE_TEXT: Record<string, string> = {
   teleop_active: "Otro operador tiene la locomoción (teleoperación activa)",
+  teleop_takeover: "El operador del visor tomó el control",
   arm_sdk_engaged: "Los brazos están tomados por el espejo de teleoperación",
   unknown_gesture: "Gesto desconocido",
   bad_arguments: "Parámetros inválidos",

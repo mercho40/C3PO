@@ -133,6 +133,13 @@ arm_enabled="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEO
 hand_enabled="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_HAND_ENABLED:-}")"
 hand_type="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_HAND_TYPE:-unset}")"
 
+# The socket is on the LAN, so the handshake is the gate (teleop/server.py authorize).
+if [ -z "$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_SECRET:-}")" ]; then
+    warn "TELEOP_SECRET is empty: any LAN client can open port $teleop_port and drive the robot."
+    warn "Set the same value in apps/bridge/.env and apps/back/.env, then restart both."
+else
+    ok "teleop socket needs a token from apps/back (TELEOP_SECRET set)"
+fi
 case "$arm_enabled" in
     1|true|yes|on) warn "arms ENABLED (rt/arm_sdk). Joint signs must already be verified — scripts/arm_sign_check.py" ;;
     *)             info "arms disabled. Head yaw and walking still work. Enable with TELEOP_ARM_ENABLED=1 in apps/bridge/.env, after arm_sign_check.py" ;;

@@ -43,8 +43,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
 import json
 import math
+import os
 import sys
 import time
 from collections.abc import Callable
@@ -452,7 +455,12 @@ async def ensure_walk_program(session: ClientSession) -> bool:
     print(f"    robot is {state.get('posture')!r}, not in the walk program — restoring ...")
     for skill in ("prepare", "start_walking_waist"):
         result = await session.call_tool(skill, {})
-        del result
+        if result.isError:
+            # PARAR latched (stage 6) and start_walking_waist needs a confirmation over MCP.
+            text = getattr(result.content[0], "text", "") if result.content else ""
+            print(f"    {skill} refused: {text}")
+            print("    Restore by hand: «Reanudar», then the console or headset bring-up.")
+            return False
         await asyncio.sleep(6)
 
     state = await mcp_state(session)
@@ -529,6 +537,13 @@ async def main() -> int:
     parser.add_argument("--teleop", default="ws://127.0.0.1:8767", help="teleop stream endpoint")
     parser.add_argument("--yaw-only", action="store_true", help="stop after the yaw-sign stage")
     args = parser.parse_args()
+    # The socket fails closed once TELEOP_SECRET is set (server.authorize). This
+    # script holds the secret, so it mints its own token, long enough for every stage.
+    secret = os.environ.get("TELEOP_SECRET")
+    if secret and "token=" not in args.teleop:
+        exp = int(time.time()) + 3600
+        sig = hmac.new(secret.encode(), f"teleop:{exp}".encode(), hashlib.sha256).hexdigest()
+        args.teleop = f"{args.teleop.rstrip('/')}/?token={exp}.{sig}"
 
     print(__doc__)
     print(f"\nbridge : {args.url}\nteleop : {args.teleop}")

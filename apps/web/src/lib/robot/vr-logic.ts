@@ -371,9 +371,9 @@ export type WalkDispatch = "move" | "stop";
  * The 0.5 s stop pulses are precautionary — sent on stream open, on VR exit, on
  * teardown — usually when this page never moved anything. Reporting THOSE
  * refusals would greet a non-admin with "requiere admin" for a stop they never
- * asked for. And while our own teleop stream holds locomotion the bridge refuses
- * `walk_velocity` with `teleop_active` — correctly, and the "other operator" it
- * means is us.
+ * asked for. And while our own teleop stream is driving (it holds the lease only
+ * while it commands motion or the arms) the bridge refuses `walk_velocity` with
+ * `teleop_active` — correctly, and the "other operator" it means is us.
  */
 export type WalkAction = "refuse" | "clear" | "stop_failed" | "ignore";
 
