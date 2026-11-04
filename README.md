@@ -60,15 +60,16 @@ entries.
 
 ## Commands
 
-| Command               | Description                                           |
-| --------------------- | ----------------------------------------------------- |
-| `bun run dev`         | Start the existing local development servers          |
-| `bun run dev:robot`   | Start API and web against the robot (tunnel first)    |
-| `bun run start`       | Start production builds against the configured bridge |
-| `bun run build`       | Build the monorepo                                    |
-| `bun run check-types` | Type-check across the monorepo                        |
-| `bun run test`        | Test across the monorepo                              |
-| `bun run format`      | Format with Prettier                                  |
+| Command                    | Description                                                             |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `bun run dev`              | Start the existing local development servers                            |
+| `bun run dev:robot`        | Start API and web against the robot (tunnel first)                      |
+| `scripts/robot_session.sh` | Robot session on the Mac: tunnel, robot internet, console, status table |
+| `bun run start`            | Start production builds against the configured bridge                   |
+| `bun run build`            | Build the monorepo                                                      |
+| `bun run check-types`      | Type-check across the monorepo                                          |
+| `bun run test`             | Test across the monorepo                                                |
+| `bun run format`           | Format with Prettier                                                    |
 
 On the robot, the corresponding integrated surface is `c3po up [profile]` and
 `c3po down`; see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). Per-app commands

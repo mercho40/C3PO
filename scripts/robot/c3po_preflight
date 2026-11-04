@@ -47,6 +47,13 @@ case "$gate" in
     *) block "cannot read the cmd_vel gate" ;;
 esac
 
+# Without the secret «Confirmar» (arm_navigation) answers 503 and a PARAR can never be cleared.
+case "$(get /safety/status || true)" in
+    *'"confirm_configured":true'*) pass "SAFETY_CONFIRM_SECRET is set — «Confirmar» and «Reanudar» can reach the bridge" ;;
+    *'"confirm_configured":false'*) block "SAFETY_CONFIRM_SECRET IS NOT SET on the bridge — «Confirmar» answers 503 (confirmation_not_configured) and «Reanudar» cannot clear a PARAR. Set the same value in apps/bridge/.env and apps/back/.env, then restart both." ;;
+    *) block "cannot read /safety/status — no way to tell whether «Confirmar» works" ;;
+esac
+
 # --- 2. is anything else commanding the robot? ------------------------------
 # Two commanders on one control API is the conflict DDS domains cannot isolate.
 if warn_if_other_commander >/dev/null 2>&1; then

@@ -101,6 +101,7 @@ c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the t
 `BRIDGE_URL=http://127.0.0.1:8001/mcp` — the default in `apps/back/.env.example` and in
 `bun run dev:robot`. Anything still dialling `g1-orin.local:8001` gets a refused connection;
 `apps/back` logs the tunnel line when that happens (`unreachableHint`).
+`scripts/robot_session.sh [host]` does the whole Mac side in one command (tunnel, robot internet, `bun run dev:robot`, a status table, the robot-side `export`/`c3po up` lines); open the console at `http://localhost:3001`.
 
 **The cable, and keeping the internet.** `c3po-wire` is the Mac's alias for the cabled
 path (`192.168.77.1`, reported 2026-10-13). Joining the robot's own Wi-Fi drops the
