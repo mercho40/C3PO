@@ -4,7 +4,7 @@ Scoped by 9 read-only agents that read the code, one per work package (WP). A, B
 
 **How to read it.** Work runs in **waves**. Inside a wave, the listed branches edit disjoint files and can run in parallel. Each subtask lands only with its tests green. A critic issue marked _apply_ is folded into the subtask when it's implemented.
 
-**Status:** 🟢 done · 🔵 in progress · ⚪ todo. Robot-only steps are in §4.
+**Status (2026-11-03):** waves 0 and 1 done, except A4/A6, which moved to wave 2 to ship with A5. 🟢 done · 🔵 in progress · ⚪ todo. Robot-only steps are in §4.
 
 ## 1. Waves
 
@@ -258,7 +258,7 @@ These are the scoping agents' recommendations. **They are the defaults unless yo
 | 1.3     | yes   | safety.py:308-309 `if tier != "T2": return None`. skill_meta.py:65-70 derive_tier makes posture/locomotion T1 at any danger level. I listed the live catalogue in stub mode: start_walking_waist (posture/high/T1, mcp_server.py:968-981) and arm_navigation (locomotion/high/T1, :1842-1854) are the only high-danger T1 tools. Agent paths (runtime.ts:314 buildTools, voice/realtime.ts:402, voice loop via b |
 | 1.10    | yes   | Nothing refuses on battery. state.py:449-452 only adds a `low_battery_<n>pct` fault in get_state. grep finds no battery check in safety.py, skills/ or teleop/. `battery_pct_gt_15` in the walk_to/go_to_object preconditions (mcp_server.py:221,323) is free-text metadata. state.py:489-498 get_sampler() creates the DDS sampler, and there is no non-creating accessor like perception_link.existing_link (: |
 
-#### ⚪ A1: PARAR latch keeps an in-process copy of the stop (11.2) `S`
+#### 🟢 A1: PARAR latch keeps an in-process copy of the stop (11.2) `S`
 
 - **Backlog:** 11.2 · **Depends on:** —
 - **Files:** `apps/bridge/src/bridge/estop.py`, `apps/bridge/tests/conftest.py`, `apps/bridge/tests/test_estop_cross_process.py`, `apps/bridge/tests/test_safety.py`
@@ -270,7 +270,7 @@ These are the scoping agents' recommendations. **They are the defaults unless yo
 - _apply (major)_: The A1 robot step proves nothing as written, and the honest version is a hazard. c3po-bridge.service runs as User=unitree, which owns ~/.c3po/run. `chmod a-w ~/.c3po/run` only blocks creating new entries. `stop_everything` already exists from earlier stops, so write_text (O_TRUNC on the file) and os.utime still succeed, and the check passes for the wrong reason. If the step is fixed so the write really fails, the teleop process (which reads only the file, teleop/server.py:243/405, _locomotion.send_velocity) never sees the PARAR, and a headset that is driving keeps driving. **Fix:** Either drop the robot step (the unit tests cover it), or make the files themselves read-only (`chmod a-w ~/.c3po/run/stop_everything ~/.c3po/run/stop_acknowledged` as well). Do it only after `stop_teleop`, with the robot damped or on the gantry. Restore the permissions before Reanudar.
 - _apply (minor)_: record_ack() returns `now` on OSError (estop.py:125-127). safety_ack (mcp_server.py:3842-3848) then answers 200 {acknowledged:true} even when nothing was recorded. After A1 the latch still stands at that point, so the console is told 'resumed' while every tool is refused. The plan also says 11.3 covers the teleop-process gap. It does not: 11.3 sends the headset's own stop over the teleop channel, and a console or agent PARAR whose sentinel write failed still never reaches the teleop process. **Fix:** signal_stop/record_ack return whether the write landed. safety_ack returns 500 {error:'ack_not_recorded', **stop_latch()} when stop_standing is still true. stop_everything adds `sentinel_written: false` to its result, so the operator learns the teleop process may not have stopped. List the teleop gap as still open after both A1 and 11.3.
 
-#### ⚪ A2: Bind a T2 grant to the canonical arguments (11.1, bridge) `S`
+#### 🟢 A2: Bind a T2 grant to the canonical arguments (11.1, bridge) `S`
 
 - **Backlog:** 11.1 · **Depends on:** —
 - **Files:** `apps/bridge/src/bridge/safety.py`, `apps/bridge/src/bridge/mcp_server.py`, `apps/bridge/tests/test_safety.py`
@@ -281,7 +281,7 @@ These are the scoping agents' recommendations. **They are the defaults unless yo
 - _apply (minor)_: Signature and contract details. tool_refusal is called with two arguments in test_safety.py:327-337 and test_teleop_estop.py:249. Once grants are keyed by (tool, digest), status()['pending_confirmations'] can list the same tool twice. Canonicalising inside GovernedMCP.call_tool before tool_refusal means a call with invalid arguments made while PARAR stands gets 'invalid arguments' instead of the PARAR text. **Fix:** Make `args_key: str | None = None` keyword-optional (None never matches a grant). Build pending with sorted({t for (t, _), exp in ...}). Wrap the canonicalisation so a ValidationError passes args_key=None and tool_refusal still reports PARAR first. Raise 'invalid arguments' only when there would otherwise be no refusal.
 - _apply (minor)_: The plan's notes say that since 3b0cae6 'only safety.py and state.py changed among the gate files'. That is wrong: `git diff --stat 3b0cae6..HEAD` shows mcp_server.py +144, skills.ts +9, tool-part.ts +33 and tool-card.svelte +48 (8c623df added the Confirmar card). The conclusions still hold, but the evidence statement is wrong. **Fix:** Correct the note. Re-read those diffs before editing, because A2, A3 and A5 touch exactly those hunks.
 
-#### ⚪ A3: Console and headset Confirmar send the refused call's arguments (11.1, back + web) `S`
+#### 🟢 A3: Console and headset Confirmar send the refused call's arguments (11.1, back + web) `S`
 
 - **Backlog:** 11.1 · **Depends on:** A2
 - **Files:** `apps/back/src/routes/skills.ts`, `apps/back/src/routes/skills.test.ts`, `apps/web/src/lib/components/chat/tool-card.svelte`, `apps/web/src/routes/(protected)/chat/+page.svelte`, `apps/web/src/lib/robot/voice-panel.ts`, `apps/web/src/lib/robot/vr-voice.svelte.ts`, `apps/web/tests/vr-voice.test.ts`
@@ -373,7 +373,7 @@ Not checked: the svelte tool-card has no component test, so the Eden body typing
 | 6.1     | yes    | The TTS already exists. The bridge `say` tool (mcp_server.py:1611) speaks Spanish through Piper es_AR-daniela-high (skills/tts.py:50-52) to PlayStream at 16 kHz, installed by apps/bridge/scripts/install_piper.sh (rhasspy/piper 2023.11.14-2 binary). It is T0 because its classification is speech (skill_meta.py:60-61). What's missing is the wiring: voice mode removes `say` from the model (runtime.ts: |
 | 6.8     | **no** | Already done as a side effect of d8d5db7. vr-voice.svelte.ts:55 creates the Chat with `id: newId()`. DefaultChatTransport sends `id: options.chatId` (ai dist/index.js ~19746). routes/agent.ts:74-96 then runs ensureChat (channel defaults to 'text', db/chats.ts:81) and appendMessage, and onEnd :118-127 persists the reply. The console list `api.chats.get({ query: {} })` (routes/(protected)/chat/+page |
 
-#### ⚪ B1: Bridge acts on the spoken stop for the legacy engine too `S`
+#### 🟢 B1: Bridge acts on the spoken stop for the legacy engine too `S`
 
 - **Backlog:** 1.2 · **Depends on:** —
 - **Files:** `apps/bridge/src/bridge/skills/listen.py`, `apps/bridge/src/bridge/mcp_server.py`, `apps/bridge/tests/test_mic_listener.py`
@@ -385,7 +385,7 @@ Not checked: the svelte tool-card has no component test, so the Eden body typing
 - _apply (minor)_: MicListener.start() calls `self.set_on_stop(on_stop)` unconditionally with a default of None (listen.py:825). Any `listener.start()` with no argument therefore disarms a live subscriber. That includes the `listen` tool's restart when the thread is not running (mcp_server.py:2480). Separately, `_run` reads `self._on_stop` twice: it checks `is not None`, then calls it. If clear_on_stop runs between the two reads, the call raises TypeError, which the `except Exception` swallows as on_stop_failed, and the stop is not acted on. **Fix:** In start(), set the callback only when one is passed (`if on_stop is not None`). Realtime always passes one, and the boot-time slot is already None. In _run, read once: `cb = self._on_stop; if cb is not None: cb(hit)`. Add a test that start() with no argument keeps an armed callback.
 - _apply (minor)_: The callback is a single slot. If A arms, then B arms, then B clears, A is still connected but disarmed. back still acts in that case, so this only falls back to today's behaviour. The double stop has a timing edge: back's own stop_everything can land after a fast «Reanudar» and latch PARAR again. That is the safe direction, but it will surprise operators. Several docstrings also go stale: the MicListener docstring ('REPORTED, not acted on'), the listen tool comment (mcp_server.py ~2499) and voice.ts:115-118 ('only the legacy loop does'). **Fix:** Document the single-slot limit with a `shortcut:` comment, or use a counter. Add the re-latch case to the B1 robot step. Update the three docstrings in the same change.
 
-#### ⚪ B2: Legacy voice: pump events separately, stop at once, abort the turn `S`
+#### 🟢 B2: Legacy voice: pump events separately, stop at once, abort the turn `S`
 
 - **Backlog:** 1.1 · **Depends on:** B1
 - **Files:** `apps/back/src/voice/loop.ts`, `apps/back/src/voice/loop.test.ts`, `apps/back/src/voice/conversation.ts`, `apps/back/src/voice/conversation.test.ts`, `apps/back/src/routes/voice.ts`
@@ -397,7 +397,7 @@ Not checked: the svelte tool-card has no component test, so the Eden body typing
 - _apply (major)_: After a stop/start, two turns can dispatch to the robot at once, which breaks the 'turns never overlap' invariant the plan says it keeps. With B2, stop() returns while a turn is still in flight and only aborts its signal. Tool execute never receives the abort signal (runtime.ts:310-321 calls callTool with no signal; walk_to runs up to 300 s), so an aborted turn can still be inside a walk. If an operator ends and restarts the conversation (/voice/start resets and l.start() makes a new pump with a fresh turnTail), the first new turn can send motion while the old walk_to is still running. Before B2 this could not happen, because stop() awaited the whole turn. **Fix:** Keep `turnTail` on the VoiceLoop instance and do not reset it on stop/start, so new turns chain after the old, aborted one. Alternatively, have start() await the previous tail. Add a test: stop() resolves, start() runs, the old runAgent stays blocked until released, and the new turn's runAgent does not start before then.
 - _apply (minor)_: Speech chained during a long turn is unbounded and answered one item at a time. The polling path joins utterances into one turn for exactly this reason (loop.ts:233-237). Also, MicListener records the stop event first and then usually transcribes the same words ('para para') as a speech event with a later seq. That speech counts as heard after the stop, so it is not skipped and starts an agent turn while PARAR stands. **Fix:** Join the speech items still queued when a turn finishes into one utterance before running the next turn. Optionally drop a speech event whose normalised text is only the stop phrase. Add one test for each.
 
-#### ⚪ B3: Agent turn registry: done on every outcome `S`
+#### 🟢 B3: Agent turn registry: done on every outcome `S`
 
 - **Backlog:** 11.8 · **Depends on:** —
 - **Files:** `apps/back/src/agent/runtime.ts`, `apps/back/src/agent/runtime.test.ts`
@@ -418,7 +418,7 @@ Not checked: the svelte tool-card has no component test, so the Eden body typing
 - **Risk:** The model forgets old perception and tool results. That is intended, since they are stale. A turn longer than 10 model messages after a refused T2 call would lose its arguments, which is rare because the model stops at the refusal.
 - _apply (minor)_: Pruning tool parts interacts with backlog 11.1. A T2 grant is consumed by tool name only (safety.py:325 _consume_confirmation). If pruning ever drops the refused call's arguments, the model can retry the same tool with invented arguments under the operator's name-only confirmation. The 10-message window makes this unlikely, but the plan treats it as UX only. **Fix:** In the risk note, say that a lost argument set is retried under a name-only grant until 11.1 lands. Add a test case where the refused T2 call sits exactly at the boundary of the last 10 model messages and survives.
 
-#### ⚪ B5: apps/back listens on loopback by default `S`
+#### 🟢 B5: apps/back listens on loopback by default `S`
 
 - **Backlog:** 1.4 · **Depends on:** —
 - **Files:** `apps/back/src/index.ts`, `apps/back/src/lib/env.ts`, `apps/back/.env.example`, `apps/back/src/routes/mounted.test.ts`, `docs/OPERATIONS.md`
@@ -429,7 +429,7 @@ Not checked: the svelte tool-card has no component test, so the Eden body typing
 - _apply (minor)_: `HOST` is a risky name. zsh defines $HOST as the machine's hostname (here Olivers-MacBook-Pro-2.local). It is not exported by default, but a dotfile or tool that exports it would make Bun bind the LAN address and drop loopback: the fix would silently invert and localhost:3000 would break. The house convention is BRIDGE_HOST (mcp_server.py:76, scripts/robot/c3po-bridge.service:46). Also, turbo runs tasks in strict env mode, so a shell-set value would not reach back through `bun run dev`. **Fix:** Name it BACK_HOST (default '127.0.0.1') in env.ts and .env.example, and say it is set in apps/back/.env, not in the shell. Point the structural test at BACK_HOST.
 - _apply (minor)_: OPERATIONS.md documents apps/back on an Ubuntu LAN box that serves a remote console (diagram line 26; §5 'apps/back → Ubuntu LAN box', lines 242-260). The plan updates only the §2 port table, so the next deploy of the compiled binary would quietly stop answering LAN clients. Also, the listen call is at index.ts:97, not :93. **Fix:** Add BACK_HOST=0.0.0.0 to the §5 deploy env notes and the per-deploy checklist there, next to the existing 'verify per deploy target' bullets.
 
-#### ⚪ B6: Close public sign-up; create operators from a CLI `S`
+#### 🟢 B6: Close public sign-up; create operators from a CLI `S`
 
 - **Backlog:** 1.4 · **Depends on:** —
 - **Files:** `apps/back/src/lib/auth.ts`, `apps/back/scripts/create-user.ts`, `apps/web/src/lib/auth-client.ts`, `apps/web/tests/auth-params.test.ts`, `docs/SESSION-CHECKLIST.md`
@@ -518,7 +518,7 @@ Left out and not checked:
 | 11.3    | yes   | vr-control.svelte.ts:1166 carries `// shortcut: the press goes through apps/back; if back is down this does nothing.` #applyStopChord (lines 1167-1178) only calls estop.press(). The teleop protocol has no stop field: protocol.py TeleopFrame (lines 125-146) and parse_frame (181-243) carry only enabled/walk/arms/head/hands. teleop/server.py reads the stop sentinel (check_estop 365-441, last_stop_at) |
 | 11.6    | yes   | Verified. teleop/server.py:553 calls renew_teleop_lease() on every _dispatch_once tick (20 Hz) for as long as the socket is open, whatever frame.enabled says. walk_to.py:64/76, turn.py:75/87 and walk_velocity.py:95 refuse with phase 'teleop_active' through _locomotion.teleop_conflict (lines 230-257). go_to_object (mcp_server.py:327, danger 'medium', so voice mode keeps it per back runtime.ts:204)  |
 
-#### ⚪ C1: PARAR works before hydration: a no-JS <form action> fallback `S`
+#### 🟢 C1: PARAR works before hydration: a no-JS <form action> fallback `S`
 
 - **Backlog:** 1.9 · **Depends on:** —
 - **Files:** `apps/web/src/lib/components/stop-button.svelte`, `apps/web/src/routes/(protected)/stop/+page.server.ts`, `apps/web/src/routes/(protected)/stop/+page.svelte`, `apps/web/tests/estop.test.ts`
@@ -529,7 +529,7 @@ Left out and not checked:
 - _apply (minor)_: The server action, written as `.catch(() => ...)` like the layout, turns a fetch aborted by AbortSignal.timeout into `{threw:true}`, which is 'unreachable' ('the order did not go out'). The store explicitly reclassifies an aborted signal as noAnswer (estop.svelte.ts:97-106), because the order may have landed. Separately, estopMessage('accepted') says 'Esperando que la telemetría lo confirme', and without JS nothing will ever confirm it. Also, dashboard-topbar mounts StopButton at line 87, not 105. **Fix:** Mirror the store: `.catch(() => (signal.aborted ? {timedOut:true} : {threw:true}))`, then `if (signal.aborted && phase !== 'accepted') phase = 'noAnswer'`. On /stop, add one fixed line under an accepted result: 'Sin JavaScript esta página no puede confirmarlo: mirá el robot.'
 - _apply (minor)_: SvelteKit runs actions BEFORE the (protected) layout load, so the layout's `if (!locals.user) redirect` does not guard the action. Auth then rests on back alone. That is correct today (back's auth guard, skills.ts:76), but the plan does not say so. **Fix:** Add a one-line comment in +page.server.ts saying that back's session guard is the authority and that a 401 classifies as 'expired'. No extra check is needed.
 
-#### ⚪ C2: Battery warning under the topbar: warn under 25 %, strong alert under 15 % `S`
+#### 🟢 C2: Battery warning under the topbar: warn under 25 %, strong alert under 15 % `S`
 
 - **Backlog:** 1.10 · **Depends on:** —
 - **Files:** `apps/web/src/lib/robot/format.ts`, `apps/web/src/lib/components/shell/battery-banner.svelte`, `apps/web/src/routes/(protected)/+layout.svelte`, `apps/web/tests/robot-format.test.ts`
@@ -539,7 +539,7 @@ Left out and not checked:
 - **Risk:** The banner flickers when the reading bounces across 25 or 15, and the alert is announced again each time. That is low risk because SoC is an integer and falls while discharging. No hysteresis on purpose (shortcut comment). Thresholds are a user decision.
 - _apply (minor)_: Callout with live=true is role=status (warn) or role=alert (danger), and the plan puts the percentage in the text. Every 1 % drop then re-announces the banner, assertively below 15 %. robot-status.svelte:18-22 records removing exactly this chattiness. Also, the banner feeds batteryPct (which rounds) into batteryWarning, so 24.6 shows no warning while the unit test asserts 24.9 -> warn. **Fix:** Keep the band word in the live title ('Batería baja' / 'Batería crítica') and render the percentage outside the live region, or key the Callout on the band so it only re-renders on a band change. Pass the raw battery_pct to batteryWarning.
 
-#### ⚪ C3: XR camera texture: upload once per new picture, not per eye per frame `S`
+#### 🟢 C3: XR camera texture: upload once per new picture, not per eye per frame `S`
 
 - **Backlog:** 6.4 · **Depends on:** —
 - **Files:** `apps/web/src/lib/webxr/camera-layer.ts`, `apps/web/tests/camera-layer.test.ts`
@@ -649,7 +649,7 @@ What I skipped or did not check: svelte-check/`?url` typing, whether Chromium pr
 | 3.4     | yes   | apps/perception/vision/c3po_vision/detector.py:264-275: RealSenseSource.start calls self._pipeline.start(config) once, with no handling around it. run() (detector.py:1081-1082) calls source.start() outside the tick try, so the RuntimeError ends the container (--restart no). `git grep hardware_reset\|query_devices` finds nothing in apps/ or scripts/. tools/capture_frames.py:61-63 reuses RealSenseSo |
 | 3.6     | yes   | apps/perception/nav/ws/src/c3po_perception/c3po_perception/world_model_publisher.py:241,250: _emit stamps stamp_unix=time.time(). _on_objects (172-199) throws away the detector payload's stamp_unix. The stored objects are re-emitted with no age_s for up to DETECTOR_OFFLINE_AFTER_S=1.5 (line 72). detector.py:1178 stamps build_report with time.time() at publish, not at the grab. The bridge already s |
 
-#### ⚪ D1: Persistent ~/.c3po/perception.env for every perception bring-up and build `S`
+#### 🟢 D1: Persistent ~/.c3po/perception.env for every perception bring-up and build `S`
 
 - **Backlog:** 3.3 · **Depends on:** —
 - **Files:** `apps/perception/bringup/spec.py`, `apps/perception/bringup/cli.py`, `apps/perception/bringup/build.py`, `scripts/robot/c3po`, `apps/perception/tests/test_bringup_cli.py`, `apps/perception/README.md`, `docs/autonomy/test-day/perception.md`
@@ -658,7 +658,7 @@ What I skipped or did not check: svelte-check/`?url` typing, whether Chromium pr
 - **Done when:** With no C3PO_* exported, `c3po perception up perception --dry-run` on a host whose ~/.c3po/perception.env holds C3PO_ONNX/C3PO_ENGINE/C3PO_LABELS prints -e flags for all three. `C3PO_LABELS=x c3po perception up perception --dry-run` prints x. A typo line refuses with its line number. Ships to the robot with a git pull, no image rebuild.
 - **Risk:** Low. shlex cuts a '#' inside an unquoted word (A=b#c gives b), where bash keeps it. Perception values are paths and numbers, so mark it `shortcut:` and quote if ever needed. bridge/env_file.py already parses this correctly, but bringup must stay stdlib/3.8 and independent of apps/bridge, so it is not imported. Allowlisting means someone who puts C3PO_NAV_SLAM in the file is told it was ignored, which is intended.
 
-#### ⚪ D2: Default camera extrinsic derived from the URDF d435_joint, pinned to the bridge's kinematics by a test `S`
+#### 🟢 D2: Default camera extrinsic derived from the URDF d435_joint, pinned to the bridge's kinematics by a test `S`
 
 - **Backlog:** 3.1 · **Depends on:** —
 - **Files:** `apps/perception/vision/c3po_vision/grounding.py`, `apps/perception/vision/c3po_vision/detector.py`, `apps/perception/tests/test_grounding.py`, `apps/perception/README.md`, `docs/autonomy/test-day/perception.md`, `docs/autonomy/test-day/manipulation.md`
@@ -667,7 +667,7 @@ What I skipped or did not check: svelte-check/`?url` typing, whether Chromium pr
 - **Done when:** `uv run pytest` in apps/perception passes with the 2 new tests. A detector started with no C3PO_CAMERA_* logs extrinsic x=0.054 y=0.018 z=0.474 pitch=47.6 source='URDF d435_joint (CAD)'. On the robot, a floor object 1.0 m ahead (tape from the pelvis projection) reports range_m within about 5 cm.
 - **Risk:** Shipping needs a vision image rebuild (code is baked into c3po/perception-vision; spec.py:356-394 mounts no source). Until then D1's perception.env carries the same four numbers. Synthetic-mode ranges (SyntheticSource, `fake` stage) shift with the new pitch. Bearing signs do not change and no test pins those ranges. The lateral bias (colour optical origin about 15 mm from d435_link, audit §3.2 low) is kept on purpose so the bridge and vision agree; the robot check decides. The nav container's base_in_body_xyz placeholder [-0.10,0,0.45] disagrees with the URDF pelvis-in-mid360 (0.028,0,0.472) by about 13 cm in x. That belongs to Navigation and is not changed here.
 
-#### ⚪ D3: Plane/glass fallback tested at the real 47.6 deg pitch: table accepted, wall rejected `S`
+#### 🟢 D3: Plane/glass fallback tested at the real 47.6 deg pitch: table accepted, wall rejected `S`
 
 - **Backlog:** 3.2 · **Depends on:** D2
 - **Files:** `apps/perception/tests/test_depth_and_tracking.py`
@@ -676,7 +676,7 @@ What I skipped or did not check: svelte-check/`?url` typing, whether Chromium pr
 - **Done when:** The 3 new tests pass. Each fails if DEFAULT_CAMERA_EXTRINSIC.pitch_deg is set back to 0.
 - **Risk:** Low. Only risk is a scene helper sign error. Assert the ray-cast table's base z equals -0.5 m for one pixel as a self-check.
 
-#### ⚪ D4: Detector resets a wedged D435 once (VIDIOC_S_FMT errno=5) and retries `S`
+#### 🟢 D4: Detector resets a wedged D435 once (VIDIOC_S_FMT errno=5) and retries `S`
 
 - **Backlog:** 3.4 · **Depends on:** —
 - **Files:** `apps/perception/vision/c3po_vision/detector.py`, `apps/perception/tests/test_realsense_source.py`
@@ -1048,7 +1048,7 @@ What I did not check: whether /usr/bin/systemctl exists on the JetPack rootfs (r
 - **Done when:** All pass. Swapping vendor pose for perception pose inside the tool makes case 2 fail.
 - **Risk:** Low. The fixture must patch module attributes, not the names already bound inside mcp_server.
 
-#### ⚪ G6: Test that runAgentChat registers and releases its turn, and fix the failed-turn leak `S`
+#### 🟢 G6: Test that runAgentChat registers and releases its turn, and fix the failed-turn leak `S`
 
 - **Backlog:** 11.9, 11.8 · **Depends on:** —
 - **Files:** `apps/back/src/agent/runtime.test.ts`, `apps/back/src/agent/runtime.ts`
