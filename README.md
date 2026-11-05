@@ -29,6 +29,7 @@ packages/       Reserved for shared TS packages
 | [`docs/ROBOT-API.md`](docs/ROBOT-API.md)           | The G1's reverse-engineered control API — services, api_ids, FSM      |
 | [`docs/ROBOT-HARDWARE.md`](docs/ROBOT-HARDWARE.md) | What the physical robot presents — network, peripherals, cohabitation |
 | [`docs/MONDAY-RUNBOOK.md`](docs/MONDAY-RUNBOOK.md) | Ordered first hardware window — gates, pass criteria, rollbacks       |
+| [`docs/autonomy/`](docs/autonomy/README.md)        | Research and the phased autonomy plan (perception, nav, arms)         |
 | `apps/*/README.md`                                 | Developing each app                                                   |
 
 ## Quickstart
