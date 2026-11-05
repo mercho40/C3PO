@@ -4,7 +4,12 @@ import { createIdGenerator } from "ai";
 import { BridgeToolError, callTool } from "#back/bridge/client.js";
 import { bridgeSiblingUrl } from "#back/bridge/url.js";
 import { appendMessage, logToolCall } from "#back/db/chats.js";
-import { buildSystemPrompt, offeredInMode } from "#back/agent/runtime.js";
+import {
+  NEEDS_CONFIRMATION,
+  buildSystemPrompt,
+  offeredInMode,
+} from "#back/agent/runtime.js";
+import { notePending } from "#back/agent/confirmations.js";
 import { listSkills } from "#back/skills/index.js";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
@@ -411,6 +416,20 @@ export class RealtimeVoiceSession {
               ? cause.message
               : String(cause);
         result = { error };
+        // Noted for the transcript's Confirmar; the realtime model cannot confirm.
+        if (
+          cause instanceof BridgeToolError &&
+          cause.detail.includes(NEEDS_CONFIRMATION) &&
+          this.state.ownerId
+        )
+          notePending({
+            id: callId,
+            tool: name,
+            args,
+            ownerId: this.state.ownerId,
+            chatId,
+            loop: false,
+          });
       }
     }
     this.state.toolCalls += 1;

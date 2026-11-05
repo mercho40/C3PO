@@ -31,6 +31,16 @@ export type VoiceLoopState = {
    * Null when nothing is running, or for the unowned legacy loop.
    */
   ownedByYou?: boolean | null;
+  /**
+   * Calls the bridge refused until this operator confirms them (T2 or
+   * high-danger T1), with the exact arguments a Confirmar would run.
+   */
+  confirmations?: {
+    id: string;
+    tool: string;
+    args: Record<string, unknown>;
+    askedAt: string;
+  }[];
   utterancesHeard: number;
   agentRuns: number;
   /** Null under the realtime engine, which does not act on spoken stops. */

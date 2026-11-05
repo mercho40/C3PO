@@ -133,6 +133,18 @@ export class VoiceConversation {
     this.lastTurn = null;
   }
 
+  /** Something the host did for the model (the operator's Confirmar): the next turn sees it; nothing is spoken. */
+  remember(text: string): void {
+    this.messages = [
+      ...this.messages,
+      {
+        id: this.deps.newId(),
+        role: "user" as const,
+        parts: [{ type: "text" as const, text }],
+      },
+    ].slice(-this.maxMessages);
+  }
+
   history(): UIMessage[] {
     return [...this.messages];
   }

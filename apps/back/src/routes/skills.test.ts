@@ -150,9 +150,13 @@ mock.module("#back/db/drizzle.js", () => ({
 }));
 
 const { skillsRoutes } = await import("./skills");
+const confirmations = await import("../agent/confirmations");
 const bridge = (await import("../bridge/client")) as unknown as {
   callTool: ReturnType<typeof mock>;
   BridgeUnavailableError: new (message?: string) => Error;
+};
+const bridgeErrors = (await import("../bridge/client")) as unknown as {
+  BridgeToolError: new (tool: string, detail: string) => Error;
 };
 
 function invoke(name: string, body: unknown) {
@@ -378,98 +382,234 @@ describe("POST /skills/:name/invoke writes the audit trail", () => {
 });
 
 /**
- * The console's half of the T2 gate. The bridge owns the grant and the tier
- * check; this route owns who may ask (admins) and keeps the secret off the
- * browser. Every confirmation is audited: who authorised arm motion is the
- * row worth having afterwards.
+ * The operator's Confirmar: one action. Back grants the refused call on the
+ * bridge AND runs it, exactly once, with exactly the refused arguments, and
+ * answers with the result and the words the model is told. The bridge owns the
+ * grant and the tier check; this route owns who may ask (admins), keeps the
+ * secret off the browser, and audits who authorised arm motion.
  */
-describe("POST /skills/:name/confirm", () => {
+describe("POST /skills/:name/confirm runs the refused call", () => {
   const realFetch = globalThis.fetch;
   let forwarded: { url: string; init: RequestInit }[] = [];
+  const pick = { label: "Dixie cup", shape: "power", side: "auto" };
 
-  function confirm(name: string, body?: unknown) {
+  function post(name: string, verb: "confirm" | "cancel", body: unknown) {
     return skillsRoutes.handle(
-      new Request(`http://localhost/skills/${name}/confirm`, {
+      new Request(`http://localhost/skills/${name}/${verb}`, {
         method: "POST",
-        ...(body === undefined
-          ? {}
-          : {
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(body),
-            }),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
       }),
     );
   }
+  const refuse = (id = "call_1", args: Record<string, unknown> = pick) =>
+    confirmations.notePending({
+      id,
+      tool: "pick",
+      args,
+      ownerId: "u1",
+      chatId: "chat_1",
+      loop: false,
+    });
 
   beforeEach(() => {
     forwarded = [];
     inserted = [];
+    bridge.callTool.mockClear();
+    confirmations.clearPending();
+    sessionUser = { id: "u1", role: "admin" };
     process.env.SAFETY_CONFIRM_SECRET = "s3cret";
+    catalogueSkills = [
+      ...FIXTURE_SKILLS,
+      { ...fixtureSkill("pick", "manipulation"), tier: "T2" },
+    ] as typeof FIXTURE_SKILLS;
     globalThis.fetch = (async (url: string, init: RequestInit) => {
       forwarded.push({ url: String(url), init });
-      return Response.json({ granted: true, tool: "move_arm" });
+      return Response.json({ granted: true, tool: "pick" });
     }) as typeof fetch;
   });
 
-  test("a non-admin cannot confirm", async () => {
-    sessionUser = { id: "u2", role: null };
-    expect((await confirm("move_arm")).status).toBe(403);
-    expect(forwarded.length).toBe(0);
-  });
-
-  test("no secret configured: refused, nothing forwarded", async () => {
-    sessionUser = { id: "u1", role: "admin" };
-    delete process.env.SAFETY_CONFIRM_SECRET;
-    expect((await confirm("move_arm")).status).toBe(503);
-    expect(forwarded.length).toBe(0);
-  });
-
-  test("an admin's confirmation reaches the bridge with the secret, and is audited", async () => {
-    sessionUser = { id: "u1", role: "admin" };
-    const res = await confirm("move_arm");
+  test("grants and dispatches exactly the refused arguments once, and says the result", async () => {
+    refuse();
+    const res = await post("pick", "confirm", { callId: "call_1", args: pick });
     globalThis.fetch = realFetch;
 
     expect(res.status).toBe(200);
+    expect(forwarded.length).toBe(1);
     expect(forwarded[0].url).toEndWith("/safety/confirm");
     const headers = forwarded[0].init.headers as Record<string, string>;
     expect(headers["x-c3po-confirm-secret"]).toBe("s3cret");
-    // No body (an old console tab): the grant covers the defaults only.
     expect(JSON.parse(String(forwarded[0].init.body))).toEqual({
-      tool: "move_arm",
-      args: {},
+      tool: "pick",
+      args: pick,
     });
+    expect(bridge.callTool).toHaveBeenCalledTimes(1);
+    expect(bridge.callTool).toHaveBeenCalledWith("pick", pick);
+    const body = (await res.json()) as { result: unknown; message: string };
+    expect(body.result).toEqual({ called: "pick", args: pick });
+    expect(body.message).toStartWith("El operador confirmó y se ejecutó pick");
+    expect(body.message).toContain('"called":"pick"');
+    expect(body.message).toContain("No lo vuelvas a llamar");
     await Bun.sleep(0);
-    expect(inserted.some((r) => r.skillName === "safety_confirm")).toBe(true);
+    const grant = inserted.find((r) => r.skillName === "safety_confirm");
+    expect(grant?.params).toEqual({ tool: "pick", args: pick, via: "button" });
+    expect(grant?.userId).toBe("u1");
   });
 
-  test("the refused call's arguments are forwarded, and audited with the grant", async () => {
-    sessionUser = { id: "u1", role: "admin" };
-    const res = await confirm("move_arm", { args: { side: "right" } });
-    globalThis.fetch = realFetch;
-
-    expect(res.status).toBe(200);
-    expect(JSON.parse(String(forwarded[0].init.body))).toEqual({
-      tool: "move_arm",
-      args: { side: "right" },
+  test("a second press runs nothing", async () => {
+    refuse();
+    await post("pick", "confirm", { callId: "call_1", args: pick });
+    const again = await post("pick", "confirm", {
+      callId: "call_1",
+      args: pick,
     });
-    await Bun.sleep(0);
-    const row = inserted.find((r) => r.skillName === "safety_confirm");
-    expect(row?.params).toEqual({ tool: "move_arm", args: { side: "right" } });
-  });
-
-  test("the bridge's refusal of the arguments reaches the console", async () => {
-    sessionUser = { id: "u1", role: "admin" };
-    globalThis.fetch = (async () =>
-      Response.json(
-        { error: "invalid_arguments", tool: "move_arm" },
-        { status: 400 },
-      )) as unknown as typeof fetch;
-    const res = await confirm("move_arm", { args: { side: 3 } });
     globalThis.fetch = realFetch;
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toBe(
-      "invalid_arguments",
+    expect(again.status).toBe(409);
+    expect(((await again.json()) as { error: string }).error).toBe(
+      "not_pending",
     );
+    expect(forwarded.length).toBe(1);
+    expect(bridge.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  test("two presses at once still run it once", async () => {
+    refuse();
+    const both = await Promise.all([
+      post("pick", "confirm", { callId: "call_1", args: pick }),
+      post("pick", "confirm", { callId: "call_1", args: pick }),
+    ]);
+    globalThis.fetch = realFetch;
+    expect(both.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(bridge.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  test("arguments other than the refused ones are refused, and the call stays pending", async () => {
+    refuse();
+    const wrong = await post("pick", "confirm", {
+      callId: "call_1",
+      args: { ...pick, side: "left" },
+    });
+    expect(wrong.status).toBe(409);
+    expect(forwarded.length).toBe(0);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+    // Key order is not a different argument set.
+    const right = await post("pick", "confirm", {
+      callId: "call_1",
+      args: { side: "auto", shape: "power", label: "Dixie cup" },
+    });
+    globalThis.fetch = realFetch;
+    expect(right.status).toBe(200);
+  });
+
+  test("another tool's name on the same call id runs nothing", async () => {
+    refuse();
+    const res = await post("wave", "confirm", { callId: "call_1", args: pick });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(409);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+  });
+
+  test("a non-admin cannot confirm, and the call stays pending", async () => {
+    refuse();
+    sessionUser = { id: "u1", role: null };
+    expect(
+      (await post("pick", "confirm", { callId: "call_1", args: pick })).status,
+    ).toBe(403);
+    globalThis.fetch = realFetch;
+    expect(forwarded.length).toBe(0);
+    expect(confirmations.listPending("u1", "chat_1").length).toBe(1);
+  });
+
+  test("another admin's refused call is not theirs to confirm", async () => {
+    refuse();
+    sessionUser = { id: "u9", role: "admin" };
+    const res = await post("pick", "confirm", { callId: "call_1", args: pick });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(409);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+  });
+
+  test("no secret: 503, nothing dispatched, and the card still works afterwards", async () => {
+    refuse();
+    delete process.env.SAFETY_CONFIRM_SECRET;
+    const res = await post("pick", "confirm", { callId: "call_1", args: pick });
+    expect(res.status).toBe(503);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+    process.env.SAFETY_CONFIRM_SECRET = "s3cret";
+    const retry = await post("pick", "confirm", {
+      callId: "call_1",
+      args: pick,
+    });
+    globalThis.fetch = realFetch;
+    expect(retry.status).toBe(200);
+    expect(bridge.callTool).toHaveBeenCalledTimes(1);
+  });
+
+  test("a refusal older than the window is not confirmable", async () => {
+    confirmations.notePending(
+      {
+        id: "old",
+        tool: "pick",
+        args: pick,
+        ownerId: "u1",
+        chatId: "chat_1",
+        loop: false,
+      },
+      Date.now() - confirmations.PENDING_TTL_MS - 1,
+    );
+    const res = await post("pick", "confirm", { callId: "old", args: pick });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(409);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+  });
+
+  test("a failed run is reported with the bridge's reason, in words for the model", async () => {
+    refuse();
+    bridge.callTool.mockImplementationOnce(async () => {
+      throw new bridgeErrors.BridgeToolError("pick", "target_lost");
+    });
+    const res = await post("pick", "confirm", { callId: "call_1", args: pick });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("tool_error");
+    expect(body.message).toContain("falló: tool_error: target_lost");
+  });
+
+  test("Cancelar drops it and runs nothing", async () => {
+    refuse();
+    const res = await post("pick", "cancel", { callId: "call_1" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { message: string }).message).toContain(
+      "canceló pick",
+    );
+    const after = await post("pick", "confirm", {
+      callId: "call_1",
+      args: pick,
+    });
+    globalThis.fetch = realFetch;
+    expect(after.status).toBe(409);
+    expect(forwarded.length).toBe(0);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+  });
+
+  test("a voice-loop call's outcome is fed back to that loop", async () => {
+    const fed: string[] = [];
+    confirmations.onLoopOutcome((message, spoken) => fed.push(message, spoken));
+    confirmations.notePending({
+      id: "v1",
+      tool: "pick",
+      args: pick,
+      ownerId: "u1",
+      chatId: null,
+      loop: true,
+    });
+    const res = await post("pick", "confirm", { callId: "v1", args: pick });
+    globalThis.fetch = realFetch;
+    confirmations.onLoopOutcome(null);
+    expect(res.status).toBe(200);
+    expect(fed[0]).toStartWith("El operador confirmó y se ejecutó pick");
+    expect(fed[1]).toBe("Confirmado: ejecuté pick.");
   });
 });
 

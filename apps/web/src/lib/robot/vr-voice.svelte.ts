@@ -15,6 +15,7 @@ import { Chat } from "@ai-sdk/svelte";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { PUBLIC_API_URL } from "$app/env/public";
 import { ADMIN_REQUIRED_HINT } from "#lib/chat/chat-error.js";
+import { decideCall } from "#lib/chat/confirm.js";
 import { newId } from "#lib/chat/ids.js";
 import type { MenuItem, VoiceLine } from "#lib/webxr/menu-layer.js";
 import { redirectToLogin } from "./poller.svelte";
@@ -32,6 +33,16 @@ import {
 import { concat, downsample, encodeWav, TARGET_RATE } from "./wav";
 // no-inline: a same-origin file, not a data: URL, is what every worklet loader accepts.
 import workletUrl from "./mic-capture.worklet.js?url&no-inline";
+
+/** apps/back /voice/transcribe's answer to a spoken «confirmo»/«cancelar». */
+type VoiceConfirmation = {
+  action: "confirmed" | "cancelled" | "ambiguous";
+  tool?: string;
+  count?: number;
+  message?: string;
+  error?: string;
+  detail?: string;
+};
 
 const MAX_TALK_S = 30; // the backend takes ~60 s; nobody holds B that long on purpose
 const MIN_TALK_S = 0.3; // a tap is not an utterance
@@ -90,11 +101,15 @@ export class VrVoice {
     });
   }
 
+  /** The refused call on screen right now, if any: Confirmar and «confirmo» act on it only. */
+  get #shown() {
+    return this.#confirming || this.busy
+      ? null
+      : pendingConfirmation(this.#chat.messages);
+  }
+
   get menuItems(): MenuItem[] {
-    const pending =
-      this.#confirming || this.busy
-        ? null
-        : pendingConfirmation(this.#chat.messages);
+    const pending = this.#shown;
     return voiceMenu(
       pending?.tool ?? null,
       this.#latch.standing,
@@ -218,7 +233,12 @@ export class VrVoice {
       const wav = encodeWav(
         downsample(samples, this.#ctx.sampleRate, TARGET_RATE),
       );
-      const res = await fetch(`${PUBLIC_API_URL}/voice/transcribe`, {
+      // Back decides a spoken «confirmo»/«cancelar» from this text, for the
+      // one call on screen only, before any model sees it (voice.ts).
+      const shown = this.#shown;
+      const q = new URLSearchParams({ chatId: this.#chat.id });
+      if (shown) q.set("pending", shown.id);
+      const res = await fetch(`${PUBLIC_API_URL}/voice/transcribe?${q}`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "audio/wav" },
@@ -233,12 +253,17 @@ export class VrVoice {
       const body = (await res.json().catch(() => ({}))) as {
         text?: string;
         error?: string;
+        confirmation?: VoiceConfirmation;
       };
       if (!res.ok) throw new Error(body.error ?? String(res.status));
       const text = (body.text ?? "").trim();
       this.phase = "idle";
       if (!text) {
         this.error = "No se entendió. Probá de nuevo, más cerca.";
+        return;
+      }
+      if (body.confirmation) {
+        this.#spoken(body.confirmation);
         return;
       }
       void this.#chat.sendMessage({ text });
@@ -260,9 +285,21 @@ export class VrVoice {
     return true;
   }
 
+  /** What back did with a spoken «confirmo»/«cancelar». */
+  #spoken(c: VoiceConfirmation): void {
+    if (c.action === "ambiguous") {
+      this.error = `Hay ${c.count ?? "varias"} confirmaciones pendientes: elegí con el menú.`;
+      return;
+    }
+    // The agent reads what happened and continues; it never retries.
+    if (c.message) void this.#chat.sendMessage({ text: c.message });
+    else
+      this.error = `No se pudo ${c.action === "cancelled" ? "cancelar" : "confirmar"} ${c.tool ?? ""} (${c.detail ?? c.error ?? "sin respuesta"}).`;
+  }
+
   async #confirm(key: string): Promise<void> {
     // Re-read at click time: the menu may be older than the transcript, and
-    // a grant must cover only the call the operator was shown.
+    // the call run must be the one the operator was shown.
     const pending = pendingConfirmation(this.#chat.messages);
     if (!pending || pending.id !== key) {
       this.error = "Esa confirmación ya no corresponde: no se envió nada.";
@@ -271,25 +308,16 @@ export class VrVoice {
     const { tool } = pending;
     this.#confirming = true;
     try {
-      const res = await fetch(
-        `${PUBLIC_API_URL}/skills/${encodeURIComponent(tool)}/confirm`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ args: pending.input ?? {} }),
-        },
+      // One action: back grants AND runs exactly this call.
+      const r = await decideCall(
+        PUBLIC_API_URL,
+        tool,
+        pending.id,
+        pending.input,
+        "confirm",
       );
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        this.error = `No se pudo confirmar ${tool} (${res.status}${body.error ? `: ${body.error}` : ""}).`;
-        return;
-      }
-      void this.#chat.sendMessage({
-        text: `Confirmado: podés ejecutar ${tool} ahora, con los mismos argumentos.`,
-      });
-    } catch {
-      this.error = `No se pudo confirmar ${tool}: sin respuesta del servidor.`;
+      if (r.message) void this.#chat.sendMessage({ text: r.message });
+      else this.error = `${tool}: ${r.outcome.text}`;
     } finally {
       this.#confirming = false;
     }

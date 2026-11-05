@@ -290,3 +290,15 @@ export function transcriptsCopy(input: {
     engine,
   };
 }
+
+/** The refused calls waiting for this operator, as the /voice page lists them. */
+export function pendingConfirmations(
+  state: VoiceLoopState | null,
+): { id: string; tool: string; args: unknown; argsText: string }[] {
+  return (state?.confirmations ?? []).map((c) => ({
+    id: c.id,
+    tool: c.tool,
+    args: c.args,
+    argsText: JSON.stringify(c.args ?? {}),
+  }));
+}

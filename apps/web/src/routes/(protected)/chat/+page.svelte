@@ -692,15 +692,17 @@
                         <ToolCard
                           {part}
                           {live}
-                          onconfirmed={(t: string) =>
-                            // A voice transcript is read-only: the speaker asks again.
+                          onconfirmed={(message: string) =>
+                            // Confirmar already ran it; the agent reads the
+                            // outcome and continues. A voice transcript is
+                            // read-only, so its session is not told.
                             isVoice
-                              ? toast.success(
-                                  `${t} confirmado: pedíselo de nuevo por voz (30 s).`,
+                              ? toast.info(
+                                  "Se ejecutó. La conversación de voz no se entera: contáselo si hace falta.",
                                 )
-                              : send(
-                                  `Confirmado: podés ejecutar ${t} ahora, con los mismos argumentos.`,
-                                ).catch((e: Error) => toast.error(e.message))}
+                              : send(message).catch((e: Error) =>
+                                  toast.error(e.message),
+                                )}
                         />
                       {/if}
                     {/each}

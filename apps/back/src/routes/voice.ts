@@ -22,13 +22,19 @@
  * loop is a no-op by construction.
  */
 
-import { Elysia } from "elysia";
+import { Elysia, t } from "elysia";
 import { createIdGenerator } from "ai";
 
 import { runAgentChat } from "#back/agent/runtime.js";
 import { callTool } from "#back/bridge/client.js";
 import { auditedCall } from "#back/bridge/audited.js";
 import { deleteChat, ensureChat } from "#back/db/chats.js";
+import {
+  decideSpoken,
+  listPending,
+  onLoopOutcome,
+  type PendingConfirmation,
+} from "#back/agent/confirmations.js";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 import { VoiceConversation } from "#back/voice/conversation.js";
 import { bridgeVoiceEvents, bridgeVoiceStatus } from "#back/voice/events.js";
@@ -39,6 +45,7 @@ import {
   TranscribeError,
   transcribe,
 } from "#back/voice/transcribe.js";
+import { cancelPending, confirmPending } from "./skills";
 
 const newId = createIdGenerator();
 
@@ -81,6 +88,26 @@ const conversation = new VoiceConversation({
   newId,
 });
 
+// A Confirmar/Cancelar of a call this loop asked for: its next turn reads the
+// outcome, and the robot says it in one line (no model, so it cannot overlap a
+// turn the loop is running).
+onLoopOutcome((message, spoken) => {
+  conversation.remember(message);
+  void auditedCall(
+    "say",
+    { text: spoken, language: "spanish", wait_for_completion: false },
+    { userId: legacyStartedBy, source: "voice" },
+  ).catch(() => {});
+});
+
+/** A refused call waiting for this operator, as the /voice page shows it. */
+const publicPending = (p: PendingConfirmation) => ({
+  id: p.id,
+  tool: p.tool,
+  args: p.args,
+  askedAt: new Date(p.at).toISOString(),
+});
+
 async function runAgentOnUtterance(
   utterance: string,
   signal?: AbortSignal,
@@ -111,6 +138,10 @@ function voiceStatus(userId?: string) {
       // for anyone else.
       chatId: ownedByYou ? chatId : null,
       ownedByYou,
+      confirmations:
+        ownedByYou && userId && chatId
+          ? listPending(userId, chatId).map(publicPending)
+          : [],
       // Compatibility fields keep the existing dashboard readable while the
       // richer Realtime state is additive.
       utterancesHeard: state.utterancesHeard,
@@ -132,6 +163,12 @@ function voiceStatus(userId?: string) {
     chatId: null,
     // The legacy loop is process-wide and unowned: anyone signed in may stop it.
     ownedByYou: null,
+    // Its refused calls wait for whoever started it (their turns asked).
+    confirmations: userId
+      ? listPending(userId, null)
+          .filter((p) => p.loop)
+          .map(publicPending)
+      : [],
     conversation: conversation.state(),
   };
 }
@@ -239,7 +276,7 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
   )
   .post(
     "/transcribe",
-    async ({ request, status, user }) => {
+    async ({ request, status, user, query, server }) => {
       // Admin only too: it spends the shared transcription key, and its text drives /agent.
       if (user.role !== "admin")
         return status(403, { error: "admin_required" });
@@ -252,7 +289,41 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
           await request.arrayBuffer(),
           request.headers.get("content-type") ?? "audio/wav",
         );
-        return { text };
+        // The admin's OWN push-to-talk, decided here and never by the model:
+        // «confirmo» runs the one refused call this client shows (`pending`,
+        // in chat `chatId`) exactly as the Confirmar button would. Anything
+        // else, or no call on screen, goes to the agent as usual.
+        const decision = decideSpoken(
+          text,
+          query.chatId ? listPending(user.id, query.chatId) : [],
+          query.pending,
+        );
+        if (decision.kind === "none") return { text };
+        server?.timeout(request, 0); // the confirmed call may outlast Bun's 10 s idle cut
+        if (decision.kind === "ambiguous")
+          return {
+            text,
+            confirmation: { action: "ambiguous", count: decision.count },
+          };
+        const p = decision.pending;
+        if (decision.kind === "cancel") {
+          const r = cancelPending(p.tool, p.id, user);
+          return {
+            text,
+            confirmation: { action: "cancelled", tool: p.tool, ...r.body },
+          };
+        }
+        const r = await confirmPending(p.tool, p.id, p.args, user, "voice");
+        return {
+          text,
+          confirmation: {
+            action: "confirmed",
+            tool: p.tool,
+            args: p.args,
+            httpStatus: r.status,
+            ...r.body,
+          },
+        };
       } catch (error) {
         if (error instanceof TranscribeError) {
           return status(error.status, { error: error.message });
@@ -263,6 +334,12 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
     {
       auth: true,
       parse: "none",
+      // The headset's chat and the refused call it shows: spoken «confirmo»
+      // applies to that call only.
+      query: t.Object({
+        chatId: t.Optional(t.String({ maxLength: 64 })),
+        pending: t.Optional(t.String({ maxLength: 128 })),
+      }),
       detail: {
         summary:
           "Speech to text for the headset's push-to-talk (WAV in, {text} out).",

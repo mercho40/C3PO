@@ -66,6 +66,7 @@ import {
   BridgeUnavailableError,
 } from "#back/bridge/client.js";
 import { beginTurn } from "./turns";
+import { notePending } from "./confirmations";
 
 const BASE_URL = process.env.AGENT_BASE_URL ?? "https://ia.ort.edu.ar/api/v1";
 /** `tic-chat` is the gateway's tool-calling chat model. Its site advertises
@@ -129,8 +130,11 @@ const SYSTEM_PREAMBLE = [
   "occur — and equally, do not claim nothing happened when the robot did move.",
   "",
   "Safety: stop_everything halts all motion immediately and works on every",
-  "target. Respect each skill's preconditions, and confirm intent before",
-  "high-danger skills. On the physical robot, treat every motion command as",
+  "target. Respect each skill's preconditions. Only a tool marked",
+  "needs-operator-confirmation below, refused with 'needs an operator's",
+  "confirmation', waits for the operator's «Confirmar»; never ask the operator to",
+  "confirm anything else (walk_to, turn, look...): do it, or ask with ask_user",
+  "only when the request is ambiguous. On the physical robot, treat every motion command as",
   "having real physical consequence: a person may be standing next to it.",
   "Keep operator-facing replies concise: say what you did and what happened.",
   "",
@@ -160,9 +164,13 @@ const SYSTEM_PREAMBLE = [
   "counter height; walk or turn so it is there first), place, handover (hold it",
   "out for a person; open with set_hand shape='open' when they have it), reach,",
   "and arm_state. There is no touch sensing: after pick, verify the hand holds it.",
-  "These are T2: each call needs the operator's console confirmation, and so do",
+  "These are T2: each call needs the operator's confirmation, and so do",
   "arm_navigation and start_walking_waist. Say what you are about to do, then",
-  "call it; a refusal means wait for the operator.",
+  "call it ONCE. When it is refused for confirmation, tell the operator in one",
+  "sentence what it will do and end the turn: do not call it again and do not",
+  "ask again. The operator's «Confirmar» runs that exact call, and you then get a",
+  "message 'El operador confirmó y se ejecutó ...' with its result: continue from",
+  "that result (for pick, verify the hand holds it). Never retry a confirmed call.",
   "",
   "Work in a loop: plan the steps briefly, do ONE step, then check it worked",
   "(verify, look or describe_surroundings) before the next. If a step failed,",
@@ -330,7 +338,7 @@ async function buildTools(
       inputSchema: jsonSchema(
         skill.parameters as Parameters<typeof jsonSchema>[0],
       ),
-      execute: async (args, { abortSignal }) => {
+      execute: async (args, { abortSignal, toolCallId }) => {
         // ai 7.0.140 can still start a tool after the turn is aborted, once
         // `toolsSettled` has already been read: send the robot nothing then.
         if (abortSignal?.aborted) return { error: "aborted" };
@@ -358,6 +366,19 @@ async function buildTools(
               : err instanceof BridgeUnavailableError
                 ? "bridge_unavailable"
                 : String(err);
+          // Noted, never granted: only an admin's Confirmar (a route) runs it.
+          const gated =
+            err instanceof BridgeToolError &&
+            err.detail.includes(NEEDS_CONFIRMATION);
+          if (gated && audit.userId)
+            notePending({
+              id: toolCallId,
+              tool: skill.name,
+              args: params,
+              ownerId: audit.userId,
+              chatId: audit.chatId,
+              loop: mode === "voice" && audit.chatId === null,
+            });
           void logToolCall({
             ...audit,
             skillName: skill.name,
@@ -366,7 +387,10 @@ async function buildTools(
             error: detail,
             durationMs: Date.now() - startedAt,
           });
-          return { error: detail };
+          // The bridge's text says "retry once"; here the console runs it.
+          return gated
+            ? { error: confirmRefusal(skill.name) }
+            : { error: detail };
         }
       },
     });
@@ -374,12 +398,19 @@ async function buildTools(
   return tools;
 }
 
+/** bridge/safety.py tool_refusal's wording; apps/web needsConfirmation reads it too. */
+export const NEEDS_CONFIRMATION = "needs an operator's confirmation";
+
+/** What the model is told instead of the bridge's "retry once" instruction. */
+export const confirmRefusal = (tool: string) =>
+  `refused: ${tool} ${NEEDS_CONFIRMATION} first. You cannot give it. The operator's «Confirmar» runs this exact call and you will then get its result as a message: do not call ${tool} again, tell the operator in one sentence what it will do, and wait.`;
+
 /**
  * The model's view of a chat: the last 40 UI messages, with tool calls and
  * results kept only for the last 10 model messages (old perception is stale
- * anyway). The stored chat is untouched. Ten keeps a refused T2 call's
- * arguments for the «Confirmado» retry; were they lost, the model would retry
- * with arguments it made up, which the bridge's argument-bound grant refuses.
+ * anyway). The stored chat is untouched. A confirmed T2 call is no longer
+ * retried by the model (the console runs it and sends the result), but ten
+ * still keeps the refused call beside that result message.
  * shortcut: count-based window, not tokens; upgrade to a token budget if the
  * gateway starts rejecting long chats.
  */

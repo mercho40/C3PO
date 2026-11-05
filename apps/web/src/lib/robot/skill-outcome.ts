@@ -304,6 +304,17 @@ export function classifyHttpError(
       code,
     });
   }
+  // The operator's Confirmar of a call that is no longer waiting (already
+  // run, cancelled, too old) or that changed under the card: nothing was sent.
+  if (code === "not_pending" || code === "args_mismatch") {
+    return make(
+      "warn",
+      code === "not_pending"
+        ? "Ya no está pendiente"
+        : "No coinciden los argumentos",
+      { detail, code },
+    );
+  }
   if (code === "tool_error") {
     return make("error", "El puente devolvió un error", { detail, code });
   }

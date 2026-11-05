@@ -632,3 +632,158 @@ describe("turn telemetry", () => {
     expect(s.outputTokens).toBeNull();
   });
 });
+
+/**
+ * The confirmation invariant, behaviourally: whatever the model does, an agent
+ * turn can only NOTE a refused gated call. It is offered no tool that confirms,
+ * reaches no /safety/confirm, never re-dispatches the call, and is told not to
+ * retry (the operator's Confirmar runs it, routes/skills.ts confirmPending).
+ */
+describe("the model cannot confirm a gated call", () => {
+  const confirmations = () => import("./confirmations");
+  const pickSkill: SkillCatalogueEntry = {
+    ...FIXTURE_SKILLS[0],
+    name: "pick",
+    description: "Pick an object.",
+    classification: "gesture",
+    tier: "T2",
+    dangerLevel: "medium",
+  };
+  const args = { label: "Dixie cup", shape: "power", side: "auto" };
+  const usage = {
+    inputTokens: {
+      total: 1,
+      noCache: 1,
+      cacheRead: undefined,
+      cacheWrite: undefined,
+    },
+    outputTokens: { total: 1, text: 1, reasoning: undefined },
+  };
+  // The model tries everything: pick, then pick again, then says it is done.
+  const steps: unknown[][] = [
+    [
+      {
+        type: "tool-call" as const,
+        toolCallId: "c1",
+        toolName: "pick",
+        input: JSON.stringify(args),
+      },
+      {
+        type: "finish" as const,
+        finishReason: { unified: "tool-calls" as const, raw: "tool_calls" },
+        usage,
+      },
+    ],
+    [
+      {
+        type: "tool-call" as const,
+        toolCallId: "c2",
+        toolName: "pick",
+        input: JSON.stringify(args),
+      },
+      {
+        type: "finish" as const,
+        finishReason: { unified: "tool-calls" as const, raw: "tool_calls" },
+        usage,
+      },
+    ],
+    [
+      { type: "text-start" as const, id: "t1" },
+      { type: "text-delta" as const, id: "t1", delta: "Confirmado." },
+      { type: "text-end" as const, id: "t1" },
+      {
+        type: "finish" as const,
+        finishReason: { unified: "stop" as const, raw: "stop" },
+        usage,
+      },
+    ],
+  ];
+  const refusal =
+    "refused: pick is a T2 tool and needs an operator's confirmation first. You cannot give it: a human operator presses «Confirmar» for these exact arguments in the console chat, then you retry once with exactly the same arguments within 30 s.";
+
+  test("a refused pick is only noted; nothing grants or re-runs it", async () => {
+    const { clearPending, listPending } = await confirmations();
+    clearPending();
+    listSkills.mockImplementation(async () => [...FIXTURE_SKILLS, pickSkill]);
+    const realFetch = globalThis.fetch;
+    const fetched: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      fetched.push(String(url));
+      return Response.json({ granted: true });
+    }) as unknown as typeof fetch;
+    const dispatched: string[] = [];
+    const call = spyOn(bridgeClient, "callTool").mockImplementation(
+      async (name) => {
+        if (name !== "pick") return {};
+        dispatched.push(name);
+        throw new bridgeClient.BridgeToolError("pick", refusal);
+      },
+    );
+    const log = spyOn(chats, "logToolCall").mockImplementation(async () => {});
+    const offered: string[][] = [];
+    const prompts: string[] = [];
+    let step = 0;
+    try {
+      const model = new MockLanguageModelV4({
+        doStream: async (options) => {
+          offered.push((options.tools ?? []).map((t) => t.name));
+          prompts.push(JSON.stringify(options.prompt));
+          return {
+            stream: convertArrayToReadableStream(
+              steps[step++] ?? steps[2],
+            ) as never,
+          };
+        },
+      });
+      const result = await runAgentChat(
+        [{ id: "u1", role: "user", parts: [{ type: "text", text: "agarrá" }] }],
+        { model, chatId: "chat_1", userId: "u1" },
+      );
+      for await (const _ of result.textStream);
+      await result.toolsSettled();
+
+      // No tool the model holds can confirm.
+      for (const names of offered)
+        expect(names.some((n) => /confirm|grant/i.test(n))).toBe(false);
+      // Nothing reached the bridge's grant, and each pick was refused, not run.
+      expect(fetched.some((u) => u.includes("/safety/confirm"))).toBe(false);
+      expect(dispatched).toEqual(["pick", "pick"]);
+      // The refusal the model reads says the console runs it, not "retry".
+      const seen = prompts[1];
+      expect(seen).toContain("needs an operator's confirmation");
+      expect(seen).toContain("do not call pick again");
+      expect(seen).not.toContain("retry once");
+      // Still waiting for a human: one card (the repeat replaced the first).
+      const waiting = listPending("u1", "chat_1");
+      expect(waiting.map((p) => [p.id, p.tool, p.args])).toEqual([
+        ["c2", "pick", args],
+      ]);
+    } finally {
+      globalThis.fetch = realFetch;
+      call.mockRestore();
+      log.mockRestore();
+      listSkills.mockImplementation(async () => FIXTURE_SKILLS);
+      clearPending();
+    }
+  });
+
+  test("the agent runtime has no path to the grant or the confirm route", async () => {
+    const src = await Bun.file(new URL("./runtime.ts", import.meta.url)).text();
+    for (const forbidden of [
+      "grantOnBridge",
+      "confirmPending",
+      "takePending",
+      "/safety/confirm",
+      "routes/skills",
+    ])
+      expect(src).not.toContain(forbidden);
+  });
+
+  test("the prompt says only refused gated tools need Confirmar, and to wait", async () => {
+    const prompt = await buildSystemPrompt();
+    expect(prompt).toContain("never ask the operator to");
+    expect(prompt).toContain("do not call it again");
+    expect(prompt).toContain("The operator's «Confirmar» runs that exact call");
+    expect(prompt).not.toContain("confirm intent before");
+  });
+});

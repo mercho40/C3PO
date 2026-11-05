@@ -14,53 +14,50 @@
    */
   import * as Tool from "#lib/components/ai-elements/tool/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
-  import { createApi } from "#lib/api.js";
+  import { PUBLIC_API_URL } from "$app/env/public";
+  import { argsText, decideCall } from "#lib/chat/confirm.js";
   import {
     classifyToolPart,
     needsConfirmation,
     toolName,
     type ToolPartLike,
   } from "#lib/chat/tool-part.js";
+  import { OUTCOME_TONE, type SkillOutcome } from "#lib/robot/skill-outcome.js";
 
   let {
     part,
     live,
     onconfirmed,
   }: {
-    part: ToolPartLike;
+    part: ToolPartLike & { toolCallId?: string };
     /** Part of the last message while the chat is busy. */
     live: boolean;
-    /** Called once the bridge granted the confirmation, to let the agent retry. */
-    onconfirmed?: (tool: string) => void;
+    /** Called once the confirmed call RAN, with the words the agent must read next. */
+    onconfirmed?: (message: string) => void;
   } = $props();
 
   const confirmable = $derived(onconfirmed ? needsConfirmation(part) : null);
-  let confirming = $state(false);
-  let confirmed = $state(false);
-  let confirmError = $state<string | null>(null);
+  let running = $state(false);
+  let outcome = $state<SkillOutcome | null>(null);
 
-  // One grant covers ONE call with exactly these arguments within 30 s
-  // (bridge/safety.py); apps/back holds the secret and checks the admin role.
-  // Shown beside the button: Tool.Input is collapsed in this state.
-  const confirmArgs = $derived(JSON.stringify(part.input ?? {}));
+  // One press is the whole action: back grants this exact call (these
+  // arguments, shown beside the button: Tool.Input is collapsed here) and runs
+  // it, once. The agent then reads the result; it does not retry.
+  const confirmArgs = $derived(argsText(part.input));
   async function confirm(tool: string) {
-    confirming = true;
-    confirmError = null;
+    running = true;
     try {
-      const { error } = await createApi(fetch)
-        .skills({ name: tool })
-        .confirm.post({ args: (part.input ?? {}) as Record<string, unknown> });
-      if (error) {
-        const body = error.value as { error?: string } | undefined;
-        confirmError = `No se pudo confirmar (${error.status}${body?.error ? `: ${body.error}` : ""}).`;
-        return;
-      }
-      confirmed = true;
-      onconfirmed?.(tool);
-    } catch {
-      confirmError = "No se pudo confirmar: sin respuesta del servidor.";
+      const r = await decideCall(
+        PUBLIC_API_URL,
+        tool,
+        part.toolCallId ?? "",
+        part.input,
+        "confirm",
+      );
+      outcome = r.outcome;
+      if (r.message) onconfirmed?.(r.message);
     } finally {
-      confirming = false;
+      running = false;
     }
   }
 
@@ -92,17 +89,28 @@
     <div class="flex flex-wrap items-center gap-2 px-3 pb-3">
       <Button
         size="sm"
-        disabled={confirming || confirmed}
+        disabled={running || outcome !== null || live}
         onclick={() => confirm(confirmable)}
+        title={live ? "Esperá a que el agente termine su turno" : undefined}
       >
-        {confirmed ? `Confirmado: ${confirmable}` : `Confirmar ${confirmable}`}
+        {running
+          ? `Ejecutando ${confirmable}…`
+          : outcome
+            ? `Confirmado: ${confirmable}`
+            : `Confirmar ${confirmable}`}
       </Button>
       <code
         class="max-w-full min-w-0 truncate readout text-xs text-ink-mute"
         title={confirmArgs}>{confirmArgs}</code
       >
-      {#if confirmError}
-        <p class="text-xs text-warn" role="alert">{confirmError}</p>
+      {#if outcome}
+        <p class={["w-full text-xs", OUTCOME_TONE[outcome.kind]]} role="status">
+          {outcome.text}{#if outcome.code}
+            · <span class="readout">{outcome.code}</span>{/if}
+          {#if outcome.detail}
+            — {outcome.detail}
+          {/if}
+        </p>
       {/if}
     </div>
   {/if}
