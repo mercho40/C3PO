@@ -60,6 +60,7 @@ import { abortAllTurns } from "#back/agent/turns.js";
 import {
   cancelMessage,
   dropPending,
+  feedChat,
   feedLoop,
   outcomeMessage,
   restorePending,
@@ -368,6 +369,7 @@ export async function confirmPending(
       message,
       ok ? `Confirmado: ejecuté ${name}.` : `Confirmado, pero ${name} falló.`,
     );
+  if (p.chatId && r.dispatched) feedChat(p.chatId, message);
   return ok
     ? { status: 200, body: { tool: name, result: r.body, message } }
     : {
@@ -392,6 +394,7 @@ export function cancelPending(
   console.log(`[confirm] ${name} cancelled by ${user.id}`);
   const message = cancelMessage(name);
   if (p.loop) feedLoop(message, `Cancelado: no ejecuto ${name}.`);
+  if (p.chatId) feedChat(p.chatId, message);
   return { status: 200, body: { tool: name, cancelled: true, message } };
 }
 
