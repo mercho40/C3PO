@@ -99,7 +99,11 @@ row bridge  "127.0.0.1:8001/telemetry/gate through the tunnel" curl -s -m3 -o /d
 proxy_ok; proxy_rc=$?
 row proxy   "Mac :8899 + robot -> Gemini (HTTP ${proxy_code:-none})" test "$proxy_rc" = 0
 row back    "127.0.0.1:3000/health" curl -sf -m3 -o /dev/null http://127.0.0.1:3000/health
-row web     "127.0.0.1:3001" curl -s -m3 -o /dev/null http://127.0.0.1:3001
+web_up() {  # vite's first start takes longer than the 8 s above
+    for _ in $(seq 1 15); do curl -s -m3 -o /dev/null http://127.0.0.1:3001 && return 0; sleep 2; done
+    return 1
+}
+row web     "127.0.0.1:3001" web_up
 cable_ok || printf '%s\n' "$cable_verdict" | sed -n '2p'
 cat <<EOF
 

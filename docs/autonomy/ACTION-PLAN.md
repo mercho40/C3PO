@@ -1564,4 +1564,18 @@ Pending for the robot session:
 - robot_session.sh with the cable: five ✓, Ctrl-C leaves no ssh/bun/python child.
 - B8 and E5–E8 (depth-only Nav2) start after the S0 robot spike.
 
-Open minors: a second `walk_to` can still start while one runs (no_active_walk_task not enforced); walk_velocity reports per-axis clamped values; Confirmar buttons show the raw `confirmation_not_configured` code; OPERATIONS.md §2 still says 192.168.77.x for the cable (H2).
+Open minors: a second `walk_to` can still start while one runs (no_active_walk_task not enforced); walk_velocity reports per-axis clamped values; Confirmar buttons show the raw `confirmation_not_configured` code.
+
+## 8. After the 2026-11-05 robot session
+
+Done and committed: simulated hand (4b8d80e), go_to_object ranges to the object's near face and reports `clearance_m` (8250fbd), pick rises beside the body and descends over the object + exact labels + walk advice (fd8a173), one Confirmar runs the refused call, /voice buttons, headset «confirmo» (76995ad). robot_internet.py now reconnects its ssh -R; OPERATIONS.md §2 has the 192.168.123.x cable.
+
+Pending for the next robot session, in order:
+- gemm: `docker ps` first (stopped, `--restart=no` on 2026-11-05).
+- Deploy bridge then back; rebuild the vision image (near_m); restart perception on it.
+- go_to_object to the chair: tape-measure the gap against `clearance_m`.
+- `arm_state` with the arm hanging, then by hand: shoulder pitch + must swing the arm BACK (URDF). If it is the other way, the "clear" phase swings the hand forward: stop.
+- First pick on the gantry, nobody within 1 m, ~0.3 m clear behind the right arm: the hand must stay above the desk until it is over the object. The desk edge must be ≥ 0.16 m in front of the torso.
+- Confirm flow: one Confirmar per pick from /chat, from the /voice panel, and a spoken «confirmo» on the Quest.
+- E2/E3 leftovers: chair moved mid-walk, covered chair → target_lost.
+

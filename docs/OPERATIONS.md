@@ -104,7 +104,8 @@ c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the t
 `scripts/robot_session.sh [host]` does the whole Mac side in one command (tunnel, robot internet, `bun run dev:robot`, a status table, the robot-side `export`/`c3po up` lines); open the console at `http://localhost:3001`.
 
 **The cable, and keeping the internet.** `c3po-wire` is the Mac's alias for the cabled
-path (`192.168.77.1`, reported 2026-10-13). Joining the robot's own Wi-Fi drops the
+path: the Mac at `192.168.123.99`, the robot at `192.168.123.164` (since 2026-11-03;
+`192.168.77.1` is the robot's own Wi-Fi hotspot, not the cable). Joining the robot's own Wi-Fi drops the
 school's — a Mac is on one Wi-Fi network at a time — and the robot has no uplink to share.
 Use the school Wi-Fi for the internet and the cable for the robot, with **Wi-Fi first in
 the service order**: System Settings → Network → "…" → Set Service Order, or
@@ -117,9 +118,9 @@ sudo networksetup -ordernetworkservices "Wi-Fi" …     # every service, Wi-Fi f
 Otherwise the cable can win: on the Mac this was written on, all four USB Ethernet
 adapters ranked above Wi-Fi, so every connection went down the cable to a robot that
 cannot forward it. If the
-cable gets no `192.168.77.x` address (a `169.254.x.x` one means it did not), set it by
+cable gets no `192.168.123.x` address (a `169.254.x.x` one means it did not), set it by
 hand with **no router**, so the cable can never become the default route:
-`sudo ipconfig set <enX> MANUAL 192.168.77.50 255.255.255.0` (until unplugged), or the
+`sudo ipconfig set <enX> MANUAL 192.168.123.99 255.255.255.0` (until unplugged), or the
 same values under the adapter's Details → TCP/IP with Router left empty.
 
 ---

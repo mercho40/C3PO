@@ -31,9 +31,11 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import signal
 import socket
 import subprocess
 import sys
+import threading
 
 LOCAL_PORT = 8899
 ROBOT_PORT = 18899
@@ -160,15 +162,30 @@ def main() -> int:
     if host == "--self-test":
         _self_test()
         return 0
-    tunnel = subprocess.Popen(
-        [
-            "ssh", "-N",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=5",
-            "-R", f"127.0.0.1:{ROBOT_PORT}:127.0.0.1:{LOCAL_PORT}",
-            host,
-        ]
-    )  # fmt: skip
+    stop = threading.Event()
+    tunnel: list[subprocess.Popen[bytes]] = []
+
+    def keep_tunnel() -> None:
+        # A cable drop (the robot walking) kills the ssh; without a new one every build stalls.
+        while not stop.is_set():
+            proc = subprocess.Popen(
+                [
+                    "ssh", "-N",
+                    "-o", "ExitOnForwardFailure=yes",
+                    "-o", "ConnectTimeout=5",
+                    "-o", "ServerAliveInterval=5",
+                    "-o", "ServerAliveCountMax=2",
+                    "-R", f"127.0.0.1:{ROBOT_PORT}:127.0.0.1:{LOCAL_PORT}",
+                    host,
+                ]
+            )  # fmt: skip
+            tunnel[:] = [proc]
+            proc.wait()
+            if not stop.wait(2):
+                print(f"robot_internet: ssh -R exited ({proc.returncode}); reconnecting", file=sys.stderr)
+
+    threading.Thread(target=keep_tunnel, daemon=True).start()
+    signal.signal(signal.SIGTERM, signal.default_int_handler)  # a plain kill also closes the ssh
     # no_proxy: the robot's own loopback services (bridge :8001) must not detour through the Mac, which refuses them.
     print(
         f"robot: export http_proxy=http://127.0.0.1:{ROBOT_PORT} https_proxy=http://127.0.0.1:{ROBOT_PORT}"
@@ -179,7 +196,9 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        tunnel.terminate()
+        stop.set()
+        for proc in tunnel:
+            proc.terminate()
     return 0
 
 
