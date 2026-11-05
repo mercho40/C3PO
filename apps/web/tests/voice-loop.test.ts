@@ -174,10 +174,46 @@ describe("voice loop client", () => {
     const result = await voiceCommand(
       `http://127.0.0.1:${server.port}`,
       "start",
-      50,
+      { timeoutMs: 50 },
     );
     expect(result.ok).toBe(false);
     expect(!result.ok && result.reason).toContain("a tiempo");
+    server.stop(true);
+  });
+
+  test("start carries the chosen engine; stop and an unchosen start send no body", async () => {
+    const bodies: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        bodies.push(`${new URL(req.url).pathname} ${await req.text()}`);
+        return Response.json(RUNNING);
+      },
+    });
+    const url = `http://127.0.0.1:${server.port}`;
+    await voiceCommand(url, "start", { engine: "openai-realtime" });
+    await voiceCommand(url, "start");
+    await voiceCommand(url, "stop", { engine: "legacy" });
+    expect(bodies).toEqual([
+      '/voice/start {"engine":"openai-realtime"}',
+      "/voice/start ",
+      "/voice/stop ",
+    ]);
+    server.stop(true);
+  });
+
+  test("a 409 for the other engine says to end it first, not that someone else has it", async () => {
+    const { server, url } = serve({
+      start: {
+        status: 409,
+        body: { ...RUNNING, engine: "legacy", error: "other_engine_running" },
+      },
+    });
+    const result = await voiceCommand(url, "start", {
+      engine: "openai-realtime",
+    });
+    expect(!result.ok && result.reason).toContain("otro motor");
+    expect(!result.ok && result.state?.engine).toBe("legacy");
     server.stop(true);
   });
 
