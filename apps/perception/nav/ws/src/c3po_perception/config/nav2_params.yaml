@@ -383,7 +383,8 @@ lifecycle_manager_navigation:
     # the instant the container starts, and from that moment any participant on
     # domain 42 that sends a NavigateToPose goal produces velocity commands.
     # Container start must never be the same event as "the robot is ready to be
-    # driven" — the same reasoning as the boot unit running C3PO_NO_TAKEOVER=1.
+    # driven" — the same reasoning that keeps the bridge's boot unit from
+    # claiming a sensor or stopping gemm (only an interactive `c3po up` does).
     autostart: false
     # 4.0 s is the Nav2 default and it kills nodes on a loaded Orin NX during
     # costmap allocation: they get respawned in a loop and it reads as a crash.

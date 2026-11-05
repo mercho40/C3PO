@@ -70,7 +70,7 @@ if ! echo "$current" | grep -q "videohub"; then
     if echo "$current" | grep -q "realsense2_camera"; then
         err "  it is gemm's realsense2_camera node: the OTHER TEAM has the camera"
         err "  their stack owns it while gemm-bringup is up. Talk to them, or"
-        err "  'stop_gemm' if you have already agreed to take the sensors."
+        err "  'c3po gemm stop' if you have already agreed to take the sensors."
     else
         err "  find out what it is before killing anything"
     fi
@@ -107,7 +107,7 @@ if ! sudo -n -l /usr/bin/systemctl stop master_service >/dev/null 2>&1; then
         err "cannot stop master_service: sudo needs a password and there is no terminal"
         err "  this is a permission problem, NOT a stubborn process."
         err "  Run it yourself, on the robot, where sudo can ask:"
-        err "      take_camera"
+        err "      c3po camera take"
         err "  or leave the camera where it is — the bridge already serves it at"
         err "  http://127.0.0.1:8001/camera without taking the device from anyone."
         exit 2

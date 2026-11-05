@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "build": "echo 'nothing to build here: the images build ON THE ROBOT (aarch64 + JetPack) via scripts/robot/build_perception'",
-    "check-types": "echo 'no type checker configured (see apps/bridge); run `bun run --filter @repo/perception lint` for the py38 syntax floor'",
+    "check-types": "uv run --project . mypy vision bringup nav",
     "lint": "uv run --project . ruff check .",
     "test": "uv run --project . pytest"
   }

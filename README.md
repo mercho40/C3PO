@@ -46,20 +46,24 @@ cd apps/back && bun run db:migrate && cd ../..
 # Existing local dev servers: back on :3000, web on :3001
 bun run dev
 
-# Real robot instead (direct LAN connection to g1-orin.local)
+# Real robot instead. The bridge only listens on the robot's loopback, so
+# tunnel to it first (the `c3po` ssh alias is g1-orin.local, by mDNS):
+ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po
 bun run dev:robot
 ```
 
 The Python bridge needs its one-time CycloneDDS/`uv` setup before that command;
 [`apps/bridge/README.md`](apps/bridge/README.md) covers it. Claude Code sessions
-also get the bridge automatically via `.mcp.json`.
+can also get the bridge through a `.mcp.json` — a local file, gitignored and not
+in the repo, so each developer writes their own; that README lists its two
+entries.
 
 ## Commands
 
 | Command               | Description                                           |
 | --------------------- | ----------------------------------------------------- |
 | `bun run dev`         | Start the existing local development servers          |
-| `bun run dev:robot`   | Start API and web against the robot over the LAN      |
+| `bun run dev:robot`   | Start API and web against the robot (tunnel first)    |
 | `bun run start`       | Start production builds against the configured bridge |
 | `bun run build`       | Build the monorepo                                    |
 | `bun run check-types` | Type-check across the monorepo                        |

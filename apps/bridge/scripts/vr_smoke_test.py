@@ -194,10 +194,11 @@ async def stage_stop(session: ClientSession) -> None:
     print("\n=== 6. STOP PATH ===")
     print(
         "    Before any sustained motion, confirm the stop actually stops.\n"
-        "    `stop_everything` damps on real hardware -- a standing robot will\n"
-        "    GO LIMP and needs support or it will drop."
+        "    `stop_everything` damps on real hardware if the robot does not\n"
+        "    acknowledge its zero-velocity burst (or with STOP_EVERYTHING_DAMP=always)\n"
+        "    -- a standing robot would GO LIMP, so keep it supported."
     )
-    confirm("Robot supported / seated so damping is safe. Send `stop_everything`?")
+    confirm("Robot supported / seated so a damp would be safe. Send `stop_everything`?")
     res = await call(session, "stop_everything", {})
     show("stop_everything", res)
     confirm("Did the robot visibly go limp (damp)?")

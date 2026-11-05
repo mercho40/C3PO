@@ -20,9 +20,16 @@ from bridge.preflight import (
     camera_url_from_env,
     classify_probe,
     direct_service_finding,
+    bridge_base_from_env,
+    bridge_finding,
+    bun_finding,
+    console_camera_finding,
     estop_finding,
+    reads_through_back,
     headset_findings,
+    is_back_health,
     port_of,
+    port_owner_finding,
     verdict,
 )
 
@@ -124,6 +131,48 @@ def test_live_with_real_frame_data_is_the_whole_chain_working():
     assert "whole chain" in text_of(findings)
 
 
+def test_frames_arriving_is_no_longer_reported_as_proof_the_rest_is_fine():
+    """The hint this replaced pointed at the renderer, and was wrong.
+
+    It used to say "if the headset still shows nothing after this, it is the
+    renderer". On 2026-08-28 the chain worked all the way to the Mac —
+    videohub live at 1920x1080, frames flowing — and the headset would still
+    have been black, because the bridge sent no CORS header. Two of these have
+    now cost a day each by confidently pointing at the renderer.
+    """
+    text = text_of(camera_findings("http://x:8001/camera", "env", "alive", LIVE, True))
+    assert "it is the renderer" not in text
+
+
+def test_frames_arriving_without_cors_is_a_failure_and_names_the_fix():
+    # The exact 2026-08-28 state: a live feed the console cannot read.
+    findings = camera_findings("http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=False)
+    text = text_of(findings)
+    assert BAD in levels(findings)
+    # It must say WHY the on-page panel looks fine while the headset does not,
+    # because "but the camera works on the page" is what stops the search.
+    assert "crossOrigin" in text
+    # Only a console aimed straight at the robot needs the grant; the fix
+    # offered is the normal setup, through apps/back.
+    assert "localhost:3000/camera" in text
+
+
+def test_frames_plus_cors_is_the_clean_pass():
+    findings = camera_findings("http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=True)
+    assert BAD not in levels(findings)
+    assert "the headset can load it" in text_of(findings)
+
+
+def test_an_unaskable_cors_probe_neither_passes_nor_fails_it():
+    # `None` means curl could not run or the request failed outright. That is
+    # not evidence either way, and inventing a verdict from it would be the
+    # same mistake as calling a missing ring a rendering bug.
+    findings = camera_findings("http://x:8001/camera", "env", "alive", LIVE, True, cors_ok=None)
+    text = text_of(findings)
+    assert BAD not in levels(findings)
+    assert "Access-Control-Allow-Origin" not in text
+
+
 def test_live_without_frame_data_is_a_failure_not_a_pass():
     """A 200 proves the socket opened. The multipart headers are sent before
     any frame exists, so only body content proves a picture."""
@@ -218,6 +267,45 @@ def test_no_stop_file_is_clear():
     assert estop_finding(stop_at=None, ack_at=None).level == OK
 
 
+# --- whose stop, though -----------------------------------------------------
+#
+# The sentinel is per-machine: estop.py puts it at $HOME/.c3po/run on whatever
+# host is running. For real hardware the bridge runs ONBOARD, so the sentinel
+# that latches teleop is the robot's — and preflight runs on the operator's Mac
+# and reads the Mac's. Both directions of that mislead, and the second is the
+# dangerous one.
+
+
+def test_a_standing_stop_says_which_machine_it_read():
+    """Otherwise a months-old local sim stop reads as a live safety state on the
+    robot. This Mac carried one from 2026-08-20 for days."""
+    finding = estop_finding(
+        stop_at=200.0, ack_at=100.0, when="16:50:57 on 20 Aug", run_dir="/Users/x/.c3po/run"
+    )
+    assert finding.level == WARN
+    assert "THIS MACHINE" in finding.text
+    notes = " ".join(finding.notes)
+    assert "/Users/x/.c3po/run" in notes
+    # And it must point at where the authoritative one lives.
+    assert "onboard" in notes.lower()
+    assert "ssh c3po" in notes
+
+
+def test_a_clear_result_admits_it_cannot_see_the_robots():
+    """The dangerous direction: a REAL standing stop onboard is invisible from
+    here, and a bare 'no stop outstanding' would be read as covering it."""
+    finding = estop_finding(stop_at=None, ack_at=None)
+    assert finding.level == OK
+    assert "this machine" in finding.text
+    assert "cannot see" in " ".join(finding.notes).lower()
+
+
+def test_run_dir_is_optional_so_existing_callers_still_work():
+    finding = estop_finding(stop_at=200.0, ack_at=100.0)
+    assert finding.level == WARN
+    assert "THIS MACHINE" in finding.text
+
+
 # --- the verdict ------------------------------------------------------------
 
 
@@ -267,3 +355,146 @@ def test_when_nothing_answers_the_first_diagnosis_is_kept():
     assert best_state(["empty", "nothing"]) == "empty"
     assert best_state(["timeout", "nothing"]) == "timeout"
     assert best_state([]) == "nothing"
+
+
+# --- this machine's own servers ----------------------------------------------
+
+REPO = "/Users/op/c3po"
+
+
+def test_back_health_is_recognised_by_its_own_shape():
+    body = json.dumps({"status": "ok", "timestamp": 1, "auth": {"providers": []}})
+    assert is_back_health(body)
+
+
+def test_a_404_page_on_3000_is_not_the_api():
+    # 2026-10-13: a Next dev server from another project held 3000, curl exited
+    # 0 on its 404, and preflight said "the API answers /health".
+    assert not is_back_health("<!DOCTYPE html><html><body>404</body></html>")
+
+
+def test_someone_elses_ok_health_is_not_the_api_either():
+    assert not is_back_health(json.dumps({"status": "ok"}))
+    assert not is_back_health(json.dumps({"status": "ok", "auth": "yes"}))
+
+
+def test_a_back_that_says_it_is_not_ok_is_not_passed():
+    assert not is_back_health(json.dumps({"status": "error", "auth": {"providers": []}}))
+
+
+def test_a_server_inside_this_checkout_is_ours():
+    owner = ("123", REPO + "/apps/back", "bun run --watch src/index.ts")
+    assert port_owner_finding(3000, "apps/back", owner, REPO) is None
+    assert port_owner_finding(3000, "apps/back", ("1", REPO, "x"), REPO + "/") is None
+
+
+def test_a_server_from_another_folder_fails_and_names_it():
+    owner = ("14417", "/Users/op/Projects/Boutique", "next-server (v16.3.8)")
+    finding = port_owner_finding(3000, "apps/back", owner, REPO)
+    assert finding is not None and finding.level == BAD
+    assert "OUTSIDE" in finding.text
+    notes = " ".join(finding.notes)
+    assert "/Users/op/Projects/Boutique" in notes and "kill 14417" in notes
+
+
+def test_a_sibling_folder_sharing_the_prefix_is_not_inside():
+    owner = ("9", REPO + "-integrate/apps/web", "vite dev")
+    assert port_owner_finding(3001, "apps/web", owner, REPO) is not None
+
+
+def test_an_unknown_owner_reports_nothing_rather_than_guessing():
+    assert port_owner_finding(3000, "apps/back", None, REPO) is None
+
+
+# --- the bridge, where apps/back dials it ------------------------------------
+
+
+def test_the_bridge_is_found_where_back_will_dial_it():
+    env = "BRIDGE_URL=http://127.0.0.1:8001/mcp   # tunnel\n"
+    assert bridge_base_from_env(env) == "http://127.0.0.1:8001"
+    # The shell wins, as it does for back itself (process.env).
+    assert bridge_base_from_env(env, "http://127.0.0.1:8011/mcp") == "http://127.0.0.1:8011"
+    # No config at all is back's own default, not a guess.
+    assert bridge_base_from_env(None) == "http://127.0.0.1:8001"
+
+
+def test_a_closed_tunnel_says_so_and_prints_it():
+    f = bridge_finding("http://127.0.0.1:8001", "nothing")
+    assert f.level == BAD and "tunnel is not open" in f.text
+    assert any("-L 8001:127.0.0.1:8001" in n for n in f.notes)
+
+
+def test_a_lan_bridge_url_is_called_out_not_retried():
+    # The bridge refuses LAN connections since 2026-09-06; probing
+    # g1-orin.local:8001 failed on every correctly deployed robot.
+    f = bridge_finding("http://g1-orin.local:8001", "nothing")
+    assert f.level == BAD and "127.0.0.1:8001" in " ".join(f.notes)
+
+
+def test_an_answering_bridge_passes():
+    assert bridge_finding("http://127.0.0.1:8001", "alive").level == OK
+
+
+# --- where the console reads the camera --------------------------------------
+
+
+def test_through_back_with_the_relay_mounted_is_the_normal_setup():
+    # 401 without a session = the relay exists and is gated.
+    f = console_camera_finding("http://localhost:3000/camera", "apps/web/.env", 401)
+    assert f.level == OK
+
+
+def test_a_back_without_the_relay_is_named():
+    f = console_camera_finding("http://localhost:3000/camera", "apps/web/.env", 404)
+    assert f.level == BAD and "bun run dev" in " ".join(f.notes)
+
+
+def test_straight_at_the_bridge_is_a_debug_setup_and_says_so():
+    f = console_camera_finding("http://127.0.0.1:8001/camera", "apps/web/.env", 0)
+    assert f.level == WARN
+    assert "localhost:3000/camera" in " ".join(f.notes)
+
+
+def test_back_is_recognised_by_its_own_address_not_by_port_3000():
+    assert reads_through_back("http://localhost:3100/camera", "http://localhost:3100")
+    assert reads_through_back("http://localhost:3000/camera", "http://localhost:3000/")
+    assert not reads_through_back("http://127.0.0.1:8001/camera", "http://localhost:3000")
+    # Same port, different host, is a different server.
+    assert not reads_through_back("http://g1-orin.local:3000/camera", "http://localhost:3000")
+
+
+def test_the_bridges_no_camera_reply_is_reported_in_its_own_words():
+    # A stub bridge's 503 has no `live` and no `frames`; it is not a camera
+    # whose frames "arrived and then stopped".
+    body = json.dumps(
+        {"error": "the head camera is real-hardware only", "hint": "use the sim feeds"}
+    )
+    text = text_of(camera_findings("http://127.0.0.1:8001/camera", "env", "alive", body, None))
+    assert "real-hardware only" in text and "use the sim feeds" in text
+    assert "arrived and then stopped" not in text
+
+
+# --- the Bun the repo needs --------------------------------------------------
+
+PACKAGE_JSON = '{"packageManager": "bun@1.4.3"}'
+
+
+def test_an_older_bun_is_a_failure_that_names_the_fix():
+    """1.3.x cannot resolve `#back/x.js`: apps/back dies at boot (2026-10-15)."""
+    f = bun_finding("1.3.14\n", PACKAGE_JSON)
+    assert f.level == BAD
+    assert "1.4.3" in f.text
+    assert any("bun upgrade" in n for n in f.notes)
+
+
+def test_the_named_bun_or_newer_passes():
+    assert bun_finding("1.4.3", PACKAGE_JSON).level == OK
+    assert bun_finding("1.10.0", PACKAGE_JSON).level == OK
+
+
+def test_no_bun_at_all_is_a_failure():
+    assert bun_finding(None, PACKAGE_JSON).level == BAD
+
+
+def test_an_unreadable_requirement_is_a_warning_not_a_pass():
+    assert bun_finding("1.4.3", None).level == WARN

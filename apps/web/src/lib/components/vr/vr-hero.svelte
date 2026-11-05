@@ -8,7 +8,7 @@
   instead of below a column of opaque panels.
 -->
 <script lang="ts">
-  import { Glasses } from "@lucide/svelte";
+  import { Eye, Glasses } from "@lucide/svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import Callout from "#lib/components/callout.svelte";
   import DetailsNote from "./details-note.svelte";
@@ -23,7 +23,8 @@
   }: {
     ctl: VrControl;
     posture: PostureInfo;
-    onenter: () => void;
+    /** `observe`: enter without commanding — see `VrControl.viewOnly`. */
+    onenter: (observe: boolean) => void;
   } = $props();
 </script>
 
@@ -46,15 +47,31 @@
           Verificando WebXR…
         </Button>
       {:else if ctl.vrSupported}
-        <Button
-          size="lg"
-          class="min-h-12 gap-2 cta px-5"
-          disabled={ctl.enteringVr}
-          onclick={onenter}
-        >
-          <Glasses class="size-4" aria-hidden="true" />
-          {ctl.enteringVr ? "Esperando al visor…" : "Entrar en VR"}
-        </Button>
+        <div class="flex flex-wrap gap-2 sm:justify-end">
+          <Button
+            size="lg"
+            class="min-h-12 gap-2 cta px-5"
+            disabled={ctl.enteringVr}
+            onclick={() => onenter(false)}
+          >
+            <Glasses class="size-4" aria-hidden="true" />
+            {ctl.enteringVr ? "Esperando al visor…" : "Entrar en VR"}
+          </Button>
+          <Button
+            size="lg"
+            variant="outline"
+            class="min-h-12 gap-2 px-5"
+            disabled={ctl.enteringVr}
+            onclick={() => onenter(true)}
+          >
+            <Eye class="size-4" aria-hidden="true" /> Entrar solo para ver
+          </Button>
+        </div>
+        <p class="max-w-[42ch] text-xs text-ink-mute sm:text-right">
+          «Solo para ver» muestra la cámara del robot sin comandarlo: no abre el
+          puente de teleoperación, no mueve nada y no toma el control si otra
+          persona está manejando.
+        </p>
       {:else}
         <p class="max-w-[38ch] text-sm text-ink-mute sm:text-right">
           WebXR no está disponible en este navegador. Abrí esta página desde el

@@ -53,14 +53,22 @@
 
   <div class="flex flex-wrap items-center gap-3">
     {#if !ctl.streaming}
+      <!-- Locked during an observe-only session. Opening this socket is
+           exactly what makes the headset a commander. -->
       <Button
         variant="outline"
         size="lg"
         class="min-h-12 gap-2 px-4"
+        disabled={ctl.viewOnly}
         onclick={() => ctl.connectStream()}
       >
         <Link2 class="size-4" aria-hidden="true" /> Conectar puente
       </Button>
+      {#if ctl.viewOnly}
+        <span class="readout">
+          Sesión en modo solo vista — salí de VR para poder comandar.
+        </span>
+      {/if}
     {:else}
       <Button
         variant="outline"

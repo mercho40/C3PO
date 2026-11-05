@@ -1,7 +1,8 @@
 """Tests for stop_everything — had zero coverage despite being the
 safety-critical e-stop. Two things matter most: (1) it actually interrupts
 an in-flight walk_velocity task via the shared task registry, not just in
-theory, and (2) the real-hardware Damp fallback only fires in real mode.
+theory, and (2) the real-hardware Damp fallback only fires in real mode,
+and there only when the robot did not acknowledge the zero-velocity burst.
 """
 
 from __future__ import annotations
@@ -21,8 +22,14 @@ def _no_real_dds(monkeypatch):
     # stop_motion_sync publishes to rt/run_command/cmd via a real DDS
     # ChannelPublisher — fine on the actual robot/sim, but there's no DDS
     # participant in a test process. Every test in this file calls
-    # stop_everything.run(), so stub this out once for all of them.
-    monkeypatch.setattr(stop_everything, "stop_motion_sync", lambda **kwargs: None)
+    # stop_everything.run(), so stub this out once for all of them: a burst the
+    # robot acknowledged, the normal case. Tests of the Damp fallback swap in
+    # an unacknowledged one with `_burst_unacknowledged`.
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", lambda **kwargs: (20, 20))
+
+
+def _burst_unacknowledged(monkeypatch):
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", lambda **kwargs: (20, 0))
 
 
 @pytest.mark.asyncio
@@ -54,17 +61,71 @@ async def test_stop_everything_cancels_in_flight_walk_velocity(monkeypatch):
     assert velocity_calls[-1][:3] == (0.0, 0.0, 0.0)
 
 
-async def test_stop_everything_dispatches_damp_in_real_mode(monkeypatch):
+async def test_an_acknowledged_stop_does_not_damp(monkeypatch):
+    """2026-10-15: PARAR damped a walking robot whose burst had landed.
+
+    On the hanger that is a sag; on the floor it is a fall. A stop the robot
+    heard leaves it standing at zero velocity, and says so.
+    """
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    monkeypatch.setattr(stop_everything, "DAMP_POLICY", "on_failure")
+    damp_calls = []
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (0, ""))
+
+    result = await stop_everything.run()
+
+    assert damp_calls == []
+    assert result["stop_burst_acked"] == 20
+    assert result["real_damp_fallback_attempts"] == 0
+    assert result["real_damp_fallback_reason"] is None
+    # None, not False: the console reads only False as a failed stop.
+    assert result["real_damp_fallback_succeeded"] is None
+
+
+async def test_stop_everything_dispatches_damp_when_the_stop_was_not_heard(monkeypatch):
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    _burst_unacknowledged(monkeypatch)
     damp_calls = []
     monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (0, ""))
 
     result = await stop_everything.run()
 
     assert len(damp_calls) == 1
+    assert result["real_damp_fallback_reason"] == "burst_unacknowledged"
     assert result["real_damp_fallback_rpc_code"] == 0
     assert result["real_damp_fallback_attempts"] == 1
     assert result["real_damp_fallback_succeeded"] is True
+
+
+async def test_a_burst_that_raises_still_gets_the_damp(monkeypatch):
+    """It used to propagate, which skipped the Damp: the one case it is for."""
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+
+    def exploding_burst(**kwargs):
+        raise RuntimeError("dds down")
+
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", exploding_burst)
+    damp_calls = []
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (0, ""))
+
+    result = await stop_everything.run()
+
+    assert len(damp_calls) == 1
+    assert result["real_damp_fallback_reason"] == "burst_failed"
+    assert "dds down" in result["stop_burst_error"]
+    assert result["real_damp_fallback_succeeded"] is True
+
+
+async def test_the_always_policy_damps_after_every_stop(monkeypatch):
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    monkeypatch.setattr(stop_everything, "DAMP_POLICY", "always")
+    damp_calls = []
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (0, ""))
+
+    result = await stop_everything.run()
+
+    assert len(damp_calls) == 1
+    assert result["real_damp_fallback_reason"] == "policy_always"
 
 
 async def test_stop_everything_skips_damp_outside_real_mode(monkeypatch):
@@ -85,6 +146,7 @@ async def test_stop_everything_retries_real_damp_until_success(monkeypatch):
     # failure -- it should retry and the result should reflect what actually
     # happened (attempts taken, eventual success).
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    _burst_unacknowledged(monkeypatch)
     monkeypatch.setattr(stop_everything, "REAL_DAMP_RETRY_DELAY_S", 0.0)
     codes = iter([3104, 3104, 0])  # fails twice, succeeds on the third attempt
     damp_calls = []
@@ -105,6 +167,7 @@ async def test_stop_everything_retries_real_damp_until_success(monkeypatch):
 
 async def test_stop_everything_reports_failure_after_exhausting_retries(monkeypatch):
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    _burst_unacknowledged(monkeypatch)
     monkeypatch.setattr(stop_everything, "REAL_DAMP_RETRY_DELAY_S", 0.0)
     damp_calls = []
     monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (3104, None))
@@ -126,6 +189,7 @@ async def test_real_damp_retries_stop_at_the_time_budget(monkeypatch):
     where the e-stop took longest to answer.
     """
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    _burst_unacknowledged(monkeypatch)
     monkeypatch.setattr(stop_everything, "REAL_DAMP_TOTAL_BUDGET_S", 0.05)
 
     attempts = 0
@@ -156,6 +220,7 @@ async def test_cancellation_is_signalled_before_any_blocking_rpc(monkeypatch):
     wedged DDS call cannot prevent the stop from beginning.
     """
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    _burst_unacknowledged(monkeypatch)
 
     from bridge.sdk import g1_rpc
     from bridge.skills.task_runtime import get_registry

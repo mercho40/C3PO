@@ -190,6 +190,24 @@ export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
   return mode === "voice" ? new Set(["listen", "say"]) : new Set();
 }
 
+/**
+ * Whether a skill is offered to the model in this mode. ONE rule for both
+ * voice engines (`voice/realtime.ts` uses it too).
+ *
+ * Voice drops high-danger skills as well as the host's own two. A spoken turn
+ * comes from whatever the microphone overheard — anybody standing near the
+ * robot, a video playing in the room — and the legacy engine (the default)
+ * offered it everything: `arm_navigation`, `start_walking_waist`, `move_arm`.
+ * The realtime engine already filtered them; the two now cannot disagree.
+ */
+export function offeredInMode(
+  skill: { name: string; dangerLevel?: string },
+  mode: AgentMode,
+): boolean {
+  if (agentToolExclusions(mode).has(skill.name)) return false;
+  return mode !== "voice" || skill.dangerLevel !== "high";
+}
+
 const VOICE_PREAMBLE = [
   "Voice session: you are having a spoken conversation, not interpreting every",
   "utterance as a robot command. Respond naturally in concise conversational",
@@ -218,7 +236,10 @@ const VOICE_PREAMBLE = [
 export async function buildSystemPrompt(
   mode: AgentMode = "operator",
 ): Promise<string> {
-  const lines = (await listSkills()).map((s) => {
+  // Only what this mode may call: describing a tool the model is not given
+  // invites it to try, and to tell the speaker it did.
+  const offered = (await listSkills()).filter((s) => offeredInMode(s, mode));
+  const lines = offered.map((s) => {
     const where =
       s.works.sim && s.works.real
         ? "sim+real"
@@ -249,11 +270,11 @@ export async function buildSystemPrompt(
  */
 async function buildTools(
   audit: AuditContext,
-  excluded: ReadonlySet<string> = new Set(),
+  mode: AgentMode,
 ): Promise<ToolSet> {
   const tools: ToolSet = {};
   for (const skill of await listSkills()) {
-    if (excluded.has(skill.name)) continue;
+    if (!offeredInMode(skill, mode)) continue;
     tools[skill.name] = tool({
       description: skill.description,
       // Already plain JSON Schema off the bridge — nothing to convert.
@@ -296,7 +317,7 @@ async function buildTools(
       },
     });
   }
-  if (!excluded.has(LOOK_TOOL.name)) {
+  if (!agentToolExclusions(mode).has(LOOK_TOOL.name)) {
     tools[LOOK_TOOL.name] = tool({
       description: LOOK_TOOL.description,
       inputSchema: jsonSchema(LOOK_TOOL.parameters),
@@ -358,7 +379,6 @@ export async function runAgentChat(
   // Both hit the bridge for the catalogue, so fetch them together rather than
   // paying two sequential round-trips before the first token.
   const mode = opts.mode ?? "operator";
-  const excludedTools = agentToolExclusions(mode);
   const [system, tools] = await Promise.all([
     buildSystemPrompt(mode),
     buildTools(
@@ -369,7 +389,7 @@ export async function runAgentChat(
         ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
         source: mode === "voice" ? "voice" : "agent",
       },
-      excludedTools,
+      mode,
     ),
   ]);
 

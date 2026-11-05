@@ -234,6 +234,30 @@ async def test_a_posture_that_never_transitions_says_so(monkeypatch):
     assert "controller" in result["result"]["note"]
 
 
+async def test_a_refused_walk_enable_says_to_load_the_feet(monkeypatch):
+    """2026-10-15: start_walking_waist from FSM 4, on the hanger, stayed at 4.
+
+    The old note sent the operator to the motion controller, which was loaded
+    (prepare had just transitioned). The precondition that was missing is the
+    feet bearing weight — say that.
+    """
+    from bridge.sdk import g1_rpc
+    from bridge.skills import _g1_request
+
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda api_id, data: (0, ""))
+    monkeypatch.setattr(_g1_request, "_await_fsm", _fake_fsm(4))
+    monkeypatch.setattr(_g1_request, "_read_fsm_mode", lambda: 1)
+
+    result = await _g1_request.run_g1_request("start_walking_waist", None)
+
+    assert result["phase"] == "acked_no_transition"
+    assert result["result"]["fsm_after"] == 4
+    assert result["result"]["fsm_mode"] == 1
+    assert "feet" in result["result"]["note"]
+    assert "fsm_mode=1" in result["result"]["note"]
+
+
 async def test_a_posture_that_lands_reports_transitioned(monkeypatch):
     from bridge.sdk import g1_rpc
     from bridge.skills import _g1_request

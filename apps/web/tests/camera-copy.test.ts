@@ -134,8 +134,10 @@ describe("overlay copy", () => {
     });
     expect(net).toContain("g1-orin.local");
     expect(net).not.toContain("network");
-    expect(cors).toContain("BRIDGE_CORS_ORIGINS");
+    // The normal setup goes through apps/back: its WEB_URL is the knob.
+    expect(cors).toContain("WEB_URL");
     expect(cors).toContain("http://localhost:3001");
+    expect(net).toContain("ssh -L 8001");
     expect(mixed).toContain("HTTPS");
     expect(new Set([net, cors, mixed]).size).toBe(3);
   });
@@ -247,5 +249,18 @@ describe("snapshot failures", () => {
     const unknown = snapshotFailure(new Error("relay exploded"));
     expect(unknown.es).toBe("La cámara respondió con un error.");
     expect(unknown.raw).toBe("relay exploded");
+  });
+});
+
+describe("the health page's camera probe", () => {
+  test("sends the session only to apps/back itself", async () => {
+    const { sameOrigin } = await import("../src/lib/robot/health");
+    expect(
+      sameOrigin("http://localhost:3000/camera", "http://localhost:3000"),
+    ).toBe(true);
+    expect(
+      sameOrigin("http://127.0.0.1:8001/camera", "http://localhost:3000"),
+    ).toBe(false);
+    expect(sameOrigin("not a url", "http://localhost:3000")).toBe(false);
   });
 });

@@ -79,8 +79,7 @@ export function replyText(parts: readonly PartLike[]): string {
  * `input-streaming` never had complete arguments, so it was never dispatched.
  */
 export type RecoveryPlan =
-  | { kind: "retry" }
-  | { kind: "continue"; ran: string[]; maybe: string[] };
+  { kind: "retry" } | { kind: "continue"; ran: string[]; maybe: string[] };
 
 export function planRecovery(messages: readonly MessageLike[]): RecoveryPlan {
   const last = messages.at(-1);

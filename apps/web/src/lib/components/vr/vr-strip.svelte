@@ -13,7 +13,7 @@
   live regions here too made every latch speak twice.
 -->
 <script lang="ts">
-  import { Crosshair, LogOut } from "@lucide/svelte";
+  import { Crosshair, Eye, LogOut } from "@lucide/svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import { LOAD_TEXT, type PostureInfo } from "#lib/robot/posture.js";
   import { teleopShort } from "#lib/robot/vr-logic.js";
@@ -37,6 +37,13 @@
       >
     </span>
     <span class="readout">Puente: {teleopShort(ctl.teleopState)}</span>
+    {#if ctl.viewOnly}
+      <!-- Said where the wearer is looking: a passive session must not be
+           mistakable for one that drives. -->
+      <span class="flex items-center gap-1 stamp text-sm text-warn">
+        <Eye class="size-3.5" aria-hidden="true" /> Solo vista — no comanda
+      </span>
+    {/if}
     <div class="ms-auto flex flex-wrap gap-2">
       <Button
         variant="outline"

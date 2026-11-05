@@ -96,10 +96,15 @@ def _get_publisher() -> Any:
     return _publisher
 
 
-def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> None:
+def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> int | None:
     """Send one body-frame velocity setpoint, by whatever channel this target uses.
 
     `height` applies to the sim channel only; see the module docstring.
+
+    Returns the robot's RPC code on real hardware (0 = acknowledged), and None
+    in sim, where the setpoint is a fire-and-forget publish with no ack.
+    `stop_everything` reads it to tell a stop the robot took from one it never
+    heard; the control loops ignore it.
     """
     if SIM_MODE == "real":
         from bridge.sdk import g1_rpc
@@ -130,12 +135,13 @@ def send_velocity(vx: float, vy: float, vyaw: float, height: float) -> None:
             # timeout stops the robot. Raising here would instead abort the
             # skill mid-stride, skipping its own stop sequence.
             log.warning("locomotion.set_velocity.rpc_error", rpc_code=code)
-        return
+        return code
 
     from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
 
     payload = str([float(vx), float(vy), float(vyaw), float(height)])
     _get_publisher().Write(String_(data=payload))
+    return None
 
 
 async def send_velocity_async(vx: float, vy: float, vyaw: float, height: float) -> None:
@@ -176,12 +182,21 @@ async def stop_motion(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -
         await asyncio.sleep(LOOP_PERIOD_S)
 
 
-def stop_motion_sync(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> None:
-    """Blocking variant of stop_motion for sync skills (e.g. stop_everything)."""
+def stop_motion_sync(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> tuple[int, int]:
+    """Blocking variant of stop_motion for sync skills (e.g. stop_everything).
+
+    Returns `(sent, acked)`: how many zero setpoints went out, and how many the
+    robot acknowledged with code 0. In sim nothing is acknowledged, so `acked`
+    stays 0 there; only real-hardware callers should read it.
+    """
+    sent = acked = 0
     deadline = time.monotonic() + duration_s
     while time.monotonic() < deadline:
-        send_velocity(0, 0, 0, height)
+        sent += 1
+        if send_velocity(0, 0, 0, height) == 0:
+            acked += 1
         time.sleep(LOOP_PERIOD_S)
+    return sent, acked
 
 
 async def maybe_report_progress(

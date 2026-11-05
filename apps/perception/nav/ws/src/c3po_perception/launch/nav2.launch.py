@@ -33,7 +33,8 @@ TWO REMAPS ARE LOAD-BEARING:
 
 The lifecycle manager starts INACTIVE. Container start must never be the same
 event as "the robot is ready to be driven" — the same reasoning that keeps the
-boot unit at C3PO_NO_TAKEOVER=1. Transition it by hand:
+bridge's boot unit from claiming a sensor or stopping gemm (only an interactive
+`c3po up` takes ownership). Transition it by hand:
 
     ros2 service call /lifecycle_manager_navigation/manage_nodes \\
         nav2_msgs/srv/ManageLifecycleNodes "{command: 0}"

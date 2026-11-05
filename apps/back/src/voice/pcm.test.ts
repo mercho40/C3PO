@@ -14,7 +14,9 @@ function count(bytes: Uint8Array): number {
 
 describe("Pcm16Resampler", () => {
   test("keeps the expected long-run sample count in both directions", () => {
-    const source16k = encode(Array.from({ length: 16_000 }, (_, i) => (i % 200) - 100));
+    const source16k = encode(
+      Array.from({ length: 16_000 }, (_, i) => (i % 200) - 100),
+    );
     const up = new Pcm16Resampler(16_000, 24_000).push(source16k);
     expect(count(up)).toBeGreaterThanOrEqual(23_998);
     expect(count(up)).toBeLessThanOrEqual(24_000);
@@ -25,7 +27,9 @@ describe("Pcm16Resampler", () => {
   });
 
   test("preserves interpolation state across arbitrary network chunks", () => {
-    const source = encode(Array.from({ length: 1_000 }, (_, i) => i * 20 - 10_000));
+    const source = encode(
+      Array.from({ length: 1_000 }, (_, i) => i * 20 - 10_000),
+    );
     const oneShot = new Pcm16Resampler(16_000, 24_000).push(source);
     const chunked = new Pcm16Resampler(16_000, 24_000);
     const parts = [
@@ -33,7 +37,9 @@ describe("Pcm16Resampler", () => {
       chunked.push(source.slice(246, 1_110)),
       chunked.push(source.slice(1_110)),
     ];
-    const joined = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+    const joined = new Uint8Array(
+      parts.reduce((sum, part) => sum + part.byteLength, 0),
+    );
     let offset = 0;
     for (const part of parts) {
       joined.set(part, offset);
@@ -43,6 +49,8 @@ describe("Pcm16Resampler", () => {
   });
 
   test("rejects half a PCM sample", () => {
-    expect(() => new Pcm16Resampler(16_000, 24_000).push(new Uint8Array([1]))).toThrow();
+    expect(() =>
+      new Pcm16Resampler(16_000, 24_000).push(new Uint8Array([1])),
+    ).toThrow();
   });
 });

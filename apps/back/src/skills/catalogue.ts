@@ -53,6 +53,10 @@ let cached: {
 /** How long a fresh answer is reused without asking the bridge again. */
 const FRESH_MS = 5000;
 let freshUntil = 0;
+/** Set by `invalidateCatalogue`: the next `getSkill` waits for the bridge. */
+let mustRefetch = false;
+/** The `tools/list` in flight, shared by every caller that needs one. */
+let inflight: Promise<CatalogueSnapshot> | null = null;
 
 /** Turn one MCP tool into the catalogue shape the rest of `back` already speaks. */
 function toEntry(tool: {
@@ -96,6 +100,22 @@ export async function getCatalogue(): Promise<CatalogueSnapshot> {
       ...(cached.rejected.length ? { rejected: cached.rejected } : {}),
     };
   }
+  return refreshCatalogue();
+}
+
+/**
+ * One `tools/list` at a time. Without this, every invoke that found the cache
+ * stale started its own, and they finished in whatever order the bridge
+ * answered them.
+ */
+function refreshCatalogue(): Promise<CatalogueSnapshot> {
+  inflight ??= fetchCatalogue().finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+
+async function fetchCatalogue(): Promise<CatalogueSnapshot> {
   try {
     const tools = await listTools();
 
@@ -126,6 +146,7 @@ export async function getCatalogue(): Promise<CatalogueSnapshot> {
 
     cached = { skills, rejected, at: Date.now() };
     freshUntil = cached.at + FRESH_MS;
+    mustRefetch = false;
     return {
       skills,
       source: "bridge",
@@ -152,14 +173,32 @@ export async function getCatalogue(): Promise<CatalogueSnapshot> {
 /** Forget the fresh answer, so the next read asks the bridge. */
 export function invalidateCatalogue(): void {
   freshUntil = 0;
+  mustRefetch = true;
 }
 
 export async function listSkills(): Promise<SkillCatalogueEntry[]> {
   return (await getCatalogue()).skills;
 }
 
+/**
+ * The lookup every `/skills/:name/invoke` makes, so it never waits on the
+ * bridge when there is an answer to serve.
+ *
+ * It used to await `getCatalogue()`, which every 5 s meant a `tools/list` round
+ * trip in front of the command. On the robot (2026-10-15) that held walk
+ * presses for up to ~0.9 s, so a press and its 900 ms repeat reached the robot
+ * 70 ms apart, and a command held there could arrive after the walk-pad stop
+ * sent after it — walking on after the operator let go. A stale answer is
+ * served at once and refreshed behind it; the bridge still validates every
+ * call, so a tool that has since gone fails there. Only a cold start (nothing
+ * cached) or an explicit `invalidateCatalogue()` waits.
+ */
 export async function getSkill(
   name: string,
 ): Promise<SkillCatalogueEntry | undefined> {
+  if (cached && !mustRefetch) {
+    if (Date.now() >= freshUntil) void refreshCatalogue();
+    return cached.skills.find((s) => s.name === name);
+  }
   return (await getCatalogue()).skills.find((s) => s.name === name);
 }

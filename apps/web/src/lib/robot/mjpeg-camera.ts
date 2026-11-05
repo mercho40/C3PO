@@ -21,9 +21,12 @@
 //
 // REACHABILITY
 // ------------
-// The onboard bridge exposes this directly at g1-orin.local:8001. It is plain
-// HTTP, so it works from the local HTTP dev console; an HTTPS-hosted console
-// needs an HTTPS/WSS gateway before browsers will accept the mixed content.
+// `PUBLIC_ROBOT_CAM_URL` points at apps/back (`http://localhost:3000/camera`),
+// which relays the bridge's `/camera/*` behind Better Auth — the same path
+// `/telemetry/*` and the costmap take. The browser never talks to the bridge's
+// port, which also serves the unauthenticated `/mcp`. Hence
+// `credentials: "include"` below: the session cookie is what gets the picture.
+// apps/back reaches the bridge at its own BRIDGE_URL.
 //
 // The bridge relays whichever of TWO servers currently owns the one physical
 // camera — the vendor's videohub feed (1920x1080) or apps/perception's vision
@@ -35,17 +38,14 @@
 // FAILURE DETAILS ARE TOKENS, translated by `camera-copy.ts`:
 //   "network"      the /status fetch threw and the host did not answer at all
 //   "cors"         the host answered, but the browser hid the answer — this
-//                  console's origin is missing from BRIDGE_CORS_ORIGINS
+//                  console's origin is not allowed: apps/back's WEB_URL, or
+//                  BRIDGE_CORS_ORIGINS when pointed at the bridge directly
 //   "timeout"      no answer within STATUS_TIMEOUT_MS
 //   "HTTP 503"     a non-OK answer, optionally followed by ": <the bridge's own
 //                  words>" (its `hint`, else its `error`), verbatim
 
 export type RobotCamState =
-  | "connecting"
-  | "live"
-  | "stale"
-  | "error"
-  | "closed";
+  "connecting" | "live" | "stale" | "error" | "closed";
 
 /** Which server is behind the bridge's relay. `none` = neither is live. */
 export type RobotCamSource = "videohub" | "vision" | "none";
@@ -211,6 +211,9 @@ export function connectRobotCamera(
     try {
       const res = await fetch(endpoint(baseUrl, "status"), {
         cache: "no-store",
+        // The feed is served by apps/back behind Better Auth; without the
+        // session cookie every poll is a 401 and the panel reads "error".
+        credentials: "include",
         signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
       });
       if (!res.ok) throw new HttpError(res.status, await bridgeWords(res));

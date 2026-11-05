@@ -1,12 +1,7 @@
 import { getContext, setContext } from "svelte";
 
 export type MessageRole =
-  | "user"
-  | "assistant"
-  | "system"
-  | "function"
-  | "data"
-  | "tool";
+  "user" | "assistant" | "system" | "function" | "data" | "tool";
 
 export type MessageVersion = {
   id: string;

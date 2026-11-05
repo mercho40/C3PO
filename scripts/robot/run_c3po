@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Take ownership from the co-tenant and ensure the systemd-managed bridge is up.
-# Perception stays separate: this command claims no camera or LiDAR.
+# Ensure the systemd-managed bridge is up. Perception stays separate: this
+# command claims no camera or LiDAR, so the co-tenant's stack is left running
+# unless C3PO_TAKE_OVER=1 says otherwise (with their OK).
 
 set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -37,20 +38,42 @@ if [ -n "$strays" ]; then
     exit 1
 fi
 
-# Interactive start means take ownership. Booting the bridge service itself does
-# not: the unit starts no sensors and issues no motion command.
-if [ -n "$(gemm_running)" ]; then
-    info "gemm is running — stopping it before C3PO can become the commander"
-    "$here/stop_gemm"
+# The other team's stack is THEIRS. This used to stop gemm's containers on every
+# start, with no flag and no question — on 2026-10-15 that took gemm-bringup
+# down after a reboot while they were using the robot. The bridge claims no
+# sensor, and the one thing that genuinely cannot share the robot — a second
+# motion commander — is what warn_if_other_commander checks below. So: leave
+# gemm alone and say so, unless the operator explicitly takes over.
+gemm_now="$(gemm_running)"
+if [ -n "$gemm_now" ]; then
+    if [ "${C3PO_TAKE_OVER:-0}" = "1" ]; then
+        info "gemm is running and C3PO_TAKE_OVER=1 — stopping it"
+        "$here/stop_gemm"
+    else
+        warn "gemm is running ($(echo "$gemm_now" | tr '\n' ' ')) — left alone; the bridge claims no sensor"
+        info "to stop it too, only with the other team's OK: C3PO_TAKE_OVER=1 c3po up <profile>"
+    fi
 fi
 warn_if_other_commander || exit 1
 
 if ! bridge_running; then
+    # Fail with the fix, not with sudo's "a terminal is required" (2026-10-15,
+    # over a non-interactive ssh). The unit is enabled at boot, so needing this
+    # at all means it did not come up: say where to look as well.
+    if ! sudo -n true 2>/dev/null && ! [ -t 0 ]; then
+        err "c3po-bridge.service is not running, and starting it needs sudo's password — no terminal here"
+        err "  run with a terminal:  ssh -t <robot> 'cd ~/c3po && ./scripts/robot/c3po up core'"
+        err "  why it is down:       journalctl -u c3po-bridge -b --no-pager | tail -50"
+        exit 2
+    fi
     sudo systemctl start c3po-bridge.service
 fi
 
 ready=0
-for _ in $(seq 1 30); do
+# 45 s: the bridge's own boot (imports, DDS init) on the Jetson, not the venv
+# sync — systemctl already waited for that. The loop still ends at once on a
+# failed unit or a dead process, so the length only matters when it is slow.
+for _ in $(seq 1 90); do
     if ready_pid="$(bridge_http_ready 8001)"; then
         ready=1
         break

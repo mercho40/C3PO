@@ -73,13 +73,13 @@ const BRIDGE_ES: readonly {
   {
     match: "prefix",
     en: "the costmap comes from Nav2's global_costmap",
-    es: "El costmap sale del global_costmap de Nav2, así que solo existe mientras hay un stage de nav2 levantado: perception_up nav2-fake (sin sensores) o perception_up nav2 (toma los dos sensores).",
+    es: "El costmap sale del global_costmap de Nav2, así que solo existe mientras hay un stage de nav2 levantado: c3po perception up nav2-fake (sin sensores) o c3po perception up nav2 (toma los dos sensores).",
   },
   // Camera.
   {
     match: "prefix",
     en: "neither camera feed is live",
-    es: "Ninguna de las dos cámaras entrega imagen. La del fabricante necesita que videohub_pc4 tenga /dev/video4; la de visión necesita perception_up perception (o nav2) con el dispositivo tomado por take_camera. No pueden funcionar las dos a la vez.",
+    es: "Ninguna de las dos cámaras entrega imagen. La del fabricante necesita que videohub_pc4 tenga /dev/video4; la de visión necesita c3po perception up perception (o nav2) con el dispositivo tomado por c3po camera take. No pueden funcionar las dos a la vez.",
   },
   {
     match: "prefix",

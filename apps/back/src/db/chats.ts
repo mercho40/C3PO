@@ -217,6 +217,13 @@ export async function logToolCall(opts: {
   status: "ok" | "error";
   error?: string | null;
   durationMs?: number;
+  /**
+   * When the command was sent (epoch ms). The row is written when the call
+   * SETTLES, so without this `created_at` is the finish time: a 1 s walk was
+   * stamped 1 s late, and a press and its stop finished — and sorted — in the
+   * same millisecond, which on 2026-10-15 read as duplicate commands.
+   */
+  startedAt?: number;
 }): Promise<void> {
   const bodyFailure = opts.status === "ok" ? resultFailure(opts.result) : null;
   const chatId = opts.chatId ?? null;
@@ -238,6 +245,9 @@ export async function logToolCall(opts: {
       status: bodyFailure ? "error" : opts.status,
       error: opts.error ?? bodyFailure,
       durationMs: opts.durationMs ?? null,
+      ...(opts.startedAt !== undefined
+        ? { createdAt: new Date(opts.startedAt) }
+        : {}),
     });
   } catch (err) {
     // A failed audit write must not abort a robot command that already ran.

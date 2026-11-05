@@ -26,11 +26,25 @@ no venv — which is a state a preflight check should survive rather than trip o
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from bridge.env_file import parse_env_file
 
-__all__ = ["Finding", "Section", "verdict", "classify_probe", "best_state"]
+__all__ = [
+    "Finding",
+    "Section",
+    "verdict",
+    "classify_probe",
+    "best_state",
+    "is_back_health",
+    "port_owner_finding",
+    "bun_finding",
+    "bridge_base_from_env",
+    "bridge_finding",
+    "console_camera_finding",
+    "reads_through_back",
+]
 
 OK, WARN, BAD = "ok", "warn", "bad"
 
@@ -130,6 +144,59 @@ def direct_service_finding(
     )
 
 
+# --- this machine's own servers ----------------------------------------------
+
+
+def is_back_health(body: str) -> bool:
+    """Is this `/health` body apps/back's, and does it say ok?
+
+    "Something answered on 3000" is not the question. On 2026-10-13 a different
+    project's Next dev server held 3000 — up for 17 hours, from another folder —
+    and this check reported "the API answers /health": curl exits 0 on a 404,
+    and a 404 page is an answer. The demo console would have talked to a travel
+    site. So the body has to be apps/back's own shape (`src/index.ts`): an `ok`
+    status AND the `auth.providers` block nothing else on a dev machine sends.
+    """
+    data = _parse_json(body)
+    if data is None or data.get("status") != "ok":
+        return False
+    auth = data.get("auth")
+    return isinstance(auth, dict) and "providers" in auth
+
+
+def port_owner_finding(
+    port: int,
+    label: str,
+    owner: Optional[Tuple[str, str, str]],
+    repo_root: str,
+) -> Optional[Finding]:
+    """A failure if the process holding `port` was started outside this checkout.
+
+    `owner` is (pid, cwd, command) of the listener, or None when it could not be
+    identified (no `lsof`, a permission error, a process that just exited). None
+    reports NOTHING — not knowing who owns a port is not evidence of a stranger,
+    and a guessed failure is the kind of false alarm that teaches people to skip
+    preflight. Same contract as `quest_setup.sh`'s check (added after
+    2026-09-08, when it forwarded the wrong app into the headset).
+    """
+    if owner is None:
+        return None
+    pid, cwd, command = owner
+    root = repo_root.rstrip("/")
+    if cwd == root or cwd.startswith(root + "/"):
+        return None
+    return Finding(
+        BAD,
+        "{}  {} — held by something OUTSIDE this checkout".format(port, label),
+        [
+            "pid {}  cwd: {}".format(pid, cwd),
+            command[:90],
+            "this checkout: {}".format(root),
+            "stop it (kill {}) and run `bun run dev` from this checkout".format(pid),
+        ],
+    )
+
+
 # --- the camera -------------------------------------------------------------
 
 
@@ -147,6 +214,117 @@ def camera_url_from_env(env_text: Optional[str], shell_value: str = "") -> Tuple
     if shell_value.strip():
         return shell_value.strip(), "the shell environment"
     return "", ""
+
+
+#: Same default as apps/back/src/bridge/url.ts: the robot's port, over the tunnel.
+DEFAULT_BRIDGE_BASE = "http://127.0.0.1:8001"
+
+#: The tunnel apps/back reaches the bridge through. The bridge listens on the
+#: robot's loopback only (since 2026-09-06, scripts/robot/c3po-bridge.service).
+TUNNEL = "ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po"
+
+
+def bridge_base_from_env(env_text: Optional[str], shell_value: str = "") -> str:
+    """`scheme://host:port` of the bridge AS APPS/BACK REACHES IT.
+
+    That is the address worth checking: everything the headset does — the
+    camera, walking, PARAR — goes browser -> back -> this. The shell wins over
+    the file because that is how back itself resolves it (`process.env`).
+    """
+    value = shell_value.strip()
+    if not value and env_text is not None:
+        value = parse_env_file(env_text).get("BRIDGE_URL", "").strip()
+    if not value:
+        return DEFAULT_BRIDGE_BASE
+    scheme, sep, rest = value.partition("://")
+    if not sep:
+        return DEFAULT_BRIDGE_BASE
+    return "{}://{}".format(scheme, rest.split("/", 1)[0])
+
+
+def bridge_finding(base: str, state: str) -> Finding:
+    """Is the bridge answering where apps/back will dial it?"""
+    loopback = any(h in base for h in ("127.0.0.1", "localhost", "[::1]"))
+    if state == "alive":
+        return Finding(OK, "bridge at {} — answering, as apps/back reaches it".format(base))
+    if state == "nothing" and loopback:
+        return Finding(
+            BAD,
+            "bridge at {} — nothing listening: the tunnel is not open".format(base),
+            [
+                "the bridge listens on the robot's loopback only, so back needs:",
+                "  " + TUNNEL,
+                "if the tunnel is up and this persists, on the robot:  c3po up core",
+            ],
+        )
+    if state == "empty" and loopback:
+        return Finding(
+            BAD,
+            "bridge at {} — the tunnel is up but nothing answers behind it".format(base),
+            ["on the robot:  c3po up core   (then `c3po status`)"],
+        )
+    return Finding(
+        BAD,
+        "bridge at {} — {}".format(base, "timed out" if state == "timeout" else "unreachable"),
+        [
+            "BRIDGE_URL points off this machine; the bridge refuses LAN connections",
+            "since 2026-09-06. Use http://127.0.0.1:8001/mcp and:",
+            "  " + TUNNEL,
+        ],
+    )
+
+
+def origin_of(url: str) -> str:
+    """`scheme://host:port`, with the scheme's default port spelled out."""
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return ""
+    return "{}://{}:{}".format(scheme, rest.split("/", 1)[0].rsplit(":", 1)[0], port_of(url))
+
+
+def reads_through_back(console_url: str, api_url: str) -> bool:
+    """Is the console's camera URL apps/back itself (`PUBLIC_API_URL`)?"""
+    return bool(api_url) and origin_of(console_url) == origin_of(api_url)
+
+
+def console_camera_finding(
+    console_url: str, source: str, relay_code: int, via_back: Optional[bool] = None
+) -> Finding:
+    """Where the CONSOLE reads the picture from, and whether that hop exists.
+
+    The normal setup is apps/back (`http://localhost:3000/camera`), which relays
+    the bridge behind the login: `relay_code` is what back answers there with
+    no session — 401 means the relay is mounted and gated, 404 means this back
+    predates it (an old dev server still running). Pointing the console
+    straight at the bridge or the vision container is a debug setup, and the
+    one place a CORS header from the robot still matters.
+    """
+    port = port_of(console_url)
+    if via_back is None:
+        via_back = port == 3000
+    if via_back:
+        if relay_code == 404:
+            return Finding(
+                BAD,
+                "the console reads the camera through apps/back, and back has no relay",
+                [
+                    "this apps/back predates /camera/* — restart it from this checkout:",
+                    "  bun run dev",
+                ],
+            )
+        return Finding(
+            OK,
+            "the console reads the camera through apps/back ({}), behind the login".format(source),
+        )
+    return Finding(
+        WARN,
+        "the console reads the camera STRAIGHT from port {} ({})".format(port, source),
+        [
+            "a debug setup: the headset then needs a CORS grant from the robot, and",
+            "8001 also serves the unauthenticated /mcp. The normal setup is:",
+            "  PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera",
+        ],
+    )
 
 
 def port_of(url: str) -> int:
@@ -171,8 +349,13 @@ def camera_findings(
     status_state: str,
     status_body: str,
     stream_has_frames: Optional[bool],
+    cors_ok: Optional[bool] = None,
 ) -> List[Finding]:
-    """What /status and the stream body mean, together."""
+    """What /status, the stream body and the CORS header mean, together.
+
+    `cors_ok` is the question this section used to be missing, and its absence
+    is why the last line below used to be wrong. None means we could not ask.
+    """
     if not url:
         return [
             Finding(
@@ -180,9 +363,9 @@ def camera_findings(
                 "PUBLIC_ROBOT_CAM_URL is not set in apps/web/.env",
                 [
                     "the page will not open the stream at all without it. Add:",
-                    "  PUBLIC_ROBOT_CAM_URL=http://g1-orin.local:8001/camera",
-                    "(the bridge picks whichever feed is live and relays it, so this",
-                    " one URL works whether or not the detector owns the camera)",
+                    "  PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera",
+                    "(apps/back relays the bridge, which picks whichever feed is live,",
+                    " so this one URL works whether or not the detector owns the camera)",
                 ],
             )
         ]
@@ -195,7 +378,10 @@ def camera_findings(
             Finding(
                 BAD,
                 "cannot reach {}".format(url),
-                ["check mDNS/Wi-Fi and that the robot service is running on port {}".format(port)],
+                [
+                    "check the tunnel ({}) and that the robot service".format(TUNNEL),
+                    "is running on port {}".format(port),
+                ],
             )
         )
         return out
@@ -203,7 +389,7 @@ def camera_findings(
         who = (
             "the BRIDGE is not up — this feed is served by it, not by perception."
             if port == 8001
-            else "the vision container is not up. On the robot:  perception_up perception"
+            else "the vision container is not up. On the robot:  c3po perception up perception"
         )
         out.append(
             Finding(
@@ -228,6 +414,19 @@ def camera_findings(
         )
         return out
 
+    if "live" not in status and status.get("error"):
+        # The bridge's 503: no camera at all, and it says why. Reading this as
+        # a /status with `frames` missing reported "frames HAVE arrived and
+        # then stopped" for a stub bridge that has never had a camera.
+        out.append(
+            Finding(
+                WARN,
+                "no camera feed: {}".format(status["error"]),
+                [str(status["hint"])] if status.get("hint") else [],
+            )
+        )
+        return out
+
     if status.get("live") is True:
         out.append(Finding(OK, "and it says it is LIVE — there are frames to show"))
         # NOT the status code. The server sends 200 and the multipart headers
@@ -239,9 +438,44 @@ def camera_findings(
                 Finding(
                     OK,
                     "real frame data is arriving — the whole chain to this Mac works",
-                    ["if the headset still shows nothing after this, it is the renderer"],
+                    # THIS HINT USED TO SAY "if the headset still shows nothing
+                    # after this, it is the renderer", AND THAT WAS WRONG. On
+                    # 2026-08-28 the chain worked to the Mac — videohub live at
+                    # 1920x1080, frames flowing — and the headset would still
+                    # have been black, because the bridge sent no CORS header
+                    # and the WebGL layer's `crossOrigin="anonymous"` image
+                    # cannot load without one. A confident wrong pointer at the
+                    # renderer is how the last two of these cost a day each.
+                    ["frames are not the whole story — see the CORS line below"],
                 )
             )
+            if cors_ok is False:
+                out.append(
+                    Finding(
+                        BAD,
+                        "frames arrive, but the reply is not readable by the console",
+                        [
+                            "no Access-Control-Allow-Origin for " + CONSOLE_ORIGIN + ".",
+                            "The on-page panel will still show a picture — a plain <img>",
+                            "needs no CORS. THE HEADSET WILL NOT: its WebGL layer sets",
+                            "crossOrigin, because WebGL refuses to sample a texture the",
+                            "page cannot read back, and without the header the image",
+                            "never loads at all.",
+                            "",
+                            "This only bites a console pointed STRAIGHT at the robot. The",
+                            "normal setup goes through apps/back and needs no CORS from it:",
+                            "  PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera",
+                            "(or grant the origin: BRIDGE_CORS_ORIGINS on the robot)",
+                        ],
+                    )
+                )
+            elif cors_ok:
+                out.append(
+                    Finding(
+                        OK,
+                        "and the console is allowed to read it — the headset can load it",
+                    )
+                )
         else:
             out.append(
                 Finding(
@@ -249,7 +483,7 @@ def camera_findings(
                     "/status says live, but no frame data came out of the stream",
                     [
                         "the server is answering and not sending pictures. Restart it:",
-                        "  perception_up perception",
+                        "  c3po perception up perception",
                     ],
                 )
             )
@@ -281,7 +515,7 @@ def camera_findings(
                 [
                     "so the camera works — its ticks are failing or running slower",
                     "than the 1 s staleness threshold. Restarting is the quick answer:",
-                    "  perception_up perception",
+                    "  c3po perception up perception",
                 ],
             )
         )
@@ -356,22 +590,58 @@ def headset_findings(adb_present: bool, listing: str, reverse_listing: str) -> L
 # --- a standing stop --------------------------------------------------------
 
 
-def estop_finding(stop_at: Optional[float], ack_at: Optional[float], when: str = "") -> Finding:
+def estop_finding(
+    stop_at: Optional[float],
+    ack_at: Optional[float],
+    when: str = "",
+    run_dir: str = "",
+) -> Finding:
     """A stop deliberately outlives the session it was pressed in.
 
     So an outstanding one is a WARNING with an explanation, never a failure:
     it is working as designed, and somebody who reads it as a fault will go
     looking for a broken robot.
+
+    WHOSE STOP, THOUGH. The sentinel is per-machine by construction — `estop.py`
+    puts it at `$HOME/.c3po/run` on whatever host is running. For real hardware
+    the bridge runs ONBOARD, because DDS only exists on the robot's internal
+    LAN, so the sentinel that actually latches teleop is the ROBOT's. Preflight
+    runs on the operator's Mac and reads the Mac's.
+
+    Both directions of that are wrong, and the second is the dangerous one:
+
+      * a months-old local sim stop reads as a live safety state on the robot
+        (this Mac carried one from 2026-08-20 for days);
+      * a real standing stop ONBOARD is invisible from here and reports as
+        "no stop outstanding".
+
+    So both branches name the machine. Reading the robot's over SSH was
+    considered and rejected: a check that can hang on the network is not what
+    you want in the thing you run before a headset goes on. It points at the
+    one-line command instead.
     """
+    where = " ({})".format(run_dir) if run_dir else ""
     if not stop_at or (ack_at or 0) >= stop_at:
-        return Finding(OK, "no stop outstanding")
+        return Finding(
+            OK,
+            "no stop outstanding on this machine",
+            ["the onboard bridge keeps its own — this check cannot see it"],
+        )
     notes = [
         "this is not broken — a stop deliberately outlives the session it was pressed in.",
         "It clears itself once you connect: hold the dead-man RELEASED for one full second.",
     ]
     if when:
         notes.append("Pressed at: {}".format(when))
-    return Finding(WARN, "an emergency stop is recorded and has not been cleared", notes)
+    notes.append("Read from THIS machine{}".format(where))
+    notes.append("The onboard bridge keeps its OWN sentinel, and that one is what")
+    notes.append("latches teleop on real hardware. Check it with:")
+    notes.append("    ssh c3po 'ls -l ~/.c3po/run/'")
+    return Finding(
+        WARN,
+        "an emergency stop is recorded on THIS MACHINE and has not been cleared",
+        notes,
+    )
 
 
 # --- the verdict ------------------------------------------------------------
@@ -452,6 +722,48 @@ def _probe(url: str, timeout: int = 5) -> Tuple[str, str]:
     return classify_probe(rc, stderr), body
 
 
+#: The origin the console is served from, and therefore the one the headset
+#: uses: `quest_setup.sh` forwards 3001 and the Quest browser loads
+#: `http://localhost:3001/vr-control`.
+CONSOLE_ORIGIN = "http://localhost:3001"
+
+
+def _camera_allows_console(url: str, origin: str = CONSOLE_ORIGIN) -> Optional[bool]:
+    """Does `/status` come back readable by the console? None if we could not ask.
+
+    Sends a real `Origin` and looks for `Access-Control-Allow-Origin` coming
+    back, because that is exactly what the browser will do and exactly what it
+    will refuse over. See `camera_findings` for why this is a separate question
+    from whether frames are arriving.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "curl",
+                "-sS",
+                "--max-time",
+                "6",
+                "-o",
+                "/dev/null",
+                "-D",
+                "-",
+                "-H",
+                "Origin: " + origin,
+                url,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return b"access-control-allow-origin" in (proc.stdout or b"").lower()
+
+
 def _stream_has_frames(url: str, boundary: str = "c3poframe") -> bool:
     """A boundary marker in the body. See `camera_findings`."""
     import subprocess
@@ -481,8 +793,66 @@ def _run(argv: Sequence[str]) -> Tuple[bool, str]:
     return True, proc.stdout.decode("utf-8", "replace") if proc.stdout else ""
 
 
-def _local_section() -> Section:
+def _port_owner(port: int) -> Optional[Tuple[str, str, str]]:
+    """(pid, cwd, command) of whatever LISTENs on `port`, or None if unknown."""
+    ok, pids = _run(["lsof", "-nP", "-tiTCP:{}".format(port), "-sTCP:LISTEN"])
+    pid = pids.split()[0] if ok and pids.split() else ""
+    if not pid:
+        return None
+    _, cwd_out = _run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"])
+    cwd = next((line[1:] for line in cwd_out.splitlines() if line.startswith("n")), "")
+    if not cwd:
+        return None
+    _, command = _run(["ps", "-o", "command=", "-p", pid])
+    return pid, cwd, command.strip()
+
+
+def _version_tuple(text: str) -> Optional[Tuple[int, ...]]:
+    import re
+
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+    return tuple(int(g) for g in match.groups()) if match else None
+
+
+def bun_finding(installed: Optional[str], package_json: Optional[str]) -> Finding:
+    """Is the Bun on PATH the one package.json names?
+
+    Since the SvelteKit 3 update apps/back imports `#back/x.js`, which Bun
+    1.3.x cannot resolve to `src/x.ts`: on an older Bun, back dies at boot with
+    "Cannot find module '#back/...'" and the console is simply not there.
+    """
+    required = None
+    if package_json:
+        try:
+            manager = json.loads(package_json).get("packageManager", "")
+        except ValueError:
+            manager = ""
+        if manager.startswith("bun@"):
+            required = manager[len("bun@") :]
+    if installed is None:
+        return Finding(BAD, "bun — not on PATH", ["https://bun.sh, then `bun install`"])
+    have, want = _version_tuple(installed), _version_tuple(required or "")
+    if have is None or want is None:
+        return Finding(
+            WARN, "bun {} — could not compare with package.json".format(installed.strip())
+        )
+    if have < want:
+        return Finding(
+            BAD,
+            "bun {} — package.json needs {}".format(installed.strip(), required),
+            [
+                "bun upgrade   (older Bun cannot start apps/back: \"Cannot find module '#back/...'\")"
+            ],
+        )
+    return Finding(OK, "bun {}".format(installed.strip()))
+
+
+def _local_section(repo_root: str) -> Section:
     findings: List[Finding] = []
+    exists, out = _run(["bun", "--version"])
+    findings.append(
+        bun_finding(out if exists else None, _read(os.path.join(repo_root, "package.json")))
+    )
     for port, label in ((3000, "apps/back"), (3001, "apps/web")):
         state = best_state(
             [
@@ -499,16 +869,26 @@ def _local_section() -> Section:
                 )
             )
         else:
-            findings.append(Finding(OK, "{}  {}".format(port, label)))
+            stranger = port_owner_finding(port, label, _port_owner(port), repo_root)
+            findings.append(stranger or Finding(OK, "{}  {}".format(port, label)))
 
-    state = best_state(
-        [
-            _probe("http://{}:3000/health".format(h), timeout=3)[0]
-            for h in ("localhost", "127.0.0.1")
-        ]
-    )
-    if state == "alive":
+    probes = [
+        _probe("http://{}:3000/health".format(h), timeout=3) for h in ("localhost", "127.0.0.1")
+    ]
+    state = best_state([p[0] for p in probes])
+    if any(is_back_health(body) for _, body in probes):
         findings.append(Finding(OK, "the API answers /health"))
+    elif state == "alive":
+        findings.append(
+            Finding(
+                BAD,
+                "3000 answers, but not as apps/back",
+                [
+                    "its /health is not c3po's — another app holds the port",
+                    "`lsof -nP -iTCP:3000 -sTCP:LISTEN` names it",
+                ],
+            )
+        )
     else:
         findings.append(
             Finding(
@@ -520,44 +900,110 @@ def _local_section() -> Section:
     return Section("1. This machine", findings)
 
 
-def _robot_section() -> Section:
+def _read(path: str) -> Optional[str]:
+    try:
+        with open(path) as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _bridge_base(repo_root: str) -> str:
     import os
 
-    host = os.environ.get("C3PO_ROBOT_HOST", "g1-orin.local")
-    spec = (
-        (8767, "teleop stream", True, "c3po up teleop"),
-        (8001, "bridge MCP/camera", True, "c3po up core"),
+    return bridge_base_from_env(
+        _read(os.path.join(repo_root, "apps", "back", ".env")),
+        os.environ.get("BRIDGE_URL", ""),
     )
-    findings = []
-    for port, label, fatal, starter in spec:
-        state, _ = _probe("http://{}:{}/".format(host, port), timeout=4)
-        findings.append(direct_service_finding(host, port, label, fatal, starter, state))
-    return Section("2. Direct robot services", findings)
+
+
+def _http_code(url: str, timeout: int = 4) -> int:
+    """The HTTP status, or 0 when nothing answered."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "--max-time",
+                str(timeout),
+                url,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except OSError:
+        return 0
+    try:
+        return int(proc.stdout.decode().strip() or 0)
+    except ValueError:
+        return 0
+
+
+def _robot_section(repo_root: str) -> Section:
+    import os
+
+    # The teleop stream is the one robot service the headset dials DIRECTLY,
+    # on the LAN. The bridge is not: it listens on the robot's loopback, and
+    # apps/back reaches it through the tunnel — so it is checked there, where
+    # back will actually dial it. Probing g1-orin.local:8001 instead failed on
+    # every correctly deployed robot.
+    host = os.environ.get("C3PO_ROBOT_HOST", "g1-orin.local")
+    state, _ = _probe("http://{}:8767/".format(host), timeout=4)
+    teleop = direct_service_finding(host, 8767, "teleop stream", True, "c3po up teleop", state)
+    base = _bridge_base(repo_root)
+    bridge_state, _ = _probe(base + "/", timeout=4)
+    return Section("2. Robot services", [bridge_finding(base, bridge_state), teleop])
 
 
 def _camera_section(repo_root: str) -> Section:
     import os
 
-    env_path = os.path.join(repo_root, "apps", "web", ".env")
-    env_text: Optional[str] = None
-    try:
-        with open(env_path) as fh:
-            env_text = fh.read()
-    except OSError:
-        env_text = None
-
-    url, source = camera_url_from_env(env_text, os.environ.get("PUBLIC_ROBOT_CAM_URL", ""))
-    if not url:
+    web_env = _read(os.path.join(repo_root, "apps", "web", ".env"))
+    console_url, source = camera_url_from_env(web_env, os.environ.get("PUBLIC_ROBOT_CAM_URL", ""))
+    api_url = (
+        os.environ.get("PUBLIC_API_URL", "")
+        or parse_env_file(web_env or "").get("PUBLIC_API_URL", "")
+        or "http://localhost:3000"
+    )
+    if not console_url:
         return Section("3. The camera, end to end", camera_findings("", "", "alive", "", None))
 
-    state, body = _probe(url.rstrip("/") + "/status", timeout=5)
+    console_url = console_url.rstrip("/")
+    via_back = reads_through_back(console_url, api_url)
+    findings = [
+        console_camera_finding(
+            console_url,
+            source,
+            _http_code(console_url + "/status") if via_back else 0,
+            via_back,
+        )
+    ]
+    # The feed itself is judged at the bridge, which needs no login: through
+    # apps/back every unauthenticated probe is a 401 and says nothing about the
+    # picture. A console aimed straight at a robot port is probed there.
+    url = _bridge_base(repo_root) + "/camera" if via_back else console_url
+    state, body = _probe(url + "/status", timeout=5)
     has_frames: Optional[bool] = None
+    cors_ok: Optional[bool] = None
     status = _parse_json(body) if state == "alive" else None
     if status is not None and status.get("live") is True:
-        has_frames = _stream_has_frames(url.rstrip("/") + "/stream.mjpg")
-    return Section(
-        "3. The camera, end to end", camera_findings(url, source, state, body, has_frames)
-    )
+        has_frames = _stream_has_frames(url + "/stream.mjpg")
+        # CORS is asked only of a console pointed STRAIGHT at the robot: back
+        # serves the browser itself and needs no grant from the bridge. And
+        # only when there is a picture to be readable — a complaint about a
+        # feed that is not running would be noise on top of the real finding.
+        if not via_back:
+            cors_ok = _camera_allows_console(url + "/status")
+    probed = "the bridge, via apps/back's BRIDGE_URL" if via_back else source
+    findings += camera_findings(url, probed, state, body, has_frames, cors_ok)
+    return Section("3. The camera, end to end", findings)
 
 
 def _headset_section() -> Section:
@@ -582,7 +1028,7 @@ def _estop_section() -> Section:
     when = time.strftime("%H:%M:%S on %d %b", time.localtime(stop_at)) if stop_at else ""
     return Section(
         "5. Is a stop still standing?",
-        [estop_finding(stop_at, mtime("stop_acknowledged"), when)],
+        [estop_finding(stop_at, mtime("stop_acknowledged"), when, run_dir)],
     )
 
 
@@ -594,9 +1040,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     quick = "--quick" in args
     repo_root = os.environ.get("C3PO_DIR") or os.getcwd()
 
-    sections = [_local_section()]
+    sections = [_local_section(repo_root)]
     if not quick:
-        sections.append(_robot_section())
+        sections.append(_robot_section(repo_root))
         sections.append(_camera_section(repo_root))
     sections.append(_headset_section())
     sections.append(_estop_section())

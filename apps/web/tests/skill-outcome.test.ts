@@ -179,3 +179,27 @@ describe("classifyInvoke", () => {
     ).toBe("error");
   });
 });
+
+describe("a refused walk enable", () => {
+  test("FSM 4 -> 501 that stayed at 4 tells the operator to load the feet", () => {
+    const o = classifySkillResult({
+      status: "completed",
+      phase: "acked_no_transition",
+      result: { fsm_target: 501, fsm_after: 4, transitioned: false },
+    });
+    expect(o.kind).toBe("error");
+    expect(o.code).toBe("acked_no_transition");
+    expect(o.text).toContain("pies");
+    expect(o.detail).toContain("arnés");
+  });
+
+  test("any other refused transition keeps the generic text", () => {
+    const o = classifySkillResult({
+      status: "completed",
+      phase: "acked_no_transition",
+      result: { fsm_target: 4, fsm_after: 501, transitioned: false, note: "n" },
+    });
+    expect(o.text).toBe("Aceptado, pero el robot NO cambió de estado");
+    expect(o.detail).toBe("n");
+  });
+});
