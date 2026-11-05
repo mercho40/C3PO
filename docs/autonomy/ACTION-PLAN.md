@@ -1579,4 +1579,6 @@ Pending for the next robot session, in order:
 - `arm_state` with the arm hanging, then by hand: shoulder pitch + must swing the arm BACK (URDF). If it is the other way, the "clear" phase swings the hand forward: stop.
 - First pick on the gantry, nobody within 1 m, ~0.3 m clear behind the right arm: the hand must stay above the desk until it is over the object. The desk edge must be ≥ 0.16 m in front of the torso.
 - Confirm flow: one Confirmar per pick from /chat, from the /voice panel, and a spoken «confirmo» on the Quest.
+- Torso box (`manipulation.TORSO_BOX`, y narrowed to ±0.08 m from the inertia box's ±0.09): with a tape, measure the torso's half-width at belly height. If it is ≥ 0.09 m, widen the box and move the far-side test target (0.26, -0.30, -0.05). Watch the tuck pose on that side: the forearm passes ~0.088 m from the midline.
+- verify now runs in back on the school vision model (Gemini only for find_object's pointing): after a simulated pick, check that `verify('¿la mano derecha sostiene la taza?')` answers no, with a reason.
 - E2/E3 leftovers: chair moved mid-walk, covered chair → target_lost.
