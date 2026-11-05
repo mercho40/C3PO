@@ -33,7 +33,16 @@ mock.module("#back/bridge/client.js", () => ({
   },
   callTool: async () => ({}),
   BridgeUnavailableError: class extends Error {},
-  BridgeToolError: class extends Error {},
+  // The registry is shared across files: whichever mock loads first can be what
+  // client.test.ts gets, so this one keeps the real class's shape (detail).
+  BridgeToolError: class extends Error {
+    constructor(
+      readonly tool: string,
+      readonly detail: string,
+    ) {
+      super(`tool_error: ${tool}`);
+    }
+  },
 }));
 
 const goodMeta = (name: string, classification = "gesture") => ({
