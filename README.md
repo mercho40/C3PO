@@ -48,7 +48,7 @@ bun run dev
 
 # Real robot instead. The bridge only listens on the robot's loopback, so
 # tunnel to it first (the `c3po` ssh alias is g1-orin.local, by mDNS):
-ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po
+ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 c3po
 bun run dev:robot
 ```
 

@@ -6,7 +6,7 @@ tunnel. It walks the escalation in the only order that makes sense — read
 before write, arms before legs, smallest possible motion before anything
 sustained — and stops dead on the first failure.
 
-    ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po   # in another terminal
+    ssh -N -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 -o ControlMaster=no c3po   # in another terminal
     uv run python scripts/vr_smoke_test.py
 
 Why a script rather than a checklist: every one of these calls has a specific

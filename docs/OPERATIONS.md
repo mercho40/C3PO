@@ -71,18 +71,18 @@ each developer writes their own; `apps/bridge/README.md` lists the two entries i
 
 The port map, in one place:
 
-| Service                    | Host                    | Port  | Notes                                                                   |
-| -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------------- |
-| `apps/back` HTTP           | LAN box (dev: anywhere) | 3000  | Better Auth cookie                                                      |
-| `apps/web` dev             | dev machine             | 3001  | Vite                                                                    |
-| `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it |
-| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                         |
-| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback       |
-| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`     |
-| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge, relayed to browsers by `apps/back` on 3000   |
-| VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; unauthenticated   |
-| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                        |
-| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                      |
+| Service                    | Host                    | Port  | Notes                                                                                |
+| -------------------------- | ----------------------- | ----- | ------------------------------------------------------------------------------------ |
+| `apps/back` HTTP           | LAN box (dev: anywhere) | 3000  | Better Auth cookie                                                                   |
+| `apps/web` dev             | dev machine             | 3001  | Vite                                                                                 |
+| `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it              |
+| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                                      |
+| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback                    |
+| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`                  |
+| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge, relayed to browsers by `apps/back` on 3000                |
+| VR teleop                  | Jetson, **loopback**    | 8767  | WebSocket setpoints while `c3po up teleop` is active; unauthenticated — tunnel to it |
+| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                                     |
+| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                                   |
 
 `DDS_DOMAIN_ID`: Isaac Sim is `1`, the real G1 is `0` (set per host in `apps/bridge/.env`;
 see `apps/bridge/.env.example`).
@@ -97,7 +97,7 @@ whitelist, and the vendor route trap that black-holes the robot's egress are in
 
 The bridge has listened on **loopback only** since 2026-09-06 (`scripts/robot/
 c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the tunnel —
-`ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po` — with
+`ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 c3po` — with
 `BRIDGE_URL=http://127.0.0.1:8001/mcp` — the default in `apps/back/.env.example` and in
 `bun run dev:robot`. Anything still dialling `g1-orin.local:8001` gets a refused connection;
 `apps/back` logs the tunnel line when that happens (`unreachableHint`).
@@ -291,13 +291,14 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
 - **Transport trap.** The bridge defaults to stdio for child-process MCP use. The systemd
   unit pins daemon mode to HTTP on `127.0.0.1:8001`, the same loopback bind ad-hoc
   developer runs default to.
-- **8001 is loopback-only; 8767 is not.** Port 8001 has no transport authentication and
-  can invoke robot tools, so since 2026-09-06 it is reached only through the SSH tunnel
-  (§2) — `apps/back` and anything else off the robot dial `127.0.0.1:8001` on their own
-  end of `-L 8001:127.0.0.1:8001`. Port 8767 still accepts live teleop setpoints from the
-  LAN while `c3po up teleop` runs, and the robot has no active host firewall: use
-  `g1-orin.local`, never a stale DHCP address, and treat the school LAN as part of the
-  robot's control boundary for as long as teleop is up.
+- **8001 and 8767 are both loopback-only.** Neither has transport authentication: 8001
+  can invoke robot tools (loopback since 2026-09-06) and 8767 takes live teleop setpoints
+  (loopback since the proposal that changed `run_teleop`'s default). Both are reached
+  only through the SSH tunnel —
+  `ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 c3po` —
+  and the robot has no active host firewall, so a LAN bind would make the school Wi-Fi
+  part of the robot's control boundary. `TELEOP_HOST=0.0.0.0 c3po up teleop` still opens
+  8767 to the LAN when that is what someone means.
 - **Non-interactive SSH PATH trap.** `~/.local/bin` comes from `~/.profile`; use
   `ssh c3po 'bash -lc "c3po status"'` or the script's absolute path. The unit has an
   explicit `PATH` and does not depend on a login shell.
@@ -429,7 +430,7 @@ hypothetical: a local `apps/back/.env` carrying
 symptom the 8000/8001 port confusion produces. Two things to do, in this order:
 
 ```bash
-ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po   # keep this running
+ssh -N -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 -o ControlMaster=no c3po   # keep this running
 # then in apps/back/.env:
 BRIDGE_URL=http://127.0.0.1:8001/mcp
 ```
@@ -560,7 +561,7 @@ changes across four days, none of them worn.
 
 ```bash
 scripts/quest_setup.sh                                     # forward the ports
-ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po     # another terminal
+ssh -N -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 -o ControlMaster=no c3po     # another terminal
 cd apps/bridge && uv run python scripts/headset_check.py
 ```
 
@@ -621,12 +622,13 @@ stream** directly; the bridge stays behind the 8001 tunnel (§2) and the camera 
 ```bash
 BRIDGE_URL=http://127.0.0.1:8001/mcp                # apps/back/.env, over the tunnel
 PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera   # apps/web/.env, via apps/back
-PUBLIC_TELEOP_HOST=g1-orin.local                    # apps/web/.env, direct on the LAN
+PUBLIC_TELEOP_HOST=                                 # apps/web/.env, blank = localhost, tunnelled
 ```
 
-The Quest remains different: WebXR requires a secure context, and an HTTPS page cannot
-open plain `ws://g1-orin.local:8767`. Until the robot serves TLS/WSS, keep the existing
-ADB-reverse/localhost path for the headset even though desktop use needs no forward for 8767.
+The Quest uses the same path one hop longer: `scripts/quest_setup.sh` forwards the
+headset's `localhost:8767` to the Mac over USB, and the tunnel carries it to the robot.
+That is also what keeps WebXR's secure context — `http://localhost` qualifies, and
+`ws://localhost` is same-scheme.
 
 **One commander at a time, and the teleop server is one.** While a session is open it is
 the only writer of `SetVelocity` — `/vr-control` suspends its own `walk_velocity` loop and

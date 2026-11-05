@@ -85,7 +85,7 @@ Start the bridge onboard with `c3po up core`, open the tunnel, then point the MC
 client at your end of it:
 
 ```bash
-ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po   # `c3po` = g1-orin.local
+ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 c3po   # `c3po` = g1-orin.local
 ```
 
 `c3po-bridge` in your local `.mcp.json` should say `http://127.0.0.1:8001/mcp`.

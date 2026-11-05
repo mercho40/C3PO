@@ -65,7 +65,7 @@ ss -ltnp | grep 8001                                        # must NOT say 0.0.0
 covers the console, the agent and the headset picture:
 
 ```bash
-ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po      # keep this running
+ssh -N -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 -o ControlMaster=no c3po      # keep this running
 ```
 
 `ControlMaster=no` is not decoration: a forward on a shared master evaporates

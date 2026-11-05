@@ -54,9 +54,14 @@ start_sidecar() {
         . ./.env
         set +a
         export PATH="$HOME/.local/bin:$PATH"
-        # Direct LAN access is the onboard policy. The Python module itself
-        # still defaults to loopback for ad-hoc developer runs.
-        export TELEOP_HOST="${TELEOP_HOST:-0.0.0.0}"
+        # LOOPBACK, like the bridge since 2026-09-06. This socket takes live arm
+        # and walk setpoints with no authentication, and the robot has no host
+        # firewall: on 0.0.0.0, anyone on the school Wi-Fi could drive the
+        # robot while a session was up. Reach it through the tunnel
+        # (`-L 8767:127.0.0.1:8767`), which the headset path already uses —
+        # quest_setup.sh forwards the Quest's localhost:8767 to this Mac.
+        # TELEOP_HOST=0.0.0.0 still opens it to the LAN, deliberately.
+        export TELEOP_HOST="${TELEOP_HOST:-127.0.0.1}"
         # `< /dev/null` matters as much as the nohup, and for a different
         # reason. nohup stops SIGHUP killing the process; the stdin redirect
         # stops `ssh c3po run_teleop` from hanging. A backgrounded child that
@@ -144,13 +149,13 @@ esac
 
 say "Reach it"
 cat <<'DIRECT'
-  teleop:  ws://g1-orin.local:8767                  direct, on the LAN
-  bridge:  http://127.0.0.1:8001/mcp                loopback only — through
-           ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po
+  teleop:  ws://127.0.0.1:8767                      loopback only — and
+  bridge:  http://127.0.0.1:8001/mcp                loopback only, both through
+           ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 c3po
   camera:  http://localhost:3000/camera             via apps/back, behind its login
 
-  The Quest's WebXR secure-context path still needs HTTPS/WSS or the existing
-  adb reverse setup; desktop development needs no forward for 8767.
+  The Quest reaches 8767 over USB: scripts/quest_setup.sh forwards its
+  localhost:8767 to the Mac's, which the tunnel above carries to the robot.
 DIRECT
 
 warn "while a headset session is open, do NOT drive the robot from anywhere else."
