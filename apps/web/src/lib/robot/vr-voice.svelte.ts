@@ -228,14 +228,15 @@ export class VrVoice {
           : "Muy corto: mantené B/Y mientras hablás.";
       return;
     }
-    this.phase = "transcribing";
+    // Back decides a spoken «confirmo»/«cancelar» from this text, for the
+    // one call on screen only, before any model sees it (voice.ts): with a call
+    // on screen this request may also run it, so say so while it waits.
+    const shown = this.#shown;
+    this.phase = shown ? "deciding" : "transcribing";
     try {
       const wav = encodeWav(
         downsample(samples, this.#ctx.sampleRate, TARGET_RATE),
       );
-      // Back decides a spoken «confirmo»/«cancelar» from this text, for the
-      // one call on screen only, before any model sees it (voice.ts).
-      const shown = this.#shown;
       const q = new URLSearchParams({ chatId: this.#chat.id });
       if (shown) q.set("pending", shown.id);
       const res = await fetch(`${PUBLIC_API_URL}/voice/transcribe?${q}`, {

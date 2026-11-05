@@ -447,7 +447,10 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
       )
       .post(
         "/:name/invoke",
-        async ({ params: { name }, body, status, user }) => {
+        async ({ params: { name }, body, status, user, server, request }) => {
+          // A skill can run for tens of seconds; Bun drops a request that sends
+          // nothing for 10 s. The MCP call's own timeout still bounds it.
+          server?.timeout(request, 0);
           const r = await invokeSkill(name, body, user);
           return r.status === 200 ? r.body : status(r.status, r.body);
         },

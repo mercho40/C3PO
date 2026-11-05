@@ -287,6 +287,20 @@ export class RealtimeVoiceSession {
       },
     });
     this.send({ type: "response.create" });
+    // In the transcript too, so the voice chat shows what the operator decided.
+    // Through eventTail, so it lands in order with the turn it answers.
+    this.eventTail = this.eventTail.then(() =>
+      appendMessage({
+        id: messageId(),
+        chatId,
+        role: "system",
+        parts: [{ type: "text", text: message }],
+      })
+        .then(() => undefined)
+        .catch((error) =>
+          console.error("[voice/realtime] outcome persistence failed", error),
+        ),
+    );
   }
 
   private send(event: unknown): void {
