@@ -17,6 +17,7 @@ from bringup.build import (
     missing_packages,
     power_mode_finding,
     precheck,
+    run_build,
     steps_for,
 )
 
@@ -193,3 +194,37 @@ def test_all_builds_the_engine_but_does_not_bench():
 def test_a_single_target_runs_only_itself():
     assert steps_for("nav") == ["nav"]
     assert images_for("bench") == {}
+
+
+# --- the engine and bench steps follow the model env vars --------------------
+
+
+def _dry(target, env):
+    lines = []
+    env = dict(env, C3PO_FAKE_ARCH="aarch64", HOME="/home/unitree")
+    assert run_build(target, runner=None, env=env, dry_run=True, say=lines.append) == 0
+    return [ln for ln in lines if ln.startswith("docker")]
+
+
+def test_the_engine_step_builds_the_model_the_env_names():
+    env = {"C3PO_ONNX": "/opt/c3po/models/yoloe-26s-seg.onnx",
+           "C3PO_ENGINE": "/opt/c3po/engines/yoloe-26s-seg.fp16.plan"}
+    (cmd,) = _dry("engine", env)
+    assert "-e C3PO_ONNX=/opt/c3po/models/yoloe-26s-seg.onnx" in cmd
+    assert "-e C3PO_ENGINE=/opt/c3po/engines/yoloe-26s-seg.fp16.plan" in cmd
+
+
+def test_bench_loads_the_engine_the_env_names_and_yolo11n_by_default():
+    (default,) = _dry("bench", {})
+    assert "--loadEngine=/opt/c3po/engines/yolo11n.fp16.plan" in default
+    (swapped,) = _dry("bench", {"C3PO_ENGINE": "/opt/c3po/engines/yoloe-26s-seg.fp16.plan"})
+    assert "--loadEngine=/opt/c3po/engines/yoloe-26s-seg.fp16.plan" in swapped
+
+
+def test_a_proxy_reaches_the_build_only_when_one_is_set():
+    from bringup.build import proxy_build_args
+
+    assert proxy_build_args({}) == []
+    args = proxy_build_args({"https_proxy": "http://127.0.0.1:18899", "PATH": "/bin"})
+    assert args[:2] == ["--network", "host"]
+    assert args[2:] == ["--build-arg", "https_proxy=http://127.0.0.1:18899"]

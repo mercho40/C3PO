@@ -229,19 +229,31 @@ async def test_reconnecting_does_not_clear_a_stop(session, sent):
         fresh.close()
 
 
-async def test_a_cleared_stop_is_not_inherited_by_the_next_session(session, sent):
-    """The other half: once an operator clears a stop, it is over.
+async def test_releasing_the_headset_clears_its_session_but_never_the_robots_stop(session, sent):
+    """C1 (review 2026-11-03): an idle, connected headset must not resume the robot.
 
-    Without the acknowledgement record, every session after a stop would
-    inherit it forever — safe, but it would read as a robot that is simply
-    broken.
+    The release dwell ends this session's own latch. It used to write the
+    shared acknowledgement as well, which cleared the PARAR the agent's tool
+    gate reads, so any stop was undone ~1 s later by a headset nobody was
+    holding. Only an operator's /safety/ack resumes the robot now.
     """
+    from bridge import estop, safety
+
     await stop_everything.run()
     session.ingest(parse_frame(frame(seq=2, enabled=False, walk=0.0)))
     t0 = session.last_frame_at
     await _release_for(session, t0, srv.ESTOP_RELEASE_DWELL_S + 0.05)
-    assert session.stopped is False
+    assert session.stopped is False  # this session's latch: released
 
+    assert estop.stop_is_standing() is True  # the robot's: still standing
+    assert "PARAR" in safety.tool_refusal("wave", {"c3po": {"tier": "T1"}})
+    fresh = _make_session()
+    try:
+        assert fresh.stopped is True  # a new session inherits it
+    finally:
+        fresh.close()
+
+    estop.record_ack()  # what /safety/ack does
     fresh = _make_session()
     try:
         assert fresh.stopped is False
@@ -296,3 +308,48 @@ async def test_stop_everything_reports_the_session_it_cancelled(session, sent):
     result = await stop_everything.run()
     cancelled = result.get("cancelled_task_ids") or result.get("cancelled") or []
     assert len(cancelled) >= 1
+
+
+# --- the headset's own PARAR, straight down the socket (C6) -----------------
+#
+# The grip chord also goes through apps/back. These pin that it does not NEED
+# to: with back down, the frame alone stops the robot.
+
+
+async def test_an_estop_frame_stops_the_robot_with_back_down(session, sent):
+    from bridge import estop
+
+    session.ingest(parse_frame(frame(seq=next_seq(), walk=1.0)))
+    await srv._dispatch_once(session, session.last_frame_at)
+    assert sent[-1][0] != 0.0
+
+    session.ingest(parse_frame(frame(seq=next_seq(), enabled=False, walk=0.0, estop=True)))
+    assert estop.stop_is_standing() is True
+    assert session.stopped is True
+
+    await srv._dispatch_once(session, session.last_frame_at)
+    assert sent[-1] == (0.0, 0.0, 0.0, srv.STAND_HEIGHT)
+
+
+async def test_an_estop_frame_with_an_old_seq_is_still_honoured(session, sent):
+    from bridge import estop
+
+    session.ingest(parse_frame(frame(seq=500)))
+    session.ingest(parse_frame(frame(seq=7, estop=True)))
+
+    assert session.frames_rejected == 1  # dropped as a frame...
+    assert session.stopped is True  # ...but never as a stop
+    assert estop.stop_is_standing() is True
+
+
+async def test_the_dwell_clears_only_the_session_after_a_headset_stop(session, sent):
+    from bridge import estop
+
+    session.ingest(parse_frame(frame(seq=next_seq(), enabled=False, walk=0.0, estop=True)))
+    t0 = session.last_frame_at
+    await _release_for(session, t0, srv.ESTOP_RELEASE_DWELL_S + 0.05)
+
+    assert session.stopped is False
+    assert estop.stop_is_standing() is True  # only /safety/ack resumes the robot
+    estop.record_ack()
+    assert estop.stop_is_standing() is False

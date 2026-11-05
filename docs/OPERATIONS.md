@@ -73,7 +73,7 @@ The port map, in one place:
 
 | Service                    | Host                    | Port  | Notes                                                                   |
 | -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------------- |
-| `apps/back` HTTP           | LAN box (dev: anywhere) | 3000  | Better Auth cookie                                                      |
+| `apps/back` HTTP           | **loopback** by default | 3000  | cookie auth; `BACK_HOST=0.0.0.0` only on a LAN box behind TLS (§5)      |
 | `apps/web` dev             | dev machine             | 3001  | Vite                                                                    |
 | `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it |
 | `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                         |
@@ -101,9 +101,11 @@ c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the t
 `BRIDGE_URL=http://127.0.0.1:8001/mcp` — the default in `apps/back/.env.example` and in
 `bun run dev:robot`. Anything still dialling `g1-orin.local:8001` gets a refused connection;
 `apps/back` logs the tunnel line when that happens (`unreachableHint`).
+`scripts/robot_session.sh [host]` does the whole Mac side in one command (tunnel, robot internet, `bun run dev:robot`, a status table, the robot-side `export`/`c3po up` lines); open the console at `http://localhost:3001`.
 
 **The cable, and keeping the internet.** `c3po-wire` is the Mac's alias for the cabled
-path (`192.168.77.1`, reported 2026-10-13). Joining the robot's own Wi-Fi drops the
+path: the Mac at `192.168.123.99`, the robot at `192.168.123.164` (since 2026-11-03;
+`192.168.77.1` is the robot's own Wi-Fi hotspot, not the cable). Joining the robot's own Wi-Fi drops the
 school's — a Mac is on one Wi-Fi network at a time — and the robot has no uplink to share.
 Use the school Wi-Fi for the internet and the cable for the robot, with **Wi-Fi first in
 the service order**: System Settings → Network → "…" → Set Service Order, or
@@ -116,9 +118,9 @@ sudo networksetup -ordernetworkservices "Wi-Fi" …     # every service, Wi-Fi f
 Otherwise the cable can win: on the Mac this was written on, all four USB Ethernet
 adapters ranked above Wi-Fi, so every connection went down the cable to a robot that
 cannot forward it. If the
-cable gets no `192.168.77.x` address (a `169.254.x.x` one means it did not), set it by
+cable gets no `192.168.123.x` address (a `169.254.x.x` one means it did not), set it by
 hand with **no router**, so the cable can never become the default route:
-`sudo ipconfig set <enX> MANUAL 192.168.77.50 255.255.255.0` (until unplugged), or the
+`sudo ipconfig set <enX> MANUAL 192.168.123.99 255.255.255.0` (until unplugged), or the
 same values under the adapter's Details → TCP/IP with Router left empty.
 
 ---
@@ -252,8 +254,13 @@ mv server.new server && systemctl restart c3po-back
 
 Keep the previous binary alongside for rollback. Env: see `apps/back/.env.example` — it
 is the authority for every variable, including the TIC AI gateway gotchas (HTTPS only —
-port 80 is blocked from the Wi-Fi VLAN — ORT-network-only, hand-issued keys). Two things
+port 80 is blocked from the Wi-Fi VLAN — ORT-network-only, hand-issued keys). Three things
 to verify per deploy target:
+
+- **Set `BACK_HOST=0.0.0.0` in the box's env.** `back` binds `127.0.0.1` by default, so
+  without it the binary boots, `/health` answers on the box itself, and every remote
+  console gets connection refused. Only do this behind TLS. Check with
+  `ss -ltnp | grep 3000` (expect `0.0.0.0:3000`; on a dev machine expect `127.0.0.1:3000`).
 
 - **The box must have a route to the TIC AI gateway.** Without one, `back` boots and
   serves `/health`, `/skills`, `/state` — and fails every `/agent` call. This rules out

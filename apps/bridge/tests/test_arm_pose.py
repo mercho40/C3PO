@@ -196,6 +196,7 @@ def test_move_arm_engage_is_refused_while_a_generic_gesture_runs(monkeypatch):
             return {
                 "lowstate_age_s": 0.1,
                 "arm_q": tuple([0.0] * 14),
+                "waist_q": (0.0, 0.0, 0.0),
                 "fsm_age_s": 0.5,
                 "fsm_id": 4,
                 "mode_machine": 5,

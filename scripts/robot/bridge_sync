@@ -38,7 +38,7 @@ if [ -x "$BRIDGE_DIR/.venv/bin/python" ] && [ -n "$hash" ] \
 fi
 
 info "syncing bridge dependencies (voice + stt extras)"
-if uv sync --quiet --extra voice --extra stt; then
+if uv sync --locked --quiet --extra voice --extra stt; then
     # postsync re-applies the unitree_sdk2py patch. It must succeed after EVERY
     # sync, or the SDK imports a module the package does not ship. Stamp only
     # after the patch so a failed patch cannot be skipped on the next start.

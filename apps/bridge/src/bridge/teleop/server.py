@@ -5,7 +5,10 @@ Run beside the MCP server, as its own process:
     uv run python -m bridge.teleop.server
 
 Binds loopback by default for ad-hoc runs; the onboard `c3po` launcher overrides
-that to a direct LAN bind. It has no authentication of its own. Port 8767, chosen
+that to a direct LAN bind (the headset connects over the LAN). The handshake is
+checked by `authorize`: a browser Origin must be in TELEOP_ORIGINS, and when
+TELEOP_SECRET is set, a token minted by apps/back (GET /teleop/token) is
+required. With no secret it still runs, with a loud warning. Port 8767, chosen
 around everything already spoken for on that Jetson — 8000 `gemm-ai.service`,
 8001 this bridge's MCP, 8081 perception's vision MJPEG, 8765 the colleague's
 foxglove bridge, 55555/60000 teleimager (`docs/ROBOT-HARDWARE.md`).
@@ -64,27 +67,32 @@ Never live-tested against the robot.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import math
 import os
 import signal
 import time
+from http import HTTPStatus
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import structlog
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.http11 import Request, Response
 
 from bridge.estop import (
     last_stop_at,
-    record_ack,
     release_teleop_lease,
     renew_teleop_lease,
+    signal_stop,
     stop_is_standing,
 )
 from bridge.skills.task_runtime import get_registry
 from bridge.teleop import hands as hands_mod
 from bridge.teleop.arm_sdk import ArmSdkUnavailable, get_driver
-from bridge.teleop.protocol import FrameError, TeleopFrame, parse_frame
+from bridge.teleop.protocol import FrameError, TeleopFrame, carries_estop, parse_frame
 from bridge.teleop.retarget import (
     DEFAULT_ARM_LENGTH_M,
     calibrate_arm_length,
@@ -95,6 +103,71 @@ log = structlog.get_logger(__name__)
 
 TELEOP_HOST = os.environ.get("TELEOP_HOST", "127.0.0.1")
 TELEOP_PORT = int(os.environ.get("TELEOP_PORT", "8767"))
+
+# --- Who may connect ---------------------------------------------------------
+# Browser pages allowed to open this socket. Same origins .env.example sets for
+# BRIDGE_CORS_ORIGINS (the console on :3001; the Quest reaches it as localhost through adb reverse).
+# A missing Origin is allowed: it is not a browser, so not a cross-site page,
+# and it could forge any Origin anyway. The token is what stops it.
+_ORIGINS = os.environ.get("TELEOP_ORIGINS", "http://localhost:3001,http://127.0.0.1:3001")
+TELEOP_ORIGINS = frozenset(o.strip() for o in _ORIGINS.split(",") if o.strip())
+#: Shared with apps/back, which mints the tokens. Empty = no token check.
+TELEOP_SECRET = os.environ.get("TELEOP_SECRET", "")
+#: Tokens already used for a handshake -> their expiry. ws:// on the LAN can be
+#: sniffed, so a token opens the socket once; a reconnect asks apps/back again.
+_spent: dict[str, int] = {}
+
+
+def token_valid(token: str, secret: str, now: float) -> bool:
+    """`<exp unix s>.<nonce>.<hex HMAC-SHA256(secret, "teleop:<exp>.<nonce>")>`, not yet expired.
+
+    Mirrors `mintTeleopToken` in apps/back/src/routes/teleop.ts. The nonce is
+    optional (`<exp>.<sig>` still verifies), so an older back keeps working.
+    """
+    body, _, sig = token.rpartition(".")
+    try:
+        exp = int(body.partition(".")[0])
+    except ValueError:
+        return False
+    if exp < now:
+        log.warning("teleop.token_expired", expired_by_s=round(now - exp, 1))  # clock skew?
+        return False
+    expected = hmac.new(secret.encode(), f"teleop:{body}".encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig.encode(), expected.encode())
+
+
+def spend_token(token: str, now: float) -> bool:
+    """False if this (valid) token already opened a socket; otherwise remember it until it expires."""
+    for t in [t for t, exp in _spent.items() if exp < now]:
+        del _spent[t]
+    if token in _spent:
+        return False
+    _spent[token] = int(token.partition(".")[0])
+    return True
+
+
+def authorize(connection: ServerConnection, request: Request) -> Response | None:
+    """Handshake gate: refuse a foreign Origin, and a bad token when a secret is set."""
+    origin = request.headers.get("Origin")
+    if origin is not None and origin not in TELEOP_ORIGINS:
+        log.warning(
+            "teleop.refused",
+            reason="origin",
+            origin=origin,
+            hint="add it to TELEOP_ORIGINS if this is the console",
+        )
+        return connection.respond(HTTPStatus.FORBIDDEN, "origin not allowed\n")
+    if TELEOP_SECRET:
+        token = parse_qs(urlsplit(request.path).query).get("token", [""])[0]
+        now = time.time()
+        if not token_valid(token, TELEOP_SECRET, now):
+            log.warning("teleop.refused", reason="token", remote=connection.remote_address)
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "missing or invalid teleop token\n")
+        if not spend_token(token, now):
+            log.warning("teleop.refused", reason="token_reused", remote=connection.remote_address)
+            return connection.respond(HTTPStatus.UNAUTHORIZED, "teleop token already used\n")
+    return None
+
 
 # --- Locomotion policy -------------------------------------------------------
 # Deliberately the same numbers the /vr-control page shows the operator, so the
@@ -270,6 +343,8 @@ class TeleopSession:
         self._liveness_ref: tuple[float, float, float, float] | None = None
         self.deadman_tripped = False
         self.moving = False
+        #: Whether the last tick renewed the teleop lease (falling-edge release).
+        self.holds_lease = False
         self.arm_error: str | None = None
         #: Whether the operator asked for the arms on the previous tick. Edge
         #: detection, so hand commands go out on transitions rather than at
@@ -292,7 +367,11 @@ class TeleopSession:
         ordered — but a reconnecting client that restarts its counter can
         produce the same symptom, and acting on a frame older than the one
         already applied means commanding a pose the operator has left.
+
+        A stop is read before that check: a stop is never stale.
         """
+        if frame.estop:
+            self.raise_stop()
         if frame.seq <= self.last_seq:
             if frame.seq == 0:
                 # A fresh client counting from zero. Accept and resynchronise.
@@ -305,6 +384,22 @@ class TeleopSession:
         self.last_frame_at = time.monotonic()
         self.frames_received += 1
         self._maybe_calibrate(frame)
+
+    def raise_stop(self) -> None:
+        """The headset's PARAR, arriving down this socket rather than via apps/back.
+
+        Raises the bridge-wide sentinel, so the MCP process refuses T1/T2 tools
+        and real-hardware velocity is zeroed until /safety/ack, and latches
+        this session; the next tick sends zero and releases the arms. Clearing
+        is unchanged: the dwell clears the session, only /safety/ack the robot.
+        Partial on purpose: gestures already running in the MCP process are
+        cancelled only when apps/back's stop_everything lands too.
+        """
+        signal_stop()
+        self._seen_stop_at = last_stop_at()
+        self.stopped = True
+        self._release_since = None
+        log.warning("teleop.estop", source="headset", task_id=self.task.task_id)
 
     def _maybe_calibrate(self, frame: TeleopFrame) -> None:
         """Learn the operator's reach once they hold an arm extended.
@@ -433,8 +528,12 @@ class TeleopSession:
         self.stopped = False
         self._release_since = None
         self.task.cancel_event.clear()
-        record_ack()
-        log.info("teleop.estop.cleared", task_id=self.task.task_id)
+        # Session latch only. It used to call record_ack(), which also cleared
+        # the bridge-wide PARAR the agent gate reads: an idle connected headset
+        # (dead-man released = resting) unlocked every tool ~1 s after any stop.
+        # Resuming the robot is /safety/ack's alone (console or headset menu);
+        # until then _locomotion zeroes this session's velocity too.
+        log.info("teleop.estop.cleared", task_id=self.task.task_id, scope="session")
         return False
 
     def stale(self, now: float) -> bool:
@@ -505,7 +604,9 @@ class TeleopSession:
         held_hard = now - self.motion_hard_started_at
         if held_hard > MAX_MOTION_HARD_CEILING_S:
             if not self.deadman_tripped:
-                log.warning("teleop.deadman.tripped", held_s=round(held_hard, 1), reason="hard_ceiling")
+                log.warning(
+                    "teleop.deadman.tripped", held_s=round(held_hard, 1), reason="hard_ceiling"
+                )
             self.deadman_tripped = True
             return
         if self._head_moved():
@@ -542,12 +643,6 @@ async def _dispatch_once(session: TeleopSession, now: float) -> None:
     from bridge.skills._locomotion import send_velocity_async
 
     frame = session.frame
-    # Announce that a headset is driving, so the MCP process's locomotion
-    # skills hold off rather than interleaving velocity commands with ours.
-    # Renewed every tick: it is a lease, not a lock, so a teleop server that
-    # dies mid-session frees locomotion in about a second instead of leaving
-    # a robot nobody can drive.
-    renew_teleop_lease()
     # Before anything else: has the e-stop been pressed? `wants_motion` also
     # consults the latch, but this is what sets it, and it must run even on a
     # tick where no frame has arrived.
@@ -565,6 +660,21 @@ async def _dispatch_once(session: TeleopSession, now: float) -> None:
     if session.deadman_tripped:
         vx = vyaw = 0.0
         commanding = False
+
+    # The lease says a headset is driving, so the MCP process's locomotion
+    # skills hold off (and running walks yield) rather than interleave velocity
+    # with ours. Only while it actually commands motion (head yaw alone counts)
+    # or holds the arms: an idle connected headset used to hold it every tick,
+    # so walks its own voice asked for were refused as "teleop is driving".
+    # Renewed per tick, a lease not a lock: a dead server frees it in ~2 s.
+    driving = commanding or get_driver().engaged
+    if driving:
+        renew_teleop_lease()
+    elif session.holds_lease:
+        # Let go: free it now, not after the TTL, so an agent walk asked for
+        # right after is not refused.
+        release_teleop_lease()
+    session.holds_lease = driving
 
     # Only send when moving, or on the single tick that stops. Re-issuing zero
     # velocity at 20 Hz forever would keep the firmware's `duration` deadman
@@ -802,6 +912,10 @@ async def handle_client(ws: ServerConnection) -> None:
             try:
                 session.ingest(parse_frame(message))
             except FrameError as exc:
+                # A stop rides out a malformed frame: a bad hand pose in the
+                # same message must not swallow it.
+                if carries_estop(message):
+                    session.raise_stop()
                 session.frames_rejected += 1
                 # Rate-limited by only logging the first few: a client with a
                 # systematic bug would otherwise emit 50 log lines a second.
@@ -913,13 +1027,21 @@ async def _main() -> None:
             # failing to start is a worse answer than running without it.
             log.warning("teleop.signal_handler_unavailable", signal=sig.name)
 
-    async with serve(handle_client, TELEOP_HOST, TELEOP_PORT):
+    if not TELEOP_SECRET:
+        log.warning(
+            "teleop.auth_disabled",
+            detail="TELEOP_SECRET is empty: any LAN client with an allowed (or no) "
+            "Origin can drive this robot. Set it here and in apps/back.",
+        )
+    async with serve(handle_client, TELEOP_HOST, TELEOP_PORT, process_request=authorize):
         log.info(
             "teleop.listening",
             host=TELEOP_HOST,
             port=TELEOP_PORT,
             sim_mode=os.environ.get("SIM_MODE", "stub"),
             arm=get_driver().status(),
+            origins=sorted(TELEOP_ORIGINS),
+            token_required=bool(TELEOP_SECRET),
         )
         # Waiting on an Event rather than `asyncio.Future()`: the signal
         # handler has to be able to reach the shutdown below. A bare Future

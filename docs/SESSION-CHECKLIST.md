@@ -203,18 +203,40 @@ scripts/quest_setup.sh          # forwards the ports; prints which .env the
 ### 3c. Log in
 
 The console is behind Better Auth and `/vr-control` redirects to `/login`
-without a session. Passwords for pre-existing dev accounts are not recoverable —
-if you do not have one, make an account rather than guessing:
+without a session. Public sign-up is closed (email and OAuth alike; `/signup`
+answers "El registro está cerrado"), so accounts are made at a terminal.
+Passwords for pre-existing dev accounts are not recoverable — if you do not
+have one, make an account rather than guessing:
+
+```bash
+cd apps/back
+bun scripts/create-user.ts you@example.com "You" --admin
+```
+
+It asks for the password twice with echo off (or reads `C3PO_PASSWORD`),
+refuses anything under 8 characters, and the account can log in at once, no
+restart. Admin matters — without it the walk buttons return 403. Drop
+`--admin` for a view-only account. An address in `ADMIN_EMAILS` is still
+promoted at startup (`[admin] promoted to admin: ...`), but only if its email
+is verified; accounts from this script are.
+
+The same script re-keys or removes an account. Do this for any account nobody
+can vouch for, e.g. `operador@c3po.local` (backlog 8.5), after checking
+/settings → Usuarios:
+
+```bash
+bun scripts/create-user.ts --reset-password operador@c3po.local  # new password, signs it out
+bun scripts/create-user.ts --delete operador@c3po.local          # gone, with its sessions
+```
+
+To confirm sign-up really is closed, with `apps/back` running:
 
 ```bash
 curl -s -X POST http://localhost:3000/api/auth/sign-up/email \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"you@example.com","password":"something-typeable","name":"You"}'
+  -H 'Content-Type: application/json' -H 'Origin: http://localhost:3001' \
+  -d '{"email":"probe@example.com","password":"something-typeable","name":"Probe"}'
+# → 400 {"code":"EMAIL_PASSWORD_SIGN_UP_DISABLED",...}
 ```
-
-Then restart `apps/back` once: an address listed in `ADMIN_EMAILS` is promoted
-to admin at startup, and the log says so (`[admin] promoted to admin: ...`).
-Admin matters — without it the walk buttons return 403.
 
 Pick a password you can type on a virtual keyboard. Typing symbols in a headset
 is its own small ordeal.

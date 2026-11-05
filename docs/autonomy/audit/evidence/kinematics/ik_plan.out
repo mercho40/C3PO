@@ -1,0 +1,31 @@
+Downloading pydantic-core (2.0MiB)
+Downloading cryptography (3.7MiB)
+ Downloaded pydantic-core
+ Downloaded cryptography
+Installed 37 packages in 120ms
+[IK full-range] pos+dir reached 195/200, pos-only 200/200, limit violations 0
+   solve time median 4 ms, max 188 ms; failed pos errs (m) [0.008, 0.027, 0.032, 0.052, 0.058]
+[shoulder] right shoulder_pitch origin in torso [0.004, -0.1, 0.248]
+[reach] max shoulder->TCP 0.474 m at elbow=1.45 rad (lower limit -1.0472)
+   d=0.30 reached(dir)=True err=0.2cm it=3 elbow=-0.27 | pos-only reached=True
+   d=0.38 reached(dir)=True err=0.1cm it=4 elbow=0.27 | pos-only reached=True
+   d=0.42 reached(dir)=True err=0.5cm it=5 elbow=0.66 | pos-only reached=True
+   d=0.45 reached(dir)=True err=0.9cm it=8 elbow=1.24 | pos-only reached=True
+   d=0.48 reached(dir)=False err=3.1cm it=150 elbow=1.38 | pos-only reached=False
+   d=0.50 reached(dir)=False err=4.9cm it=150 elbow=1.52 | pos-only reached=False
+   d=0.53 reached(dir)=False err=7.5cm it=150 elbow=1.54 | pos-only reached=False
+[plan_pick seed=hanging] planned 430/1170 workspace grid points (37%)
+   max |dq| between consecutive waypoints: median 0.71 rad, max 5.32 rad; >0.5 rad in 394 plans
+   pre->grasp TCP deviation from straight line under per-joint slew: median 5.0 cm, max 24.1 cm, >2 cm in 400/430
+   approach tilt chosen (deg, rounded): {0: 322, 30: 45, 60: 63}
+   start->pre: hand passes within 5 cm of the object point in 61/430 plans; dips >5 cm below object point in 430/430
+[plan_pick seed=none] planned 427/1170 workspace grid points (36%)
+   max |dq| between consecutive waypoints: median 0.69 rad, max 1.83 rad; >0.5 rad in 384 plans
+   pre->grasp TCP deviation from straight line under per-joint slew: median 5.0 cm, max 19.2 cm, >2 cm in 393/427
+   approach tilt chosen (deg, rounded): {0: 318, 30: 46, 60: 63}
+[free roll] 25 solutions for one target+pointing; wrist_yaw_link +z roll about the finger axis spans -102..113 deg
+   plan_pick (seed=None) grasp-pose link +z roll across 12 targets: [0, -2, 0, -3, -2, -4, -3, -3]
+[tcp] if the true palm centre is 0.05 m, grasp pose puts it at [0.269, -0.145, 0.052] (target (0.32ish))
+[tcp] if the true palm centre is 0.08 m, grasp pose puts it at [0.299, -0.15, 0.052] (target (0.32ish))
+[tcp] if the true palm centre is 0.10 m, grasp pose puts it at [0.318, -0.154, 0.052] (target (0.32ish))
+[tcp] if the true palm centre is 0.12 m, grasp pose puts it at [0.338, -0.157, 0.052] (target (0.32ish))

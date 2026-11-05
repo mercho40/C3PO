@@ -1,0 +1,61 @@
+# slam_toolbox on the EXISTING /scan, for a map the robot remembers.
+# Research 03 §2, "recommended path" step 1: no new sensor pipeline, Nav2-native.
+#
+# One file for both modes; nav2.launch.py sets `mode`, `map_file_name` and
+# `map_name` per mode (C3PO_NAV_SLAM=mapping|localization). Off by default.
+#
+# FRAMES. FAST-LIO2 (through g1_odom_tf) stays the odom->base_footprint source:
+# it is better odometry than anything a 2D scan matcher will produce, and the
+# local costmap and controller keep running in odom through every correction.
+# slam_toolbox adds exactly one edge, map->odom. /scan is already in
+# base_footprint, gravity-aligned with the ground removed, so base_frame and the
+# scan frame are the same frame and no laser mount TF is needed.
+#
+# HUMANOID SWAY is the known risk (03 §2 step 2): the scan plane tilts with the
+# torso. pointcloud_to_laserscan projects in the gravity-aligned base_footprint,
+# which takes most of it out; if relocalization is still flaky, the documented
+# upgrade is 3D localization against a FAST-LIO PCD, not tuning this file.
+slam_toolbox:
+  ros__parameters:
+    use_sim_time: false
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+    scan_topic: /scan
+    mode: mapping                     # overridden by the launch file
+
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.05    # 20 Hz map->odom, matches the smoother
+    map_update_interval: 2.0
+    resolution: 0.05                  # = the local costmap's
+    max_laser_range: 12.0             # = pointcloud_to_laserscan range_max
+    minimum_time_interval: 0.3
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000       # serializing a large pose graph overflows the default
+    enable_interactive_mode: false
+
+    use_scan_matching: true
+    use_scan_barycenter: true
+    # A biped covers ground slowly and sways; small thresholds add nodes from
+    # sway alone. 0.3 m / 0.3 rad is upstream's default and a good start.
+    minimum_travel_distance: 0.3
+    minimum_travel_heading: 0.3
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+    do_loop_closing: true
+    loop_search_maximum_distance: 3.0
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45

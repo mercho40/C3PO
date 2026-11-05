@@ -60,7 +60,7 @@ from rclpy.qos import (
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
-from c3po_perception import scan_ring
+from c3po_perception import object_age, scan_ring
 
 REPORT_VERSION = 1
 
@@ -147,6 +147,7 @@ class WorldModelPublisher(Node):
         self._objects: list[dict] = []
         self._objects_omitted = 0
         self._objects_seen = 0.0
+        self._objects_stamp = 0.0
         self._free_space: dict[str, float] | None = None
         self._scan_seen = 0.0
         self._scan_msg: LaserScan | None = None
@@ -181,6 +182,8 @@ class WorldModelPublisher(Node):
             payload = json.loads(msg.data)
             if int(payload.get("v", 0)) != 1:
                 raise ValueError(f"unsupported objects schema v={payload.get('v')}")
+            # The grab time, not ours: every object is aged from it in _emit.
+            stamp = object_age.capture_stamp(payload.get("stamp_unix"), time.time())
         # BLIND EXCEPT, DELIBERATE: this is the trust boundary. The payload crossed domain
         # 42 from another container and may be malformed in any way at all —
         # bad JSON, wrong schema version, a field of the wrong type. Every one
@@ -192,6 +195,7 @@ class WorldModelPublisher(Node):
             self._notes.append(f"Detector payload rejected: {exc}")
             return
         self._objects_seen = time.time()
+        self._objects_stamp = stamp
         found = payload.get("objects") or []
         self._objects_omitted = int(payload.get("objects_omitted", 0) or 0)
         if len(found) > MAX_OBJECTS_ON_WIRE:
@@ -253,7 +257,8 @@ class WorldModelPublisher(Node):
             "pose_age_s": (round(max(0.0, self._now() - self._pose_stamp), 2)
                            if pose_online else None),
             "detector_online": detector_online,
-            "objects": self._objects if detector_online else [],
+            "objects": (object_age.aged(self._objects, self._objects_stamp, now)
+                        if detector_online else []),
             "objects_omitted": self._objects_omitted if detector_online else 0,
             # ARRIVAL ONLY. This used to be `and self._free_space is not None`,
             # which is the "absent is not empty" rule broken in the one file

@@ -745,13 +745,13 @@ class MicListener:
     thread sits in a socket timeout loop. There is no audio to decode and no
     model work to do until somebody presses the button.
 
-    The stop phrase is detected here and REPORTED, not acted on. D6.2 had it
-    bypass the agent straight into stop_everything; that made sense when the
-    microphone was assumed always-on, and does not now — whoever is holding the
-    remote to make the robot hear at all already has a physical e-stop under
-    their thumb, which is faster and cannot mis-hear. Auto-triggering on a
-    mis-decode would halt the robot mid-task on a word nobody said. Pass
-    `on_stop=` to opt into acting on it.
+    The stop phrase is detected here and always REPORTED. It is ACTED on only
+    while a voice session is connected: the realtime audio stream and the legacy
+    loop's event stream each arm `on_stop` (stop_everything inside the bridge,
+    no apps/back or model in the path) and disarm it when they disconnect. In a
+    session a mis-decode halts the robot, the cheap direction to be wrong in.
+    Outside one nobody is talking to the robot, so a mis-decode would halt it
+    mid-task on a word nobody said; the agent's `listen` poll still sees it.
     """
 
     def __init__(
@@ -818,11 +818,22 @@ class MicListener:
         """Arm/disarm session-scoped stop action without restarting the listener."""
         self._on_stop = on_stop
 
+    def clear_on_stop(self, on_stop: Callable[[str], None] | None) -> None:
+        """Disarm, but only if `on_stop` is still the armed callback.
+
+        A subscriber that disconnects after a newer one armed (a reconnect inside
+        the 0.5 s disconnect poll) must not disarm the newer one.
+        """
+        # shortcut: one slot, so A arms, B arms, B clears leaves A connected but
+        # disarmed (apps/back still acts); keep a set if sessions ever overlap.
+        if self._on_stop is on_stop:
+            self._on_stop = None
+
     def start(self, on_stop: Callable[[str], None] | None = None) -> None:
-        # A Realtime audio subscriber may arrive after the boot-started listener.
-        # Updating the callback even when the thread is already alive lets that
-        # explicit session arm bridge-local spoken stop without restarting audio.
-        self.set_on_stop(on_stop)
+        # Only an explicit callback arms: a bare start() (boot, the `listen`
+        # tool's restart) must not disarm a live session's spoken stop.
+        if on_stop is not None:
+            self.set_on_stop(on_stop)
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_evt.clear()
@@ -884,9 +895,10 @@ class MicListener:
                 detector.reset()
                 log.warning("mic_listener.stop_phrase", phrase=hit)
                 self._record(hit, kind="stop")
-                if self._on_stop is not None:
+                # Read once: a clear between a check and a call would make it None.
+                if (on_stop := self._on_stop) is not None:
                     try:
-                        self._on_stop(hit)
+                        on_stop(hit)
                     except Exception:
                         log.exception("mic_listener.on_stop_failed")
 

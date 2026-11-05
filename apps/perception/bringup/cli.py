@@ -14,14 +14,29 @@ which is how a change here gets checked before it is trusted.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import time
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from bringup.spec import NAV, STAGES, STT, VISION, Stage, containers_for, containers_to_replace
+from bringup.spec import (
+    MAPS_SUBDIR,
+    NAV,
+    PERSISTENT_ENV_KEYS,
+    STAGES,
+    STT,
+    VISION,
+    Stage,
+    containers_for,
+    containers_to_replace,
+    nav_options,
+)
 
 PREFIX = "c3po-perception"
+
+#: Under $HOME. Model paths and a measured extrinsic, kept across shells and reboots.
+ENV_FILE = os.path.join(".c3po", "perception.env")
 
 
 #: How long ONE readiness probe may take, in seconds.
@@ -87,6 +102,9 @@ class Runner:
 
     def makedirs(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
+
+    def exists(self, path: str) -> bool:
+        return os.path.exists(path)
 
     def shell(self, argv: Sequence[str]) -> Tuple[int, str]:
         """A non-docker command. Same shape as `docker`, same reason."""
@@ -168,6 +186,51 @@ def info(msg: str) -> None:
     print(f"  {_DIM}{msg}{_RESET}")
 
 
+# --- the operator's env file ------------------------------------------------
+
+
+def read_env_file(path: str) -> Dict[str, str]:
+    """`KEY=VALUE` per line, `export` and `#` comments allowed. Missing file: {}.
+
+    Raises ValueError naming the line, so a typo refuses instead of half-applying.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        return {}
+    out: Dict[str, str] = {}
+    for number, line in enumerate(lines, 1):
+        try:
+            # shortcut: an unquoted '#' inside a word ends it (A=b#c gives b; bash
+            # keeps it). Values here are paths and numbers; quote one if that changes.
+            words = shlex.split(line, comments=True)
+        except ValueError as exc:
+            raise ValueError(f"{path}:{number}: {exc}") from None
+        if words[:1] == ["export"]:
+            words = words[1:]
+        if not words:
+            continue
+        key, sep, value = words[0].partition("=")
+        if len(words) != 1 or not sep or not key.isidentifier():
+            raise ValueError(f"{path}:{number}: expected KEY=VALUE, got {line.strip()!r}")
+        out[key] = value
+    return out
+
+
+def operator_env(environ: Mapping[str, str]) -> Dict[str, str]:
+    """`environ` over the allowlisted keys of ~/.c3po/perception.env. The shell wins."""
+    path = os.path.join(environ.get("HOME", "/home/unitree"), ENV_FILE)
+    persisted = read_env_file(path)
+    for key in sorted(set(persisted) - set(PERSISTENT_ENV_KEYS)):
+        warn(f"{path}: {key} ignored (not in bringup/spec.py PERSISTENT_ENV_KEYS)")
+    kept = {k: v for k, v in persisted.items() if k in PERSISTENT_ENV_KEYS}
+    taken = sorted(k for k in kept if k not in environ)
+    if taken:
+        info(f"from {path}: {', '.join(taken)}")
+    return {**kept, **environ}
+
+
 # --- helpers ----------------------------------------------------------------
 
 
@@ -239,6 +302,24 @@ def bring_up(
     if lidar_source == "driver":
         warn("C3PO_LIDAR_SOURCE=driver — claiming the Livox device itself")
 
+    if stage.launch_file == "nav2.launch.py":
+        # Validated BEFORE anything is taken: a typo in a flag must not cost
+        # the other team their sensors for a launch that was never going to run.
+        try:
+            nav_args, _ = nav_options(env, home)
+        except ValueError as exc:
+            err(str(exc))
+            return 2
+        for arg in nav_args:
+            warn(f"nav flag: {arg}")
+        if "slam:=localization" in nav_args:
+            map_yaml = os.path.join(
+                home, MAPS_SUBDIR, (env.get("C3PO_NAV_MAP", "") or "c3po") + ".yaml")
+            if not dry_run and not runner.exists(map_yaml):
+                err(f"no saved map at {map_yaml} — run a mapping session and "
+                    "scripts/robot/nav_map_save first, or unset C3PO_NAV_SLAM")
+                return 1
+
     take_over = env.get("C3PO_TAKE_OVER", "0") == "1"
     if not _arbitrate(stage, runner, scripts_dir, dry_run, lidar_source, take_over):
         return 1
@@ -266,6 +347,9 @@ def bring_up(
         # on a laptop — the seam is only worth having if nothing routes around it.
         runner.makedirs(log_dir)
         runner.makedirs(os.path.join(home, ".c3po", "models"))
+        # Before `docker create`: a bind source that does not exist is created
+        # by the daemon, as root, and the save script can then not write to it.
+        runner.makedirs(os.path.join(home, MAPS_SUBDIR))
 
     for container in wanted:
         args = container.create_args()
@@ -490,7 +574,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         err("usage: perception_up {" + "|".join(STAGES) + "} [--dry-run]")
         return 2
     scripts_dir = os.environ.get("C3PO_SCRIPTS_DIR", "")
-    return bring_up(args[0], Runner(), scripts_dir=scripts_dir, dry_run=dry_run)
+    try:
+        env = operator_env(os.environ)
+    except ValueError as exc:
+        err(str(exc))
+        return 2
+    return bring_up(args[0], Runner(), env=env, scripts_dir=scripts_dir, dry_run=dry_run)
 
 
 if __name__ == "__main__":

@@ -43,8 +43,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
 import json
 import math
+import os
 import sys
 import time
 from collections.abc import Callable
@@ -58,10 +61,24 @@ except ImportError:  # pragma: no cover - dependency is declared in pyproject
     raise SystemExit(1)
 
 try:
-    from websockets.asyncio.client import connect
+    from websockets.asyncio.client import connect as _ws_connect
 except ImportError:  # pragma: no cover
     print("websockets not available -- run this via `uv run` inside apps/bridge.")
     raise SystemExit(1)
+
+
+def connect(url: str) -> Any:
+    """Each stage's socket, with its own token: the bridge accepts a token once (server.authorize).
+
+    This script holds TELEOP_SECRET, so it mints them itself.
+    """
+    secret = os.environ.get("TELEOP_SECRET")
+    if secret and "token=" not in url:
+        body = f"{int(time.time()) + 60}.{os.urandom(16).hex()}"
+        sig = hmac.new(secret.encode(), f"teleop:{body}".encode(), hashlib.sha256).hexdigest()
+        url = f"{url.rstrip('/')}/?token={body}.{sig}"
+    return _ws_connect(url)
+
 
 PROTOCOL_VERSION = 1
 
@@ -452,7 +469,12 @@ async def ensure_walk_program(session: ClientSession) -> bool:
     print(f"    robot is {state.get('posture')!r}, not in the walk program — restoring ...")
     for skill in ("prepare", "start_walking_waist"):
         result = await session.call_tool(skill, {})
-        del result
+        if result.isError:
+            # PARAR latched (stage 6) and start_walking_waist needs a confirmation over MCP.
+            text = getattr(result.content[0], "text", "") if result.content else ""
+            print(f"    {skill} refused: {text}")
+            print("    Restore by hand: «Reanudar», then the console or headset bring-up.")
+            return False
         await asyncio.sleep(6)
 
     state = await mcp_state(session)
@@ -529,7 +551,6 @@ async def main() -> int:
     parser.add_argument("--teleop", default="ws://127.0.0.1:8767", help="teleop stream endpoint")
     parser.add_argument("--yaw-only", action="store_true", help="stop after the yaw-sign stage")
     args = parser.parse_args()
-
     print(__doc__)
     print(f"\nbridge : {args.url}\nteleop : {args.teleop}")
     confirm("Standing next to the robot with the e-stop in reach?")

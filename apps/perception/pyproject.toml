@@ -107,6 +107,10 @@ target-version = "py38"
 # lint` from ever being run in CI — a gate configured, never enforced, and
 # reporting mostly noise the first time anyone looked at it.
 "vision/*.py" = ["UP006", "UP045", "FA100"]
+# Same case again: these two also run INSIDE the vision image (python 3.8), via
+# `docker run --entrypoint python3` — see their docstrings.
+"tools/capture_frames.py" = ["UP006", "UP045", "FA100"]
+"tools/eval_recall.py" = ["UP006", "UP045", "FA100"]
 
 # RUF046: "value being cast to int is already an integer". True of the Python
 # types ruff can see, and NOT true of what arrives at runtime.

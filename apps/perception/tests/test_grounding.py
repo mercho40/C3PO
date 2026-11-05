@@ -40,10 +40,13 @@ honest, round enough that every expected value is checkable on paper.
 from __future__ import annotations
 
 import math
+import os
+import types
 
 import pytest
+from bridge import kinematics
 from bridge.world_model import Observation
-from c3po_vision import grounding
+from c3po_vision import detector, grounding
 from c3po_vision.grounding import (
     CameraExtrinsic,
     Grounded,
@@ -63,12 +66,21 @@ from c3po_vision.grounding import (
 INTR = Intrinsics(fx=600.0, fy=600.0, cx=320.0, cy=240.0, width=640, height=480)
 
 # Camera 0.10 m forward of base_link's origin, on the centreline, 1.20 m up,
-# looking straight ahead. Every test states its own extrinsic rather than
-# leaning on `DEFAULT_CAMERA_EXTRINSIC`: those numbers are an UNMEASURED
-# reasoned default — grounding.py says so in capitals — and a test that
-# asserted them would start failing on the day somebody finally measures the
-# robot with a tape, which is the one day you want this suite green.
+# looking straight ahead. Every maths test states its own extrinsic rather than
+# leaning on `DEFAULT_CAMERA_EXTRINSIC`: the default is the URDF's CAD mount,
+# pinned to the bridge's kinematics by the two tests below and nothing else. A
+# tape measurement goes in ~/.c3po/perception.env (C3PO_CAMERA_*), not into the
+# default, so measuring the robot never turns this suite red.
 LEVEL_CAM = CameraExtrinsic(x_m=0.10, y_m=0.0, z_m=1.20, pitch_deg=0.0)
+
+
+def _in_pelvis(link: str) -> tuple[kinematics.Vec3, kinematics.Mat3]:
+    """`link`'s origin and rotation in the URDF's `pelvis`, every waist joint at zero."""
+    pos, rot = (0.0, 0.0, 0.0), kinematics._I3
+    for j in kinematics._path(link, "pelvis"):  # revolute at angle 0: only the origin counts
+        pos = kinematics._add(pos, kinematics._mv(rot, j.xyz))
+        rot = kinematics._mm(rot, j.rot)
+    return pos, rot
 
 
 def frame(width: int = 640, height: int = 480) -> list[list[int]]:
@@ -199,6 +211,94 @@ def test_range_is_horizontal_and_slant_is_never_shorter():
     assert bearing == pytest.approx(math.degrees(math.atan2(4.0, 3.0)))
     assert elevation == pytest.approx(math.degrees(math.atan2(12.0, 5.0)))
     assert elevation > 0.0                                 # +z is UP
+
+
+# --------------------------------------------------------------------------
+# The default mount IS the URDF's d435_joint, the one the arm IK uses
+# --------------------------------------------------------------------------
+
+
+def test_the_default_extrinsic_is_the_urdf_d435_mount_seen_from_the_pelvis():
+    d = grounding.DEFAULT_CAMERA_EXTRINSIC
+    pos, r = _in_pelvis("d435_link")
+    assert (d.x_m, d.y_m, d.z_m) == pytest.approx(pos, abs=1e-6)
+    # R = Rz(yaw) Ry(pitch) Rx(roll): read the three angles back out.
+    assert math.degrees(math.asin(-r[2][0])) == pytest.approx(d.pitch_deg, abs=1e-6)
+    assert math.degrees(math.atan2(r[1][0], r[0][0])) == pytest.approx(d.yaw_deg, abs=1e-9)
+    assert d.yaw_deg == 0.0
+    assert math.atan2(r[2][1], r[2][2]) == pytest.approx(0.0, abs=1e-9)  # no roll to drop
+
+
+@pytest.mark.parametrize("p_opt", [(0.0, 0.0, 1.0), (-0.3, 0.2, 1.5), (0.25, -0.1, 0.6)])
+def test_the_vision_container_and_the_arm_ik_put_a_pixel_in_the_same_place(p_opt):
+    # camera_to_torso is what `pick` reaches for; camera_to_base is what range_m and
+    # bearing_deg come from. Torso -> pelvis is the waist chain at zero.
+    t_pos, t_rot = _in_pelvis("torso_link")
+    want = kinematics._add(t_pos, kinematics._mv(t_rot, kinematics.camera_to_torso(p_opt)))
+    assert camera_to_base(p_opt, grounding.DEFAULT_CAMERA_EXTRINSIC) == pytest.approx(want, abs=1e-6)
+
+
+def test_the_start_log_names_where_the_extrinsic_came_from(monkeypatch, capsys):
+    class Started(Exception):
+        pass
+
+    def stop_after_the_start_log(_self):
+        raise Started
+
+    monkeypatch.setenv("C3PO_VISION_FAKE", "1")
+    monkeypatch.setattr(detector.SyntheticSource, "start", stop_after_the_start_log)
+    for k in [k for k in os.environ if k.startswith("C3PO_CAMERA_")]:
+        monkeypatch.delenv(k)
+    with pytest.raises(Started):
+        detector.run()
+    err = capsys.readouterr().err
+    assert "extrinsic=x=0.054 y=0.018 z=0.474 pitch=47.6 yaw=0.0" in err
+    assert "extrinsic_source=URDF d435_joint (CAD)" in err
+
+    monkeypatch.setenv("C3PO_CAMERA_PITCH_DEG", "40")
+    with pytest.raises(Started):
+        detector.run()
+    err = capsys.readouterr().err
+    assert "pitch=40.0" in err
+    assert "extrinsic_source=env" in err
+
+
+def test_the_report_is_stamped_when_the_frame_arrives(monkeypatch):
+    # read() blocks 0.2 s for the frame, inference takes 0.1 s. The stamp is the
+    # frame's arrival: neither the tick start nor the publish.
+    clock = [1000.0]
+
+    class Published(Exception):
+        pass
+
+    class Capture:
+        def start(self):
+            pass
+
+        def publish(self, payload):
+            raise Published(payload)
+
+    real_read, real_ground_all = detector.SyntheticSource.read, detector.ground_all
+
+    def slow_read(self):
+        clock[0] += 0.2
+        return real_read(self)
+
+    def slow_ground_all(*a, **kw):
+        clock[0] += 0.1
+        return real_ground_all(*a, **kw)
+
+    monkeypatch.setenv("C3PO_VISION_FAKE", "1")
+    monkeypatch.setenv("C3PO_VISION_DRY_RUN", "1")
+    monkeypatch.delenv("C3PO_VISION_STREAM", raising=False)
+    monkeypatch.setattr(detector, "time", types.SimpleNamespace(time=lambda: clock[0]))
+    monkeypatch.setattr(detector.SyntheticSource, "read", slow_read)
+    monkeypatch.setattr(detector, "ground_all", slow_ground_all)
+    monkeypatch.setattr(detector, "StdoutPublisher", Capture)
+    monkeypatch.setattr(detector, "_Stopper", lambda: types.SimpleNamespace(stop=False))
+    with pytest.raises(Published) as published:
+        detector.run()
+    assert published.value.args[0]["stamp_unix"] == pytest.approx(1000.2)
 
 
 def test_norm180_wraps_without_moving_a_bearing_already_in_range():
