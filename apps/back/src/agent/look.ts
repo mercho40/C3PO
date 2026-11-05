@@ -193,3 +193,76 @@ export const bridgeCamera: Pick<LookDeps, "cameraStatus" | "cameraFrame"> = {
     return new Uint8Array(await res.arrayBuffer());
   },
 };
+
+/**
+ * `verify` — a yes/no check on the newest frame, through the same camera and
+ * vision model as `look`. The bridge's Gemini `verify` needed a paid key; this
+ * one uses the school gateway. The model answers in a fixed shape and
+ * `verdict` reads it: anything it cannot read as yes or no is `unsure`, never a
+ * guessed yes.
+ */
+export const VERIFY_TOOL = {
+  name: "verify",
+  description: [
+    "Check one fact in the robot's camera view right now and get yes / no /",
+    "unsure with a short reason, e.g. after pick: '¿la mano derecha sostiene la",
+    "taza?'. Use it after a step instead of assuming it worked. 'unsure' means the",
+    "picture cannot show it (out of view, occluded, dark): move or turn and check",
+    "again. One model's reading of one picture; status 'unavailable' means you",
+    "cannot see, not that the answer is no.",
+  ].join(" "),
+  parameters: {
+    type: "object",
+    properties: {
+      question: {
+        type: "string",
+        description:
+          "A yes/no question about the current picture, any language: '¿la puerta está abierta?'.",
+      },
+    },
+    required: ["question"],
+    additionalProperties: false,
+  },
+} as const;
+
+export const VERIFY_PROMPT_LINE = `- ${VERIFY_TOOL.name} [back/available/real-only/danger:low] — ${VERIFY_TOOL.description}`;
+
+const VERIFY_FORMAT =
+  "Respondé empezando con UNA palabra: «sí», «no» o «no sé» (si la imagen no permite saberlo). Después, una sola frase con la razón, según lo que se ve.";
+
+export type Verdict = "yes" | "no" | "unsure";
+
+/** The model's answer read as a verdict. Anything unclear is "unsure". */
+export function verdict(text: string): { answer: Verdict; reason: string } {
+  const t = text.trim().normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  const m = /^[«"'¡¿*\s]*(no se|no lo se|unsure|not sure|si|yes|no)\b/u.exec(t);
+  const word = m?.[1];
+  const answer: Verdict =
+    word === "si" || word === "yes" ? "yes" : word === "no" ? "no" : "unsure";
+  const reason = (m ? text.trim().slice(m[0].length) : text.trim())
+    .replace(/^[»"'.,:;!\s\-–—]+/u, "")
+    .trim();
+  return { answer, reason };
+}
+
+export type VerifyResult =
+  | (Omit<Extract<LookResult, { status: "ok" }>, "answer"> & {
+      answer: Verdict;
+      reason: string;
+    })
+  | Exclude<LookResult, { status: "ok" }>;
+
+export async function verify(
+  args: { question?: unknown },
+  deps: LookDeps,
+): Promise<VerifyResult> {
+  const question =
+    typeof args.question === "string" ? args.question.trim() : "";
+  if (!question) return { status: "error", error: "verify needs a question" };
+  const seen = await look(
+    { question: `${question}\n\n${VERIFY_FORMAT}` },
+    deps,
+  );
+  if (seen.status !== "ok") return seen;
+  return { ...seen, question, ...verdict(seen.answer) };
+}
