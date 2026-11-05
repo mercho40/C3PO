@@ -1557,6 +1557,7 @@ What I skipped or did not check:
 Done and committed (dac6602, e5a6f19, ef04924, d624aa2): E2, E3, E4, C4, C5, C8, F7 and every §6 leftover. Adversarial review fixed before commit: the Meta menu / headset-off return no longer steers until the head is centred; Nav2 paths (go_to_object, navigate_to, navigate_to_landmark) refuse and cancel while the headset drives; a non-finite velocity axis is 0, not the cap; walk_to's deadline is monotonic.
 
 Pending for the robot session:
+
 - Deploy the BRIDGE BEFORE BACK: a new back's nonce tokens are refused by an old bridge, which also drops the headset's PARAR-over-socket until the bridge is updated.
 - Rebuild the vision and nav images (capture stamp, E1 age). Until then go_to_object takes the age-less path; once deployed, consider rejecting age-less detections (decision 2).
 - E2/E3/E4 acceptance: aim after a `turn` within ~0.2 m; chair moved 0.5 m mid-walk re-aims; covered chair → target_lost in ~4 s; with the gate armed, walks around a box; headset stick mid-goal cancels it.
@@ -1571,6 +1572,7 @@ Open minors: a second `walk_to` can still start while one runs (no_active_walk_t
 Done and committed: simulated hand (4b8d80e), go_to_object ranges to the object's near face and reports `clearance_m` (8250fbd), pick rises beside the body and descends over the object + exact labels + walk advice (fd8a173), one Confirmar runs the refused call, /voice buttons, headset «confirmo» (76995ad). robot_internet.py now reconnects its ssh -R; OPERATIONS.md §2 has the 192.168.123.x cable.
 
 Pending for the next robot session, in order:
+
 - gemm: `docker ps` first (stopped, `--restart=no` on 2026-11-05).
 - Deploy bridge then back; rebuild the vision image (near_m); restart perception on it.
 - go_to_object to the chair: tape-measure the gap against `clearance_m`.
@@ -1578,4 +1580,3 @@ Pending for the next robot session, in order:
 - First pick on the gantry, nobody within 1 m, ~0.3 m clear behind the right arm: the hand must stay above the desk until it is over the object. The desk edge must be ≥ 0.16 m in front of the torso.
 - Confirm flow: one Confirmar per pick from /chat, from the /voice panel, and a spoken «confirmo» on the Quest.
 - E2/E3 leftovers: chair moved mid-walk, covered chair → target_lost.
-
