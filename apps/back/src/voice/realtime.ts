@@ -7,11 +7,10 @@ import { appendMessage, logToolCall } from "#back/db/chats.js";
 import {
   NEEDS_CONFIRMATION,
   buildSystemPrompt,
-  lookAtRobot,
+  BACK_TOOLS,
   offeredInMode,
 } from "#back/agent/runtime.js";
 import { notePending } from "#back/agent/confirmations.js";
-import { LOOK_TOOL } from "#back/agent/look.js";
 import { listSkills } from "#back/skills/index.js";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
@@ -57,16 +56,16 @@ export function realtimeTools(skills: RealtimeSkill[]) {
       description: skill.description,
       parameters: skill.parameters as Record<string, unknown>,
     }));
-  // `look` runs here in back, not on the bridge — see agent/look.ts. The frame
-  // goes to the agent's vision model, never into the Realtime session.
+  // look and verify run here in back, not on the bridge — see agent/look.ts.
+  // The frame goes to the agent's vision model, never into the Realtime session.
   return [
     ...bridgeTools,
-    {
+    ...BACK_TOOLS.map(({ def }) => ({
       type: "function" as const,
-      name: LOOK_TOOL.name,
-      description: LOOK_TOOL.description,
-      parameters: LOOK_TOOL.parameters as Record<string, unknown>,
-    },
+      name: def.name,
+      description: def.description,
+      parameters: def.parameters as Record<string, unknown>,
+    })),
   ];
 }
 
@@ -434,11 +433,12 @@ export class RealtimeVoiceSession {
       result = { error };
     } else {
       try {
-        if (name === LOOK_TOOL.name) {
-          result = await lookAtRobot(args);
+        const back = BACK_TOOLS.find((t) => t.def.name === name);
+        if (back) {
+          result = await back.run(args);
           if ((result as { status?: string }).status === "error") {
             status = "error";
-            error = (result as { error?: string }).error ?? "look failed";
+            error = (result as { error?: string }).error ?? `${name} failed`;
           }
         } else {
           result = await callTool(name, args);
