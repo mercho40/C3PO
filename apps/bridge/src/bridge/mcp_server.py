@@ -478,13 +478,11 @@ async def go_to_object(
     log.info("go_to_object.called", query=query, target=target, world_target=(tx, ty))
 
     # Nav2 when it is up and a person already armed the gate. Never armed here.
-    from bridge.skills.task_runtime import get_registry
+    from bridge.skills.walk_to import active_walk
 
     refusal = _nav_refusal()
     nav_pose = None
-    if refusal is None and any(
-        t.skill_name in ("walk_to", "turn", "walk_velocity") for t in get_registry().list_active()
-    ):
+    if refusal is None and active_walk() is not None:
         refusal = {"reason": "walk_task_active"}  # the no_active_walk_task precondition
     if refusal is None:
         from bridge.sdk.nav_link import get_nav_link

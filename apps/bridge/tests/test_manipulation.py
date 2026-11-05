@@ -234,6 +234,13 @@ def test_a_hand_already_low_in_front_is_refused_not_swept_back():
         m.plan_pick("right", THERMOS, "power", list(low_front))
 
 
+def test_a_path_through_the_torso_is_refused():
+    # Right arm placing just across the midline: the wrist sat at (0.01, -0.03, 0.08) m above
+    # it and withdrawing drove it further in, inside the chest. The workspace box allows it.
+    with pytest.raises(m.PlanError, match=r"\d+/\d+: the \w+ would pass through the torso"):
+        m.plan_place("right", (0.12, 0.12, 0.0), None)
+
+
 def test_every_planned_pose_is_inside_the_urdf_limits():
     lim = kinematics.limits("right")
     for s in m.plan_pick("right", (0.36, -0.25, 0.0), "power", None):
