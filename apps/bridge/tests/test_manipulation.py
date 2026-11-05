@@ -325,6 +325,23 @@ async def test_nothing_moves_while_the_base_walks(monkeypatch, real):
 
 
 @pytest.mark.asyncio
+async def test_a_simulated_hand_runs_the_pick_and_says_nothing_was_gripped(monkeypatch, real):
+    _arm, hand = real
+    hand.name = "simulated"
+    see(monkeypatch, cup())
+    out = await m.pick("cup")
+    assert out["status"] == "completed", out
+    assert "nothing was gripped" in out["result"]["hand"]
+
+
+@pytest.mark.asyncio
+async def test_a_real_hand_result_carries_no_simulation_note(monkeypatch, real):
+    see(monkeypatch, cup())
+    out = await m.pick("cup")
+    assert "hand" not in out["result"]
+
+
+@pytest.mark.asyncio
 async def test_pick_refuses_when_that_hand_is_not_configured(monkeypatch, real):
     arm, _hand = real
     see(monkeypatch, cup())

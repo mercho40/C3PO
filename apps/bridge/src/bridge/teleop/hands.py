@@ -183,6 +183,23 @@ class NullHandDriver(HandDriver):
         return
 
 
+class SimulatedHandDriver(HandDriver):
+    """Publishes nothing, but lets pick/place run their whole sequence: for a body whose hands are dead.
+
+    shortcut: no finger moves and nothing is gripped; results say so. Swap back to
+    TELEOP_HAND_TYPE=brainco once the hands answer on their serial lines again.
+    """
+
+    name = "simulated"
+
+    def __init__(self, sides: tuple[Side, ...] = DEFAULT_SIDES) -> None:
+        self.sides = sides
+        log.warning("teleop.hands.simulated", sides=list(sides), note="no finger will move")
+
+    def send(self, side: Side, grip: float) -> None:
+        log.info("teleop.hands.simulated.send", side=side, grip=round(_clamp01(grip), 2))
+
+
 class BrainCoHandDriver(HandDriver):
     """`rt/brainco/{side}/cmd`, `unitree_go MotorCmds_`, 6 entries in [0,1]."""
 
@@ -339,6 +356,9 @@ def build_driver() -> HandDriver:
 
     if hand_type == "dex3":
         return Dex3HandDriver(sides=sides)  # type: ignore[arg-type]
+
+    if hand_type == "simulated":
+        return SimulatedHandDriver(sides=sides)  # type: ignore[arg-type]
 
     return NullHandDriver(
         f"TELEOP_HAND_TYPE={hand_type!r} is not one of 'brainco' or 'dex3'. This robot has "

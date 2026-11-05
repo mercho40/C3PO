@@ -375,6 +375,12 @@ async def execute(
             "hand_unavailable",
             f"the {side} hand is not configured (TELEOP_HAND_SIDES={','.join(hand_driver.sides) or 'none'})",
         )
+    if needs_hand and hand_driver.name == "simulated":
+        # The model must never report a grasp that did not happen.
+        task.result = {
+            **(task.result or {}),
+            "hand": "simulated: the arm moved, but no finger moved and nothing was gripped",
+        }
     why = _abort_reason(allow_person)
     if why:
         return done("failed", f"refused:{why}", why)
