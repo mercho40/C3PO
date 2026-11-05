@@ -2,7 +2,7 @@
  * Talking to `back` about the voice loop. No runes — see the note below.
  *
  *   GET  /voice/status  ->  is it running, and what has it done
- *   POST /voice/start   ->  begin a spoken conversation session
+ *   POST /voice/start   ->  begin a spoken conversation session, on an engine
  *   POST /voice/stop    ->  the robot keeps listening; no turns are processed
  *
  * WHY THIS IS SPLIT FROM `voice-loop.svelte.ts`. A `.svelte.ts` module cannot be
@@ -16,10 +16,19 @@
  * loop as running because a button was pressed. `back`'s reply is the state.
  */
 
+import { ADMIN_REQUIRED_HINT } from "#lib/chat/chat-error.js";
+/** Engine names as `back` speaks them. The console's own are in `voice-view.ts`. */
+export type WireEngine = "legacy" | "openai-realtime";
+
 /** The loop's own snapshot. Mirrors `VoiceLoopState` in apps/back. */
 export type VoiceLoopState = {
   running: boolean;
-  engine?: "legacy" | "openai-realtime";
+  /** The running session's engine, or the last one that ran. */
+  engine?: WireEngine;
+  /** What a start without an engine runs on (`VOICE_ENGINE`). */
+  defaultEngine?: WireEngine;
+  /** What a start can succeed on: realtime needs `OPENAI_API_KEY` in back. */
+  availableEngines?: WireEngine[];
   phase?: "idle" | "connecting" | "listening" | "speaking" | "error";
   chatId?: string | null;
   lastReply?: string | null;
@@ -29,6 +38,16 @@ export type VoiceLoopState = {
    * Null when nothing is running, or for the unowned legacy loop.
    */
   ownedByYou?: boolean | null;
+  /**
+   * Calls the bridge refused until this operator confirms them (T2 or
+   * high-danger T1), with the exact arguments a Confirmar would run.
+   */
+  confirmations?: {
+    id: string;
+    tool: string;
+    args: Record<string, unknown>;
+    askedAt: string;
+  }[];
   utterancesHeard: number;
   agentRuns: number;
   /** Null under the realtime engine, which does not act on spoken stops. */
@@ -116,11 +135,20 @@ async function ask(url: string, init: RequestInit): Promise<VoiceResult> {
   if (res.status === 401) {
     return { ok: false, status: 401, reason: "Sesión vencida." };
   }
+  if (res.status === 403) {
+    return { ok: false, status: 403, reason: ADMIN_REQUIRED_HINT };
+  }
   if (res.status === 409) {
+    const otherEngine =
+      body !== null &&
+      typeof body === "object" &&
+      (body as { error?: unknown }).error === "other_engine_running";
     return {
       ok: false,
       status: 409,
-      reason: "Otro operador tiene la conversación de voz.",
+      reason: otherEngine
+        ? "Ya hay una conversación con el otro motor. Terminala antes de cambiar de motor."
+        : "Otro operador tiene la conversación de voz.",
       ...(looksLikeState(body) ? { state: body } : {}),
     };
   }
@@ -154,14 +182,25 @@ export function voiceStatus(
  */
 export const VOICE_COMMAND_TIMEOUT_MS = 20_000;
 
+/**
+ * `engine` is the operator's choice for a start; omitted, back uses its
+ * default. Stop needs none — it ends whichever engine is running.
+ */
 export function voiceCommand(
   base: string,
   which: "start" | "stop",
-  timeoutMs: number = VOICE_COMMAND_TIMEOUT_MS,
+  opts: { engine?: WireEngine; timeoutMs?: number } = {},
 ): Promise<VoiceResult> {
+  const engine = which === "start" ? opts.engine : undefined;
   return ask(`${base}/voice/${which}`, {
     method: "POST",
-    signal: AbortSignal.timeout(timeoutMs),
+    ...(engine
+      ? {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ engine }),
+        }
+      : {}),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? VOICE_COMMAND_TIMEOUT_MS),
   });
 }
 

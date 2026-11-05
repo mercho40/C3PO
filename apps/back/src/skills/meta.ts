@@ -35,6 +35,14 @@ export const SkillMetaSchema = t.Object({
     t.Literal("medium"),
     t.Literal("high"),
   ]),
+  /**
+   * Risk tier, derived on the bridge from classification + danger_level
+   * (`skill_meta.derive_tier`). T2 needs an operator confirmation the bridge
+   * checks itself. Optional so an older bridge's catalogue still loads.
+   */
+  tier: t.Optional(
+    t.Union([t.Literal("T0"), t.Literal("T1"), t.Literal("T2")]),
+  ),
   status: t.Union([t.Literal("real"), t.Literal("stub"), t.Literal("planned")]),
   cancellable: t.Boolean(),
   expected_duration_s: t.Number(),

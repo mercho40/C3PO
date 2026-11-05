@@ -164,4 +164,41 @@ describe("VoiceConversation", () => {
     expect(conversation.history()).toEqual([]);
     expect(conversation.state()).toEqual({ phase: "idle", lastTurn: null });
   });
+
+  test("an aborted turn speaks nothing more and is not remembered", async () => {
+    const spoken: string[] = [];
+    const abort = new AbortController();
+    let received: AbortSignal | undefined;
+    let n = 0;
+    // streamText ends its text stream normally on abort, so the stream here
+    // keeps going after the abort, as a not-yet-noticed one would.
+    async function* aborted() {
+      yield "Primera frase. ";
+      abort.abort();
+      yield "Segunda frase. ";
+      yield "Tercera";
+    }
+    const conversation = new VoiceConversation({
+      complete: async (_messages, signal) => {
+        received = signal;
+        return ++n === 1 ? "Hola." : aborted();
+      },
+      speak: async (text) => {
+        spoken.push(text);
+      },
+      newId: () => crypto.randomUUID(),
+    });
+
+    await conversation.turn("hola");
+    const before = conversation.history();
+
+    await expect(
+      conversation.turn("contame algo", abort.signal),
+    ).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toBe(abort.signal);
+    expect(spoken).toEqual(["Hola.", "Primera frase."]);
+    expect(conversation.history()).toEqual(before);
+    expect(conversation.state().phase).toBe("idle");
+  });
 });

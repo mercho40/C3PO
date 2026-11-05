@@ -89,3 +89,33 @@ describe("the VR session handle during the consent prompt", () => {
     expect(controller.slice(catchIndex, gate)).toContain("return;");
   });
 });
+
+const read = (rel: string) =>
+  readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+
+describe("the Meta menu and other overlays (C5)", () => {
+  const xr = read("../src/lib/webxr/xr-teleop.ts");
+
+  test("xr-teleop forwards the session's visibilitychange", () => {
+    expect(xr).toContain('session.addEventListener("visibilitychange"');
+    expect(xr).toContain("onVisibility?.(session.visibilityState)");
+  });
+
+  test("no pose sample is taken while the session is not visible", () => {
+    const frame = xr.slice(xr.indexOf("const onFrame"));
+    const gate = frame.indexOf(
+      'if (active.visibilityState !== "visible") return;',
+    );
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(frame.indexOf("this.#callbacks.onSample?.("));
+    // Drawn first: the overlay still shows the last picture.
+    expect(gate).toBeGreaterThan(frame.indexOf("drawPerEye("));
+  });
+
+  test("the «Entrar en VR» tap resumes the mic before starting the session", () => {
+    const page = read("../src/routes/(protected)/vr-control/+page.svelte");
+    const prime = page.indexOf("voice.prime();");
+    expect(prime).toBeGreaterThan(-1);
+    expect(prime).toBeLessThan(page.indexOf("ctl.enterVr(overlayRoot"));
+  });
+});

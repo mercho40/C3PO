@@ -6,7 +6,7 @@
  * that leads to a "missing client_id" page is drawn at all.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   DEFAULT_REDIRECT,
   oauthErrorMessage,
@@ -98,5 +98,27 @@ describe("oauthErrorMessage", () => {
   test("known and unknown codes are Spanish", () => {
     expect(oauthErrorMessage("access_denied")).toContain("Cancelaste");
     expect(oauthErrorMessage("something_new")).toContain("No se pudo ingresar");
+  });
+});
+
+describe("authErrorMessage", () => {
+  // auth-client.ts reads the API URL from SvelteKit's env module, which only
+  // exists inside a SvelteKit build. Same keys and values as
+  // vr-control-runtime.test.ts: bun keeps the first mock's export names.
+  mock.module("$app/env/public", () => ({
+    PUBLIC_API_URL: "http://localhost:3000",
+    PUBLIC_ROBOT_CAM_URL: "",
+    PUBLIC_TELEOP_HOST: "",
+    PUBLIC_TELEOP_PORT: "",
+  }));
+
+  test("closed sign-up says who to ask, in Spanish", async () => {
+    const { authErrorMessage } = await import("../src/lib/auth-client");
+    expect(
+      authErrorMessage({
+        code: "EMAIL_PASSWORD_SIGN_UP_DISABLED",
+        status: 400,
+      }),
+    ).toBe("El registro está cerrado. Pedile una cuenta a un admin.");
   });
 });

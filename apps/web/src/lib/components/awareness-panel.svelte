@@ -81,7 +81,7 @@
     {#if section !== "hears"}
       <section class="flex min-w-0 flex-col gap-3 panel p-5">
         <div
-          class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2"
+          class="flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-2"
         >
           <div class="flex items-baseline gap-2">
             <h2 class="eyebrow">Ve</h2>
@@ -259,7 +259,7 @@
     {#if section !== "sees"}
       <section class="flex min-w-0 flex-col gap-3 panel p-5">
         <div
-          class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2"
+          class="flex min-h-8 flex-wrap items-center justify-between gap-x-3 gap-y-2"
         >
           <div class="flex items-baseline gap-2">
             <h2 class="eyebrow">Escucha</h2>

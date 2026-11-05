@@ -8,7 +8,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { VoiceLoop, type ListenResult } from "./loop";
+import { abortAllTurns } from "../agent/turns";
+import { VoiceConversation } from "./conversation";
+import {
+  VoiceLoop,
+  type ListenResult,
+  type VoiceInputEvent,
+  type VoiceLoopDeps,
+} from "./loop";
 
 function harness(results: ListenResult[], opts = {}) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
@@ -216,5 +223,286 @@ describe("VoiceLoop", () => {
     await new Promise((r) => setTimeout(r, 40));
     await loop.stop();
     expect(maxActive).toBe(1);
+  });
+});
+
+async function until(cond: () => boolean, ms = 500): Promise<void> {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error("timed out waiting");
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
+/** An event stream the test feeds, and a runAgent that blocks until released. */
+function eventHarness(
+  opts: {
+    stopFails?: boolean;
+    agentFails?: boolean;
+    runAgent?: VoiceLoopDeps["runAgent"];
+  } = {},
+) {
+  const queue: VoiceInputEvent[] = [];
+  let wake: (() => void) | null = null;
+  let seq = 0;
+  const calls: string[] = [];
+  const logs: string[] = [];
+  const runs: Array<{
+    text: string;
+    signal?: AbortSignal;
+    release: () => void;
+  }> = [];
+  let active = 0;
+  let maxActive = 0;
+  let connects = 0;
+
+  const loop = new VoiceLoop({
+    callTool: async (name) => {
+      calls.push(name);
+      if (name === "stop_everything" && opts.stopFails)
+        throw new Error("bridge went away");
+      return { status: "ok" };
+    },
+    runAgent:
+      opts.runAgent ??
+      (async (text, signal) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        try {
+          await new Promise<void>((release) => {
+            runs.push({ text, signal, release });
+          });
+          if (opts.agentFails) throw new Error("model error");
+        } finally {
+          active -= 1;
+        }
+      }),
+    events: async function* (signal) {
+      connects += 1;
+      while (!signal.aborted) {
+        const next = queue.shift();
+        if (next) {
+          yield next;
+          continue;
+        }
+        await new Promise<void>((r) => {
+          wake = r;
+          signal.addEventListener("abort", () => r(), { once: true });
+        });
+      }
+    },
+    log: (event) => logs.push(event),
+    sleep: async () => {},
+  });
+
+  const push = (kind: VoiceInputEvent["kind"], text: string) => {
+    queue.push({ seq: ++seq, kind, text });
+    wake?.();
+  };
+  return {
+    loop,
+    calls,
+    logs,
+    runs,
+    push,
+    texts: () => runs.map((r) => r.text),
+    maxActive: () => maxActive,
+    connects: () => connects,
+  };
+}
+
+describe("VoiceLoop event path", () => {
+  test("a stop during a turn stops the robot and aborts the turn, with no wait", async () => {
+    // runAgent never resolves by itself: before, the pump awaited it and the
+    // stop event behind it was never read.
+    const h = eventHarness();
+    h.loop.start();
+    h.push("speech", "caminá hasta la puerta");
+    await until(() => h.runs.length === 1);
+    h.push("stop", "emergencia");
+    await until(() => h.calls.includes("stop_everything"));
+    expect(h.runs[0]!.signal?.aborted).toBe(true);
+    expect(h.loop.snapshot().stopsTriggered).toBe(1);
+    h.runs[0]!.release();
+    await h.loop.stop();
+  });
+
+  test("PARAR from anywhere aborts the signal the voice turn runs with", async () => {
+    // The console's and headset's PARAR reach abortAllTurns, not this loop.
+    const h = eventHarness();
+    h.loop.start();
+    h.push("speech", "contame un cuento");
+    await until(() => h.runs.length === 1);
+    abortAllTurns("PARAR (console)");
+    expect(h.runs[0]!.signal?.aborted).toBe(true);
+    h.runs[0]!.release();
+    await h.loop.stop();
+  });
+
+  test("speech heard before a stop is not run after it", async () => {
+    const h = eventHarness();
+    h.loop.start();
+    h.push("speech", "caminá");
+    await until(() => h.runs.length === 1);
+    h.push("speech", "y después girá");
+    h.push("stop", "emergencia");
+    await until(() => h.calls.includes("stop_everything"));
+    h.runs[0]!.release();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.texts()).toEqual(["caminá"]);
+    await h.loop.stop();
+  });
+
+  test("turns never overlap, and speech during a turn is answered after it", async () => {
+    const h = eventHarness();
+    h.loop.start();
+    h.push("speech", "hola");
+    await until(() => h.runs.length === 1);
+    h.push("speech", "¿cómo estás?");
+    await until(() => h.loop.snapshot().utterancesHeard === 2);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.runs.length).toBe(1);
+    h.runs[0]!.release();
+    await until(() => h.runs.length === 2);
+    h.runs[1]!.release();
+    expect(h.texts()).toEqual(["hola", "¿cómo estás?"]);
+    expect(h.maxActive()).toBe(1);
+    await h.loop.stop();
+  });
+
+  test("speech queued during a turn is joined into one turn", async () => {
+    // Same reason as the polling path: Vosk splits one sentence on a breath.
+    const h = eventHarness();
+    h.loop.start();
+    h.push("speech", "hola");
+    await until(() => h.runs.length === 1);
+    h.push("speech", "caminá hasta la puerta");
+    h.push("speech", "y buscá la caja");
+    await until(() => h.loop.snapshot().utterancesHeard === 3);
+    h.runs[0]!.release();
+    await until(() => h.runs.length === 2);
+    h.runs[1]!.release();
+    expect(h.texts()).toEqual([
+      "hola",
+      "caminá hasta la puerta y buscá la caja",
+    ]);
+    await h.loop.stop();
+  });
+
+  test("the stop phrase transcribed as speech does not start a turn", async () => {
+    const h = eventHarness();
+    h.loop.start();
+    h.push("stop", "para para");
+    h.push("speech", "¡Pará, para!");
+    h.push("speech", "hola");
+    await until(() => h.runs.length === 1);
+    expect(h.texts()).toEqual(["hola"]);
+    expect(h.logs).toContain("voice.stop_echo_dropped");
+    h.runs[0]!.release();
+    await h.loop.stop();
+  });
+
+  test("stop() resolves while a turn is still in flight", async () => {
+    const h = eventHarness();
+    h.loop.start();
+    h.push("speech", "caminá");
+    await until(() => h.runs.length === 1);
+    const stopped = await Promise.race([
+      h.loop.stop().then(() => true),
+      new Promise((r) => setTimeout(() => r(false), 200)),
+    ]);
+    expect(stopped).toBe(true);
+    expect(h.runs[0]!.signal?.aborted).toBe(true);
+    expect(h.loop.snapshot().running).toBe(false);
+    h.runs[0]!.release();
+  });
+
+  test("a restarted loop does not run a turn beside the aborted one's walk_to", async () => {
+    // The real runAgent: an abort ends the model's text at once (ai 7's
+    // streamText), while the walk_to it sent keeps driving until the bridge answers.
+    let walkDone!: () => void;
+    const walk = new Promise<void>((r) => (walkDone = r));
+    let models = 0;
+    const conversation = new VoiceConversation({
+      complete: (_messages, signal) => {
+        if (++models > 1) return "Hola.";
+        const textStream = (async function* () {
+          await new Promise((r) =>
+            signal?.addEventListener("abort", r, { once: true }),
+          );
+        })();
+        return { textStream, toolsSettled: () => walk };
+      },
+      speak: async () => {},
+      newId: () => crypto.randomUUID(),
+    });
+    const h = eventHarness({
+      runAgent: async (u, s) => void (await conversation.turn(u, s)),
+    });
+    h.loop.start();
+    h.push("speech", "caminá");
+    await until(() => models === 1);
+    await h.loop.stop();
+    h.loop.start();
+    h.push("speech", "hola");
+    await until(() => h.loop.snapshot().utterancesHeard === 2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(models).toBe(1);
+    walkDone();
+    await until(() => models === 2);
+    expect(h.logs).toContain("voice.turn_aborted");
+    await h.loop.stop();
+  });
+
+  test("an aborted turn is not an error and does not hide a failed stop", async () => {
+    // Still inside runAgentChat's bridge calls, which take no signal: the
+    // turn's rejection lands after stop_everything has already failed.
+    const h = eventHarness({
+      stopFails: true,
+      runAgent: (_u, signal) =>
+        new Promise((_, reject) =>
+          signal?.addEventListener(
+            "abort",
+            () => setTimeout(() => reject(signal.reason), 5),
+            { once: true },
+          ),
+        ),
+    });
+    h.loop.start();
+    h.push("speech", "caminá");
+    await until(() => h.loop.snapshot().agentRuns === 1);
+    h.push("stop", "emergencia");
+    await until(() => h.logs.includes("voice.turn_aborted"));
+    expect(h.logs).not.toContain("voice.turn_failed");
+    expect(h.loop.snapshot().lastError).toBe("bridge went away");
+    await h.loop.stop();
+  });
+
+  test("a failing turn is recorded and does not reconnect the stream", async () => {
+    const h = eventHarness({ agentFails: true });
+    h.loop.start();
+    h.push("speech", "hola");
+    await until(() => h.runs.length === 1);
+    h.runs[0]!.release();
+    await until(() => h.logs.includes("voice.turn_failed"));
+    expect(h.loop.snapshot().lastError).toBe("model error");
+    h.push("speech", "¿seguís ahí?");
+    await until(() => h.runs.length === 2);
+    h.runs[1]!.release();
+    expect(h.connects()).toBe(1);
+    await h.loop.stop();
+  });
+
+  test("a failing stop_everything is recorded and does not reconnect the stream", async () => {
+    const h = eventHarness({ stopFails: true });
+    h.loop.start();
+    h.push("stop", "emergencia");
+    await until(() => h.logs.includes("voice.stop_failed"));
+    expect(h.loop.snapshot().lastError).toBe("bridge went away");
+    h.push("speech", "hola");
+    await until(() => h.runs.length === 1);
+    h.runs[0]!.release();
+    expect(h.connects()).toBe(1);
+    await h.loop.stop();
   });
 });

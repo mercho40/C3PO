@@ -17,7 +17,10 @@
   } from "$app/env/public";
   import { getRobotLive, getVoiceLoop } from "#lib/robot/context.js";
   import { LINK } from "#lib/robot/link-copy.js";
-  import { ENGINE_LABEL, engineOf } from "#lib/components/voice/voice-view.js";
+  import {
+    ENGINE_LABEL,
+    defaultEngineOf,
+  } from "#lib/components/voice/voice-view.js";
 
   const live = getRobotLive();
   const voice = getVoiceLoop();
@@ -71,7 +74,9 @@
     <div class="flex min-w-0 flex-col gap-1">
       <dt class="eyebrow">Voz</dt>
       <dd class="text-sm text-ink-dim">
-        {voice.state ? ENGINE_LABEL[engineOf(voice.state)] : "—"}
+        {voice.state
+          ? `${ENGINE_LABEL[defaultEngineOf(voice.state)]} · predeterminado`
+          : "—"}
       </dd>
     </div>
   </dl>
