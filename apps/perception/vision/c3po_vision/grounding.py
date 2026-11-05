@@ -86,16 +86,20 @@ no TF in the vision container, no TF in the bridge, and no ROS in either. The
 nav container's `g1_odom_tf.py` carries the same mount note; the number below
 must agree with the physical robot, and NOTHING will tell you if it does not.
 
-    MEASURE IT. `DEFAULT_CAMERA_EXTRINSIC` is a reasoned default, not a
-    measurement (apps/perception/README.md, decisions list). A 5 cm error in
-    `z_m` is harmless; a 10
-    degree error in `pitch_deg` puts a 4 m detection about 0.7 m off in range.
+    VERIFY IT. `DEFAULT_CAMERA_EXTRINSIC` is the URDF's `d435_joint` (CAD),
+    not a tape measurement, and it is the same mount the bridge's arm IK uses
+    (`bridge.kinematics.camera_to_torso`; test_grounding.py pins the two
+    together). A 5 cm error in `z_m` is harmless; a 10 degree error in
+    `pitch_deg` puts a 4 m detection about 0.7 m off in range. If the robot
+    disagrees, the measured numbers go in `C3PO_CAMERA_*`
+    (~/.c3po/perception.env), not here.
 """
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
-from statistics import median
+from statistics import median, quantiles
 from typing import Any, Sequence
 
 __all__ = [
@@ -108,12 +112,17 @@ __all__ = [
     "camera_to_base",
     "clamp_box",
     "deproject_pixel_to_camera",
+    "fit_plane",
     "ground_box",
     "inner_region",
     "median_depth_m",
     "norm180",
+    "object_depths_m",
     "range_bearing_from_base",
+    "ray_bearing_deg",
+    "ray_plane_depth_m",
     "sample_depths_m",
+    "support_points",
     "to_observation",
 ]
 
@@ -124,6 +133,8 @@ __all__ = [
 # handed to a planner is worse than a gap.
 MIN_VALID_DEPTH_M = 0.20
 MAX_VALID_DEPTH_M = 10.0
+# near_m's percentile: the object's near face, not its middle, and still past a stray near pixel.
+NEAR_PERCENTILE = 10
 
 
 @dataclass(frozen=True)
@@ -150,6 +161,9 @@ class Intrinsics:
 class CameraExtrinsic:
     """base_link <- camera_link, as a fixed mount. Angles are REP-103.
 
+    base_link is the URDF root `pelvis` (what the nav container's base_link
+    stands for); camera_link is the URDF `d435_link`.
+
     x_m/y_m/z_m: where the camera sits IN base_link. +x forward, +y left,
     +z up. So z_m is "how far above the robot's base frame the lens is".
 
@@ -174,17 +188,21 @@ class CameraExtrinsic:
     yaw_deg: float = 0.0
 
 
-# UNMEASURED. See the module docstring and apps/perception/README.md (decisions
-# list): the nav container's
-# g1_odom_tf.py holds the LiDAR mount numbers, this holds the camera's, and both
-# are reasoned defaults that a human with a tape measure must replace before any
-# detection is trusted for navigation. Nominal here: D435i on the G1's head,
-# roughly a hand's width forward of base_link's origin, level.
+# CAD, not a tape measure: pelvis -> d435_link in
+# apps/bridge/src/bridge/assets/g1_29dof_rev_1_0.urdf, waist joints at zero:
+#   pelvis -> waist_yaw_joint(0) -> waist_roll_joint xyz(-0.0039635, 0, 0.044)
+#   -> waist_pitch_joint(0) -> torso_link
+#   -> d435_joint xyz(0.0576235, 0.01753, 0.42987) rpy(0, 0.8307767, 0) = 47.6 deg nose-down.
+# C3PO_CAMERA_* still override it (detector.camera_extrinsic_from_env).
+# shortcut: the D435 rides torso_link above the three waist joints, so this is exact only at
+# waist (0,0,0): waist yaw adds straight onto every bearing, waist pitch adds onto the pitch and
+# moves the lens ~4 cm per 0.1 rad, and gait pitch/roll of the pelvis is not modelled. Upgrade:
+# feed waist_q from rt/lowstate if the robot shows bearing drift with the waist off zero.
 DEFAULT_CAMERA_EXTRINSIC = CameraExtrinsic(
-    x_m=0.10,
-    y_m=0.0,
-    z_m=0.55,
-    pitch_deg=0.0,
+    x_m=0.05366,
+    y_m=0.01753,
+    z_m=0.47387,
+    pitch_deg=47.6,  # the URDF's rpy pitch 0.8307767239493009 rad is radians(47.6) exactly
     yaw_deg=0.0,
 )
 
@@ -205,6 +223,16 @@ class Grounded:
     slant_m: float          # 3-D distance, always >= range_m
     depth_m: float          # the median optical-axis depth this came from
     depth_samples: int      # how many valid pixels the median was taken over
+    # "direct": the median of the object's own pixels. "plane": the sensor read
+    # THROUGH the object (glass) or not at all, so depth came from the support
+    # surface under it — see `ground_box`. Published, so the planner knows.
+    depth_source: str = "direct"
+    # HORIZONTAL range of the object's NEAR face (NEAR_PERCENTILE of its depth samples); range_m is
+    # its middle. None unless depth_source is "direct" — the plane fallback has no face to measure.
+    near_m: float | None = None
+    # The deprojected point in the colour-optical frame (x right, y down, z forward), before any
+    # extrinsic. The bridge's arm IK maps it through the URDF's CAD mount instead of ours.
+    p_opt: tuple[float, float, float] | None = None
 
 
 def norm180(deg: float) -> float:
@@ -274,6 +302,8 @@ def sample_depths_m(
     min_depth_m: float = MIN_VALID_DEPTH_M,
     max_depth_m: float = MAX_VALID_DEPTH_M,
     max_samples: int = 1024,
+    mask: Any = None,
+    mask_origin: tuple[int, int] = (0, 0),
 ) -> list[float]:
     """Valid depths, in METRES, over `region`, subsampled on a stride.
 
@@ -285,12 +315,17 @@ def sample_depths_m(
     0.001; read it from `sensor.get_depth_scale()`, do not assume). Pass 1.0 if
     the array is already metres.
 
+    `mask`, if given, is indexable as mask[v - oy][u - ox] with (ox, oy) =
+    `mask_origin`; pixels where it is falsy are skipped. That is how an
+    instance mask keeps the background between a chair's legs out of its depth.
+
     ZEROS ARE DROPPED, not clamped and not counted. 0 is the D435i's "I could
     not solve this pixel", and a hole in the middle of an object is common. So
     is a hole covering most of it, which is why the caller must handle an empty
     return rather than an average of nothing.
     """
     x0, y0, x1, y1 = region
+    ox, oy = mask_origin
     side = max(1, math.isqrt(max(1, int(max_samples))))
     sx = _stride_for(x1 - x0, side)
     sy = _stride_for(y1 - y0, side)
@@ -298,7 +333,10 @@ def sample_depths_m(
     out: list[float] = []
     for v in range(y0, y1, sy):
         row = depth[v]
+        mrow = None if mask is None else mask[v - oy]
         for u in range(x0, x1, sx):
+            if mrow is not None and not mrow[u - ox]:
+                continue
             raw = row[u]
             if not raw:                     # 0 == INVALID, never "at the lens"
                 continue
@@ -321,6 +359,7 @@ def median_depth_m(
     min_depth_m: float = MIN_VALID_DEPTH_M,
     max_depth_m: float = MAX_VALID_DEPTH_M,
     max_samples: int = 1024,
+    mask: Any = None,
 ) -> tuple[float | None, int]:
     """Robust depth for one 2-D box. Returns (metres | None, sample count).
 
@@ -329,22 +368,67 @@ def median_depth_m(
     the box-centre pixel. An object reported at the wrong distance is more
     dangerous than an object not reported at all, because the model will plan
     around the number it was given.
+
+    With an instance `mask` (indexed relative to the CLIPPED box's top-left)
+    the median is over the WHOLE box's masked pixels — the mask does the inner
+    region's job, better. A mask with too few valid pixels under it (tiny, or
+    all holes) falls back to the inner region rather than to None.
+    """
+    samples = object_depths_m(
+        depth,
+        box,
+        width=width,
+        height=height,
+        depth_scale=depth_scale,
+        inner_fraction=inner_fraction,
+        min_valid_samples=min_valid_samples,
+        min_depth_m=min_depth_m,
+        max_depth_m=max_depth_m,
+        max_samples=max_samples,
+        mask=mask,
+    )
+    if len(samples) < max(1, int(min_valid_samples)):
+        return None, len(samples)
+    return float(median(samples)), len(samples)
+
+
+def object_depths_m(
+    depth: Any,
+    box: Sequence[float],
+    *,
+    width: int,
+    height: int,
+    depth_scale: float = 0.001,
+    inner_fraction: float = 0.5,
+    min_valid_samples: int = 12,
+    min_depth_m: float = MIN_VALID_DEPTH_M,
+    max_depth_m: float = MAX_VALID_DEPTH_M,
+    max_samples: int = 1024,
+    mask: Any = None,
+) -> list[float]:
+    """The valid (non-zero, in-band) depths `median_depth_m` takes its median over.
+
+    Fewer than `min_valid_samples` means "no usable range" — the caller checks.
     """
     clipped = clamp_box(box, width, height)
     if clipped is None:
-        return None, 0
-    region = inner_region(clipped, inner_fraction)
-    samples = sample_depths_m(
+        return []
+    if mask is not None:
+        masked = sample_depths_m(
+            depth, clipped, depth_scale=depth_scale, min_depth_m=min_depth_m,
+            max_depth_m=max_depth_m, max_samples=max_samples,
+            mask=mask, mask_origin=(clipped[0], clipped[1]),
+        )
+        if len(masked) >= max(1, int(min_valid_samples)):
+            return masked
+    return sample_depths_m(
         depth,
-        region,
+        inner_region(clipped, inner_fraction),
         depth_scale=depth_scale,
         min_depth_m=min_depth_m,
         max_depth_m=max_depth_m,
         max_samples=max_samples,
     )
-    if len(samples) < max(1, int(min_valid_samples)):
-        return None, len(samples)
-    return float(median(samples)), len(samples)
 
 
 def deproject_pixel_to_camera(
@@ -427,6 +511,115 @@ def range_bearing_from_base(
     return horiz, bearing, elevation, slant
 
 
+def ray_bearing_deg(u: float, v: float, intr: Intrinsics, extr: CameraExtrinsic) -> float:
+    """Bearing of the pixel's RAY, mount rotation only — for a box with no depth.
+
+    Exact for an object far away compared with the mount offset (x_m, y_m);
+    a few degrees off up close. Used only where the alternative is no bearing.
+    """
+    ray = deproject_pixel_to_camera(u, v, 1.0, intr)
+    x, y, _z = camera_to_base(ray, CameraExtrinsic(0.0, 0.0, 0.0, extr.pitch_deg, extr.yaw_deg))
+    return norm180(math.degrees(math.atan2(y, x)))
+
+
+# --- the support plane: depth for what the sensor cannot see -----------------
+#
+# Active-IR stereo reads THROUGH glass (the pattern lands on the wall behind)
+# and returns holes on shiny or dark things. The table the object stands on is
+# usually fine. So: fit a plane to the valid depth in a strip just BELOW the
+# box, cast the ray through the box's bottom-centre pixel, and intersect — that
+# is the contact point (docs/autonomy/research/02-perception.md §3.2.1).
+
+
+def support_points(
+    depth: Any,
+    box: tuple[int, int, int, int],
+    intr: Intrinsics,
+    *,
+    depth_scale: float = 0.001,
+    min_depth_m: float = MIN_VALID_DEPTH_M,
+    max_depth_m: float = MAX_VALID_DEPTH_M,
+    strip_fraction: float = 0.25,
+    max_points: int = 192,
+) -> list[tuple[float, float, float]]:
+    """Valid depth in the strip under a CLIPPED box, deprojected (camera optical)."""
+    x0, _y0, x1, y1 = box
+    height = intr.height or len(depth)
+    strip = max(4, round((y1 - box[1]) * strip_fraction))
+    ys0, ys1 = y1, min(height, y1 + strip)
+    if ys1 <= ys0:
+        return []
+    side = max(1, math.isqrt(max(1, max_points)))
+    sx, sy = _stride_for(x1 - x0, side), _stride_for(ys1 - ys0, side)
+    out: list[tuple[float, float, float]] = []
+    for v in range(ys0, ys1, sy):
+        row = depth[v]
+        for u in range(x0, x1, sx):
+            raw = row[u]
+            if not raw:
+                continue
+            z = float(raw) * depth_scale
+            if min_depth_m <= z <= max_depth_m:
+                out.append(deproject_pixel_to_camera(u, v, z, intr))
+    return out
+
+
+def fit_plane(
+    points: Sequence[tuple[float, float, float]],
+    *,
+    iterations: int = 32,
+    tol_m: float = 0.015,
+    min_inlier_fraction: float = 0.5,
+    seed: int = 0,
+) -> tuple[tuple[float, float, float], float] | None:
+    """RANSAC plane n.p = d (|n| = 1) or None. Seeded, so a frame replays exactly.
+
+    shortcut: the best 3-point hypothesis, no least-squares refit — the 1.5 cm
+    inlier band is already below the D435i's noise at a metre; refit if the
+    test set says plane depths are biased.
+    """
+    if len(points) < 12:
+        return None
+    rng = random.Random(seed)
+    best: tuple[tuple[float, float, float], float] | None = None
+    best_count = 0
+    for _ in range(iterations):
+        p1, p2, p3 = rng.sample(points, 3)
+        ax, ay, az = p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]
+        bx, by, bz = p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]
+        nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+        norm = math.sqrt(nx * nx + ny * ny + nz * nz)
+        if norm < 1e-9:
+            continue
+        nx, ny, nz = nx / norm, ny / norm, nz / norm
+        d = nx * p1[0] + ny * p1[1] + nz * p1[2]
+        count = sum(1 for p in points if abs(nx * p[0] + ny * p[1] + nz * p[2] - d) < tol_m)
+        if count > best_count:
+            best, best_count = ((nx, ny, nz), d), count
+    if best is None or best_count < min_inlier_fraction * len(points):
+        return None
+    return best
+
+
+def plane_tilt_deg(normal: tuple[float, float, float], extr: CameraExtrinsic) -> float:
+    """Angle between the plane and base_link's horizontal. 0 = a table or floor."""
+    nx, ny, nz = camera_to_base(normal, CameraExtrinsic(0.0, 0.0, 0.0, extr.pitch_deg, extr.yaw_deg))
+    return math.degrees(math.acos(min(1.0, abs(nz) / max(1e-9, math.sqrt(nx * nx + ny * ny + nz * nz)))))
+
+
+def ray_plane_depth_m(
+    u: float, v: float, intr: Intrinsics, plane: tuple[tuple[float, float, float], float]
+) -> float | None:
+    """Optical-axis depth where pixel (u, v)'s ray meets the plane; None if never."""
+    (nx, ny, nz), d = plane
+    rx, ry = (float(u) - intr.cx) / intr.fx, (float(v) - intr.cy) / intr.fy
+    denom = nx * rx + ny * ry + nz
+    if abs(denom) < 1e-6:
+        return None
+    t = d / denom
+    return t if t > 0 else None
+
+
 def ground_box(
     box: Sequence[float],
     depth: Any,
@@ -439,6 +632,9 @@ def ground_box(
     min_depth_m: float = MIN_VALID_DEPTH_M,
     max_depth_m: float = MAX_VALID_DEPTH_M,
     max_samples: int = 1024,
+    mask: Any = None,
+    behind_m: float | None = 0.30,
+    max_plane_tilt_deg: float = 45.0,
 ) -> Grounded | None:
     """The whole 2-D box -> egocentric pipeline, in one pure call.
 
@@ -447,11 +643,21 @@ def ground_box(
     detection — it does NOT make the scene empty, because the detector's
     heartbeat still goes out on that tick saying "online, and here is what I
     could ground".
+
+    THE SUPPORT-PLANE FALLBACK (`depth_source="plane"`). Tried when the
+    object's own depth is missing, or reads more than `behind_m` FARTHER than
+    the surface just below it — the signature of a glass on a table read
+    through to the wall. It is taken only if that surface fits a plane within
+    `max_plane_tilt_deg` of horizontal (a table, a floor: never the sofa back
+    under a wall-mounted TV) and the contact point is NEARER than the direct
+    reading. Anything else keeps the direct depth or returns None — the plane
+    is a better guess than a hole, never a licence to invent one.
+    `behind_m=None` turns the fallback off.
     """
     width = intr.width or (len(depth[0]) if len(depth) else 0)
     height = intr.height or len(depth)
 
-    z_m, n = median_depth_m(
+    samples = object_depths_m(
         depth,
         box,
         width=width,
@@ -462,14 +668,29 @@ def ground_box(
         min_depth_m=min_depth_m,
         max_depth_m=max_depth_m,
         max_samples=max_samples,
+        mask=mask,
     )
-    if z_m is None:
-        return None
-
+    n = len(samples)
+    z_m = float(median(samples)) if n >= max(1, int(min_valid_samples)) else None
     clipped = clamp_box(box, width, height)
     if clipped is None:
         return None
     x0, y0, x1, y1 = clipped
+
+    source = "direct"
+    if behind_m is not None:
+        pts = support_points(depth, clipped, intr, depth_scale=depth_scale,
+                             min_depth_m=min_depth_m, max_depth_m=max_depth_m)
+        if pts and (z_m is None or z_m > median(p[2] for p in pts) + behind_m):
+            plane = fit_plane(pts)
+            if plane is not None and plane_tilt_deg(plane[0], extr) <= max_plane_tilt_deg:
+                z_plane = ray_plane_depth_m((x0 + x1) / 2.0, float(y1), intr, plane)
+                if (z_plane is not None and min_depth_m <= z_plane <= max_depth_m
+                        and (z_m is None or z_plane < z_m)):
+                    z_m, n, source = z_plane, len(pts), "plane"
+    if z_m is None:
+        return None
+
     # Deproject the box CENTRE with the box's MEDIAN depth. The centre is the
     # best single bearing estimate for the object; the median is the best
     # single range estimate for it. Mixing them is intentional — the centre
@@ -480,6 +701,13 @@ def ground_box(
     p_opt = deproject_pixel_to_camera(u, v, z_m, intr)
     xb, yb, zb = camera_to_base(p_opt, extr)
     rng, bearing, elevation, slant = range_bearing_from_base(xb, yb, zb)
+    near = None
+    if source == "direct" and n >= 2:  # quantiles needs two points; min_valid_samples may be 1
+        # The near face: a low percentile of the same samples, along the same centre ray.
+        z_near = quantiles(samples, n=100, method="inclusive")[NEAR_PERCENTILE - 1]
+        near = range_bearing_from_base(
+            *camera_to_base(deproject_pixel_to_camera(u, v, z_near, intr), extr)
+        )[0]
 
     return Grounded(
         range_m=rng,
@@ -491,6 +719,9 @@ def ground_box(
         slant_m=slant,
         depth_m=z_m,
         depth_samples=n,
+        depth_source=source,
+        near_m=near,
+        p_opt=(float(p_opt[0]), float(p_opt[1]), float(p_opt[2])),
     )
 
 

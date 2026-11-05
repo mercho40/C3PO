@@ -253,6 +253,12 @@ check_contains "the CLI exposes integrated profiles" "c3po up [operator|core|tel
 check_contains "the CLI exposes complete shutdown" "c3po down | restart | status | logs" "$out"
 check_contains "the CLI exposes explicit perception stages" "c3po perception up <stage>" "$out"
 check_contains "the CLI exposes the deliberate camera takeover" "c3po camera take" "$out"
+check_contains "the CLI exposes the map session" "c3po map start [name] | save [name]" "$out"
+if out="$(bash "$repo/scripts/robot/c3po" map save a b 2>&1)"; then
+    fail=$((fail + 1)); failed_names+=("map save rejects a second name")
+else
+    check_contains "map save rejects a second name" "takes at most a map name" "$out"
+fi
 
 if out="$(bash "$repo/scripts/robot/c3po" up unknown 2>&1)"; then
     fail=$((fail + 1)); failed_names+=("the CLI rejects unknown integrated profiles")
@@ -300,7 +306,7 @@ check_contains "start calls stop_gemm exactly once (the take-over branch)" \
 # ...and a sudo that needs a password with no terminal fails with the fix,
 # not with sudo's own "a terminal is required".
 check_contains "start explains a sudo that cannot prompt" \
-    'if ! sudo -n true 2>/dev/null && ! [ -t 0 ]; then' "$start_source"
+    'if ! sudo -n -l /usr/bin/systemctl start c3po-bridge.service >/dev/null 2>&1 && ! [ -t 0 ]; then' "$start_source"
 common_source="$(cat "$repo/scripts/robot/_common.sh")"
 check_contains "socket ownership uses the explicit deployed LAN bind" \
     '0.0.0.0)   address_hex="00000000"' "$common_source"
@@ -354,6 +360,8 @@ check_contains "the bridge permits the local web dev origins" \
     "$bridge_unit_source"
 check_not_contains "the bridge has no pidfile" "PIDFile=" "$bridge_unit_source"
 check_not_contains "the bridge unit does not call run_c3po" "ExecStart=/home/unitree/c3po/scripts/robot/run_c3po" "$bridge_unit_source"
+check_contains "the robot installs exactly the committed lock" \
+    "uv sync --locked" "$(cat "$repo/scripts/robot/bridge_sync")"
 
 stop_stack_source="$(cat "$repo/scripts/robot/stop_c3po")"
 check_contains "stack stop removes teleop before the bridge" \
@@ -377,6 +385,18 @@ check_not_contains "health contains no systemd repair action" \
 sudoers_source="$(cat "$repo/scripts/robot/c3po.sudoers")"
 check_not_contains "sudoers grants no perception lifecycle command" \
     'c3po-perception@' "$sudoers_source"
+# sudo matches exact argv: the grant and its three callers must stay identical.
+for verb in start stop restart; do
+    check_contains "sudoers grants exactly: systemctl $verb c3po-bridge.service" \
+        "unitree ALL=(root) NOPASSWD: /usr/bin/systemctl $verb c3po-bridge.service" "$sudoers_source"
+done
+for forbidden in 'daemon-reload' 'systemctl edit' 'enable' '*'; do
+    check_not_contains "sudoers grants nothing with: $forbidden" "$forbidden" "$sudoers_source"
+done
+check_contains "c3po restart runs the exact granted command line" \
+    'sudo systemctl restart c3po-bridge.service' "$cli_source"
+check_contains "start runs the exact granted command line" \
+    'sudo systemctl start c3po-bridge.service' "$start_source"
 
 commander_source="$(cat "$repo/scripts/robot/_common.sh")"
 check_contains "unitree_slam is treated as a locomotion commander" \
@@ -424,6 +444,63 @@ check_contains "a taken local port fails the tunnel instead of a silent no-op" \
 check_contains "the tunnel defaults to the c3po ssh alias" " c3po" "$tunnel_cmd"
 check_contains "the tunnel takes the host as an argument" \
     " c3po-wire" "$("$repo/scripts/robot_tunnel.sh" --print c3po-wire)"
+
+echo "== robot internet =="
+check "the Mac proxy refuses loopback, private and non-web destinations" "ok" \
+    "$(python3 "$repo/scripts/robot_internet.py" --self-test 2>&1)"
+
+echo "== robot session =="
+# One command for tunnel + robot internet + console. Env cleared so a developer's
+# own C3PO_SSH_HOST / C3PO_ROBOT_HOST cannot change what is asserted.
+session_print="$(C3PO_SSH_HOST='' C3PO_ROBOT_HOST='' "$repo/scripts/robot_session.sh" --print)"
+check_contains "the session starts the tunnel to the c3po alias" "robot_tunnel.sh c3po" "$session_print"
+check_contains "the session lends the robot the Mac's internet" "robot_internet.py c3po" "$session_print"
+check_contains "the session starts the console against the tunnel" \
+    "C3PO_ROBOT_HOST=localhost bun run dev:robot" "$session_print"
+session_wire="$(C3PO_SSH_HOST='' "$repo/scripts/robot_session.sh" --print c3po-wire)"
+check_contains "the session takes the host as an argument (tunnel)" "robot_tunnel.sh c3po-wire" "$session_wire"
+check_contains "the session takes the host as an argument (internet)" "robot_internet.py c3po-wire" "$session_wire"
+
+# Fake `route` / `ipconfig`: ipconfig answers only for the interface route named.
+session_stub="$(mktemp -d)"
+# shellcheck disable=SC2016  # the $vars are for the stub to expand, not us
+printf '#!/bin/sh\necho "  interface: $FAKE_IFACE"\n' >"$session_stub/route"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\n[ "$2" = "$FAKE_IFACE" ] && echo "$FAKE_ADDR"\n' >"$session_stub/ipconfig"
+chmod +x "$session_stub/route" "$session_stub/ipconfig"
+cable_out="$(PATH="$session_stub:$PATH" FAKE_IFACE=en11 FAKE_ADDR=192.168.123.99 C3PO_ETH='' \
+    "$repo/scripts/robot_session.sh" --print)"
+check_contains "the cable on en11 at 192.168.123.99 passes" "✓ cable" "$cable_out"
+check_not_contains "a good cable prints no sudo fix" "sudo ipconfig" "$cable_out"
+wifi_out="$(PATH="$session_stub:$PATH" FAKE_IFACE=en0 FAKE_ADDR=10.10.32.5 C3PO_ETH='' \
+    "$repo/scripts/robot_session.sh" --print)"
+check_contains "the robot reached over Wi-Fi prints the cable fix, with no router" \
+    "sudo ipconfig set en11 MANUAL 192.168.123.99 255.255.255.0" "$wifi_out"
+check_not_contains "the session never says ✓ cable off the cable" "✓ cable" "$wifi_out"
+rm -rf "$session_stub"
+
+# ---------------------------------------------------------------------------
+# c3po_preflight: no SAFETY_CONFIRM_SECRET on the bridge is a blocker
+# ---------------------------------------------------------------------------
+echo "== c3po_preflight confirm secret =="
+preflight_stub="$(mktemp -d)"
+# A curl that answers /safety/status from $FAKE_STATUS and fails everything else.
+# shellcheck disable=SC2016  # the $vars are for the stub to expand, not us
+printf '#!/bin/sh\nfor a; do case "$a" in */safety/status) echo "$FAKE_STATUS"; exit 0 ;; esac; done\nexit 7\n' \
+    >"$preflight_stub/curl"
+chmod +x "$preflight_stub/curl"
+unset_out="$(PATH="$preflight_stub:$PATH" FAKE_STATUS='{"confirm_configured":false}' \
+    bash "$repo/scripts/robot/c3po_preflight" 2>&1 || true)"
+set_out="$(PATH="$preflight_stub:$PATH" FAKE_STATUS='{"confirm_configured":true}' \
+    bash "$repo/scripts/robot/c3po_preflight" 2>&1 || true)"
+check_contains "an unset confirm secret is a blocker" \
+    "SAFETY_CONFIRM_SECRET IS NOT SET on the bridge" "$unset_out"
+check_contains "a set confirm secret passes" "SAFETY_CONFIRM_SECRET is set —" "$set_out"
+# The rest of the stack is absent in both runs, so the secret is the only difference in the count.
+blockers_in() { printf '%s' "$1" | grep -oE '[0-9]+ blocker' | grep -oE '[0-9]+'; }
+check "an unset confirm secret adds exactly one blocker" \
+    "$(( $(blockers_in "$set_out") + 1 ))" "$(blockers_in "$unset_out")"
+rm -rf "$preflight_stub"
 
 echo "== audit watch =="
 watch_query="$("$repo/scripts/audit_watch.sh" --print)"

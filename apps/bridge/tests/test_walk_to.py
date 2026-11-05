@@ -122,3 +122,79 @@ async def test_walk_to_cancellation_stops_promptly(monkeypatch):
 
     assert result["status"] == "cancelled"
     assert result["phase"] == "cancelled"
+
+
+# --- retarget: the hook go_to_object re-aims through ------------------------
+
+
+@pytest.fixture
+def fast_retarget(monkeypatch):
+    monkeypatch.setattr(walk_to, "LOOP_PERIOD_S", 0.005)
+    monkeypatch.setattr(walk_to, "RETARGET_PERIOD_S", 0.05)
+    stops: list[float] = []
+
+    async def counting_stop(height=0.78, duration_s=0.4):
+        stops.append(height)
+
+    monkeypatch.setattr(walk_to, "stop_motion", counting_stop)
+    return stops
+
+
+@pytest.mark.asyncio
+async def test_retarget_is_called_once_per_period_not_every_loop(monkeypatch, fast_retarget):
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    calls: list[int] = []
+
+    def retarget():
+        calls.append(sampler._i)
+        return (10.0, 0.0)
+
+    result = await walk_to.run(
+        target_x=10.0, target_y=0.0, stop_distance_m=0.1, timeout_s=0.3, retarget=retarget
+    )
+
+    assert result["phase"] == "timeout"
+    assert 3 <= len(calls) <= 7  # ~0.3 s / 0.05 s
+    assert sampler._i > 3 * len(calls)  # the loop ran many more times than it re-aimed
+
+
+@pytest.mark.asyncio
+async def test_a_moved_target_is_followed(monkeypatch, fast_retarget):
+    # Standing at the origin, 5 m short of the first target; the object turns out to be 0.5 m away.
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await walk_to.run(
+        target_x=5.0, target_y=0.0, stop_distance_m=1.0, timeout_s=2.0, retarget=lambda: (0.0, 0.5)
+    )
+
+    assert result["phase"] == "arrived"
+    assert result["result"]["final_distance_m"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_a_lost_target_ends_the_walk_through_stop_motion(monkeypatch, fast_retarget):
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _FakeSampler([_pose(0.0, 0.0)]))
+
+    result = await walk_to.run(
+        target_x=5.0, target_y=0.0, stop_distance_m=1.0, timeout_s=2.0, retarget=lambda: None
+    )
+
+    assert (result["status"], result["phase"]) == ("failed", "target_lost")
+    assert len(fast_retarget) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_raising_retarget_still_stops(monkeypatch, fast_retarget):
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _FakeSampler([_pose(0.0, 0.0)]))
+
+    def broken():
+        raise RuntimeError("perception exploded")
+
+    result = await walk_to.run(
+        target_x=5.0, target_y=0.0, stop_distance_m=1.0, timeout_s=2.0, retarget=broken
+    )
+
+    assert (result["status"], result["phase"]) == ("failed", "exception")
+    assert len(fast_retarget) == 1

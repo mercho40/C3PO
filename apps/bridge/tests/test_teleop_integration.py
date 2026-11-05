@@ -310,3 +310,19 @@ async def test_teardown_does_not_wait_out_an_unanswered_stop(sent, monkeypatch):
     assert waited < srv.RECONNECT_GRACE_S + 2.0, (
         f"reconnect took {waited:.1f}s — teardown is still waiting on the ack"
     )
+
+
+async def test_a_malformed_frame_carrying_estop_still_stops(sent):
+    """C6: a bad hand pose in the same message must not swallow the stop."""
+    from bridge import estop
+
+    server, url = await _serve()
+    async with server:
+        async with connect(url) as ws:
+            await ws.send(_frame(1, estop=True, head={"yaw": "nope", "pos": [0, 1.6, 0]}))
+            for _ in range(50):
+                if estop.stop_is_standing():
+                    break
+                await asyncio.sleep(0.02)
+
+    assert estop.stop_is_standing() is True

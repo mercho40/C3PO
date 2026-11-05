@@ -42,6 +42,7 @@ __all__ = [
     "bun_finding",
     "bridge_base_from_env",
     "bridge_finding",
+    "confirm_secret_finding",
     "console_camera_finding",
     "reads_through_back",
 ]
@@ -240,6 +241,29 @@ def bridge_base_from_env(env_text: Optional[str], shell_value: str = "") -> str:
     if not sep:
         return DEFAULT_BRIDGE_BASE
     return "{}://{}".format(scheme, rest.split("/", 1)[0])
+
+
+def confirm_secret_finding(env_texts: Sequence[Optional[str]], shell_value: str = "") -> Finding:
+    """Does apps/back hold SAFETY_CONFIRM_SECRET? Without it «Confirmar» and «Reanudar» answer 503.
+
+    `env_texts` in Bun's order of increasing precedence (.env, .env.<NODE_ENV>, .env.local):
+    a later file that names the key wins, as it does for back.
+    """
+    merged: Dict[str, str] = {}
+    for text in env_texts:
+        merged.update(parse_env_file(text or ""))
+    value = shell_value.strip() or merged.get("SAFETY_CONFIRM_SECRET", "")
+    if value.strip():
+        return Finding(OK, "apps/back has SAFETY_CONFIRM_SECRET")
+    return Finding(
+        BAD,
+        "SAFETY_CONFIRM_SECRET is not set for apps/back",
+        [
+            "«Confirmar» answers 503 confirmation_not_configured, and a PARAR",
+            "can never be cleared with «Reanudar».",
+            "Set it in apps/back/.env, the same value as the robot's apps/bridge/.env.",
+        ],
+    )
 
 
 def bridge_finding(base: str, state: str) -> Finding:
@@ -897,6 +921,19 @@ def _local_section(repo_root: str) -> Section:
                 ["it bound the port and then failed — look at what it printed at boot"],
             )
         )
+    findings.append(
+        confirm_secret_finding(
+            [
+                _read(os.path.join(repo_root, "apps", "back", name))
+                for name in (
+                    ".env",
+                    ".env." + (os.environ.get("NODE_ENV") or "development"),
+                    ".env.local",
+                )
+            ],
+            os.environ.get("SAFETY_CONFIRM_SECRET", ""),
+        )
+    )
     return Section("1. This machine", findings)
 
 

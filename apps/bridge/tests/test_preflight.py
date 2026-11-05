@@ -23,6 +23,7 @@ from bridge.preflight import (
     bridge_base_from_env,
     bridge_finding,
     bun_finding,
+    confirm_secret_finding,
     console_camera_finding,
     estop_finding,
     reads_through_back,
@@ -498,3 +499,30 @@ def test_no_bun_at_all_is_a_failure():
 
 def test_an_unreadable_requirement_is_a_warning_not_a_pass():
     assert bun_finding("1.4.3", None).level == WARN
+
+
+def test_a_missing_confirm_secret_is_a_blocker():
+    for env_text in (None, "SAFETY_CONFIRM_SECRET=\n", "SAFETY_CONFIRM_SECRET=  # unset\n"):
+        finding = confirm_secret_finding([env_text])
+        assert finding.level == BAD
+        assert any("confirmation_not_configured" in n for n in finding.notes)
+    assert confirm_secret_finding(["SAFETY_CONFIRM_SECRET=abc\n"]).level == OK
+    assert confirm_secret_finding([None], shell_value="abc").level == OK
+
+
+def test_the_confirm_secret_is_read_in_buns_env_file_order():
+    # .env, .env.<NODE_ENV>, .env.local: a secret kept only in .env.local is not a false blocker.
+    assert (
+        confirm_secret_finding(
+            ["SAFETY_CONFIRM_SECRET=\n", None, "SAFETY_CONFIRM_SECRET=abc\n"]
+        ).level
+        == OK
+    )
+    assert confirm_secret_finding([None, "SAFETY_CONFIRM_SECRET=abc\n", None]).level == OK
+    # ...and a later file that blanks it wins, as it does for back.
+    assert (
+        confirm_secret_finding(
+            ["SAFETY_CONFIRM_SECRET=abc\n", None, "SAFETY_CONFIRM_SECRET=\n"]
+        ).level
+        == BAD
+    )

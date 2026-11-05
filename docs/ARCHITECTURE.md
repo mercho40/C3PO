@@ -161,12 +161,18 @@ agent required removing nothing, and both can run forever:
    bridge as MCP over HTTP (`apps/back/src/bridge/client.ts`), results feed
    the next turn, and the console consumes the run as a token/tool-call
    stream. Provider and gateway facts: `apps/back/.env.example`; the
-   provider-choice rationale: `docs/DECISIONS.md` D5.
-3. **Voice** (co-located human) is live behind an explicit dashboard switch.
-   `VOICE_ENGINE=legacy` uses local transcription + the text agent + Piper;
-   `VOICE_ENGINE=realtime` keeps the OpenAI key and session in `back`, streams
-   PCM to/from the bridge, persists final transcripts, and dispatches function
-   calls through the same bridge registry.
+   provider-choice rationale: `docs/DECISIONS.md` D5. One tool is `back`'s
+   own rather than the bridge's: `look` (`apps/back/src/agent/look.ts`) sends
+   the newest camera frame and a question to the vision model and returns only
+   the answer text, so the image never enters the agent's context and the
+   robot never holds the model key. Every voice engine gets it too.
+3. **Voice** (co-located human) is live behind an explicit dashboard switch,
+   and the operator picks the engine per session (`VOICE_ENGINE` is only the
+   default; one engine runs at a time). The local engine uses local
+   transcription + the text agent + Piper; the Realtime engine keeps the OpenAI
+   key and session in `back`, streams PCM to/from the bridge, persists final
+   transcripts, and dispatches function calls through the same bridge registry.
+   Realtime is offered only when `back` has `OPENAI_API_KEY`.
 
 An earlier design had `apps/back` also _serving_ MCP to external clients
 (Claude Desktop through the control plane, with tokens and auditing). That
@@ -348,7 +354,7 @@ cooperation (§7 layer 3).
 
 ## 7. The safety model
 
-Five layers, outermost first. Each is independent — that is the point.
+Six layers, outermost first. Each is independent — that is the point.
 
 1. **The physical remote / e-stop.** Always authoritative. Nothing we write
    overrides it.
@@ -383,6 +389,17 @@ Five layers, outermost first. Each is independent — that is the point.
    long skill — and becomes correct once long skills are fire-and-forget. The
    full reasoning is in the module docstring; the arming flag is in
    `apps/bridge/.env.example`.
+6. **Safety governor** (`apps/bridge/src/bridge/safety.py`, autonomy PLAN
+   0.2). Every real `SET_VELOCITY` passes it inside `_locomotion.send_velocity`:
+   speed/yaw caps (0.3 by default, never above 0.5 m/s / 0.8 rad/s),
+   an acceleration cap that never limits braking, and the person-distance
+   rule — a fresh `person` detection inside 1.5 m slows the base to ×0.4,
+   inside 0.5 m stops it. With no fresh detector data, Nav2 (the only
+   autonomous source) is slowed; manual driving is not. Every MCP tool also
+   carries a derived risk tier, and T2 (free-form arm/hand) is refused in
+   `call_tool` without a one-shot console confirmation and with a person in
+   arm's reach. `soft_stop` is the first stop tier on its own: zero velocity,
+   never damps. Hardware checklist: `docs/autonomy/test-day/safety.md`.
 
 What keeps working with **no network at all** is a short list: the firmware
 velocity deadman (layer 2), the local wake word and a spoken "stop" once voice

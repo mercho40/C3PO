@@ -265,3 +265,44 @@ class TestTheCorsHeaderAndItsBoundary:
             "camera routes. If the new use only DETECTS the header rather "
             "than sending it, add it to MAY_MENTION with the reason."
         )
+
+
+class _EndlessUpstream:
+    """The vision server's stream: it never ends on its own."""
+
+    closed = False
+
+    def read(self, _n: int) -> bytes:
+        return b"--c3poframe\r\n"
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _ViewerLeavesAfter:
+    def __init__(self, chunks: int) -> None:
+        self.left_after = chunks
+
+    async def is_disconnected(self) -> bool:
+        self.left_after -= 1
+        return self.left_after < 0
+
+
+def test_a_viewer_leaving_releases_the_vision_slot(monkeypatch):
+    """Four abandoned relays fill the vision server (max 4) and it 503s everyone."""
+    import asyncio
+    import urllib.request
+
+    from bridge import mcp_server
+
+    upstream = _EndlessUpstream()
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: upstream)
+
+    async def drain() -> int:
+        n = 0
+        async for _ in mcp_server._relay_stream("http://vision/stream.mjpg", _ViewerLeavesAfter(2)):
+            n += 1
+        return n
+
+    assert asyncio.run(asyncio.wait_for(drain(), 5)) == 2
+    assert upstream.closed, "the upstream connection outlived the viewer"

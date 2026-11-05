@@ -66,9 +66,9 @@ systemctl is-active c3po-bridge
 curl -sS http://127.0.0.1:8001/telemetry/gate
 c3po status
 docker ps
-sudo systemctl stop c3po-bridge
+sudo systemctl stop c3po-bridge.service
 docker ps
-sudo systemctl start c3po-bridge
+sudo systemctl start c3po-bridge.service
 c3po restart   # proves systemd's MainPID owns 127.0.0.1:8001
 curl -sS http://127.0.0.1:8001/telemetry/gate
 docker ps

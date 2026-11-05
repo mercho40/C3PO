@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Start a mapping session: the nav2 stage with slam_toolbox in MAPPING mode.
+#
+#   nav_map_start [name]        (or: c3po map start [name])
+#
+# Then walk the robot once around the space — the console walk pad or the
+# headset, NOT Nav2 (it needs no gate armed, and there is nothing to plan
+# against yet) — slowly, closing at least one loop back to the start. Then
+# `nav_map_save [name]`. Docs: docs/autonomy/test-day/nav.md.
+#
+# Remember where the robot stood when this started: localization mode starts
+# there (`map_start_at_dock`), so mark the spot on the floor.
+#
+# Nothing here is new machinery: it is `c3po up nav2` with C3PO_NAV_SLAM set,
+# so every guard that stage has (gemm refusal unless C3PO_TAKE_OVER=1, the
+# commander check, the rollback if no world summary appears) still applies.
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+export C3PO_NAV_SLAM=mapping
+export C3PO_NAV_MAP="${1:-${C3PO_NAV_MAP:-c3po}}"
+exec "$here/c3po" up nav2
