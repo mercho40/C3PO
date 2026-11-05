@@ -92,3 +92,53 @@ describe("a function call the session never declared", () => {
     expect(guard).toBeLessThan(body.indexOf("await callTool(name, args)"));
   });
 });
+
+describe("an operator's decision on a call this session asked for", () => {
+  // The socket and state are private and need a live OpenAI connection; a fake
+  // open socket stands in for it.
+  function session(running: boolean) {
+    const sent: unknown[] = [];
+    const s = new RealtimeVoiceSession();
+    const inner = s as unknown as {
+      socket: unknown;
+      state: { running: boolean; chatId: string | null };
+    };
+    inner.socket = {
+      readyState: 1, // ws OPEN
+      send: (raw: string) => sent.push(JSON.parse(raw)),
+    };
+    inner.state.running = running;
+    inner.state.chatId = "chat_rt";
+    return { s, sent };
+  }
+
+  test("its own chat's outcome reaches the model, which is asked to answer", () => {
+    const { s, sent } = session(true);
+    s.informOutcome("chat_rt", "El operador confirmó y se ejecutó pick.");
+    expect(sent).toEqual([
+      {
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: "El operador confirmó y se ejecutó pick.",
+            },
+          ],
+        },
+      },
+      { type: "response.create" },
+    ]);
+  });
+
+  test("another chat, or a stopped session, hears nothing", () => {
+    const other = session(true);
+    other.s.informOutcome("chat_other", "x");
+    expect(other.sent).toEqual([]);
+    const stopped = session(false);
+    stopped.s.informOutcome("chat_rt", "x");
+    expect(stopped.sent).toEqual([]);
+  });
+});

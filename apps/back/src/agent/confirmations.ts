@@ -197,3 +197,17 @@ export function onLoopOutcome(
 export function feedLoop(message: string, spoken: string): void {
   loopFeedback?.(message, spoken);
 }
+
+/**
+ * Where a chat call's outcome goes besides the client that pressed the button
+ * (routes/voice.ts sets it): the realtime voice session of that chat hears it.
+ */
+let chatFeedback: ((chatId: string, message: string) => void) | null = null;
+export function onChatOutcome(
+  fn: ((chatId: string, message: string) => void) | null,
+): void {
+  chatFeedback = fn;
+}
+export function feedChat(chatId: string, message: string): void {
+  chatFeedback?.(chatId, message);
+}

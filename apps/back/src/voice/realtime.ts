@@ -273,6 +273,23 @@ export class RealtimeVoiceSession {
     this.state.phase = "idle";
   }
 
+  /**
+   * An admin route already confirmed (or cancelled) a call this session asked
+   * for: the model is told what happened. It decides nothing here.
+   */
+  informOutcome(chatId: string, message: string): void {
+    if (!this.state.running || this.state.chatId !== chatId) return;
+    this.send({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{ type: "input_text", text: message }],
+      },
+    });
+    this.send({ type: "response.create" });
+  }
+
   private send(event: unknown): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify(event));
