@@ -13,7 +13,13 @@ import {
 import { replyText, type MessageLike } from "#lib/chat/turn.js";
 import type { MenuItem, VoiceLine } from "#lib/webxr/menu-layer.js";
 
-export type VoicePhase = "idle" | "listening" | "transcribing" | "thinking";
+export type VoicePhase =
+  | "idle"
+  | "listening"
+  | "transcribing"
+  /** Transcribing with a call on screen: back may run it if it heard «confirmo». */
+  | "deciding"
+  | "thinking";
 
 /** Menu item names the voice mode owns. Never a skill name: they carry a colon. */
 export const VOICE_OPEN = "voice:open";
@@ -35,6 +41,7 @@ function argSummary(input: unknown): string {
 const PHASE_LINE: Record<Exclude<VoicePhase, "idle">, string> = {
   listening: "● Escuchando… soltá B/Y para enviar",
   transcribing: "Transcribiendo…",
+  deciding: "Transcribiendo… si dijiste «confirmo», se ejecuta",
   thinking: "Pensando…",
 };
 

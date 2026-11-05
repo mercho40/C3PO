@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as chats from "#back/db/chats.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -104,6 +105,21 @@ describe("a function call the session never declared", () => {
 });
 
 describe("an operator's decision on a call this session asked for", () => {
+  // No database in tests: record what would be written instead. Restored after
+  // each test: bun shares modules across files, and a spy left on db/chats.js
+  // would swallow every other file's writes.
+  const written: { chatId: string; role: string; parts: unknown[] }[] = [];
+  let append: ReturnType<typeof spyOn> | null = null;
+  beforeEach(() => {
+    append = spyOn(chats, "appendMessage").mockImplementation(async (m) => {
+      written.push(m);
+      return "msg";
+    });
+  });
+  afterEach(() => {
+    append?.mockRestore();
+    written.length = 0;
+  });
   // The socket and state are private and need a live OpenAI connection; a fake
   // open socket stands in for it.
   function session(running: boolean) {
@@ -141,6 +157,26 @@ describe("an operator's decision on a call this session asked for", () => {
       },
       { type: "response.create" },
     ]);
+  });
+
+  test("the outcome is written into that voice chat's transcript", async () => {
+    const { s } = session(true);
+    s.informOutcome("chat_rt", "El operador canceló pick: no se ejecutó.");
+    await (s as unknown as { eventTail: Promise<void> }).eventTail;
+    expect(written).toEqual([
+      {
+        id: expect.any(String),
+        chatId: "chat_rt",
+        role: "system",
+        parts: [
+          { type: "text", text: "El operador canceló pick: no se ejecutó." },
+        ],
+      } as never,
+    ]);
+    const other = session(true);
+    other.s.informOutcome("chat_other", "x");
+    await (other.s as unknown as { eventTail: Promise<void> }).eventTail;
+    expect(written).toHaveLength(1);
   });
 
   test("another chat, or a stopped session, hears nothing", () => {
