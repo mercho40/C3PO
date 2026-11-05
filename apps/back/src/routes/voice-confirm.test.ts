@@ -44,6 +44,7 @@ mock.module("#back/db/drizzle.js", () => ({
 }));
 
 const { voiceRoutes } = await import("./voice");
+const { RealtimeVoiceSession } = await import("#back/voice/realtime.js");
 const confirmations = await import("#back/agent/confirmations.js");
 const bridgeClient = await import("#back/bridge/client.js");
 const skillsIndex = await import("#back/skills/index.js");
@@ -179,5 +180,24 @@ describe("spoken confirmation on /voice/transcribe", () => {
       text: "confirmo",
     });
     expect(dispatched).toEqual([]);
+  });
+
+  test("the realtime session of that chat is told the outcome, confirmed or cancelled", async () => {
+    const told: [string, string][] = [];
+    const inform = spyOn(
+      RealtimeVoiceSession.prototype,
+      "informOutcome",
+    ).mockImplementation((chatId, message) => {
+      told.push([chatId, message]);
+    });
+    restore.push(() => inform.mockRestore());
+    refuse("c1");
+    await say("?chatId=chat_1&pending=c1");
+    heard = "cancelar";
+    refuse("c2");
+    await say("?chatId=chat_1&pending=c2");
+    expect(told.map(([chatId]) => chatId)).toEqual(["chat_1", "chat_1"]);
+    expect(told[0]?.[1]).toContain("El operador confirmó y se ejecutó pick");
+    expect(told[1]?.[1]).toContain("El operador canceló pick");
   });
 });

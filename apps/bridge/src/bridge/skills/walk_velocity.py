@@ -28,6 +28,7 @@ from typing import Any
 
 import structlog
 
+from bridge import safety
 from bridge.skills._locomotion import DEFAULT_HEIGHT, send_velocity_async, teleop_conflict
 from bridge.skills.task_runtime import get_registry
 
@@ -57,10 +58,6 @@ MAX_DURATION_S = 3.0
 REISSUE_PERIOD_S = 0.05
 
 
-def _clamp(value: float, limit: float) -> float:
-    return max(-limit, min(limit, value))
-
-
 async def run(
     vx: float,
     vy: float,
@@ -78,9 +75,15 @@ async def run(
     task = get_registry().create("walk_velocity")
 
     requested = {"vx": vx, "vy": vy, "vyaw": vyaw, "duration_s": duration_s}
-    clamped_vx = _clamp(vx, MAX_LINEAR_VEL)
-    clamped_vy = _clamp(vy, MAX_LINEAR_VEL)
-    clamped_vyaw = _clamp(vyaw, MAX_YAW_VEL)
+    # The governor's own static caps, so `clamped` is the vector the legs get, not a per-axis
+    # clamp the governor then shrinks. Its person rule and ramp still act per setpoint.
+    clamped_vx, clamped_vy, clamped_vyaw = safety.cap(
+        vx,
+        vy,
+        vyaw,
+        min(MAX_LINEAR_VEL, safety.MAX_LINEAR_MPS),
+        min(MAX_YAW_VEL, safety.MAX_YAW_RPS),
+    )
     clamped_duration = max(0.0, min(duration_s, MAX_DURATION_S))
     clamped = {
         "vx": clamped_vx,

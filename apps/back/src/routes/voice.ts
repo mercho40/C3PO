@@ -38,6 +38,7 @@ import { deleteChat, ensureChat } from "#back/db/chats.js";
 import {
   decideSpoken,
   listPending,
+  onChatOutcome,
   onLoopOutcome,
   type PendingConfirmation,
 } from "#back/agent/confirmations.js";
@@ -130,6 +131,9 @@ async function runAgentOnUtterance(
 
 let loop: VoiceLoop | null = null;
 const realtime = new RealtimeVoiceSession();
+// A Confirmar/Cancelar of a call the realtime session asked for: it hears the
+// outcome (it checks the chat is still its own).
+onChatOutcome((chatId, message) => realtime.informOutcome(chatId, message));
 
 /**
  * The engine status describes: whichever is running, else whichever ran last.
