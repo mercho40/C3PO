@@ -71,10 +71,15 @@ import { notePending } from "./confirmations";
 import {
   LOOK_PROMPT_LINE,
   LOOK_TOOL,
+  VERIFY_PROMPT_LINE,
+  VERIFY_TOOL,
   VISION_SYSTEM,
   bridgeCamera,
   look,
+  verify,
+  type LookDeps,
   type LookResult,
+  type VerifyResult,
 } from "./look";
 
 const BASE_URL = process.env.AGENT_BASE_URL ?? "https://ia.ort.edu.ar/api/v1";
@@ -130,36 +135,57 @@ const VISION_MODEL = process.env.VISION_MODEL || MODEL;
  * agent, the legacy voice loop (both via `buildTools`) and the Realtime session,
  * so every engine sees through the same path.
  */
-export function lookAtRobot(args: { question?: unknown }): Promise<LookResult> {
-  if (!API_KEY)
-    return Promise.resolve({
-      status: "error",
-      error: `AGENT_API_KEY is not set — ${BASE_URL} rejects unauthenticated requests.`,
+const NO_KEY = `AGENT_API_KEY is not set — ${BASE_URL} rejects unauthenticated requests.`;
+
+/** The robot's camera and the vision model, as `look` and `verify` use them. */
+const robotVision: LookDeps = {
+  ...bridgeCamera,
+  model: VISION_MODEL,
+  describe: async (question, jpeg) => {
+    const { text } = await generateText({
+      model: provider.chatModel(VISION_MODEL),
+      system: VISION_SYSTEM,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: question },
+            { type: "file", data: jpeg, mediaType: "image/jpeg" },
+          ],
+        },
+      ],
+      // One retry covers a gateway blip; the agent loop is waiting on this.
+      maxRetries: 1,
+      abortSignal: AbortSignal.timeout(20_000),
     });
-  return look(args, {
-    ...bridgeCamera,
-    model: VISION_MODEL,
-    describe: async (question, jpeg) => {
-      const { text } = await generateText({
-        model: provider.chatModel(VISION_MODEL),
-        system: VISION_SYSTEM,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: question },
-              { type: "file", data: jpeg, mediaType: "image/jpeg" },
-            ],
-          },
-        ],
-        // One retry covers a gateway blip; the agent loop is waiting on this.
-        maxRetries: 1,
-        abortSignal: AbortSignal.timeout(20_000),
-      });
-      return text;
-    },
-  });
+    return text;
+  },
+};
+
+export function lookAtRobot(args: { question?: unknown }): Promise<LookResult> {
+  if (!API_KEY) return Promise.resolve({ status: "error", error: NO_KEY });
+  return look(args, robotVision);
 }
+
+/** A yes/no check on the camera view: `look`'s path, read as a verdict. */
+export function verifyOnRobot(args: {
+  question?: unknown;
+}): Promise<VerifyResult> {
+  if (!API_KEY) return Promise.resolve({ status: "error", error: NO_KEY });
+  return verify(args, robotVision);
+}
+
+/**
+ * Tools that run here in back, not on the bridge. Each takes its name from the
+ * bridge's same-named Gemini tool, which is then not offered (offeredInMode).
+ */
+export const BACK_TOOLS = [
+  { def: LOOK_TOOL, run: lookAtRobot, promptLine: LOOK_PROMPT_LINE },
+  { def: VERIFY_TOOL, run: verifyOnRobot, promptLine: VERIFY_PROMPT_LINE },
+] as const;
+const BACK_TOOL_NAMES: ReadonlySet<string> = new Set(
+  BACK_TOOLS.map((t) => t.def.name),
+);
 
 const SYSTEM_PREAMBLE = [
   "You are C3PO, the control intelligence of a Unitree G1 humanoid robot.",
@@ -281,8 +307,8 @@ export function offeredInMode(
   mode: AgentMode,
 ): boolean {
   if (agentToolExclusions(mode).has(skill.name)) return false;
-  // back's own `look` (agent/look.ts) takes the name; the bridge's Gemini one is not offered.
-  if (skill.name === LOOK_TOOL.name) return false;
+  // back's own look/verify (agent/look.ts) take the names; the bridge's Gemini ones are not offered.
+  if (BACK_TOOL_NAMES.has(skill.name)) return false;
   return (
     mode !== "voice" || skill.tier === "T2" || skill.dangerLevel !== "high"
   );
@@ -335,7 +361,7 @@ export async function buildSystemPrompt(
     return `- ${s.name} [${s.classification}/${s.status}/${where}/danger:${s.dangerLevel}${tier}] — ${s.description}`;
   });
   const modePrompt = mode === "voice" ? `\n\n${VOICE_PREAMBLE}` : "";
-  lines.push(LOOK_PROMPT_LINE);
+  lines.push(...BACK_TOOLS.map((t) => t.promptLine));
   return `${SYSTEM_PREAMBLE}${modePrompt}\n\nAvailable skills:\n${lines.join("\n")}`;
 }
 
@@ -451,17 +477,18 @@ async function buildTools(
       },
     });
   }
-  if (!agentToolExclusions(mode).has(LOOK_TOOL.name)) {
-    tools[LOOK_TOOL.name] = tool({
-      description: LOOK_TOOL.description,
-      inputSchema: jsonSchema(LOOK_TOOL.parameters),
+  for (const back of BACK_TOOLS) {
+    if (agentToolExclusions(mode).has(back.def.name)) continue;
+    tools[back.def.name] = tool({
+      description: back.def.description,
+      inputSchema: jsonSchema(back.def.parameters),
       execute: async (args) => {
         const params = args as Record<string, unknown>;
         const startedAt = Date.now();
-        const result = await lookAtRobot(params);
+        const result = await back.run(params);
         void logToolCall({
           ...audit,
-          skillName: LOOK_TOOL.name,
+          skillName: back.def.name,
           params,
           result,
           status: result.status === "error" ? "error" : "ok",
@@ -472,6 +499,7 @@ async function buildTools(
       },
     });
   }
+
   return tools;
 }
 
