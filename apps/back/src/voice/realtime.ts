@@ -7,9 +7,11 @@ import { appendMessage, logToolCall } from "#back/db/chats.js";
 import {
   NEEDS_CONFIRMATION,
   buildSystemPrompt,
+  lookAtRobot,
   offeredInMode,
 } from "#back/agent/runtime.js";
 import { notePending } from "#back/agent/confirmations.js";
+import { LOOK_TOOL } from "#back/agent/look.js";
 import { listSkills } from "#back/skills/index.js";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
@@ -47,14 +49,25 @@ type RealtimeEvent = {
 type RealtimeSkill = Awaited<ReturnType<typeof listSkills>>[number];
 
 export function realtimeTools(skills: RealtimeSkill[]) {
-  return skills
+  const bridgeTools = skills
     .filter((skill) => offeredInMode(skill, "voice"))
     .map((skill) => ({
       type: "function" as const,
       name: skill.name,
       description: skill.description,
-      parameters: skill.parameters,
+      parameters: skill.parameters as Record<string, unknown>,
     }));
+  // `look` runs here in back, not on the bridge — see agent/look.ts. The frame
+  // goes to the agent's vision model, never into the Realtime session.
+  return [
+    ...bridgeTools,
+    {
+      type: "function" as const,
+      name: LOOK_TOOL.name,
+      description: LOOK_TOOL.description,
+      parameters: LOOK_TOOL.parameters as Record<string, unknown>,
+    },
+  ];
 }
 
 export function realtimeSessionUpdate(
@@ -404,7 +417,15 @@ export class RealtimeVoiceSession {
       result = { error };
     } else {
       try {
-        result = await callTool(name, args);
+        if (name === LOOK_TOOL.name) {
+          result = await lookAtRobot(args);
+          if ((result as { status?: string }).status === "error") {
+            status = "error";
+            error = (result as { error?: string }).error ?? "look failed";
+          }
+        } else {
+          result = await callTool(name, args);
+        }
       } catch (cause) {
         status = "error";
         // The robot's own reason, not just "tool_error: <name>": it is what

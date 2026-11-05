@@ -46,6 +46,7 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   convertToModelMessages,
+  generateText,
   jsonSchema,
   pruneMessages,
   stepCountIs,
@@ -67,6 +68,14 @@ import {
 } from "#back/bridge/client.js";
 import { beginTurn } from "./turns";
 import { notePending } from "./confirmations";
+import {
+  LOOK_PROMPT_LINE,
+  LOOK_TOOL,
+  VISION_SYSTEM,
+  bridgeCamera,
+  look,
+  type LookResult,
+} from "./look";
 
 const BASE_URL = process.env.AGENT_BASE_URL ?? "https://ia.ort.edu.ar/api/v1";
 /** `tic-chat` is the gateway's tool-calling chat model. Its site advertises
@@ -107,6 +116,50 @@ const provider = createOpenAICompatible({
   baseURL: BASE_URL,
   apiKey: API_KEY, // sent as `Authorization: Bearer <key>`
 });
+
+/**
+ * The model `look` sends camera frames to. Defaults to the agent's own model:
+ * `tic-chat` read a robot frame correctly on 2026-10-27
+ * (`scripts/smoke-vision.ts`), so no second provider is needed. Same gateway
+ * and key — a vision model elsewhere would be a provider change, not env.
+ */
+const VISION_MODEL = process.env.VISION_MODEL || MODEL;
+
+/**
+ * Look through the robot's camera and answer `question`. Shared by the typed
+ * agent, the legacy voice loop (both via `buildTools`) and the Realtime session,
+ * so every engine sees through the same path.
+ */
+export function lookAtRobot(args: { question?: unknown }): Promise<LookResult> {
+  if (!API_KEY)
+    return Promise.resolve({
+      status: "error",
+      error: `AGENT_API_KEY is not set — ${BASE_URL} rejects unauthenticated requests.`,
+    });
+  return look(args, {
+    ...bridgeCamera,
+    model: VISION_MODEL,
+    describe: async (question, jpeg) => {
+      const { text } = await generateText({
+        model: provider.chatModel(VISION_MODEL),
+        system: VISION_SYSTEM,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: question },
+              { type: "file", data: jpeg, mediaType: "image/jpeg" },
+            ],
+          },
+        ],
+        // One retry covers a gateway blip; the agent loop is waiting on this.
+        maxRetries: 1,
+        abortSignal: AbortSignal.timeout(20_000),
+      });
+      return text;
+    },
+  });
+}
 
 const SYSTEM_PREAMBLE = [
   "You are C3PO, the control intelligence of a Unitree G1 humanoid robot.",
@@ -228,6 +281,8 @@ export function offeredInMode(
   mode: AgentMode,
 ): boolean {
   if (agentToolExclusions(mode).has(skill.name)) return false;
+  // back's own `look` (agent/look.ts) takes the name; the bridge's Gemini one is not offered.
+  if (skill.name === LOOK_TOOL.name) return false;
   return (
     mode !== "voice" || skill.tier === "T2" || skill.dangerLevel !== "high"
   );
@@ -280,6 +335,7 @@ export async function buildSystemPrompt(
     return `- ${s.name} [${s.classification}/${s.status}/${where}/danger:${s.dangerLevel}${tier}] — ${s.description}`;
   });
   const modePrompt = mode === "voice" ? `\n\n${VOICE_PREAMBLE}` : "";
+  lines.push(LOOK_PROMPT_LINE);
   return `${SYSTEM_PREAMBLE}${modePrompt}\n\nAvailable skills:\n${lines.join("\n")}`;
 }
 
@@ -392,6 +448,27 @@ async function buildTools(
             ? { error: confirmRefusal(skill.name) }
             : { error: detail };
         }
+      },
+    });
+  }
+  if (!agentToolExclusions(mode).has(LOOK_TOOL.name)) {
+    tools[LOOK_TOOL.name] = tool({
+      description: LOOK_TOOL.description,
+      inputSchema: jsonSchema(LOOK_TOOL.parameters),
+      execute: async (args) => {
+        const params = args as Record<string, unknown>;
+        const startedAt = Date.now();
+        const result = await lookAtRobot(params);
+        void logToolCall({
+          ...audit,
+          skillName: LOOK_TOOL.name,
+          params,
+          result,
+          status: result.status === "error" ? "error" : "ok",
+          error: result.status === "error" ? result.error : null,
+          durationMs: Date.now() - startedAt,
+        });
+        return result;
       },
     });
   }
