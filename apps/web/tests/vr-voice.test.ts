@@ -106,6 +106,16 @@ describe("the headset conversation panel", () => {
     expect(lines[1].text).toContain("Escuchando");
   });
 
+  test("with a call on screen, the wait says a «confirmo» runs it", () => {
+    const opts = { stopStanding: false, error: null };
+    expect(voiceLines([], { ...opts, phase: "deciding" })[0].text).toContain(
+      "«confirmo», se ejecuta",
+    );
+    expect(voiceLines([], { ...opts, phase: "transcribing" })[0].text).toBe(
+      "Transcribiendo…",
+    );
+  });
+
   test("a refused T2 call offers Confirmar; a standing PARAR offers Reanudar instead", () => {
     const msgs = [user("Extendé la mano"), assistant(refused)];
     expect(pendingConfirmation(msgs)).toEqual({
