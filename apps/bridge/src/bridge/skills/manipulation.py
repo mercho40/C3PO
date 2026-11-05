@@ -97,6 +97,15 @@ SHOULDER_BACK_RAD = 0.7
 #: the model how to walk when a target is out of reach.
 COMFORT_X_M = 0.30
 COMFORT_Y_OUT_M = 0.05
+#: The torso no arm point may enter, torso_link (x, y, z) ranges. x and z: the URDF torso
+#: inertia's equivalent solid box (0.11 x 0.18 x 0.27 m about the COM at z=0.15), rounded out,
+#: z down to the waist. y: that box says +-0.09 (the shoulder joints sit at +-0.10), but the
+#: tuck pose for a target far out to the side passes the forearm 0.088 m off the midline.
+#: shortcut: y narrowed to 0.08, points only, no link radius, no mesh (not vendored); measure
+#: the torso's flank at belly height and use the STL hull with capsule arm links once a
+#: crossing is seen to clip, or the tuck pose grazes the torso on the robot.
+TORSO_BOX = ((-0.06, 0.06), (-0.08, 0.08), (-0.05, 0.30))
+_ARM_POINTS = ("elbow", "wrist", "wrist", "wrist", "hand")  # joint_origins[3:] and the TCP
 
 
 class PlanError(Exception):
@@ -197,6 +206,7 @@ def _line(
         ]
         out.append(q)
         prev = q
+    _check_torso(side, name, out)
     return out
 
 
@@ -228,6 +238,19 @@ def _check_clear(
                 f"z={z:.2f} m, below the surface clearance z={clear_z:.2f} m — if the arm is "
                 "already out in front, release_arm_control first so it starts at the side"
             )
+
+
+def _check_torso(side: Side, name: str, qs: list[tuple[float, ...]]) -> None:
+    """PlanError if any pose puts the elbow, wrist or hand inside TORSO_BOX."""
+    for i, q in enumerate(qs):
+        hp = kinematics.forward(side, q)
+        for part, p in zip(_ARM_POINTS, (*hp.joint_origins[3:], hp.position), strict=True):
+            if all(lo < v < hi for v, (lo, hi) in zip(p, TORSO_BOX, strict=True)):
+                raise PlanError(
+                    f"{name} {i + 1}/{len(qs)}: the {part} would pass through the torso at "
+                    f"({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}) m — pick a target further out "
+                    f"on the {side} arm's own side"
+                )
 
 
 def _joint_path(q_from: list[float], q_to: tuple[float, ...]) -> list[tuple[float, ...]]:
@@ -277,6 +300,7 @@ def _transit(
                     + _joint_path(list(bent), q_tuck)
                 )
             _check_clear(side, "clear", rise, edge, clear_z)
+            _check_torso(side, "clear", rise)
             break
         except PlanError as exc:
             errors.append(str(exc))
@@ -336,6 +360,7 @@ def plan_place(
     above = (target[0], target[1], target[2] + LIFT_M)
     clear = (target[0], target[1], max(above[2], target[2] + SURFACE_MARGIN_M))
     q_above = _solve(side, "above", above, d, seed)
+    _check_torso(side, "above", [q_above])
     down = _line(side, "down", above, target, d, q_above)
     up = _line(side, "retreat", target, clear, d, down[-1])
     errors = []

@@ -38,6 +38,15 @@ from bridge.skills.task_runtime import get_registry
 log = structlog.get_logger(__name__)
 
 RETARGET_PERIOD_S = 1.0
+# The skills behind the no_active_walk_task precondition: each loops velocity setpoints.
+WALK_SKILLS = ("walk_to", "turn", "walk_velocity")
+
+
+def active_walk() -> str | None:
+    """The task_id of a walk already running, or None."""
+    return next(
+        (t.task_id for t in get_registry().list_active() if t.skill_name in WALK_SKILLS), None
+    )
 
 
 async def run(
@@ -61,7 +70,15 @@ async def run(
 
     from bridge.sdk.state import get_sampler
 
+    running = active_walk()  # before create(): the new task is a walk too
     task = get_registry().create("walk_to")
+    if running is not None:
+        task.status = "failed"
+        task.phase = "walk_task_active"
+        task.error = f"walk task {running} is still running; cancel_task it or wait"
+        task.ended_at = time.time()
+        log.warning("walk_to.walk_task_active", task_id=task.task_id, running=running)
+        return task.to_dict()
 
     # Checked before the sampler is built, because building one initialises
     # DDS — and a skill that is about to refuse has no business opening a
