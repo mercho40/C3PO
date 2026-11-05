@@ -23,7 +23,8 @@ describe("OpenAI Realtime session contract", () => {
       skill("walk_to", "medium"),
       skill("dangerous_posture", "high"),
     ]);
-    expect(tools.map((tool) => tool.name)).toEqual(["walk_to"]);
+    // `look` is back's own tool, appended after the bridge's.
+    expect(tools.map((tool) => tool.name)).toEqual(["walk_to", "look"]);
   });
 
   test("refuses to start without putting a missing API key on another machine", async () => {

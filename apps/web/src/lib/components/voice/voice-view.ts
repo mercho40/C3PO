@@ -16,18 +16,72 @@
  * Counters are the loop's own, as it reported them. Nothing is recomputed.
  */
 
-import type { VoiceLoopState } from "#lib/robot/voice-loop.js";
+import type { VoiceLoopState, WireEngine } from "#lib/robot/voice-loop.js";
 
 export type Engine = "legacy" | "realtime";
 
+export const ENGINE_WIRE: Record<Engine, WireEngine> = {
+  legacy: "legacy",
+  realtime: "openai-realtime",
+};
+
+const fromWire = (wire: WireEngine | undefined): Engine =>
+  wire === "openai-realtime" ? "realtime" : "legacy";
+
 export function engineOf(state: VoiceLoopState | null): Engine {
-  return state?.engine === "openai-realtime" ? "realtime" : "legacy";
+  return fromWire(state?.engine);
+}
+
+/** What a start without a choice runs on — back's `VOICE_ENGINE`. */
+export function defaultEngineOf(state: VoiceLoopState | null): Engine {
+  return fromWire(state?.defaultEngine ?? state?.engine);
 }
 
 export const ENGINE_LABEL: Record<Engine, string> = {
   legacy: "Local (transcripción + agente)",
   realtime: "OpenAI Realtime (voz a voz)",
 };
+
+export type EngineOption = {
+  key: Engine;
+  label: string;
+  /** Where the audio goes — the one fact that should decide the choice. */
+  detail: string;
+  /** Null when the option can be started; otherwise why not, in words. */
+  unavailable: string | null;
+};
+
+/**
+ * The engine picker's options. Availability is back's word, not a guess: a
+ * back that predates the choice sends no `availableEngines` and ignores the
+ * requested engine, so only the engine it reports is offered then.
+ */
+export function engineOptions(state: VoiceLoopState | null): EngineOption[] {
+  const offered = (key: Engine) =>
+    state?.availableEngines
+      ? state.availableEngines.includes(ENGINE_WIRE[key])
+      : state !== null && engineOf(state) === key;
+  return [
+    {
+      key: "legacy",
+      label: "Local",
+      detail:
+        "El audio no sale del robot: transcribe y habla el robot, y razona TIC AI en el campus.",
+      unavailable: offered("legacy")
+        ? null
+        : "El servidor no ofrece este motor.",
+    },
+    {
+      key: "realtime",
+      label: "OpenAI Realtime",
+      detail:
+        "Voz a voz, más rápida y natural: el audio se envía a OpenAI. No hay frase de parada hablada.",
+      unavailable: offered("realtime")
+        ? null
+        : "Falta OPENAI_API_KEY en apps/back.",
+    },
+  ];
+}
 
 export type StepStatus = "done" | "active" | "todo";
 
