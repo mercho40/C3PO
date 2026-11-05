@@ -25,15 +25,19 @@ let listCalls = 0;
 /** When set, `listTools` waits for it — a bridge that is slow to answer. */
 let gate: Promise<void> | null = null;
 
+// bun shares one module registry across test files, so whichever file loads
+// first decides what client.test.ts imports. Keep the real module and replace
+// only the two calls this file needs: client.test.ts still gets the real
+// failure / sessionLost / error classes, whatever the run order.
+const realClient = await import("#back/bridge/client.js");
 mock.module("#back/bridge/client.js", () => ({
+  ...realClient,
   listTools: async () => {
     listCalls++;
     if (gate) await gate;
     return toolsToReturn;
   },
   callTool: async () => ({}),
-  BridgeUnavailableError: class extends Error {},
-  BridgeToolError: class extends Error {},
 }));
 
 const goodMeta = (name: string, classification = "gesture") => ({
