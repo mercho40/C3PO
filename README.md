@@ -29,6 +29,7 @@ packages/       Reserved for shared TS packages
 | [`docs/ROBOT-API.md`](docs/ROBOT-API.md)           | The G1's reverse-engineered control API — services, api_ids, FSM      |
 | [`docs/ROBOT-HARDWARE.md`](docs/ROBOT-HARDWARE.md) | What the physical robot presents — network, peripherals, cohabitation |
 | [`docs/MONDAY-RUNBOOK.md`](docs/MONDAY-RUNBOOK.md) | Ordered first hardware window — gates, pass criteria, rollbacks       |
+| [`docs/autonomy/`](docs/autonomy/README.md)        | Research and the phased autonomy plan (perception, nav, arms)         |
 | `apps/*/README.md`                                 | Developing each app                                                   |
 
 ## Quickstart
@@ -60,15 +61,16 @@ entries.
 
 ## Commands
 
-| Command               | Description                                           |
-| --------------------- | ----------------------------------------------------- |
-| `bun run dev`         | Start the existing local development servers          |
-| `bun run dev:robot`   | Start API and web against the robot (tunnel first)    |
-| `bun run start`       | Start production builds against the configured bridge |
-| `bun run build`       | Build the monorepo                                    |
-| `bun run check-types` | Type-check across the monorepo                        |
-| `bun run test`        | Test across the monorepo                              |
-| `bun run format`      | Format with Prettier                                  |
+| Command                    | Description                                                             |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `bun run dev`              | Start the existing local development servers                            |
+| `bun run dev:robot`        | Start API and web against the robot (tunnel first)                      |
+| `scripts/robot_session.sh` | Robot session on the Mac: tunnel, robot internet, console, status table |
+| `bun run start`            | Start production builds against the configured bridge                   |
+| `bun run build`            | Build the monorepo                                                      |
+| `bun run check-types`      | Type-check across the monorepo                                          |
+| `bun run test`             | Test across the monorepo                                                |
+| `bun run format`           | Format with Prettier                                                    |
 
 On the robot, the corresponding integrated surface is `c3po up [profile]` and
 `c3po down`; see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). Per-app commands
