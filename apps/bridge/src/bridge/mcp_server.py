@@ -3759,7 +3759,12 @@ async def pick(
     ctx: Context,
     label: Annotated[
         str | None,
-        Field(description="What to pick, as the detector names it ('cup', 'remote', 'wallet'). Spanish works too."),
+        Field(
+            description=(
+                "What to pick: the detector's label exactly ('cup', 'bottle'), or its plain Spanish "
+                "word ('taza'). No partial matches: 'Dixie cup' does not pick a 'cup'."
+            )
+        ),
     ] = None,
     side: _SideAuto = "auto",
     shape: Annotated[
@@ -3767,17 +3772,25 @@ async def pick(
         Field(description="power = wrap (cup, bottle, remote); pinch = small/thin (keys, watch, wallet); hook = handles."),
     ] = "power",
     track_id: Annotated[
-        int | None, Field(description="Pick this exact detection (track_id from describe_surroundings).")
+        int | None,
+        Field(
+            description=(
+                "Pick this exact detection; wins over label. A pick that misses lists the "
+                "graspable detections with their track_id, range and bearing."
+            )
+        ),
     ] = None,
 ) -> dict:
     """Pick up an object the head camera sees right now — a physical arm and hand move.
 
     Needs a FRESH detection of it with depth (turn toward it / look first). Plans the
-    whole motion before moving: open hand, pre-grasp 10 cm short, grasp, close, lift
-    8 cm, then HOLD. Refuses without moving if any pose is out of reach — the G1 arm
-    is short: objects ~25-40 cm in front of the chest, at counter height. There is no
-    touch sensing: call verify('¿tenés X en la mano?') afterwards. Then place,
-    handover, or open_hands.
+    whole motion before moving: open hand, raise it beside the body (shoulder back,
+    elbow up) to 8 cm above the object, forward over the surface, straight down to
+    pre-grasp 10 cm short, grasp, close, lift 8 cm, then HOLD. Refuses without moving
+    if any pose is out of reach — the G1 arm is short: ~30 cm in front of the
+    shoulder, at counter height — and then says how far to walk (walk_velocity) to
+    make it reachable. There is no touch sensing: call verify('¿tenés X en la mano?')
+    afterwards. Then place, handover, or open_hands.
     """
     from bridge.skills import manipulation
 
@@ -3790,13 +3803,14 @@ async def place(
     side: _Side = "right",
     onto: Annotated[
         str | None,
-        Field(description="A detected surface/object to put it on ('table', 'plate'). Omit to set it down right below the hand."),
+        Field(description="A detected surface/object to put it on, by its exact label ('dining table', 'plate'). Omit to set it down right below the hand."),
     ] = None,
     drop_m: Annotated[
         float, Field(ge=0.0, le=0.15, description="Without `onto`: how far to lower before opening.")
     ] = 0.05,
 ) -> dict:
-    """Put down what the hand holds: lower, open, back away, and hand the arm back."""
+    """Put down what the hand holds: lower, open, lift clear, pull back toward the body, and
+    hand the arm back (it lowers beside the body)."""
     from bridge.skills import manipulation
 
     return {**await manipulation.place(side, onto, drop_m, ctx=ctx), "env": SIM_MODE}

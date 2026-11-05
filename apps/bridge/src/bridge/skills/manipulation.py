@@ -60,7 +60,6 @@ WORKSPACE_Y_CROSS = 0.12
 FRESH_DETECTION_S = 1.0
 PREGRASP_BACK_M = 0.10
 LIFT_M = 0.08
-RETREAT_M = 0.08
 #: Depth reads the object's FRONT surface; the grasp closes around its middle.
 #: shortcut: one constant for every object; use the mask's depth spread once wrist cameras exist.
 GRASP_DEPTH_OFFSET_M = 0.02
@@ -82,6 +81,22 @@ LINE_MAX_DQ_RAD = 0.25
 #: that swings the hand ~3 cm off the line. Joint-interpolating in 0.03 rad steps keeps the
 #: joints moving together.
 LINE_JOINT_STEP_RAD = 0.03
+#: The hand stays this far above the support surface whenever it is in front of the body.
+#: One joint-space slew from the arm hanging to pre-grasp swept the hand forward through desk
+#: height into the desk edge (robot, 2026-11-05).
+SURFACE_MARGIN_M = 0.08
+#: The hand rises and lowers no further forward than this (torso_link x): elbow flexed,
+#: shoulder back. Everything in front of it is treated as possibly over the desk, so the desk
+#: edge must be no closer than this (on 2026-11-05 the robot stood 0.3-0.4 m from it).
+#: shortcut: a constant desk-edge proxy; use a fitted support plane once perception reports one.
+TUCK_X_M = (0.16, 0.20, 0.24)  # closest first; further out only where the closer is unreachable
+#: How far the shoulder pitches back before the elbow bends: the elbow sits behind the chest,
+#: so the forearm passes horizontal no further forward than the first tuck point.
+SHOULDER_BACK_RAD = 0.7
+#: Where the arm reaches comfortably, in front of its own shoulder (torso_link). Used to tell
+#: the model how to walk when a target is out of reach.
+COMFORT_X_M = 0.30
+COMFORT_Y_OUT_M = 0.05
 
 
 class PlanError(Exception):
@@ -201,10 +216,92 @@ def _offset(p: tuple[float, ...], d: tuple[float, ...], k: float) -> tuple[float
 Step = tuple[str, str, Any]  # ("arm", phase, q) | ("hand", phase, shape) | ("wait", phase, s)
 
 
+def _check_clear(
+    side: Side, name: str, qs: list[tuple[float, ...]], edge_x: float, clear_z: float
+) -> None:
+    """PlanError if any pose puts the hand in front of `edge_x` below `clear_z`."""
+    for i, q in enumerate(qs):
+        x, _, z = kinematics.forward(side, q).position
+        if x > edge_x + kinematics.POS_TOL_M and z < clear_z - kinematics.POS_TOL_M:
+            raise PlanError(
+                f"{name} {i + 1}/{len(qs)}: the hand would pass {x:.2f} m forward at "
+                f"z={z:.2f} m, below the surface clearance z={clear_z:.2f} m — if the arm is "
+                "already out in front, release_arm_control first so it starts at the side"
+            )
+
+
+def _joint_path(q_from: list[float], q_to: tuple[float, ...]) -> list[tuple[float, ...]]:
+    """q_from -> q_to in LINE_JOINT_STEP_RAD pieces: every joint moves together, as planned,
+    instead of each finishing on its own under arm_sdk's per-joint slew."""
+    jump = max(abs(b - a) for a, b in zip(q_from, q_to, strict=True))
+    n = max(1, math.ceil(jump / LINE_JOINT_STEP_RAD))
+    return [
+        tuple(a + (b - a) * i / n for a, b in zip(q_from, q_to, strict=True))
+        for i in range(1, n + 1)
+    ]
+
+
+def _transit(
+    side: Side,
+    pre: tuple[float, float, float],
+    d: kinematics.Vec3,
+    clear_z: float,
+    seed: list[float] | None,
+) -> list[tuple[str, tuple[float, ...]]]:
+    """From wherever the arm is to `pre` without sweeping through the surface:
+    rise close to the body ("clear"), forward above the surface ("over"), straight down
+    onto pre-grasp ("pre_grasp"). The descent is vertical, over the object's own footprint.
+    """
+    top = max(clear_z, pre[2])
+    # Rise beside the body, on the arm's own side: never across the torso.
+    sy = kinematics.forward(side, [0.0] * 7).joint_origins[0][1]
+    y = sy + (COMFORT_Y_OUT_M if side == "left" else -COMFORT_Y_OUT_M)
+    errors = []
+    for edge in sorted({min(x, pre[0]) for x in TUCK_X_M}):
+        tuck = (edge, y, top)
+        try:
+            q_tuck = _solve(side, "clear", tuck, d, seed)
+            if seed is None:
+                rise = [q_tuck]  # no measured pose (stub, tests): nothing to rise from
+            else:
+                # Shoulder back (the arm swings behind, never forward), then the elbow and
+                # wrist up with the shoulder still back, then the shoulder forward onto the
+                # tuck. One joint-space move bends the elbow with the upper arm hanging: the
+                # forearm swings out horizontally at desk height (robot, 2026-11-05).
+                back = list(seed)
+                back[0] = max(seed[0], q_tuck[0], SHOULDER_BACK_RAD)  # URDF pitch: + is back
+                bent = (back[0], *q_tuck[1:])
+                rise = (
+                    _joint_path(seed, tuple(back))
+                    + _joint_path(back, bent)
+                    + _joint_path(list(bent), q_tuck)
+                )
+            _check_clear(side, "clear", rise, edge, clear_z)
+            break
+        except PlanError as exc:
+            errors.append(str(exc))
+    else:
+        raise PlanError(errors[0])
+    above = (pre[0], pre[1], top)
+    over = _line(side, "over", tuck, above, d, rise[-1])
+    _check_clear(side, "over", over, edge, clear_z)
+    down = _line(side, "pre_grasp", above, pre, d, over[-1])
+    return [
+        *(("clear", q) for q in rise),
+        *(("over", q) for q in over),
+        *(("pre_grasp", q) for q in down),
+    ]
+
+
 def plan_pick(
     side: Side, target: tuple[float, float, float], shape: str, seed: list[float] | None
 ) -> list[Step]:
-    """Open, pre-grasp, grasp, close, lift — every pose solved, or PlanError."""
+    """Open, clear, over, pre-grasp, grasp, close, lift — every pose solved, or PlanError.
+
+    shortcut: the object's own z stands in for the support surface (it is above the real
+    desk top, so it errs high); use a support plane from perception once it reports one.
+    """
+    clear_z = target[2] + SURFACE_MARGIN_M
     errors = []
     for tilt in APPROACH_TILTS_DEG:
         d = _approach(side, target, tilt)
@@ -212,15 +309,15 @@ def plan_pick(
         pre = _offset(grasp, d, -PREGRASP_BACK_M)
         lifted = (grasp[0], grasp[1], grasp[2] + LIFT_M)
         try:
-            q_pre = _solve(side, "pre-grasp", pre, d, seed)
-            approach = _line(side, "grasp", pre, grasp, d, q_pre)
+            transit = _transit(side, pre, d, clear_z, seed)
+            approach = _line(side, "grasp", pre, grasp, d, transit[-1][1])
             lift = _line(side, "lift", grasp, lifted, d, approach[-1])
         except PlanError as exc:
             errors.append(f"tilt {tilt:.0f}°: {exc}")
             continue
         return [
             ("hand", "open", "open"),
-            ("arm", "pre_grasp", q_pre),
+            *(("arm", phase, q) for phase, q in transit),
             *(("arm", "grasp", q) for q in approach),
             ("hand", "close", shape),
             ("wait", "closing", CLOSE_SETTLE_S),
@@ -232,19 +329,65 @@ def plan_pick(
 def plan_place(
     side: Side, target: tuple[float, float, float], seed: list[float] | None
 ) -> list[Step]:
-    """Lower onto `target`, open, back away."""
+    """Lower onto `target`, open, then the reverse of a pick's transit: straight up clear of
+    the surface ("retreat"), back toward the body ("withdraw"). Releasing the arm afterwards
+    lowers it beside the body, behind the desk edge."""
     d = _approach(side, target, 0.0)
     above = (target[0], target[1], target[2] + LIFT_M)
+    clear = (target[0], target[1], max(above[2], target[2] + SURFACE_MARGIN_M))
     q_above = _solve(side, "above", above, d, seed)
     down = _line(side, "down", above, target, d, q_above)
-    back = _line(side, "retreat", target, _offset(target, d, -RETREAT_M), d, down[-1])
+    up = _line(side, "retreat", target, clear, d, down[-1])
+    errors = []
+    for x in TUCK_X_M:
+        try:
+            back = _line(
+                side, "withdraw", clear, (min(x, target[0]), target[1], clear[2]), d, up[-1]
+            )
+            break
+        except PlanError as exc:
+            errors.append(str(exc))
+    else:
+        raise PlanError(errors[0])
     return [
         ("arm", "above", q_above),
         *(("arm", "down", q) for q in down),
         ("hand", "open", "open"),
         ("wait", "opening", CLOSE_SETTLE_S),
-        *(("arm", "retreat", q) for q in back),
+        *(("arm", "retreat", q) for q in up),
+        *(("arm", "withdraw", q) for q in back),
     ]
+
+
+def reach_advice(side: Side, target: tuple[float, float, float]) -> str:
+    """How to walk so `target` sits where this arm reaches comfortably: in front of its own
+    shoulder, COMFORT_X_M ahead. Checked by planning the moved target; says so if even
+    that would not reach (a height problem walking cannot fix)."""
+    sy = kinematics.forward(side, [0.0] * 7).joint_origins[0][1]
+    good = (COMFORT_X_M, sy + (COMFORT_Y_OUT_M if side == "left" else -COMFORT_Y_OUT_M), target[2])
+    fwd, left = target[0] - good[0], target[1] - good[1]
+    moves = []
+    if abs(fwd) >= 0.03:
+        moves.append(
+            f"{abs(fwd):.2f} m {'forward' if fwd > 0 else 'back'} (walk_velocity vx{'>' if fwd > 0 else '<'}0)"
+        )
+    if abs(left) >= 0.03:
+        moves.append(
+            f"{abs(left):.2f} m to the {'LEFT' if left > 0 else 'RIGHT'} (walk_velocity vy{'>' if left > 0 else '<'}0)"
+        )
+    try:
+        plan_pick(side, good, "power", None)
+    except PlanError:
+        return (
+            f"the object's height (z={target[2]:.2f} m from the torso) is out of the {side} arm's "
+            "range; walking will not fix that — pick it from a different surface or ask for help"
+        )
+    if not moves:
+        return f"it is already in front of the {side} shoulder; look again for a fresh detection and retry"
+    return (
+        f"step {' and '.join(moves)} so the object sits {COMFORT_X_M:.2f} m in front of the "
+        f"{side} shoulder, then look again and retry pick"
+    )
 
 
 def handover_point(side: Side) -> tuple[float, float, float]:
@@ -255,36 +398,65 @@ def handover_point(side: Side) -> tuple[float, float, float]:
 # --- targets --------------------------------------------------------------------------------
 
 
+def label_tier(label: str, query: str) -> int | None:
+    """0: the same label (case/accents ignored). 1: the whole query's singular or Spanish
+    translation ('cups', 'taza' -> 'cup'). None otherwise — never a partial match: 'Dixie cup'
+    is not 'cup', and grabbing a different object is worse than asking."""
+    from bridge.object_memory import _STOPWORDS, SYNONYMS, _fold, _singular
+
+    have, want = _fold(label), _fold(query)
+    if have == want:
+        return 0
+    phrase = " ".join(w for w in want.split() if w not in _STOPWORDS)
+    forms = {phrase, _singular(phrase)}
+    if have in forms or any(have in SYNONYMS.get(f, ()) for f in forms):
+        return 1
+    return None
+
+
 def detected_target(
     label: str | None, track_id: int | None
 ) -> tuple[tuple[float, float, float], dict[str, Any]]:
-    """The freshest matching detection, in torso_link. PlanError if there is none."""
-    from bridge.object_memory import label_matches
+    """The freshest matching detection, in torso_link. PlanError if there is none.
+
+    `track_id` wins over `label`. Otherwise the exact label beats a translation, and the most
+    confident detection wins within a tier. A miss lists what IS graspable, with track_ids.
+    """
     from bridge.sdk.perception_link import existing_link
 
     link = existing_link()
     report, age = link.latest_report() if link is not None else (None, None)
     if not report or age is None or age > FRESH_DETECTION_S:
         raise PlanError("no fresh detection report (perception offline or stale) — look first")
-    best: dict[str, Any] | None = None
-    for obj in report.get("objects") or []:
-        if not isinstance(obj, dict) or not isinstance(obj.get("cam_xyz"), list):
-            continue
+    fresh = [
+        obj
+        for obj in report.get("objects") or []
+        if isinstance(obj, dict)
+        and isinstance(obj.get("cam_xyz"), list)
         # The report can be fresh while the frame it repeats is not (age_s: since capture).
-        if age + float(obj.get("age_s") or 0) > FRESH_DETECTION_S:
-            continue
-        if track_id is not None and obj.get("track_id") != track_id:
-            continue
-        if label and not label_matches(str(obj.get("label", "")), label):
-            continue
-        if best is None or float(obj.get("confidence") or 0) > float(best.get("confidence") or 0):
-            best = obj
-    if best is None:
+        and age + float(obj.get("age_s") or 0) <= FRESH_DETECTION_S
+    ]
+    found: list[dict[str, Any]] = []
+    if track_id is not None:
+        found = [o for o in fresh if o.get("track_id") == track_id]
+    elif label:
+        tiers = [(label_tier(str(o.get("label", "")), label), o) for o in fresh]
+        best_tier = min((t for t, _ in tiers if t is not None), default=None)
+        found = [o for t, o in tiers if best_tier is not None and t == best_tier]
+    if not found:
         what = f"track {track_id}" if track_id is not None else repr(label)
+        seen = [
+            f"{o.get('label')!r} track_id={o.get('track_id')} {float(o.get('range_m') or 0):.2f} m "
+            f"{float(o.get('bearing_deg') or 0):+.0f}°"
+            for o in fresh
+            if o.get("label") != "person"
+        ]
         raise PlanError(
-            f"{what} is not in the current detections with a 3-D point — "
-            "turn toward it, or use find_object, then retry"
+            f"{what} is not in the current detections with a 3-D point. Graspable now: "
+            + ("; ".join(seen) if seen else "nothing")
+            + " — retry with that exact label or track_id, or turn toward it / find_object"
         )
+    best = max(found, key=lambda o: float(o.get("confidence") or 0))
     p = kinematics.camera_to_torso(best["cam_xyz"])
     return p, best
 
@@ -481,10 +653,26 @@ async def pick(
         )
     try:
         target, obj = detected_target(label, track_id)
-        arm = choose_side(side, target)
-        steps = plan_pick(arm, target, shape, _measured_q(arm))
     except PlanError as exc:
         return _refused("pick", str(exc))
+    arm = choose_side(side, target)
+    if SIM_MODE == "real" and _measured_q(arm) is None:
+        # Without the start pose the rise is one unchecked slew: the desk-edge hit.
+        return _refused(
+            "pick",
+            "no measured arm pose (arm state offline): cannot plan a path clear of the surface",
+        )
+    try:
+        steps = plan_pick(arm, target, shape, _measured_q(arm))
+    except PlanError as exc:
+        other: Side = "left" if arm == "right" else "right"
+        configured = hands.get_driver().sides
+        if side != "auto" or (configured and other not in configured):
+            return _refused("pick", f"{exc}. {reach_advice(arm, target)}")
+        try:
+            arm, steps = other, plan_pick(other, target, shape, _measured_q(other))
+        except PlanError:
+            return _refused("pick", f"{exc}. {reach_advice(arm, target)}")
     summary = {
         "object": {
             k: obj.get(k) for k in ("label", "track_id", "confidence", "range_m", "depth_source")

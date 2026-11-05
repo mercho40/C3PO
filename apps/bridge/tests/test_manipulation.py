@@ -13,6 +13,11 @@ from bridge.teleop import arm_sdk, hands
 from bridge.teleop.retarget import ArmAngles
 
 REACHABLE = (0.30, -0.15, 0.05)  # torso_link: counter height, in front of the right shoulder
+#: The right arm hanging at the side, the hand just below desk height (URDF angles).
+HANGING = [0.0, -0.15, 0.0, 1.5, 0.0, 0.0, 0.0]
+#: The thermos on the desk, 2026-11-05: planned fine, then the hand hit the desk edge.
+THERMOS = (0.35, -0.16, -0.03)
+PICK_PHASES = ["open", "clear", "over", "pre_grasp", "grasp", "close", "closing", "lift"]
 
 
 def to_optical(p):
@@ -37,7 +42,8 @@ class FakeArm:
     def __init__(self):
         self.engaged = False
         self.weight = 1.0
-        self._t = [0.0] * 14
+        # Both arms hanging at the sides, as the robot stands before a pick.
+        self._t = [HANGING[0], -HANGING[1], *HANGING[2:], *HANGING]
         self.commands: list[tuple[ArmAngles | None, ArmAngles | None]] = []
         self.release_requested = False
         self.on_command = None
@@ -90,6 +96,10 @@ def real(monkeypatch):
     monkeypatch.setattr(m, "CLOSE_SETTLE_S", 0.0)
     monkeypatch.setattr(arm_sdk, "get_driver", lambda: arm)
     monkeypatch.setattr(hands, "get_driver", lambda: hand)
+    # The robot measures the arm before planning; here the fake arm is that measurement.
+    monkeypatch.setattr(
+        m, "_measured_q", lambda side: list(arm._t[0:7] if side == "left" else arm._t[7:14])
+    )
     monkeypatch.setattr(safety, "PERSON_RULE", True)
     safety.reset()
     return arm, hand
@@ -139,7 +149,7 @@ def last_q(steps, phase):
 
 def test_a_pick_plan_opens_first_and_lifts_last():
     steps = m.plan_pick("right", REACHABLE, "power", None)
-    assert phases(steps) == ["open", "pre_grasp", "grasp", "close", "closing", "lift"]
+    assert phases(steps) == PICK_PHASES
     grasp = kinematics.forward("right", last_q(steps, "grasp")).position
     lift = kinematics.forward("right", last_q(steps, "lift")).position
     assert lift[2] - grasp[2] == pytest.approx(m.LIFT_M, abs=0.02)
@@ -181,9 +191,47 @@ def test_approach_and_lift_follow_a_straight_line(target):
 
 def test_place_lowers_and_retreats_in_straight_lines():
     steps = m.plan_place("right", REACHABLE, None)
-    assert phases(steps) == ["above", "down", "open", "opening", "retreat"]
+    assert phases(steps) == ["above", "down", "open", "opening", "retreat", "withdraw"]
     assert max_deviation(steps, "down", "above") < 0.01
     assert max_deviation(steps, "retreat", "down") < 0.01
+    assert max_deviation(steps, "withdraw", "retreat") < 0.01
+
+
+def arm_path(steps, q0, until):
+    """Every hand position arm_sdk slews through from q0 until the last `until` waypoint."""
+    qs = [q0] + [s[2] for s in steps if s[0] == "arm"]
+    last = max(i for i, s in enumerate([s for s in steps if s[0] == "arm"]) if s[1] == until)
+    return [p for a, b in zip(qs, qs[1 : last + 2]) for p in slewed_tcp(a, b)]
+
+
+@pytest.mark.parametrize("target", [THERMOS, REACHABLE, (0.30, -0.15, -0.10), (0.36, -0.25, 0.0)])
+def test_the_hand_never_sweeps_through_the_desk_on_the_way_to_pre_grasp(target):
+    # Robot, 2026-11-05: one slew hanging -> pre-grasp swung the hand into the desk edge.
+    # In front of the body the hand stays above the surface + margin; the only way down
+    # is straight down onto pre-grasp, over the object's footprint.
+    steps = m.plan_pick("right", target, "power", HANGING)
+    pre = kinematics.forward("right", last_q(steps, "pre_grasp")).position
+    clear_z = target[2] + m.SURFACE_MARGIN_M
+    tol = kinematics.POS_TOL_M
+    for x, y, z in arm_path(steps, HANGING, "pre_grasp"):
+        if x > m.TUCK_X_M[0] + tol:
+            descending = math.hypot(x - pre[0], y - pre[1]) < 0.02 and z >= pre[2] - tol
+            assert z >= clear_z - tol or descending, (x, y, z)
+
+
+def test_the_place_retreat_lifts_clear_before_pulling_back():
+    steps = m.plan_place("right", REACHABLE, None)
+    retreat = [kinematics.forward("right", s[2]).position for s in steps if s[1] == "retreat"]
+    withdraw = [kinematics.forward("right", s[2]).position for s in steps if s[1] == "withdraw"]
+    assert retreat[-1][2] >= REACHABLE[2] + m.SURFACE_MARGIN_M - kinematics.POS_TOL_M
+    assert all(p[2] >= retreat[-1][2] - kinematics.POS_TOL_M for p in withdraw)
+    assert withdraw[-1][0] <= m.TUCK_X_M[0] + kinematics.POS_TOL_M  # back beside the body
+
+
+def test_a_hand_already_low_in_front_is_refused_not_swept_back():
+    low_front = kinematics.solve("right", (0.30, -0.15, -0.15), seed=HANGING).q
+    with pytest.raises(m.PlanError, match="release_arm_control"):
+        m.plan_pick("right", THERMOS, "power", list(low_front))
 
 
 def test_every_planned_pose_is_inside_the_urdf_limits():
@@ -203,8 +251,8 @@ def test_a_pose_outside_the_joint_limits_is_a_plan_error(monkeypatch):
 
 def test_the_plan_summary_collapses_each_line_into_one_entry():
     plan = m._plan_dict(m.plan_pick("right", REACHABLE, "power", None))
-    assert [e["phase"] for e in plan] == ["open", "pre_grasp", "grasp", "close", "closing", "lift"]
-    assert plan[2]["waypoints"] >= 10  # 10 cm approach at 1 cm
+    assert [e["phase"] for e in plan] == PICK_PHASES
+    assert plan[PICK_PHASES.index("grasp")]["waypoints"] >= 10  # 10 cm approach at 1 cm
 
 
 def test_an_unreachable_target_never_produces_a_plan():
@@ -217,6 +265,33 @@ def test_the_detection_round_trips_through_the_camera_mount(monkeypatch):
     p, obj = m.detected_target("taza", None)  # Spanish query, English label
     assert obj["label"] == "cup"
     assert p == pytest.approx(REACHABLE, abs=1e-6)
+
+
+def test_a_different_label_is_never_a_match_and_the_miss_lists_what_is_graspable(monkeypatch):
+    # Robot: "Dixie cup" resolved the detection "cup" (track 4300), a different object.
+    see(monkeypatch, cup(track_id=4300, range_m=0.42, bearing_deg=-12.0))
+    with pytest.raises(m.PlanError) as err:
+        m.detected_target("Dixie cup", None)
+    assert "'cup' track_id=4300 0.42 m -12°" in str(err.value)
+    with pytest.raises(m.PlanError, match="'cup' track_id=4300"):
+        m.detected_target("botella de agua", None)
+
+
+def test_the_exact_label_beats_a_translation_and_case_is_ignored(monkeypatch):
+    see(
+        monkeypatch,
+        cup(track_id=1, confidence=0.9),
+        cup(label="Dixie Cup", track_id=2, confidence=0.5),
+    )
+    assert m.detected_target("dixie cup", None)[1]["track_id"] == 2
+    assert m.detected_target("cups", None)[1]["track_id"] == 1
+
+
+def test_a_track_id_wins_over_the_label(monkeypatch):
+    see(monkeypatch, cup(track_id=7), cup(label="bottle", track_id=8, confidence=0.99))
+    assert m.detected_target("bottle", 7)[1]["label"] == "cup"
+    with pytest.raises(m.PlanError, match="track 9 .*'bottle' track_id=8"):
+        m.detected_target("cup", 9)
 
 
 def test_stale_or_depthless_detections_are_not_grasp_targets(monkeypatch):
@@ -250,7 +325,7 @@ async def test_stub_mode_plans_and_moves_nothing(monkeypatch):
     monkeypatch.setattr(arm_sdk, "get_driver", lambda: arm)
     out = await m.pick("cup")
     assert out["status"] == "completed" and out["phase"] == "stub"
-    assert len(out["result"]["plan"]) == 6
+    assert len(out["result"]["plan"]) == len(PICK_PHASES)
     assert not arm.engaged and arm.commands == []
 
 
@@ -350,6 +425,41 @@ async def test_pick_refuses_when_that_hand_is_not_configured(monkeypatch, real):
     assert not arm.engaged
 
 
+@pytest.mark.asyncio
+async def test_an_out_of_reach_pick_says_how_to_walk(monkeypatch, real):
+    # Robot: the centred thermos (y -0.01) failed every tilt; at y -0.16 it planned fine.
+    arm, _hand = real
+    see(monkeypatch, cup(p=(0.35, -0.01, -0.03)))
+    out = await m.pick("cup", side="right")
+    assert out["phase"] == "planning" and not arm.engaged
+    assert "0.05 m forward" in out["error"] and "0.14 m to the LEFT" in out["error"]
+    m.plan_pick("right", (0.30, -0.15, -0.03), "power", None)  # where that walk puts it
+
+
+def test_a_height_no_walk_can_fix_says_so():
+    with pytest.raises(m.PlanError):
+        m.plan_pick("right", (0.30, -0.15, -0.28), "power", None)
+    assert "walking will not fix" in m.reach_advice("right", (0.30, -0.15, -0.28))
+
+
+@pytest.mark.asyncio
+async def test_auto_side_tries_the_other_arm_before_giving_up(monkeypatch, real):
+    _arm, hand = real
+    hand.sides = ("left", "right")
+    see(monkeypatch, cup(p=(0.32, -0.01, -0.03)))
+    plan = m.plan_pick
+
+    def right_fails(side, *a):
+        if side == "right":
+            raise m.PlanError("right: out of reach")
+        return plan(side, *a)
+
+    monkeypatch.setattr(m, "plan_pick", right_fails)
+    out = await m.pick("cup")
+    assert out["status"] == "completed", out
+    assert out["result"]["side"] == "left"
+
+
 def test_brainco_shapes_respect_the_thumb_cap():
     sent = []
 
@@ -364,3 +474,14 @@ def test_brainco_shapes_respect_the_thumb_cap():
     assert sent[-1][1] == pytest.approx(hands.BRAINCO_CLOSURE_CAPS[1])
     d.send("right", 0.5)
     assert sent[-1] == pytest.approx([0.5] * 6)
+
+
+@pytest.mark.asyncio
+async def test_a_pick_without_the_measured_arm_pose_refuses_on_the_robot(monkeypatch, real):
+    # No start pose means no checked rise: the one-slew path that hit the desk.
+    arm, _hand = real
+    monkeypatch.setattr(m, "_measured_q", lambda side: None)
+    see(monkeypatch, cup())
+    out = await m.pick("cup", side="right")
+    assert out["phase"] == "planning" and "measured arm pose" in out["error"]
+    assert not arm.engaged and not arm.commands
