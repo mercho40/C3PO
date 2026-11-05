@@ -108,6 +108,18 @@ function runtimeFailure(output: unknown): string | null {
 }
 
 /**
+ * The tool to offer a "Confirmar" button for, or null: a T2 or high-danger T1
+ * call the bridge refused only because no operator confirmed it (bridge/safety.py's wording).
+ */
+export function needsConfirmation(part: ToolPartLike): string | null {
+  if (part.state !== "output-available") return null;
+  const failure = runtimeFailure(part.output);
+  return failure?.includes("needs an operator's confirmation")
+    ? toolName(part)
+    : null;
+}
+
+/**
  * Classify one tool part for display.
  *
  * `live` is true only for parts of the last message while the chat is busy —
@@ -177,6 +189,27 @@ export function classifyToolPart(
         });
       }
       const toolError = /^tool_error:\s*/.exec(wrapped);
+      const words = toolError ? wrapped.slice(toolError[0].length) : wrapped;
+      // Two refusals are the safety gate working, not a failure: shown amber,
+      // with what the operator can do about it.
+      if (words.includes("needs an operator's confirmation")) {
+        return base({
+          label: "Requiere confirmación",
+          tone: "warn",
+          note: "Un operador debe confirmarlo (una llamada, estos argumentos, 30 s).",
+          detail: words,
+          defaultOpen: false,
+        });
+      }
+      if (words.startsWith("refused: PARAR")) {
+        return base({
+          label: "Detenido (PARAR)",
+          tone: "warn",
+          note: "PARAR sigue activo: «Reanudar» en la barra superior.",
+          detail: words,
+          defaultOpen: false,
+        });
+      }
       return base({
         label: "Error",
         tone: "error",

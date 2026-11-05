@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { LOOK_TOOL, look, type LookDeps } from "./look";
+import { LOOK_TOOL, look, verdict, verify, type LookDeps } from "./look";
 
 const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 
@@ -122,5 +122,53 @@ describe("look", () => {
   test("the tool tells the agent the answer is a reading, not a measurement", () => {
     expect(LOOK_TOOL.description).toContain("describe_surroundings");
     expect(LOOK_TOOL.description).toContain("unavailable");
+  });
+});
+
+describe("verify", () => {
+  test("the model's first word is the verdict; the rest is the reason", () => {
+    expect(verdict("Sí, la mano derecha sostiene la taza.")).toEqual({
+      answer: "yes",
+      reason: "la mano derecha sostiene la taza.",
+    });
+    expect(verdict("No. La mano está vacía.").answer).toBe("no");
+    expect(verdict("«No sé»: la mano queda fuera de la imagen.").answer).toBe(
+      "unsure",
+    );
+    expect(verdict("No se ve la mano.").answer).toBe("unsure");
+    // Not readable as yes or no: never a guessed yes.
+    expect(verdict("Parece que quizás sí").answer).toBe("unsure");
+    expect(verdict("Nosotros vemos una taza").answer).toBe("unsure");
+  });
+
+  test("it asks the vision model in a fixed shape and returns the verdict", async () => {
+    const d = deps({
+      describe: async (question) => {
+        d.asked.push(question);
+        return "No — la taza sigue sobre la mesa.";
+      },
+    });
+    const r = await verify({ question: "¿La mano tiene la taza?" }, d);
+    expect(r.status).toBe("ok");
+    if (r.status !== "ok") return;
+    expect(r.answer).toBe("no");
+    expect(r.reason).toBe("la taza sigue sobre la mesa.");
+    expect(r.question).toBe("¿La mano tiene la taza?");
+    expect(d.asked[0].startsWith("¿La mano tiene la taza?")).toBe(true);
+    expect(d.asked[0]).toContain("«no sé»");
+  });
+
+  test("no picture is unavailable, not a no; no question is an error", async () => {
+    const dark = deps({
+      cameraStatus: async () => ({
+        ok: true,
+        status: 200,
+        body: { live: false },
+      }),
+    });
+    expect((await verify({ question: "¿Hay una taza?" }, dark)).status).toBe(
+      "unavailable",
+    );
+    expect((await verify({}, deps())).status).toBe("error");
   });
 });

@@ -76,6 +76,7 @@ function toEntry(tool: {
     typicalFailureModes: meta.typical_failure_modes,
     classification: meta.classification,
     dangerLevel: meta.danger_level,
+    ...(meta.tier ? { tier: meta.tier } : {}),
     status: meta.status,
     works: meta.works,
   };

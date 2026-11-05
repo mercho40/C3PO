@@ -57,9 +57,12 @@ bun run dev
 ```
 
 Runs on `http://localhost:3000` (`PORT` in `.env` to change). All routes
-except `/health` require a session — sign up / log in via `apps/web`, or
-directly against `POST /api/auth/sign-up/email` (Better Auth's REST surface;
-handy for headless/API-only testing).
+except `/health` require a session. Public sign-up is closed (`disableSignUp`
+on email and on the GitHub/Google providers, `src/lib/auth.ts`), so accounts
+are made from this directory with `bun scripts/create-user.ts <email> <name>
+[--admin]`; the same script takes `--reset-password <email>` and `--delete
+<email>`. Then log in via `apps/web`, or directly against
+`POST /api/auth/sign-in/email` for headless/API-only testing.
 
 `bun scripts/smoke-agent.ts` checks the internal agent's LLM link (key,
 model, tool calling) without needing the bridge, the DB, or a port.

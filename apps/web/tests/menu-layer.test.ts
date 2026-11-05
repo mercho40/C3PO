@@ -16,6 +16,7 @@ import { describe, expect, test } from "bun:test";
 import {
   alertFor,
   firstSelectable,
+  NO_CONTROLLER_STOP_HINT,
   nextSelectable,
   paintMenu,
   readinessFor,
@@ -140,6 +141,46 @@ function stub2d() {
     calls.filter((c) => c.fn === "fillText").map((c) => String(c.args[0]));
   return { ctx: ctx as unknown as CanvasRenderingContext2D, calls, texts };
 }
+
+describe("paintMenu — voice mode", () => {
+  test("draws the conversation above the items, and the talk/PARAR hint", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(
+      ctx,
+      [{ name: "voice:close", label: "Volver a gestos", verified: true }],
+      0,
+      null,
+      null,
+      null,
+      null,
+      [
+        { text: "Vos: Andá hasta la silla", kind: "you" },
+        { text: "Robot: Listo.", kind: "robot" },
+      ],
+    );
+    const t = texts();
+    expect(t).toContain("Hablar con el robot");
+    expect(t.indexOf("Vos: Andá hasta la silla")).toBeLessThan(
+      t.findIndex((x) => x.startsWith("Volver a gestos")),
+    );
+    expect(t.some((x) => x.includes("B/Y") && x.includes("PARAR"))).toBe(true);
+  });
+
+  test("the gestures footer names the PARAR chord too", () => {
+    const { ctx, texts } = stub2d();
+    paintMenu(ctx, REAL, 0, null, null);
+    expect(texts().some((x) => x.includes("2 grips PARAR"))).toBe(true);
+  });
+
+  test("under hand tracking it never advertises a chord that cannot fire", () => {
+    for (const voice of [null, [{ text: "Vos: hola", kind: "you" as const }]]) {
+      const { ctx, texts } = stub2d();
+      paintMenu(ctx, REAL, 0, null, null, null, null, voice, false);
+      expect(texts()).toContain(NO_CONTROLLER_STOP_HINT);
+      expect(texts().some((x) => x.includes("grips"))).toBe(false);
+    }
+  });
+});
 
 describe("paintMenu — what the operator is shown", () => {
   test("draws every item's label", () => {
@@ -336,6 +377,22 @@ describe("alertFor — the latch that stopped you, and how to clear it", () => {
 
   test("nothing latched is no alert at all", () => {
     expect(alertFor(false, false)).toBe(null);
+  });
+
+  test("a low battery shows in the band, below every latch", () => {
+    expect(alertFor(false, false, "warn")?.text).toBe("BATERÍA BAJA");
+    expect(alertFor(false, false, "alert")?.text).toBe("BATERÍA CRÍTICA");
+    expect(alertFor(true, false, "alert")?.text).toBe("LÍMITE DE 8 s");
+    expect(alertFor(false, true, "alert")?.text).toBe("PARADA DE EMERGENCIA");
+  });
+
+  test("a yaw on hold asks for the head at centre, below everything else", () => {
+    expect(alertFor(false, false, null, true)).toEqual({
+      text: "CENTRÁ LA CABEZA",
+      hint: "giro en pausa",
+    });
+    expect(alertFor(false, false, "warn", true)?.text).toBe("BATERÍA BAJA");
+    expect(alertFor(true, false, null, true)?.text).toBe("LÍMITE DE 8 s");
   });
 
   test("the hold latch says to release and push again", () => {

@@ -60,6 +60,7 @@ export const RPC_HINTS: Record<string, string> = {
 /** Phases whose meaning is the same wherever they appear. */
 const PHASE_TEXT: Record<string, string> = {
   teleop_active: "Otro operador tiene la locomoción (teleoperación activa)",
+  teleop_takeover: "El operador del visor tomó el control",
   arm_sdk_engaged: "Los brazos están tomados por el espejo de teleoperación",
   unknown_gesture: "Gesto desconocido",
   bad_arguments: "Parámetros inválidos",
@@ -68,6 +69,8 @@ const PHASE_TEXT: Record<string, string> = {
   release_failed: "Hecho, pero no logró soltar el brazo",
   exception: "Error interno del puente",
   unavailable: "No disponible en este robot",
+  target_lost: "Perdí de vista el objetivo",
+  stale_detection: "La detección es vieja; mirá de nuevo",
 };
 
 const str = (v: unknown): string | null =>
@@ -119,7 +122,7 @@ export function classifySkillResult(body: unknown): SkillOutcome {
   if (status === "failed" || err) {
     const code = err ?? (phase || null);
     const text =
-      (err && RPC_HINTS[err]) ??
+      (err && (RPC_HINTS[err] ?? PHASE_TEXT[err])) ??
       PHASE_TEXT[phase] ??
       (phase === "rpc_error" ? "El robot rechazó el pedido" : null) ??
       "Falló";
@@ -294,6 +297,23 @@ export function classifyHttpError(
       detail: "La orden se envió; puede seguir ejecutándose en el robot.",
       code: "bridge_timeout",
     });
+  }
+  if (code === "confirmation_not_configured") {
+    return make("error", "Falta configurar la confirmación", {
+      detail: "SAFETY_CONFIRM_SECRET en apps/back/.env",
+      code,
+    });
+  }
+  // The operator's Confirmar of a call that is no longer waiting (already
+  // run, cancelled, too old) or that changed under the card: nothing was sent.
+  if (code === "not_pending" || code === "args_mismatch") {
+    return make(
+      "warn",
+      code === "not_pending"
+        ? "Ya no está pendiente"
+        : "No coinciden los argumentos",
+      { detail, code },
+    );
   }
   if (code === "tool_error") {
     return make("error", "El puente devolvió un error", { detail, code });

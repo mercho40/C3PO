@@ -65,6 +65,9 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
   .post(
     "/",
     async ({ body, user, session, status, request }) => {
+      // 1.4: driving the robot through a model is an admin's job, like /invoke.
+      if (user.role !== "admin")
+        return status(403, { error: "admin_required" });
       const messages = body.messages as UIMessage[];
       const latest = messages[messages.length - 1];
 
@@ -101,6 +104,7 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
       const result = await runAgentChat(messages, {
         chatId,
         userId: user.id,
+        mode: body.mode === "voice" ? "voice" : "operator",
         // Aborts when the browser goes away (Stop, or leaving /chat). `onEnd`
         // below still persists what the aborted turn produced.
         abortSignal: request.signal,
@@ -143,6 +147,10 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
         // `messageIdsFor`). A foreign id is harmless — `appendMessage` refuses
         // to update another chat's row and writes a fresh one instead.
         replaceMessageId: t.Optional(t.String({ maxLength: 64 })),
+        // The headset's push-to-talk sends "voice": transcribed speech gets the
+        // voice-mode toolset (no high-danger T1, no damp). A client can only ask
+        // for the stricter mode; anything else stays "operator".
+        mode: t.Optional(t.String({ maxLength: 16 })),
       }),
       detail: {
         summary:

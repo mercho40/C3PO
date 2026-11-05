@@ -17,7 +17,8 @@
     "db:generate": "bunx drizzle-kit generate",
     "db:migrate": "bunx drizzle-kit migrate",
     "db:studio": "bunx drizzle-kit studio",
-    "check-types": "tsc --noEmit"
+    "check-types": "tsc --noEmit",
+    "eval:t0": "bun scripts/eval-agent.ts --tier T0 --expect-env stub"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.68",

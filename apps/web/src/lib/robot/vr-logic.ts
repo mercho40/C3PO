@@ -371,9 +371,9 @@ export type WalkDispatch = "move" | "stop";
  * The 0.5 s stop pulses are precautionary — sent on stream open, on VR exit, on
  * teardown — usually when this page never moved anything. Reporting THOSE
  * refusals would greet a non-admin with "requiere admin" for a stop they never
- * asked for. And while our own teleop stream holds locomotion the bridge refuses
- * `walk_velocity` with `teleop_active` — correctly, and the "other operator" it
- * means is us.
+ * asked for. And while our own teleop stream is driving (it holds the lease only
+ * while it commands motion or the arms) the bridge refuses `walk_velocity` with
+ * `teleop_active` — correctly, and the "other operator" it means is us.
  */
 export type WalkAction = "refuse" | "clear" | "stop_failed" | "ignore";
 
@@ -439,6 +439,27 @@ export function estopHalts(prev: EstopPhase | null, next: EstopPhase): boolean {
   if (next === "sending") return true;
   if (prev === "idle") return true;
   return prev === null && stopInFlight(next);
+}
+
+/**
+ * Whether head yaw must come back to centre before it steers again.
+ *
+ * Set for the headset's own voice turn (decision D4 b), so looking around does
+ * not take over the agent's walk (`busy` covers every turn, questions
+ * included), and by the caller when the session leaves "visible" (Meta menu,
+ * headset off). Released only by a FRESH sample inside the deadzone: pass
+ * `freshYaw` null when there is none, because a stale yaw read at 30 Hz says
+ * nothing about where the head is now. A turn that ends with the head 30 deg
+ * left must not start the robot turning by itself. Yaw steers while false.
+ */
+export function yawNeedsCentre(
+  held: boolean,
+  busy: boolean,
+  freshYaw: number | null,
+  deadzoneRadians: number,
+): boolean {
+  if (busy) return true;
+  return held && (freshYaw === null || Math.abs(freshYaw) >= deadzoneRadians);
 }
 
 /**

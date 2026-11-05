@@ -41,6 +41,7 @@ import {
   precautionaryStopNeeded,
   walkResultAction,
   xrErrorCopy,
+  yawNeedsCentre,
   type StampedOutcome,
   type WalkDispatch,
   type XrErrorCopy,
@@ -49,11 +50,13 @@ import {
   XrTeleopSession,
   checkXrSupport,
   type HandSample,
+  type XrButtons,
   type XrTeleopSupport,
 } from "#lib/webxr/xr-teleop.js";
 import {
   buildFrame,
   connectTeleop,
+  teleopUrl,
   type TeleopFramePayload,
   type TeleopHandle,
   type TeleopState,
@@ -71,6 +74,7 @@ import {
   alertFor,
   type MenuAlert,
   type MenuItem,
+  type VoiceLine,
   type Readiness,
 } from "#lib/webxr/menu-layer.js";
 import { cameraReasonFor, type CameraReason } from "#lib/webxr/camera-layer.js";
@@ -101,6 +105,7 @@ const YAW_DEADZONE_RAD = (6 * Math.PI) / 180; // ignore natural head wobble
 const YAW_FULL_SCALE_RAD = (30 * Math.PI) / 180; // head turn that saturates vyaw
 const YAW_MAX_RAD_S = 0.3; // below the bridge's 0.3 hard cap
 const VR_STALE_MS = 800; // no fresh pose sample in this long -> treat as 0
+export const STOP_CHORD_MS = 300; // both grips this long = PARAR; a relaxed hold is shorter-lived
 
 // USB link probe cadence. See `#startLinkWatch`.
 const LINK_PROBE_MS = 5000;
@@ -119,6 +124,20 @@ export type VrControlOptions = {
    * catalogue. Read when a session starts.
    */
   menuItems?: () => readonly MenuItem[];
+  /** `batteryWarning` for the live reading, shown in the headset's alert band. */
+  battery?: () => "warn" | "alert" | null;
+  /**
+   * "Hablar con el robot" (vr-voice.svelte.ts). `onItem` gets every `voice:*`
+   * menu selection and says whether it took it; `onTalk` is push-to-talk
+   * (B/Y held / released); `cancelTalk` drops a recording without sending it;
+   * `busy` is an agent turn running, during which head yaw does not steer.
+   */
+  voice?: {
+    onItem: (name: string) => boolean;
+    onTalk: (down: boolean) => void;
+    cancelTalk: () => void;
+    busy: () => boolean;
+  };
 };
 
 export class VrControl {
@@ -197,6 +216,9 @@ export class VrControl {
   yawDisplayDeg = $state(0);
   trackingStale = $state(false);
   handsVisible = $state(false);
+  //: Head yaw is on hold until the head comes back to centre (see
+  //: `yawNeedsCentre`) and the head is outside the deadzone: the headset says so.
+  yawPaused = $state(false);
 
   //: OBSERVE-ONLY: watch the robot's view, command nothing.
   //
@@ -271,8 +293,8 @@ export class VrControl {
     return this.teleopState === "open";
   }
 
-  //: The bridge holds locomotion whenever the socket is up — INCLUDING while
-  //: stalled. `streaming` goes false there, which used to re-open the door for
+  //: The bridge holds the teleop lease while this headset commands motion
+  //: (C7) — INCLUDING while stalled. `streaming` goes false there, which used to re-open the door for
   //: this page's own velocity loop: the socket is still OPEN, its 33 Hz sender
   //: is still transmitting, and the moment the bridge starts reading again
   //: both writers are live on SetVelocity. `stalled` is a diagnosis, not a
@@ -325,6 +347,8 @@ export class VrControl {
         (own && this.latchCause === "deadman"),
       this.teleopStatus?.stopped_by_estop === true ||
         (own && this.latchCause === "estop"),
+      this.#battery(),
+      this.yawPaused,
     );
   }
 
@@ -383,7 +407,19 @@ export class VrControl {
   //: held-state at display rate, so without this a single press of A would
   //: cycle the highlight through the whole list in under a tenth of a second
   //: and the trigger would fire the same skill 70 times.
-  #prevButtons = { trigger: false, primary: false };
+  #prevButtons: XrButtons = {
+    trigger: false,
+    primary: false,
+    secondary: false,
+    grips: 0,
+  };
+  #voice: VrControlOptions["voice"];
+  #battery: () => "warn" | "alert" | null;
+  // See `yawNeedsCentre`. The dead-man re-arm reads the real yaw, not this.
+  #yawNeedsCentre = false;
+  // The PARAR chord's hold (see `#applyStopChord`).
+  #chordSince: number | null = null;
+  #chordFired = false;
 
   // Raw pose, updated at XR frame rate (~72-120Hz) -- kept as plain fields
   // rather than $state so looking around doesn't force a Svelte re-render
@@ -407,13 +443,28 @@ export class VrControl {
   // walk_velocity. `destroy()` stops this one too.
   #pendingVr: XrTeleopSession | null = null;
   #teleop: TeleopHandle | null = null;
+  #connectSeq = 0;
   #camHandle: RobotCamHandle | null = null;
   #destroyed = false;
 
   constructor(opts: VrControlOptions) {
     this.#posture = opts.posture;
     this.#menuItems = opts.menuItems ?? (() => []);
+    this.#voice = opts.voice;
+    this.#battery = opts.battery ?? (() => null);
   }
+
+  /** Re-read `menuItems` into a running session (voice mode swaps the list). */
+  refreshMenu(): void {
+    this.#vr?.setMenuItems(this.#menuItems());
+  }
+
+  /** The conversation panel in the headset, or null for the gestures menu. */
+  setMenuVoice(lines: readonly VoiceLine[] | null): void {
+    this.#menuVoice = lines;
+    this.#vr?.setMenuVoice(lines);
+  }
+  #menuVoice: readonly VoiceLine[] | null = null;
 
   /**
    * Browser-only setup. Returns the teardown. Call from `onMount`.
@@ -560,6 +611,8 @@ export class VrControl {
    * power with nobody having asked again.
    */
   #haltForEstop(): void {
+    // Straight down the teleop socket too, so PARAR works with apps/back down.
+    this.#teleop?.stop();
     this.#estopEpoch++;
     this.walking = null;
     this.armsRequested = false;
@@ -746,7 +799,15 @@ export class VrControl {
     // Same rule for the buttons: assume HELD, so a trigger still down from
     // before is not mistaken for a new press that fires a preset. The cost is
     // one release before the next press counts, which is the deliberate act.
-    this.#prevButtons = { trigger: true, primary: true };
+    // B/Y too (a held talk button is not a new utterance; the recording is
+    // dropped), but NOT the grips: a PARAR chord still held should fire.
+    this.#prevButtons = {
+      trigger: true,
+      primary: true,
+      secondary: true,
+      grips: 0,
+    };
+    this.#voice?.cancelTalk();
     if (this.walking !== null) {
       this.walking = null;
       if (!this.bridgeHolds && !this.#loopShouldRun()) {
@@ -756,8 +817,21 @@ export class VrControl {
     }
   }
 
+  /** False while head yaw is held for the headset's voice turn. Updates the hold. */
+  #yawSteers(): boolean {
+    // null: this pose may be stale, so it can set the hold but never release it.
+    this.#yawNeedsCentre = yawNeedsCentre(
+      this.#yawNeedsCentre,
+      this.#voice?.busy() ?? false,
+      null,
+      YAW_DEADZONE_RAD,
+    );
+    return !this.#yawNeedsCentre;
+  }
+
   #computeVyaw(): number {
-    if (!this.vrActive || this.deadManTripped) return 0;
+    const steers = this.#yawSteers(); // first, so the hold sees every busy edge
+    if (!steers || !this.vrActive || this.deadManTripped) return 0;
     if (Date.now() - this.#lastYawSampleAt > VR_STALE_MS) return 0; // tracking stale
     const err = this.#yawErrorRadians;
     const mag = Math.abs(err);
@@ -1113,18 +1187,45 @@ export class VrControl {
    * `runSkill`, so the headset obeys the same lock and outcome rules as the
    * tiles on the page.
    */
-  #applyMenuButtons(b: { trigger: boolean; primary: boolean }): void {
+  /**
+   * IN-HEADSET PARAR: both grips held for STOP_CHORD_MS. Called FIRST in
+   * `onSample`, before anything that could throw, and before the observer
+   * guard: a stop is never anyone's to withhold. Same `estop.press()` as the
+   * page's button (it also ends agent turns). The hold is what keeps a relaxed
+   * grip on both controllers from stopping the robot; one hand never counts.
+   */
+  #applyStopChord(grips: number, now: number): void {
+    if (grips < 2) {
+      this.#chordSince = null;
+      this.#chordFired = false;
+      return;
+    }
+    this.#chordSince ??= now;
+    if (!this.#chordFired && now - this.#chordSince >= STOP_CHORD_MS) {
+      this.#chordFired = true;
+      void estop.press();
+    }
+  }
+
+  #applyMenuButtons(b: XrButtons): void {
     const prev = this.#prevButtons;
     this.#prevButtons = { ...b };
     // Observers cycle the highlight — reading the list is not commanding — but
     // the trigger does nothing.
     if (b.primary && !prev.primary) this.#vr?.advanceMenu();
     if (this.viewOnly) return;
+    // Push-to-talk on B/Y: an utterance commands the robot, so observers get
+    // none (the guard above).
+    if (b.secondary !== prev.secondary) this.#voice?.onTalk(b.secondary);
     if (!(b.trigger && !prev.trigger)) return;
     // `menuSelection` returns null for anything unverified, so this cannot
     // dispatch untested motion even if the highlight somehow sat on it.
     const item = this.#vr?.menuSelection;
     if (!item) return;
+    if (item.name.startsWith("voice:")) {
+      this.#voice?.onItem(item.name);
+      return;
+    }
     void this.runSkill(item.name, item.label, item.name);
   }
 
@@ -1175,17 +1276,29 @@ export class VrControl {
     const session = new XrTeleopSession(
       {
         onSample: (s) => {
+          this.#applyStopChord(s.buttons.grips, Date.now());
           this.#yawErrorRadians = s.yawErrorRadians;
           this.#headPosition = s.headPosition;
           this.#handLeft = s.left;
           this.#handRight = s.right;
           this.#lastYawSampleAt = Date.now();
+          this.#noteYawHold(s.yawErrorRadians);
           this.#noteHandsVisible();
           this.#applyWalkAxis(s.walkAxis);
           this.#applyMenuButtons(s.buttons);
         },
+        onVisibility: (v) => {
+          if (v === "visible") return;
+          // Samples stop under the overlay: zero yaw and arms now, not VR_STALE_MS later.
+          this.#lastYawSampleAt = 0;
+          // Coming back is not a deliberate act: steer again only from centre.
+          this.#yawNeedsCentre = true;
+          this.releaseAllControls();
+        },
         onEnd: () => {
           this.vrActive = false;
+          // A recording still held when the headset came off is not a command.
+          this.#voice?.cancelTalk();
           // Back to commanding by default. Observe-only is a property of ONE
           // session, chosen on the way in; leaving it latched would mean the
           // next operator's "Entrar en VR" silently did nothing to the robot
@@ -1264,6 +1377,7 @@ export class VrControl {
     session.setCameraReason(this.#cameraReason());
     // The preset list, each entry's verification status from the catalogue.
     session.setMenuItems(this.#menuItems());
+    session.setMenuVoice(this.#menuVoice);
     session.setMenuVisible(true);
     // The watchers keep these current, but they cannot fire just because a
     // session now exists — the first values go in here.
@@ -1324,7 +1438,7 @@ export class VrControl {
       vrActive: this.vrActive,
       lastSampleAt: this.#lastYawSampleAt,
       staleAfterMs: VR_STALE_MS,
-      yawErrorRadians: this.#yawErrorRadians,
+      yawErrorRadians: this.#yawSteers() ? this.#yawErrorRadians : 0,
       yawDeadzoneRadians: YAW_DEADZONE_RAD,
       headPosition: this.#headPosition,
       left: this.#handLeft,
@@ -1332,6 +1446,22 @@ export class VrControl {
       walking: this.walking,
       armsRequested: this.armsRequested,
     });
+  }
+
+  /** The only place the centre hold is released: a fresh sample. XR loop rate. */
+  #noteYawHold(yaw: number): void {
+    const busy = this.#voice?.busy() ?? false;
+    this.#yawNeedsCentre = yawNeedsCentre(
+      this.#yawNeedsCentre,
+      busy,
+      yaw,
+      YAW_DEADZONE_RAD,
+    );
+    // Guarded: $state written at frame rate re-renders at frame rate. Not
+    // during the turn itself, where the voice panel already says what is going on.
+    const paused =
+      this.#yawNeedsCentre && !busy && Math.abs(yaw) >= YAW_DEADZONE_RAD;
+    if (paused !== this.yawPaused) this.yawPaused = paused;
   }
 
   /** Mirror hand visibility into the UI, cheaply. Called from the XR loop. */
@@ -1343,7 +1473,7 @@ export class VrControl {
     if (seen !== this.handsVisible) this.handsVisible = seen;
   }
 
-  connectStream(): void {
+  async connectStream(): Promise<void> {
     // Opening this socket is exactly what makes the headset a commander, and
     // the bridge PULLS from it — so one tap would turn a session somebody
     // entered as passive into one that drives, with nothing visible changing
@@ -1353,11 +1483,29 @@ export class VrControl {
     // commander the moment the session ended and `viewOnly` reset.
     if (this.viewOnly) return;
     this.#teleop?.close();
+    this.#teleop = null;
     this.teleopStatus = null;
+    this.teleopState = "connecting";
+    const attempt = ++this.#connectSeq;
+    // The bridge's handshake token. null (no secret configured, or back
+    // unreachable) connects without one; the bridge decides.
+    let token: string | null = null;
+    try {
+      const res = await createApi(fetch).teleop.token.get({
+        fetch: { signal: AbortSignal.timeout(3000) },
+      });
+      token = res.data?.token ?? null;
+    } catch {
+      token = null;
+    }
+    // A disconnect, a second connect, observe-only or teardown arrived meanwhile.
+    if (attempt !== this.#connectSeq || this.viewOnly || this.#destroyed)
+      return;
     const host = PUBLIC_TELEOP_HOST || location.hostname;
     const port = PUBLIC_TELEOP_PORT || "8767";
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    this.#teleop = connectTeleop(`${protocol}://${host}:${port}`, {
+    const url = teleopUrl(`${protocol}://${host}:${port}`, token);
+    this.#teleop = connectTeleop(url, {
       getFrame: () => this.#buildTeleopFrame(),
       onState: (state, detail) => {
         this.teleopState = state;
@@ -1394,6 +1542,7 @@ export class VrControl {
   }
 
   disconnectStream(): void {
+    this.#connectSeq++; // cancels a connect still waiting for its token
     this.armsRequested = false;
     this.#teleop?.close();
     this.#teleop = null;

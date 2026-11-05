@@ -17,6 +17,7 @@
 <script lang="ts">
   import AwarenessPanel from "#lib/components/awareness-panel.svelte";
   import VoiceControl from "#lib/components/voice-control.svelte";
+  import PendingConfirmations from "#lib/components/voice/pending-confirmations.svelte";
   import SayBox from "#lib/components/voice/say-box.svelte";
   import Transcripts from "#lib/components/voice/transcripts.svelte";
   import { engineOf } from "#lib/components/voice/voice-view.js";
@@ -33,6 +34,7 @@
 <div class="grid gap-4 pb-2 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
   <div class="flex min-w-0 flex-col gap-4">
     <VoiceControl />
+    <PendingConfirmations />
 
     {#if data.isAdmin}
       <SayBox

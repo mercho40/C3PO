@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as chats from "#back/db/chats.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -23,8 +24,27 @@ describe("OpenAI Realtime session contract", () => {
       skill("walk_to", "medium"),
       skill("dangerous_posture", "high"),
     ]);
-    // `look` is back's own tool, appended after the bridge's.
-    expect(tools.map((tool) => tool.name)).toEqual(["walk_to", "look"]);
+    // `look` and `verify` are back's own tools, appended after the bridge's.
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "walk_to",
+      "look",
+      "verify",
+    ]);
+  });
+
+  test("the bridge's own look and verify are not offered next to back's: one name, one tool", () => {
+    const tools = realtimeTools([
+      skill("look", "low"),
+      skill("verify", "low"),
+      skill("walk_to", "medium"),
+    ]);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "walk_to",
+      "look",
+      "verify",
+    ]);
+    for (const t of tools.slice(1))
+      expect(t.description).not.toBe(`${t.name} description`);
   });
 
   test("refuses to start without putting a missing API key on another machine", async () => {
@@ -81,5 +101,90 @@ describe("a function call the session never declared", () => {
     const guard = body.indexOf("if (!this.declaredTools.has(name)) {");
     expect(guard).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(body.indexOf("await callTool(name, args)"));
+  });
+});
+
+describe("an operator's decision on a call this session asked for", () => {
+  // No database in tests: record what would be written instead. Restored after
+  // each test: bun shares modules across files, and a spy left on db/chats.js
+  // would swallow every other file's writes.
+  const written: { chatId: string; role: string; parts: unknown[] }[] = [];
+  let append: ReturnType<typeof spyOn> | null = null;
+  beforeEach(() => {
+    append = spyOn(chats, "appendMessage").mockImplementation(async (m) => {
+      written.push(m);
+      return "msg";
+    });
+  });
+  afterEach(() => {
+    append?.mockRestore();
+    written.length = 0;
+  });
+  // The socket and state are private and need a live OpenAI connection; a fake
+  // open socket stands in for it.
+  function session(running: boolean) {
+    const sent: unknown[] = [];
+    const s = new RealtimeVoiceSession();
+    const inner = s as unknown as {
+      socket: unknown;
+      state: { running: boolean; chatId: string | null };
+    };
+    inner.socket = {
+      readyState: 1, // ws OPEN
+      send: (raw: string) => sent.push(JSON.parse(raw)),
+    };
+    inner.state.running = running;
+    inner.state.chatId = "chat_rt";
+    return { s, sent };
+  }
+
+  test("its own chat's outcome reaches the model, which is asked to answer", () => {
+    const { s, sent } = session(true);
+    s.informOutcome("chat_rt", "El operador confirmó y se ejecutó pick.");
+    expect(sent).toEqual([
+      {
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: "El operador confirmó y se ejecutó pick.",
+            },
+          ],
+        },
+      },
+      { type: "response.create" },
+    ]);
+  });
+
+  test("the outcome is written into that voice chat's transcript", async () => {
+    const { s } = session(true);
+    s.informOutcome("chat_rt", "El operador canceló pick: no se ejecutó.");
+    await (s as unknown as { eventTail: Promise<void> }).eventTail;
+    expect(written).toEqual([
+      {
+        id: expect.any(String),
+        chatId: "chat_rt",
+        role: "system",
+        parts: [
+          { type: "text", text: "El operador canceló pick: no se ejecutó." },
+        ],
+      } as never,
+    ]);
+    const other = session(true);
+    other.s.informOutcome("chat_other", "x");
+    await (other.s as unknown as { eventTail: Promise<void> }).eventTail;
+    expect(written).toHaveLength(1);
+  });
+
+  test("another chat, or a stopped session, hears nothing", () => {
+    const other = session(true);
+    other.s.informOutcome("chat_other", "x");
+    expect(other.sent).toEqual([]);
+    const stopped = session(false);
+    stopped.s.informOutcome("chat_rt", "x");
+    expect(stopped.sent).toEqual([]);
   });
 });

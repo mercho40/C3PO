@@ -107,6 +107,27 @@ describe("classifySkillResult", () => {
     expect(o.text).toContain("teleoperación");
   });
 
+  test("teleop_takeover says the headset took over", () => {
+    const o = classifySkillResult({
+      status: "failed",
+      phase: "teleop_takeover",
+    });
+    expect(o.kind).toBe("error");
+    expect(o.text).toContain("El operador del visor tomó el control");
+  });
+
+  test("go_to_object's target_lost phase and stale_detection error are named", () => {
+    expect(
+      classifySkillResult({ status: "failed", phase: "target_lost" }).text,
+    ).toBe("Perdí de vista el objetivo");
+    const stale = classifySkillResult({
+      status: "failed",
+      error: "stale_detection",
+    });
+    expect(stale.text).toBe("La detección es vieja; mirá de nuevo");
+    expect(stale.code).toBe("stale_detection");
+  });
+
   test("a stub bridge's {status: ok, stub: true} is not success", () => {
     const o = classifySkillResult({ status: "ok", stub: true });
     expect(o.kind).toBe("warn");
@@ -145,6 +166,13 @@ describe("classifyHttpError", () => {
     const o = classifyHttpError(403, { error: "admin_required" });
     expect(o.kind).toBe("warn");
     expect(o.code).toBe("admin_required");
+  });
+
+  test("confirmation_not_configured names the missing secret", () => {
+    const o = classifyHttpError(503, { error: "confirmation_not_configured" });
+    expect(o.kind).toBe("error");
+    expect(o.text).toContain("Falta configurar la confirmación");
+    expect(o.detail).toContain("SAFETY_CONFIRM_SECRET");
   });
 
   test("tool_error carries the bridge's detail", () => {

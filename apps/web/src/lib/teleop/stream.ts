@@ -7,8 +7,9 @@
  * round-trip, a task-registry entry and a progress notification in the path of
  * every frame. The onboard launcher exposes it directly on the robot LAN.
  *
- * The consequence to be honest about: this socket has no authentication of its
- * own. Treat the LAN as part of the robot's control boundary.
+ * It is on the LAN, so the bridge gates the handshake: the console's Origin, plus
+ * a short-lived token from apps/back (`GET /teleop/token`, see `teleopUrl`)
+ * when TELEOP_SECRET is set. Without a secret it still accepts, and warns.
  *
  * Two policies live here rather than in the WebXR module or in the page:
  *
@@ -74,10 +75,18 @@ export type TeleopFramePayload = {
       grip?: number;
     };
   };
+  /** The headset's PARAR. Optional and v1: an older bridge ignores it. */
+  estop?: boolean;
 };
 
 export type TeleopHandle = {
   close: () => void;
+  /**
+   * PARAR straight to the bridge, so it works with apps/back down. Only while
+   * the stream is open: without it the stop has only back's path, and the
+   * headset's own motion goes through back too.
+   */
+  stop: () => void;
 };
 
 export type TeleopCallbacks = {
@@ -92,6 +101,14 @@ export type TeleopCallbacks = {
 };
 
 export const PROTOCOL_VERSION = 1;
+
+/** The socket URL carrying apps/back's token, which the bridge checks on the handshake. */
+export function teleopUrl(base: string, token: string | null): string {
+  if (!token) return base;
+  const url = new URL(base);
+  url.searchParams.set("token", token);
+  return url.toString();
+}
 const SEND_INTERVAL_MS = 33; // ~30 Hz
 
 /** The payload for "operator is holding nothing", used before the first update. */
@@ -218,7 +235,7 @@ export function connectTeleop(
       "error",
       err instanceof Error ? err.message : String(err),
     );
-    return { close: () => {} };
+    return { close: () => {}, stop: () => {} };
   }
 
   socket.addEventListener("open", () => {
@@ -306,6 +323,24 @@ export function connectTeleop(
   });
 
   return {
+    stop: () => {
+      // Never skipped for `bufferedAmount`: a backed-up link is when a stop
+      // matters most, and one frame is not what backs it up.
+      if (socket?.readyState !== WebSocket.OPEN) return;
+      try {
+        socket.send(
+          JSON.stringify({
+            v: PROTOCOL_VERSION,
+            seq: seq++,
+            t: Math.round(performance.now()),
+            ...idlePayload(),
+            estop: true,
+          }),
+        );
+      } catch {
+        // apps/back's PARAR is fired alongside this; it does not depend on it.
+      }
+    },
     close: () => {
       closed = true;
       if (timer) clearInterval(timer);

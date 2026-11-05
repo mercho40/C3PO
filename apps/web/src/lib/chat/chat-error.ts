@@ -57,6 +57,10 @@ export function cleanCause(raw: string | null | undefined): string | null {
  *   streaming; null for errors that arrived inside a 200 stream, or when no
  *   HTTP answer came back at all.
  */
+/** back's 403 `admin_required` on /agent and /voice (1.4), in the console and the headset. */
+export const ADMIN_REQUIRED_HINT =
+  "Se requiere una cuenta admin para hablar con el robot.";
+
 export function describeChatError(
   message: string | null | undefined,
   httpStatus: number | null,
@@ -76,6 +80,9 @@ export function describeChatError(
 
   if (httpStatus === 401) {
     return view("Tu sesión venció. Iniciá sesión de nuevo.", false);
+  }
+  if (httpStatus === 403 && message?.includes("admin_required")) {
+    return view(ADMIN_REQUIRED_HINT, false);
   }
   if (httpStatus === 403) {
     return view(
