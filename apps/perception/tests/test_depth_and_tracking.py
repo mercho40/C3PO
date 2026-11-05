@@ -79,6 +79,46 @@ def test_a_mask_over_nothing_but_holes_falls_back_to_the_inner_region():
     assert z == 2.0
 
 
+# --- near_m: the near face, for "stop this far from it" ------------------------
+
+
+def chair_front_and_back() -> list[list[int]]:
+    """A 40x40 box at the image centre: left third of its columns 1.0 m (the seat's
+    front edge), the rest 1.5 m (the backrest), every fourth pixel a hole."""
+    depth = [[0] * 640 for _ in range(480)]
+    fill(depth, (300, 220, 314, 260), 1000)
+    fill(depth, (314, 220, 340, 260), 1500)
+    for v in range(220, 260):
+        for u in range(300 + v % 4, 340, 4):
+            depth[v][u] = 0
+    return depth
+
+
+def test_near_m_is_the_horizontal_range_of_the_near_face_and_range_m_the_middle():
+    level_at_base = CameraExtrinsic(x_m=0.0, y_m=0.0, z_m=1.20, pitch_deg=0.0)
+    box = (300, 220, 340, 260)
+    mask = [[True] * 40 for _ in range(40)]  # the whole box: the inner region would miss the front
+    g = ground_box(box, chair_front_and_back(), INTR, extr=level_at_base, mask=mask)
+    assert g is not None and g.depth_source == "direct"
+    assert g.near_m is not None and abs(g.near_m - 1.0) < 1e-9  # zeros dropped, not "at the lens"
+    assert g.depth_m == 1.5 and g.range_m > g.near_m + 0.4  # range_m unchanged: the median
+
+
+def test_near_m_uses_the_same_horizontal_projection_as_range_m():
+    depth = [[0] * 640 for _ in range(480)]
+    fill(depth, (300, 340, 340, 380), 1000)  # one depth, so near face == middle
+    g = ground_box((300, 340, 340, 380), depth, INTR, extr=DEFAULT_CAMERA_EXTRINSIC)
+    assert g is not None and g.near_m is not None
+    assert abs(g.near_m - g.range_m) < 1e-9
+
+
+def test_the_plane_fallback_has_no_near_m():
+    depth = table_scene()
+    fill(depth, GLASS, 3000)
+    g = ground_box(GLASS, depth, INTR, extr=LEVEL_CAM)
+    assert g is not None and g.depth_source == "plane" and g.near_m is None
+
+
 # --- the support plane ----------------------------------------------------------
 
 
@@ -256,6 +296,8 @@ def test_every_ranged_object_carries_a_track_id_and_a_depth_source():
     by_label = {o["label"]: o for o in objects}
     assert by_label["drinking glass"]["depth_source"] == "plane"
     assert by_label["backpack"]["depth_source"] == "direct"
+    assert by_label["backpack"]["near_m"] == by_label["backpack"]["range_m"]  # flat: same face
+    assert "near_m" not in by_label["drinking glass"]  # plane: no face of its own
     assert {o["track_id"] for o in objects} == {1, 2}
     # The optical-frame point the bridge's arm IK uses: z is the depth that was ranged.
     bag = by_label["backpack"]["cam_xyz"]

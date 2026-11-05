@@ -390,16 +390,23 @@ async def go_to_object(
     ],
     stop_distance_m: Annotated[
         float,
-        Field(ge=0.5, le=2.0, description="Stop this far from the object, metres."),
+        Field(
+            ge=0.5,
+            le=2.0,
+            description="Stop this far from the object, metres: from the robot's front to the object's near side.",
+        ),
     ] = 0.7,
 ) -> dict:
     """Walk to an object the camera sees now, or saw in the last 10 minutes.
 
     Use this for "andá hasta la silla" / "go to the backpack". It needs NO
     map: it takes the object's range and bearing from the detector (or from
-    object memory, so `look_around` first helps) and stops `stop_distance_m`
-    short. Refuses targets over 4 m, and live detections over 1 s old
-    (`stale_detection`: look again). Two result shapes:
+    object memory, so `look_around` first helps) and stops with the robot's
+    front `stop_distance_m` from the object's near side. Without a near-side
+    reading (memory, an older detector) the stop is measured from the object's
+    centre and `target.range_to` says "centre". Refuses targets over 4 m, and
+    live detections over 1 s old (`stale_detection`: look again). Two result
+    shapes:
 
     - Nav2 active and the gate already armed by a person: status 'started',
       `via: 'nav2'` and a task_id at once; Nav2 plans around obstacles. Poll
@@ -410,7 +417,10 @@ async def go_to_object(
       about once a second; the person rule still slows and stops it. Phase
       'target_lost' when the object stayed out of the detections while in view.
 
-    Both carry `target` (label, range, bearing, live or memory).
+    Both carry `target` (label, range, bearing, live or memory). The camera
+    walk also carries `clearance_m` (front to near side, the number to tell the
+    user) and a `note` saying what was measured; `final_distance_m` is from the
+    pelvis, never the gap.
     """
     import time as _time
 
@@ -433,10 +443,12 @@ async def go_to_object(
     )
     if "error" in target:
         return target
-    if target["range_m"] > g.MAX_RANGE_M:
+    # aim_rng: near face if measured, else centre; stop: base_link's stop from that point.
+    aim_rng, stop = g.approach(target, stop_distance_m)
+    if aim_rng > g.MAX_RANGE_M:
         return {
             "error": "too_far",
-            "detail": f"{target['label']} is {target['range_m']:.1f} m away; walk closer first (max {g.MAX_RANGE_M} m).",
+            "detail": f"{target['label']} is {aim_rng:.1f} m away; walk closer first (max {g.MAX_RANGE_M} m).",
             "target": target,
         }
     rounded = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in target.items()}
@@ -462,7 +474,7 @@ async def go_to_object(
             "detail": "the detection is older than the odometry history; look at it again.",
             "target": rounded,
         }
-    tx, ty = g.world_target(*at, target["range_m"], target["bearing_deg"])
+    tx, ty = g.world_target(*at, aim_rng, target["bearing_deg"])
     log.info("go_to_object.called", query=query, target=target, world_target=(tx, ty))
 
     # Nav2 when it is up and a person already armed the gate. Never armed here.
@@ -484,9 +496,9 @@ async def go_to_object(
     # The object relative to the robot NOW on vendor odometry, applied to Nav2's
     # own pose: the two frames' absolute coordinates are never mixed.
     rng_now, brg_now = egocentric({"x_m": x, "y_m": y, "yaw_deg": math.degrees(yaw)}, tx, ty)
-    if nav_pose is not None and rng_now > stop_distance_m:
+    if nav_pose is not None and rng_now > stop:
         gx, gy = g.world_target(
-            nav_pose["x"], nav_pose["y"], nav_pose["yaw"], rng_now - stop_distance_m, brg_now
+            nav_pose["x"], nav_pose["y"], nav_pose["yaw"], rng_now - stop, brg_now
         )
         started = await _start_navigation(
             gx,
@@ -509,10 +521,10 @@ async def go_to_object(
         points = []
         for o, age in g.live_matches(target["label"], live, live_age)[0]:
             seen_from = aim_from(age, now_pose)
-            if seen_from is not None:
-                points.append(
-                    g.world_target(*seen_from, float(o["range_m"]), float(o["bearing_deg"]))
-                )
+            # Same kind of range as the walk: a near-face walk skips sightings without one.
+            rng = g.aim_range(o, to_near_face="near_m" in target)
+            if seen_from is not None and rng is not None:
+                points.append(g.world_target(*seen_from, rng, float(o["bearing_deg"])))
         old = follow.target
         new = follow.update(points, now_pose, _time.monotonic())
         if new is None:
@@ -527,7 +539,7 @@ async def go_to_object(
     result = await run_walk_to(
         target_x=tx,
         target_y=ty,
-        stop_distance_m=stop_distance_m,
+        stop_distance_m=stop,
         timeout_s=60.0,
         ctx=ctx,
         autonomous=True,
@@ -536,7 +548,7 @@ async def go_to_object(
     via: dict[str, Any] = {"via": "walk_to"}
     if refusal is not None:
         via["nav2_refused"] = refusal["reason"]
-    return {**result, **via, "target": rounded, "env": SIM_MODE}
+    return {**result, **via, **g.report(result, target), "target": rounded, "env": SIM_MODE}
 
 
 # ---------------------------------------------------------------------------

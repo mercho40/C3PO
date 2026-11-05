@@ -32,6 +32,53 @@ DRIFT_M = 1.5
 LOST_AFTER_S = 3.0
 # Closer than this the pitched head camera cuts the object out of frame: keep the last fix.
 NEAR_M = 1.2
+# base_link (pelvis) -> the robot's front. URDF g1_29dof_rev_1_0: toe contact spheres at
+# x=0.12 (all joints zero), 0.09 standing; knees 0.03. Collision is meshes, so 0.15 with margin.
+BODY_FRONT_M = 0.15
+# base_link never stops closer than this to a near face, whatever stop_distance_m says.
+MIN_BASE_TO_FACE_M = BODY_FRONT_M + 0.1
+
+
+def aim_range(obj: dict[str, Any], to_near_face: bool) -> float | None:
+    """The range to walk at: the near face (`near_m`) or the object's centre (`range_m`).
+    None when a near-face walk meets a sighting without a near face."""
+    value = obj.get("near_m") if to_near_face else obj.get("range_m")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def approach(target: dict[str, Any], stop_distance_m: float) -> tuple[float, float]:
+    """(range to walk at, how far base_link stops from that point).
+
+    With `near_m` the robot's FRONT stops stop_distance_m from the near face, so base_link
+    stops BODY_FRONT_M further back. Without it (old detector, memory) the stop is from the
+    centre, as it always was.
+    """
+    if "near_m" in target:
+        return target["near_m"], max(stop_distance_m + BODY_FRONT_M, MIN_BASE_TO_FACE_M)
+    return target["range_m"], stop_distance_m
+
+
+def report(walk: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+    """What the model is told it measured: the front-to-near-face gap, or that it has none."""
+    final = (walk.get("result") or {}).get("final_distance_m")
+    if "near_m" not in target:
+        return {
+            "note": (
+                "final_distance_m is from the robot's pelvis to the object's CENTRE "
+                "(no near-face reading); its near side and the robot's front are closer."
+            )
+        }
+    if not isinstance(final, (int, float)):
+        return {}
+    clearance = round(final - BODY_FRONT_M, 2)
+    return {
+        "clearance_m": clearance,
+        "note": (
+            f"clearance_m ({clearance} m) is the gap from the robot's front to the object's "
+            "near side, measured by depth camera; say that number. final_distance_m is "
+            "from the pelvis."
+        ),
+    }
 
 
 def live_matches(
@@ -76,7 +123,8 @@ def resolve(
     frame: str | None = None,
     live_age_s: float | None = None,
 ) -> dict[str, Any]:
-    """Pick the target. Returns {range_m, bearing_deg, label, source} or {error, ...}.
+    """Pick the target. Returns {range_m, bearing_deg, label, source} plus `near_m` (near
+    face) or `range_to: "centre"`, or {error, ...}.
 
     `live_age_s` is the report's own age; live targets carry `age_s` since capture
     (None when the detector sent none).
@@ -87,13 +135,15 @@ def resolve(
     fresh, stale = live_matches(query, live_objects, live_age_s)
     if fresh:
         best, age = max(fresh, key=lambda m: float(m[0].get("confidence") or 0.0))
-        return {
+        live = {
             "label": best["label"],
             "range_m": float(best["range_m"]),
             "bearing_deg": float(best["bearing_deg"]),
             "source": "live",
             "age_s": age,
         }
+        near = aim_range(best, to_near_face=True)
+        return {**live, "near_m": near} if near is not None else {**live, "range_to": "centre"}
     if stale:
         return {
             "error": "stale_detection",
@@ -121,6 +171,7 @@ def resolve(
                 "bearing_deg": bearing,
                 "source": "memory",
                 "seen_s_ago": round(now - entry.last_seen, 1),
+                "range_to": "centre",
             }
     return {
         "error": "not_found",

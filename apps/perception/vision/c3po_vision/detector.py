@@ -16,9 +16,9 @@ WHAT THIS PUBLISHES, AND WHY EVERY TICK
      "unranged": [...]}
 
 `objects` are ALREADY EGOCENTRIC — label, range_m, bearing_deg, confidence,
-exactly `world_model.Observation`'s keyword arguments — plus three ADDITIVE
-fields older consumers ignore: `track_id` (tracking.py), `cam_xyz` (optical-frame point, m) and `depth_source`
-("direct" | "plane", grounding.ground_box). `unranged` (also additive) holds
+exactly `world_model.Observation`'s keyword arguments — plus ADDITIVE
+fields older consumers ignore: `track_id` (tracking.py), `cam_xyz` (optical-frame point, m), `depth_source`
+("direct" | "plane", grounding.ground_box) and, for "direct" only, `near_m` (the near face's range). `unranged` (also additive) holds
 what was SEEN but could not be ranged — label, bearing_deg, confidence,
 track_id, depth_source "invalid" — kept out of `objects` because a thing with
 no range is not an obstacle at range 0. D2.2 option 1: this
@@ -1060,6 +1060,8 @@ def ground_all(
             continue
         obj = to_observation(label, g, confidence)
         obj["depth_source"] = g.depth_source
+        if g.near_m is not None:
+            obj["near_m"] = round(g.near_m, 2)
         if g.p_opt is not None:
             obj["cam_xyz"] = [round(v, 3) for v in g.p_opt]
         if track_id is not None:

@@ -102,6 +102,7 @@ def tool(monkeypatch):
         state={"pose": {"x_meters_world": 1.0, "y_meters_world": 1.0, "yaw_radians_world": 0.0}},
         pose_at=lambda when: current_pose(),
         walks=[],
+        walk_result={"task_id": "walk-1", "status": "running"},
         sent=[],
         now=time.time(),
     )
@@ -115,7 +116,7 @@ def tool(monkeypatch):
 
     async def fake_run(**kwargs):
         t.walks.append(kwargs)
-        return {"task_id": "walk-1", "status": "running"}
+        return t.walk_result
 
     monkeypatch.setattr(server, "SIM_MODE", "real")
     monkeypatch.setattr(server, "NAV_POLL_S", 0.01)
@@ -150,6 +151,9 @@ async def test_a_live_object_is_aimed_from_the_vendor_pose(tool):
     assert (walk["stop_distance_m"], walk["timeout_s"], walk["autonomous"]) == (0.7, 60.0, True)
     assert out["target"]["source"] == "live"
     assert out["env"] == "real"
+    # No near_m on the wire (an older detector): today's walk, and the model is told so.
+    assert out["target"]["range_to"] == "centre" and "clearance_m" not in out
+    assert "CENTRE" in out["note"]
 
 
 async def test_memory_is_relative_from_perception_then_steered_on_vendor_odometry(tool):
@@ -434,3 +438,79 @@ async def test_nav2_is_not_used_while_a_walk_is_running(tool):
         walking.status = "completed"  # no skill is looping on it to end it
     assert out["nav2_refused"] == "walk_task_active"
     assert tool.sent == []
+
+
+# --- near_m: the robot's FRONT stops stop_distance_m from the object's NEAR side ----
+
+
+def chair_near(range_m, near_m, bearing_deg=90.0):
+    return {**chair(range_m), "near_m": near_m, "bearing_deg": bearing_deg}
+
+
+async def test_a_near_face_walk_aims_at_the_face_and_stops_the_pelvis_body_front_further_back(tool):
+    tool.objects = [chair_near(2.0, 1.7)]
+    tool.walk_result = {"status": "completed", "result": {"final_distance_m": 0.85}}
+    out = await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
+    walk = tool.walks[0]
+    # From (1, 1) facing +x, the near face 1.7 m to the LEFT is (1, 2.7).
+    assert (walk["target_x"], walk["target_y"]) == pytest.approx((1.0, 2.7), abs=1e-9)
+    assert walk["stop_distance_m"] == pytest.approx(0.7 + g.BODY_FRONT_M)
+    assert out["target"]["near_m"] == 1.7 and "range_to" not in out["target"]
+    # final_distance_m is pelvis-to-face; the model is given the front-to-face gap.
+    assert out["clearance_m"] == pytest.approx(0.7)
+    assert "near side" in out["note"]
+
+
+async def test_a_near_face_target_further_than_the_cap_by_its_centre_is_not_too_far(tool):
+    tool.objects = [chair_near(4.2, 3.9)]
+    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    assert "error" not in out and len(tool.walks) == 1
+
+
+def test_the_stop_is_clamped_so_the_pelvis_never_drives_into_the_face():
+    t = {"range_m": 2.0, "near_m": 1.5}
+    assert g.approach(t, 0.0) == (1.5, g.MIN_BASE_TO_FACE_M)
+    assert g.approach(t, -1.0) == (1.5, g.MIN_BASE_TO_FACE_M)
+    assert g.MIN_BASE_TO_FACE_M == pytest.approx(g.BODY_FRONT_M + 0.1)
+    assert g.approach({"range_m": 2.0}, 0.7) == (2.0, 0.7)  # centre: as before
+
+
+async def test_the_near_face_walk_re_aims_only_at_near_face_sightings(tool, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0)
+    tool.pose_at = lambda when: (1.0, 1.0, 0.0)
+    tool.objects = [{**chair_near(2.0, 1.8, bearing_deg=0.0), "age_s": 0.2}]
+    await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
+    assert tool.walks[0]["target_x"] == pytest.approx(2.8)
+    retarget = tool.walks[0]["retarget"]
+    tool.objects = [{**chair_near(2.0, 1.5, bearing_deg=10.0), "age_s": 0.2}]
+    assert retarget() == pytest.approx(g.world_target(1.0, 1.0, 0.0, 1.5, 10.0))
+    # A sighting with no near face (the plane fallback) is not mixed in as one.
+    tool.objects = [{**chair(1.9), "bearing_deg": 0.0, "age_s": 0.2}]
+    assert retarget() == pytest.approx(g.world_target(1.0, 1.0, 0.0, 1.5, 10.0))
+
+
+async def test_nav2_gets_the_near_face_goal_with_the_body_front(tool):
+    tool.nav._ingest_status(nav_status())
+    tool.gate.enable(reason="operator", ttl_s=60)
+    tool.objects = [chair_near(2.0, 1.6, bearing_deg=0.0)]
+    out = await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
+    assert out["via"] == "nav2"
+    goal = tool.sent[-1]
+    # Face 1.6 m ahead; pelvis stops 0.7 + BODY_FRONT_M short of it. Nav2 at (5, 5) facing +y.
+    assert (goal["x"], goal["y"]) == pytest.approx(
+        (5.0, 5.0 + 1.6 - 0.7 - g.BODY_FRONT_M), abs=1e-9
+    )
+    from bridge.skills.task_runtime import get_registry
+
+    get_registry().cancel(out["task_id"])  # the goal's watcher would outlive the test
+    await asyncio.sleep(0.05)
+
+
+async def test_already_at_the_face_sends_no_nav2_goal(tool):
+    tool.nav._ingest_status(nav_status())
+    tool.gate.enable(reason="operator", ttl_s=60)
+    tool.objects = [chair_near(1.2, 0.8)]  # 0.8 m <= 0.7 + BODY_FRONT_M
+    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    assert tool.sent == [] and out["via"] == "walk_to"

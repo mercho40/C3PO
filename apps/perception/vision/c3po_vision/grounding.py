@@ -99,7 +99,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from statistics import median
+from statistics import median, quantiles
 from typing import Any, Sequence
 
 __all__ = [
@@ -117,6 +117,7 @@ __all__ = [
     "inner_region",
     "median_depth_m",
     "norm180",
+    "object_depths_m",
     "range_bearing_from_base",
     "ray_bearing_deg",
     "ray_plane_depth_m",
@@ -132,6 +133,8 @@ __all__ = [
 # handed to a planner is worse than a gap.
 MIN_VALID_DEPTH_M = 0.20
 MAX_VALID_DEPTH_M = 10.0
+# near_m's percentile: the object's near face, not its middle, and still past a stray near pixel.
+NEAR_PERCENTILE = 10
 
 
 @dataclass(frozen=True)
@@ -224,6 +227,9 @@ class Grounded:
     # THROUGH the object (glass) or not at all, so depth came from the support
     # surface under it — see `ground_box`. Published, so the planner knows.
     depth_source: str = "direct"
+    # HORIZONTAL range of the object's NEAR face (NEAR_PERCENTILE of its depth samples); range_m is
+    # its middle. None unless depth_source is "direct" — the plane fallback has no face to measure.
+    near_m: float | None = None
     # The deprojected point in the colour-optical frame (x right, y down, z forward), before any
     # extrinsic. The bridge's arm IK maps it through the URDF's CAD mount instead of ours.
     p_opt: tuple[float, float, float] | None = None
@@ -368,30 +374,61 @@ def median_depth_m(
     region's job, better. A mask with too few valid pixels under it (tiny, or
     all holes) falls back to the inner region rather than to None.
     """
+    samples = object_depths_m(
+        depth,
+        box,
+        width=width,
+        height=height,
+        depth_scale=depth_scale,
+        inner_fraction=inner_fraction,
+        min_valid_samples=min_valid_samples,
+        min_depth_m=min_depth_m,
+        max_depth_m=max_depth_m,
+        max_samples=max_samples,
+        mask=mask,
+    )
+    if len(samples) < max(1, int(min_valid_samples)):
+        return None, len(samples)
+    return float(median(samples)), len(samples)
+
+
+def object_depths_m(
+    depth: Any,
+    box: Sequence[float],
+    *,
+    width: int,
+    height: int,
+    depth_scale: float = 0.001,
+    inner_fraction: float = 0.5,
+    min_valid_samples: int = 12,
+    min_depth_m: float = MIN_VALID_DEPTH_M,
+    max_depth_m: float = MAX_VALID_DEPTH_M,
+    max_samples: int = 1024,
+    mask: Any = None,
+) -> list[float]:
+    """The valid (non-zero, in-band) depths `median_depth_m` takes its median over.
+
+    Fewer than `min_valid_samples` means "no usable range" — the caller checks.
+    """
     clipped = clamp_box(box, width, height)
     if clipped is None:
-        return None, 0
-    need = max(1, int(min_valid_samples))
+        return []
     if mask is not None:
         masked = sample_depths_m(
             depth, clipped, depth_scale=depth_scale, min_depth_m=min_depth_m,
             max_depth_m=max_depth_m, max_samples=max_samples,
             mask=mask, mask_origin=(clipped[0], clipped[1]),
         )
-        if len(masked) >= need:
-            return float(median(masked)), len(masked)
-    region = inner_region(clipped, inner_fraction)
-    samples = sample_depths_m(
+        if len(masked) >= max(1, int(min_valid_samples)):
+            return masked
+    return sample_depths_m(
         depth,
-        region,
+        inner_region(clipped, inner_fraction),
         depth_scale=depth_scale,
         min_depth_m=min_depth_m,
         max_depth_m=max_depth_m,
         max_samples=max_samples,
     )
-    if len(samples) < need:
-        return None, len(samples)
-    return float(median(samples)), len(samples)
 
 
 def deproject_pixel_to_camera(
@@ -620,7 +657,7 @@ def ground_box(
     width = intr.width or (len(depth[0]) if len(depth) else 0)
     height = intr.height or len(depth)
 
-    z_m, n = median_depth_m(
+    samples = object_depths_m(
         depth,
         box,
         width=width,
@@ -633,6 +670,8 @@ def ground_box(
         max_samples=max_samples,
         mask=mask,
     )
+    n = len(samples)
+    z_m = float(median(samples)) if n >= max(1, int(min_valid_samples)) else None
     clipped = clamp_box(box, width, height)
     if clipped is None:
         return None
@@ -662,6 +701,13 @@ def ground_box(
     p_opt = deproject_pixel_to_camera(u, v, z_m, intr)
     xb, yb, zb = camera_to_base(p_opt, extr)
     rng, bearing, elevation, slant = range_bearing_from_base(xb, yb, zb)
+    near = None
+    if source == "direct" and n >= 2:  # quantiles needs two points; min_valid_samples may be 1
+        # The near face: a low percentile of the same samples, along the same centre ray.
+        z_near = quantiles(samples, n=100, method="inclusive")[NEAR_PERCENTILE - 1]
+        near = range_bearing_from_base(
+            *camera_to_base(deproject_pixel_to_camera(u, v, z_near, intr), extr)
+        )[0]
 
     return Grounded(
         range_m=rng,
@@ -674,6 +720,7 @@ def ground_box(
         depth_m=z_m,
         depth_samples=n,
         depth_source=source,
+        near_m=near,
         p_opt=(float(p_opt[0]), float(p_opt[1]), float(p_opt[2])),
     )
 
