@@ -198,3 +198,20 @@ async def test_a_raising_retarget_still_stops(monkeypatch, fast_retarget):
 
     assert (result["status"], result["phase"]) == ("failed", "exception")
     assert len(fast_retarget) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_second_walk_is_refused_while_one_runs(monkeypatch):
+    # The no_active_walk_task precondition: two loops writing velocity would fight.
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    walking = get_registry().create("walk_to")
+    try:
+        result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=0.05)
+    finally:
+        walking.status = "completed"  # no skill is looping on it to end it
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "walk_task_active"
+    assert walking.task_id in result["error"]
+    assert sampler._i == 0  # refused before reading a pose, let alone moving

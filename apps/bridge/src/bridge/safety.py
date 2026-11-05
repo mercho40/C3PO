@@ -215,21 +215,28 @@ def _ramp(prev: float, req: float, max_step: float) -> float:
     return prev + math.copysign(min(abs(req) - abs(prev), max_step), req)
 
 
+def cap(
+    vx: float, vy: float, vyaw: float, max_linear: float, max_yaw: float
+) -> tuple[float, float, float]:
+    """The static caps: non-finite axes to 0, linear speed capped as a vector, yaw clamped."""
+    # Non-finite is a bug upstream, never a request: _clamp would turn NaN into the full cap.
+    vx, vy, vyaw = (v if math.isfinite(v) else 0.0 for v in (vx, vy, vyaw))
+    tx, ty = _clamp(vx, max_linear), _clamp(vy, max_linear)
+    # The vector, not each axis: a diagonal must not reach sqrt(2) x the cap.
+    norm = math.hypot(tx, ty)
+    if norm > max_linear:
+        tx, ty = tx * max_linear / norm, ty * max_linear / norm
+    return tx, ty, _clamp(vyaw, max_yaw)
+
+
 def govern(
     vx: float, vy: float, vyaw: float, *, autonomous: bool = False
 ) -> tuple[float, float, float]:
     """The velocity that may actually reach the legs for this request."""
     global _last, _last_at, _last_reason
     factor, reason = speed_factor(autonomous=autonomous)
-    # Non-finite is a bug upstream, never a request: _clamp would turn NaN into the full cap.
-    vx, vy, vyaw = (v if math.isfinite(v) else 0.0 for v in (vx, vy, vyaw))
-    tx, ty = _clamp(vx, MAX_LINEAR_MPS), _clamp(vy, MAX_LINEAR_MPS)
-    # The vector, not each axis: a diagonal must not reach sqrt(2) x the cap.
-    norm = math.hypot(tx, ty)
-    if norm > MAX_LINEAR_MPS:
-        tx, ty = tx * MAX_LINEAR_MPS / norm, ty * MAX_LINEAR_MPS / norm
-    tx, ty = tx * factor, ty * factor
-    tw = _clamp(vyaw, MAX_YAW_RPS) * factor
+    tx, ty, tw = cap(vx, vy, vyaw, MAX_LINEAR_MPS, MAX_YAW_RPS)
+    tx, ty, tw = tx * factor, ty * factor, tw * factor
 
     now = time.monotonic()
     with _lock:
