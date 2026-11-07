@@ -56,6 +56,15 @@ const FIXTURE_SKILLS: SkillCatalogueEntry[] = [
   },
 ];
 
+FIXTURE_SKILLS.push({
+  ...FIXTURE_SKILLS[0]!,
+  name: "stop_everything",
+  description: "Stop all motion.",
+  classification: "safety",
+  dangerLevel: "low",
+  works: { sim: true, real: true },
+});
+
 const listSkills = mock(async () => FIXTURE_SKILLS);
 
 mock.module("#back/skills/index.js", () => ({
@@ -481,6 +490,54 @@ describe("runAgentChat toolsSettled", () => {
     } finally {
       restore();
     }
+  });
+
+  const sentWith = async (toolName: string) => {
+    let signal: AbortSignal | undefined;
+    let sent!: () => void;
+    const walkSent = new Promise<void>((r) => (sent = r));
+    const call = spyOn(bridgeClient, "callTool").mockImplementation(
+      async (name, _args, s) => {
+        if (name !== toolName) return {};
+        signal = s;
+        sent();
+        return { status: "ok" };
+      },
+    );
+    const log = spyOn(chats, "logToolCall").mockImplementation(async () => {});
+    try {
+      const stop = new AbortController();
+      const model = new MockLanguageModelV4({
+        doStream: async () => ({
+          stream: convertArrayToReadableStream([
+            { ...walk[0]!, toolName },
+            walk[1]!,
+          ]),
+        }),
+      });
+      const result = await runAgentChat(hello, {
+        model,
+        abortSignal: stop.signal,
+      });
+      const text = drain(result.textStream);
+      await walkSent;
+      stop.abort();
+      await text;
+      return signal;
+    } finally {
+      call.mockRestore();
+      log.mockRestore();
+    }
+  };
+
+  test("the turn's abort reaches the bridge call, so a walk ends with it", async () => {
+    // Aborting cancels the call on the bridge, and walk_to stops on cancel.
+    const signal = await sentWith("walk_to");
+    expect(signal?.aborted).toBe(true);
+  });
+
+  test("a stop the model sent is never cancelled by the turn ending", async () => {
+    expect(await sentWith("stop_everything")).toBeUndefined();
   });
 
   test("a tool the SDK starts after the abort sends the robot nothing", async () => {

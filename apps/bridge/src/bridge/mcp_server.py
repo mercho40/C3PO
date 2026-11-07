@@ -2079,6 +2079,8 @@ def arm_navigation(
         # nothing, so nothing will move until Nav2 starts.
         "cmd_vel_age_s": status.get("cmd_vel_age_s"),
         "clamps": status.get("clamps"),
+        # False: the governor zeroes every Nav2 setpoint until the lidar reports again.
+        "obstacles_fresh": safety.obstacles_fresh(),
         "warning": (
             "The robot can now be driven by Nav2. A person must be watching "
             "with the e-stop in reach. The gate closes itself in "
@@ -4494,7 +4496,8 @@ async def camera_status(request):  # noqa: ANN001, ANN201 - starlette types
     from bridge.sdk.videohub import get_camera
 
     videohub = get_camera().status()
-    vision = camera_relay.upstream_status()
+    # The probe can block 1.5 s, and this loop also serves stop_everything.
+    vision = await asyncio.to_thread(camera_relay.upstream_status)
     source = camera_relay.choose_source(videohub, vision)
     return JSONResponse(
         camera_relay.merged_status(videohub, vision, source),
@@ -4522,7 +4525,8 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
 
     camera = get_camera()
     videohub = camera.status()
-    vision = camera_relay.upstream_status()
+    # The probe can block 1.5 s, and this loop also serves stop_everything.
+    vision = await asyncio.to_thread(camera_relay.upstream_status)
     source = camera_relay.choose_source(videohub, vision)
 
     if source == "videohub":
@@ -4624,7 +4628,8 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
 
     camera = get_camera()
     videohub = camera.status()
-    vision = camera_relay.upstream_status()
+    # The probe can block 1.5 s, and this loop also serves stop_everything.
+    vision = await asyncio.to_thread(camera_relay.upstream_status)
     source = camera_relay.choose_source(videohub, vision)
 
     if source is None:

@@ -229,12 +229,34 @@ def cap(
     return tx, ty, _clamp(vyaw, max_yaw)
 
 
+def obstacles_fresh() -> bool:
+    """Whether Nav2's obstacle sensor is live: a fresh world summary with the lidar online.
+
+    Independent of PERSON_RULE and STALE_POLICY: those are about people, this is
+    about whether the costmap Nav2 drives on is still being fed at all.
+    shortcut: lidar only; nav2-depth (ACTION-PLAN E5-E8) must add its depth cloud here.
+    """
+    from bridge.sdk.perception_link import existing_link
+
+    link = existing_link()
+    if link is None:
+        return False
+    report, age = link.latest_report()
+    return bool(
+        report and age is not None and age <= PERCEPTION_STALE_S and report.get("lidar_online")
+    )
+
+
 def govern(
     vx: float, vy: float, vyaw: float, *, autonomous: bool = False
 ) -> tuple[float, float, float]:
     """The velocity that may actually reach the legs for this request."""
     global _last, _last_at, _last_reason
     factor, reason = speed_factor(autonomous=autonomous)
+    if autonomous and not obstacles_fresh():
+        # Nav2 keeps planning on its last costmap when the sensor goes quiet, and
+        # Humble's collision monitor ignores a stale source: blind, so it fails open.
+        factor, reason = 0.0, "obstacle_source_stale"
     tx, ty, tw = cap(vx, vy, vyaw, MAX_LINEAR_MPS, MAX_YAW_RPS)
     tx, ty, tw = tx * factor, ty * factor, tw * factor
 
