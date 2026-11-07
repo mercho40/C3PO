@@ -260,12 +260,12 @@ async function invokeSkill(
     return body;
   };
 
-  // PARAR also ends every agent turn in flight, before the stop is
+  // Every stop also ends every agent turn in flight, before the stop is
   // even sent: the model must not plan a next step around it.
-  if (name === "stop_everything") {
-    const aborted = abortAllTurns("PARAR");
+  if (SAFETY_SKILLS.has(name)) {
+    const aborted = abortAllTurns(name);
     if (aborted)
-      console.warn(`[skills] PARAR aborted ${aborted} agent turn(s)`);
+      console.warn(`[skills] ${name} aborted ${aborted} agent turn(s)`);
   }
 
   // The dispatch, audited when it SETTLES — however long that takes —

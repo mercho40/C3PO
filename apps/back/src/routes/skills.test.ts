@@ -82,6 +82,7 @@ function fixtureSkill(name: string, classification: string) {
 const FIXTURE_SKILLS = [
   fixtureSkill("wave", "gesture"),
   fixtureSkill("stop_everything", "safety"),
+  fixtureSkill("soft_stop", "safety"),
   {
     ...fixtureSkill("walk_velocity", "locomotion"),
     // Real schema (not the permissive fixture default) so the 422 test
@@ -207,6 +208,47 @@ describe("POST /skills/:name/invoke", () => {
     expect(res.status).toBe(200);
     expect(turn.signal.aborted).toBe(true);
     expect(activeTurnCount()).toBe(0);
+  });
+
+  test("soft_stop ends the agent's turns too", async () => {
+    const { beginTurn, activeTurnCount } = await import("../agent/turns");
+    const turn = beginTurn();
+    sessionUser = { id: "u1", role: null };
+    const res = await invoke("soft_stop", {});
+    expect(res.status).toBe(200);
+    expect(turn.signal.aborted).toBe(true);
+    expect(activeTurnCount()).toBe(0);
+  });
+
+  test("the /tasks estop ends the agent's turns too", async () => {
+    const { beginTurn, activeTurnCount } = await import("../agent/turns");
+    const { tasksRoutes } = await import("./tasks");
+    const turn = beginTurn();
+    const res = await tasksRoutes.handle(
+      new Request("http://localhost/tasks/t1/cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "estop" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(turn.signal.aborted).toBe(true);
+    expect(activeTurnCount()).toBe(0);
+  });
+
+  test("a graceful task cancel leaves the agent's turns alone", async () => {
+    const { beginTurn, abortAllTurns } = await import("../agent/turns");
+    const { tasksRoutes } = await import("./tasks");
+    const turn = beginTurn();
+    await tasksRoutes.handle(
+      new Request("http://localhost/tasks/t1/cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "graceful" }),
+      }),
+    );
+    expect(turn.signal.aborted).toBe(false);
+    abortAllTurns("test cleanup");
   });
 
   test("404 for an unknown skill even as admin", async () => {
