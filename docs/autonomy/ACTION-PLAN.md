@@ -1582,3 +1582,16 @@ Pending for the next robot session, in order:
 - Torso box (`manipulation.TORSO_BOX`, y narrowed to ±0.08 m from the inertia box's ±0.09): with a tape, measure the torso's half-width at belly height. If it is ≥ 0.09 m, widen the box and move the far-side test target (0.26, -0.30, -0.05). Watch the tuck pose on that side: the forearm passes ~0.088 m from the midline.
 - verify now runs in back on the school vision model (Gemini only for find_object's pointing): after a simulated pick, check that `verify('¿la mano derecha sostiene la taza?')` answers no, with a reason.
 - E2/E3 leftovers: chair moved mid-walk, covered chair → target_lost.
+
+## 9. Robot-independent leftovers closed (2026-11-07)
+
+From §5 "Items no WP covers yet":
+
+- ✅ `camera_relay.upstream_status()` runs in a thread in the three camera routes (5e4c03c). A slow vision container can no longer delay `stop_everything` over HTTP.
+- ✅ The cmd_vel path fails closed on a stale obstacle source (d6acd8b). `safety.govern` zeroes every autonomous setpoint unless a world summary ≤ 1 s old says `lidar_online`, whatever SAFETY_PERSON_RULE and SAFETY_STALE_POLICY say. `arm_navigation` reports `obstacles_fresh`. **nav2-depth (E5–E8) must add the depth cloud to `safety.obstacles_fresh()`**, or Nav2 on depth gets zero velocity.
+- ✅ `soft_stop` on /skills and the /tasks estop abort every agent turn, like `stop_everything` (cf5d136).
+- ✅ The turn's abort and its remaining budget reach the bridge call (4d77169): a 300 s `walk_to` is cancelled on PARAR, when the client goes away, or at the 240 s budget, and `walk_to` runs its stop sequence on cancel. Safety skills are never cancelled this way.
+
+Robot check for the next session: arm Nav2 with the lidar faulted. `arm_navigation` must report `obstacles_fresh: false`, and the bridge log must show `safety.speed_factor reason=obstacle_source_stale` with zero velocity sent.
+
+Listed open in §5 and not re-checked today: the external-stop watcher (11.3), the headset's socket PARAR not aborting back's turns, geofence and heartbeat, the Gemini data terms, the Livox pins, the shared sport client, CancelledError in gesture/_g1_request, forged `/agent` history and `javascript:` links, the Realtime fatal-error and odd-PCM items.

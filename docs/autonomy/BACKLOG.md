@@ -20,6 +20,7 @@ autostart disabled · ✅ **review fixes:** an idle headset no longer clears PAR
 `look_around` is T1 and every velocity is zeroed while stopped (C2), `damp` is never
 offered to a model, headset speech runs in voice mode, the VR menu keeps its selection by
 name, a 300 ms grip chord, a stop voids pending grants, and the ack refuses a newer stop.
+· ✅ docs brought up to date (BACKLOG §10).
 
 Verified on the robot: the PARAR latch and Reanudar, `go_to_object("silla")`, the URDF
 sign check, a confirmed `reach` within 1 cm, the console Confirmar button, the YOLOE
@@ -138,9 +139,9 @@ engine, and Gemini `look`.
 
 ## 10. Docs
 
-- `ROBOT-API.md` §8: the ServiceSwitch key is `switch` (not `swit`), API version 1.0.0.2.
-- `OPERATIONS.md`: cable + static IP, push to the robot, the proxy, the 501 vs 802 trap.
-- The test-day docs: today's results, and the checklist order that worked.
+- ✅ `ROBOT-API.md` §8: the ServiceSwitch key is `switch` (not `swit`), API version 1.0.0.2 (50edc56).
+- ✅ `OPERATIONS.md`: cable + static IP, push to the robot, the proxy, the 501 vs 802 trap (6db98fb).
+- ✅ The test-day docs: today's results, and the checklist order that worked (5aa6442, f404d60, ad0920d; app READMEs 1cd57a9).
 
 ## 11. From the 2026-11-03 code review (left after the fixes)
 
