@@ -1,6 +1,8 @@
 # Test day — Nav2 goals, a saved map, a landmark goal (Phase 3)
 
-Branch `auto/nav`. Nothing here has run on the robot. Every step changes one
+Branch `feat/autonomy`. Still nothing here has run on the robot: the Mid-360S scan module
+is faulted (BACKLOG 4.1), and the nav-image rebuild was cut off by the battery (4.5). Only
+§2 (`nav2-fake`, gate closed) can run until both are fixed. Every step changes one
 thing, says what you should see, and has a one-line rollback. Stop at the
 first step whose expected result does not appear. The next step assumes it did.
 
@@ -38,9 +40,13 @@ activate() { nav ros2 service call /lifecycle_manager_navigation/manage_nodes \
 
 ## 1. Deploy (robot stopped, nobody on it)
 
+Deploy as in `docs/OPERATIONS.md` §5 (push from the Mac, `git merge --ff-only incoming` on
+the robot). The nav build needs the proxy (`docs/OPERATIONS.md` §2) and must include the
+Mid360s config from a0243e5.
+
 ```bash
-cd ~/c3po && git fetch && git checkout auto/nav && git pull   # once the branch is on the remote
 ./scripts/robot/c3po install && c3po restart                   # bridge: new tools + stop cancels goals
+export http_proxy=http://127.0.0.1:18899 https_proxy=http://127.0.0.1:18899 no_proxy=localhost,127.0.0.1,::1
 c3po perception build nav                                      # nav image: + slam_toolbox layer
 ```
 
@@ -92,6 +98,8 @@ nav ros2 topic echo --once /c3po/nav_status          # goal.state canceled
 
 ## 3. Real Nav2 on the gantry (robot hanging, feet just clear)
 
+First `c3po preflight`: it must show the LiDAR online. If it does not, stop here.
+
 ```bash
 c3po down
 C3PO_TAKE_OVER=1 c3po up nav2      # with the gemm team's OK
@@ -100,7 +108,8 @@ nav ros2 run tf2_ros tf2_echo odom base_footprint    # z ≈ 0, roll/pitch ≈ 0
 ```
 
 MCP, with the e-stop in hand, robot in its walk mode (`prepare` →
-`start_walking_waist`, same as for the walk pad):
+`start_walking_waist`, same as for the walk pad; confirm `fsm_id` 501, because 802 accepts
+velocity and ignores it):
 
 1. `navigation_status()` → note `pose` (in `odom`).
 2. `arm_navigation(reason="gantry: first Nav2 goal, 0.5 m", seconds=30)`.
