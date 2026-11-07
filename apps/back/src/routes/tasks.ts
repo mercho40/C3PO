@@ -19,6 +19,7 @@ import {
   BridgeToolError,
 } from "../bridge/client";
 import { auditedCall } from "../bridge/audited";
+import { abortAllTurns } from "../agent/turns";
 
 /**
  * The signed-in user, from the auth guard this module is mounted inside
@@ -44,6 +45,8 @@ export const tasksRoutes = new Elysia({ prefix: "/tasks" })
       const who = { userId: userIdOf(ctx), source: "direct" as const };
       try {
         if (mode === "estop") {
+          // As in /skills: the model must not plan a next step around a stop.
+          abortAllTurns("PARAR (task estop)");
           const raw = await auditedCall("stop_everything", {}, who);
           // Bridge tools always return a dict today, but nothing at the
           // type level guarantees it -- spreading a non-object (e.g. a bare
