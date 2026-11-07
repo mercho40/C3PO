@@ -321,9 +321,10 @@ headset's PARAR button and the console dispatch the same call.
   PLACEHOLDERS because nobody has measured them.
 - **Nine skills are `works_real=False`**, and `UNVERIFIED_EXITS`, FSM label 802
   and the `measure_turn` yaw numbers still need robot time.
-- **802 is probably not "run".** It was read live while the robot stood
-  perfectly still. Resolve it by watching `fsm_id` transition during a
-  supervised sequence.
+- **802 is Run, and it accepts velocity without moving.** R2+A on the remote
+  puts the robot there; `SetVelocity` answers rpc 0 and nothing moves. Bring-up
+  must end in 501. See `docs/OPERATIONS.md` §5, "Accepts velocity, does not
+  move: FSM 802".
 
 ---
 
