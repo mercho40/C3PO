@@ -4494,7 +4494,8 @@ async def camera_status(request):  # noqa: ANN001, ANN201 - starlette types
     from bridge.sdk.videohub import get_camera
 
     videohub = get_camera().status()
-    vision = camera_relay.upstream_status()
+    # The probe can block 1.5 s, and this loop also serves stop_everything.
+    vision = await asyncio.to_thread(camera_relay.upstream_status)
     source = camera_relay.choose_source(videohub, vision)
     return JSONResponse(
         camera_relay.merged_status(videohub, vision, source),
@@ -4522,7 +4523,8 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
 
     camera = get_camera()
     videohub = camera.status()
-    vision = camera_relay.upstream_status()
+    # The probe can block 1.5 s, and this loop also serves stop_everything.
+    vision = await asyncio.to_thread(camera_relay.upstream_status)
     source = camera_relay.choose_source(videohub, vision)
 
     if source == "videohub":
@@ -4624,7 +4626,8 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
 
     camera = get_camera()
     videohub = camera.status()
-    vision = camera_relay.upstream_status()
+    # The probe can block 1.5 s, and this loop also serves stop_everything.
+    vision = await asyncio.to_thread(camera_relay.upstream_status)
     source = camera_relay.choose_source(videohub, vision)
 
     if source is None:
