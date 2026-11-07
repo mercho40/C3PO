@@ -16,18 +16,18 @@ ssh c3po 'cat ~/.c3po/objects.json'
 
 | #   | Do                                                 | Expect                                                                                  |
 | --- | -------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| 0.1 | `cd apps/bridge && uv run pytest -q`               | 841 passed, 13 skipped                                                                  |
-| 0.2 | `cd apps/back && bun test`                         | 155 pass                                                                                |
+| 0.1 | `cd apps/bridge && uv run pytest -q`               | 0 failed; the skips are all `test_listen.py` (BACKLOG 9.1)                              |
+| 0.2 | `cd apps/back && bun test`                         | 0 fail                                                                                  |
 | 0.3 | `bun apps/back/scripts/eval-agent.ts --dry-run`    | 96/96, every row 3/3. Anything else means `tasks.yaml` or the scorer broke              |
 | 0.4 | On campus: stub bridge + `eval-agent.ts --tier T0` | Runs 54 trials, writes `runs.jsonl` + `summary.md`. The score is the planner's baseline |
 
 ## 1. Deploy and bring-up
 
-| #   | Do                                                                                | Expect                                                                                          |
-| --- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| 1.1 | Deploy `auto/memory` (`git pull && ./scripts/robot/c3po install && c3po restart`) | Bridge answers; `list_objects` → `{"count": 0, ...}` (or what an earlier run left)              |
-| 1.2 | `c3po up perception` (Livox + RealSense)                                          | `describe_surroundings` → `sources.detector: ok` and a `pose`. Without both, memory stays empty |
-| 1.3 | `forget_object("all")`                                                            | Clean slate for the checks below                                                                |
+| #   | Do                                                           | Expect                                                                                          |
+| --- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| 1.1 | Deploy `feat/autonomy` (the push in `docs/OPERATIONS.md` §5) | Bridge answers; `list_objects` → `{"count": 0, ...}` (or what an earlier run left)              |
+| 1.2 | `c3po up perception` (Livox + RealSense)                     | `describe_surroundings` → `sources.detector: ok` and a `pose`. Without both, memory stays empty |
+| 1.3 | `forget_object("all")`                                       | Clean slate for the checks below                                                                |
 
 ## 2. Walk past objects
 
