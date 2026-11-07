@@ -146,6 +146,8 @@ passes the request's abort signal to the agent loop, so a stopped reply (or a
 closed tab) ends its next steps instead of leaving it dispatching skills
 unseen. PARAR (the `stop_everything` invoke), `soft_stop`, the `/tasks` estop and
 the spoken stop abort every running agent turn (`agent/turns.ts` `abortAllTurns`).
+A stop latched on the bridge directly, such as the headset's, does too:
+`agent/stop-watch.ts` polls `/safety/status` while a turn runs.
 An ended turn (abort or the 240 s budget) cancels the bridge call it is waiting on,
 except a stop; the latch itself is the
 bridge's (`docs/OPERATIONS.md` §4). `damp` and `zero_torque` are never offered to
