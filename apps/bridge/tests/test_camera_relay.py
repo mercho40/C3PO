@@ -306,3 +306,37 @@ def test_a_viewer_leaving_releases_the_vision_slot(monkeypatch):
 
     assert asyncio.run(asyncio.wait_for(drain(), 5)) == 2
     assert upstream.closed, "the upstream connection outlived the viewer"
+
+
+def test_a_slow_vision_probe_does_not_stall_the_event_loop(monkeypatch):
+    """The probe blocks up to 1.5 s; the same loop serves stop_everything."""
+    import asyncio
+    import time
+
+    from bridge import mcp_server
+    from bridge.sdk import camera_relay, videohub
+
+    class _Camera:
+        def status(self) -> dict:
+            return {"live": False}
+
+    def slow_probe(now=None):  # noqa: ANN001, ANN202
+        time.sleep(0.5)
+        return None
+
+    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(camera_relay, "upstream_status", slow_probe)
+    monkeypatch.setattr(videohub, "get_camera", lambda: _Camera())
+
+    class _Request:
+        headers: dict = {}
+
+    async def race() -> float:
+        route = asyncio.ensure_future(mcp_server.camera_status(_Request()))
+        started = time.monotonic()
+        await asyncio.sleep(0.05)  # a PARAR arriving while the probe runs
+        waited = time.monotonic() - started
+        await route
+        return waited
+
+    assert asyncio.run(race()) < 0.3, "the camera probe held the event loop"

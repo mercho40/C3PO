@@ -37,10 +37,11 @@ class FakeLink:
         return {}
 
 
-def _report(*objects, detector_online=True, omitted=0):
+def _report(*objects, detector_online=True, omitted=0, lidar_online=True):
     return {
         "report_version": 1,
         "detector_online": detector_online,
+        "lidar_online": lidar_online,
         "objects": list(objects),
         "objects_omitted": omitted,
     }
@@ -150,19 +151,18 @@ def test_person_distance_scales_every_source(sent, link, range_m, expected):
     assert sent[-1][0] == pytest.approx(expected)
 
 
-def test_stale_perception_slows_autonomous_motion_only(sent, link):
-    link.age = 1.5  # older than PERCEPTION_STALE_S
+def test_stale_perception_stops_autonomous_motion_only(sent, link):
+    link.age = 1.5  # older than PERCEPTION_STALE_S: the lidar reading is stale too
     _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
     assert sent[-1][0] == 0.3  # the console walk pad works without perception
     safety.reset()
     _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
-    assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
+    assert sent[-1][0] == 0.0
 
 
 @pytest.mark.parametrize(
     "report",
     [
-        None,  # no report at all
         _report(detector_online=False),  # nav up, detector down
         _report(omitted=3),  # truncated: a person may be in what was dropped
         _report({"label": "person", "range_m": "near"}),  # unreadable range
@@ -202,10 +202,10 @@ def test_a_fresh_or_unaged_person_still_slows_and_blocks_reach(sent, link, extra
     assert "inside arm's reach" in (safety.tool_refusal("set_hand", {"c3po": {"tier": "T2"}}) or "")
 
 
-def test_nav2_with_no_perception_link_at_all_is_slowed(sent, monkeypatch):
+def test_nav2_with_no_perception_link_at_all_is_stopped(sent, monkeypatch):
     monkeypatch.setattr(perception_link, "_link_singleton", None)
     perception_link._default_forward(0.3, 0.0, 0.0)
-    assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
+    assert sent[-1][0] == 0.0
     assert perception_link._link_singleton is None  # reading never creates a link
 
 
@@ -734,3 +734,37 @@ async def test_a_battery_refusal_drops_the_grant_it_was_given(mcp, link, monkeyp
     _battery(monkeypatch, 50)
     with pytest.raises(ToolError, match="needs an operator's confirmation"):
         await mcp.call_tool("set_hand", {"closure": 0.5})
+
+
+# -- Nav2's obstacle source ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("report", "age"),
+    [
+        (None, None),  # no world summary at all
+        (_report(lidar_online=False), 0.1),  # the Mid-360S scan fault, 2026-11-03
+        (_report(), safety.PERCEPTION_STALE_S + 0.5),  # the summary stopped coming
+    ],
+)
+def test_nav2_does_not_drive_blind(sent, link, report, age):
+    """A stale costmap is a picture of obstacles that have moved: Nav2 gets zero."""
+    link.report, link.age = report, age
+    perception_link._default_forward(0.3, 0.0, 0.3)
+    assert sent[-1][:3] == (0.0, 0.0, 0.0)
+    # People driving still move: the console pad and walk_to are not Nav2.
+    safety.reset()
+    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
+    assert sent[-1][0] == 0.3
+
+
+def test_nav2_drives_when_the_lidar_reports(sent, link):
+    perception_link._default_forward(0.3, 0.0, 0.0)
+    assert sent[-1][0] == 0.3
+
+
+def test_the_blind_rule_holds_with_the_person_rule_off(sent, link, monkeypatch):
+    monkeypatch.setattr(safety, "PERSON_RULE", False)
+    link.report = _report(lidar_online=False)
+    perception_link._default_forward(0.3, 0.0, 0.0)
+    assert sent[-1][0] == 0.0
