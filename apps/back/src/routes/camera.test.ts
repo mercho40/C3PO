@@ -106,6 +106,9 @@ describe("/camera/status", () => {
 
 describe("/camera/frame.jpg", () => {
   test("relays one JPEG, uncached, with its type", async () => {
+    // Set here, not left to the default: the 503 test below replaces it.
+    frameReply = () =>
+      new Response("JPEGBYTES", { headers: { "Content-Type": "image/jpeg" } });
     const res = await get("/camera/frame.jpg");
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("image/jpeg");
