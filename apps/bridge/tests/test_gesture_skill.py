@@ -153,3 +153,68 @@ async def test_isaac_mode_logs_only(monkeypatch):
     result = await gesture.run("refuse")
     assert result["status"] == "completed"
     assert result["phase"] == "logged_only"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_hold_still_releases_the_arm(monkeypatch):
+    """An ended agent turn cancels its tool call (back aborts the MCP request).
+    CancelledError skipped `except Exception`, so the hold was cut and the arm
+    stayed latched in the pose, with the task pinned at "running"."""
+    import asyncio
+
+    from bridge.skills.task_runtime import get_registry
+
+    monkeypatch.setattr(gesture, "SIM_MODE", "real")
+    sent: list[int] = []
+    monkeypatch.setattr(g1_rpc, "call_arm", lambda g: sent.append(g) or (0, ""))
+
+    call = asyncio.ensure_future(gesture.run("high_five", hold_s=5.0))
+    for _ in range(100):
+        if sent:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.01)  # into the hold
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    for _ in range(100):
+        if len(sent) == 2:
+            break
+        await asyncio.sleep(0.01)
+
+    assert sent == [int(g1_protocol.Gesture.HIGH_FIVE), int(g1_protocol.Gesture.RELEASE_ARM)]
+    # Not pinned "running": the watchdog reads active tasks as ongoing motion.
+    assert not [t for t in get_registry().list_active() if t.skill_name == "gesture"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_dispatch_releases_after_the_gesture_lands(monkeypatch):
+    """The gesture's RPC thread keeps running after the cancel; the release
+    waits for it rather than racing it on the one arm client."""
+    import asyncio
+    import threading
+
+    monkeypatch.setattr(gesture, "SIM_MODE", "real")
+    sent: list[int] = []
+    gate = threading.Event()
+
+    def call_arm(g: int) -> tuple[int, str]:
+        if g != int(g1_protocol.Gesture.RELEASE_ARM):
+            gate.wait(2.0)
+        sent.append(g)
+        return 0, ""
+
+    monkeypatch.setattr(g1_rpc, "call_arm", call_arm)
+    call = asyncio.ensure_future(gesture.run("high_five", hold_s=5.0))
+    await asyncio.sleep(0.05)  # inside the dispatch
+    call.cancel()
+    await asyncio.sleep(0.05)
+    assert sent == []  # nothing released while the gesture still runs
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    for _ in range(200):
+        if len(sent) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert sent == [int(g1_protocol.Gesture.HIGH_FIVE), int(g1_protocol.Gesture.RELEASE_ARM)]
