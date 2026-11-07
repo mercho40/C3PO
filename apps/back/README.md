@@ -144,8 +144,10 @@ skills read the catalogue, which is reused for 5 s (the VR walk loop invokes
 about once a second) and whose `tools/list` is bounded at 3 s. `POST /agent`
 passes the request's abort signal to the agent loop, so a stopped reply (or a
 closed tab) ends its next steps instead of leaving it dispatching skills
-unseen. PARAR (the `stop_everything` invoke) and the spoken stop abort every
-running agent turn (`agent/turns.ts` `abortAllTurns`); the latch itself is the
+unseen. PARAR (the `stop_everything` invoke), `soft_stop`, the `/tasks` estop and
+the spoken stop abort every running agent turn (`agent/turns.ts` `abortAllTurns`).
+An ended turn (abort or the 240 s budget) cancels the bridge call it is waiting on,
+except a stop; the latch itself is the
 bridge's (`docs/OPERATIONS.md` §4). `damp` and `zero_torque` are never offered to
 a model (`agent/runtime.ts` `agentToolExclusions`). Unexpected errors are answered with a generic `internal_error` body;
 the real one goes to the log (a drizzle error's message is its SQL).
