@@ -18,7 +18,7 @@ that can turn it into leg motion, through a gate that is closed by default
 ```
 eth0 (robot internal LAN)        domain 42 (lo, unicast)            domain 0 (eth0)
 ─────────────────────────        ───────────────────────            ───────────────
-Mid-360 ──UDP──> [nav container]
+Mid-360S ──UDP──> [nav container]
                    livox_ros_driver2 (CustomMsg, xfer_format=1)
                    FAST-LIO2 ──/Odometry, /cloud_registered_body
                    g1_odom_tf ──/odom (odom→base_footprint, real twist)
@@ -27,7 +27,7 @@ Mid-360 ──UDP──> [nav container]
                    world_model_publisher ──/c3po/world_summary ───┤
                    costmap_publisher ──/c3po/costmap (PNG) ───────┤
 D435i ──USB──> [vision container]                                 │
-                   pyrealsense2 (V4L2) + YOLO11 TRT engine        │
+                   pyrealsense2 + YOLO11n or YOLOE-26 TRT engine  │
                    ──/c3po/objects (String JSON, egocentric) ─────┤
                    ──MJPEG on 127.0.0.1:8081 (operator console)   │
                                                                   │
@@ -60,7 +60,7 @@ those comments are the authority; read them before "simplifying" back to one ima
 | Base     | `ros:humble-ros-base-jammy` (22.04)                                    | `nvcr.io/nvidia/l4t-jetpack:r35.3.1` (20.04)           |
 | ROS      | Humble from apt binaries                                               | **none at all**                                        |
 | GPU      | no (`runc`)                                                            | yes (`--runtime nvidia`)                               |
-| Owns     | Livox Mid-360                                                          | RealSense D435i                                        |
+| Owns     | Livox Mid-360S (scan module faulted, `docs/ROBOT-HARDWARE.md` §4.6)    | RealSense D435i                                        |
 | Contains | livox_ros_driver2, FAST-LIO2, Nav2, pointcloud_to_laserscan, our nodes | pyrealsense2 (V4L2 wheel), TensorRT, CycloneDDS python |
 
 The vision container has no ROS by design: it publishes already-resolved
@@ -147,6 +147,9 @@ ssh c3po 'bash -lc "c3po perception measure <label> [sec]"'    # compute-budget 
 c3po down                                                       # complete stack shutdown
 ```
 
+The robot has no internet on the cable: with `http_proxy`/`https_proxy` exported
+(`scripts/robot_internet.py`, `docs/OPERATIONS.md` §2), `bringup/build.py`
+(`proxy_build_args`) builds with `--network host` and the proxy as build-args.
 The build implementation carries per-step timings, disk guards and assertions.
 `c3po up <stage>` accepts every perception stage below. The granular
 `c3po perception up <stage>` command remains available when the bridge is
@@ -408,7 +411,8 @@ error. **The rebuild carrying that pin has not run yet.**
   prompt-free `-pf` model (4,585 names). Same checks as the YOLO11 exporter,
   but the default head is the NMS-free one: `[1,300,38]` + protos
   `[1,32,160,160]` (`--raw-head` gives `[1,1259,8400]`, 42 MB/frame). Ran on a
-  Mac 2026-11-02; **TensorRT 8.5 has not parsed it yet.** The detector decodes
+  Mac 2026-11-02; parsed by TensorRT 8.5 and live on the robot on 2026-11-03 at
+  ~40 ms/tick. The detector decodes
   either head by shape, uses the masks for the depth median, falls back to a
   support-plane fit for glass/holes (`depth_source`), and tags `track_id`.
   Switching model is `C3PO_ONNX`/`C3PO_ENGINE`/`C3PO_LABELS` in

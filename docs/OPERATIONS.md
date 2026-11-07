@@ -31,7 +31,7 @@ flowchart TB
   end
 
   CTRL["G1 control board"]
-  LIDAR["Livox Mid-360"]
+  LIDAR["Livox Mid-360S"]
 
   VERCEL -->|HTTPS| UBUNTU
   UBUNTU -->|"MCP/HTTP, SSH tunnel to loopback :8001"| BRIDGE
@@ -41,13 +41,13 @@ flowchart TB
   PERCEPTION -->|"internal LAN"| LIDAR
 ```
 
-| Component         | Where                     | How it deploys                                                                     |
-| ----------------- | ------------------------- | ---------------------------------------------------------------------------------- |
-| `apps/web`        | Vercel                    | git push (see `apps/web/README.md`)                                                |
-| `apps/back`       | Ubuntu box on the LAN     | `bun build --compile` → one self-contained binary + systemd (§5)                   |
-| Postgres          | Neon (managed, sa-east-1) | `drizzle-kit migrate` on deploy (§7)                                               |
-| `apps/bridge`     | G1 Jetson                 | `~/c3po` checkout; `git pull && ./scripts/robot/c3po install && c3po restart` (§5) |
-| `apps/perception` | G1 Jetson                 | `c3po perception build`, then `c3po up <stage>`                                    |
+| Component         | Where                     | How it deploys                                                                   |
+| ----------------- | ------------------------- | -------------------------------------------------------------------------------- |
+| `apps/web`        | Vercel                    | git push (see `apps/web/README.md`)                                              |
+| `apps/back`       | Ubuntu box on the LAN     | `bun build --compile` → one self-contained binary + systemd (§5)                 |
+| Postgres          | Neon (managed, sa-east-1) | `drizzle-kit migrate` on deploy (§7)                                             |
+| `apps/bridge`     | G1 Jetson                 | `~/c3po` checkout; pushed from the Mac, then `git merge --ff-only incoming` (§5) |
+| `apps/perception` | G1 Jetson                 | `c3po perception build`, then `c3po up <stage>`                                  |
 
 Neon is the live DB only; local dev runs against a Homebrew Postgres — setup in
 `apps/back/README.md`.
@@ -74,20 +74,23 @@ The port map, in one place:
 | Service                    | Host                    | Port  | Notes                                                                   |
 | -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------------- |
 | `apps/back` HTTP           | **loopback** by default | 3000  | cookie auth; `BACK_HOST=0.0.0.0` only on a LAN box behind TLS (§5)      |
-| `apps/web` dev             | dev machine             | 3001  | Vite                                                                    |
+| `apps/web` dev             | dev machine             | 3001  | Vite; open `http://localhost:3001`, never `127.0.0.1:3001` (below)      |
 | `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it |
 | `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                         |
 | `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback       |
 | Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`     |
 | Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge, relayed to browsers by `apps/back` on 3000   |
 | VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; unauthenticated   |
+| Internet proxy             | Mac, **loopback**       | 8899  | `scripts/robot_internet.py`; public :80/:443 only                       |
+| Internet proxy, robot end  | Jetson, **loopback**    | 18899 | the `ssh -R` of that proxy; alive only while the ssh session is         |
 | Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                        |
 | G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                      |
 
 `DDS_DOMAIN_ID`: Isaac Sim is `1`, the real G1 is `0` (set per host in `apps/bridge/.env`;
 see `apps/bridge/.env.example`).
 
-**Address the robot by name, never by IP.** The Jetson is `g1-orin.local` (mDNS,
+**On Wi-Fi, address the robot by name, never by IP.** (The cable is different: the
+internal `192.168.123.x` addresses are vendor-static, below.) The Jetson is `g1-orin.local` (mDNS,
 `avahi-daemon` onboard; SSH user `unitree`, `c3po` Host alias in `~/.ssh/config`). Its
 DHCP lease has already moved twice, and one of the old addresses later answered as a
 _different device_ — a stale IP does not fail closed, it reaches the wrong machine. Use
@@ -103,9 +106,16 @@ c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the t
 `apps/back` logs the tunnel line when that happens (`unreachableHint`).
 `scripts/robot_session.sh [host]` does the whole Mac side in one command (tunnel, robot internet, `bun run dev:robot`, a status table, the robot-side `export`/`c3po up` lines); open the console at `http://localhost:3001`.
 
+**Open the console as `http://localhost:3001`, never `http://127.0.0.1:3001`.** Vite
+listens on `127.0.0.1` (`apps/web/package.json` `dev`), but the browser must use the name:
+`WEB_URL=http://localhost:3001` is `back`'s only CORS origin (`apps/back/src/index.ts`) and
+Better Auth's only trusted origin (`apps/back/src/lib/auth.ts`).
+
 **The cable, and keeping the internet.** `c3po-wire` is the Mac's alias for the cabled
-path: the Mac at `192.168.123.99`, the robot at `192.168.123.164` (since 2026-11-03;
-`192.168.77.1` is the robot's own Wi-Fi hotspot, not the cable). Joining the robot's own Wi-Fi drops the
+path: the Mac at `192.168.123.99/24`, set by hand with no router (the internal LAN has no
+DHCP, `docs/ROBOT-HARDWARE.md` §1), and the Jetson at `192.168.123.164`. This worked on
+2026-11-03. The `192.168.77.1` address reported on 2026-10-13 is probably the robot's own
+Wi-Fi hotspot, not the cable **[?]** (`docs/ROBOT-HARDWARE.md` §1). Joining the robot's own Wi-Fi drops the
 school's — a Mac is on one Wi-Fi network at a time — and the robot has no uplink to share.
 Use the school Wi-Fi for the internet and the cable for the robot, with **Wi-Fi first in
 the service order**: System Settings → Network → "…" → Set Service Order, or
@@ -122,6 +132,28 @@ cable gets no `192.168.123.x` address (a `169.254.x.x` one means it did not), se
 hand with **no router**, so the cable can never become the default route:
 `sudo ipconfig set <enX> MANUAL 192.168.123.99 255.255.255.0` (until unplugged), or the
 same values under the adapter's Details → TCP/IP with Router left empty.
+
+On `.99` the Mac sits on the robot's control LAN: DDS domain 0 and the control board's
+TCP 9991 (BACKLOG 1.8). **Never turn on Internet Sharing for that adapter.** Route the
+cable so it cannot pull: on 2026-11-06 the USB-Ethernet adapter in the Anker hub dropped
+three times while the robot walked.
+
+**Lending the robot the Mac's internet.** The robot has no internet on the cable.
+`python3 scripts/robot_internet.py unitree@192.168.123.164` runs a proxy on the Mac's
+loopback (8899) and an `ssh -R` that shows it on the robot's loopback as
+`127.0.0.1:18899`. It reaches only public addresses on ports 80 and 443. For apt and
+`c3po perception build`, export the proxy in the robot shell:
+
+```bash
+export http_proxy=http://127.0.0.1:18899 https_proxy=http://127.0.0.1:18899 no_proxy=localhost,127.0.0.1,::1
+```
+
+`bringup/build.py` (`proxy_build_args`) then builds with `--network host` and the proxy as
+build-args. For Gemini, put `https_proxy=http://127.0.0.1:18899` and
+`no_proxy=127.0.0.1,localhost` in `apps/bridge/.env`, and **no `http_proxy`**. The bridge
+loads that file into `os.environ` (`env_file.py`) and urllib honours it, so an
+`http_proxy` there would send the camera relay's `http://127.0.0.1:8081` fetches
+(`sdk/camera_relay.py`) to the Mac.
 
 ---
 
@@ -163,7 +195,7 @@ c3po status
 
 The installer links only `c3po` onto `~/.local/bin`, validates and copies one root-owned
 systemd unit (never a symlink into the writable checkout), and installs root-owned
-logrotate/sudoers policies. It starts nothing. Re-run `c3po install` after pulling a unit
+logrotate/sudoers policies. It starts nothing. Re-run `c3po install` after merging a unit
 change.
 
 | Unit                  | What it owns                                                    |
@@ -228,6 +260,26 @@ before stopping it. The bridge therefore uses port 8001, on loopback.
 the stack mid-task expecting a software cancellation path; the physical e-stop
 and firmware velocity deadman remain.
 
+### The PARAR latch and «Reanudar»
+
+Every `stop_everything` writes `~/.c3po/run/stop_everything` (`estop.signal_stop`):
+the console PARAR or Shift+Space, both headset grips held 300 ms, the spoken stop, or
+a Claude Code tool call. `back` aborts every running agent turn when a PARAR or the
+spoken stop goes through it (`agent/turns.ts` `abortAllTurns`). While the stop stands,
+nothing moves:
+
+- the bridge refuses every non-T0 tool except `damp` (`safety.tool_refusal`);
+- `_locomotion` zeroes every velocity;
+- `arm_sdk` refuses to engage.
+
+The latch survives bridge and teleop restarts. Only «Reanudar» clears it. It is admin
+only, from the console's «PARAR ACTIVO» chip or the headset menu. `back`'s
+`POST /safety/ack` forwards it to the bridge's `/safety/ack` with
+`SAFETY_CONFIRM_SECRET`, and a stop newer than the one the operator saw gets 409
+`newer_stop`. Re-engaging the headset does not clear it (993da12). With no secret
+configured in both `.env` files, nothing clears it: set the secret, restart `back` and
+the bridge, then «Reanudar».
+
 ---
 
 ## 5. Per-component deploy
@@ -282,11 +334,24 @@ to verify per deploy target:
 ### `apps/bridge` → G1 Jetson
 
 A git checkout at `~/c3po`; Python and `uv` under `~/.local`; CycloneDDS prebuilt on the
-box (paths in `apps/bridge/.env.example`). Deploy:
+box (paths in `apps/bridge/.env.example`). Deploy by pushing from the Mac: the robot has
+no internet on the cable, so it cannot fetch from GitHub.
 
 ```bash
-ssh c3po 'bash -lc "cd ~/c3po && git pull && ./scripts/robot/c3po install && c3po restart"'
+# On the Mac:
+git push ssh://unitree@192.168.123.164/home/unitree/c3po feat/autonomy:refs/heads/incoming
+# On the robot (ssh -t, in your own terminal: install asks for the sudo password):
+cd ~/c3po && git merge --ff-only incoming && ./scripts/robot/c3po install && c3po restart
 ```
+
+`--ff-only` refuses a robot checkout that has diverged. Then stop and look: never force,
+and never touch `~/gemm*`. `c3po install` stages and validates root-owned files, so it
+needs the `unitree` sudo password; run it in the operator's own terminal (`ssh -t`),
+because Claude Code cannot type it. `c3po restart`, `c3po up core` and `c3po down` need no
+password: `/etc/sudoers.d/c3po` (from `scripts/robot/c3po.sudoers`, installed 2026-11-06)
+grants exactly `systemctl {start,stop,restart} c3po-bridge.service`, plus the two camera
+commands `systemctl stop master_service` and `pkill -9 -x videohub_pc4`. Every other sudo
+command still needs `ssh -t` and the password.
 
 Re-running the installer is intentional: unit and root-owned config changes are applied
 and validated in the same operation. `c3po restart` restarts only the bridge; perception
@@ -311,7 +376,7 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
 - **Boot unit.** `c3po install` installs and enables `c3po-bridge.service`. The unit
   directly supervises the interpreter, claims no sensor, and issues no motion command.
 - **Root boundary.** Unit files are copied root-owned into `/etc/systemd/system`; PID 1
-  never follows a symlink into the user-writable checkout. A pull does not update a loaded
+  never follows a symlink into the user-writable checkout. A merge does not update a loaded
   unit until `c3po install` validates, copies and reloads it.
 
 Rollback uses the root-owned `/var/lib/c3po/previous-c3po-bridge.service` backup created
@@ -344,6 +409,15 @@ uv run python scripts/select_motion_mode.py                # robot supported!
 id, because both answer `code 0` from the sport service and look identical
 otherwise. Expect to need this **once per session** whenever the robot is
 shared.
+
+### Accepts velocity, does not move: FSM 802
+
+R2+A on the remote puts the robot in 802 (Run, `docs/ROBOT-API.md` §4.1). In 802,
+`SetVelocity` answers rpc 0 and nothing moves (unitree_sdk2_python #170, BACKLOG §12).
+Bring-up must end in **501**: the bring-up panel's «1 · Amortiguar → 2 · Preparar →
+3 · Habilitar marcha» is `damp` → `prepare` → `start_walking_waist`. Read `get_state`
+`fsm_id` after every `SetFsmId`, because rpc 0 proves nothing (`docs/ROBOT-API.md` §12:
+`SetFsmId(99999)` also answers 0).
 
 ### Putting a Quest on the console
 
@@ -459,16 +533,15 @@ tunnel and `apps/back` going around it. Pointing `BRIDGE_URL` at
 
 ⚠️ **A robot keeps binding `0.0.0.0` until it is redeployed.** The unit file is
 what changed, and `/etc/systemd/system/c3po-bridge.service` is a root-owned
-**copy**, not a symlink into the checkout: a `git pull` alone changes nothing
+**copy**, not a symlink into the checkout: a new checkout alone changes nothing
 systemd runs, and only `c3po install` validates, copies and reloads the new unit
-(§4, "The durable install"). The pull also has to bring the change — **it
-pulls whatever branch the checkout already has**, and on a branch without the
-change the install faithfully re-copies `0.0.0.0`. Check with
+(§4, "The durable install"). The checkout also has to have the change, and on a
+branch without it the install faithfully re-copies `0.0.0.0`. Check with
 `git -C ~/c3po log --oneline -1 -- scripts/robot/c3po-bridge.service` before
-concluding anything. Then:
+concluding anything. Then, after the push above:
 
 ```bash
-git -C ~/c3po pull
+git -C ~/c3po merge --ff-only incoming
 grep BRIDGE_HOST ~/c3po/scripts/robot/c3po-bridge.service   # must say 127.0.0.1
 ~/c3po/scripts/robot/c3po install && c3po restart
 grep BRIDGE_HOST /etc/systemd/system/c3po-bridge.service    # the copy systemd runs
@@ -528,13 +601,13 @@ with the headset on**, like the rest of this section; the first check is that
 
 ### Deploying this branch to the robot, then closing it out 🔧
 
-The robot's checkout was on `152e3a6` as of 2026-08-28 — it does not have the
-HUD placement fix, the stereo fix, the camera CORS fix, or anything else from
-the last two days. Nothing in the headset can be judged until it does.
+Nothing in the headset can be judged until the robot runs the branch under test.
 
 ```bash
+# 0. Session start: gemm's containers must not be up (they hold the D435).
+ssh c3po 'docker ps'
 # 1. Robot free? Nobody else driving? (OPERATIONS §4 — one commander.)
-ssh c3po 'bash -lc "cd ~/c3po && git pull && ./scripts/robot/c3po install && c3po restart"'
+#    Push and merge as in "apps/bridge → G1 Jetson" above, then:
 ssh c3po 'systemctl is-active c3po-bridge'
 
 # 2. Prove the fix landed, from the Mac, before the headset goes on:
@@ -647,8 +720,13 @@ has run the corresponding check on the robot:
 
 | Env                                                                             | Unblocked by                | Why it is gated                                                                                                                                                            |
 | ------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TELEOP_ARM_ENABLED=1`                                                          | `scripts/arm_sign_check.py` | No source gives the positive direction of any G1 arm joint                                                                                                                 |
+| `TELEOP_ARM_ENABLED=1`                                                          | `scripts/arm_sign_check.py` | Shoulder signs match the URDF (test-day `manipulation.md` §1, 2026-11-03); wrists unverified (BACKLOG 5.5)                                                                 |
 | `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE=brainco` + `TELEOP_BRAINCO_OPEN_AT` | inspection                  | The hands are **two BrainCo** (settled 2026-08-19). Units are [0,1], not Dex3 radians — and BrainCo has **no firmware deadman**, so any hold must be bounded by the bridge |
+
+Neither BrainCo hand answers (2026-11-06): not on any of the four FT4232 lines, not even
+through the vendor `brainco_hand_server` (BACKLOG 5.1). So the bridge runs
+`TELEOP_HAND_TYPE=simulated`: pick and place run their whole sequence, no finger moves,
+and the result says nothing was gripped.
 
 Put them in `apps/bridge/.env` once settled, not on the command line, so the answer
 survives the next session. Head-yaw turning and the walk axis are not gated — they ride on
@@ -705,8 +783,9 @@ run. Only `C3PO_TAKE_OVER=1 c3po up <profile>` (or `c3po gemm stop`) stops
 gemm — said with the other team's OK. The motion-commander check
 (`OTHER_COMMANDER_PATTERNS`) still refuses a second commander either way. The
 bridge systemd starts at boot (`c3po install` enables it) claims no sensor; if
-it is not active, start it from a terminal (`ssh -t`): sudo needs a password,
-and `run_c3po` now says so instead of failing on "a terminal is required".
+it is not active, `c3po up core` starts it with no password through
+`/etc/sudoers.d/c3po` (§5). Without that rule, `run_c3po` asks for a terminal
+(`ssh -t`) instead of failing on "a terminal is required".
 
 `c3po status` is the whole Stage 3 crossing in one line:
 
@@ -771,13 +850,19 @@ A SIGILL here means MPPI got installed by accident.
 
 ## 6. Secrets
 
-| Secret               | Web | Back |   Robot   |
-| -------------------- | :-: | :--: | :-------: |
-| `AGENT_API_KEY`      |  —  |  ✅  | **never** |
-| `DATABASE_URL`       |  —  |  ✅  | **never** |
-| `BETTER_AUTH_SECRET` | ✅  |  ✅  |     —     |
+| Secret                  | Web | Back |   Robot   |
+| ----------------------- | :-: | :--: | :-------: |
+| `AGENT_API_KEY`         |  —  |  ✅  | **never** |
+| `DATABASE_URL`          |  —  |  ✅  | **never** |
+| `BETTER_AUTH_SECRET`    | ✅  |  ✅  |     —     |
+| `SAFETY_CONFIRM_SECRET` |  —  |  ✅  |    ✅     |
+| `GEMINI_API_KEY`        |  —  |  —   |    ✅     |
 
-**The robot holds no model or database credentials**, because the agent runs in `back`.
+`SAFETY_CONFIRM_SECRET` is the same value in `apps/back/.env` and `apps/bridge/.env`;
+without it no Confirmar or «Reanudar» works (§4). `GEMINI_API_KEY` is for the bridge's
+vision tools only (`vlm.py`); BACKLOG §12 has the data terms.
+
+**The robot holds no agent or database credentials**, because the agent runs in `back`.
 That is a real security property: the robot is physically accessible, shared with
 another team, and runs third-party containers. It is also easy to lose by accident —
 moving the agent onboard for "lower latency" would hand an API key to the least trusted
@@ -807,7 +892,7 @@ CI (`.github/workflows/ci.yml`) runs TypeScript/Svelte type-checks, back and web
 tests, prettier, the perception harness's Ruff + pytest gates, and the bridge's Ruff +
 mypy + pytest gates. There is **no CD**: web is automatic on Vercel;
 `back` would need a runner that can reach the LAN box (self-hosted, or a manual
-`make deploy`); the bridge deploy is the one-liner in §5.
+`make deploy`); the bridge deploy is the push in §5.
 
 ---
 
@@ -856,6 +941,9 @@ Plain facts, not a roadmap. Each stays here until fixed.
   the tunnel's stream handling is not a factor and the fallback (plain request/response
   POSTs instead of the SDK transport) is not needed. The blocker is fully closed.
 
+- **The Mid-360S scan module is faulted** (HMS `0x02100003`, 2026-11-03;
+  `docs/ROBOT-HARDWARE.md` §4.6, BACKLOG 4.1). There is no FAST-LIO, no `/scan` and no
+  Nav2 obstacle data. `go_to_object` is camera-only, with no obstacle avoidance.
 - **The planned `back` target host is unreachable.** `perrobot` (10.40.5.4) does not
   answer ping from the dev machine — a different VLAN, the same constraint that blocks
   sim→Mac DDS (§1). Deploying `back` needs that resolved or a different host.
@@ -866,6 +954,10 @@ Plain facts, not a roadmap. Each stays here until fixed.
   container (`restart=unless-stopped`) was up again on its own after `c3po start`'s
   explicit `docker stop` (§4) — "stopped" is not a permanent state. Verify with
   `docker ps` before counting on the sensors or the one-commander invariant.
+  It happened again by 2026-11-06: gemm's containers had been redeployed with
+  `restart=always` and held the D435. They were stopped and set to `--restart=no`.
+  So `docker ps` is the first step of every session. Never delete or modify gemm's
+  files.
 - **The one-commander check is signature-based.** `OTHER_COMMANDER_PATTERNS` in
   `scripts/robot/_common.sh` covers the known leg/arm/hand commanders, including
   `unitree_slam` (its 1102 pose navigation closes its own velocity loop). The returning
