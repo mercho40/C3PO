@@ -2,13 +2,14 @@
 
 What this session must answer, in order: **does YOLOE-26 build and run on the Orin
 (TensorRT 8.5)**, **how fast**, and **how much more does it see than YOLO11n on our own
-objects at 0.5 / 1.5 / 3 m**. Everything below is on branch `auto/perception`; the
+objects at 0.5 / 1.5 / 3 m**. Everything below is on branch `feat/autonomy`; the
 tools are in `apps/perception/tools/`. Rollback (§8) is one env var unset.
 
 What is already verified on a Mac (2026-11-02, ultralytics 8.4.198): the exports, their
 shapes and ops, the detector's decoding and masks on real ONNX Runtime outputs, the
-grounding/plane/tracker maths, and both tools end to end. **Nothing has run on TensorRT
-8.5 or on the D435i yet** — §3 is the first time.
+grounding/plane/tracker maths, and both tools end to end. On the robot (✅ 2026-11-03): the
+engine built on the Orin and runs live at ~40 ms/tick. Which export ran (NMS-free or raw head)
+is not recorded **[?]**. The camera pitch (§4) and the test set (§5–7) are still open.
 
 | export (all opset 16, input `[1,3,640,640]`)   | outputs                                | classes |
 | ---------------------------------------------- | -------------------------------------- | ------- |
@@ -25,8 +26,8 @@ the GPU). The Orin's A78 cores are slower — expect roughly 2-4x.
 ## 0. Before leaving the lab laptop (10 min)
 
 ```bash
-git checkout auto/perception
-cd apps/perception && uv run pytest -q && cd -        # 277 pass, 1 skip (numpy file)
+git checkout feat/autonomy
+cd apps/perception && uv run pytest -q && cd -        # 0 failed
 T=apps/perception/tools
 uv run --with "ultralytics>=8.4" --with onnx python $T/export_yoloe_onnx.py yoloe-26s-seg.pt out/
 uv run --with "ultralytics>=8.4" --with onnx python $T/export_yoloe_onnx.py yoloe-26s-seg-pf.pt out/
@@ -52,9 +53,13 @@ silently; `-P` resumes. The raw-head file is renamed so it cannot shadow the def
 `detector.py`, `grounding.py` and the new `tracking.py` are COPIED into the image, so the
 image must be rebuilt — the new engine alone is not enough.
 
+Deploy as in `docs/OPERATIONS.md` §5 (push from the Mac, `git merge --ff-only incoming` on
+the robot). The build needs internet: run `scripts/robot_internet.py` on the Mac and export
+the proxy in the robot shell first (`docs/OPERATIONS.md` §2; `bringup/build.py` then adds
+`--network host` and the build-args, 9a6063d).
+
 ```bash
-ssh c3po
-cd ~/c3po && git fetch && git checkout <the branch carrying auto/perception> && git pull
+export http_proxy=http://127.0.0.1:18899 https_proxy=http://127.0.0.1:18899 no_proxy=localhost,127.0.0.1,::1
 c3po perception build vision
 ```
 

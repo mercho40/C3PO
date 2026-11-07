@@ -55,7 +55,7 @@ Two computers, plus a LiDAR that is its own network host. **[live]**
 | -------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
 | Jetson Orin NX (`g1-orin`) | `192.168.123.164` (eth0), DHCP (wlan0) | General-purpose host. SSH. Where our bridge runs.                                  |
 | Control board ("PC1")      | `192.168.123.161`                      | Publishes the robot's DDS topics. **No SSH** — the only open TCP port is **9991**. |
-| Livox Mid-360 LiDAR        | `192.168.123.120`                      | Direct network peer on the internal LAN.                                           |
+| Livox Mid-360S LiDAR       | `192.168.123.120`                      | Direct network peer on the internal LAN. Scan module faulted (§4.6).               |
 | Mac (when cabled)          | `192.168.123.99`                       | Static, set by hand — the internal LAN has **no DHCP server**.                     |
 
 The control board pushes **~24 MB/s to multicast `239.255.0.1`** and has **no wireless

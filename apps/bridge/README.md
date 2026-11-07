@@ -122,10 +122,10 @@ its own. The Python module retains a loopback default for ad-hoc developer runs.
 **Both hardware paths are off by default**, and stay off until a person has
 verified what the documentation cannot tell us:
 
-| Path                | Gate                                         | What has to happen first                                                                                                                |
-| ------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Arms (`rt/arm_sdk`) | `TELEOP_ARM_ENABLED=1` + `SIM_MODE=real`     | `scripts/arm_sign_check.py` — no source gives the positive direction of any G1 arm joint                                                |
-| Fingers             | `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE` | `scripts/hand_probe.py` — which hands are fitted is unresolved, and the two candidates disagree on topic, type, motor count _and units_ |
+| Path                | Gate                                         | What has to happen first                                                                                           |
+| ------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Arms (`rt/arm_sdk`) | `TELEOP_ARM_ENABLED=1` + `SIM_MODE=real`     | `scripts/arm_sign_check.py` — shoulder signs match the URDF (2026-11-03); wrists still open (BACKLOG 5.5)          |
+| Fingers             | `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE` | two BrainCo, and neither answers (BACKLOG 5.1); the robot runs `TELEOP_HAND_TYPE=simulated`, which moves no finger |
 
 With neither set, the stream still runs: head yaw turns the robot and the walk
 axis drives it, which is the part that rides on already-vetted machinery
@@ -183,6 +183,10 @@ src/bridge/
   mcp_server.py         FastMCP server — the skill catalogue as MCP tools; stdio or http transport
   skill_meta.py         safety/capability metadata attached to every tool (MCP _meta)
   watchdog.py           operator-link watchdog — safe the robot when the link drops
+  estop.py              the PARAR sentinel and ack files under ~/.c3po/run (the latch)
+  safety.py             governor, tier gate, T2 grants, the latch check; the
+                        /safety/{status,confirm,ack} routes are in mcp_server.py
+  kinematics.py         FK/IK over the G1 URDF (pure Python)
   world_model.py        world-model contract: what perception hands the agent
   sdk/
     connection.py       CycloneDDS init; generates unicast peer XML (macOS multicast workaround)
@@ -198,6 +202,9 @@ src/bridge/
     landmarks.py        remember/recall/list named poses
     task_runtime.py     Task records + registry, cooperative cancellation
     stop_everything.py  cancel-all + arm/hand release + zero-velocity burst (+ damp on real if unacknowledged)
+                        + latches PARAR until /safety/ack
+    go_to_object.py     walk to a detected or remembered object, camera only
+    manipulation.py     reach / pick / place / handover plans over kinematics.py
     walk_velocity.py    open-loop velocity, real hardware only — no pose needed
     dance.py            choreographed gesture sequence via call_arm()
     gesture.py          any preset action from the firmware's own 23-entry catalogue, by name

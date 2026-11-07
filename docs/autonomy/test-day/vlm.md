@@ -24,6 +24,12 @@ On the Jetson (`ssh c3po`):
 curl -sS -o /dev/null -w '%{http_code}\n' https://generativelanguage.googleapis.com/
 ```
 
+On the cable the robot has no internet of its own. Lend it the Mac's: on the Mac run
+`python3 scripts/robot_internet.py unitree@192.168.123.164`, put
+`https_proxy=http://127.0.0.1:18899` and `no_proxy=127.0.0.1,localhost` (and no `http_proxy`)
+in `apps/bridge/.env`, and add `-x http://127.0.0.1:18899` to the curl
+(`docs/OPERATIONS.md` §2).
+
 **Expect** `404` (or any HTTP code). A timeout or `Could not resolve` means the robot
 has no egress. Check the vendor route trap in `docs/ROBOT-HARDWARE.md` before you
 debug anything else. No egress means none of these tools can work.
