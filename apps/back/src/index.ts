@@ -15,6 +15,7 @@ import { safetyRoutes } from "#back/routes/safety.js";
 import { teleopRoutes } from "#back/routes/teleop.js";
 import { enabledSocialProviders } from "#back/lib/auth.js";
 import { reconcileAdmins } from "#back/lib/admin-bootstrap.js";
+import { startStopWatch } from "#back/agent/stop-watch.js";
 // Imported for its VALUES below, and for its import-time validation.
 //
 // That validation already ran before this line — `admin-bootstrap` imports
@@ -32,6 +33,9 @@ import { env } from "#back/lib/env.js";
 await reconcileAdmins().catch((error: unknown) => {
   console.warn("[admin] could not reconcile admin roles:", error);
 });
+
+// A PARAR sent straight to the bridge (headset, stop phrase) ends agent turns too.
+startStopWatch();
 
 const app = new Elysia()
   // An unexpected throw must not reach the browser verbatim: Elysia's default
