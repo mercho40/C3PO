@@ -94,7 +94,10 @@ src/
   bridge/url.ts        BRIDGE_URL and its sibling HTTP routes, in one place
   routes/
     state.ts           GET /state — proxies get_state
-    skills.ts          GET /skills, GET /skills/:name, POST /skills/:name/{invoke,dry-run}
+    skills.ts          GET /skills, GET /skills/:name,
+                       POST /skills/:name/{invoke,dry-run,confirm,cancel} — confirm
+                       (admin) grants AND runs the refused call once
+    safety.ts          GET /safety/status, POST /safety/ack (admin, «Reanudar»)
     tasks.ts           GET /tasks, POST /tasks/:task_id/cancel
     agent.ts           POST /agent — streaming internal-agent chat (needs AGENT_API_KEY)
     chats.ts           GET /chats, GET/PATCH/DELETE /chats/:id — history
@@ -105,7 +108,8 @@ src/
     camera.ts          GET /camera/{status,frame.jpg,stream.mjpg} — the robot
                        camera, same reason (PUBLIC_ROBOT_CAM_URL points here)
     voice.ts           POST /voice/{start,stop}, GET /voice/status — explicit
-                       operator-owned legacy or OpenAI Realtime voice session
+                       operator-owned legacy or OpenAI Realtime voice session;
+                       POST /voice/transcribe — headset push-to-talk STT
   voice/loop.ts        legacy transcript → text-agent → Piper fallback
   voice/realtime.ts    PCM ↔ OpenAI WebSocket, tool dispatch, durable transcript
                        (design: docs/ARCHITECTURE.md §4.1)
@@ -140,7 +144,12 @@ skills read the catalogue, which is reused for 5 s (the VR walk loop invokes
 about once a second) and whose `tools/list` is bounded at 3 s. `POST /agent`
 passes the request's abort signal to the agent loop, so a stopped reply (or a
 closed tab) ends its next steps instead of leaving it dispatching skills
-unseen. Unexpected errors are answered with a generic `internal_error` body;
+unseen. PARAR (the `stop_everything` invoke), `soft_stop`, the `/tasks` estop and
+the spoken stop abort every running agent turn (`agent/turns.ts` `abortAllTurns`).
+An ended turn (abort or the 240 s budget) cancels the bridge call it is waiting on,
+except a stop; the latch itself is the
+bridge's (`docs/OPERATIONS.md` §4). `damp` and `zero_torque` are never offered to
+a model (`agent/runtime.ts` `agentToolExclusions`). Unexpected errors are answered with a generic `internal_error` body;
 the real one goes to the log (a drizzle error's message is its SQL).
 `GET /audit` (the command log) is admin-only; `GET /health` is public and also
 reports which social sign-in providers are configured (`auth.providers`), so

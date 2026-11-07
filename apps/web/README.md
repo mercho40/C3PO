@@ -92,7 +92,13 @@ which owns one instance each of `RobotLive` (`/state`), `VoiceLoopControl`
   hold-to-confirm tile) never sees it, and `/vr-control` latches its own walk
   loop on any press. The topbar stop sits above every bits-ui overlay (sheet,
   dialog, alert dialog) — the stop is idempotent, so bypassing a modal is
-  safe, and a modal that swallows the first tap on PARAR is not.
+  safe, and a modal that swallows the first tap on PARAR is not. In
+  immersive-vr, PARAR is both grips held 300 ms (not available under hand
+  tracking; cad99bb). A stop latches on the bridge: the «PARAR ACTIVO ·
+  Reanudar» chip (`shell/stop-latch-chip.svelte`, admin) sends the stamp it
+  showed, so a newer stop is not cleared by accident (`docs/OPERATIONS.md` §4).
+- **A T2 tool card shows «Confirmar <tool>».** One click grants and runs that
+  refused call once, with the arguments shown, within 30 s.
 - **Privacy and autonomy are visible everywhere**: an "Escuchando" chip while a
   voice session runs, and "NAV ARMADO · N s" while Nav2 is armed to drive. An
   armed gate that can no longer be read keeps its chip and says "sin datos" —
@@ -195,7 +201,9 @@ on synthetic odom and scan — **no sensors, nothing taken from the other team.*
   realtime session (`ownedByYou`; only the owner can end it or open its
   transcript), what the robot heard, past voice transcripts, and an admin-only
   "Decir". Under the realtime engine the spoken stop phrase does nothing, and
-  the page says so rather than showing a "Paradas 0" counter.
+  the page says so rather than showing a "Paradas 0" counter. The headset has
+  its own «Hablar con el robot»: hold B/Y, the WAV goes to `/voice/transcribe`,
+  and the text runs as a voice-mode turn. Not yet tried on a Quest.
 - **`/health`** is one row per subsystem — server, bridge and catalogue, robot
   link, battery, faults, autonomous navigation, perception, voice, camera,
   map — sorted worst first. The summary never says "todo en orden" while any
