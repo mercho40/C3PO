@@ -30,6 +30,7 @@ Today:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any
@@ -55,7 +56,6 @@ async def _await_fsm(target: int, timeout_s: float) -> int | None:
     Returns whatever the FSM ended up as — including None when the poller has
     nothing, which is itself the answer that no controller is loaded.
     """
-    import asyncio
 
     from bridge.sdk.state import get_sampler
 
@@ -172,7 +172,6 @@ async def run_g1_request(
         # on the DDS response, so run it off the event loop — otherwise one
         # in-flight request (e.g. a slow ack) would stall every other tool
         # call, including stop_everything.
-        import asyncio
 
         from bridge.sdk import g1_rpc
 
@@ -253,6 +252,16 @@ async def run_g1_request(
             task.error = f"rpc_error_code_{code}"
         task.ended_at = time.time()
         return task.to_dict()
+
+    except asyncio.CancelledError:
+        # BaseException, so `except Exception` missed it and the task stayed
+        # "running" for the process lifetime. The request itself already went
+        # out (its thread finishes regardless); there is nothing to undo.
+        task.status = "cancelled"
+        task.phase = "cancelled"
+        task.ended_at = time.time()
+        log.info("g1_request.cancelled", task_id=task.task_id, skill_name=skill_name)
+        raise
 
     except Exception as exc:
         task.status = "failed"

@@ -294,3 +294,23 @@ def _fake_fsm(value):
         return value
 
     return _fake
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_request_is_not_left_running(monkeypatch):
+    """An ended agent turn cancels its MCP call. CancelledError skipped
+    `except Exception`, and the task stayed "running" for the process lifetime."""
+    import asyncio
+    import time as _time
+
+    from bridge.skills.task_runtime import get_registry
+
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda api_id, data: _time.sleep(0.3) or (0, ""))
+
+    call = asyncio.ensure_future(_g1_request.run_g1_request("damp"))
+    await asyncio.sleep(0.05)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert not [t for t in get_registry().list_active() if t.skill_name == "damp"]
