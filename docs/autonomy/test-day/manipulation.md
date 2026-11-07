@@ -2,10 +2,12 @@
 
 Branch `feat/autonomy`. Code: `apps/bridge/src/bridge/kinematics.py` (IK over Unitree's URDF) and
 `apps/bridge/src/bridge/skills/manipulation.py`. Tested offline only (`uv run pytest`: IK
-round-trips, plan order, the per-tick person abort). **No arm has moved under this code yet.**
+round-trips, plan order, the per-tick person abort). On the robot, 2026-11-03: the §1 URDF sign
+check ✅ and the §2 step 4 `reach` ✅ within 1 cm. Hands not run: neither answers (BACKLOG 5.1).
 
 **Do this only after `safety.md` steps 8–11 passed** (T2 confirmations work, the reach block
-works). Robot standing (FSM 4 or 500), on the gantry for §1–4, not walking. One person on the
+works). Robot standing (FSM 4 or 501; `arm_sdk.ALLOWED_FSM_IDS` is {4, 500, 501}, 500 is
+not this chassis's walk program, and 802 is refused), on the gantry for §1–4, not walking. One person on the
 remote; a second person watches the arm and calls the stop. Nothing fragile within 70 cm of the
 shoulders.
 
@@ -20,7 +22,10 @@ is the only arm skill allowed with a person in reach. `arm_state` (T0) reports w
 is by forward kinematics and moves nothing. `set_hand` gained `shape=` (`power`, `pinch`,
 `hook`, `point`, `open`). Every motion skill is T2 (one console confirmation per call), aborts
 mid-motion if a person comes inside 0.8 m or the base starts walking, and uses the same
-`rt/arm_sdk` driver as `move_arm` (2 s ramp, 0.6 rad/s slew).
+`rt/arm_sdk` driver as `move_arm` (2 s ramp, 0.6 rad/s slew). The waist is held while arm_sdk is
+on (9cdc3b3). `pick` and `place` move in straight ~1 cm steps inside the URDF limits (e002c0a).
+Stale perception aborts the motion (f1c95d7). Release freezes the arm before the 2 s hand-back
+(baf1894).
 
 ## Before you start
 
@@ -30,13 +35,15 @@ mid-motion if a person comes inside 0.8 m or the base starts walking, and uses t
 | ------------------------ | --------------------------------------------------------- |
 | `TELEOP_ARM_ENABLED`     | `1`                                                       |
 | `TELEOP_HAND_ENABLED`    | `1`                                                       |
-| `TELEOP_HAND_TYPE`       | `brainco`                                                 |
+| `TELEOP_HAND_TYPE`       | `simulated` until a hand answers (5.1), then `brainco`    |
 | `TELEOP_HAND_SIDES`      | `right` (add `left` only once the left hand has answered) |
 | `TELEOP_BRAINCO_OPEN_AT` | `0` or `1`, from `scripts/hand_probe.py`. Never guess it. |
 
-`brainco_hand_server` must be running for the right hand (`--serial` per hand). Invoke tools
-from the console agent, or directly through Claude Code over MCP (`vlm.md` §4). Each T2 call
-needs `POST /skills/<tool>/confirm` first (`safety.md` step 9).
+Neither BrainCo hand answers on any of the four FT4232 lines, even through the vendor
+`brainco_hand_server` (2026-11-06). With `simulated`, no finger moves and the result says nothing
+was gripped. Invoke tools from the console agent, or directly through Claude Code over MCP
+(`vlm.md` §4). Each T2 call needs one «Confirmar» press on the tool card or in the VR menu
+(`safety.md` step 9).
 
 ## 1. Is the URDF the robot? (no motion from us, 5 min)
 
@@ -57,7 +64,7 @@ URDF. The URDF says **positive `right_shoulder_roll` moves the right arm toward 
 | 4   | Confirm, then `reach` x 0.30, y -0.15, z 0.05, side right, fingers forward, hold true. | Slow (~34°/s) move after a 2 s ramp. The palm ends ~30 cm in front of the torso, 15 cm right, about elbow height, fingers forward. `result.target_torso_m` matches. Tape-check: within ~3 cm. |
 | 5   | `reach` x 0.70 (too far).                                                              | `status failed`, `phase planning`, "out of reach", **nothing moves**.                                                                                                                         |
 | 6   | `reach` y +0.30 with the right arm.                                                    | Refused "too far across", nothing moves.                                                                                                                                                      |
-| 7   | Repeat 4, and halfway through have someone step to 0.6 m in front (perception up).     | Aborts: `phase aborted:person_in_reach`, the arm ramps back to the firmware controller.                                                                                                       |
+| 7   | Repeat 4, and halfway through have someone step to 0.6 m in front (perception up).     | Aborts: `phase aborted:person_in_reach`, the arm ramps back to the firmware controller. Watch the 2 s hand-back for a sweep (11.4).                                                           |
 | 8   | `release_arm_control`.                                                                 | Arm returns under the built-in controller over ~2 s.                                                                                                                                          |
 
 ## 3. Hand shapes (5 min, arm at rest)
@@ -107,11 +114,11 @@ That override moves the detector's ranges only; `pick` keeps the URDF mount.
 
 ## Rollback
 
-| Problem                         | Do                                                                                    |
-| ------------------------------- | ------------------------------------------------------------------------------------- |
-| Anything moves wrong            | Remote, or `stop_everything` (releases the arm, opens the hands).                     |
-| Arms must not move today at all | `TELEOP_ARM_ENABLED=0`, restart the bridge. `pick` etc. then refuse with the reason.  |
-| Hands only                      | `TELEOP_HAND_ENABLED=0`. `reach` still works; `pick` refuses ("hand not configured"). |
+| Problem                         | Do                                                                                                                      |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Anything moves wrong            | Remote, or `stop_everything` (releases the arm, opens the hands). It also latches: «Reanudar» before the next arm call. |
+| Arms must not move today at all | `TELEOP_ARM_ENABLED=0`, restart the bridge. `pick` etc. then refuse with the reason.                                    |
+| Hands only                      | `TELEOP_HAND_ENABLED=0`. `reach` still works; `pick` refuses ("hand not configured").                                   |
 
 ## Known limits (not bugs to file tomorrow)
 
