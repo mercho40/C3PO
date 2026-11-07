@@ -410,6 +410,7 @@ async function buildTools(
   audit: AuditContext,
   mode: AgentMode,
   inFlight: Set<Promise<unknown>>,
+  deadline: number,
 ): Promise<ToolSet> {
   const tools: ToolSet = {};
   for (const skill of await listSkills()) {
@@ -426,8 +427,17 @@ async function buildTools(
         if (abortSignal?.aborted) return { error: "aborted" };
         const params = args as Record<string, unknown>;
         const startedAt = Date.now();
+        // A turn that ends (PARAR, the budget, the client gone) cancels its
+        // call: a 300 s walk_to outlived the 240 s budget. A stop runs out.
+        const signal =
+          skill.classification === "safety"
+            ? undefined
+            : AbortSignal.any([
+                ...(abortSignal ? [abortSignal] : []),
+                AbortSignal.timeout(Math.max(0, deadline - Date.now())),
+              ]);
         try {
-          const call = callTool(skill.name, params);
+          const call = callTool(skill.name, params, signal);
           inFlight.add(call);
           const result = await call;
           void logToolCall({
@@ -623,6 +633,7 @@ export async function runAgentChat(
       }),
     );
   };
+  const deadline = turn.startedAt + TURN_BUDGET_MS;
   try {
     const [basePrompt, world, tools] = await Promise.all([
       buildSystemPrompt(mode),
@@ -637,10 +648,10 @@ export async function runAgentChat(
         },
         mode,
         inFlight,
+        deadline,
       ),
     ]);
     const system = `${basePrompt}\n\n${world}`;
-    const deadline = Date.now() + TURN_BUDGET_MS;
     // `steps` rejects with a generic NoOutputGeneratedError; the gateway's
     // own error reaches only onError.
     let streamError: unknown;

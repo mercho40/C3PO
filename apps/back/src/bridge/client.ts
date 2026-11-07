@@ -182,6 +182,9 @@ const CALL_TIMEOUT_MS = 15 * 60_000;
 export async function callTool(
   name: string,
   args: Record<string, unknown> = {},
+  // Aborting it cancels the call on the bridge, on purpose: an agent turn
+  // nobody follows any more must not keep a walk going. Never for a stop.
+  signal?: AbortSignal,
 ): Promise<unknown> {
   // A timeout CANCELS the call on the bridge (`notifications/cancelled`),
   // which for a skill halfway through moving the robot — or stopping it — is
@@ -200,8 +203,12 @@ export async function callTool(
   try {
     result = await client.callTool({ name, arguments: args }, undefined, {
       timeout: CALL_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
     });
   } catch (err) {
+    // The SDK rejects with the signal's own reason: our abort, not a lost
+    // session, and closing the session would take PARAR in flight with it.
+    if (signal?.aborted) throw new BridgeToolError(name, "aborted");
     if (sessionLost(err)) abandon(pending, client);
     throw failure(name, err);
   }
