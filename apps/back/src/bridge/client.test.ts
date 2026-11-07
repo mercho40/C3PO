@@ -145,6 +145,15 @@ describe("a discarded session is actually closed", () => {
     expect(abandonBody.slice(0, end)).toContain("discard(client);");
   });
 
+  test("our own abort is told apart before the session is judged lost", () => {
+    // The SDK rejects an aborted call with the signal's reason, a plain Error,
+    // which sessionLost reads as a dead transport: PARAR in flight would go too.
+    const body = src.slice(src.indexOf("export async function callTool"));
+    const guard = body.indexOf("if (signal?.aborted) throw");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(body.indexOf("if (sessionLost(err))"));
+  });
+
   test("a tool call sets its own ceiling instead of inheriting the SDK's 60 s", () => {
     // Omitting `timeout` does not mean "none": the SDK falls back to 60 s and
     // cancels the call on the bridge. walk_to accepts up to 300 s.
