@@ -266,7 +266,9 @@ Every `stop_everything` writes `~/.c3po/run/stop_everything` (`estop.signal_stop
 the console PARAR or Shift+Space, both headset grips held 300 ms, the spoken stop, or
 a Claude Code tool call. `back` aborts every running agent turn when a PARAR, a
 `soft_stop`, a `/tasks` estop or the spoken stop goes through it (`agent/turns.ts`
-`abortAllTurns`), and an aborted turn cancels the bridge call it was waiting on, so a
+`abortAllTurns`). A stop that reaches the bridge any other way (headset grips, Claude
+Code) ends the turns within about 0.5 s: while a turn runs, `agent/stop-watch.ts` polls
+`/safety/status` for a new `stopped_at`. An aborted turn cancels the bridge call it was waiting on, so a
 running `walk_to` stops too. While the stop stands,
 nothing moves:
 

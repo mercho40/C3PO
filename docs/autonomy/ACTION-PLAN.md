@@ -1592,6 +1592,10 @@ From §5 "Items no WP covers yet":
 - ✅ `soft_stop` on /skills and the /tasks estop abort every agent turn, like `stop_everything` (cf5d136).
 - ✅ The turn's abort and its remaining budget reach the bridge call (4d77169): a 300 s `walk_to` is cancelled on PARAR, when the client goes away, or at the 240 s budget, and `walk_to` runs its stop sequence on cancel. Safety skills are never cancelled this way.
 
+- ✅ A cancelled `gesture` still releases the arm, and a cancelled `gesture` or `_g1_request` task ends as `cancelled` instead of staying `running`. 4d77169 made this reachable: every ended turn now cancels its tool call. The release waits for the gesture's own RPC to finish, so the two never race on the arm client.
+- ✅ A PARAR latched on the bridge directly (headset socket, stop phrase) ends back's agent turns. While a turn runs, `agent/stop-watch.ts` polls `/safety/status` every 500 ms and aborts every turn when `stopped_at` moves. It compares stamps rather than clocks, because `stopped_at` is the robot's wall clock.
+- ✅ The back tests pass under `bun test --randomize` (40 seeds). `catalogue.test.ts` loads its own copy of the catalogue, since bun applied another file's mock of `skills/index` to the re-exported functions. `camera.test.ts` no longer relies on the order of its tests.
+
 Robot check for the next session: arm Nav2 with the lidar faulted. `arm_navigation` must report `obstacles_fresh: false`, and the bridge log must show `safety.speed_factor reason=obstacle_source_stale` with zero velocity sent.
 
-Listed open in §5 and not re-checked today: the external-stop watcher (11.3), the headset's socket PARAR not aborting back's turns, geofence and heartbeat, the Gemini data terms, the Livox pins, the shared sport client, CancelledError in gesture/_g1_request, forged `/agent` history and `javascript:` links, the Realtime fatal-error and odd-PCM items.
+Still open in §5: the external-stop watcher (11.3), geofence and heartbeat, the Gemini data terms, the Livox SDK version, the shared sport client, forged `/agent` history and `javascript:` links, the Realtime fatal-error and odd-PCM items, and PARAR not stopping speech (`stop_everything` never calls `g1_rpc.stop_play`).
