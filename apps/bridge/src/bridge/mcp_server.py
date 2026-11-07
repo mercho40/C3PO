@@ -2079,6 +2079,8 @@ def arm_navigation(
         # nothing, so nothing will move until Nav2 starts.
         "cmd_vel_age_s": status.get("cmd_vel_age_s"),
         "clamps": status.get("clamps"),
+        # False: the governor zeroes every Nav2 setpoint until the lidar reports again.
+        "obstacles_fresh": safety.obstacles_fresh(),
         "warning": (
             "The robot can now be driven by Nav2. A person must be watching "
             "with the e-stop in reach. The gate closes itself in "
