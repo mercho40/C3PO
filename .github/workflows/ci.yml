@@ -337,16 +337,19 @@ jobs:
           import xml.etree.ElementTree as ET
 
           cases = ET.parse(sys.argv[1]).getroot().iter("testcase")
-          ran, whisper, bad = 0, 0, []
+          ran, whisper, xfail, bad = 0, 0, 0, []
           for case in cases:
               skip = case.find("skipped")
               if skip is None:
                   ran += 1
+              elif skip.get("type") == "pytest.xfail":
+                  # A known decode miss, pinned on purpose (flat "detener").
+                  xfail += 1
               elif "faster-whisper" in (skip.get("message") or ""):
                   whisper += 1
               else:
                   bad.append(f"{case.get('name')}: {skip.get('message')}")
-          print(f"ran {ran}, whisper skips {whisper}, other skips {len(bad)}")
+          print(f"ran {ran}, xfail {xfail}, whisper skips {whisper}, other skips {len(bad)}")
           if bad:
               sys.exit("a voice test skipped in the job that exists to run it:\n  " + "\n  ".join(bad))
           if ran == 0:

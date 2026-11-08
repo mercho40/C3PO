@@ -126,8 +126,9 @@ def test_mic_constants_match_the_documented_feed():
         "¡detener!",
         pytest.param(
             "detener",
+            # Not strict: CI's piper build (the robot's) may render it differently.
             marks=pytest.mark.xfail(
-                strict=True,
+                strict=False,
                 reason="flat 'detener' decodes as 'te tenga'/'tener' (7 of 15 random "
                 "syntheses heard, 2026-11-07); operators should say 'emergencia'",
             ),
