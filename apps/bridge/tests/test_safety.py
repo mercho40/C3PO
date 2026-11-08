@@ -23,6 +23,7 @@ class FakeLink:
     def __init__(self, report, age=0.1):
         self.report, self.age = report, age
         self.disabled = []
+        self.armed = False  # the Nav2 gate: the geofence applies only while it is open
 
     def latest_report(self):
         return self.report, self.age
@@ -32,9 +33,13 @@ class FakeLink:
 
     def enable(self, reason="", ttl_s=0.0):
         self.enabled = (reason, ttl_s)  # arm_navigation's gate, never a real one
+        self.armed = True
+
+    def is_enabled(self):
+        return self.armed
 
     def status(self):
-        return {}
+        return {"enabled": self.armed}
 
 
 def _report(*objects, detector_online=True, omitted=0, lidar_online=True):
@@ -768,3 +773,153 @@ def test_the_blind_rule_holds_with_the_person_rule_off(sent, link, monkeypatch):
     link.report = _report(lidar_online=False)
     perception_link._default_forward(0.3, 0.0, 0.0)
     assert sent[-1][0] == 0.0
+
+
+# -- the geofence --------------------------------------------------------------
+
+
+class FakeSampler:
+    def __init__(self, x=0.0, y=0.0, age=0.05):
+        self.pose = (x, y, age)
+
+    def latest_pose(self):
+        return self.pose
+
+
+@pytest.fixture
+def odom(monkeypatch):
+    from bridge.sdk import state
+
+    fake = FakeSampler()
+    monkeypatch.setattr(state, "_sampler_singleton", fake)
+    return fake
+
+
+def _from_rest():
+    # Not safety.reset(): that would also forget the fence's centre.
+    safety._last_at = None
+
+
+def _armed_at(link, odom, x=0.0, y=0.0):
+    odom.pose = (x, y, 0.05)
+    safety.anchor_geofence(renewing=False)
+    link.armed = True
+
+
+def _nav2(odom, x, y=0.0, age=0.05):
+    """One Nav2 tick with the robot at (x, y); what reached the legs."""
+    odom.pose = (x, y, age)
+    _from_rest()
+    perception_link._default_forward(0.3, 0.0, 0.0)
+
+
+def test_nav2_drives_inside_the_fence(sent, link, odom):
+    _armed_at(link, odom)
+    _nav2(odom, safety.GEOFENCE_M - 0.1)
+    assert sent[-1][0] == 0.3
+    assert safety.geofence()["inside"] is True
+
+
+def test_nav2_is_zeroed_outside_the_fence_but_people_still_drive(sent, link, odom):
+    _armed_at(link, odom, 1.0, 1.0)
+    _nav2(odom, 1.0, 1.0 + safety.GEOFENCE_M + 0.1)
+    assert sent[-1][:3] == (0.0, 0.0, 0.0)
+    assert safety.status()["last_reason"] == "outside_geofence"
+    assert safety.geofence()["inside"] is False
+    # Teleop is never fenced: it is how the operator brings the robot back.
+    _from_rest()
+    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
+    assert sent[-1][0] == 0.3
+
+
+def test_nav2_drives_again_once_back_inside(sent, link, odom):
+    _armed_at(link, odom)
+    _nav2(odom, safety.GEOFENCE_M + 0.5)
+    assert sent[-1][0] == 0.0
+    _nav2(odom, safety.GEOFENCE_M - 0.5)
+    assert sent[-1][0] == 0.3
+
+
+@pytest.mark.parametrize("pose", [None, (0.0, 0.0, safety.POSE_STALE_S + 0.5)])
+def test_nav2_is_zeroed_when_the_pose_is_unknown_or_stale(sent, link, odom, pose):
+    _armed_at(link, odom)
+    odom.pose = pose
+    _from_rest()
+    perception_link._default_forward(0.3, 0.0, 0.3)
+    assert sent[-1][:3] == (0.0, 0.0, 0.0)
+    assert safety.status()["last_reason"] == "geofence_pose_unknown"
+
+
+def test_nav2_is_zeroed_with_no_sampler_at_all(sent, link, monkeypatch):
+    from bridge.sdk import state
+
+    monkeypatch.setattr(state, "_sampler_singleton", None)
+    safety.anchor_geofence(renewing=False)
+    link.armed = True
+    perception_link._default_forward(0.3, 0.0, 0.0)
+    assert sent[-1][0] == 0.0
+    assert safety.geofence()["anchor"] is None
+
+
+def test_arming_with_no_pose_holds_nav2_until_a_renewal_finds_one(sent, link, odom):
+    odom.pose = None
+    safety.anchor_geofence(renewing=False)
+    link.armed = True
+    _nav2(odom, 0.0)
+    assert sent[-1][0] == 0.0
+    safety.anchor_geofence(renewing=True)  # no centre yet, so a renewal takes this one
+    _nav2(odom, 0.0)
+    assert sent[-1][0] == 0.3
+
+
+def test_a_renewal_keeps_the_centre_and_a_fresh_arm_moves_it(sent, link, odom):
+    _armed_at(link, odom)
+    odom.pose = (safety.GEOFENCE_M + 1.0, 0.0, 0.05)
+    safety.anchor_geofence(renewing=True)
+    _nav2(odom, safety.GEOFENCE_M + 1.0)
+    assert sent[-1][0] == 0.0  # re-arming leg by leg cannot walk the fence away
+    safety.anchor_geofence(renewing=False)
+    _nav2(odom, safety.GEOFENCE_M + 1.0)
+    assert sent[-1][0] == 0.3
+
+
+def test_the_fence_is_off_at_zero_radius(sent, link, odom, monkeypatch):
+    monkeypatch.setattr(safety, "GEOFENCE_M", 0.0)
+    _armed_at(link, odom)
+    _nav2(odom, 50.0)
+    assert sent[-1][0] == 0.3
+    odom.pose = None
+    _from_rest()
+    perception_link._default_forward(0.3, 0.0, 0.0)
+    assert sent[-1][0] == 0.3
+    assert safety.geofence()["radius_m"] is None
+
+
+def test_an_unarmed_autonomous_walk_is_not_fenced(sent, link, odom):
+    """go_to_object's walk_to is autonomous but not Nav2: no arm, no centre."""
+    odom.pose = None
+    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
+    assert sent[-1][0] == 0.3
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "wide"])
+def test_a_broken_radius_falls_back_to_the_default_never_off(monkeypatch, raw):
+    monkeypatch.setenv("SAFETY_GEOFENCE_M", raw)
+    try:
+        importlib.reload(safety)
+        assert safety.GEOFENCE_M == safety.GEOFENCE_DEFAULT_M
+    finally:
+        monkeypatch.delenv("SAFETY_GEOFENCE_M")
+        importlib.reload(safety)
+
+
+def test_arm_navigation_and_status_report_the_fence(link, odom):
+    from bridge import mcp_server
+
+    odom.pose = (2.0, -1.0, 0.05)
+    out = mcp_server.arm_navigation(reason="test arm", seconds=5)
+    assert out["geofence"] == {
+        "radius_m": safety.GEOFENCE_M, "anchor": [2.0, -1.0], "distance_m": 0.0, "inside": True,
+    }  # fmt: skip
+    assert safety.status()["geofence"]["anchor"] == [2.0, -1.0]
+    assert safety.status()["obstacles_fresh"] is True

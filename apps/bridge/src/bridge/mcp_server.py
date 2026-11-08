@@ -2068,6 +2068,8 @@ def arm_navigation(
         # depend on timing the operator cannot see.
         log.warning("arm_navigation.no_planner_traffic")
 
+    # Before enable(): whether this renews an open gate decides if the fence keeps its centre.
+    safety.anchor_geofence(renewing=bool(status_before.get("enabled")))
     link.enable(reason=reason, ttl_s=seconds)
     status = link.status()
     return {
@@ -2081,6 +2083,8 @@ def arm_navigation(
         "clamps": status.get("clamps"),
         # False: the governor zeroes every Nav2 setpoint until the lidar reports again.
         "obstacles_fresh": safety.obstacles_fresh(),
+        # inside null with a radius set: no pose, so every Nav2 setpoint is zeroed.
+        "geofence": safety.geofence(),
         "warning": (
             "The robot can now be driven by Nav2. A person must be watching "
             "with the e-stop in reach. The gate closes itself in "
