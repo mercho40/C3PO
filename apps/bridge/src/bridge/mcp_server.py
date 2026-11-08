@@ -4558,6 +4558,28 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
+@mcp.custom_route("/camera/cloud_frame.jpg", methods=["GET"])
+async def camera_cloud_frame(request):  # noqa: ANN001, ANN201 - starlette types
+    """The newest frame with faces blurred, for a caller that uploads it to a cloud model.
+
+    apps/back's `look` and `verify` read this, never /camera/frame.jpg (the
+    operator's own view stays sharp). Blurred here because OpenCV is here.
+    Fails closed like `vlm.blur_faces`: 503 with the reason, never a raw frame.
+    """
+    from starlette.responses import JSONResponse, Response
+
+    from bridge import vlm
+
+    jpeg, _source, err = await _grab_frame()
+    if err or jpeg is None:
+        return JSONResponse(err or {"error": "no_frame"}, status_code=503)
+    try:
+        jpeg = await asyncio.to_thread(vlm.blur_faces, jpeg)
+    except vlm.VlmError as exc:
+        return JSONResponse({"error": "face_blur_failed", "detail": str(exc)}, status_code=503)
+    return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 async def _relay_stream(url: str, request):  # noqa: ANN001 - starlette Request
     """Pipe an upstream MJPEG response straight through to the client.
 

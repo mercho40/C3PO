@@ -18,6 +18,7 @@ Plain `urllib`, like the rest of the bridge: one POST does not justify a SDK.
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import math
 import os
@@ -55,6 +56,102 @@ _DATA_NOT_ORDERS = (
 
 class VlmError(RuntimeError):
     """The VLM could not answer. The message is safe to show the planner."""
+
+
+# --- faces are blurred before any frame leaves for a cloud model ---------------
+#
+# WHY. The robot stands at a public expo, and on Gemini's free tier Google may
+# keep the images and humans may review them; the robotics docs suggest face
+# blurring (BACKLOG §12). `generate` below and the bridge's
+# /camera/cloud_frame.jpg (what apps/back's `look` uploads) both go through
+# `blur_faces`, so no frame reaches a cloud model any other way.
+#
+# FAILS CLOSED. If OpenCV or its cascades are missing, or the frame does not
+# decode, the frame is not sent: the VLM tools answer `vlm_unavailable` with
+# the reason, and the detector, motion and stop keep working. A missing
+# library is a deployment bug, not a blip, so failing open would leak every
+# frame until someone noticed. Turning it off is an explicit env choice.
+#
+# Detector: OpenCV's bundled Haar cascades (opencv-python comes in with
+# unitree-sdk2py, so no new dependency), frontal + profile both ways.
+# shortcut: Haar misses faces that are small, tilted or half-lit; if robot
+# frames show misses, move to YuNet (cv2.FaceDetectorYN, needs a 300 kB ONNX).
+
+#: Detection runs on a copy at most this wide: ~35 ms for three passes on a
+#: Mac at 640x360; the blur itself is applied at full resolution.
+_DETECT_W = 640
+#: Each detected box grows by this fraction per side, to cover hair and chin.
+_PAD = 0.25
+#: The face becomes this many blocks across: unrecognisable, still a head.
+_BLOCKS = 6
+_CASCADES = ("haarcascade_frontalface_default.xml", "haarcascade_profileface.xml")
+
+
+def face_blur_on() -> bool:
+    """C3PO_FACE_BLUR, ON unless set to 0/false/off/no (e.g. with a paid key)."""
+    return os.environ.get("C3PO_FACE_BLUR", "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+@functools.cache
+def _cascades() -> list[Any]:
+    import cv2
+
+    root = cv2.data.haarcascades  # type: ignore[attr-defined]  # cv2's stubs omit `data`
+    loaded = [cv2.CascadeClassifier(root + name) for name in _CASCADES]
+    if any(c.empty() for c in loaded):
+        raise VlmError(f"OpenCV face cascades did not load from {root}")
+    return loaded
+
+
+def _faces(gray: Any) -> list[tuple[int, int, int, int]]:
+    """(x, y, w, h) of every face in a grayscale image."""
+    import cv2
+
+    frontal, profile = _cascades()
+    found = [tuple(b) for b in frontal.detectMultiScale(gray, 1.1, 3, minSize=(20, 20))]
+    found += [tuple(b) for b in profile.detectMultiScale(gray, 1.1, 3, minSize=(20, 20))]
+    width = gray.shape[1]
+    # The profile cascade only knows one side; the mirror finds the other.
+    for x, y, w, h in profile.detectMultiScale(cv2.flip(gray, 1), 1.1, 3, minSize=(20, 20)):
+        found.append((width - x - w, y, w, h))
+    return [(int(x), int(y), int(w), int(h)) for x, y, w, h in found]
+
+
+def blur_faces(jpeg: bytes) -> bytes:
+    """`jpeg` with every detected face pixelated. Raises VlmError rather than
+    return a frame it could not check (see above). No face: the bytes unchanged."""
+    if not face_blur_on():
+        return jpeg
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:
+        raise VlmError(
+            f"face blur needs OpenCV ({exc}); not sending the frame. Install "
+            "opencv-python in the bridge venv, or set C3PO_FACE_BLUR=0 with a paid key."
+        ) from exc
+    img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise VlmError("the camera frame did not decode, so faces could not be blurred; not sent")
+    h, w = img.shape[:2]
+    scale = min(1.0, _DETECT_W / w)
+    small = cv2.resize(img, (round(w * scale), round(h * scale))) if scale < 1 else img
+    faces = _faces(cv2.equalizeHist(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)))
+    if not faces:
+        return jpeg
+    for fx, fy, fw, fh in faces:
+        pad_x, pad_y = fw * _PAD, fh * _PAD
+        x0, y0 = max(0, int((fx - pad_x) / scale)), max(0, int((fy - pad_y) / scale))
+        x1, y1 = min(w, int((fx + fw + pad_x) / scale)), min(h, int((fy + fh + pad_y) / scale))
+        roi = img[y0:y1, x0:x1]
+        if roi.size:
+            blocks = cv2.resize(roi, (_BLOCKS, _BLOCKS), interpolation=cv2.INTER_AREA)
+            img[y0:y1, x0:x1] = cv2.resize(blocks, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST)
+    ok, out = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    if not ok:
+        raise VlmError("re-encoding the face-blurred frame failed; not sent")
+    log.info("vlm.faces_blurred", count=len(faces))
+    return bytes(out.tobytes())
 
 
 def _key() -> str:
@@ -104,6 +201,7 @@ def _text_of(resp: dict) -> str:
 def generate(jpeg: bytes, prompt: str) -> str:
     """One image + one prompt -> the model's text. Raises VlmError."""
     key = _key()
+    jpeg = blur_faces(jpeg)
     parts = [
         {"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(jpeg).decode()}},
         {"text": f"{prompt}\n\n{_DATA_NOT_ORDERS}"},

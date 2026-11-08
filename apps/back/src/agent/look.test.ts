@@ -102,6 +102,19 @@ describe("look", () => {
     expect(d.asked).toHaveLength(0);
   });
 
+  test("a frame the bridge could not blur is unavailable with its reason", async () => {
+    const d = deps({
+      cameraFrame: async () => {
+        throw new Error("OpenCV face cascades did not load");
+      },
+    });
+    expect(await look({}, d)).toMatchObject({
+      status: "unavailable",
+      reason: "OpenCV face cascades did not load",
+    });
+    expect(d.asked).toHaveLength(0);
+  });
+
   test("a failing or silent model is an error the agent can report", async () => {
     const failed = await look(
       {},
