@@ -9,6 +9,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { HastNode, Parser, Plugin } from "svelte-exmarkdown";
 import {
   isSafeUrl,
@@ -155,15 +157,18 @@ describe("isSafeUrl", () => {
 });
 
 describe("the chat bubble renders through the filtered pipeline", () => {
-  test("response.svelte passes responsePlugins(), not a plugin list of its own", async () => {
+  test("response.svelte passes responsePlugins(), not a plugin list of its own", () => {
     // The tests above parse with responsePlugins(); this pins that the
     // component the operator sees uses the same list.
-    const source = await Bun.file(
-      new URL(
-        "../src/lib/components/ai-elements/response/response.svelte",
-        import.meta.url,
+    const source = readFileSync(
+      fileURLToPath(
+        new URL(
+          "../src/lib/components/ai-elements/response/response.svelte",
+          import.meta.url,
+        ),
       ),
-    ).text();
+      "utf8",
+    );
     expect(source).toContain("plugins={responsePlugins()}");
     expect(source).not.toContain("gfmPlugin");
   });
