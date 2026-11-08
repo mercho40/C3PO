@@ -153,3 +153,18 @@ describe("isSafeUrl", () => {
     expect(isSafeUrl(undefined, web)).toBe(false);
   });
 });
+
+describe("the chat bubble renders through the filtered pipeline", () => {
+  test("response.svelte passes responsePlugins(), not a plugin list of its own", async () => {
+    // The tests above parse with responsePlugins(); this pins that the
+    // component the operator sees uses the same list.
+    const source = await Bun.file(
+      new URL(
+        "../src/lib/components/ai-elements/response/response.svelte",
+        import.meta.url,
+      ),
+    ).text();
+    expect(source).toContain("plugins={responsePlugins()}");
+    expect(source).not.toContain("gfmPlugin");
+  });
+});
