@@ -48,9 +48,17 @@ describe("Pcm16Resampler", () => {
     expect(Array.from(joined)).toEqual(Array.from(oneShot));
   });
 
-  test("rejects half a PCM sample", () => {
-    expect(() =>
-      new Pcm16Resampler(16_000, 24_000).push(new Uint8Array([1])),
-    ).toThrow();
+  test("an odd-length chunk keeps its last byte for the next one", () => {
+    const source = encode(
+      Array.from({ length: 1_000 }, (_, i) => i * 20 - 10_000),
+    );
+    const oneShot = new Pcm16Resampler(16_000, 24_000).push(source);
+    const chunked = new Pcm16Resampler(16_000, 24_000);
+    // Odd cuts, a lone byte, and an empty chunk between the halves of a sample.
+    const cuts = [0, 1, 2, 247, 247, 248, 1_111, 1_999, source.byteLength];
+    const parts = cuts
+      .slice(1)
+      .map((end, i) => chunked.push(source.slice(cuts[i], end)));
+    expect(Array.from(Buffer.concat(parts))).toEqual(Array.from(oneShot));
   });
 });

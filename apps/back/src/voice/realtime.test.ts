@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   RealtimeVoiceSession,
+  isRecoverableRealtimeError,
   realtimeSessionUpdate,
   realtimeTools,
 } from "./realtime";
@@ -186,5 +187,99 @@ describe("an operator's decision on a call this session asked for", () => {
     const stopped = session(false);
     stopped.s.informOutcome("chat_rt", "x");
     expect(stopped.sent).toEqual([]);
+  });
+});
+
+describe("a Realtime error event", () => {
+  // fail() asks the bridge to drop queued audio; no bridge here.
+  let fetchSpy: ReturnType<typeof spyOn> | null = null;
+  let warnSpy: ReturnType<typeof spyOn> | null = null;
+  let errorSpy: ReturnType<typeof spyOn> | null = null;
+  beforeEach(() => {
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+      (async () => new Response(null, { status: 204 })) as never,
+    );
+    warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    fetchSpy?.mockRestore();
+    warnSpy?.mockRestore();
+    errorSpy?.mockRestore();
+  });
+
+  function running() {
+    const s = new RealtimeVoiceSession();
+    const inner = s as unknown as {
+      socket: unknown;
+      state: { running: boolean; phase: string };
+      receive: (raw: Buffer) => void;
+    };
+    let closed = false;
+    inner.socket = {
+      readyState: 1,
+      send: () => {},
+      close: () => {
+        closed = true;
+      },
+    };
+    inner.state.running = true;
+    inner.state.phase = "listening";
+    const receive = (error: {
+      type?: string;
+      code?: string;
+      message?: string;
+    }) => inner.receive(Buffer.from(JSON.stringify({ type: "error", error })));
+    return { s, receive, closed: () => closed };
+  }
+
+  test("a collision with an active response leaves the session listening", () => {
+    const { s, receive, closed } = running();
+    receive({
+      type: "invalid_request_error",
+      code: "conversation_already_has_active_response",
+      message: "Conversation already has an active response",
+    });
+    expect(s.snapshot()).toMatchObject({
+      running: true,
+      phase: "listening",
+      lastError: null,
+    });
+    expect(closed()).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  test("an unknown or code-less error still ends the session", () => {
+    for (const error of [
+      { type: "invalid_request_error", code: "session_expired", message: "x" },
+      { type: "server_error", message: "The server had an error" },
+    ]) {
+      const { s, receive, closed } = running();
+      receive(error);
+      expect(s.snapshot()).toMatchObject({
+        running: false,
+        phase: "error",
+        lastError: error.message,
+      });
+      expect(closed()).toBe(true);
+    }
+  });
+
+  test("only named codes are recoverable", () => {
+    for (const code of [
+      "conversation_already_has_active_response",
+      "response_cancel_not_active",
+      "input_audio_buffer_commit_empty",
+      "rate_limit_exceeded",
+    ])
+      expect(isRecoverableRealtimeError({ code })).toBe(true);
+    for (const error of [
+      undefined,
+      {},
+      { type: "invalid_request_error" },
+      { code: "invalid_api_key" },
+      { code: "session_expired" },
+    ])
+      expect(isRecoverableRealtimeError(error)).toBe(false);
   });
 });

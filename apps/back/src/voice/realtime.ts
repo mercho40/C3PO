@@ -42,8 +42,33 @@ type RealtimeEvent = {
   name?: string;
   arguments?: string;
   call_id?: string;
-  error?: { message?: string };
+  error?: RealtimeError;
 };
+
+type RealtimeError = { type?: string; code?: string; message?: string };
+
+/**
+ * Error codes that reject one client event and leave the session usable.
+ * `response.create` goes out after every tool result and every operator
+ * decision while semantic VAD creates responses of its own, so a collision
+ * with an active response is routine; a cancel can arrive after its response
+ * ended; a rate limit fails a response, not the socket. Anything not listed
+ * stays fatal: a session we think is alive but is not would leave the operator
+ * talking to nothing. And a misjudged entry still ends the session when the
+ * server closes the socket (the `close` handler).
+ */
+const RECOVERABLE_ERROR_CODES: ReadonlySet<string> = new Set([
+  "conversation_already_has_active_response",
+  "response_cancel_not_active",
+  "input_audio_buffer_commit_empty",
+  "rate_limit_exceeded",
+]);
+
+export function isRecoverableRealtimeError(
+  error: RealtimeError | undefined,
+): boolean {
+  return error?.code !== undefined && RECOVERABLE_ERROR_CODES.has(error.code);
+}
 
 type RealtimeSkill = Awaited<ReturnType<typeof listSkills>>[number];
 
@@ -376,6 +401,10 @@ export class RealtimeVoiceSession {
       return;
     }
     if (event.type === "error") {
+      if (isRecoverableRealtimeError(event.error)) {
+        console.warn("[voice/realtime] recoverable error", event.error);
+        return;
+      }
       this.fail(new Error(event.error?.message ?? "OpenAI Realtime error"));
       return;
     }

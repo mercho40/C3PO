@@ -1,5 +1,9 @@
 export class Pcm16Resampler {
   private samples: number[] = [];
+  // HTTP chunk boundaries fall wherever the transport put them, not on samples:
+  // the robot's mic stream does hand over odd-length chunks, and refusing one
+  // used to end the whole Realtime session. The stray byte waits for its pair.
+  private carry: number | null = null;
   private position = 0;
   private readonly step: number;
 
@@ -9,11 +13,16 @@ export class Pcm16Resampler {
     this.step = inputRate / outputRate;
   }
 
-  push(pcm: Uint8Array): Uint8Array {
-    if (pcm.byteLength % 2 !== 0)
-      throw new Error("PCM16 input must contain complete samples");
-    const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
-    for (let offset = 0; offset < pcm.byteLength; offset += 2) {
+  push(chunk: Uint8Array): Uint8Array {
+    let pcm = chunk;
+    if (this.carry !== null && pcm.byteLength > 0) {
+      pcm = concatBytes(Uint8Array.of(this.carry), pcm);
+      this.carry = null;
+    }
+    const whole = pcm.byteLength - (pcm.byteLength % 2);
+    if (whole < pcm.byteLength) this.carry = pcm[whole]!;
+    const view = new DataView(pcm.buffer, pcm.byteOffset, whole);
+    for (let offset = 0; offset < whole; offset += 2) {
       this.samples.push(view.getInt16(offset, true));
     }
 
