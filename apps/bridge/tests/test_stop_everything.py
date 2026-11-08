@@ -325,12 +325,13 @@ async def test_parar_stops_our_speech_beside_the_burst(monkeypatch):
 async def test_a_slow_speaker_does_not_hold_the_stop_answer(monkeypatch):
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
     monkeypatch.setattr(stop_everything, "SPEECH_STOP_WAIT_S", 0.05)
-    monkeypatch.setattr(g1_rpc, "stop_play", lambda: time.sleep(0.5) or (0, None))
+    monkeypatch.setattr(g1_rpc, "stop_play", lambda: time.sleep(3.0) or (0, None))
 
     started = time.monotonic()
     result = await stop_everything.run()
 
-    assert time.monotonic() - started < 0.4
+    # Wide margin: this must hold on a loaded CI box, and 3 s is what it guards.
+    assert time.monotonic() - started < 2.0
     assert result["speech_stop_rpc_code"] is None
 
 
