@@ -184,6 +184,16 @@ class StopPhraseDetector:
         partial = json.loads(self._rec.PartialResult()).get("partial", "")
         return self._hit(partial)
 
+    def flush(self) -> str | None:
+        """The stop phrase in whatever is still buffered, at end of stream.
+
+        A final result needs trailing silence, and on a short clip the partials
+        can lag the audio: "emergencia" with nothing after it was missed in 3 of
+        5 runs on real Vosk. A live mic keeps sending silence, so this matters
+        for finite sources, and a stop is the one result never to drop.
+        """
+        return self._hit(json.loads(self._rec.FinalResult()).get("text", ""))
+
     def reset(self) -> None:
         self._rec.Reset()
 
@@ -203,7 +213,7 @@ def detect_in_pcm(
         hit = det.feed(pcm[off : off + frame_bytes])
         if hit:
             return hit
-    return None
+    return det.flush()
 
 
 class Transcriber:
@@ -567,6 +577,14 @@ def listen_loop(
             utterance.clear()
             if better and on_text is not None:
                 on_text(better)
+
+    # The stop first, as in the loop: an utterance cut off by the end of the
+    # stream may still be the stop.
+    hit = detector.flush()
+    if hit:
+        log.warning("listen.stop_phrase", phrase=hit)
+        if on_stop is not None:
+            on_stop(hit)
 
     # FLUSH, and it is not an edge case. Vosk emits a final result only at an
     # utterance boundary — i.e. trailing silence — so a finite source (a file, a

@@ -176,6 +176,23 @@ uv run mypy src               # type-check
 
 No DDS/hardware needed — everything that touches DDS is monkeypatched (`unitree_sdk2py`'s `ChannelPublisher`/`ChannelSubscriber`/RPC client are never actually constructed in test runs).
 
+### The MuJoCo arm twin (`tests/sim/`)
+
+Checks `kinematics.py` and the pick/place/handover plans against MuJoCo Menagerie's G1
+(`unitree_g1/g1.xml` at commit `98a70c569c4c`, BSD-3-Clause, ~22 MB of meshes, fetched and
+sha256-checked, never committed): motor slot order, joint limits, FK parity, `move_arm`'s
+envelope, whether the model's hand reaches the planned grasp, and mesh contact with the body.
+Kinematics only: no stepping, no DDS, no SIM_MODE change.
+
+```bash
+uv sync --extra sim
+bash scripts/fetch_menagerie_g1.sh     # -> .cache/menagerie/unitree_g1 (gitignored)
+uv run --extra sim pytest -m sim
+```
+
+Without the extra or the model the module skips, so plain `uv run pytest` stays offline. CI
+sets `C3PO_SIM_REQUIRED=1`, which turns that skip into a failure.
+
 ## Layout
 
 ```

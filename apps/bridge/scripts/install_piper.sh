@@ -3,6 +3,10 @@
 #
 #     ssh c3po 'bash ~/c3po/apps/bridge/scripts/install_piper.sh'
 #
+# CI runs it too (.github/workflows/ci.yml, the `voice` job), on an x86_64
+# ubuntu runner, so the spoken-stop tests decode real synthesised speech there.
+# Same release, same voice, same paths; only the binary's architecture differs.
+#
 # Why a binary and not `pip install piper-tts`: the pip package pulls
 # onnxruntime, which on aarch64/JetPack means either a wheel that does not exist
 # for this Python or a CUDA build that drags the bridge venv toward the vision
@@ -19,12 +23,17 @@ DEST="${PIPER_DEST:-$HOME/.local/share/piper}"
 VOICE="es_AR-daniela-high"
 VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_AR/daniela/high"
 RELEASE="https://github.com/rhasspy/piper/releases/download/2023.11.14-2"
-TARBALL="piper_linux_aarch64.tar.gz"
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mFATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 
-[ "$(uname -m)" = "aarch64" ] || die "this fetches an aarch64 build; uname -m says $(uname -m)"
+# The Jetson is aarch64; the CI runner is x86_64. Release 2023.11.14-2 ships a
+# Linux build for both and nothing else this script has been run on.
+case "$(uname -s)-$(uname -m)" in
+    Linux-aarch64) TARBALL="piper_linux_aarch64.tar.gz" ;;
+    Linux-x86_64) TARBALL="piper_linux_x86_64.tar.gz" ;;
+    *) die "no piper build chosen for $(uname -s) $(uname -m) — aarch64 (robot) and x86_64 (CI) Linux only" ;;
+esac
 
 mkdir -p "$DEST"
 

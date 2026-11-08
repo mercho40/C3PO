@@ -26,6 +26,8 @@ def _no_real_dds(monkeypatch):
     # robot acknowledged, the normal case. Tests of the Damp fallback swap in
     # an unacknowledged one with `_burst_unacknowledged`.
     monkeypatch.setattr(stop_everything, "stop_motion_sync", lambda **kwargs: (20, 20))
+    # Real-mode stops also silence our speaker (voice/1004), another DDS RPC.
+    monkeypatch.setattr(g1_rpc, "stop_play", lambda: (0, None))
 
 
 def _burst_unacknowledged(monkeypatch):
@@ -306,3 +308,59 @@ async def test_stop_survives_a_broken_teleop_stack(monkeypatch):
 
     assert result["arm_sdk_release_requested"] is False
     assert result["hands_relaxed"] is False
+
+
+async def test_parar_stops_our_speech_beside_the_burst(monkeypatch):
+    """PARAR left the robot talking: stop_everything never called stop_play."""
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    calls: list[str] = []
+    monkeypatch.setattr(g1_rpc, "stop_play", lambda: calls.append("stop_play") or (0, None))
+
+    result = await stop_everything.run()
+
+    assert calls == ["stop_play"]
+    assert result["speech_stop_rpc_code"] == 0
+
+
+async def test_a_slow_speaker_does_not_hold_the_stop_answer(monkeypatch):
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    monkeypatch.setattr(stop_everything, "SPEECH_STOP_WAIT_S", 0.05)
+    monkeypatch.setattr(g1_rpc, "stop_play", lambda: time.sleep(3.0) or (0, None))
+
+    started = time.monotonic()
+    result = await stop_everything.run()
+
+    # Wide margin: this must hold on a loaded CI box, and 3 s is what it guards.
+    assert time.monotonic() - started < 2.0
+    assert result["speech_stop_rpc_code"] is None
+
+
+async def test_stop_play_ends_a_play_pcm_still_sending_chunks(monkeypatch):
+    """Stopping what reached the speaker is no use if the next chunk restarts it."""
+    sent: list[int] = []
+
+    class FakeVoice:
+        def _CallRequestWithParamAndBin(self, api_id, param, chunk):
+            sent.append(len(chunk))
+            if len(sent) == 2:
+                g1_rpc.cancel_pcm_playback()  # PARAR lands mid-utterance
+            return 0, None
+
+    monkeypatch.setattr(g1_rpc, "_get_voice_client", lambda: FakeVoice())
+    pcm = b"\x00" * (g1_rpc.PLAY_CHUNK_BYTES * 5)
+
+    code, data = g1_rpc.play_pcm(pcm, "c3po-1")
+
+    assert len(sent) == 2
+    assert (code, data) == (0, "stopped")
+
+
+async def test_outside_real_mode_the_stop_does_not_touch_the_speaker(monkeypatch):
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
+    calls: list[str] = []
+    monkeypatch.setattr(g1_rpc, "stop_play", lambda: calls.append("x") or (0, None))
+
+    result = await stop_everything.run()
+
+    assert calls == []
+    assert result["speech_stop_rpc_code"] is None
