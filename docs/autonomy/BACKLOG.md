@@ -83,27 +83,27 @@ engine, and Gemini `look`.
 
 ## 5. Arms and hands 🟡
 
-| #   | Item                                                                                                                                               | Size |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| 5.1 | **Right BrainCo hand doesn't answer on any ttyUSB.** Check power and the wrist connector; try the official `unitreerobotics/brainco_hand_service`. | S 🤖 |
-| 5.2 | Measure `TELEOP_BRAINCO_OPEN_AT` (read the state with the hand visibly open), then `set_hand`, then `pick`.                                        | S 🤖 |
-| 5.3 | `pin` + `pink` + `coal`: 6-D IK with roll control and self/table collision checks (audit §4).                                                      | M    |
-| 5.4 | MuJoCo Menagerie G1 twin as the arm test harness. It would have caught the release and sweep bugs before the robot did.                            | M    |
-| 5.5 | Wrist joint signs are unverified. Confirm them with a firmware gesture plus `arm_state`, like today's shoulder check.                              | S 🤖 |
-| 5.6 | Gestures from text (Kimodo-G1, offline, replayed arm-only through the arm_sdk caps).                                                               | L 🔵 |
+| #   | Item                                                                                                                                                                                                                                                              | Size |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 5.1 | **Right BrainCo hand doesn't answer on any ttyUSB.** Check power and the wrist connector; try the official `unitreerobotics/brainco_hand_service`.                                                                                                                | S 🤖 |
+| 5.2 | Measure `TELEOP_BRAINCO_OPEN_AT` (read the state with the hand visibly open), then `set_hand`, then `pick`.                                                                                                                                                       | S 🤖 |
+| 5.3 | `pin` + `pink` + `coal`: 6-D IK with roll control and self/table collision checks (audit §4).                                                                                                                                                                     | M    |
+| 5.4 | ✅ partly (I4): twin green in CI (`tests/sim`, Menagerie G1 rev 98a70c5, mujoco 3.9.0 `sim` extra); driver-in-the-loop tests still open — MuJoCo Menagerie G1 twin as the arm test harness. It would have caught the release and sweep bugs before the robot did. | M    |
+| 5.5 | Wrist joint signs are unverified. Confirm them with a firmware gesture plus `arm_state`, like today's shoulder check.                                                                                                                                             | S 🤖 |
+| 5.6 | Gestures from text (Kimodo-G1, offline, replayed arm-only through the arm_sdk caps).                                                                                                                                                                              | L 🔵 |
 
 ## 6. Voice and VR 🟡
 
-| #   | Item                                                                                                                                                                                                                                                     | Size |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| 6.1 | The robot speaks the VR reply: Piper (**OHF-Voice/piper1-gpl** v1.8.0, GPL-3.0) with the **es_AR "daniela"** voice on the Orin CPU → `AudioClient.PlayStream` (16 kHz mono PCM).                                                                         | S    |
-| 6.2 | ✅ C4, C5 · pending headset test — VR audio: move from `ScriptProcessor` to an AudioWorklet. Quest Browser is Chromium 146+. Open the mic and resume the AudioContext from a tap **before** `requestSession`; keep one stream; handle `visible-blurred`. | S 🥽 |
-| 6.3 | Better STT: first, client-side VAD (Silero in the worklet) so an utterance uploads the moment speech ends; later, true streaming (OpenAI Realtime transcription, proxied through back, or WhisperLive).                                                  | M 🔵 |
-| 6.4 | ✅ C3 · pending headset test — XR camera texture uploaded per eye per frame (~200 × 1080p/s): upload once per frame. Causes Quest judder (audit §5).                                                                                                     | S 🥽 |
-| 6.5 | Camera over WebRTC (go2rtc/aiortc) instead of MJPEG.                                                                                                                                                                                                     | M    |
-| 6.6 | Stand audio kit: a handheld or lav mic plus echo cancellation, for the expo (audit §7 #1).                                                                                                                                                               | M    |
-| 6.7 | Benchmark STT on Rioplatense Spanish (OpenSLR 61): `tic-transcript` vs sherpa-onnx Parakeet.                                                                                                                                                             | M 🔵 |
-| 6.8 | ✅ (vr-voice persists the chat) — Show the headset conversation in the console Chat (persist it as a chat).                                                                                                                                              | S    |
+| #   | Item                                                                                                                                                                                                                                                                                                     | Size |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 6.1 | ✅ code (B8, `HEADSET_SPEAK_REPLY=1`, default off) · pending robot test; the Piper switch to piper1-gpl is still open — The robot speaks the VR reply: Piper (**OHF-Voice/piper1-gpl** v1.8.0, GPL-3.0) with the **es_AR "daniela"** voice on the Orin CPU → `AudioClient.PlayStream` (16 kHz mono PCM). | S    |
+| 6.2 | ✅ C4, C5 · pending headset test — VR audio: move from `ScriptProcessor` to an AudioWorklet. Quest Browser is Chromium 146+. Open the mic and resume the AudioContext from a tap **before** `requestSession`; keep one stream; handle `visible-blurred`.                                                 | S 🥽 |
+| 6.3 | Better STT: first, client-side VAD (Silero in the worklet) so an utterance uploads the moment speech ends; later, true streaming (OpenAI Realtime transcription, proxied through back, or WhisperLive).                                                                                                  | M 🔵 |
+| 6.4 | ✅ C3 · pending headset test — XR camera texture uploaded per eye per frame (~200 × 1080p/s): upload once per frame. Causes Quest judder (audit §5).                                                                                                                                                     | S 🥽 |
+| 6.5 | Camera over WebRTC (go2rtc/aiortc) instead of MJPEG.                                                                                                                                                                                                                                                     | M    |
+| 6.6 | Stand audio kit: a handheld or lav mic plus echo cancellation, for the expo (audit §7 #1).                                                                                                                                                                                                               | M    |
+| 6.7 | Benchmark STT on Rioplatense Spanish (OpenSLR 61): `tic-transcript` vs sherpa-onnx Parakeet.                                                                                                                                                                                                             | M 🔵 |
+| 6.8 | ✅ (vr-voice persists the chat) — Show the headset conversation in the console Chat (persist it as a chat).                                                                                                                                                                                              | S    |
 
 ## 7. Agent 🟡
 
@@ -130,12 +130,12 @@ engine, and Gemini `look`.
 
 ## 9. Tests and CI 🟠
 
-| #   | Item                                                                                                                                    | Size |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| 9.1 | The spoken-stop tests never run (all 13 skips are `test_listen.py`); make them run in CI.                                               | S    |
-| 9.2 | ✅ F8 — `test_mic_listener` timing flake under full-suite load.                                                                         | S    |
-| 9.3 | ✅ partly: back, web, bridge and perception run on PRs (F1) — CI for web, back, bridge and perception on every push, plus svelte-check. | S    |
-| 9.4 | ✅ F2 — `graphify-out` is ignored only through `.git/info/exclude`; add it to `.gitignore`.                                             | S    |
+| #   | Item                                                                                                                                                                    | Size |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 9.1 | ✅ the `voice` CI job runs them on real vosk + piper · pending first CI run — The spoken-stop tests never run (all 13 skips are `test_listen.py`); make them run in CI. | S    |
+| 9.2 | ✅ F8 — `test_mic_listener` timing flake under full-suite load.                                                                                                         | S    |
+| 9.3 | ✅ partly: back, web, bridge and perception run on PRs (F1) — CI for web, back, bridge and perception on every push, plus svelte-check.                                 | S    |
+| 9.4 | ✅ F2 — `graphify-out` is ignored only through `.git/info/exclude`; add it to `.gitignore`.                                                                             | S    |
 
 ## 10. Docs
 
@@ -173,3 +173,9 @@ engine, and Gemini `look`.
 - **VLA models (GR00T, pi0, OpenVLA) are not realistic on Orin NX with JetPack 5.** GR00T-WBC needs JP6 and TRT 10.7. Realistic: train ACT or SmolVLA with unitree_lerobot for one arm task, and run it on a laptop GPU off the robot.
 - **Isaac ROS / nvblox are not available on JP 5.1.1.** Their last JP5 releases (2.0/2.1) target 5.1.2. Re-flashing the G1's Orin to JP6 (NVIDIA's GR00T-WBC guide) is a large change; consider it only for VLA work.
 - **Safety architecture:** remote/damp, then a deterministic bridge monitor (caps, geofence, heartbeat watchdog, `GetFsmId` after `SetFsmId`), then fixed skills, then the LLM as planner. That is our shape; add a geofence and a heartbeat watchdog. References: RoboGuard (arXiv 2503.07885), BTGenBot-2.
+
+### Acted on 2026-11-07
+
+- ✅ Geofence (safety architecture): `SAFETY_GEOFENCE_M`, default 3 m, around where `arm_navigation` found the robot; Nav2 only (0553c27). Pending robot test. The heartbeat watchdog is still open.
+- ✅ Gemini data terms: faces pixelated before upload, failing closed, `C3PO_FACE_BLUR` (03153df). Recall on real expo frames is a pending robot test.
+- Still open: the Livox SDK2 ≥ 1.3.3 pin, FAST-LIO `blind`, and the ER 2 pointing format.
