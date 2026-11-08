@@ -223,3 +223,20 @@ jobs:
       - name: pytest
         working-directory: apps/bridge
         run: uv run pytest -v
+
+      # The MuJoCo arm twin (tests/sim, ACTION-PLAN I4). After the main suite, so that one
+      # keeps running without mujoco, as a dev checkout does. C3PO_SIM_REQUIRED=1 turns the
+      # twin's skip into a failure: a test that always skips checks nothing.
+      - name: Cache Menagerie G1 model
+        uses: actions/cache@v4
+        with:
+          path: apps/bridge/.cache/menagerie
+          key: menagerie-g1-${{ hashFiles('apps/bridge/scripts/fetch_menagerie_g1.sh') }}
+
+      - name: Arm twin (MuJoCo)
+        working-directory: apps/bridge
+        env:
+          C3PO_SIM_REQUIRED: "1"
+        run: |
+          bash scripts/fetch_menagerie_g1.sh
+          uv run --frozen --extra sim pytest -m sim -v
