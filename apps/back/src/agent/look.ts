@@ -9,7 +9,9 @@
  *
  * IT RUNS IN `back`, NOT ON THE ROBOT, for the same reason the agent does: the
  * model key lives here and the robot holds no credentials (D6.2). The bridge
- * only serves the JPEG it already serves the console.
+ * serves the frame from /camera/cloud_frame.jpg, faces already blurred (OpenCV
+ * is on the robot, BACKLOG §12); a 503 there means it could not blur, and the
+ * frame is not sent.
  *
  * TEXT OUT, NEVER THE IMAGE. The answer is what returns to the agent loop, not
  * the frame: a JPEG in a tool result is base64 in the conversation, ~27 k
@@ -90,7 +92,7 @@ export type LookDeps = {
     status: number;
     body: CameraStatus;
   }>;
-  /** GET the bridge's /camera/frame.jpg; null when it has no frame. */
+  /** GET the bridge's face-blurred frame; null or a throw (with the reason) when there is none. */
   cameraFrame: () => Promise<Uint8Array | null>;
   /** One vision call: the question and the JPEG in, the answer text out. */
   describe: (question: string, jpeg: Uint8Array) => Promise<string>;
@@ -143,7 +145,16 @@ export async function look(
     };
   }
 
-  const frame = await deps.cameraFrame().catch(() => null);
+  let frame: Uint8Array | null;
+  try {
+    frame = await deps.cameraFrame();
+  } catch (err) {
+    return {
+      status: "unavailable",
+      reason: err instanceof Error ? err.message : String(err),
+      hint: camera.body.hint ?? null,
+    };
+  }
   if (!frame || frame.byteLength === 0) {
     return {
       status: "unavailable",
@@ -185,11 +196,20 @@ export const bridgeCamera: Pick<LookDeps, "cameraStatus" | "cameraFrame"> = {
     return { ok: res.ok, status: res.status, body };
   },
   async cameraFrame() {
-    const res = await fetch(bridgeSiblingUrl("/camera/frame.jpg"), {
+    // Never /camera/frame.jpg: this frame goes to a cloud model.
+    const res = await fetch(bridgeSiblingUrl("/camera/cloud_frame.jpg"), {
       cache: "no-store",
       signal: AbortSignal.timeout(5_000),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as {
+        detail?: string;
+        error?: string;
+      };
+      throw new Error(
+        body.detail ?? body.error ?? `camera frame HTTP ${res.status}`,
+      );
+    }
     return new Uint8Array(await res.arrayBuffer());
   },
 };
