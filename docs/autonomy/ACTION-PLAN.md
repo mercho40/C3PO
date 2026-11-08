@@ -1121,7 +1121,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** `swit` appears nowhere in docs/. The §8 snippet, the :216 table and lidar_service.py all agree on `switch` and 1.0.0.2. prettier passes.
 - **Risk:** Low. Don't tag 1001 as [live] until the user confirms that today's restart returned rpc_code 0 (see robot steps).
 
-#### ⚪ H2: OPERATIONS.md: how a session connects, deploys and gets internet `S`
+#### 🟢 H2: OPERATIONS.md: how a session connects, deploys and gets internet `S`
 
 - **Backlog:** 10 · **Depends on:** —
 - **Files:** `docs/OPERATIONS.md`
@@ -1130,7 +1130,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** From OPERATIONS alone, a new operator can cable the Mac, push the branch, lend the robot internet without breaking the camera relay, and open the console on the right origin. No remaining instruction tells the robot to `git pull` feat/autonomy from origin. prettier passes.
 - **Risk:** The push recipe and the 'sudo password dialog' come from the session, not the repo, so they need the user's confirmation (decision 1 and 6). A wrong proxy line can silently break the camera relay: hence https_proxy only.
 
-#### ⚪ H3: OPERATIONS.md: the 802 trap, the PARAR latch, the Mid-360S, secrets (plus 3 one-liners elsewhere) `S`
+#### 🟢 H3: OPERATIONS.md: the 802 trap, the PARAR latch, the Mid-360S, secrets (plus 3 one-liners elsewhere) `S`
 
 - **Backlog:** 10 · **Depends on:** H2
 - **Files:** `docs/OPERATIONS.md`, `docs/ROBOT-HARDWARE.md`, `docs/SESSION-CHECKLIST.md`
@@ -1139,7 +1139,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** OPERATIONS names the 802 trap with its fix, describes the latch exactly as estop.py, safety.py and safety.ts implement it (no bypass described), lists the two secrets the robot really holds, and says the lidar is a faulted Mid-360S. prettier passes.
 - **Risk:** Same file as H2, so do them in sequence. The latch text must not teach a way around it (decision 2).
 
-#### ⚪ H4: test-day README.md + return-checklist.md: 2026-11-03 results, corrected recovery, and the order that worked `S`
+#### 🟢 H4: test-day README.md + return-checklist.md: 2026-11-03 results, corrected recovery, and the order that worked `S`
 
 - **Backlog:** 10 · **Depends on:** H2, H3
 - **Files:** `docs/autonomy/test-day/README.md`, `docs/autonomy/test-day/return-checklist.md`
@@ -1148,7 +1148,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** Each row in both files reads as ✅ verified, open, or blocked (with the BACKLOG id), and no instruction contradicts the code (estop.py, safety.ts, runtime.ts offeredInMode). prettier passes.
 - **Risk:** Low. Mark only the results BACKLOG §0 lists as verified; nothing more.
 
-#### ⚪ H5: test-day safety.md + manipulation.md: latch, Confirmar button, voice offer rule, arm fixes `S`
+#### 🟢 H5: test-day safety.md + manipulation.md: latch, Confirmar button, voice offer rule, arm fixes `S`
 
 - **Backlog:** 10 · **Depends on:** H3
 - **Files:** `docs/autonomy/test-day/safety.md`, `docs/autonomy/test-day/manipulation.md`
@@ -1157,7 +1157,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** Both checklists match safety.py, skill_meta.derive_tier, runtime.ts offeredInMode and arm_sdk.ALLOWED_FSM_IDS, and carry today's ✅ marks. prettier passes.
 - **Risk:** Low. The step 7 wording must not claim that 11.4 is settled.
 
-#### ⚪ H6: test-day perception.md + nav.md: YOLOE live, yoloe.env, the build proxy, the lidar block `S`
+#### 🟢 H6: test-day perception.md + nav.md: YOLOE live, yoloe.env, the build proxy, the lidar block `S`
 
 - **Backlog:** 10 · **Depends on:** H2
 - **Files:** `docs/autonomy/test-day/perception.md`, `docs/autonomy/test-day/nav.md`
@@ -1166,7 +1166,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** Following perception.md on a fresh boot gets YOLOE up (source yoloe.env), and nav.md stops a reader before any lidar-dependent step while the Mid-360S is faulted. prettier passes.
 - **Risk:** The ~/.c3po/yoloe.env path and engine name are not in the repo, so confirm them on the robot before publishing (robot step 2).
 
-#### ⚪ H7: App READMEs and root README: routes, latch, VR stop and voice, bridge layout, YOLOE, Mid-360S `S`
+#### 🟢 H7: App READMEs and root README: routes, latch, VR stop and voice, bridge layout, YOLOE, Mid-360S `S`
 
 - **Backlog:** 10 · **Depends on:** H2, H3
 - **Files:** `apps/back/README.md`, `apps/web/README.md`, `apps/bridge/README.md`, `apps/perception/README.md`, `README.md`
@@ -1175,7 +1175,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** Every route in apps/back/src/routes/{safety,skills,voice}.ts appears in the back README, and each README describes today's behaviour with a pointer to OPERATIONS instead of repeating it. prettier passes.
 - **Risk:** Low. Keep the READMEs as pointers so OPERATIONS stays the one place that holds the facts.
 
-#### ⚪ H8: Close BACKLOG §10 and refresh the graph `S`
+#### 🟢 H8: Close BACKLOG §10 and refresh the graph `S`
 
 - **Backlog:** 10 · **Depends on:** H1, H2, H3, H4, H5, H6, H7
 - **Files:** `docs/autonomy/BACKLOG.md`
