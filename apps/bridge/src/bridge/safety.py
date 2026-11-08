@@ -17,6 +17,9 @@ Two gates live here, and both sit on a path the LLM cannot route around:
      PERSON_SLOW_M scales speed by PERSON_SLOW_FACTOR, inside PERSON_STOP_M
      stops the base;
    * the stale-perception policy, for AUTONOMOUS sources only (Nav2 today);
+   * the geofence, while the Nav2 gate is armed: zero further than
+     SAFETY_GEOFENCE_M from where arm_navigation found the robot, or with no
+     fresh odometry pose to measure. Manual driving is never fenced;
    * an acceleration cap. Braking toward zero is never rate-limited.
 
    The firmware's 1 s `duration` deadman stays underneath all of it
@@ -114,6 +117,17 @@ PERCEPTION_STALE_S = 1.0
 # Nav2 can still be brought up on the gantry before the vision container is.
 STALE_POLICY = os.environ.get("SAFETY_STALE_POLICY", "slow").strip().lower()
 
+# -- the geofence --------------------------------------------------------------
+
+# Nav2 may not take the robot further than this from where it was armed
+# (vendor odometry, the frame walk_to uses). 0 or less turns it off; an
+# unparseable or non-finite value falls back to the default, never to off.
+GEOFENCE_DEFAULT_M = 3.0
+_geofence_env = _env_float("SAFETY_GEOFENCE_M", GEOFENCE_DEFAULT_M)
+GEOFENCE_M = _geofence_env if math.isfinite(_geofence_env) else GEOFENCE_DEFAULT_M
+# Odometry arrives at ~50 Hz or more, so 1 s is dozens of missed messages.
+POSE_STALE_S = 1.0
+
 # -- risk tiers ---------------------------------------------------------------
 
 # Covers T2 and high-danger T1 alike (needs_confirmation); off opens both.
@@ -130,15 +144,18 @@ _lock = threading.Lock()
 _last: tuple[float, float, float] = (0.0, 0.0, 0.0)
 _last_at: float | None = None
 _last_reason: str | None = None
+# Where arm_navigation found the robot, (x, y) in vendor odometry; None = unknown.
+_fence_anchor: tuple[float, float] | None = None
 # (tool, sha256 of its canonical arguments) -> expiry: a grant is for one argument set.
 _grants: dict[tuple[str, str], float] = {}
 
 
 def reset() -> None:
     """Forget governor state and grants. For tests, and nothing else."""
-    global _last, _last_at, _last_reason
+    global _last, _last_at, _last_reason, _fence_anchor
     with _lock:
         _last, _last_at, _last_reason = (0.0, 0.0, 0.0), None, None
+        _fence_anchor = None
         _grants.clear()
 
 
@@ -247,6 +264,82 @@ def obstacles_fresh() -> bool:
     )
 
 
+def _pose_now() -> tuple[float, float] | None:
+    """The robot's (x, y) in vendor odometry, or None when there is none fresher than POSE_STALE_S.
+
+    Never creates the sampler, like battery_pct.
+    """
+    from bridge.sdk.state import existing_sampler
+
+    sampler = existing_sampler()
+    if sampler is None:
+        return None
+    try:
+        pose = sampler.latest_pose()
+    except Exception as exc:  # noqa: BLE001 - a broken read is unknown, never a crash in the gate
+        log.warning("safety.pose_unknown", reason="read_failed", error=str(exc))
+        return None
+    if pose is None or pose[2] > POSE_STALE_S:
+        return None
+    return pose[0], pose[1]
+
+
+def anchor_geofence(*, renewing: bool) -> None:
+    """Centre the fence on the robot now. arm_navigation calls this.
+
+    A renewal while the gate is still open keeps the centre it has, so re-arming
+    leg by leg cannot walk the fence across the room; it re-centres only from a
+    closed gate, or when the last attempt found no pose.
+    """
+    global _fence_anchor
+    pose = _pose_now()
+    with _lock:
+        if not renewing or _fence_anchor is None:
+            _fence_anchor = pose
+    log.warning("safety.geofence_anchored", anchor=pose, radius_m=GEOFENCE_M, renewing=renewing)
+
+
+def geofence() -> dict[str, Any]:
+    """The fence as arm_navigation and /safety/status report it."""
+    pose = _pose_now()
+    with _lock:
+        anchor = _fence_anchor
+    distance = None if pose is None or anchor is None else round(math.dist(pose, anchor), 2)
+    return {
+        "radius_m": GEOFENCE_M if GEOFENCE_M > 0 else None,
+        "anchor": None if anchor is None else [round(v, 2) for v in anchor],
+        "distance_m": distance,
+        # None: no fence, or no pose/anchor to measure (Nav2 is then held at zero).
+        "inside": None if GEOFENCE_M <= 0 or distance is None else distance <= GEOFENCE_M,
+    }
+
+
+def _nav2_armed() -> bool:
+    from bridge.sdk.perception_link import existing_link
+
+    link = existing_link()
+    return link is not None and link.is_enabled()
+
+
+def _geofence_block() -> str | None:
+    """Why the fence stops autonomous motion now, or None when it allows it.
+
+    Only while the Nav2 gate is open: arming is what sets the centre, and an
+    unarmed autonomous walk (go_to_object's walk_to) is bounded by its own target.
+    """
+    if GEOFENCE_M <= 0 or not _nav2_armed():
+        return None
+    pose = _pose_now()
+    with _lock:
+        anchor = _fence_anchor
+    if pose is None or anchor is None:
+        # No pose to measure against: Nav2 could be anywhere, so it gets zero.
+        return "geofence_pose_unknown"
+    if math.dist(pose, anchor) > GEOFENCE_M:
+        return "outside_geofence"
+    return None
+
+
 def govern(
     vx: float, vy: float, vyaw: float, *, autonomous: bool = False
 ) -> tuple[float, float, float]:
@@ -257,6 +350,10 @@ def govern(
         # Nav2 keeps planning on its last costmap when the sensor goes quiet, and
         # Humble's collision monitor ignores a stale source: blind, so it fails open.
         factor, reason = 0.0, "obstacle_source_stale"
+    if autonomous and (fence := _geofence_block()):
+        # Zero, not "inward only": Nav2's goal is what took it out, and recovery
+        # is the operator's (teleop is never fenced) or a fresh arm here.
+        factor, reason = 0.0, fence
     tx, ty, tw = cap(vx, vy, vyaw, MAX_LINEAR_MPS, MAX_YAW_RPS)
     tx, ty, tw = tx * factor, ty * factor, tw * factor
 
@@ -488,6 +585,8 @@ def status() -> dict[str, Any]:
         "confirm_configured": bool(CONFIRM_SECRET),
         "pending_confirmations": pending,
         "perception_fresh": fresh,
+        "obstacles_fresh": obstacles_fresh(),
+        "geofence": geofence(),
         "nearest_person_m": nearest,
         "last_command": list(last),
         "last_command_age_s": None if last_at is None else round(time.monotonic() - last_at, 2),

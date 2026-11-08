@@ -105,6 +105,61 @@ function splitForSpeech(text: string): string[] {
   return chunks;
 }
 
+type Env = Record<string, string | undefined>;
+
+/**
+ * Whether the robot says the headset's agent replies out loud. Off unless
+ * `HEADSET_SPEAK_REPLY=1`: the speaker is shared with gemm, and a robot that
+ * starts talking after every push-to-talk is a change an operator should opt
+ * into, not find out about at a demo.
+ */
+export function headsetSpeaksReplies(env: Env = process.env): boolean {
+  return env.HEADSET_SPEAK_REPLY === "1";
+}
+
+/**
+ * Only a voice turn the model finished. `isAborted` is not enough: a headset
+ * that disconnects mid-turn ends as `unknown`, and a turn that failed half-way
+ * as `failed`, and both would otherwise say a partial reply out loud.
+ */
+export function shouldSpeak(input: {
+  enabled: boolean;
+  mode: "operator" | "voice";
+  outcome: { status: string };
+}): boolean {
+  return (
+    input.enabled &&
+    input.mode === "voice" &&
+    input.outcome.status === "completed"
+  );
+}
+
+/**
+ * Says a finished reply's text, the same text the headset panel shows, in
+ * order and one chunk at a time. Sequential, because each `say` takes a new
+ * stream and barges in on the one before. The signal is checked before every
+ * chunk: `say` is allowed while a stop stands, so after PARAR only this check
+ * keeps chunks 2..n from going out.
+ */
+export async function speakReply(
+  parts: ReadonlyArray<{ type: string; text?: unknown }>,
+  speak: (text: string) => Promise<unknown>,
+  signal?: AbortSignal,
+): Promise<number> {
+  const text = parts
+    .filter((p) => p.type === "text" && typeof p.text === "string")
+    .map((p) => (p.text as string).trim())
+    .filter((t) => t.length > 0)
+    .join("\n\n");
+  let spoken = 0;
+  for (const chunk of splitForSpeech(text)) {
+    if (signal?.aborted) break;
+    await speak(chunk);
+    spoken += 1;
+  }
+  return spoken;
+}
+
 async function* deltasOf(completion: VoiceCompletion): AsyncGenerator<string> {
   if (typeof completion === "string") {
     yield completion;
