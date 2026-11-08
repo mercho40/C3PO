@@ -383,6 +383,14 @@ class StateSampler:
                     return x, y, yaw
         return None
 
+    def latest_pose(self) -> tuple[float, float, float] | None:
+        """`(x, y, seconds since it arrived)` of the newest pose, or None before the first."""
+        with self._lock:
+            if not self._pose_history:
+                return None
+            at, x, y, _ = self._pose_history[-1]
+        return x, y, time.monotonic() - at
+
     def battery(self) -> tuple[int | None, float | None]:
         """`(soc %, seconds since that BmsState_)`, or (None, None) before the first one."""
         with self._lock:

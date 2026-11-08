@@ -1121,7 +1121,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** `swit` appears nowhere in docs/. The §8 snippet, the :216 table and lidar_service.py all agree on `switch` and 1.0.0.2. prettier passes.
 - **Risk:** Low. Don't tag 1001 as [live] until the user confirms that today's restart returned rpc_code 0 (see robot steps).
 
-#### ⚪ H2: OPERATIONS.md: how a session connects, deploys and gets internet `S`
+#### 🟢 H2: OPERATIONS.md: how a session connects, deploys and gets internet `S`
 
 - **Backlog:** 10 · **Depends on:** —
 - **Files:** `docs/OPERATIONS.md`
@@ -1130,7 +1130,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** From OPERATIONS alone, a new operator can cable the Mac, push the branch, lend the robot internet without breaking the camera relay, and open the console on the right origin. No remaining instruction tells the robot to `git pull` feat/autonomy from origin. prettier passes.
 - **Risk:** The push recipe and the 'sudo password dialog' come from the session, not the repo, so they need the user's confirmation (decision 1 and 6). A wrong proxy line can silently break the camera relay: hence https_proxy only.
 
-#### ⚪ H3: OPERATIONS.md: the 802 trap, the PARAR latch, the Mid-360S, secrets (plus 3 one-liners elsewhere) `S`
+#### 🟢 H3: OPERATIONS.md: the 802 trap, the PARAR latch, the Mid-360S, secrets (plus 3 one-liners elsewhere) `S`
 
 - **Backlog:** 10 · **Depends on:** H2
 - **Files:** `docs/OPERATIONS.md`, `docs/ROBOT-HARDWARE.md`, `docs/SESSION-CHECKLIST.md`
@@ -1139,7 +1139,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** OPERATIONS names the 802 trap with its fix, describes the latch exactly as estop.py, safety.py and safety.ts implement it (no bypass described), lists the two secrets the robot really holds, and says the lidar is a faulted Mid-360S. prettier passes.
 - **Risk:** Same file as H2, so do them in sequence. The latch text must not teach a way around it (decision 2).
 
-#### ⚪ H4: test-day README.md + return-checklist.md: 2026-11-03 results, corrected recovery, and the order that worked `S`
+#### 🟢 H4: test-day README.md + return-checklist.md: 2026-11-03 results, corrected recovery, and the order that worked `S`
 
 - **Backlog:** 10 · **Depends on:** H2, H3
 - **Files:** `docs/autonomy/test-day/README.md`, `docs/autonomy/test-day/return-checklist.md`
@@ -1148,7 +1148,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** Each row in both files reads as ✅ verified, open, or blocked (with the BACKLOG id), and no instruction contradicts the code (estop.py, safety.ts, runtime.ts offeredInMode). prettier passes.
 - **Risk:** Low. Mark only the results BACKLOG §0 lists as verified; nothing more.
 
-#### ⚪ H5: test-day safety.md + manipulation.md: latch, Confirmar button, voice offer rule, arm fixes `S`
+#### 🟢 H5: test-day safety.md + manipulation.md: latch, Confirmar button, voice offer rule, arm fixes `S`
 
 - **Backlog:** 10 · **Depends on:** H3
 - **Files:** `docs/autonomy/test-day/safety.md`, `docs/autonomy/test-day/manipulation.md`
@@ -1157,7 +1157,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** Both checklists match safety.py, skill_meta.derive_tier, runtime.ts offeredInMode and arm_sdk.ALLOWED_FSM_IDS, and carry today's ✅ marks. prettier passes.
 - **Risk:** Low. The step 7 wording must not claim that 11.4 is settled.
 
-#### ⚪ H6: test-day perception.md + nav.md: YOLOE live, yoloe.env, the build proxy, the lidar block `S`
+#### 🟢 H6: test-day perception.md + nav.md: YOLOE live, yoloe.env, the build proxy, the lidar block `S`
 
 - **Backlog:** 10 · **Depends on:** H2
 - **Files:** `docs/autonomy/test-day/perception.md`, `docs/autonomy/test-day/nav.md`
@@ -1166,7 +1166,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** Following perception.md on a fresh boot gets YOLOE up (source yoloe.env), and nav.md stops a reader before any lidar-dependent step while the Mid-360S is faulted. prettier passes.
 - **Risk:** The ~/.c3po/yoloe.env path and engine name are not in the repo, so confirm them on the robot before publishing (robot step 2).
 
-#### ⚪ H7: App READMEs and root README: routes, latch, VR stop and voice, bridge layout, YOLOE, Mid-360S `S`
+#### 🟢 H7: App READMEs and root README: routes, latch, VR stop and voice, bridge layout, YOLOE, Mid-360S `S`
 
 - **Backlog:** 10 · **Depends on:** H2, H3
 - **Files:** `apps/back/README.md`, `apps/web/README.md`, `apps/bridge/README.md`, `apps/perception/README.md`, `README.md`
@@ -1175,7 +1175,7 @@ Risks for the user: the README's ':8001 stub' recipe can point an LLM eval at th
 - **Done when:** Every route in apps/back/src/routes/{safety,skills,voice}.ts appears in the back README, and each README describes today's behaviour with a pointer to OPERATIONS instead of repeating it. prettier passes.
 - **Risk:** Low. Keep the READMEs as pointers so OPERATIONS stays the one place that holds the facts.
 
-#### ⚪ H8: Close BACKLOG §10 and refresh the graph `S`
+#### 🟢 H8: Close BACKLOG §10 and refresh the graph `S`
 
 - **Backlog:** 10 · **Depends on:** H1, H2, H3, H4, H5, H6, H7
 - **Files:** `docs/autonomy/BACKLOG.md`
@@ -1598,4 +1598,37 @@ From §5 "Items no WP covers yet":
 
 Robot check for the next session: arm Nav2 with the lidar faulted. `arm_navigation` must report `obstacles_fresh: false`, and the bridge log must show `safety.speed_factor reason=obstacle_source_stale` with zero velocity sent.
 
-Still open in §5: the external-stop watcher (11.3), geofence and heartbeat, the Gemini data terms, the Livox SDK version, the shared sport client, forged `/agent` history and `javascript:` links, the Realtime fatal-error and odd-PCM items, and PARAR not stopping speech (`stop_everything` never calls `g1_rpc.stop_play`).
+## 10. Second pass, 2026-11-07
+
+Done off the robot, each with tests that fail without the fix:
+
+- ✅ PARAR stops our speech: `stop_everything` sends `g1_rpc.stop_play` beside the burst, and `stop_play` ends a `play_pcm` still sending chunks (466f503).
+- ✅ Chat markdown keeps only http/https/mailto/relative links and http/https/relative images (`safe-urls.ts`); raw HTML renders as escaped text (3672bcd, c981aa5).
+- ✅ POST /agent takes only the last message from the client, as user text. A persisted chat's history comes from the database; without one, only user text. Forged assistant or tool turns are dropped (984bd5d).
+- ✅ Realtime voice: an odd PCM byte carries over, and four error codes no longer end the session (d87836a).
+- ✅ B8: a completed headset reply is spoken behind `HEADSET_SPEAK_REPLY=1` (default off), under its own turn so PARAR cuts it, with a 10 min backstop (104fd9a, adc1cf4). The B8 risk "stop_everything has no stop_play" is closed by 466f503.
+- ✅ Geofence on Nav2 (0553c27), see OPERATIONS §4.
+- ✅ Faces blurred before any cloud upload (03153df), see OPERATIONS §6.
+- ✅ I4, partly: the MuJoCo arm twin runs in CI (82d9f0c). **It found that all six pick plans put an arm link 6–51 mm into the torso**: `TORSO_BOX` uses y = ±0.08 m, the torso is about ±0.10 m, and links have thickness. Its strict xfail is I1's acceptance test. Until I1, do not run `pick` (test-day/manipulation.md §5).
+- ✅ F9: a `voice` CI job runs the spoken-stop decode tests on real vosk + piper (8af37d0). Running them showed the test spoke the banned words, and the stop detector never flushed at the end of the audio (fixed, dd18ce6). Tests now synthesise deterministically. Measured on random syntheses: «emergencia» 13/15, «pará, pará» 14/15, «¡detener!» 14/15, flat «detener» 7/15 (a non-strict xfail), and no false stops.
+- ✅ F10, partly: concurrency cancels superseded PR runs; triggers unchanged.
+- ✅ The back tests pass under `--randomize` (`client.test.ts` and `catalogue.test.ts` load private module instances).
+
+Still open off the robot: I1 (arm-link clearance), the heartbeat watchdog, the external-stop watcher (11.3), the Livox SDK version, the shared sport client, the Piper switch to piper1-gpl, and the heavier I4 driver-in-the-loop tests.
+
+### Pending robot test
+
+Code is done; each needs the robot (or the Quest) to confirm:
+
+- [ ] PARAR while the robot speaks: speech stops and no more of the sentence follows (test-day/safety.md 12).
+- [ ] The spoken stop with real voices at 1 m and 3 m; record «detener» (safety.md 13).
+- [ ] Geofence trips at about 3 m and odometry stays under 1 s old while Nav2 drives (safety.md 14).
+- [ ] Nav2 armed with the lidar faulted: `obstacles_fresh: false`, `obstacle_source_stale` (safety.md 15).
+- [ ] A headset PARAR ends back's agent turns within about 0.5 s (stop-watch).
+- [ ] A cancelled gesture releases the arm on the real arm service.
+- [ ] B8 with Piper on the robot and the Quest (`HEADSET_SPEAK_REPLY=1`).
+- [ ] Face blur recall on expo frames (small, tilted, backlit faces, people 2–4 m away), its latency on the Orin, and that `look` still recognises people and gestures.
+- [ ] Whether the arm really touches the torso in the planned picks (after I1, on the gantry).
+- [ ] Realtime voice error codes seen live (`VOICE_ENGINE=realtime`).
+- [ ] In the browser: a `javascript:` link in a reply is plain text; typed chat send, reload and Retry; VR push-to-talk and spoken confirm after the history change.
+- [ ] The first CI run of the `voice` job and the MuJoCo step (GitHub).

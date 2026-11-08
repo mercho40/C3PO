@@ -86,6 +86,8 @@ REAL_DAMP_RETRY_DELAY_S = 0.15
 REAL_DAMP_TOTAL_BUDGET_S = 4.0
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
+#: How long the stop's answer waits to report whether speech stopped.
+SPEECH_STOP_WAIT_S = 1.0
 # "on_failure" (default): damp only when the zero-velocity burst was not
 # acknowledged. "always": damp after every stop, the pre-2026-10-15 behaviour.
 DAMP_POLICY = os.environ.get("STOP_EVERYTHING_DAMP", "on_failure").strip().lower()
@@ -239,6 +241,20 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     # the skills are stopping themselves whatever happens next; what this buys
     # is an event loop that can still answer a second stop press or a state
     # poll while these blocking DDS calls are in flight.
+    # STOP TALKING. Our own Spanish speech only (PlayStream under app "c3po");
+    # firmware TTS and the co-tenant's assistant cannot be stopped from here.
+    # Started beside the burst, never ahead of it: the voice RPC can be slow
+    # and the zero setpoints are what stop the robot.
+    speech_stop: asyncio.Future[tuple[int, str | None]] | None = None
+    if SIM_MODE == "real":
+        try:
+            from bridge.sdk import g1_rpc as _g1_rpc
+
+            _g1_rpc.cancel_pcm_playback()
+            speech_stop = asyncio.ensure_future(asyncio.to_thread(_g1_rpc.stop_play))
+        except Exception:
+            log.exception("stop_everything.speech_stop_failed")
+
     burst_sent, burst_acked, burst_error, duration = await _zero_burst(height)
 
     # Zero velocity stops the gait and leaves the robot balanced; damp zeroes
@@ -292,9 +308,20 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
             budget_exhausted=budget_exhausted,
         )
 
+    speech_stop_rpc_code: int | None = None
+    if speech_stop is not None:
+        try:
+            speech_stop_rpc_code, _ = await asyncio.wait_for(
+                asyncio.shield(speech_stop), SPEECH_STOP_WAIT_S
+            )
+        except Exception:
+            # Slow or failed: the stop's answer must not wait on the speaker.
+            log.warning("stop_everything.speech_stop_unconfirmed", exc_info=True)
+
     return {
         "cancelled_task_ids": cancelled_ids,
         "cancelled_count": len(cancelled_ids),
+        "speech_stop_rpc_code": speech_stop_rpc_code,
         "stop_burst_duration_s": round(duration, 3),
         "stop_burst_sent": burst_sent,
         "stop_burst_acked": burst_acked if SIM_MODE == "real" else None,

@@ -2068,6 +2068,8 @@ def arm_navigation(
         # depend on timing the operator cannot see.
         log.warning("arm_navigation.no_planner_traffic")
 
+    # Before enable(): whether this renews an open gate decides if the fence keeps its centre.
+    safety.anchor_geofence(renewing=bool(status_before.get("enabled")))
     link.enable(reason=reason, ttl_s=seconds)
     status = link.status()
     return {
@@ -2081,6 +2083,8 @@ def arm_navigation(
         "clamps": status.get("clamps"),
         # False: the governor zeroes every Nav2 setpoint until the lidar reports again.
         "obstacles_fresh": safety.obstacles_fresh(),
+        # inside null with a radius set: no pose, so every Nav2 setpoint is zeroed.
+        "geofence": safety.geofence(),
         "warning": (
             "The robot can now be driven by Nav2. A person must be watching "
             "with the e-stop in reach. The gate closes itself in "
@@ -4556,6 +4560,28 @@ async def camera_frame(request):  # noqa: ANN001, ANN201 - starlette types
         status_code=503,
         headers=camera_relay.camera_headers(origin),
     )
+
+
+@mcp.custom_route("/camera/cloud_frame.jpg", methods=["GET"])
+async def camera_cloud_frame(request):  # noqa: ANN001, ANN201 - starlette types
+    """The newest frame with faces blurred, for a caller that uploads it to a cloud model.
+
+    apps/back's `look` and `verify` read this, never /camera/frame.jpg (the
+    operator's own view stays sharp). Blurred here because OpenCV is here.
+    Fails closed like `vlm.blur_faces`: 503 with the reason, never a raw frame.
+    """
+    from starlette.responses import JSONResponse, Response
+
+    from bridge import vlm
+
+    jpeg, _source, err = await _grab_frame()
+    if err or jpeg is None:
+        return JSONResponse(err or {"error": "no_frame"}, status_code=503)
+    try:
+        jpeg = await asyncio.to_thread(vlm.blur_faces, jpeg)
+    except vlm.VlmError as exc:
+        return JSONResponse({"error": "face_blur_failed", "detail": str(exc)}, status_code=503)
+    return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 async def _relay_stream(url: str, request):  # noqa: ANN001 - starlette Request

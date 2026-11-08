@@ -276,6 +276,28 @@ nothing moves:
 - `_locomotion` zeroes every velocity;
 - `arm_sdk` refuses to engage.
 
+PARAR also stops the robot's own Spanish speech (`g1_rpc.stop_play`, sent beside the
+zero-velocity burst, never ahead of it), and cuts off any utterance still being sent.
+Firmware TTS and the co-tenant's speech are out of its reach.
+
+**The spoken stop: say «emergencia» or «pará, pará».** On synthesised speech they were
+heard 13 and 14 times out of 15. A flat «detener» was heard only 7 of 15 times (a
+shouted «¡detener!» 14 of 15), and a single «pará», «alto» or «stop» is not a stop
+phrase at all. None of this is validated on a stressed human voice yet (pending robot
+test).
+
+**Nav2 limits** (`safety.govern`, autonomous setpoints only; manual driving is never
+limited by them):
+
+- zero velocity unless a world summary ≤ 1 s old says the lidar is online
+  (`obstacle_source_stale`);
+- a geofence while the Nav2 gate is open: zero velocity further than
+  `SAFETY_GEOFENCE_M` (default 3 m; 0 turns it off) from where `arm_navigation` found
+  the robot (`outside_geofence`), or with no odometry pose under 1 s old
+  (`geofence_pose_unknown`). Renewing an open gate keeps the centre. To recover, drive
+  back by hand or re-arm on the spot. `arm_navigation` and `/safety/status` report
+  `obstacles_fresh` and `geofence`.
+
 The latch survives bridge and teleop restarts. Only «Reanudar» clears it. It is admin
 only, from the console's «PARAR ACTIVO» chip or the headset menu. `back`'s
 `POST /safety/ack` forwards it to the bridge's `/safety/ack` with
@@ -865,6 +887,17 @@ A SIGILL here means MPPI got installed by accident.
 `SAFETY_CONFIRM_SECRET` is the same value in `apps/back/.env` and `apps/bridge/.env`;
 without it no Confirmar or «Reanudar» works (§4). `GEMINI_API_KEY` is for the bridge's
 vision tools only (`vlm.py`); BACKLOG §12 has the data terms.
+
+**Faces are pixelated before any frame goes to a cloud model.** `vlm.blur_faces`
+(OpenCV Haar, frontal and profile) runs inside `vlm.generate` (Gemini) and behind
+`/camera/cloud_frame.jpg`, the only frame source `apps/back`'s `look` and `verify`
+use. It fails closed: no OpenCV, no cascades or an undecodable frame means the frame
+is not sent (`vlm_unavailable`, or 503 with the reason). The operator's own feed is not
+blurred. `C3PO_FACE_BLUR=0` turns it off; do that only with a paid key. Recall on real
+expo frames is a pending robot test.
+
+Other settings added on 2026-11-07: `HEADSET_SPEAK_REPLY=1` in `apps/back/.env` makes
+the robot say a completed headset reply (B8, default off).
 
 **The robot holds no agent or database credentials**, because the agent runs in `back`.
 That is a real security property: the robot is physically accessible, shared with
