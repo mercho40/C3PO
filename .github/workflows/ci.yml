@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# A NEW PUSH TO A PR MAKES THE RUN BEFORE IT WORTHLESS, so cancel it rather than
+# let both finish. Only pull_request runs share a group: every other run is
+# grouped by its own run_id, so no two push runs on main ever cancel or queue
+# behind each other and every commit on main keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   typescript:
     name: TypeScript and shell — checks and tests
@@ -223,3 +231,124 @@ jobs:
       - name: pytest
         working-directory: apps/bridge
         run: uv run pytest -v
+
+  # THE SPOKEN STOP'S DECODE TESTS NEVER RAN IN CI UNTIL THIS JOB.
+  #
+  # tests/test_listen.py has nine tests that synthesise Spanish with piper and
+  # decode it with vosk — the only automated check that "emergencia" said out
+  # loud actually reaches stop_everything. The `bridge` job has neither, so all
+  # nine skipped there and the job stayed green: a skip reads as a pass to
+  # anyone looking at a check mark. This job installs both and sets
+  # C3PO_REQUIRE_VOICE=1, under which a missing model FAILS with its fix
+  # instead of skipping, and the last step fails on any skip that is not one of
+  # the four whisper tests (those stay robot-only: transcription quality, not
+  # the stop path, and a ~145 MB model per cache miss).
+  #
+  # Separate from `bridge` so that job stays fast and nothing waits on this one.
+  # Same models, same paths, same installers as the robot.
+  voice:
+    name: Bridge — spoken-stop tests (real vosk + piper)
+    runs-on: ubuntu-latest
+    env:
+      CYCLONEDDS_HOME: ${{ github.workspace }}/.cyclonedds-0.10.2
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same library, same key as the `bridge` job: `uv sync` needs it for
+      # unitree_sdk2py whether or not these tests touch DDS.
+      - name: Cache CycloneDDS C library
+        id: cyclonedds-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CYCLONEDDS_HOME }}
+          key: cyclonedds-0.10.2-${{ runner.os }}-v1
+
+      - name: Build CycloneDDS C library
+        if: steps.cyclonedds-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch 0.10.2 https://github.com/eclipse-cyclonedds/cyclonedds.git /tmp/cyclonedds-src
+          cmake -S /tmp/cyclonedds-src -B /tmp/cyclonedds-build \
+            -DCMAKE_INSTALL_PREFIX="$CYCLONEDDS_HOME" \
+            -DBUILD_IDLC=ON -DBUILD_TESTING=OFF -DBUILD_DDSPERF=OFF \
+            -DENABLE_SECURITY=NO -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build /tmp/cyclonedds-build --target install -j "$(nproc)"
+
+      - uses: astral-sh/setup-uv@v4
+
+      # `--extra voice` is vosk 0.3.45, pinned by uv.lock like everything else.
+      - name: Install bridge deps with the voice extra
+        working-directory: apps/bridge
+        run: uv sync --frozen --group dev --extra voice
+
+      - name: Apply unitree_sdk2py patch
+        working-directory: apps/bridge
+        run: ./scripts/postsync.sh
+
+      # THE MODELS ARE NOT ON PyPI, so uv.lock cannot pin them; the installers
+      # do. install_vosk.sh pins vosk-model-small-es-0.42 (alphacephei.com) to
+      # its exact byte count, install_piper.sh pins piper release 2023.11.14-2
+      # (github.com) and checks the es_AR-daniela-high voice (huggingface.co)
+      # against the server's Content-Length. Keying the cache on the two
+      # scripts means changing a pin there is what invalidates it — there is no
+      # second copy of the model names in this file to drift.
+      #
+      # Cached: ~40 MB zip + ~58 MB unpacked vosk model, ~114 MB voice, ~26 MB
+      # piper build. A cold run downloads ~180 MB.
+      - name: Cache voice models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/vosk
+            ~/.local/share/piper
+          key: voice-models-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/bridge/scripts/install_vosk.sh', 'apps/bridge/scripts/install_piper.sh') }}
+
+      # Run on every build, cache hit or not. Both are idempotent and verify
+      # what is already there — a cache restored half-written fails HERE, by
+      # name, not as nine opaque decode failures later. install_vosk.sh loads
+      # the model through the bridge venv's python, so it must follow uv sync.
+      - name: Install the vosk model (same script as the robot)
+        working-directory: apps/bridge
+        run: bash scripts/install_vosk.sh
+
+      - name: Install piper and the es_AR voice (same script as the robot)
+        working-directory: apps/bridge
+        run: bash scripts/install_piper.sh
+
+      # Every voice test file, not only test_listen.py: test_tts.py and
+      # test_mic_listener.py are written to pass without vosk or piper, and
+      # this is the one place they also have to pass WITH them installed.
+      - name: pytest (voice required)
+        working-directory: apps/bridge
+        env:
+          C3PO_REQUIRE_VOICE: "1"
+        run: >
+          uv run --frozen --extra voice pytest -v -rs
+          tests/test_listen.py tests/test_tts.py tests/test_mic_listener.py
+          --junitxml="$RUNNER_TEMP/voice-junit.xml"
+
+      # C3PO_REQUIRE_VOICE already turns the nine `needs_audio` skips into
+      # failures. This catches the next one: any skip added later, for any
+      # reason, that is not the four robot-only whisper tests.
+      - name: Fail if any voice test skipped (except the whisper four)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - "$RUNNER_TEMP/voice-junit.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse(sys.argv[1]).getroot().iter("testcase")
+          ran, whisper, bad = 0, 0, []
+          for case in cases:
+              skip = case.find("skipped")
+              if skip is None:
+                  ran += 1
+              elif "faster-whisper" in (skip.get("message") or ""):
+                  whisper += 1
+              else:
+                  bad.append(f"{case.get('name')}: {skip.get('message')}")
+          print(f"ran {ran}, whisper skips {whisper}, other skips {len(bad)}")
+          if bad:
+              sys.exit("a voice test skipped in the job that exists to run it:\n  " + "\n  ".join(bad))
+          if ran == 0:
+              sys.exit("no voice tests ran at all")
+          PY

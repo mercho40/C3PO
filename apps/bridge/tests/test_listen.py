@@ -21,6 +21,8 @@ phrase is validated" — that needs recordings of real people, ideally shouting.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from bridge.skills import listen
@@ -37,10 +39,27 @@ def _tts_ready() -> tuple[bool, str]:
 
 
 tts_ok, tts_why = _tts_ready()
+
+# A SKIP IS A PASS TO ANYONE READING A GREEN BUILD, which is how these tests went
+# unrun: CI had no vosk and no piper, so all nine skipped and the job stayed
+# green. Where the voice stack is supposed to be present — CI's `voice` job, the
+# robot — set C3PO_REQUIRE_VOICE=1 and a missing piece FAILS with the fix
+# instead. Unset (a Mac, the default bridge job) still skips, with the reason.
+# Same idea as C3PO_REQUIRE_SHELLCHECK=1 in packages/robot-scripts.
+REQUIRE_VOICE = os.environ.get("C3PO_REQUIRE_VOICE") == "1"
+
 needs_audio = pytest.mark.skipif(
-    not (vosk_ok and tts_ok),
+    not (vosk_ok and tts_ok) and not REQUIRE_VOICE,
     reason=f"needs vosk and piper on the robot — vosk: {vosk_why or 'ok'}; piper: {tts_why or 'ok'}",
 )
+
+
+@pytest.mark.skipif(not REQUIRE_VOICE, reason="only asserted where C3PO_REQUIRE_VOICE=1")
+def test_the_voice_stack_is_present_where_it_is_required():
+    """The nine decode tests below would fail anyway without vosk or piper, but
+    deep inside a decoder call. This names the missing piece and its fix once."""
+    assert vosk_ok, f"vosk: {vosk_why}"
+    assert tts_ok, f"piper: {tts_why}"
 
 
 # --- matching logic (no vosk needed) ---------------------------------------
