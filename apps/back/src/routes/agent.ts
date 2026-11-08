@@ -15,6 +15,9 @@
  * failed turn still leaves a record of what was asked), and the assistant
  * message is saved from `onEnd` once the stream completes.
  *
+ * With HEADSET_SPEAK_REPLY=1, a headset (voice-mode) turn that completes is
+ * also said by the robot (B8), under its own agent turn so PARAR cuts it.
+ *
  * This is the backend taking over as the conversation host (docs/ARCHITECTURE.md §3) — the
  * same skill registry the external MCP path uses, now driven server-side.
  *
@@ -27,6 +30,8 @@ import { Elysia, t } from "elysia";
 import { createIdGenerator, type UIMessage } from "ai";
 
 import { runAgentChat } from "#back/agent/runtime.js";
+import { beginTurn } from "#back/agent/turns.js";
+import { auditedCall } from "#back/bridge/audited.js";
 import {
   appendMessage,
   ensureChat,
@@ -34,6 +39,11 @@ import {
   titleFromParts,
 } from "#back/db/chats.js";
 import { betterAuth } from "#back/lib/auth-plugin.js";
+import {
+  headsetSpeaksReplies,
+  shouldSpeak,
+  speakReply,
+} from "#back/voice/conversation.js";
 
 /**
  * Ids for the assistant messages we persist.
@@ -109,6 +119,9 @@ export function trustedHistory(
   });
 }
 
+/** Longest a headset turn plus its spoken reply may stay registered. */
+const SPEECH_TURN_MAX_MS = 10 * 60_000;
+
 export const agentRoutes = new Elysia({ prefix: "/agent" })
   .use(betterAuth)
   .post(
@@ -155,16 +168,33 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
         chatId ? body.replaceMessageId : undefined,
       );
 
+      const mode = body.mode === "voice" ? "voice" : "operator";
+      const speakReplies = headsetSpeaksReplies();
+      // The spoken reply's own turn, registered now rather than when speech
+      // starts: a PARAR between the model's last token and the first `say`
+      // still aborts it, and stop-watch keeps one baseline across both, so a
+      // stop latched on the bridge in that gap is not read as the new normal.
+      const speech = mode === "voice" && speakReplies ? beginTurn() : null;
+      // Backstop: `onEnd` releases it, but a stream nobody reads might never
+      // end, and a turn left registered keeps stop-watch polling for good.
+      if (speech) setTimeout(speech.done, SPEECH_TURN_MAX_MS).unref?.();
+
       // `userId` attributes the audit rows even when the chat is not persisted
       // (no chat id to look the owner up from).
-      const result = await runAgentChat(messages, {
-        chatId,
-        userId: user.id,
-        mode: body.mode === "voice" ? "voice" : "operator",
-        // Aborts when the browser goes away (Stop, or leaving /chat). `onEnd`
-        // below still persists what the aborted turn produced.
-        abortSignal: request.signal,
-      });
+      let result: Awaited<ReturnType<typeof runAgentChat>>;
+      try {
+        result = await runAgentChat(messages, {
+          chatId,
+          userId: user.id,
+          mode,
+          // Aborts when the browser goes away (Stop, or leaving /chat). `onEnd`
+          // below still persists what the aborted turn produced.
+          abortSignal: request.signal,
+        });
+      } catch (err) {
+        speech?.done();
+        throw err;
+      }
 
       return result.toUIMessageStreamResponse({
         originalMessages: messages,
@@ -174,7 +204,26 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
           chatId ? body.replaceMessageId : undefined,
         ),
         // `onFinish` is the deprecated spelling of this callback in ai@7.
-        onEnd: async ({ responseMessage, isAborted }) => {
+        onEnd: async ({ responseMessage, isAborted, outcome }) => {
+          if (speech) {
+            if (shouldSpeak({ enabled: speakReplies, mode, outcome })) {
+              // Not awaited: persistence and the HTTP stream do not wait on
+              // the speaker. wait_for_completion, so chunk n+1 does not cut
+              // chunk n off.
+              void speakReply(
+                responseMessage.parts ?? [],
+                (text) =>
+                  auditedCall(
+                    "say",
+                    { text, language: "spanish", wait_for_completion: true },
+                    { userId: user.id, source: "voice" },
+                  ),
+                speech.signal,
+              )
+                .catch((e) => console.warn("[agent] voice reply not spoken", e))
+                .finally(speech.done);
+            } else speech.done();
+          }
           // An aborted turn still persists what was generated — a half-finished
           // sequence of tool calls is exactly the history an operator needs.
           if (!chatId) return;
