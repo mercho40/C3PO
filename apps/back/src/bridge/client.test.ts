@@ -27,12 +27,13 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import {
-  BridgeToolError,
-  BridgeUnavailableError,
-  failure,
-  sessionLost,
-} from "./client";
+// A private instance, for the pure helpers below: other files mock.module the
+// client without every export, and under --randomize a static import could get
+// that mock ("Export named 'failure' not found"). The query string makes a
+// separate module entry no other file mocks.
+const CLIENT_INSTANCE = "./client.ts?client-test";
+const { BridgeToolError, BridgeUnavailableError, failure, sessionLost } =
+  await (import(CLIENT_INSTANCE) as Promise<typeof import("./client")>);
 
 // fileURLToPath, not `.pathname` — this repo lives under a directory with
 // spaces in its name, which `.pathname` hands back percent-encoded.
@@ -199,6 +200,8 @@ describe("which failures end the session", () => {
     expect(sessionLost(refused)).toBe(false);
     const err = failure("walk_to", refused);
     expect(err).toBeInstanceOf(BridgeToolError);
-    expect((err as BridgeToolError).detail).toContain("bad arguments");
+    expect((err as InstanceType<typeof BridgeToolError>).detail).toContain(
+      "bad arguments",
+    );
   });
 });
