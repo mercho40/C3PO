@@ -214,7 +214,12 @@ def play_pcm(
     client = _get_voice_client()
     param = json.dumps({"app_name": app_name, "stream_id": stream_id})
     code, data = 0, None
+    generation = _play_generation
     for offset in range(0, len(pcm), PLAY_CHUNK_BYTES):
+        if _play_generation != generation:
+            # stop_play ran: the chunks still to send would restart the speech.
+            log.info("voice.play_pcm.stopped", offset=offset, total=len(pcm))
+            return 0, "stopped"
         chunk = pcm[offset : offset + PLAY_CHUNK_BYTES]
         code, data = client._CallRequestWithParamAndBin(
             g1_protocol.API_ID_VOICE_START_PLAY, param, chunk
@@ -231,13 +236,27 @@ def play_pcm(
     return code, data
 
 
+#: Bumped by every stop; a play_pcm loop sending an older generation quits.
+_play_generation = 0
+
+
+def cancel_pcm_playback() -> None:
+    """End every play_pcm loop in flight before its next chunk. Never blocks."""
+    global _play_generation
+    _play_generation += 1
+
+
 def stop_play(app_name: str = PLAY_APP_NAME) -> tuple[int, str | None]:
     """Stop OUR playback (voice/1004). Scoped by app_name, not stream_id.
 
     Three of four sources agree it takes app_name; the on-robot C++ example
     passing a stream_id is simply wrong. The scoping is a feature here — it is
     structurally impossible for this to silence the co-tenant's assistant.
+
+    Also ends any play_pcm still sending chunks: stopping what already reached
+    the speaker is no use if the rest of the utterance follows it.
     """
+    cancel_pcm_playback()
     return _get_voice_client().call_raw(
         g1_protocol.API_ID_VOICE_STOP_PLAY, json.dumps({"app_name": app_name})
     )
