@@ -101,6 +101,7 @@ def real(monkeypatch):
         m, "_measured_q", lambda side: list(arm._t[0:7] if side == "left" else arm._t[7:14])
     )
     monkeypatch.setattr(safety, "PERSON_RULE", True)
+    monkeypatch.setenv(m.ALLOW_PICK_ENV, "1")  # past the gantry fence; its own tests drop it
     safety.reset()
     return arm, hand
 
@@ -492,3 +493,42 @@ async def test_a_pick_without_the_measured_arm_pose_refuses_on_the_robot(monkeyp
     out = await m.pick("cup", side="right")
     assert out["phase"] == "planning" and "measured arm pose" in out["error"]
     assert not arm.engaged and not arm.commands
+
+
+# --- the gantry fence (no pick until the planner's torso clearance is checked on the robot) ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["pick", "place"])
+async def test_pick_and_place_refuse_on_the_robot_until_the_fence_is_lifted(
+    monkeypatch, real, skill
+):
+    arm, _hand = real
+    monkeypatch.delenv(m.ALLOW_PICK_ENV)
+    planned = []
+    monkeypatch.setattr(m, "plan_pick", lambda *a: planned.append(a))
+    monkeypatch.setattr(m, "plan_place", lambda *a: planned.append(a))
+    see(monkeypatch, cup())
+    out = await (m.pick("cup") if skill == "pick" else m.place("right", label="cup"))
+    assert out["status"] == "failed" and out["error"] == "pick_disabled_until_gantry_test"
+    assert out["result"]["moved"] is False and m.ALLOW_PICK_ENV in out["result"]["note"]
+    assert planned == [] and not arm.engaged and arm.commands == []
+
+
+@pytest.mark.asyncio
+async def test_the_lifted_fence_lets_pick_and_place_run(monkeypatch, real):
+    arm, _hand = real
+    see(monkeypatch, cup())
+    assert (await m.pick("cup"))["status"] == "completed"
+    picked = len(arm.commands)
+    out = await m.place("right")  # set it down below the hand
+    assert out["status"] == "completed", out
+    assert len(arm.commands) > picked
+
+
+@pytest.mark.asyncio
+async def test_the_fence_leaves_stub_planning_alone(monkeypatch):
+    monkeypatch.delenv(m.ALLOW_PICK_ENV, raising=False)
+    see(monkeypatch, cup())
+    out = await m.pick("cup")
+    assert out["phase"] == "stub" and out["result"]["plan"]

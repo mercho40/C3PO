@@ -3750,6 +3750,11 @@ _ARM_META: dict[str, Any] = dict(
         "hand_unavailable",
     ],
 )
+#: pick and place also refuse on the robot until C3PO_ALLOW_PICK=1 (skills/manipulation.py).
+_PICK_META = {
+    **_ARM_META,
+    "typical_failure_modes": [*_ARM_META["typical_failure_modes"], "pick_disabled_until_gantry_test"],
+}
 
 _SideAuto = Annotated[
     Literal["auto", "left", "right"],
@@ -3758,7 +3763,7 @@ _SideAuto = Annotated[
 _Side = Annotated[Literal["left", "right"], Field(description="Which arm.")]
 
 
-@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 15.0}))
+@mcp.tool(meta=skill_meta(**{**_PICK_META, "expected_duration_s": 15.0}))
 async def pick(
     ctx: Context,
     label: Annotated[
@@ -3801,7 +3806,7 @@ async def pick(
     return {**await manipulation.pick(label, side, shape, track_id, ctx=ctx), "env": SIM_MODE}
 
 
-@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 12.0}))
+@mcp.tool(meta=skill_meta(**{**_PICK_META, "expected_duration_s": 12.0}))
 async def place(
     ctx: Context,
     side: _Side = "right",

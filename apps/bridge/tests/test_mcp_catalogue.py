@@ -481,3 +481,12 @@ def test_the_bring_up_path_that_works_is_marked_working(tools):
     for name in ("damp", "prepare", "start_walking_waist", "walk_to", "wave", "say"):
         works = tools[name].meta["c3po"]["works"]
         assert works["real"] is True, f"{name} works on hardware but is marked unavailable"
+
+
+def test_pick_and_place_advertise_the_gantry_fence(tools):
+    # skills/manipulation.py refuses them on the robot until C3PO_ALLOW_PICK=1.
+    for name in ("pick", "place"):
+        modes = tools[name].meta["c3po"]["typical_failure_modes"]
+        assert "pick_disabled_until_gantry_test" in modes, name
+    reach = tools["reach"].meta["c3po"]["typical_failure_modes"]
+    assert "pick_disabled_until_gantry_test" not in reach

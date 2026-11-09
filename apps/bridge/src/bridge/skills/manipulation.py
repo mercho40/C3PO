@@ -662,6 +662,26 @@ def _refused(name: str, error: str, **extra: Any) -> dict[str, Any]:
     return task.to_dict()
 
 
+#: Pick and place stay refused on the robot until the gantry touch check (test-day
+#: manipulation.md) shows the planned arm clears the torso. This flag lifts the fence for that
+#: check and after it; read per call. Stub mode plans freely: nothing moves there.
+ALLOW_PICK_ENV = "C3PO_ALLOW_PICK"
+
+
+def _fenced(name: str) -> dict[str, Any] | None:
+    if SIM_MODE != "real" or os.environ.get(ALLOW_PICK_ENV) == "1":
+        return None
+    return _refused(
+        name,
+        "pick_disabled_until_gantry_test",
+        note=(
+            f"{name} is off on the robot until the gantry touch check passes (test-day "
+            f"manipulation.md). Nothing moved. For that check: {ALLOW_PICK_ENV}=1 in "
+            "apps/bridge/.env, then restart the bridge."
+        ),
+    )
+
+
 # --- the four skills --------------------------------------------------------------------------
 
 
@@ -672,6 +692,8 @@ async def pick(
     track_id: int | None = None,
     ctx: Any | None = None,
 ) -> dict[str, Any]:
+    if (fenced := _fenced("pick")) is not None:
+        return fenced
     if shape not in hands.SHAPES or shape == "open":
         return _refused(
             "pick", f"unknown_shape_{shape}", shapes=sorted(set(hands.SHAPES) - {"open"})
@@ -716,6 +738,8 @@ async def place(
     ctx: Any | None = None,
 ) -> dict[str, Any]:
     """Put down what the hand holds: onto a detected surface/object, or `drop_m` below here."""
+    if (fenced := _fenced("place")) is not None:
+        return fenced
     seed = _measured_q(side)
     try:
         if label:
