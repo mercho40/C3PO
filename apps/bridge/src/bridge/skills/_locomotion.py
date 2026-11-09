@@ -242,6 +242,11 @@ def stop_motion_sync(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) ->
     if errors and not acked:
         # Nothing landed and something raised: stop_everything reports it and damps.
         raise errors[0]
+    if errors:
+        # The robot heard the rest, so no Damp; but a raise is never silent.
+        log.warning(
+            "locomotion.stop_burst.setpoint_raised", count=len(errors), error=repr(errors[0])
+        )
     return sent, acked
 
 

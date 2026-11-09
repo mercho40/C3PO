@@ -47,8 +47,9 @@ Meanwhile the Damp fallback below can retry 3x against a 10 s client timeout,
 so a degraded link — the case the retry exists for — could wedge the whole
 event loop for ~30 s. During that window a second stop press and every
 `get_state` poll went unanswered: the e-stop made the robot unreachable
-precisely when the operator was pressing it again. The RPCs now go through
-`asyncio.to_thread`, and the retry loop carries a total time budget on top.
+precisely when the operator was pressing it again. The RPCs now run on
+threads of their own (`_on_own_thread`), and the retry loop carries a total
+time budget on top.
 
 When it runs, the real-hardware Damp fallback retries up to REAL_DAMP_MAX_ATTEMPTS times on
 RPC failure (a dropped packet shouldn't mean a silently-failed e-stop), but
@@ -61,9 +62,12 @@ Returns a list of cancelled task IDs and the duration of the stop burst.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
+import threading
 import time
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import structlog
 
@@ -94,12 +98,36 @@ SPEECH_STOP_WAIT_S = 1.0
 # acknowledged. "always": damp after every stop, the pre-2026-10-15 behaviour.
 DAMP_POLICY = os.environ.get("STOP_EVERYTHING_DAMP", "on_failure").strip().lower()
 
+_T = TypeVar("_T")
+
+
+def _on_own_thread(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> asyncio.Future[_T]:
+    """Start `fn` now, on a thread of its own, and return a future for its answer.
+
+    Not asyncio.to_thread: that queues on the loop's shared executor, which
+    camera streams, voice long-polls and RPCs hung on a bad link can fill. The
+    stop waited behind them, and a Damp attempt still queued when its budget
+    ran out was cancelled without being sent. Cancelling this future gives up
+    only the wait; the call itself always runs.
+    """
+    done: concurrent.futures.Future[_T] = concurrent.futures.Future()
+    done.set_running_or_notify_cancel()
+
+    def work() -> None:
+        try:
+            done.set_result(fn(*args, **kwargs))
+        except BaseException as exc:
+            done.set_exception(exc)
+
+    threading.Thread(target=work, name="stop-rpc", daemon=True).start()
+    return asyncio.wrap_future(done)
+
 
 async def _zero_burst(height: float) -> tuple[int, int, str | None, float]:
     """The soft-stop tier: `(sent, acked, error, duration_s)` of a zero burst."""
     start = time.monotonic()
     try:
-        sent, acked = await asyncio.to_thread(
+        sent, acked = await _on_own_thread(
             stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S
         )
         return sent, acked, None, time.monotonic() - start
@@ -245,7 +273,7 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
 
         hand_driver = _get_hand_driver()
         if hand_driver.sides:
-            await asyncio.to_thread(hand_driver.relax)
+            await _on_own_thread(hand_driver.relax)
             hands_relaxed = True
     except Exception:
         log.exception("stop_everything.hand_relax_failed")
@@ -289,38 +317,37 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
 
         from bridge.sdk import g1_protocol, g1_rpc
 
-        deadline = time.monotonic() + REAL_DAMP_TOTAL_BUDGET_S
         budget_exhausted = False
-        for attempt in range(1, REAL_DAMP_MAX_ATTEMPTS + 1):
-            real_damp_attempts = attempt
-            try:
-                # Waited on for what is left of the budget only: one attempt can
-                # sit on the sport client's 10 s timeout. Its thread finishes
-                # by itself; only the wait for the answer is given up.
-                real_damp_rpc_code, _ = await asyncio.wait_for(
-                    asyncio.to_thread(g1_rpc.call_sport, g1_protocol.Mode.DAMP),
-                    deadline - time.monotonic(),
-                )
-            except TimeoutError:
-                real_damp_rpc_code = RPC_ERR_CLIENT_API_TIMEOUT
-            if real_damp_rpc_code == 0:
-                break
+        try:
+            # One deadline over the whole loop, not a wait_for per attempt: a
+            # wait_for given no time left (the budget ran out in the pause
+            # before a retry) cancels its attempt before it is sent.
+            async with asyncio.timeout(REAL_DAMP_TOTAL_BUDGET_S):
+                for attempt in range(1, REAL_DAMP_MAX_ATTEMPTS + 1):
+                    real_damp_attempts = attempt
+                    # What an attempt the budget stops waiting for reports. One
+                    # can sit on the sport client's 10 s timeout; it is sent
+                    # anyway and finishes on its own thread.
+                    real_damp_rpc_code = RPC_ERR_CLIENT_API_TIMEOUT
+                    real_damp_rpc_code, _ = await _on_own_thread(
+                        g1_rpc.call_sport, g1_protocol.Mode.DAMP
+                    )
+                    if real_damp_rpc_code == 0:
+                        break
+                    log.warning(
+                        "stop_everything.real_damp_fallback.retry",
+                        attempt=attempt,
+                        rpc_code=real_damp_rpc_code,
+                    )
+                    if attempt < REAL_DAMP_MAX_ATTEMPTS:
+                        await asyncio.sleep(REAL_DAMP_RETRY_DELAY_S)
+        except TimeoutError:
+            budget_exhausted = True
             log.warning(
-                "stop_everything.real_damp_fallback.retry",
-                attempt=attempt,
-                rpc_code=real_damp_rpc_code,
+                "stop_everything.real_damp_fallback.budget_exhausted",
+                attempts=real_damp_attempts,
+                budget_s=REAL_DAMP_TOTAL_BUDGET_S,
             )
-            if time.monotonic() >= deadline:
-                # One slow attempt can consume the whole budget on its own.
-                budget_exhausted = True
-                log.warning(
-                    "stop_everything.real_damp_fallback.budget_exhausted",
-                    attempts=real_damp_attempts,
-                    budget_s=REAL_DAMP_TOTAL_BUDGET_S,
-                )
-                break
-            if attempt < REAL_DAMP_MAX_ATTEMPTS:
-                await asyncio.sleep(REAL_DAMP_RETRY_DELAY_S)
         log.warning(
             "stop_everything.real_damp_fallback",
             reason=damp_reason,
