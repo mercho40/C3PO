@@ -4,8 +4,13 @@
  * and stop-watch.ts for a stop latched on the bridge directly): stopping the robot without stopping the model left its next step
  * free to move it again. The bridge refuses that step anyway while the stop
  * stands; this also ends the planning, so nobody is answered by a model still
- * at work. No imports on purpose: voice/loop.ts stays dependency-free.
+ * at work. It also drops every confirmation card asked before the stop: the
+ * bridge mints a fresh grant on «Confirmar», so a card from before PARAR would
+ * still run after «Reanudar». No imports but confirmations.ts, which has none,
+ * so voice/loop.ts stays dependency-free.
  */
+import { clearPending } from "./confirmations";
+
 const activeTurns = new Set<AbortController>();
 let onFirstTurn: (() => void) | null = null;
 
@@ -32,6 +37,7 @@ export function abortAllTurns(reason = "PARAR"): number {
   const n = activeTurns.size;
   for (const turn of activeTurns) turn.abort(new Error(reason));
   activeTurns.clear();
+  clearPending();
   return n;
 }
 

@@ -117,7 +117,7 @@ export function restorePending(p: PendingConfirmation): void {
   pending.set(keyOf(p.ownerId, p.id), p);
 }
 
-/** Tests only. */
+/** Every card, everyone's: PARAR and «Reanudar» (turns.ts, routes/safety.ts). */
 export function clearPending(): void {
   pending.clear();
 }
