@@ -261,7 +261,7 @@ describe("a bridge that forgot our session", () => {
       new Response(proc.stdout).text(),
     ]);
     expect(code).toBe(0);
-    return JSON.parse(stdout.trim().split("\n").at(-1) ?? "null");
+    return JSON.parse(stdout.trim().split("\n").pop() ?? "null");
   }
 
   test("the first call after a restart, PARAR, goes out on a fresh session, once", async () => {
