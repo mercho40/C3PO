@@ -380,3 +380,16 @@ def test_the_relay_status_is_what_the_bridge_and_landmarks_accept(relay):
     )
     assert link._ingest_status(json.dumps(no_tf))
     assert lm.nav_pose_from_status(no_tf) is None
+
+
+async def test_refused_while_the_arms_are_held(rig, monkeypatch):
+    from types import SimpleNamespace
+
+    from bridge.teleop import arm_sdk
+
+    server, _nav, _gate, sent, _ = await _armed(rig)
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: SimpleNamespace(engaged=True))
+    out = await server.navigate_to(x=1.0, y=0.0)
+    assert (out["status"], out["reason"]) == ("refused", "arm_held")
+    assert "release_arm_control" in out["how_to_fix"]
+    assert sent == []

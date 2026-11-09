@@ -29,7 +29,12 @@ from typing import Any
 import structlog
 
 from bridge import safety
-from bridge.skills._locomotion import DEFAULT_HEIGHT, send_velocity_async, teleop_conflict
+from bridge.skills._locomotion import (
+    DEFAULT_HEIGHT,
+    arm_hold_conflict,
+    send_velocity_async,
+    teleop_conflict,
+)
 from bridge.skills.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
@@ -102,6 +107,14 @@ async def run(
             task.error = conflict
             task.ended_at = time.time()
             log.warning("walk_velocity.teleop_active", task_id=task.task_id)
+            return task.to_dict()
+        conflict = arm_hold_conflict()
+        if conflict is not None:
+            task.status = "failed"
+            task.phase = "arm_held"
+            task.error = conflict
+            task.ended_at = time.time()
+            log.warning("walk_velocity.arm_held", task_id=task.task_id)
             return task.to_dict()
 
         setpoint = (clamped_vx, clamped_vy, clamped_vyaw, DEFAULT_HEIGHT)

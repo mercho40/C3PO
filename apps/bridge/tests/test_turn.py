@@ -250,3 +250,19 @@ async def test_odometry_freezing_mid_turn_stops_the_turn(monkeypatch):
     assert (result["status"], result["phase"]) == ("failed", "pose_stale")
     assert len(sent) == 3  # no setpoint steered on the frozen pose...
     assert stops  # ...and the stop still went out
+
+
+@pytest.mark.asyncio
+async def test_a_turn_is_refused_while_the_arms_are_held(monkeypatch):
+    from types import SimpleNamespace
+
+    from bridge.teleop import arm_sdk
+
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: SimpleNamespace(engaged=True))
+    sampler = _FakeSampler([_pose(0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=0.05)
+
+    assert (result["status"], result["phase"]) == ("failed", "arm_held")
+    assert sampler._i == 0

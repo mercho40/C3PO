@@ -263,6 +263,26 @@ def teleop_conflict() -> str | None:
     )
 
 
+def arm_hold_conflict() -> str | None:
+    """Why the base must not walk now because this process holds the arms, or None.
+
+    move_arm(hold=True), pick and reach leave `rt/arm_sdk` engaged after they
+    return, and walking under arm_sdk weight is untried on this robot (BACKLOG
+    §12). The headset's own arms renew the teleop lease, so teleop_conflict
+    already covers those. Checked here, not in ArmSdkDriver.engage, so the
+    headset's arms are never refused for the operator looking around.
+    """
+    from bridge.teleop.arm_sdk import get_driver
+
+    if not get_driver().engaged:
+        return None
+    return (
+        "the arms are held on rt/arm_sdk (move_arm, pick or reach), and walking under "
+        "arm_sdk weight is untried on this robot. Call release_arm_control (or "
+        "stop_everything) first, then walk."
+    )
+
+
 #: The error a running walk or turn ends with when the headset takes over.
 TELEOP_TAKEOVER = (
     "the operator in the headset took over and is driving the robot, so this motion "

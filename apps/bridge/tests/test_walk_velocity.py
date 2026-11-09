@@ -113,3 +113,18 @@ async def test_cancel_stops_early_and_sends_zero_velocity(monkeypatch):
     assert result["duration_s"] < 1.0
     assert calls[0][0] == 0.1
     assert calls[-1][:3] == (0.0, 0.0, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_refused_while_the_arms_are_held(monkeypatch):
+    from types import SimpleNamespace
+
+    from bridge.teleop import arm_sdk
+
+    calls = _record(monkeypatch)
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: SimpleNamespace(engaged=True))
+
+    result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.2)
+
+    assert (result["status"], result["phase"]) == ("failed", "arm_held")
+    assert calls == []

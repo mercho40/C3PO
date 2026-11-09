@@ -2185,6 +2185,10 @@ _NAV_FIX = {
         "A person in the headset is driving the robot; Nav2 would be a second commander "
         "on the base. Wait until they let go, then try again."
     ),
+    "arm_held": (
+        "The arms are held on rt/arm_sdk (move_arm, pick or reach), and walking under "
+        "arm_sdk weight is untried on this robot. Call release_arm_control first."
+    ),
 }
 
 
@@ -2192,11 +2196,13 @@ def _nav_refusal() -> dict | None:
     """Why a goal must not be sent right now, or None if it may."""
     from bridge.sdk.nav_link import get_nav_link
     from bridge.sdk.perception_link import get_link
-    from bridge.skills._locomotion import teleop_conflict
+    from bridge.skills._locomotion import arm_hold_conflict, teleop_conflict
 
     status, _ = get_nav_link().latest_status()
     if teleop_conflict() is not None:
         reason = "teleop_active"
+    elif arm_hold_conflict() is not None:
+        reason = "arm_held"
     elif status is None:
         reason = "nav_relay_offline"
     elif not status.get("nav2_ready"):
