@@ -268,3 +268,22 @@ TELEOP_TAKEOVER = (
     "the operator in the headset took over and is driving the robot, so this motion "
     "ended. Do not retry it while they drive."
 )
+
+#: The error a walk or turn refuses or ends with when odometry stops arriving.
+POSE_STALE = (
+    "pose_stale: odometry has not updated for over a second, so the robot would steer "
+    "on a frozen position. Check get_state's faults (stale_pose) and the bridge's odom "
+    "subscription before retrying."
+)
+
+
+def pose_stale(sampler: Any) -> bool:
+    """True when the sampler's newest pose is older than safety.POSE_STALE_S, or it has none.
+
+    `get_state()` keeps returning the last pose after odometry stops, so a loop
+    reading only that would keep driving toward a target it never gets closer to.
+    """
+    from bridge.safety import POSE_STALE_S
+
+    pose = sampler.latest_pose()
+    return pose is None or pose[2] > POSE_STALE_S

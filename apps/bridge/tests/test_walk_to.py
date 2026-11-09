@@ -25,16 +25,23 @@ class _FakeSampler:
     def __init__(self, poses: list[dict]) -> None:
         self._poses = poses
         self._i = 0
+        self.pose_age = 0.0  # what latest_pose() reports: odometry is live unless a test says not
 
     def get_state(self) -> dict:
         i = min(self._i, len(self._poses) - 1)
         self._i += 1
         return {"pose": self._poses[i]}
 
+    def latest_pose(self) -> tuple[float, float, float]:
+        return 0.0, 0.0, self.pose_age
+
 
 class _NoPoseSampler:
     def get_state(self) -> dict:
         return {"pose": None}
+
+    def latest_pose(self) -> None:
+        return None
 
 
 def _pose(x: float, y: float, yaw: float = 0.0) -> dict:
@@ -215,3 +222,44 @@ async def test_a_second_walk_is_refused_while_one_runs(monkeypatch):
     assert result["phase"] == "walk_task_active"
     assert walking.task_id in result["error"]
     assert sampler._i == 0  # refused before reading a pose, let alone moving
+
+
+# --- frozen odometry (get_state keeps returning the last pose after it stops) ---
+
+
+@pytest.mark.asyncio
+async def test_frozen_odometry_refuses_before_moving(monkeypatch):
+    sent: list[tuple] = []
+
+    async def recording_send(*a, **kw):
+        sent.append(a)
+
+    monkeypatch.setattr(walk_to, "send_velocity_async", recording_send)
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    sampler.pose_age = 5.0
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=2.0)
+
+    assert (result["status"], result["phase"]) == ("failed", "pose_stale")
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_odometry_freezing_mid_walk_stops_the_walk(monkeypatch, fast_retarget):
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    sent: list[tuple] = []
+
+    async def send(*a, **kw):
+        sent.append(a)
+        if len(sent) == 3:
+            sampler.pose_age = 5.0
+
+    monkeypatch.setattr(walk_to, "send_velocity_async", send)
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=2.0)
+
+    assert (result["status"], result["phase"]) == ("failed", "pose_stale")
+    assert len(sent) == 3  # no setpoint steered on the frozen pose...
+    assert len(fast_retarget) == 1  # ...and the stop still went out

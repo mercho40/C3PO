@@ -27,8 +27,10 @@ from bridge.skills._locomotion import (
     MAX_FWD_VEL,
     MAX_LAT_VEL,
     MAX_YAW_VEL,
+    POSE_STALE,
     TELEOP_TAKEOVER,
     maybe_report_progress,
+    pose_stale,
     teleop_conflict,
     send_velocity_async,
     stop_motion,
@@ -116,6 +118,13 @@ async def run(
             task.ended_at = time.time()
             log.warning("walk_to.no_pose", task_id=task.task_id)
             return task.to_dict()
+        if pose_stale(sampler):
+            task.status = "failed"
+            task.phase = "pose_stale"
+            task.error = POSE_STALE
+            task.ended_at = time.time()
+            log.warning("walk_to.pose_stale", task_id=task.task_id)
+            return task.to_dict()
 
         start_x = float(pose["x_meters_world"])
         start_y = float(pose["y_meters_world"])
@@ -156,6 +165,7 @@ async def run(
         arrived = False
         cancelled = False
         taken_over = False
+        stale = False
         lost = False
         next_retarget = time.monotonic() + RETARGET_PERIOD_S
 
@@ -168,6 +178,9 @@ async def run(
             # no velocity, and the robot would hold our last setpoint.
             if teleop_conflict() is not None:
                 taken_over = True
+                break
+            if pose_stale(sampler):
+                stale = True
                 break
 
             state = sampler.get_state()
@@ -234,6 +247,11 @@ async def run(
             task.phase = "teleop_takeover"
             task.error = TELEOP_TAKEOVER
             log.warning("walk_to.teleop_takeover", task_id=task.task_id)
+        elif stale:
+            task.status = "failed"
+            task.phase = "pose_stale"
+            task.error = POSE_STALE
+            log.warning("walk_to.pose_stale", task_id=task.task_id)
         elif lost:
             task.status = "failed"
             task.phase = "target_lost"

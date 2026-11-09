@@ -19,16 +19,23 @@ class _FakeSampler:
     def __init__(self, poses: list[dict]) -> None:
         self._poses = poses
         self._i = 0
+        self.pose_age = 0.0  # what latest_pose() reports: odometry is live unless a test says not
 
     def get_state(self) -> dict:
         i = min(self._i, len(self._poses) - 1)
         self._i += 1
         return {"pose": self._poses[i]}
 
+    def latest_pose(self) -> tuple[float, float, float]:
+        return 0.0, 0.0, self.pose_age
+
 
 class _NoPoseSampler:
     def get_state(self) -> dict:
         return {"pose": None}
+
+    def latest_pose(self) -> None:
+        return None
 
 
 def _pose(yaw: float) -> dict:
@@ -197,3 +204,49 @@ async def test_the_confirm_window_commands_zero_yaw(monkeypatch):
     assert sent, "nothing was commanded at all"
     # The steering commands come first, then the confirm window's zeros.
     assert sent[-1] == 0.0, f"confirm window did not command a stop: {sent[-3:]}"
+
+
+# --- frozen odometry (get_state keeps returning the last pose after it stops) ---
+
+
+@pytest.mark.asyncio
+async def test_frozen_odometry_refuses_before_turning(monkeypatch):
+    sent: list[tuple] = []
+
+    async def recording_send(*a, **kw):
+        sent.append(a)
+
+    monkeypatch.setattr(turn, "send_velocity_async", recording_send)
+    sampler = _FakeSampler([_pose(0.0)])
+    sampler.pose_age = 5.0
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=2.0)
+
+    assert (result["status"], result["phase"]) == ("failed", "pose_stale")
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_odometry_freezing_mid_turn_stops_the_turn(monkeypatch):
+    sampler = _FakeSampler([_pose(0.0)])
+    sent: list[tuple] = []
+    stops: list[float] = []
+
+    async def send(*a, **kw):
+        sent.append(a)
+        if len(sent) == 3:
+            sampler.pose_age = 5.0
+
+    async def counting_stop(height=0.78, duration_s=0.4):
+        stops.append(height)
+
+    monkeypatch.setattr(turn, "send_velocity_async", send)
+    monkeypatch.setattr(turn, "stop_motion", counting_stop)
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=2.0)
+
+    assert (result["status"], result["phase"]) == ("failed", "pose_stale")
+    assert len(sent) == 3  # no setpoint steered on the frozen pose...
+    assert stops  # ...and the stop still went out
