@@ -773,12 +773,13 @@ def _default_forward(vx: float, vy: float, vyaw: float) -> None:
     one place. `height` is not ours to choose — Nav2 has no opinion about
     stand height and a Twist carries none.
 
-    `autonomous=True` puts this under the safety governor's stale-perception
-    policy: nobody is in this loop, so "no detector" must not read as "clear".
+    `nav2=True` puts this under the safety governor's stale-perception policy
+    (nobody is in this loop, so "no detector" must not read as "clear") and its
+    blind rule (no fresh lidar, no costmap to steer on: zero).
     """
     from bridge.skills._locomotion import DEFAULT_HEIGHT, send_velocity
 
-    send_velocity(vx, vy, vyaw, DEFAULT_HEIGHT, autonomous=True)
+    send_velocity(vx, vy, vyaw, DEFAULT_HEIGHT, autonomous=True, nav2=True)
 
 
 _link_singleton: PerceptionLink | None = None

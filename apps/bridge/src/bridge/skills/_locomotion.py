@@ -100,13 +100,20 @@ def _get_publisher() -> Any:
 
 
 def send_velocity(
-    vx: float, vy: float, vyaw: float, height: float, *, autonomous: bool = False
+    vx: float,
+    vy: float,
+    vyaw: float,
+    height: float,
+    *,
+    autonomous: bool = False,
+    nav2: bool = False,
 ) -> int | None:
     """Send one body-frame velocity setpoint, by whatever channel this target uses.
 
     `height` applies to the sim channel only; see the module docstring.
-    `autonomous` marks a source with no person in its loop (Nav2): it gets the
-    safety governor's stale-perception policy on top of the shared rules.
+    `autonomous` marks a source with no person in its loop (Nav2, go_to_object):
+    it gets the safety governor's stale-perception policy on top of the shared
+    rules. `nav2` marks Nav2's cmd_vel alone, which also gets the blind rule.
 
     Returns the robot's RPC code on real hardware (0 = acknowledged), and None
     in sim, where the setpoint is a fire-and-forget publish with no ack.
@@ -131,7 +138,7 @@ def send_velocity(
             # headset, Nav2) still cannot move the robot while PARAR stands.
             log.warning("locomotion.refused_stop_standing", vx=vx, vy=vy, vyaw=vyaw)
             vx = vy = vyaw = 0.0
-        vx, vy, vyaw = safety.govern(vx, vy, vyaw, autonomous=autonomous)
+        vx, vy, vyaw = safety.govern(vx, vy, vyaw, autonomous=autonomous, nav2=nav2)
 
         code, _ = g1_rpc.call_set_velocity(vx, vy, vyaw, VELOCITY_DURATION_S)
         if code != 0:
