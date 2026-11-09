@@ -205,3 +205,97 @@ describe("which failures end the session", () => {
     );
   });
 });
+
+describe("a bridge that forgot our session", () => {
+  /**
+   * After `c3po restart` the bridge answers the old session id with 404
+   * before running anything. The first call after it, PARAR included, used to
+   * fail as "bridge_unavailable". A fake bridge in a fresh process (the real
+   * client, see the top of this file) forgets every session on demand.
+   */
+  async function againstFakeBridge(body: string): Promise<unknown> {
+    const script = `
+      const live = new Set();
+      let sessions = 0;
+      let always404 = false;
+      const ran = [];
+      let refused = 0;
+      const server = Bun.serve({ port: 0, async fetch(req) {
+        if (req.method !== "POST") return new Response(null, { status: 405 });
+        const msg = await req.json();
+        if (msg.method === "initialize") {
+          const sid = "s" + ++sessions;
+          live.add(sid);
+          return Response.json({ jsonrpc: "2.0", id: msg.id, result: {
+            protocolVersion: msg.params.protocolVersion,
+            capabilities: { tools: {} },
+            serverInfo: { name: "fake-bridge", version: "0" },
+          } }, { headers: { "mcp-session-id": sid } });
+        }
+        const sid = req.headers.get("mcp-session-id");
+        if (!live.has(sid) || (always404 && msg.id !== undefined)) {
+          refused++;
+          return Response.json({ jsonrpc: "2.0", id: "server-error",
+            error: { code: -32600, message: "Session not found" } }, { status: 404 });
+        }
+        if (msg.id === undefined) return new Response(null, { status: 202 });
+        ran.push(msg.params?.name ?? msg.method);
+        const result = msg.method === "tools/list"
+          ? { tools: [] }
+          : { content: [], structuredContent: { ran: msg.params.name } };
+        return Response.json({ jsonrpc: "2.0", id: msg.id, result });
+      } });
+      process.env.BRIDGE_URL = "http://127.0.0.1:" + server.port + "/mcp";
+      const { callTool, listTools, BridgeUnavailableError } = await import(${JSON.stringify(CLIENT_TS)});
+      const out = {};
+      ${body}
+      console.log(JSON.stringify({ ...out, ran, refused, sessions }));
+      process.exit(0);
+    `;
+    const proc = Bun.spawn(["bun", "-e", script], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [code, stdout] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+    ]);
+    expect(code).toBe(0);
+    return JSON.parse(stdout.trim().split("\n").at(-1) ?? "null");
+  }
+
+  test("the first call after a restart, PARAR, goes out on a fresh session, once", async () => {
+    const r = await againstFakeBridge(`
+      await callTool("get_state", {});
+      live.clear(); // c3po restart
+      out.stop = await callTool("stop_everything", {});
+      live.clear();
+      out.tools = await listTools();
+    `);
+    expect(r).toEqual({
+      stop: { ran: "stop_everything" },
+      tools: [],
+      ran: ["get_state", "stop_everything", "tools/list"],
+      refused: 2,
+      sessions: 3,
+    });
+  }, 30_000);
+
+  test("a bridge that keeps answering 404 is retried once, not forever", async () => {
+    const r = await againstFakeBridge(`
+      always404 = true;
+      try {
+        await callTool("stop_everything", {});
+        out.error = "resolved";
+      } catch (err) {
+        out.error = err instanceof BridgeUnavailableError ? "bridge_unavailable" : String(err);
+      }
+    `);
+    expect(r).toEqual({
+      error: "bridge_unavailable",
+      ran: [],
+      refused: 2,
+      sessions: 2,
+    });
+  }, 30_000);
+});
