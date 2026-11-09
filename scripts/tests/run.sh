@@ -613,6 +613,77 @@ check "the three add three warnings" \
 check "and no blocker" "$(blockers_in "$tight_out")" "$(blockers_in "$loose_out")"
 rm -rf "$preflight_stub"
 
+# ---------------------------------------------------------------------------
+# install_piper.sh: the voice is pinned by commit and by sha256
+# ---------------------------------------------------------------------------
+echo "== piper voice pin =="
+# Against a fake server: curl serves $piper_tmp/server/<basename> and resumes by
+# appending past the local size, as the real one does. sha256sum prints a file's
+# first 64 bytes, so a served file is "good" when it starts with its pinned hash.
+# uname says Linux and stat is GNU's -c%s, so this runs on the Mac too.
+piper_script="$repo/apps/bridge/scripts/install_piper.sh"
+piper_tmp="$(mktemp -d)"
+mkdir -p "$piper_tmp/bin" "$piper_tmp/server" "$piper_tmp/dest"
+# shellcheck disable=SC2016  # the $vars are for the stubs to expand, not us
+{
+    printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; *) echo x86_64 ;; esac\n' >"$piper_tmp/bin/uname"
+    printf '#!/bin/sh\nprintf "%%s  %%s\\n" "$(head -c 64 "$1")" "$1"\n' >"$piper_tmp/bin/sha256sum"
+    printf '#!/bin/sh\nwc -c <"$2" | tr -d " "\n' >"$piper_tmp/bin/stat"
+    printf '#!/bin/sh\ncat >/dev/null\nhead -c 4000 /dev/zero\n' >"$piper_tmp/dest/piper"
+    cat >"$piper_tmp/bin/curl" <<'STUB'
+#!/bin/sh
+resume=0 out="" url=""
+while [ $# -gt 0 ]; do
+    case "$1" in -C) resume=1; shift ;; -o) out="$2"; shift ;; http*) url="$1" ;; esac
+    shift
+done
+echo "$resume $url" >>"$FAKE_CURL_LOG"
+src="$FAKE_SERVER/${url##*/}"
+[ -f "$src" ] || exit 22
+have=0; [ "$resume" = 1 ] && [ -f "$out" ] && have="$(wc -c <"$out" | tr -d ' ')"
+want="$(wc -c <"$src" | tr -d ' ')"
+[ "$have" -eq 0 ] && { cat "$src" >"$out"; exit 0; }
+[ "$have" -eq "$want" ] && exit 0  # curl: "already completely downloaded"
+[ "$have" -gt "$want" ] && exit 33  # the server refuses the range
+tail -c +"$((have + 1))" "$src" >>"$out"
+STUB
+}
+chmod +x "$piper_tmp/bin/"* "$piper_tmp/dest/piper"
+onnx_pin="$(sed -n 's/^VOICE_ONNX_SHA256=//p' "$piper_script")"
+json_pin="$(sed -n 's/^VOICE_JSON_SHA256=//p' "$piper_script")"
+serve() {  # serve <first 64 bytes> <file>
+    { printf '%s\n' "$1"; head -c 60 /dev/zero | tr '\0' x; } >"$piper_tmp/server/$2"
+}
+serve "$onnx_pin" es_AR-daniela-high.onnx
+serve "$json_pin" es_AR-daniela-high.onnx.json
+served="$piper_tmp/server/es_AR-daniela-high.onnx"
+installed="$piper_tmp/dest/es_AR-daniela-high.onnx"
+good_onnx="$(cat "$served")"
+run_piper() {
+    : >"$piper_tmp/curl.log"
+    PATH="$piper_tmp/bin:$PATH" PIPER_DEST="$piper_tmp/dest" FAKE_SERVER="$piper_tmp/server" \
+        FAKE_CURL_LOG="$piper_tmp/curl.log" bash "$piper_script" >"$piper_tmp/out" 2>&1
+    echo "exit $?"
+}
+
+check "each voice file has a sha256 pin" "64 64" "${#onnx_pin} ${#json_pin}"
+check "a fresh install succeeds" "exit 0" "$(run_piper)"
+check "and installs the served voice" "$good_onnx" "$(cat "$installed")"
+check_not_contains "the voice is fetched by commit, not from main" "/resolve/main/" "$(cat "$piper_tmp/curl.log")"
+check "a verified voice is not fetched again" "exit 0|" "$(run_piper)|$(cat "$piper_tmp/curl.log")"
+# Right size, wrong bytes: what a resume onto another revision's file leaves,
+# and what a size check calls complete.
+{ printf z; tail -c +2 "$served"; } >"$installed"
+check "a same-size file with the wrong hash is replaced" "exit 0|$good_onnx" "$(run_piper)|$(cat "$installed")"
+head -c 40 "$served" >"$installed"
+check "a truncated download is resumed, not fetched again" "exit 0|$good_onnx|1" \
+    "$(run_piper)|$(cat "$installed")|$(cut -d' ' -f1 "$piper_tmp/curl.log")"
+rm -f "$installed"
+serve "0000" es_AR-daniela-high.onnx
+check "a server that sends other bytes fails the install" "exit 1" "$(run_piper)"
+check_contains "and says it is the hash" "sha256" "$(cat "$piper_tmp/out")"
+rm -rf "$piper_tmp"
+
 echo "== audit watch =="
 watch_query="$("$repo/scripts/audit_watch.sh" --print)"
 check_contains "the audit watch prints each row once, by id" "select id," "$watch_query"

@@ -337,8 +337,8 @@ jobs:
       # THE MODELS ARE NOT ON PyPI, so uv.lock cannot pin them; the installers
       # do. install_vosk.sh pins vosk-model-small-es-0.42 (alphacephei.com) to
       # its exact byte count, install_piper.sh pins piper release 2023.11.14-2
-      # (github.com) and checks the es_AR-daniela-high voice (huggingface.co)
-      # against the server's Content-Length. Keying the cache on the two
+      # (github.com) and the es_AR-daniela-high voice (huggingface.co) to a
+      # commit and a sha256 per file. Keying the cache on the two
       # scripts means changing a pin there is what invalidates it — there is no
       # second copy of the model names in this file to drift.
       #
