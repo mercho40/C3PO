@@ -479,6 +479,57 @@ check_contains "the robot reached over Wi-Fi prints the cable fix, with no route
 check_not_contains "the session never says ✓ cable off the cable" "✓ cable" "$wifi_out"
 rm -rf "$session_stub"
 
+# The whole session against stub children: a copy of the script whose repo holds
+# a fake robot_tunnel.sh, and fake python3/bun/curl/lsof/sleep on PATH. Each long
+# child records its pid and idles. It runs in its own process group (perl's
+# setpgrp) because the session's teardown is `kill 0`, which would otherwise take
+# this test runner down with it.
+session_fake="$(mktemp -d)"
+mkdir -p "$session_fake/scripts" "$session_fake/bin"
+cp "$repo/scripts/robot_session.sh" "$session_fake/scripts/"
+# shellcheck disable=SC2016  # the $vars are for the stubs to expand, not us
+child='#!/bin/sh\necho $$ >>"$FAKE_PIDS"\nexec /bin/sleep 300\n'
+# shellcheck disable=SC2059  # the stub body is the format on purpose
+printf "$child" >"$session_fake/scripts/robot_tunnel.sh"
+# shellcheck disable=SC2059
+printf "$child" >"$session_fake/bin/python3"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\ncase "$*" in *smoke-agent*) exit "$FAKE_AGENT_RC" ;; esac\necho $$ >>"$FAKE_PIDS"\nexec /bin/sleep 300\n' \
+    >"$session_fake/bin/bun"
+printf '#!/bin/sh\nexit 0\n' >"$session_fake/bin/curl"
+printf '#!/bin/sh\nexit 1\n' >"$session_fake/bin/lsof"
+printf '#!/bin/sh\nexec /bin/sleep 0.1\n' >"$session_fake/bin/sleep"
+chmod +x "$session_fake/scripts/robot_tunnel.sh" "$session_fake/bin/"*
+
+# run_session <agent rc>: start it, wait for the table, TERM it, then echo the
+# output and how many children survived. Survivors are killed so nothing leaks.
+run_session() {
+    local out="$session_fake/out.$1" pids="$session_fake/pids.$1" pid survivors=0 p _
+    : >"$pids"
+    FAKE_PIDS="$pids" FAKE_AGENT_RC="$1" PATH="$session_fake/bin:$PATH" TMPDIR="$session_fake" \
+        C3PO_SSH_HOST='' perl -e 'setpgrp(0, 0); exec @ARGV' \
+        bash "$session_fake/scripts/robot_session.sh" >"$out" 2>&1 &
+    pid=$!
+    for _ in $(seq 1 100); do grep -q 'Ctrl-C stops all three' "$out" && break; /bin/sleep 0.1; done
+    kill -TERM "$pid" 2>/dev/null
+    for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; /bin/sleep 0.1; done
+    /bin/sleep 0.2
+    while read -r p; do
+        if kill -0 "$p" 2>/dev/null; then survivors=$((survivors + 1)); kill -9 "$p"; fi
+    done <"$pids"
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    printf '%s\nchildren started: %s\nsurvivors: %s\n' "$(cat "$out")" "$(wc -l <"$pids" | tr -d ' ')" "$survivors"
+}
+agent_ok_out="$(run_session 0)"
+check_contains "a model that makes a tool call is a passing agent row" "✓ agent" "$agent_ok_out"
+agent_bad_out="$(run_session 1)"
+check_contains "a model that does not is a failing agent row" "✗ agent" "$agent_bad_out"
+check_contains "the session started its three children" "children started: 3" "$agent_ok_out"
+check_contains "TERM leaves no child of the session running" "survivors: 0" "$agent_ok_out"
+check_contains "TERM leaves no child running after a failed row either" "survivors: 0" "$agent_bad_out"
+rm -rf "$session_fake"
+
 # ---------------------------------------------------------------------------
 # c3po_preflight: no SAFETY_CONFIRM_SECRET on the bridge is a blocker
 # ---------------------------------------------------------------------------
