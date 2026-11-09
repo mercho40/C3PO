@@ -8,9 +8,11 @@ import {
   PENDING_TTL_MS,
   clearPending,
   decideSpoken,
+  dropPending,
   listPending,
   normalizeUtterance,
   notePending,
+  takePending,
   type PendingConfirmation,
 } from "./confirmations";
 
@@ -92,5 +94,28 @@ describe("the pending list", () => {
     expect(listPending("u1", "chat_1", Date.now() + PENDING_TTL_MS)).toEqual(
       [],
     );
+  });
+});
+
+describe("two admins' cards", () => {
+  beforeEach(() => clearPending());
+
+  // The call id is the model's: two turns can mint the same one.
+  test("the same call id from two owners stays two cards, each its owner's", () => {
+    const { at: _, ...p } = call("call_1");
+    notePending(p);
+    notePending({ ...p, ownerId: "u2" });
+    expect(listPending("u1", "chat_1").map((q) => q.ownerId)).toEqual(["u1"]);
+    expect(listPending("u2", "chat_1").map((q) => q.ownerId)).toEqual(["u2"]);
+    // u2 takes and cancels only their own; u1's card is still there.
+    expect(takePending("call_1", "u2", "pick", p.args)).toMatchObject({
+      ownerId: "u2",
+    });
+    expect(takePending("call_1", "u2", "pick", p.args)).toBe("not_pending");
+    expect(dropPending("call_1", "u2", "pick")).toBeNull();
+    expect(listPending("u1", "chat_1").length).toBe(1);
+    expect(takePending("call_1", "u1", "pick", p.args)).toMatchObject({
+      ownerId: "u1",
+    });
   });
 });
