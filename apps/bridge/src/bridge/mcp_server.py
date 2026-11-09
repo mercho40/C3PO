@@ -3145,8 +3145,9 @@ async def look_around(
 
     THE ROBOT PHYSICALLY ROTATES: each step is a `turn` call with all of its
     checks (teleop conflict, pose, cancel). A full circle takes ~45 s. Stops at
-    the first failed turn or as soon as stop_everything is pressed. Refuses
-    without moving when perception is offline — turning blind updates nothing.
+    the first failed turn, or as soon as its task is cancelled (cancel_task,
+    soft_stop, stop_everything), pauses included. Refuses without moving when
+    perception is offline — turning blind updates nothing.
 
     Returns `new_objects` (first seen during this sweep), `seen_again`, and
     `forgotten` (remembered here but now looked at and absent), each with
@@ -3154,6 +3155,7 @@ async def look_around(
     """
     from bridge import estop
     from bridge.object_memory import get_object_memory
+    from bridge.skills.task_runtime import get_registry
 
     if _memory_pose()[0] is None:
         return {
@@ -3170,19 +3172,44 @@ async def look_around(
     steps = max(1, round(total_degrees / LOOK_STEP_DEG))
     step_rad = math.radians(total_degrees / steps)
 
+    # A registry task, so cancel_task, soft_stop and stop_everything reach the sweep,
+    # dwells included: a bare sleep heard none of them.
+    task = get_registry().create("look_around")
+
+    async def look() -> None:
+        try:
+            await asyncio.wait_for(task.cancel_event.wait(), dwell)
+        except TimeoutError:
+            pass
+
     turned = 0.0
     stopped: str | None = None
-    await asyncio.sleep(dwell)  # look before the first turn, too
-    for _ in range(steps):
-        if estop.last_stop_at() > started:
-            stopped = "stop_everything"
-            break
-        result = await turn(ctx, delta_yaw_radians=step_rad, timeout_s=30.0, tolerance_degrees=5.0)
-        if result.get("status") not in ("ok", "completed"):
-            stopped = f"turn_{result.get('status')}: {result.get('error') or result.get('phase')}"
-            break
-        turned += math.degrees(step_rad)
-        await asyncio.sleep(dwell)
+    try:
+        await look()  # look before the first turn, too
+        for _ in range(steps):
+            if estop.last_stop_at() > started:
+                stopped = "stop_everything"
+                break
+            if task.cancel_event.is_set():
+                break
+            result = await turn(
+                ctx, delta_yaw_radians=step_rad, timeout_s=30.0, tolerance_degrees=5.0
+            )
+            if result.get("status") not in ("ok", "completed"):
+                stopped = f"turn_{result.get('status')}: {result.get('error') or result.get('phase')}"
+                break
+            turned += math.degrees(step_rad)
+            await look()
+        if stopped is None and task.cancel_event.is_set():
+            stopped = "cancelled"
+    except BaseException:
+        stopped = stopped or "exception"
+        raise
+    finally:
+        # Never left "running": the registry reaps only finished tasks.
+        cancelled = task.cancel_event.is_set()
+        task.status = "cancelled" if cancelled else "failed" if stopped else "completed"
+        task.phase, task.ended_at = stopped or "done", time.time()
 
     pose, frame = _memory_pose()
     now = time.time()
@@ -3191,6 +3218,7 @@ async def look_around(
     return {
         "status": "stopped" if stopped else "ok",
         **({"stopped_reason": stopped} if stopped else {}),
+        "task_id": task.task_id,
         "turned_degrees": round(turned, 1),
         "new_objects": [e.describe(pose, frame, now) for e in after if e.id not in before],
         "seen_again": [
