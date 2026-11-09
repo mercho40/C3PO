@@ -251,6 +251,25 @@ def test_stop_everything_cancels_before_the_first_await():
     assert src.index("nav.cancel(None)") < src.index("await ")
 
 
+async def test_soft_stop_cancels_the_nav2_goal(rig, monkeypatch):
+    """A goal left active walks the robot again as soon as the gate is re-armed."""
+    from bridge.skills import stop_everything
+
+    sent = rig[3]
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", lambda **kwargs: (20, 20))
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
+    await stop_everything.soft_stop()
+    assert {"v": 1, "cancel": True} in sent
+
+
+def test_soft_stop_cancels_before_the_first_await():
+    from bridge.skills import stop_everything
+
+    src = pathlib.Path(stop_everything.__file__).read_text()
+    src = src.split("async def soft_stop(", 1)[-1].split("async def run(", 1)[0]
+    assert src.index("nav.cancel(None)") < src.index("await ")
+
+
 # --- landmarks: only a pose in a frame Nav2 owns ----------------------------
 
 

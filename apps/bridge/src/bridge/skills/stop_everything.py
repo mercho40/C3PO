@@ -26,10 +26,11 @@ still there for an operator who wants the robot limp.
 
 **Two tiers, and `soft_stop` is the first one on its own.** The zero burst
 (`_zero_burst`) is the soft stop: velocity to zero, the robot left standing.
-`soft_stop` runs just that tier — close the nav gate, cancel tasks, burst —
-for "stop walking" without a latch or a fall risk. `stop_everything` runs the
-same burst and keeps everything that makes it the e-stop: the cross-process
-sentinel, arms and hands let go, and Damp when the burst was not heard.
+`soft_stop` runs just that tier — close the nav gate, cancel the Nav2 goal and
+the tasks, burst — for "stop walking" without a latch or a fall risk.
+`stop_everything` runs the same burst and keeps everything that makes it the
+e-stop: the cross-process sentinel, arms and hands let go, and Damp when the
+burst was not heard.
 
 **Cancellation happens synchronously, before anything can block.** Every
 `cancel_event` is set at the top of `run()` with no awaits in between, so the
@@ -113,7 +114,8 @@ async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     """Halt the base and stay standing. Never damps, never latches.
 
     Same order as `run` for the parts it shares: gate first, synchronously,
-    so Nav2's next tick cannot undo the burst; then cancellation; then zeros.
+    so Nav2's next tick cannot undo the burst; then the Nav2 goal; then
+    cancellation; then zeros.
     Arms and hands are left alone — `stop_everything` is the stop for those.
     """
     try:
@@ -122,6 +124,16 @@ async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
         get_link().disable(reason="soft_stop")
     except Exception:
         log.exception("soft_stop.gate_close_failed")
+
+    # A goal left active walks the robot again the moment the gate is re-armed.
+    try:
+        from bridge.sdk.nav_link import get_nav_link
+
+        nav = get_nav_link()
+        if nav.can_publish:
+            nav.cancel(None)
+    except Exception:
+        log.exception("soft_stop.nav_cancel_failed")
 
     registry = get_registry()
     cancelled_ids = [t.task_id for t in registry.list_active() if registry.cancel(t.task_id)]

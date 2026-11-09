@@ -862,8 +862,8 @@ async def stop_everything() -> dict:
 async def soft_stop() -> dict:
     """Stop walking and stay standing — zero velocity, never goes limp.
 
-    Closes the Nav2 gate, cancels running tasks and sends a ~0.4 s zero-velocity
-    burst. Unlike stop_everything it does not latch the e-stop, does not let go
+    Closes the Nav2 gate, cancels the Nav2 goal and running tasks, and sends a
+    ~0.4 s zero-velocity burst. Unlike stop_everything it does not latch the e-stop, does not let go
     of the arms or hands, and never damps — so it cannot drop the robot. Use it
     to end a walk. If the result says `heard: false`, the robot did not
     acknowledge the stop: call stop_everything.
