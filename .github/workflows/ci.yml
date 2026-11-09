@@ -138,6 +138,23 @@ jobs:
         working-directory: apps/perception
         run: uv run --project . pytest -q
 
+      # THE DECODE-HEAD TESTS SKIP ABOVE: they need numpy, which the harness
+      # deliberately does not install. So the vision files that import only
+      # c3po_vision run again here under the vision image's own pins, python
+      # 3.8 and numpy 1.24.4 (vision/Dockerfile), and any skip fails the step.
+      # test_grounding.py is not among them: it imports the bridge (3.12).
+      - name: Vision tests under the container's python 3.8 and numpy 1.24.4
+        working-directory: apps/perception
+        run: |
+          uv run --no-project --python 3.8 --with numpy==1.24.4 --with pytest==8.3.5 \
+            python -m pytest -q -rs -p no:cacheprovider \
+            tests/test_decode_head.py tests/test_depth_and_tracking.py \
+            tests/test_realsense_source.py tests/test_stream.py | tee "$RUNNER_TEMP/vision.txt"
+          if grep -qE '[0-9]+ skipped' "$RUNNER_TEMP/vision.txt"; then
+            echo "a vision test skipped in the step that exists to run it" >&2
+            exit 1
+          fi
+
       # THE PYTHON 3.8 SYNTAX FLOOR IS LOAD-BEARING.
       #
       # `vision/c3po_vision` is COPIED into an l4t-jetpack:r35.3.1 image whose
