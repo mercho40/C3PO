@@ -17,6 +17,7 @@ intends to use and callers pass the parameter JSON.
 from __future__ import annotations
 
 import json
+import threading
 from typing import Final
 
 import structlog
@@ -62,27 +63,33 @@ class _G1Client(Client):
 
 
 _sport_client: _G1Client | None = None
+_sport_client_lock = threading.Lock()
 _arm_client: _G1Client | None = None
 
 
 def _get_sport_client() -> _G1Client:
     global _sport_client
-    if _sport_client is None:
-        # One client per service, registering every api_id we use on it —
-        # separate Client instances on the same service would each stand up
-        # their own request/response channels.
-        _sport_client = _G1Client(
-            "sport",
-            (
-                g1_protocol.API_ID_G1_STATE,
-                g1_protocol.API_ID_LOCO_SET_VELOCITY,
-                g1_protocol.API_ID_LOCO_SET_BALANCE_MODE,
-                g1_protocol.API_ID_LOCO_GET_FSM_ID,
-                g1_protocol.API_ID_LOCO_GET_FSM_MODE,
-            ),
-            timeout_s=SPORT_TIMEOUT_S,
-        )
-        _sport_client.Init()
+    # Locked, and published only once Init has run: the stop burst asks from
+    # several threads at once, and a racer got a second client or one whose
+    # api_ids were not registered yet.
+    with _sport_client_lock:
+        if _sport_client is None:
+            # One client per service, registering every api_id we use on it —
+            # separate Client instances on the same service would each stand up
+            # their own request/response channels.
+            client = _G1Client(
+                "sport",
+                (
+                    g1_protocol.API_ID_G1_STATE,
+                    g1_protocol.API_ID_LOCO_SET_VELOCITY,
+                    g1_protocol.API_ID_LOCO_SET_BALANCE_MODE,
+                    g1_protocol.API_ID_LOCO_GET_FSM_ID,
+                    g1_protocol.API_ID_LOCO_GET_FSM_MODE,
+                ),
+                timeout_s=SPORT_TIMEOUT_S,
+            )
+            client.Init()
+            _sport_client = client
     return _sport_client
 
 

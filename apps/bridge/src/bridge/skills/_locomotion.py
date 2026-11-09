@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
+import threading
 import time
 from typing import Any
 
@@ -191,20 +192,56 @@ async def stop_motion(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -
         await asyncio.sleep(LOOP_PERIOD_S)
 
 
+#: How long the stop burst keeps counting acks after its last setpoint. A reply
+#: slower than this counts as unheard. A guess until the real SET_VELOCITY ack
+#: latency is measured on the robot.
+STOP_ACK_GRACE_S = 0.3
+
+
 def stop_motion_sync(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> tuple[int, int]:
     """Blocking variant of stop_motion for sync skills (e.g. stop_everything).
 
     Returns `(sent, acked)`: how many zero setpoints went out, and how many the
     robot acknowledged with code 0. In sim nothing is acknowledged, so `acked`
     stays 0 there; only real-hardware callers should read it.
+
+    On real each setpoint waits for its ack on its own thread, so the burst
+    keeps its 50 Hz schedule however the robot answers. It used to wait in
+    line: SET_VELOCITY has SPORT_TIMEOUT_S (10 s) of headroom, so one hung reply
+    held the whole burst, it came back `acked == 0`, and stop_everything damped
+    a standing robot. Acks count until STOP_ACK_GRACE_S after the last
+    setpoint. Concurrent calls are safe on the vendor client: it matches each
+    reply to its request by id, and the walk loops already call it from
+    several threads.
     """
-    sent = acked = 0
+    codes: list[int | None] = []
+    errors: list[Exception] = []
+
+    def send_one() -> None:
+        try:
+            codes.append(send_velocity(0, 0, 0, height))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads: list[threading.Thread] = []
+    sent = 0
     deadline = time.monotonic() + duration_s
     while time.monotonic() < deadline:
         sent += 1
-        if send_velocity(0, 0, 0, height) == 0:
-            acked += 1
+        if SIM_MODE == "real":
+            thread = threading.Thread(target=send_one, name="stop-burst", daemon=True)
+            thread.start()
+            threads.append(thread)
+        else:
+            send_velocity(0, 0, 0, height)  # a publish: it never waits
         time.sleep(LOOP_PERIOD_S)
+    grace_end = time.monotonic() + STOP_ACK_GRACE_S
+    for thread in threads:
+        thread.join(max(0.0, grace_end - time.monotonic()))
+    acked = codes.count(0)
+    if errors and not acked:
+        # Nothing landed and something raised: stop_everything reports it and damps.
+        raise errors[0]
     return sent, acked
 
 

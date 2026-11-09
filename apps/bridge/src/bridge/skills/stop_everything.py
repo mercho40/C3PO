@@ -52,7 +52,7 @@ precisely when the operator was pressing it again. The RPCs now go through
 
 When it runs, the real-hardware Damp fallback retries up to REAL_DAMP_MAX_ATTEMPTS times on
 RPC failure (a dropped packet shouldn't mean a silently-failed e-stop), but
-stops retrying once REAL_DAMP_TOTAL_BUDGET_S has elapsed. The sim-mode path
+stops retrying, and waiting, once REAL_DAMP_TOTAL_BUDGET_S has elapsed. The sim-mode path
 (task cancellation + zero-velocity burst) stays fast and single-shot.
 
 Returns a list of cancelled task IDs and the duration of the stop burst.
@@ -83,7 +83,8 @@ REAL_DAMP_RETRY_DELAY_S = 0.15
 # Ceiling on the whole retry loop. Each attempt can sit on the sport client's
 # 10 s timeout, so attempt-count alone bounds this at ~30 s — far too long for
 # the call an operator makes when something is going wrong. Past this budget we
-# stop retrying and report honestly rather than keep trying in silence.
+# stop retrying, and stop waiting on the attempt in flight, and report honestly
+# rather than keep trying in silence.
 REAL_DAMP_TOTAL_BUDGET_S = 4.0
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
@@ -284,15 +285,24 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
         elif burst_acked == 0:
             damp_reason = "burst_unacknowledged"
     if damp_reason is not None:
+        from unitree_sdk2py.rpc.internal import RPC_ERR_CLIENT_API_TIMEOUT
+
         from bridge.sdk import g1_protocol, g1_rpc
 
         deadline = time.monotonic() + REAL_DAMP_TOTAL_BUDGET_S
         budget_exhausted = False
         for attempt in range(1, REAL_DAMP_MAX_ATTEMPTS + 1):
             real_damp_attempts = attempt
-            real_damp_rpc_code, _ = await asyncio.to_thread(
-                g1_rpc.call_sport, g1_protocol.Mode.DAMP
-            )
+            try:
+                # Waited on for what is left of the budget only: one attempt can
+                # sit on the sport client's 10 s timeout. Its thread finishes
+                # by itself; only the wait for the answer is given up.
+                real_damp_rpc_code, _ = await asyncio.wait_for(
+                    asyncio.to_thread(g1_rpc.call_sport, g1_protocol.Mode.DAMP),
+                    deadline - time.monotonic(),
+                )
+            except TimeoutError:
+                real_damp_rpc_code = RPC_ERR_CLIENT_API_TIMEOUT
             if real_damp_rpc_code == 0:
                 break
             log.warning(
