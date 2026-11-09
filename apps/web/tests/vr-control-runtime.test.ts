@@ -6,7 +6,8 @@
  * Pinned here: PARAR goes down the socket, every connect asks back for a fresh
  * (single-use) token, the Meta menu zeroes steering at once (C5), and head yaw
  * is held through the headset's own voice turn and until the head is centred
- * again (C8).
+ * again (C8), the grips chord is PARAR only after 300 ms, observe-only sends
+ * nothing but PARAR, and PARAR drops the arms.
  */
 
 import { describe, expect, mock, test } from "bun:test";
@@ -14,7 +15,11 @@ import { plugin } from "bun";
 import { readFileSync } from "node:fs";
 import { compileModule } from "svelte/compiler";
 import * as realXr from "../src/lib/webxr/xr-teleop";
-import type { XrSample, XrTeleopCallbacks } from "../src/lib/webxr/xr-teleop";
+import type {
+  XrButtons,
+  XrSample,
+  XrTeleopCallbacks,
+} from "../src/lib/webxr/xr-teleop";
 
 plugin({
   name: "svelte-runes",
@@ -87,6 +92,7 @@ class FakeSocket {
 type Frame = {
   enabled: boolean;
   head: { yaw: number };
+  arms?: boolean;
   estop?: boolean;
 };
 
@@ -104,12 +110,14 @@ async function harness() {
     location: g.location,
   };
   let tokens = 0;
+  const fetched: string[] = [];
   g.WebSocket = FakeSocket;
   g.window = new EventTarget();
   g.document = Object.assign(new EventTarget(), { visibilityState: "visible" });
   g.location = { hostname: "page", protocol: "http:" };
   g.fetch = async (input: unknown) => {
     const url = String(input instanceof Request ? input.url : input);
+    fetched.push(url);
     if (url.includes("/teleop/token"))
       return Response.json({ token: `tok${++tokens}` });
     return Response.json({});
@@ -117,26 +125,36 @@ async function harness() {
   FakeSocket.made = [];
   FakeXr.last = null;
 
-  const voice = { busy: false, cancelled: 0 };
+  const voice = { busy: false, cancelled: 0, talks: 0 };
   const ctl = new VrControl({
     posture: () => null,
     voice: {
       onItem: () => false,
-      onTalk: () => {},
+      onTalk: () => voice.talks++,
       cancelTalk: () => voice.cancelled++,
       busy: () => voice.busy,
     },
   });
   const unmount = ctl.mount();
 
-  const sample = (yaw: number): XrSample => ({
+  const sample = (
+    yaw: number,
+    buttons: Partial<XrButtons> = {},
+    walkAxis: XrSample["walkAxis"] = 0,
+  ): XrSample => ({
     yawRadians: yaw,
     yawErrorRadians: yaw,
     headPosition: [0, 1.6, 0],
     left: null,
     right: null,
-    walkAxis: 0,
-    buttons: { trigger: false, primary: false, secondary: false, grips: 0 },
+    walkAxis,
+    buttons: {
+      trigger: false,
+      primary: false,
+      secondary: false,
+      grips: 0,
+      ...buttons,
+    },
   });
 
   return {
@@ -151,6 +169,13 @@ async function harness() {
       await ctl.enterVr({} as HTMLElement);
     },
     look: (yaw: number) => FakeXr.last!.cb.onSample?.(sample(yaw)),
+    /** One XR sample with these buttons (and stick) held, head centred. */
+    hold: (buttons: Partial<XrButtons>, walkAxis: XrSample["walkAxis"] = 0) =>
+      FakeXr.last!.cb.onSample?.(sample(0, buttons, walkAxis)),
+    /** Every request the page made, by URL. */
+    fetched,
+    /** stop_everything requests: one per PARAR. */
+    stops: () => fetched.filter((u) => u.includes("/stop_everything/")).length,
     xr: () => FakeXr.last!,
     /** The newest frame the bridge got, after at least one send tick. */
     async frame(): Promise<Frame> {
@@ -271,6 +296,102 @@ describe("head yaw during the headset's own voice turn (C8)", () => {
       f = await h.frame();
       expect(f.head.yaw).toBe(0.5);
       expect(f.enabled).toBe(true);
+    } finally {
+      h.restore();
+    }
+  });
+});
+
+/** Date.now, under the test's control: the chord's hold is timed by it. */
+function clock() {
+  const real = Date.now;
+  let now = real();
+  Date.now = () => now;
+  return {
+    advance: (ms: number) => void (now += ms),
+    restore: () => void (Date.now = real),
+  };
+}
+
+describe("the in-headset PARAR chord (both grips)", () => {
+  test("299 ms is not PARAR, 301 ms is, once per hold; one grip never is", async () => {
+    const h = await harness();
+    const t = clock();
+    try {
+      await h.drive();
+      h.hold({ grips: 1 });
+      t.advance(1000);
+      h.hold({ grips: 1 });
+      h.hold({ grips: 2 }); // the chord starts here
+      t.advance(299);
+      h.hold({ grips: 2 });
+      await Bun.sleep(0);
+      expect(h.stops()).toBe(0);
+      t.advance(2);
+      h.hold({ grips: 2 });
+      await Bun.sleep(20); // the press settles, so a second one would go out
+      expect(h.stops()).toBe(1);
+      t.advance(1000);
+      h.hold({ grips: 2 }); // still the same hold
+      await Bun.sleep(0);
+      expect(h.stops()).toBe(1);
+    } finally {
+      t.restore();
+      h.restore();
+    }
+  });
+});
+
+describe("observe-only, run for real", () => {
+  test("the stick, the trigger, B/Y and the head command nothing; PARAR still does", async () => {
+    const h = await harness();
+    const t = clock();
+    try {
+      await h.ctl.connectStream();
+      h.socket().emit("open");
+      await h.ctl.enterVr({} as HTMLElement, true);
+      expect(h.socket().readyState).toBe(3); // closed on the way in
+      const sent = h.socket().sent.length;
+      h.hold({}); // everything released and at neutral first, so the next is a press
+      h.hold({ trigger: true, secondary: true }, 1);
+      h.look(0); // centred first, so a turned head would steer a commander
+      h.look(0.5);
+      await Bun.sleep(1000); // a local loop (900 ms) would have ticked
+      expect(h.fetched.filter((u) => u.includes("/skills/"))).toEqual([]);
+      expect(h.socket().sent.length).toBe(sent);
+      expect(h.ctl.walking).toBeNull();
+      expect(h.voice.talks).toBe(0);
+      await h.ctl.connectStream();
+      expect(FakeSocket.made.length).toBe(1);
+      // PARAR is never anyone's to withhold.
+      h.hold({ grips: 2 });
+      t.advance(301);
+      h.hold({ grips: 2 });
+      await Bun.sleep(0);
+      expect(h.stops()).toBe(1);
+    } finally {
+      t.restore();
+      h.restore();
+    }
+  });
+});
+
+describe("PARAR drops the arms", () => {
+  test("arms requested go false, and stay false once the latch is lifted", async () => {
+    const h = await harness();
+    try {
+      await h.drive();
+      h.ctl.toggleArms();
+      h.look(0);
+      expect((await h.frame()).arms).toBe(true);
+      h.estop.phase = "sending";
+      await Bun.sleep(0);
+      expect(h.ctl.armsRequested).toBe(false);
+      h.look(0);
+      expect((await h.frame()).arms).toBe(false);
+      h.estop.phase = "idle"; // the stop is over: nobody asked for the arms again
+      h.look(0);
+      expect((await h.frame()).arms).toBe(false);
     } finally {
       h.restore();
     }
