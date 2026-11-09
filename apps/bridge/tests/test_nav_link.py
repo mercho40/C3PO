@@ -415,3 +415,21 @@ async def test_a_new_goal_still_replaces_the_running_one(rig):
     await asyncio.sleep(0.05)
     server.cancel_navigation()
     await asyncio.sleep(0.05)
+
+
+async def test_operator_velocity_preempting_a_goal_cancels_it_in_nav2(rig, monkeypatch):
+    """11.6b: walk_velocity cancels navigate_to's task, and the goal must not stay active in Nav2."""
+    from bridge.sdk import g1_rpc
+    from bridge.skills import _locomotion, walk_velocity
+
+    server, nav, _gate, sent, _ = await _armed(rig)
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (0, ""))
+    out = await server.navigate_to(x=1.0, y=0.0)
+    nav._ingest_status(status(goal_rec(out["goal_id"], "active", dist=1.0)))
+
+    result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.1)
+
+    assert result["status"] == "completed"
+    assert get_registry().get(out["task_id"]).status == "cancelled"
+    assert {"v": 1, "cancel": True, "id": out["goal_id"]} in sent
