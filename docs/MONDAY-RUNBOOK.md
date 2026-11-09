@@ -78,26 +78,10 @@ Pass if both starts become `active`, the gate reports closed, `c3po status` read
 systemd-owned PID, and stopping the bridge never stops perception containers. Also confirm
 that `~/.local/bin` exposes `c3po` rather than the old lifecycle command set.
 
-If it fails, restore the prior checkout and the exact bridge unit that the new installer
-backed up. Do **not** run the old full-stack installer: it would restore the retired
-perception unit and repair timer.
-
-```bash
-previous="$(cut -d= -f2 ~/.c3po/previous-deploy)"
-git switch --detach "$previous"
-sudo install -o root -g root -m 0644 \
-  /var/lib/c3po/previous-c3po-bridge.service \
-  /etc/systemd/system/c3po-bridge.service
-sudo systemctl daemon-reload
-
-# Restore only that checkout's user commands, never its systemd automation.
-if [ -x ./scripts/robot/install_robot_scripts.sh ]; then
-  SKIP_LOGROTATE=1 ./scripts/robot/install_robot_scripts.sh
-elif [ -x ./scripts/robot/c3po ]; then
-  ln -sf "$PWD/scripts/robot/c3po" ~/.local/bin/c3po
-fi
-sudo systemctl restart c3po-bridge.service
-```
+If it fails, roll back as in `docs/OPERATIONS.md` §5 ("Rollback"), to the commit recorded
+above (`cut -d= -f2 ~/.c3po/previous-deploy`). Do **not** run the old full-stack installer:
+it would restore the retired perception unit and repair timer. That recipe says when to
+restore the backed-up unit instead.
 
 This rollback keeps perception foreground-only. Do not continue to sensor or motion tests
 after a rollback.

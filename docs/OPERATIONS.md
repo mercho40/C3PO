@@ -405,10 +405,50 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
   never follows a symlink into the user-writable checkout. A merge does not update a loaded
   unit until `c3po install` validates, copies and reloads it.
 
-Rollback uses the root-owned `/var/lib/c3po/previous-c3po-bridge.service` backup created
-before each install. Restore the checkout and that unit, then restore only the old user PATH
-commands—never run the old full-stack installer, because it would revive the retired
-perception unit and repair timer. Exact commands are in `MONDAY-RUNBOOK.md`.
+**Rollback.** This is the one recipe; the runbooks point here. Pushing an older commit does
+not work: git refuses it as a non-fast-forward on `incoming`, and `git merge --ff-only` with
+an older commit only says "Already up to date". The robot already has every commit it ran,
+so roll back on the robot itself:
+
+```bash
+# On the robot (ssh -t: install asks for the sudo password):
+cd ~/c3po
+git status --short                 # must print nothing; stop if it does
+git reflog -5                      # HEAD@{0} runs now; HEAD@{1} ran before the last deploy
+git checkout --detach 'HEAD@{1}'   # or a sha from that list
+./scripts/robot/c3po install && c3po restart
+```
+
+The checkout is now detached, and its branch still points at the newer commit. To go
+forward again, push the fix to `incoming` as above, then on the robot:
+
+```bash
+cd ~/c3po && git checkout - && git status -sb   # back on the branch; check its name
+git merge --ff-only incoming && ./scripts/robot/c3po install && c3po restart
+```
+
+`c3po install` from the older checkout installs that checkout's unit, after backing up the
+current one to the root-owned `/var/lib/c3po/previous-c3po-bridge.service`. Every commit
+since be8001b (2026-08-22) has this installer. Never run the installer of an older commit:
+it is the old full-stack one, and it would revive the retired perception unit and repair
+timer. For a target that old, check it out as above, then restore the backed-up unit and
+only that checkout's user commands:
+
+```bash
+sudo install -o root -g root -m 0644 \
+  /var/lib/c3po/previous-c3po-bridge.service \
+  /etc/systemd/system/c3po-bridge.service
+sudo systemctl daemon-reload
+if [ -x ./scripts/robot/install_robot_scripts.sh ]; then
+  SKIP_LOGROTATE=1 ./scripts/robot/install_robot_scripts.sh
+elif [ -x ./scripts/robot/c3po ]; then
+  ln -sf "$PWD/scripts/robot/c3po" ~/.local/bin/c3po
+fi
+sudo systemctl restart c3po-bridge.service
+```
+
+A rollback leaves the perception images as they are. `c3po perception build` on the
+older checkout rebuilds them, if the rollback is about perception code.
 
 ### When the robot ignores everything
 

@@ -330,11 +330,9 @@ headset's PARAR button and the console dispatch the same call.
 
 ## Rollback
 
-The bridge is a git checkout, so rollback is a checkout:
-
-```bash
-cd ~/c3po && git checkout <sha> && c3po restart
-```
+The bridge is a git checkout, so rollback is a checkout on the robot, then
+`c3po install` and `c3po restart`. Use the exact commands in `docs/OPERATIONS.md`
+§5 ("Rollback"): pushing an older commit to `incoming` does not work.
 
 If the bridge will not start at all, `bridge_sync` now refuses to start it when
 the Unitree SDK patch fails to apply — deliberately. An unpatched SDK gives a

@@ -64,7 +64,7 @@ setpoint lasting up to 3 s. Every `gesture` tool with danger ≠ low is T2
 | Nav2 too slow on the gantry with no detector   | `SAFETY_STALE_POLICY=ignore`, gantry only. `stop` is the strict option.                                     |
 | T2 confirmation in the way                     | `SAFETY_T2_CONFIRM=off` (the reach block still applies)                                                     |
 | `walk_velocity` stutters (a slow ack at 20 Hz) | Look for `locomotion.set_velocity.rpc_error` in the bridge log. To undo: revert the `walk_velocity` commit. |
-| Anything else                                  | Deploy `c8a17fd` (this branch's base).                                                                      |
+| Anything else                                  | Roll back to `c8a17fd` (this branch's base) as in `docs/OPERATIONS.md` §5 ("Rollback").                     |
 
 The caps can be set lower without risk: `SAFETY_MAX_LINEAR_MPS`, `SAFETY_MAX_YAW_RPS`.
 Raise them only after measuring.
