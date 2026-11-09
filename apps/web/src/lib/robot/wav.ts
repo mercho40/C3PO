@@ -29,6 +29,30 @@ export function downsample(
   return out;
 }
 
+/**
+ * Drop the silence before and after the speech: B/Y goes down before the
+ * first word and comes up after the last, and every second of that is
+ * uploaded and transcribed for nothing. `margin` seconds stay on either side
+ * so word edges are not clipped. Empty when nothing reaches `level` (peak,
+ * about -40 dBFS: the mic runs with noise suppression on).
+ */
+export function trimSilence(
+  samples: Float32Array,
+  rate = TARGET_RATE,
+  level = 0.01,
+  margin = 0.2,
+): Float32Array {
+  const loud = (v: number) => Math.abs(v) >= level;
+  const first = samples.findIndex(loud);
+  if (first < 0) return samples.subarray(0, 0);
+  const last = samples.findLastIndex(loud);
+  const pad = Math.round(margin * rate);
+  return samples.subarray(
+    Math.max(0, first - pad),
+    Math.min(samples.length, last + 1 + pad),
+  );
+}
+
 /** Concatenate the recorder's chunks. */
 export function concat(chunks: readonly Float32Array[]): Float32Array {
   const out = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
