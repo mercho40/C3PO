@@ -63,14 +63,16 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any, TypeVar
 
 import structlog
 
+from bridge import estop
 from bridge.estop import signal_stop
 from bridge.skills._locomotion import DEFAULT_HEIGHT, stop_motion_sync
 from bridge.skills.task_runtime import get_registry
@@ -182,13 +184,18 @@ async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     }
 
 
-async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
-    """Cancel all running tasks and send a zero-velocity burst."""
+async def run(height: float = DEFAULT_HEIGHT, *, signal: bool = True) -> dict[str, Any]:
+    """Cancel all running tasks and send a zero-velocity burst.
+
+    `signal=False` runs a stop another process already stamped (see
+    `watch_foreign_stops`) without stamping it again: a newer stamp than the
+    one the operator saw makes /safety/ack refuse with 409.
+    """
     # Cross-process first, and before any await: the teleop stream runs in its
     # own process with its own TaskRegistry, so the cancellation below cannot
     # reach it. Found on the robot when PARAR left it turning for another 27
     # degrees. See bridge/estop.py.
-    sentinel_written = signal_stop()
+    sentinel_written = signal_stop() if signal else None
     from bridge import safety
 
     safety.clear_confirmations("stop_everything")
@@ -389,3 +396,52 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
         # sentinel file and never heard this stop. A driving headset may still drive.
         "sentinel_written": sentinel_written,
     }
+
+
+#: How often the MCP process looks for a stop another process signalled.
+FOREIGN_STOP_POLL_S = 0.1
+
+
+async def watch_foreign_stops() -> None:
+    """Run the stop here for a PARAR another process signalled, until cancelled.
+
+    The headset's PARAR down the teleop socket only stamps the sentinel
+    (teleop/server.py `raise_stop`). That latches this process, but an arm
+    move, a walk_to or a Nav2 monitor already running here went on, and with
+    apps/back down nothing else stops them. A stamp more than 1 ms newer than
+    this process's own last stop is someone else's. A stamp from before the
+    watcher started is already latched and is not run again, and each stamp
+    is run once, failed or not: retrying it would resend Damp every poll.
+    """
+    seen = estop._file_stop_at()
+    while True:
+        await asyncio.sleep(FOREIGN_STOP_POLL_S)
+        stamp = estop._file_stop_at()
+        if stamp <= seen:
+            continue
+        seen = stamp
+        if stamp <= estop._signalled_at + 1e-3:
+            continue  # this process's own stop: its run() did the work
+        log.warning("stop_everything.foreign_stop", stamped_at=stamp)
+        try:
+            await run(signal=False)
+        except Exception:
+            log.exception("stop_everything.foreign_stop_failed")
+
+
+@contextlib.asynccontextmanager
+async def watching_foreign_stops() -> AsyncIterator[None]:
+    """`watch_foreign_stops` for as long as the server serves.
+
+    Process-wide, not FastMCP's lifespan: over streamable HTTP that is entered
+    once per MCP session, so with apps/back down there would be no watcher.
+    Not in stub, where the stop_everything tool itself does nothing.
+    """
+    if SIM_MODE == "stub":
+        yield
+        return
+    watcher = asyncio.create_task(watch_foreign_stops())
+    try:
+        yield
+    finally:
+        watcher.cancel()
