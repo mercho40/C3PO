@@ -217,16 +217,23 @@ jobs:
       # unbound name in one of those surfaces at the worst possible moment.
       - name: ruff
         working-directory: apps/bridge
-        run: uv run ruff check src tests scripts
+        run: >
+          uv run ruff check src tests scripts
+          ../../scripts/robot_internet.py ../../scripts/robot/lidar_service.py
 
       # `scripts` too, for the same reason ruff covers it: those are the files
       # somebody runs standing next to a humanoid with an e-stop in their hand.
       # It found two real typing faults in `arm_sign_check.py` the first time
       # it ran — a driver variable holding two incompatible types on what
       # looked like one path, in the script that MOVES THE ARMS.
+      #
+      # The two root robot scripts too: robot_internet.py runs on the Mac and
+      # lidar_service.py on the robot with this venv, and neither had a check.
       - name: mypy
         working-directory: apps/bridge
-        run: uv run mypy src scripts
+        run: >
+          uv run mypy src scripts
+          ../../scripts/robot_internet.py ../../scripts/robot/lidar_service.py
 
       - name: pytest
         working-directory: apps/bridge
