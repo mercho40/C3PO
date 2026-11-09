@@ -1559,6 +1559,7 @@ async def gesture(
             "stale_lowstate",
             "gesture_contention",
             "settle_timeout",
+            "teleop_active",
         ],
     )
 )
@@ -3748,6 +3749,7 @@ _ARM_META: dict[str, Any] = dict(
         "base_moving",
         "settle_timeout",
         "hand_unavailable",
+        "teleop_active",
     ],
 )
 #: pick and place also refuse on the robot until C3PO_ALLOW_PICK=1 (skills/manipulation.py).

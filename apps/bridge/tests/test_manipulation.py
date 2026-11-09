@@ -532,3 +532,35 @@ async def test_the_fence_leaves_stub_planning_alone(monkeypatch):
     see(monkeypatch, cup())
     out = await m.pick("cup")
     assert out["phase"] == "stub" and out["result"]["plan"]
+
+
+# --- the headset wins (A4): no second rt/arm_sdk commander from this process ------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["pick", "reach", "handover"])
+async def test_arm_skills_refuse_while_the_headset_drives(monkeypatch, real, skill):
+    from bridge import estop
+
+    arm, _hand = real
+    see(monkeypatch, cup())
+    estop.renew_teleop_lease()
+    out = await {
+        "pick": lambda: m.pick("cup"),
+        "reach": lambda: m.reach("right", (0.30, -0.15, 0.10)),
+        "handover": lambda: m.handover("right"),
+    }[skill]()
+    assert out["phase"] == "refused:teleop_active" and out["error"] == "teleop_active"
+    assert not arm.engaged and arm.commands == []
+
+
+@pytest.mark.asyncio
+async def test_the_headset_taking_over_mid_pick_aborts_it(monkeypatch, real):
+    from bridge import estop
+
+    arm, _hand = real
+    see(monkeypatch, cup())
+    arm.on_command = estop.renew_teleop_lease
+    out = await m.pick("cup")
+    assert out["phase"] == "aborted:teleop_active"
+    assert arm.release_requested and len(arm.commands) == 1

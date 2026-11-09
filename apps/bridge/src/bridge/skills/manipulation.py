@@ -15,7 +15,8 @@ Added here, because these skills move the arm without a human choosing each join
 
 * every waypoint must solve IK (within 1 cm, fingers within 10°) AND sit inside WORKSPACE,
   or nothing moves at all;
-* a per-tick abort: a person inside arm's reach (except `handover`), or the base walking;
+* a per-tick abort: a person inside arm's reach (except `handover`), the base walking, or the
+  headset driving (the teleop lease; that refuses the start too);
 * grasp targets come only from a detection younger than FRESH_DETECTION_S, never from object
   memory: memory is where the wallet *was*, and a grasp needs where it *is*.
 
@@ -37,7 +38,7 @@ from typing import Any, Literal
 
 import structlog
 
-from bridge import kinematics, safety
+from bridge import estop, kinematics, safety
 from bridge.skills import arm_pose
 from bridge.skills.task_runtime import get_registry
 from bridge.teleop import arm_sdk, hands
@@ -501,6 +502,9 @@ def choose_side(requested: str, p: tuple[float, float, float]) -> Side:
 
 
 def _abort_reason(allow_person: bool) -> str | None:
+    if estop.teleop_is_driving():
+        # The headset (its own process) drives the base or holds the arms on rt/arm_sdk.
+        return "teleop_active"
     if safety.base_moving():
         return "base_moving"
     if safety.PERSON_RULE and not allow_person:
