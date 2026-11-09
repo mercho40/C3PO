@@ -594,6 +594,23 @@ check_contains "a set confirm secret passes" "SAFETY_CONFIRM_SECRET is set —" 
 blockers_in() { printf '%s' "$1" | grep -oE '[0-9]+ blocker' | grep -oE '[0-9]+'; }
 check "an unset confirm secret adds exactly one blocker" \
     "$(( $(blockers_in "$set_out") + 1 ))" "$(blockers_in "$unset_out")"
+
+# Person rule off, geofence off and a standing stop warn, and block nothing (a
+# decision about what should block is still open).
+loose_out="$(PATH="$preflight_stub:$PATH" FAKE_STATUS='{"person_rule":false,"confirm_configured":true,"geofence":{"radius_m":null},"stop_standing":true}' \
+    bash "$repo/scripts/robot/c3po_preflight" 2>&1 || true)"
+tight_out="$(PATH="$preflight_stub:$PATH" FAKE_STATUS='{"person_rule":true,"confirm_configured":true,"geofence":{"radius_m":3.0},"stop_standing":false}' \
+    bash "$repo/scripts/robot/c3po_preflight" 2>&1 || true)"
+check_contains "a person rule that is off is a warning" "the person rule is OFF" "$loose_out"
+check_contains "a geofence that is off is a warning" "the geofence is OFF" "$loose_out"
+check_contains "a standing stop is a warning" "a PARAR is still standing" "$loose_out"
+for needle in "the person rule is OFF" "the geofence is OFF" "a PARAR is still standing"; do
+    check_not_contains "no '$needle' when it is not so" "$needle" "$tight_out"
+done
+warnings_in() { printf '%s' "$1" | grep -oE '[0-9]+ warning' | grep -oE '[0-9]+'; }
+check "the three add three warnings" \
+    "$(( $(warnings_in "$tight_out") + 3 ))" "$(warnings_in "$loose_out")"
+check "and no blocker" "$(blockers_in "$tight_out")" "$(blockers_in "$loose_out")"
 rm -rf "$preflight_stub"
 
 echo "== audit watch =="
