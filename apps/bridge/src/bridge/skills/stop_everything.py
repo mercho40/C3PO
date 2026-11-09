@@ -95,18 +95,18 @@ DAMP_POLICY = os.environ.get("STOP_EVERYTHING_DAMP", "on_failure").strip().lower
 
 async def _zero_burst(height: float) -> tuple[int, int, str | None, float]:
     """The soft-stop tier: `(sent, acked, error, duration_s)` of a zero burst."""
-    start = time.time()
+    start = time.monotonic()
     try:
         sent, acked = await asyncio.to_thread(
             stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S
         )
-        return sent, acked, None, time.time() - start
+        return sent, acked, None, time.monotonic() - start
     except Exception as exc:
         # Not fatal, and not the end of the stop: a burst that raised is a
         # burst the robot may never have heard, which is exactly when the
         # Damp fallback in `run` has to run. It used to propagate and skip it.
         log.exception("stop_everything.burst_failed")
-        return 0, 0, f"{type(exc).__name__}: {exc}", time.time() - start
+        return 0, 0, f"{type(exc).__name__}: {exc}", time.monotonic() - start
 
 
 async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
@@ -274,7 +274,7 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     if damp_reason is not None:
         from bridge.sdk import g1_protocol, g1_rpc
 
-        deadline = time.time() + REAL_DAMP_TOTAL_BUDGET_S
+        deadline = time.monotonic() + REAL_DAMP_TOTAL_BUDGET_S
         budget_exhausted = False
         for attempt in range(1, REAL_DAMP_MAX_ATTEMPTS + 1):
             real_damp_attempts = attempt
@@ -288,7 +288,7 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
                 attempt=attempt,
                 rpc_code=real_damp_rpc_code,
             )
-            if time.time() >= deadline:
+            if time.monotonic() >= deadline:
                 # One slow attempt can consume the whole budget on its own.
                 budget_exhausted = True
                 log.warning(

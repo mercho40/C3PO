@@ -364,3 +364,23 @@ async def test_outside_real_mode_the_stop_does_not_touch_the_speaker(monkeypatch
 
     assert calls == []
     assert result["speech_stop_rpc_code"] is None
+
+
+async def test_a_wall_clock_step_does_not_cut_the_damp_retries_short(monkeypatch):
+    """The robot has no RTC: NTP steps its wall clock forward after boot.
+
+    A deadline on time.time() then read as long past after one failed attempt,
+    and the burst's duration came out as hours.
+    """
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    _burst_unacknowledged(monkeypatch)
+    monkeypatch.setattr(stop_everything, "REAL_DAMP_RETRY_DELAY_S", 0.0)
+    real_time = time.time
+    step = iter(range(0, 10**6, 3600))
+    monkeypatch.setattr(time, "time", lambda: real_time() + next(step))
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: (3104, None))
+
+    result = await stop_everything.run()
+
+    assert result["real_damp_fallback_attempts"] == stop_everything.REAL_DAMP_MAX_ATTEMPTS
+    assert result["stop_burst_duration_s"] < 1.0
