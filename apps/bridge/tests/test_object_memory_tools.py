@@ -221,3 +221,19 @@ def test_a_failing_listener_does_not_cost_the_report():
     link.on_report = boom
     assert link._ingest_report(_report())
     assert link.latest_report()[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_look_around_is_refused_while_a_walk_runs(monkeypatch, mem):
+    from bridge.skills.task_runtime import get_registry
+
+    fake = FakeTurn()
+    monkeypatch.setattr(server, "turn", fake)
+    walking = get_registry().create("walk_to")
+    try:
+        out = await server.look_around(None, total_degrees=360)
+    finally:
+        walking.status = "completed"
+    assert (out["status"], out["error"]) == ("failed", "walk_task_active")
+    assert fake.calls == []
+    assert _look_around_tasks() == []

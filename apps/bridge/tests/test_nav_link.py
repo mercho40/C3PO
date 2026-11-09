@@ -393,3 +393,25 @@ async def test_refused_while_the_arms_are_held(rig, monkeypatch):
     assert (out["status"], out["reason"]) == ("refused", "arm_held")
     assert "release_arm_control" in out["how_to_fix"]
     assert sent == []
+
+
+async def test_refused_while_another_walk_runs(rig):
+    server, _nav, _gate, sent, _ = await _armed(rig)
+    walking = get_registry().create("walk_to")
+    try:
+        out = await server.navigate_to(x=1.0, y=0.0)
+    finally:
+        walking.status = "completed"
+    assert (out["status"], out["reason"]) == ("refused", "walk_task_active")
+    assert sent == []
+
+
+async def test_a_new_goal_still_replaces_the_running_one(rig):
+    server, nav, _gate, sent, _ = await _armed(rig)
+    first = await server.navigate_to(x=1.0, y=0.0)
+    second = await server.navigate_to(x=2.0, y=0.0)
+    assert second["status"] == "started"
+    assert get_registry().get(first["task_id"]).cancel_event.is_set()
+    await asyncio.sleep(0.05)
+    server.cancel_navigation()
+    await asyncio.sleep(0.05)

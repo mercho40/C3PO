@@ -41,14 +41,20 @@ from bridge.skills.task_runtime import get_registry
 log = structlog.get_logger(__name__)
 
 RETARGET_PERIOD_S = 1.0
-# The skills behind the no_active_walk_task precondition: each loops velocity setpoints.
-WALK_SKILLS = ("walk_to", "turn", "walk_velocity")
+# The skills behind the no_active_walk_task precondition: each puts velocity on the base,
+# navigate_to through Nav2's cmd_vel and look_around through its turns.
+WALK_SKILLS = ("walk_to", "turn", "walk_velocity", "navigate_to", "look_around")
 
 
-def active_walk() -> str | None:
-    """The task_id of a walk already running, or None."""
+def active_walk(ignore: tuple[str, ...] = ()) -> str | None:
+    """The task_id of a walk already running, skills in `ignore` aside, or None."""
     return next(
-        (t.task_id for t in get_registry().list_active() if t.skill_name in WALK_SKILLS), None
+        (
+            t.task_id
+            for t in get_registry().list_active()
+            if t.skill_name in WALK_SKILLS and t.skill_name not in ignore
+        ),
+        None,
     )
 
 

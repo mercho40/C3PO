@@ -266,3 +266,30 @@ async def test_a_turn_is_refused_while_the_arms_are_held(monkeypatch):
 
     assert (result["status"], result["phase"]) == ("failed", "arm_held")
     assert sampler._i == 0
+
+
+@pytest.mark.asyncio
+async def test_a_turn_is_refused_while_another_walk_runs(monkeypatch):
+    sampler = _FakeSampler([_pose(0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    walking = get_registry().create("walk_to")
+    try:
+        result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=0.05)
+    finally:
+        walking.status = "completed"  # no skill is looping on it to end it
+
+    assert (result["status"], result["phase"]) == ("failed", "walk_task_active")
+    assert walking.task_id in result["error"]
+    assert sampler._i == 0
+
+
+@pytest.mark.asyncio
+async def test_look_around_may_turn_inside_its_own_sweep(monkeypatch):
+    sampler = _FakeSampler([_pose(0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    sweep = get_registry().create("look_around")
+    try:
+        result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=0.05)
+    finally:
+        sweep.status = "completed"
+    assert result["phase"] == "timeout"  # it ran

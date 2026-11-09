@@ -2189,6 +2189,10 @@ _NAV_FIX = {
         "The arms are held on rt/arm_sdk (move_arm, pick or reach), and walking under "
         "arm_sdk weight is untried on this robot. Call release_arm_control first."
     ),
+    "walk_task_active": (
+        "Another walk (walk_to, turn, walk_velocity or look_around) is driving the base; "
+        "Nav2 would be a second commander. cancel_task it or wait, then try again."
+    ),
 }
 
 
@@ -2197,12 +2201,15 @@ def _nav_refusal() -> dict | None:
     from bridge.sdk.nav_link import get_nav_link
     from bridge.sdk.perception_link import get_link
     from bridge.skills._locomotion import arm_hold_conflict, teleop_conflict
+    from bridge.skills.walk_to import active_walk
 
     status, _ = get_nav_link().latest_status()
     if teleop_conflict() is not None:
         reason = "teleop_active"
     elif arm_hold_conflict() is not None:
         reason = "arm_held"
+    elif active_walk(ignore=("navigate_to",)) is not None:  # a new goal replaces the old one
+        reason = "walk_task_active"
     elif status is None:
         reason = "nav_relay_offline"
     elif not status.get("nav2_ready"):
@@ -3156,12 +3163,20 @@ async def look_around(
     from bridge import estop
     from bridge.object_memory import get_object_memory
     from bridge.skills.task_runtime import get_registry
+    from bridge.skills.walk_to import active_walk
 
     if _memory_pose()[0] is None:
         return {
             "status": "failed",
             "error": "perception_offline",
             "message": "No fresh perception report with a pose: nothing to look with.",
+            "env": SIM_MODE,
+        }
+    if (running := active_walk()) is not None:
+        return {
+            "status": "failed",
+            "error": "walk_task_active",
+            "message": f"walk task {running} is still running; cancel_task it or wait.",
             "env": SIM_MODE,
         }
 

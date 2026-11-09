@@ -281,3 +281,16 @@ async def test_a_walk_is_refused_while_the_arms_are_held(monkeypatch):
     assert (result["status"], result["phase"]) == ("failed", "arm_held")
     assert "release_arm_control" in result["error"]
     assert sampler._i == 0  # refused before reading a pose, let alone moving
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["navigate_to", "look_around"])
+async def test_a_walk_is_refused_while_nav2_or_a_sweep_drives(monkeypatch, skill):
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    other = get_registry().create(skill)
+    try:
+        result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=0.05)
+    finally:
+        other.status = "completed"
+    assert (result["status"], result["phase"]) == ("failed", "walk_task_active")

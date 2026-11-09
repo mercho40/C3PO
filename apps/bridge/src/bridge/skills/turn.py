@@ -67,8 +67,19 @@ async def run(
     Returns the full task dict.
     """
     from bridge.sdk.state import get_sampler
+    from bridge.skills.walk_to import active_walk
 
+    # look_around turns through this. A turn started in its pause makes the sweep's
+    # next turn refuse instead, so the two never steer at once.
+    running = active_walk(ignore=("look_around",))  # before create(): the new task is a walk too
     task = get_registry().create("turn")
+    if running is not None:
+        task.status = "failed"
+        task.phase = "walk_task_active"
+        task.error = f"walk task {running} is still running; cancel_task it or wait"
+        task.ended_at = time.time()
+        log.warning("turn.walk_task_active", task_id=task.task_id, running=running)
+        return task.to_dict()
 
     # Checked before the sampler is built, because building one initialises
     # DDS — and a skill that is about to refuse has no business opening a
