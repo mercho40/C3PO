@@ -684,6 +684,22 @@ check "a server that sends other bytes fails the install" "exit 1" "$(run_piper)
 check_contains "and says it is the hash" "sha256" "$(cat "$piper_tmp/out")"
 rm -rf "$piper_tmp"
 
+# ---------------------------------------------------------------------------
+# .gitignore: only apps/back's compiled binary is called `server`
+# ---------------------------------------------------------------------------
+echo "== gitignore =="
+# A source directory named server (SvelteKit's $lib/server) used to be ignored
+# everywhere, so a file in it stayed off git without a word.
+ignored() { git -C "$repo" check-ignore -q --no-index "$1" && echo ignored || echo tracked; }
+if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    check "apps/back's compiled server binary is ignored" ignored "$(ignored apps/back/server)"
+    for path in apps/web/src/lib/server/auth.ts apps/back/src/server/index.ts packages/x/server/a.ts; do
+        check "a source file under $path is not ignored" tracked "$(ignored "$path")"
+    done
+else
+    printf '  – skipped: not a git checkout\n'
+fi
+
 echo "== audit watch =="
 watch_query="$("$repo/scripts/audit_watch.sh" --print)"
 check_contains "the audit watch prints each row once, by id" "select id," "$watch_query"
