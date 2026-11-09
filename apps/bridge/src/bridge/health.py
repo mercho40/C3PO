@@ -88,11 +88,14 @@ def assess(
     gemm_containers: Sequence[str],
     port: int = 8001,
     bind_hosts: Sequence[str] = (),
+    unit_enabled: Optional[str] = None,
 ) -> Report:
     """Pure. Probe results in, a report out.
 
     `bind_hosts` are the addresses the bridge is actually listening on, read
     from the socket rather than from configuration — see `_bind_hosts`.
+    `unit_enabled` is `systemctl is-enabled c3po-bridge.service`; None or ""
+    when it could not be asked, which reports nothing.
     """
     checks: List[Check] = []
 
@@ -148,6 +151,22 @@ def assess(
         )
     elif bind_hosts:
         checks.append(Check("bridge bind", "{} (loopback)".format(", ".join(bind_hosts))))
+
+    # A bridge that is up now but not enabled is gone after the next reboot,
+    # and with it stop_everything. install_stack.sh enables it; nothing else
+    # should have to.
+    if unit_enabled == "enabled":
+        checks.append(Check("bridge at boot", "enabled"))
+    elif unit_enabled:
+        checks.append(
+            Check(
+                "bridge at boot",
+                "{} — no bridge after a reboot: sudo systemctl enable c3po-bridge".format(
+                    unit_enabled
+                ),
+                problem=True,
+            )
+        )
 
     if gate is None:
         checks.append(Check("bridge http", "NOT ANSWERING on :{}".format(port), problem=True))
@@ -312,6 +331,7 @@ def probe_and_assess(
     docker_ps: Callable[[str], Sequence[str]],
     port: int = 8001,
     list_binds: Optional[Callable[[int], Sequence[str]]] = None,
+    unit_enabled: Optional[Callable[[], str]] = None,
 ) -> Report:
     """Run the probes, then assess. The only place the two are joined."""
     return assess(
@@ -338,6 +358,7 @@ def probe_and_assess(
         gemm_containers=docker_ps("^gemm"),
         port=port,
         bind_hosts=list_binds(port) if list_binds else (),
+        unit_enabled=unit_enabled() if unit_enabled else None,
     )
 
 
@@ -425,6 +446,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ],
         port=port,
         list_binds=_bind_hosts,
+        unit_enabled=lambda: _run(["systemctl", "is-enabled", "c3po-bridge.service"]).strip(),
     )
 
     print(render(report, colour=sys.stdout.isatty()))

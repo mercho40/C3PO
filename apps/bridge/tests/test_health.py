@@ -410,3 +410,40 @@ def test_a_wildcard_alongside_loopback_still_reports_the_wildcard():
     report = assess(gate_json=CLOSED, bind_hosts=["127.0.0.1", "0.0.0.0"], **BASE)
     assert "bridge bind" in problem_names(report)
     assert "0.0.0.0" in detail_for(report, "bridge bind")
+
+
+# --- enabled at boot --------------------------------------------------------
+
+
+def test_an_enabled_unit_is_reported_and_is_not_a_problem():
+    report = assess(gate_json=CLOSED, unit_enabled="enabled", **BASE)
+    assert detail_for(report, "bridge at boot") == "enabled"
+    assert report.healthy
+
+
+def test_a_disabled_unit_is_a_problem_even_while_the_bridge_runs():
+    # Up now, gone after the next reboot, and stop_everything with it.
+    for state in ("disabled", "masked"):
+        report = assess(gate_json=CLOSED, unit_enabled=state, **BASE)
+        assert "bridge at boot" in problem_names(report)
+        assert "systemctl enable" in detail_for(report, "bridge at boot")
+
+
+def test_an_unaskable_unit_state_says_nothing():
+    for state in (None, ""):
+        report = assess(gate_json=CLOSED, unit_enabled=state, **BASE)
+        assert "bridge at boot" not in check_names(report)
+
+
+def test_status_asks_systemd_whether_the_bridge_is_enabled(monkeypatch, capsys):
+    calls = []
+
+    def run(argv):
+        calls.append(list(argv))
+        return "disabled\n" if "is-enabled" in argv else ""
+
+    monkeypatch.setattr(health, "_run", run)
+    monkeypatch.setattr(health, "_http_get", lambda url: None)
+    assert health.main([]) == 1
+    assert ["systemctl", "is-enabled", "c3po-bridge.service"] in calls
+    assert "no bridge after a reboot" in capsys.readouterr().out

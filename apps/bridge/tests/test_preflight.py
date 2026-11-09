@@ -31,6 +31,7 @@ from bridge.preflight import (
     is_back_health,
     port_of,
     port_owner_finding,
+    teleop_secret_finding,
     verdict,
 )
 
@@ -526,3 +527,48 @@ def test_the_confirm_secret_is_read_in_buns_env_file_order():
         ).level
         == BAD
     )
+
+
+# --- the teleop socket's secret --------------------------------------------
+
+
+def test_a_token_required_by_the_robot_and_held_by_back_passes():
+    assert teleop_secret_finding(401, back_has_secret=True).level == OK
+
+
+def test_a_token_required_by_the_robot_but_unknown_to_back_is_a_blocker():
+    finding = teleop_secret_finding(401, back_has_secret=False)
+    assert finding.level == BAD
+    assert "apps/back/.env" in text_of([finding])
+
+
+def test_a_socket_that_takes_no_token_is_a_warning_that_names_the_fix():
+    for back_has_secret in (True, False):
+        finding = teleop_secret_finding(426, back_has_secret)
+        assert finding.level == WARN
+        assert "TELEOP_SECRET" in text_of([finding])
+
+
+def test_other_answers_say_nothing_about_the_secret():
+    # 0 (nothing answered) and 403 are the reachability line's business.
+    for code in (0, 200, 403, 500):
+        assert teleop_secret_finding(code, back_has_secret=False) is None
+
+
+async def test_the_real_teleop_gate_answers_the_probe_preflight_sends(monkeypatch):
+    """401 with a secret, 426 without: the two codes the finding is built on."""
+    import asyncio
+
+    from websockets.asyncio.server import serve
+
+    from bridge import preflight
+    from bridge.teleop import server as srv
+
+    for secret, level in (("s3cret", OK), ("", WARN)):
+        monkeypatch.setattr(srv, "TELEOP_SECRET", secret)
+        server = await serve(srv.handle_client, "127.0.0.1", 0, process_request=srv.authorize)
+        port = next(iter(server.sockets)).getsockname()[1]
+        async with server:
+            code = await asyncio.to_thread(preflight._http_code, f"http://127.0.0.1:{port}/")
+        finding = teleop_secret_finding(code, back_has_secret=True)
+        assert finding is not None and finding.level == level, code
