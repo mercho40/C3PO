@@ -405,3 +405,29 @@ video_holder_kind() {
         *) echo other ;;
     esac
 }
+
+# --- install bookkeeping ---------------------------------------------------
+
+# Keep the loaded unit as the rollback copy only when this install changes it.
+# Backing up on every run made a second install of the same unit overwrite the
+# one copy that was actually different.
+backup_unit_if_changed() {  # <live unit> <staged unit> <backup>
+    sudo test -e "$1" || return 0
+    sudo cmp -s "$1" "$2" && return 0
+    sudo cp -L "$1" "$3"
+    sudo chown root:root "$3"
+    sudo chmod 0644 "$3"
+}
+
+# <dir>/deployed is "<commit> <UTC time>"; the record it replaces becomes
+# <dir>/previous-deploy, the commit a rollback returns to. Re-installing the same
+# commit keeps both, for the same reason as the unit backup.
+record_deploy() {  # <checkout> <dir>
+    local commit
+    commit="$(git -C "$1" rev-parse HEAD)" || return 1
+    mkdir -p "$2"
+    if [ -f "$2/deployed" ] && [ "$(cut -d' ' -f1 "$2/deployed")" != "$commit" ]; then
+        mv -f "$2/deployed" "$2/previous-deploy"
+    fi
+    [ -f "$2/deployed" ] || printf '%s %s\n' "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$2/deployed"
+}

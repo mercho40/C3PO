@@ -341,6 +341,49 @@ check_contains "migration refuses an activating perception unit" \
     "$install_stack_source"
 check_not_contains "PID 1 never follows unit symlinks into the writable checkout" \
     'sudo ln -sf "$here/$unit"' "$install_stack_source"
+check_contains "install_stack backs the unit up only through the changed-unit check" \
+    'backup_unit_if_changed "/etc/systemd/system/$unit" "$stage/$unit"' "$install_stack_source"
+check_contains "install_stack records the deployed commit in ~/.c3po" \
+    'record_deploy "$here/../.." "$HOME/.c3po"' "$install_stack_source"
+
+# The rollback copy and the deploy record, against a temp HOME and a throwaway
+# repo. sudo runs the command as us, and chown root is a no-op, so the real
+# functions run unchanged.
+install_tmp="$(mktemp -d)"
+deploy_dir="$install_tmp/home/.c3po"
+git -C "$install_tmp" init -q repo
+commit_in() { git -C "$install_tmp/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1"; }
+head_of() { git -C "$install_tmp/repo" rev-parse HEAD; }
+first_field() { cut -d' ' -f1 "$1" 2>/dev/null; }
+commit_in one; c1="$(head_of)"
+(HOME="$install_tmp/home"; record_deploy "$install_tmp/repo" "$HOME/.c3po")
+check "the first install records its commit" "$c1" "$(first_field "$deploy_dir/deployed")"
+check "the first install has no previous deploy" "absent" \
+    "$([ -e "$deploy_dir/previous-deploy" ] && echo present || echo absent)"
+commit_in two; c2="$(head_of)"
+(HOME="$install_tmp/home"; record_deploy "$install_tmp/repo" "$HOME/.c3po")
+(HOME="$install_tmp/home"; record_deploy "$install_tmp/repo" "$HOME/.c3po")
+check "a new commit is recorded as deployed" "$c2" "$(first_field "$deploy_dir/deployed")"
+check "re-installing the same commit keeps the one before it" "$c1" \
+    "$(first_field "$deploy_dir/previous-deploy")"
+check_contains "the record carries a UTC time" "Z" "$(cut -d' ' -f2 "$deploy_dir/deployed")"
+
+backup_with() {  # <live content or -> <staged content>: prints the backup afterwards
+    (
+        sudo() { "$@"; }
+        chown() { :; }
+        rm -f "$install_tmp/live"
+        [ "$1" = - ] || printf '%s\n' "$1" >"$install_tmp/live"
+        printf '%s\n' "$2" >"$install_tmp/staged"
+        backup_unit_if_changed "$install_tmp/live" "$install_tmp/staged" "$install_tmp/backup"
+    )
+    cat "$install_tmp/backup" 2>/dev/null
+}
+printf 'older\n' >"$install_tmp/backup"
+check "no loaded unit leaves the backup alone" "older" "$(backup_with - new)"
+check "re-installing the loaded unit keeps the older backup" "older" "$(backup_with same same)"
+check "a changed unit backs up the loaded one" "loaded" "$(backup_with loaded new)"
+rm -rf "$install_tmp"
 
 bridge_unit_source="$(cat "$repo/scripts/robot/c3po-bridge.service")"
 check_contains "systemd directly supervises the bridge" "Type=exec" "$bridge_unit_source"
