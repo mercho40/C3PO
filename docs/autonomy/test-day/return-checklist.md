@@ -1,7 +1,10 @@
 # Back at the robot: what to test, in order
 
-Written 2026-11-03 while the operators were away. Everything here is on `feat/autonomy`
-and on the robot. One person holds the Unitree remote for every step that moves.
+Written 2026-11-03 while the operators were away; last updated 2026-11-09. This is the one
+dated sheet for the next robot session. `docs/SESSION-CHECKLIST.md` is the general order,
+and the expo stand runs from `docs/DEMO-RUNBOOK.md`. Everything here is on `feat/autonomy`:
+deploy it first, as in `docs/OPERATIONS.md` §5. One person holds the Unitree remote for every
+step that moves.
 
 Console: http://localhost:3001 (`operador@c3po.local`). Robot in the gantry unless a step
 says otherwise.

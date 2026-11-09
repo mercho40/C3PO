@@ -4,14 +4,18 @@ Run this in order on the first supervised hardware window. The order keeps read-
 non-motion checks ahead of sensor takeover and motion. Record the command output and stop
 at the first failed gate; do not "try the next thing" around a safety refusal.
 
+This was the first window's sequence. For the next session, the dated list is
+`docs/autonomy/test-day/return-checklist.md`; deploy as in `docs/OPERATIONS.md` §5.
+
 ## People and stop conditions
 
 Before connecting:
 
 - One operator is beside the G1 with the physical e-stop in reach.
 - The floor is clear and the robot starts standing still.
-- The other team has agreed to the sensor/build window before `c3po gemm stop`,
-  `c3po camera take`, `c3po perception up perception`, or an eight-core image build.
+- `docker ps` shows no `gemm-*` containers before `c3po camera take`,
+  `c3po perception up perception`, or an eight-core image build. The G1 is C3PO-only since
+  2026-10-27; if gemm's containers are up, `docker stop` them and never touch their files.
 - Nobody enables `TELEOP_ARM_ENABLED` until `arm_sign_check.py` has completed.
 - Any unexpected motion, second commander, unknown gate state, missing physical e-stop, or
   failed health check ends the run. Use the physical e-stop first if motion is unexpected.
@@ -192,7 +196,7 @@ c3po status
 docker ps
 ```
 
-Return the sensors/stack according to the agreement with the other team. Preserve
+Leave gemm's containers stopped; their autostart is off. Preserve
 `~/.c3po/logs/monday-validation.log`, note every failed gate, and update the "Written and
 never run on hardware" inventory in `docs/OPERATIONS.md` only for checks that actually
 passed.

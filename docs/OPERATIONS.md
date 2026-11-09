@@ -6,10 +6,12 @@ that have already cost real debugging time. How the system fits together is
 reverse-engineered control API is `docs/ROBOT-API.md`; why choices were made is
 `docs/DECISIONS.md`. Per-app dev docs live in each app's README.
 
-**Standing next to the robot with a session to run?** `docs/SESSION-CHECKLIST.md`
-is the ordered runbook — deploy, verify, headset, then motion — and it starts
-with the deploy step that silently does nothing if the robot's checkout is on
-the wrong branch. This file is the reference; that one is the sequence.
+**Standing next to the robot with a session to run?** Start from
+`docs/autonomy/test-day/return-checklist.md`: the one dated sheet of what to test
+next, in order. `docs/SESSION-CHECKLIST.md` is the general order — deploy, verify,
+headset, then motion — and it starts with the deploy step that silently does nothing
+if the robot's checkout is on the wrong branch. For the expo stand, run
+`docs/DEMO-RUNBOOK.md`. This file is the reference; those are the sequences.
 
 ---
 
