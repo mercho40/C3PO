@@ -114,7 +114,9 @@ async def run(
             task.ended_at = time.time()
             log.warning("walk_velocity.teleop_active", task_id=task.task_id)
             return task.to_dict()
-        conflict = arm_hold_conflict()
+        # A zero call is a stop (the headset's stop pulses), and the check below may not refuse it.
+        moving = any((clamped_vx, clamped_vy, clamped_vyaw))
+        conflict = arm_hold_conflict() if moving else None
         if conflict is not None:
             task.status = "failed"
             task.phase = "arm_held"

@@ -130,6 +130,22 @@ async def test_refused_while_the_arms_are_held(monkeypatch):
     assert calls == []
 
 
+@pytest.mark.asyncio
+async def test_a_stop_still_goes_out_while_the_arms_are_held(monkeypatch):
+    """The headset's stop pulses are zero walk_velocity calls: refusing one refuses a stop."""
+    from types import SimpleNamespace
+
+    from bridge.teleop import arm_sdk
+
+    calls = _record(monkeypatch)
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: SimpleNamespace(engaged=True))
+
+    result = await walk_velocity.run(vx=0.0, vy=0.0, vyaw=0.0, duration_s=0.1)
+
+    assert result["status"] == "completed"
+    assert calls and all(c[:3] == (0.0, 0.0, 0.0) for c in calls)
+
+
 # --- decision 11.6b: deliberate operator input preempts an agent walk -------
 
 
