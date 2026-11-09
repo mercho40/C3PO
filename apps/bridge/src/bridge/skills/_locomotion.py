@@ -283,6 +283,34 @@ def arm_hold_conflict() -> str | None:
     )
 
 
+def fsm_conflict() -> str | None:
+    """Why a fresh FSM reading says the legs will not take velocity now, or None.
+
+    In 802 (Run, R2+A on the remote) SetVelocity answers code 0 and nothing moves,
+    so a walk stood still until its timeout and reported completed. Gated like
+    ArmSdkDriver's FSM check, except that an unknown or stale reading is allowed:
+    sim has no FSM poller, and a slow poll must not block a walk. Never creates
+    the sampler.
+    """
+    from bridge.sdk import g1_protocol
+    from bridge.sdk.state import existing_sampler
+    from bridge.skills._g1_request import WALK_FSM_IDS
+    from bridge.teleop.arm_sdk import MAX_FSM_AGE_S
+
+    sampler = existing_sampler()
+    if sampler is None:
+        return None
+    state = sampler.get_arm_state()
+    fsm_id, age = state["fsm_id"], state["fsm_age_s"]
+    if fsm_id is None or age is None or age > MAX_FSM_AGE_S or fsm_id in WALK_FSM_IDS:
+        return None
+    return (
+        f"the robot is in FSM {fsm_id} ({g1_protocol.mode_label(fsm_id)}), not a walk "
+        "program (500/501), so it would acknowledge every velocity and not move. Run damp, "
+        "prepare, then start_walking_waist, and check that get_state's fsm_id reads 501."
+    )
+
+
 #: The error a running walk or turn ends with when the headset takes over.
 TELEOP_TAKEOVER = (
     "the operator in the headset took over and is driving the robot, so this motion "

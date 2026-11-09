@@ -30,6 +30,7 @@ from bridge.skills._locomotion import (
     POSE_STALE,
     TELEOP_TAKEOVER,
     arm_hold_conflict,
+    fsm_conflict,
     maybe_report_progress,
     pose_stale,
     teleop_conflict,
@@ -110,6 +111,14 @@ async def run(
         task.error = conflict
         task.ended_at = time.time()
         log.warning("walk_to.arm_held", task_id=task.task_id)
+        return task.to_dict()
+    conflict = fsm_conflict()
+    if conflict is not None:
+        task.status = "failed"
+        task.phase = "fsm_not_walkable"
+        task.error = conflict
+        task.ended_at = time.time()
+        log.warning("walk_to.fsm_not_walkable", task_id=task.task_id)
         return task.to_dict()
 
     sampler = get_sampler()

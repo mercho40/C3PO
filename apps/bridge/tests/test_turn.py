@@ -293,3 +293,19 @@ async def test_look_around_may_turn_inside_its_own_sweep(monkeypatch):
     finally:
         sweep.status = "completed"
     assert result["phase"] == "timeout"  # it ran
+
+
+@pytest.mark.asyncio
+async def test_a_turn_is_refused_in_a_fresh_non_walk_fsm(monkeypatch):
+    """In FSM 802 SetVelocity answers 0 and nothing turns; the turn used to time out as completed."""
+    from types import SimpleNamespace
+
+    fsm = SimpleNamespace(get_arm_state=lambda: {"fsm_id": 802, "fsm_age_s": 0.5})
+    monkeypatch.setattr("bridge.sdk.state.existing_sampler", lambda: fsm)
+    sampler = _FakeSampler([_pose(0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=0.05)
+
+    assert (result["status"], result["phase"]) == ("failed", "fsm_not_walkable")
+    assert sampler._i == 0

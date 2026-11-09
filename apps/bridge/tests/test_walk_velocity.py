@@ -217,3 +217,45 @@ async def test_a_running_walk_velocity_yields_to_the_headset_and_still_stops(mon
 
     assert (result["status"], result["phase"]) == ("failed", "teleop_takeover")
     assert len(calls) == 4 and calls[-1] == (0.0, 0.0, 0.0)  # three setpoints, then only zero
+
+
+def _fsm(monkeypatch, fsm_id, age_s=0.5):
+    from types import SimpleNamespace
+
+    reading = SimpleNamespace(get_arm_state=lambda: {"fsm_id": fsm_id, "fsm_age_s": age_s})
+    monkeypatch.setattr("bridge.sdk.state.existing_sampler", lambda: reading)
+
+
+@pytest.mark.asyncio
+async def test_refused_in_a_fresh_non_walk_fsm(monkeypatch):
+    """In 802 (R2+A) SetVelocity answers 0 and the legs ignore it: a walk that only looks done."""
+    calls = _record(monkeypatch)
+    _fsm(monkeypatch, 802)
+
+    result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.2)
+
+    assert (result["status"], result["phase"]) == ("failed", "fsm_not_walkable")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_stop_still_goes_out_in_a_non_walk_fsm(monkeypatch):
+    calls = _record(monkeypatch)
+    _fsm(monkeypatch, 802)
+
+    result = await walk_velocity.run(vx=0.0, vy=0.0, vyaw=0.0, duration_s=0.1)
+
+    assert result["status"] == "completed"
+    assert calls and all(c[:3] == (0.0, 0.0, 0.0) for c in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fsm_id, age_s", [(501, 0.5), (802, 30.0), (None, None)])
+async def test_walks_in_501_or_on_a_stale_or_missing_reading(monkeypatch, fsm_id, age_s):
+    calls = _record(monkeypatch)
+    _fsm(monkeypatch, fsm_id, age_s)
+
+    result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.1)
+
+    assert result["status"] == "completed"
+    assert calls[0][0] == 0.1

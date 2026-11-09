@@ -33,6 +33,7 @@ from bridge.skills._locomotion import (
     DEFAULT_HEIGHT,
     TELEOP_TAKEOVER,
     arm_hold_conflict,
+    fsm_conflict,
     send_velocity_async,
     teleop_conflict,
 )
@@ -114,7 +115,7 @@ async def run(
             task.ended_at = time.time()
             log.warning("walk_velocity.teleop_active", task_id=task.task_id)
             return task.to_dict()
-        # A zero call is a stop (the headset's stop pulses), and the check below may not refuse it.
+        # A zero call is a stop (the headset's stop pulses), and neither check below may refuse it.
         moving = any((clamped_vx, clamped_vy, clamped_vyaw))
         conflict = arm_hold_conflict() if moving else None
         if conflict is not None:
@@ -123,6 +124,14 @@ async def run(
             task.error = conflict
             task.ended_at = time.time()
             log.warning("walk_velocity.arm_held", task_id=task.task_id)
+            return task.to_dict()
+        conflict = fsm_conflict() if moving else None
+        if conflict is not None:
+            task.status = "failed"
+            task.phase = "fsm_not_walkable"
+            task.error = conflict
+            task.ended_at = time.time()
+            log.warning("walk_velocity.fsm_not_walkable", task_id=task.task_id)
             return task.to_dict()
 
         # Decision 11.6b: deliberate operator input preempts an agent walk. Never another
