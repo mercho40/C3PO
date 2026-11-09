@@ -1,0 +1,59 @@
+name: Nav image
+
+# Builds apps/perception/nav the way `build_perception nav` does on the robot,
+# and pushes nothing. Until this existed no workflow ran `docker build`, so the
+# FAST-LIO patch drift of 584a7e6 was found on the robot, mid-build. Weekly as
+# well, because the apt layers follow the ROS archive even when nothing here
+# changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/perception/nav/**"
+      - ".github/workflows/nav-image.yml"
+  pull_request:
+    paths:
+      - "apps/perception/nav/**"
+      - ".github/workflows/nav-image.yml"
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+# Same grouping as ci.yml: a new push to a PR cancels its older run, nothing else does.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build c3po/perception-nav:humble (arm64, no push)
+    # The robot's Orin is arm64, and ros:humble-ros-base-jammy has an arm64
+    # image. Arm runners are free on a public repo.
+    runs-on: ubuntu-24.04-arm
+    # About 35 min on the robot's 8 shared cores; the runner has 4.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # DOCKER_BUILDKIT=0: the robot's docker 24.0.7 has no buildx, so the
+      # classic builder is the one this image has to pass on.
+      - name: docker build, classic builder as on the robot
+        env:
+          DOCKER_BUILDKIT: "0"
+        run: docker build -t c3po/perception-nav:humble apps/perception/nav
+
+      # The check build_perception runs after a nav build, with its own list.
+      - name: The image has every package the launch files name
+        working-directory: apps/perception
+        run: |
+          docker run --rm c3po/perception-nav:humble bash -lc "ros2 pkg list" >"$RUNNER_TEMP/pkgs.txt"
+          python3 - "$RUNNER_TEMP/pkgs.txt" <<'EOF'
+          import sys
+          from bringup.build import missing_packages
+          missing = missing_packages(open(sys.argv[1]).read())
+          print("missing: " + " ".join(missing) if missing else "every required package is present")
+          sys.exit(1 if missing else 0)
+          EOF
