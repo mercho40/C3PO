@@ -85,6 +85,32 @@ describe("decideCall", () => {
     expect(r.message).toBeNull();
   });
 
+  test("a failed grant ran nothing, so the chat card offers Reintentar", async () => {
+    const run = async (status: number, body: unknown) =>
+      (
+        await decideCall(
+          "http://back",
+          "pick",
+          "c1",
+          pick,
+          "confirm",
+          backAnswering(status, body).impl,
+        )
+      ).final;
+    // Back put the call back on its list and told the agent nothing.
+    expect(await run(502, { error: "bridge_unavailable" })).toBe(false);
+    expect(await run(503, { error: "confirmation_not_configured" })).toBe(
+      false,
+    );
+    // It ran (whatever its outcome), or it is no longer pending.
+    expect(await run(200, { result: { status: "completed" } })).toBe(true);
+    expect(await run(502, { error: "tool_error", message: "…" })).toBe(true);
+    expect(await run(409, { error: "not_pending" })).toBe(true);
+    const card = src("../src/lib/components/chat/tool-card.svelte");
+    expect(card).toContain("disabled={running || final || live}");
+    expect(card).toContain("`Reintentar ${confirmable}`");
+  });
+
   test("Cancelar posts only the call id", async () => {
     const back = backAnswering(200, {
       cancelled: true,
