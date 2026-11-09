@@ -73,23 +73,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       # Keep package tests behind Turbo so local and CI task selection use the
-      # same package boundaries and cache keys.
+      # same package boundaries and cache keys. @repo/web here is the headset's
+      # suite (`bun test` in apps/web); a second step used to run it again.
       - name: back, web, and robot-script tests
         run: bun run test -- --filter=@repo/back --filter=@repo/web --filter=@repo/robot-scripts
-
-      # THE HEADSET'S TESTS WERE NOT RUN BY ANYTHING UNTIL 2026-08-27.
-      #
-      # 210 of them: the camera layer's silent-black failure modes, the menu
-      # and radar placement, the per-eye stereo geometry, the teleop protocol,
-      # the MJPEG liveness logic. Every one of them guards something that has
-      # already gone wrong in a real session with somebody wearing the thing,
-      # and none of them could fail the build.
-      #
-      # `bun test` in apps/back was added and apps/web was not — the whole
-      # suite is one line, needs no services, and takes ~18 s.
-      - name: apps/web unit tests
-        working-directory: apps/web
-        run: bun test
 
       # The note that used to live here said `prettier --check` failed on ~122
       # files, mostly vendored shadcn-svelte components, and that gating it
