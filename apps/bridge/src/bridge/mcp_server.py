@@ -2663,7 +2663,7 @@ async def listen(
             items = listener.poll()
 
     diag = listener.diagnostics()
-    source = listen_skill.describe_audio_source()
+    source = await asyncio.to_thread(listen_skill.describe_audio_source)  # runs `arecord -l`
     speech = [i for i in items if i["kind"] == "speech"]
     stops = [i for i in items if i["kind"] == "stop"]
 
@@ -4388,7 +4388,7 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
 
         listener = listen_skill.get_mic_listener()
         diag = listener.diagnostics()
-        source = listen_skill.describe_audio_source()
+        source = await asyncio.to_thread(listen_skill.describe_audio_source)  # runs `arecord -l`
         items = listener.recent(120.0) if diag["running"] else []
         return JSONResponse(
             {

@@ -34,13 +34,14 @@ import asyncio
 import math
 import os
 import time
-from typing import Any, Literal
+from collections.abc import Callable
+from typing import Any, Literal, TypeVar
 
 import structlog
 
 from bridge import estop, kinematics, safety
 from bridge.skills import arm_pose
-from bridge.skills.task_runtime import get_registry
+from bridge.skills.task_runtime import Task, get_registry
 from bridge.teleop import arm_sdk, hands
 from bridge.teleop.retarget import ArmAngles
 
@@ -534,7 +535,7 @@ def _plan_dict(steps: list[Step]) -> list[dict[str, Any]]:
 
 
 async def execute(
-    name: str,
+    task: Task,
     side: Side,
     steps: list[Step],
     *,
@@ -543,8 +544,9 @@ async def execute(
     hold: bool = True,
     ctx: Any | None = None,
 ) -> dict[str, Any]:
-    """Run a planned step list on one arm. Returns the task dict."""
-    task = get_registry().create(name)
+    """Run a planned step list on one arm, as `task` (created before planning). Returns the
+    task dict."""
+    name = task.skill_name
     task.result = {**summary, "side": side, "plan": _plan_dict(steps)}
     log.info(f"{name}.requested", task_id=task.task_id, side=side, sim_mode=SIM_MODE, **summary)
 
@@ -560,6 +562,9 @@ async def execute(
         task.ended_at = time.time()
         return task.to_dict()
 
+    if task.cancel_event.is_set():
+        # A stop arrived while the plan was computed off the loop: nothing has moved yet.
+        return done("cancelled", "cancelled", note="Stopped before anything moved.")
     if SIM_MODE == "stub":
         return done("completed", "stub", note="Stub mode — planned only, nothing moved.")
     if SIM_MODE != "real":
@@ -657,9 +662,8 @@ async def execute(
         return done("failed", "exception", repr(exc), hand_closed=hand_closed)
 
 
-def _refused(name: str, error: str, **extra: Any) -> dict[str, Any]:
+def _refused(task: Task, error: str, **extra: Any) -> dict[str, Any]:
     """A plan that never reached the arm. Shaped like a task dict so callers need one path."""
-    task = get_registry().create(name)
     task.status, task.phase, task.error = "failed", "planning", error
     task.result = {"moved": False, **extra}
     task.ended_at = time.time()
@@ -672,14 +676,14 @@ def _refused(name: str, error: str, **extra: Any) -> dict[str, Any]:
 ALLOW_PICK_ENV = "C3PO_ALLOW_PICK"
 
 
-def _fenced(name: str) -> dict[str, Any] | None:
+def _fenced(task: Task) -> dict[str, Any] | None:
     if SIM_MODE != "real" or os.environ.get(ALLOW_PICK_ENV) == "1":
         return None
     return _refused(
-        name,
+        task,
         "pick_disabled_until_gantry_test",
         note=(
-            f"{name} is off on the robot until the gantry touch check passes (test-day "
+            f"{task.skill_name} is off on the robot until the gantry touch check passes (test-day "
             f"manipulation.md). Nothing moved. For that check: {ALLOW_PICK_ENV}=1 in "
             "apps/bridge/.env, then restart the bridge."
         ),
@@ -687,6 +691,46 @@ def _fenced(name: str) -> dict[str, Any] | None:
 
 
 # --- the four skills --------------------------------------------------------------------------
+#
+# Each creates its task BEFORE planning, so a stop during the plan finds it (execute checks the
+# cancel), and plans in a worker thread: pure-Python IK takes ~1 s for a refused pick, and the
+# event loop runs the 50 Hz arm hold and the stop.
+
+
+_T = TypeVar("_T")
+
+
+async def _off_loop(task: Task, fn: Callable[..., _T], *args: Any) -> _T:
+    """`fn(*args)` in a worker thread. Anything but a PlanError (the caller refuses those)
+    ends `task` here, or it would stay "running" with no skill behind it."""
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except PlanError:
+        raise
+    except BaseException as exc:
+        cancelled = isinstance(exc, asyncio.CancelledError)
+        task.status = "cancelled" if cancelled else "failed"
+        task.phase, task.error = ("cancelled", None) if cancelled else ("exception", repr(exc))
+        task.ended_at = time.time()
+        raise
+
+
+def _plan_pick(
+    arm: Side, side: str, target: tuple[float, float, float], shape: str
+) -> tuple[Side, list[Step]]:
+    """(arm, steps) on `arm`, else on the other arm when `side` is auto and its hand is
+    configured. PlanError says how to walk if neither plans."""
+    try:
+        return arm, plan_pick(arm, target, shape, _measured_q(arm))
+    except PlanError as exc:
+        other: Side = "left" if arm == "right" else "right"
+        configured = hands.get_driver().sides
+        if side == "auto" and (not configured or other in configured):
+            try:
+                return other, plan_pick(other, target, shape, _measured_q(other))
+            except PlanError:
+                pass
+        raise PlanError(f"{exc}. {reach_advice(arm, target)}") from None
 
 
 async def pick(
@@ -696,34 +740,26 @@ async def pick(
     track_id: int | None = None,
     ctx: Any | None = None,
 ) -> dict[str, Any]:
-    if (fenced := _fenced("pick")) is not None:
+    task = get_registry().create("pick")
+    if (fenced := _fenced(task)) is not None:
         return fenced
     if shape not in hands.SHAPES or shape == "open":
-        return _refused(
-            "pick", f"unknown_shape_{shape}", shapes=sorted(set(hands.SHAPES) - {"open"})
-        )
+        return _refused(task, f"unknown_shape_{shape}", shapes=sorted(set(hands.SHAPES) - {"open"}))
     try:
         target, obj = detected_target(label, track_id)
     except PlanError as exc:
-        return _refused("pick", str(exc))
+        return _refused(task, str(exc))
     arm = choose_side(side, target)
     if SIM_MODE == "real" and _measured_q(arm) is None:
         # Without the start pose the rise is one unchecked slew: the desk-edge hit.
         return _refused(
-            "pick",
+            task,
             "no measured arm pose (arm state offline): cannot plan a path clear of the surface",
         )
     try:
-        steps = plan_pick(arm, target, shape, _measured_q(arm))
+        arm, steps = await _off_loop(task, _plan_pick, arm, side, target, shape)
     except PlanError as exc:
-        other: Side = "left" if arm == "right" else "right"
-        configured = hands.get_driver().sides
-        if side != "auto" or (configured and other not in configured):
-            return _refused("pick", f"{exc}. {reach_advice(arm, target)}")
-        try:
-            arm, steps = other, plan_pick(other, target, shape, _measured_q(other))
-        except PlanError:
-            return _refused("pick", f"{exc}. {reach_advice(arm, target)}")
+        return _refused(task, str(exc))
     summary = {
         "object": {
             k: obj.get(k) for k in ("label", "track_id", "confidence", "range_m", "depth_source")
@@ -732,7 +768,7 @@ async def pick(
         "shape": shape,
         "next": f"verify('¿tenés {obj.get('label')} en la mano?') — no contact sensing here",
     }
-    return await execute("pick", arm, steps, summary=summary, ctx=ctx)
+    return await execute(task, arm, steps, summary=summary, ctx=ctx)
 
 
 async def place(
@@ -742,7 +778,8 @@ async def place(
     ctx: Any | None = None,
 ) -> dict[str, Any]:
     """Put down what the hand holds: onto a detected surface/object, or `drop_m` below here."""
-    if (fenced := _fenced("place")) is not None:
+    task = get_registry().create("place")
+    if (fenced := _fenced(task)) is not None:
         return fenced
     seed = _measured_q(side)
     try:
@@ -754,20 +791,21 @@ async def place(
                 raise PlanError("no measured arm pose to place from")
             here = kinematics.forward(side, seed).position
             target = (here[0], here[1], here[2] - max(0.0, min(drop_m, 0.15)))
-        steps = plan_place(side, target, seed)
+        steps = await _off_loop(task, plan_place, side, target, seed)
     except PlanError as exc:
-        return _refused("place", str(exc))
+        return _refused(task, str(exc))
     summary = {"target_torso_m": [round(v, 3) for v in target], "onto": label}
-    return await execute("place", side, steps, summary=summary, hold=False, ctx=ctx)
+    return await execute(task, side, steps, summary=summary, hold=False, ctx=ctx)
 
 
 async def handover(side: Side, ctx: Any | None = None) -> dict[str, Any]:
     """Hold the hand out at chest height for a person to take what it holds."""
+    task = get_registry().create("handover")
     p = handover_point(side)
     try:
-        q = _solve(side, "handover", p, (1.0, 0.0, 0.0), _measured_q(side))
+        q = await _off_loop(task, _solve, side, "handover", p, (1.0, 0.0, 0.0), _measured_q(side))
     except PlanError as exc:
-        return _refused("handover", str(exc))
+        return _refused(task, str(exc))
     summary = {
         "target_torso_m": list(p),
         "next": (
@@ -776,7 +814,7 @@ async def handover(side: Side, ctx: Any | None = None) -> dict[str, Any]:
         ),
     }
     return await execute(
-        "handover", side, [("arm", "extend", q)], summary=summary, allow_person=True, ctx=ctx
+        task, side, [("arm", "extend", q)], summary=summary, allow_person=True, ctx=ctx
     )
 
 
@@ -788,14 +826,15 @@ async def reach(
     hold: bool = True,
     ctx: Any | None = None,
 ) -> dict[str, Any]:
+    task = get_registry().create("reach")
     p = kinematics.camera_to_torso(point) if frame == "camera" else tuple(float(v) for v in point)
     pointing = {"forward": (1.0, 0.0, 0.0), "down": (0.0, 0.0, -1.0), "free": None}[fingers]
     try:
-        q = _solve(side, "reach", p, pointing, _measured_q(side))  # type: ignore[arg-type]
+        q = await _off_loop(task, _solve, side, "reach", p, pointing, _measured_q(side))
     except PlanError as exc:
-        return _refused("reach", str(exc))
+        return _refused(task, str(exc))
     summary = {"target_torso_m": [round(v, 3) for v in p], "fingers": fingers}
-    return await execute("reach", side, [("arm", "reach", q)], summary=summary, hold=hold, ctx=ctx)
+    return await execute(task, side, [("arm", "reach", q)], summary=summary, hold=hold, ctx=ctx)
 
 
 def arm_state() -> dict[str, Any]:

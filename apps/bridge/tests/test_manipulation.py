@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
+import threading
 
 import pytest
 
 from bridge import kinematics, safety
 from bridge.sdk import perception_link
+from bridge.skills.task_runtime import get_registry
 from bridge.skills import manipulation as m
 from bridge.teleop import arm_sdk, hands
 from bridge.teleop.retarget import ArmAngles
@@ -564,3 +567,75 @@ async def test_the_headset_taking_over_mid_pick_aborts_it(monkeypatch, real):
     out = await m.pick("cup")
     assert out["phase"] == "aborted:teleop_active"
     assert arm.release_requested and len(arm.commands) == 1
+
+
+# --- planning off the event loop (A11) ------------------------------------------------------
+
+
+async def _stop_while_planning(monkeypatch, skill, start):
+    """Run `start()` with planning held open in its worker thread; cancel the task the skill
+    registered meanwhile, as stop_everything does, then let planning finish."""
+    release = threading.Event()
+
+    def held(real):
+        def wrapper(*a, **k):
+            assert release.wait(2.0), "planning ran on the event loop"
+            return real(*a, **k)
+
+        return wrapper
+
+    for name in ("plan_pick", "plan_place", "_solve"):
+        monkeypatch.setattr(m, name, held(getattr(m, name)))
+    registry = get_registry()
+    before = {t.task_id for t in registry.list_active()}
+    running = asyncio.ensure_future(start())
+    mine = []
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        mine = [t for t in registry.list_active() if t.task_id not in before]
+        if mine:
+            break
+    release.set()
+    assert mine and mine[0].skill_name == skill, "no task to cancel while the plan is computed"
+    assert registry.cancel(mine[0].task_id)
+    out = await asyncio.wait_for(running, 5.0)
+    assert out["task_id"] == mine[0].task_id
+    return out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["pick", "place", "reach", "handover"])
+async def test_a_stop_during_planning_finds_the_task_and_nothing_moves(monkeypatch, real, skill):
+    arm, _hand = real
+    see(monkeypatch, cup())
+    if skill == "place":  # from where a pick leaves the hand
+        await m.pick("cup")
+        arm.commands.clear()
+        arm.engaged = False
+    start = {
+        "pick": lambda: m.pick("cup"),
+        "place": lambda: m.place("right"),
+        "reach": lambda: m.reach("right", (0.30, -0.15, 0.10)),
+        "handover": lambda: m.handover("right"),
+    }[skill]
+    out = await _stop_while_planning(monkeypatch, skill, start)
+    assert out["status"] == "cancelled", out
+    assert not arm.engaged and arm.commands == []
+
+
+@pytest.mark.asyncio
+async def test_a_pick_cancelled_while_planning_does_not_stay_running(monkeypatch, real):
+    # FastMCP cancels the coroutine (client gone, timeout); the worker thread finishes alone.
+    see(monkeypatch, cup())
+    release = threading.Event()
+    plan = m.plan_pick
+    monkeypatch.setattr(m, "plan_pick", lambda *a: release.wait(2.0) and plan(*a))
+    before = {t.task_id for t in get_registry().list_active()}
+    running = asyncio.ensure_future(m.pick("cup"))
+    await asyncio.sleep(0.05)
+    (task,) = [t for t in get_registry().list_active() if t.task_id not in before]
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    release.set()
+    assert task.status == "cancelled" and task.ended_at is not None
