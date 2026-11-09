@@ -680,7 +680,7 @@ def _battery(monkeypatch, soc, *, age_s=0.0):
 
     sampler = state.StateSampler()
     if soc is not None:
-        sampler._bms = state._BmsSnapshot(received_at=time.time() - age_s, soc_pct=soc)
+        sampler._bms = state._BmsSnapshot(received_at=time.monotonic() - age_s, soc_pct=soc)
     monkeypatch.setattr(state, "_sampler_singleton", sampler)
 
 

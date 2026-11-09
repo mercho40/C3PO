@@ -314,3 +314,22 @@ async def test_a_cancelled_request_is_not_left_running(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await call
     assert not [t for t in get_registry().list_active() if t.skill_name == "damp"]
+
+
+async def test_a_wall_clock_step_does_not_cut_the_fsm_wait(monkeypatch):
+    """NTP stepping the clock forward mid-wait read as a posture that never landed."""
+    import time
+    from types import SimpleNamespace
+
+    real_time, step, readings = time.time, [0.0], iter([4, 501])
+
+    def get_arm_state():
+        step[0] = 3600.0
+        return {"fsm_id": next(readings)}
+
+    monkeypatch.setattr(time, "time", lambda: real_time() + step[0])
+    monkeypatch.setattr(
+        "bridge.sdk.state.get_sampler", lambda: SimpleNamespace(get_arm_state=get_arm_state)
+    )
+
+    assert await _g1_request._await_fsm(501, 5.0) == 501

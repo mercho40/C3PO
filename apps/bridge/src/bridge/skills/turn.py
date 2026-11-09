@@ -161,7 +161,7 @@ async def run(
         )
 
         task.phase = "turning"
-        deadline = time.time() + timeout_s
+        deadline = time.monotonic() + timeout_s  # an NTP step must not move it
         last_reported = 0.0
         reached = False
         cancelled = False
@@ -169,7 +169,7 @@ async def run(
         stale = False
         in_tolerance = 0
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             if task.cancel_event.is_set():
                 cancelled = True
                 break

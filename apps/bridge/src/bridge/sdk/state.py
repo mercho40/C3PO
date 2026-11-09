@@ -65,6 +65,8 @@ _POSE_SOURCE = "odom" if (_SIM_MODE == "real" and ODOM_TOPIC) else "sim_state"
 class _LowStateSnapshot:
     """Latest LowState_ values we care about, plus capture time."""
 
+    #: time.monotonic(), like every received_at here: each only ever becomes an age, and
+    #: the robot has no RTC, so an NTP step would age (or freshen) every reading at once.
     received_at: float = 0.0
     tick: int = 0
     mode_machine: int = 0
@@ -256,7 +258,9 @@ class StateSampler:
                 self._note_fsm_failure()
                 continue
             with self._lock:
-                self._fsm = _FsmSnapshot(received_at=time.time(), fsm_id=fsm_id, fsm_mode=fsm_mode)
+                self._fsm = _FsmSnapshot(
+                    received_at=time.monotonic(), fsm_id=fsm_id, fsm_mode=fsm_mode
+                )
 
     def _note_fsm_failure(self) -> None:
         with self._lock:
@@ -275,16 +279,17 @@ class StateSampler:
         except Exception as exc:  # malformed / unexpected layout
             log.warning("odom.parse_failed", error=str(exc))
             return
+        now = time.monotonic()
         with self._lock:
             self._pose = _PoseSnapshot(
-                received_at=time.time(),
+                received_at=now,
                 x_meters_world=x,
                 y_meters_world=y,
                 z_meters_world=z,
                 yaw_radians_world=yaw,
                 raw_message_count=self._pose.raw_message_count + 1,
             )
-            self._pose_history.append((time.monotonic(), x, y, yaw))
+            self._pose_history.append((now, x, y, yaw))
 
     def _on_lowstate(self, msg: Any) -> None:
         motors = msg.motor_state
@@ -298,7 +303,7 @@ class StateSampler:
             waist_q = tuple(float(motors[i].q) for i in range(WAIST_JOINT_START, ARM_JOINT_START))
         with self._lock:
             self._lowstate = _LowStateSnapshot(
-                received_at=time.time(),
+                received_at=time.monotonic(),
                 tick=int(msg.tick),
                 mode_machine=int(msg.mode_machine),
                 motor_count=len(motors),
@@ -324,7 +329,7 @@ class StateSampler:
             "arm_q": low.arm_q,
             "waist_q": low.waist_q,
             "mode_machine": low.mode_machine,
-            "lowstate_age_s": (time.time() - low.received_at) if low.received_at else None,
+            "lowstate_age_s": (time.monotonic() - low.received_at) if low.received_at else None,
             "fsm_id": fsm.fsm_id,
             # The FSM comes from a DIFFERENT snapshot than the lowstate, with
             # its own arrival time, and the caller gates on both. Returning the
@@ -332,7 +337,7 @@ class StateSampler:
             # while deciding on an FSM reading from minutes earlier — which is
             # the difference between "the robot is standing locked" and "the
             # robot has been walking since the last time anyone asked".
-            "fsm_age_s": (time.time() - fsm.received_at) if fsm.received_at else None,
+            "fsm_age_s": (time.monotonic() - fsm.received_at) if fsm.received_at else None,
         }
 
     def _on_bms(self, msg: Any) -> None:
@@ -341,7 +346,7 @@ class StateSampler:
         # tells you charging state without a separate flag.
         with self._lock:
             self._bms = _BmsSnapshot(
-                received_at=time.time(),
+                received_at=time.monotonic(),
                 soc_pct=int(msg.soc),
                 soh_pct=int(msg.soh),
                 current_ma=int(msg.current),
@@ -361,16 +366,17 @@ class StateSampler:
             return
 
         yaw = _yaw_from_quaternion(qw, qx, qy, qz)
+        now = time.monotonic()
         with self._lock:
             self._pose = _PoseSnapshot(
-                received_at=time.time(),
+                received_at=now,
                 x_meters_world=x,
                 y_meters_world=y,
                 z_meters_world=z,
                 yaw_radians_world=yaw,
                 raw_message_count=self._pose.raw_message_count + 1,
             )
-            self._pose_history.append((time.monotonic(), x, y, yaw))
+            self._pose_history.append((now, x, y, yaw))
 
     def pose_at(self, t: float) -> tuple[float, float, float] | None:
         """(x, y, yaw) of the newest pose received at or before `t` (time.monotonic()).
@@ -397,7 +403,7 @@ class StateSampler:
             bms = self._bms
         if not bms.received_at:
             return None, None
-        return bms.soc_pct, time.time() - bms.received_at
+        return bms.soc_pct, time.monotonic() - bms.received_at
 
     def get_state(self) -> dict[str, Any]:
         """Return the current state in the shape the MCP `get_state` tool exposes."""
@@ -423,7 +429,7 @@ class StateSampler:
                 },
             }
 
-        now = time.time()
+        now = time.monotonic()
         lowstate_age = now - low.received_at
         faults: list[str] = []
 

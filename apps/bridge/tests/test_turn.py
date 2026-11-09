@@ -309,3 +309,25 @@ async def test_a_turn_is_refused_in_a_fresh_non_walk_fsm(monkeypatch):
 
     assert (result["status"], result["phase"]) == ("failed", "fsm_not_walkable")
     assert sampler._i == 0
+
+
+@pytest.mark.asyncio
+async def test_a_wall_clock_step_does_not_end_the_turn(monkeypatch):
+    """The robot has no RTC, so NTP steps its clock; the turn's deadline must not move with it."""
+    import time
+
+    real_time, step = time.time, [0.0]
+    monkeypatch.setattr(time, "time", lambda: real_time() + step[0])
+
+    async def send(*a, **kw):
+        step[0] = 3600.0  # the first setpoint is sent inside the loop, after the deadline
+
+    monkeypatch.setattr(turn, "send_velocity_async", send)
+    sampler = _FakeSampler(
+        [_pose(0.0), _pose(0.0), _pose(math.radians(45)), _pose(math.radians(89))]
+    )
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=5.0)
+
+    assert result["phase"] == "reached"
