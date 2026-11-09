@@ -106,6 +106,49 @@ jobs:
       - name: Formatting
         run: bunx prettier --check "**/*.{ts,tsx,svelte,json,md}"
 
+  # Every other back test mocks drizzle, so who may read or write a chat, and
+  # what concurrent appends do to `seq`, had never run against Postgres. Its
+  # own process: those mocks are process-wide (see the test's header).
+  back-db:
+    name: back — chat persistence on Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: c3po
+          POSTGRES_PASSWORD: c3po
+          POSTGRES_DB: c3po_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - run: bun install --frozen-lockfile
+
+      # As in the typescript job; DATABASE_URL below overrides the example's.
+      - name: Seed .env from .env.example
+        run: |
+          cp apps/back/.env.example apps/back/.env
+          echo 'BETTER_AUTH_SECRET=ci-placeholder-not-a-secret-0000000000' \
+            >> apps/back/.env
+
+      - name: chats.ts on Postgres
+        working-directory: apps/back
+        env:
+          C3PO_DB_TEST: "1"
+          DATABASE_URL: postgres://c3po:c3po@localhost:5432/c3po_test
+        run: bun test src/db/chats.db.test.ts
+
   perception:
     name: Perception — lint, Stage 0 tests
     runs-on: ubuntu-latest
