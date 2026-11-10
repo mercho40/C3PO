@@ -3208,9 +3208,27 @@ async def look_around(
                 break
             if task.cancel_event.is_set():
                 break
-            result = await turn(
-                ctx, delta_yaw_radians=step_rad, timeout_s=30.0, tolerance_degrees=5.0
+            step = asyncio.ensure_future(
+                turn(ctx, delta_yaw_radians=step_rad, timeout_s=30.0, tolerance_degrees=5.0)
             )
+            heard = asyncio.ensure_future(task.cancel_event.wait())
+            try:
+                await asyncio.wait((step, heard), return_when=asyncio.FIRST_COMPLETED)
+            except BaseException:
+                step.cancel()  # as a plain await did: the sweep's own cancellation reaches the turn
+                raise
+            finally:
+                heard.cancel()
+            if not step.done():
+                # cancel_task names the sweep; the turn is its own registry task. While it
+                # runs no other turn can, so every running turn is this one.
+                registry = get_registry()
+                for t in registry.list_active():
+                    if t.skill_name == "turn":
+                        registry.cancel(t.task_id)
+            result = await step
+            if task.cancel_event.is_set():
+                break
             if result.get("status") not in ("ok", "completed"):
                 stopped = f"turn_{result.get('status')}: {result.get('error') or result.get('phase')}"
                 break
