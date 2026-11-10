@@ -52,10 +52,11 @@ sudo logrotate --debug "$stage/c3po.logrotate" >/dev/null
 sudo visudo -cf "$stage/c3po.sudoers" >/dev/null
 
 # Preserve the currently loaded bridge unit for a one-unit rollback, when this
-# install replaces it. -L dereferences the legacy checkout symlink; the backup
-# itself is root-owned.
+# install moves to a new commit. -L dereferences the legacy checkout symlink; the
+# backup itself is root-owned.
 sudo install -d -o root -g root -m 0755 /var/lib/c3po
-backup_unit_if_changed "/etc/systemd/system/$unit" "$stage/$unit" "/var/lib/c3po/previous-$unit"
+backup_unit_if_new_commit "/etc/systemd/system/$unit" "/var/lib/c3po/previous-$unit" \
+    "$here/../.." "$HOME/.c3po"
 
 # Retire the old automatic perception/repair layer. Stop the timer and any
 # already-triggered repair job, then refuse to remove a live perception unit:

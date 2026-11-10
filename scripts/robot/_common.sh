@@ -408,26 +408,36 @@ video_holder_kind() {
 
 # --- install bookkeeping ---------------------------------------------------
 
-# Keep the loaded unit as the rollback copy only when this install changes it.
-# Backing up on every run made a second install of the same unit overwrite the
-# one copy that was actually different.
-backup_unit_if_changed() {  # <live unit> <staged unit> <backup>
+# Keep the loaded unit as the rollback copy whenever this install moves to a new
+# commit, even with an identical unit, so it is always the unit that ran
+# previous-deploy (record_deploy). Re-installing the same commit keeps it: a
+# second run would overwrite the copy with the unit it just installed.
+backup_unit_if_new_commit() {  # <live unit> <backup> <checkout> <deploy dir>
+    local head
     sudo test -e "$1" || return 0
-    sudo cmp -s "$1" "$2" && return 0
-    sudo cp -L "$1" "$3"
-    sudo chown root:root "$3"
-    sudo chmod 0644 "$3"
+    head="$(git -C "$3" rev-parse HEAD 2>/dev/null)"
+    [ "$(cut -d' ' -f1 "$4/deployed" 2>/dev/null)" = "$head" ] && return 0
+    # A retry after an install that swapped the unit but died before
+    # record_deploy: the live unit is already the new one, so keep the backup.
+    [ "$(cat "$4/unit-backup-for" 2>/dev/null)" = "$head" ] && return 0
+    sudo cp -L "$1" "$2"
+    sudo chown root:root "$2"
+    sudo chmod 0644 "$2"
+    mkdir -p "$4" && printf '%s\n' "$head" >"$4/unit-backup-for"
 }
 
-# <dir>/deployed is "<commit> <UTC time>"; the record it replaces becomes
-# <dir>/previous-deploy, the commit a rollback returns to. Re-installing the same
-# commit keeps both, for the same reason as the unit backup.
+# <dir>/deployed is "<commit> <UTC time>"; when the commit changes, the commit
+# it replaces becomes <dir>/previous-deploy, bare, the one a rollback checks
+# out. Re-installing the same commit keeps both, for the same reason as the
+# unit backup.
 record_deploy() {  # <checkout> <dir>
-    local commit
+    local commit last
     commit="$(git -C "$1" rev-parse HEAD)" || return 1
     mkdir -p "$2"
-    if [ -f "$2/deployed" ] && [ "$(cut -d' ' -f1 "$2/deployed")" != "$commit" ]; then
-        mv -f "$2/deployed" "$2/previous-deploy"
+    last="$(cut -d' ' -f1 "$2/deployed" 2>/dev/null || true)"
+    if [ -n "$last" ] && [ "$last" != "$commit" ]; then
+        printf '%s\n' "$last" >"$2/previous-deploy"
+        rm -f "$2/deployed"
     fi
     [ -f "$2/deployed" ] || printf '%s %s\n' "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$2/deployed"
 }
