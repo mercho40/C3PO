@@ -482,7 +482,8 @@ async def go_to_object(
 
     refusal = _nav_refusal()
     nav_pose = None
-    if refusal is None and active_walk() is not None:
+    # navigate_to aside: a new goal replaces the running one, as in _nav_refusal.
+    if refusal is None and active_walk(ignore=("navigate_to",)) is not None:
         refusal = {"reason": "walk_task_active"}  # the no_active_walk_task precondition
     if refusal is None:
         from bridge.sdk.nav_link import get_nav_link
