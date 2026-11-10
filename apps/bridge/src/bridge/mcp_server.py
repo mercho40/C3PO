@@ -534,7 +534,7 @@ async def go_to_object(
 
     from bridge.skills.walk_to import run as run_walk_to
 
-    # autonomous: a model-chosen walk with no obstacle avoidance, so stale perception slows it (person rule).
+    # autonomous: a model-chosen walk with no obstacle avoidance, so no live detector stops it.
     result = await run_walk_to(
         target_x=tx,
         target_y=ty,
