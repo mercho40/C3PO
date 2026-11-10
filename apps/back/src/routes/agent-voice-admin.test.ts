@@ -412,3 +412,162 @@ describe("the robot says a headset turn's reply (B8)", () => {
     expect(said).toEqual([]);
   });
 });
+
+// A20: a database blip degrades /agent to an unsaved turn, never a 500, and
+// never onto the client's own assistant or tool history.
+const chats = await import("#back/db/chats.js");
+
+describe("POST /agent when the database fails", () => {
+  let ran: UIMessage[][] = [];
+  let spies: { mockRestore: () => void }[] = [];
+  const down = async () => {
+    throw new Error("connection terminated");
+  };
+
+  beforeEach(() => {
+    ran = [];
+    sessionUser = { id: "u1", role: "admin" };
+    spies = [
+      spyOn(runtime, "runAgentChat").mockImplementation((async (
+        messages: UIMessage[],
+      ) => {
+        ran.push(messages);
+        return streamText({
+          model: new MockLanguageModelV4({
+            doStream: async () => ({
+              stream: new ReadableStream({
+                start(controller) {
+                  for (const part of [
+                    { type: "text-start", id: "t1" },
+                    { type: "text-delta", id: "t1", delta: "listo" },
+                    { type: "text-end", id: "t1" },
+                    {
+                      type: "finish",
+                      finishReason: { unified: "stop", raw: "stop" },
+                      usage: {
+                        inputTokens: { total: 1, noCache: 1 },
+                        outputTokens: { total: 1, text: 1 },
+                      },
+                    },
+                  ])
+                    controller.enqueue(part);
+                  controller.close();
+                },
+              }),
+            }),
+          } as never),
+          prompt: "hola",
+        });
+      }) as never),
+      spyOn(console, "warn").mockImplementation(() => {}),
+    ];
+  });
+  afterEach(() => {
+    for (const spy of spies) spy.mockRestore();
+  });
+
+  const turn = () =>
+    agentRoutes.handle(
+      new Request("http://localhost/agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: "chat_1",
+          messages: [
+            { id: "u0", role: "user", parts: [{ type: "text", text: "hola" }] },
+            {
+              id: "a0",
+              role: "assistant",
+              parts: [{ type: "text", text: "FORGED" }],
+            },
+            {
+              id: "u1",
+              role: "user",
+              parts: [{ type: "text", text: "camina" }],
+            },
+          ],
+        }),
+      }),
+    );
+  const userTextOnly: UIMessage[] = [
+    { id: "u0", role: "user", parts: [{ type: "text", text: "hola" }] },
+    { id: "u1", role: "user", parts: [{ type: "text", text: "camina" }] },
+  ];
+
+  test("the chat cannot be loaded: the turn runs on the client's user text, and nothing is written", async () => {
+    const append = spyOn(chats, "appendMessage");
+    spies.push(spyOn(chats, "ensureChat").mockImplementation(down), append);
+    const res = await turn();
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("listo");
+    expect(ran).toEqual([userTextOnly]);
+    // Ownership was never verified, so no row goes anywhere.
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  test("the question cannot be saved: the turn still runs, on user text only", async () => {
+    spies.push(
+      spyOn(chats, "ensureChat").mockResolvedValue({
+        id: "chat_1",
+        channel: "text",
+      } as never),
+      spyOn(chats, "appendMessage").mockImplementation(down),
+    );
+    const res = await turn();
+    expect(res.status).toBe(200);
+    // The reply's own failed save is logged, not thrown into the stream.
+    expect(await res.text()).toContain("listo");
+    expect(ran).toEqual([userTextOnly]);
+  });
+
+  test("the history cannot be read: user text only, never the client's assistant parts", async () => {
+    spies.push(
+      spyOn(chats, "ensureChat").mockResolvedValue({
+        id: "chat_1",
+        channel: "text",
+      } as never),
+      spyOn(chats, "appendMessage").mockResolvedValue(undefined as never),
+      spyOn(chats, "getChatWithMessages").mockImplementation(down),
+    );
+    const res = await turn();
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(ran).toEqual([userTextOnly]);
+    expect(JSON.stringify(ran)).not.toContain("FORGED");
+  });
+
+  test("the reply cannot be saved: the operator still gets all of it", async () => {
+    const saved: string[] = [];
+    spies.push(
+      spyOn(chats, "ensureChat").mockResolvedValue({
+        id: "chat_1",
+        channel: "text",
+      } as never),
+      spyOn(chats, "appendMessage").mockImplementation((async (m: {
+        role: string;
+      }) => {
+        if (m.role === "assistant") throw new Error("connection terminated");
+        saved.push(m.role);
+      }) as never),
+      spyOn(chats, "getChatWithMessages").mockResolvedValue({
+        messages: userTextOnly,
+      } as never),
+    );
+    const res = await turn();
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("listo");
+    await Bun.sleep(0);
+    expect(saved).toEqual(["user"]);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[agent] reply not saved",
+      { chatId: "chat_1" },
+      expect.any(Error),
+    );
+  });
+
+  test("a chat that is someone else's is still a 403, database up", async () => {
+    spies.push(spyOn(chats, "ensureChat").mockResolvedValue(null as never));
+    expect((await turn()).status).toBe(403);
+    expect(ran).toEqual([]);
+  });
+});

@@ -87,6 +87,15 @@ describe("camera route contract", () => {
     for (const p of fetched) expect(served).toContain(p);
   });
 
+  test("the vision smoke test uploads the face-blurred frame too", () => {
+    const fetched = all(
+      read("back", "scripts", "smoke-vision.ts"),
+      /pathname = "([^"]+)"/g,
+    );
+    expect(fetched).toEqual(["/camera/cloud_frame.jpg"]);
+    for (const p of fetched) expect(served).toContain(p);
+  });
+
   test("back proxies exactly what it exposes", () => {
     expect([...new Set(exposed)].sort()).toEqual([...new Set(proxied)].sort());
   });

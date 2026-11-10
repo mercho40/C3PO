@@ -136,31 +136,39 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
 
       // Persistence is best-effort around the stream: a database problem should
       // degrade this to an unsaved conversation, not refuse to drive the robot.
+      // On a failure the history is the client's user text only (`stored`
+      // null), never its assistant or tool parts; an unverified owner (the
+      // ensureChat itself failed) also leaves `chatId` null, so nothing is
+      // written into a chat that may not be theirs.
       let chatId: string | null = null;
       let stored: Incoming[] | null = null;
       if (body.id) {
-        const owned = await ensureChat({
-          id: body.id,
-          userId: user.id,
-          // Better Auth's organization plugin tracks the active org on the
-          // session, not the user — a user can belong to several.
-          organizationId: session.activeOrganizationId ?? null,
-          title: titleFromParts(latest.parts),
-        });
-        if (!owned) return status(403);
-        // Voice transcripts are deliberately read-only in typed chat. Without
-        // this server-side check a caller could bypass the UI and merge channels.
-        if (owned.channel !== "text") return status(409);
-        chatId = owned.id;
+        try {
+          const owned = await ensureChat({
+            id: body.id,
+            userId: user.id,
+            // Better Auth's organization plugin tracks the active org on the
+            // session, not the user — a user can belong to several.
+            organizationId: session.activeOrganizationId ?? null,
+            title: titleFromParts(latest.parts),
+          });
+          if (!owned) return status(403);
+          // Voice transcripts are deliberately read-only in typed chat. Without
+          // this server-side check a caller could bypass the UI and merge channels.
+          if (owned.channel !== "text") return status(409);
+          chatId = owned.id;
 
-        await appendMessage({
-          id: latest.id,
-          chatId,
-          role: "user",
-          parts: latest.parts,
-        });
-        // Read after the append, so it ends in the message just saved.
-        stored = (await getChatWithMessages(chatId, user.id))?.messages ?? [];
+          await appendMessage({
+            id: latest.id,
+            chatId,
+            role: "user",
+            parts: latest.parts,
+          });
+          // Read after the append, so it ends in the message just saved.
+          stored = (await getChatWithMessages(chatId, user.id))?.messages ?? [];
+        } catch (err) {
+          console.warn("[agent] chat not saved, turn runs on user text", err);
+        }
       }
       const messages = trustedHistory(
         body.messages,
@@ -232,7 +240,9 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
             chatId,
             role: "assistant",
             parts: responseMessage.parts ?? [],
-          });
+          }).catch((err) =>
+            console.warn("[agent] reply not saved", { chatId }, err),
+          );
           if (isAborted) console.warn("agent turn aborted", { chatId });
         },
         // Surface the real cause (e.g. missing AGENT_API_KEY, an unreachable

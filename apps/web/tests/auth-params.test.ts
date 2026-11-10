@@ -7,6 +7,8 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_REDIRECT,
   oauthErrorMessage,
@@ -120,5 +122,17 @@ describe("authErrorMessage", () => {
         status: 400,
       }),
     ).toBe("El registro está cerrado. Pedile una cuenta a un admin.");
+  });
+});
+
+describe("no way in but /login", () => {
+  const at = (path: string) => fileURLToPath(new URL(path, import.meta.url));
+  test("sign-up is closed on back, so no page offers it", () => {
+    expect(existsSync(at("../src/routes/signup"))).toBe(false);
+    for (const page of [
+      "../src/routes/login/+page.svelte",
+      "../src/routes/+page.svelte",
+    ])
+      expect(readFileSync(at(page), "utf8")).not.toContain("signup");
   });
 });

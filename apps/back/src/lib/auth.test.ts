@@ -33,7 +33,11 @@ function readConfig(): {
   github?: boolean;
   google?: boolean;
 } {
-  const proc = Bun.spawnSync(["bun", "--no-env-file", "-e", PROBE], {
+  return runProbe(PROBE) as ReturnType<typeof readConfig>;
+}
+
+function runProbe(probe: string): unknown {
+  const proc = Bun.spawnSync(["bun", "--no-env-file", "-e", probe], {
     cwd: BACK,
     env: {
       PATH: process.env.PATH ?? "",
@@ -71,5 +75,50 @@ describe("auth sign-up policy", () => {
   test("OAuth cannot create a user implicitly either", () => {
     expect(config.github).toBe(true);
     expect(config.google).toBe(true);
+  });
+});
+
+/**
+ * A real socket on loopback, NODE_ENV unset as under `bun run dev` and the
+ * compiled binary: Better Auth leaves rate limiting off there by default, and
+ * keys it on X-Forwarded-For, which any client writes.
+ */
+const LIMIT_PROBE = `
+const { Elysia } = await import("elysia");
+const { betterAuth } = await import("./src/lib/auth-plugin.ts");
+const app = new Elysia().use(betterAuth).listen({ port: 0, hostname: "127.0.0.1" });
+const base = "http://127.0.0.1:" + app.server.port + "/api/auth";
+const signIn = [];
+for (let i = 0; i < 4; i++) {
+  const res = await fetch(base + "/sign-in/email", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113." + i },
+    body: "{}",
+  });
+  signIn.push(res.status);
+}
+let sessionLimited = 0;
+for (let i = 0; i < 120; i++) {
+  if ((await fetch(base + "/get-session")).status === 429) sessionLimited++;
+}
+console.log(JSON.stringify({ signIn, sessionLimited }));
+process.exit(0);
+`;
+
+describe("login rate limiting", () => {
+  const { signIn, sessionLimited } = runProbe(LIMIT_PROBE) as {
+    signIn: number[];
+    sessionLimited: number;
+  };
+
+  // A new X-Forwarded-For per attempt used to be a fresh bucket per attempt.
+  test("a fourth sign-in in 10 s is refused, whatever X-Forwarded-For says", () => {
+    expect(signIn.slice(0, 3)).not.toContain(429);
+    expect(signIn[3]).toBe(429);
+  });
+
+  // The console's server hooks call it for every operator from one address.
+  test("the session check is never limited", () => {
+    expect(sessionLimited).toBe(0);
   });
 });

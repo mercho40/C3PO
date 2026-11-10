@@ -14,6 +14,7 @@ import { Elysia } from "elysia";
 import { bridgeSiblingUrl } from "../bridge/url";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 import { logToolCall } from "#back/db/chats.js";
+import { clearPending } from "#back/agent/confirmations.js";
 
 export const safetyRoutes = new Elysia({ prefix: "/safety" })
   .use(betterAuth)
@@ -46,6 +47,9 @@ export const safetyRoutes = new Elysia({ prefix: "/safety" })
           if (user.role !== "admin") {
             return status(403, { error: "admin_required" });
           }
+          // A card asked before the stop is not confirmable after it, including
+          // one noted while the stop stood or after a PARAR back never saw.
+          clearPending();
           const secret = process.env.SAFETY_CONFIRM_SECRET;
           if (!secret) {
             return status(503, { error: "confirmation_not_configured" });

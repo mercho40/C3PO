@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { concat, downsample, encodeWav } from "../src/lib/robot/wav";
+import {
+  concat,
+  downsample,
+  encodeWav,
+  trimSilence,
+} from "../src/lib/robot/wav";
 import type { MessageLike } from "../src/lib/chat/turn";
 import {
   VOICE_CLOSE,
@@ -46,6 +51,21 @@ describe("WAV for /voice/transcribe", () => {
     expect([2, 3, 4].map((i) => v.getInt16(44 + i * 2 - 2, true))).toEqual([
       32767, -32768, 32767,
     ]);
+  });
+
+  test("trims the silence around the speech, keeping a margin", () => {
+    // 1 s quiet, 0.5 s said, 1 s quiet, at 100 Hz to keep it readable.
+    const s = new Float32Array(250).fill(0.005);
+    s.fill(0.2, 100, 150);
+    const out = trimSilence(s, 100, 0.01, 0.2);
+    expect(out.length).toBe(50 + 2 * 20);
+    expect(out[20]).toBeCloseTo(0.2);
+    expect(out[19]).toBeCloseTo(0.005);
+    // Speech at the very edges: nothing to trim, nothing invented.
+    expect(trimSilence(new Float32Array([0.5, 0, 0.5]), 100).length).toBe(3);
+    // Nothing reaches the level: nothing left to send.
+    expect(trimSilence(new Float32Array(100).fill(0.009), 100).length).toBe(0);
+    expect(trimSilence(new Float32Array(0)).length).toBe(0);
   });
 
   test("concatenates recorder chunks in order", () => {

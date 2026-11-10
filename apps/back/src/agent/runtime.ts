@@ -201,8 +201,10 @@ const SYSTEM_PREAMBLE = [
   "Environment: call get_state and read `env` to learn which target you are",
   "driving — 'stub', 'isaac' (simulator) or 'real' (physical robot). Do this",
   "before your first motion command in a session, and never assume. Each skill's",
-  "catalogue entry below marks where it works: a skill that does not support the",
-  "current env will be constructed and logged but produce no motion.",
+  "catalogue entry below marks where it has been seen to work. That tag is a",
+  "record, not a switch: on 'real' every skill you call is sent to the physical",
+  "robot, so a skill not marked for real is untested motion, not a no-op. On",
+  "'isaac' a skill not marked for sim may only be logged.",
   "",
   "Report what actually happened, not what you intended. If a skill did not run",
   "on this target, say so plainly rather than describing motion that didn't",
@@ -301,17 +303,35 @@ export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
  * gate — not this list — decides whether an overheard request moves an arm.
  * `high` stays for T1 until Nav2 has driven the robot under the governor: it
  * is what keeps `arm_navigation` off voice.
+ *
+ * Voice also drops a skill nobody has watched work on either target: on 'real'
+ * the bridge dispatches it live all the same, and squat, sit_g1, dance and
+ * lie_up are T1, so no confirmation stands between a misheard word and the
+ * posture. T0 never moves, T2 waits for «Confirmar», and cancel_navigation
+ * only ends motion, so those stay. No tier (an older bridge) is not T0.
  */
 export function offeredInMode(
-  skill: { name: string; dangerLevel?: string; tier?: string },
+  skill: {
+    name: string;
+    dangerLevel?: string;
+    tier?: string;
+    works: { sim: boolean; real: boolean };
+  },
   mode: AgentMode,
 ): boolean {
   if (agentToolExclusions(mode).has(skill.name)) return false;
   // back's own look/verify (agent/look.ts) take the names; the bridge's Gemini ones are not offered.
   if (BACK_TOOL_NAMES.has(skill.name)) return false;
-  return (
-    mode !== "voice" || skill.tier === "T2" || skill.dangerLevel !== "high"
-  );
+  if (mode !== "voice") return true;
+  const unwatched = !skill.works.sim && !skill.works.real;
+  if (
+    unwatched &&
+    skill.tier !== "T0" &&
+    skill.tier !== "T2" &&
+    skill.name !== "cancel_navigation"
+  )
+    return false;
+  return skill.tier === "T2" || skill.dangerLevel !== "high";
 }
 
 const VOICE_PREAMBLE = [

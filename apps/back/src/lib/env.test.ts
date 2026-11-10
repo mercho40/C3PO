@@ -145,4 +145,19 @@ describe("apps/back environment contract", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  test("every default for the AI gateway is https: campus Wi-Fi blocks port 80", () => {
+    const defaults = [
+      ...sourceFiles(join(BACK, "src")),
+      ...sourceFiles(join(BACK, "scripts")),
+    ].flatMap((file) =>
+      [
+        ...readFileSync(file, "utf8").matchAll(
+          /AGENT_BASE_URL\s*\?\?\s*"([^"]+)"/g,
+        ),
+      ].map((m) => m[1]),
+    );
+    expect(defaults.length).toBeGreaterThanOrEqual(4);
+    for (const url of defaults) expect(url).toStartWith("https://");
+  });
 });

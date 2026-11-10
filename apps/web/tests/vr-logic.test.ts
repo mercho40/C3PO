@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import {
   BRING_UP_STEPS,
   GESTURE_CATALOGUE_FALLBACK,
+  GESTURE_FSM,
   GESTURE_LABELS,
   OUTCOME_SETTLE_MS,
   OUTCOME_TTL_MS,
@@ -60,6 +61,10 @@ describe("postureGate", () => {
   test("standing prepared is not walking", () => {
     expect(postureGate("preparation", true, WALK_FSM)).toBe("wrong_posture");
     expect(postureGate(null, true, WALK_FSM)).toBe("wrong_posture");
+  });
+  test("802 (run) acks velocity and does not walk, but may still gesture", () => {
+    expect(postureGate("run", true, WALK_FSM)).toBe("wrong_posture");
+    expect(postureGate("run", true, GESTURE_FSM)).toBe("ok");
   });
 });
 

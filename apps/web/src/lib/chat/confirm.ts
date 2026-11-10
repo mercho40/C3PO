@@ -20,6 +20,12 @@ export type DecisionResult = {
   outcome: SkillOutcome;
   /** For the agent; null when nothing ran (or the answer never arrived). */
   message: string | null;
+  /**
+   * False when the call is still pending on back: nothing reached the bridge
+   * (a failed grant), or the answer never arrived. Pressing again is safe: back
+   * takes a pending call once, so it can never run twice.
+   */
+  final: boolean;
 };
 
 export async function decideCall(
@@ -45,14 +51,25 @@ export async function decideCall(
     );
   } catch {
     // It may have run: back stopped answering, not necessarily the robot.
-    return { outcome: classifyHttpError(null, null), message: null };
+    return {
+      outcome: classifyHttpError(null, null),
+      message: null,
+      final: false,
+    };
   }
   const body = (await res.json().catch(() => null)) as {
     result?: unknown;
     message?: unknown;
   } | null;
   const message = typeof body?.message === "string" ? body.message : null;
-  if (!res.ok) return { outcome: classifyHttpError(res.status, body), message };
+  // Back restores the call whenever nothing ran, and then has no `message`; a
+  // 409 says it is no longer pending.
+  if (!res.ok)
+    return {
+      outcome: classifyHttpError(res.status, body),
+      message,
+      final: message !== null || res.status === 409,
+    };
   return {
     outcome:
       decision === "cancel"
@@ -65,6 +82,7 @@ export async function decideCall(
           }
         : classifySkillResult(body?.result),
     message,
+    final: true,
   };
 }
 
