@@ -1,6 +1,6 @@
 # C3PO Web (`apps/web`)
 
-SvelteKit 3 operator console (Svelte 5 runes, Tailwind CSS 4): login/signup and
+SvelteKit 3 operator console (Svelte 5 runes, Tailwind CSS 4): login and
 a `(protected)` group with the dashboard, live map, cameras, agent chat with
 history, voice control, VR control, a health board and settings. The page list
 lives once, in `src/lib/nav.ts` — sidebar entries, topbar titles and browser-tab
@@ -50,8 +50,8 @@ are two different transports, not two addresses for one (below).
   `redirectToLogin()` — an expired session is never shown as a robot that is
   "offline". `redirectTo` is sanitised server-side (`login/auth-params.ts`,
   tested against open-redirect forms).
-- Login/signup are server-rendered and redirect already-authenticated visitors
-  in their `+page.server.ts`. Logout navigates with `refreshAll`, which is
+- Login is server-rendered and redirects already-authenticated visitors in
+  its `+page.server.ts`. Logout navigates with `refreshAll`, which is
   what keeps the root layout's `data.user` from bouncing `/login` →
   `/dashboard` → `/login`.
 - Social buttons render only for providers `back` reports as configured on

@@ -58,12 +58,8 @@ const body = (signature: string): string => {
 };
 
 describe("observe-only commands nothing", () => {
-  test("the local velocity loop refuses to run", () => {
-    expect(body("#loopShouldRun(): boolean {")).toContain(
-      "if (this.viewOnly) return false;",
-    );
-  });
-
+  // The local velocity loop refusing to run is pinned by behaviour in
+  // vr-control-runtime.test.ts.
   test("the teleop socket cannot be opened during the session", () => {
     const connect = body("async connectStream(): Promise<void> {");
     expect(connect).toContain("if (this.viewOnly) return;");
@@ -152,5 +148,6 @@ describe("a held stick cannot re-arm its own latch", () => {
   });
 });
 
-// The headset PARAR down the teleop socket (C6) and the per-connect token (X15)
-// are pinned by behaviour in vr-control-runtime.test.ts.
+// The headset PARAR down the teleop socket (C6), the per-connect token (X15),
+// the chord's 300 ms, observe-only sending nothing but PARAR, and PARAR
+// dropping the arms are pinned by behaviour in vr-control-runtime.test.ts.

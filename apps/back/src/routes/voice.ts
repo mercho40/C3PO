@@ -356,10 +356,16 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
         return status(413, { error: "audio_too_long" });
       }
       try {
+        // Stage times for the headset's voice latency (the Quest logs the rest).
+        const since = (t: number) => Math.round(performance.now() - t);
+        const startedAt = performance.now();
+        const audio = await request.arrayBuffer();
+        const uploadedAt = performance.now();
         const text = await transcribe(
-          await request.arrayBuffer(),
+          audio,
           request.headers.get("content-type") ?? "audio/wav",
         );
+        const stages = `[voice] transcribe ${audio.byteLength} B: upload ${Math.round(uploadedAt - startedAt)} ms, transcribe ${since(uploadedAt)} ms`;
         // The admin's OWN push-to-talk, decided here and never by the model:
         // «confirmo» runs the one refused call this client shows (`pending`,
         // in chat `chatId`) exactly as the Confirmar button would. Anything
@@ -369,6 +375,7 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
           query.chatId ? listPending(user.id, query.chatId) : [],
           query.pending,
         );
+        if (decision.kind !== "confirm") console.log(stages);
         if (decision.kind === "none") return { text };
         server?.timeout(request, 0); // the confirmed call may outlast Bun's 10 s idle cut
         if (decision.kind === "ambiguous")
@@ -384,7 +391,9 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
             confirmation: { action: "cancelled", tool: p.tool, ...r.body },
           };
         }
+        const confirmAt = performance.now();
         const r = await confirmPending(p.tool, p.id, p.args, user, "voice");
+        console.log(`${stages}, confirm ${since(confirmAt)} ms`);
         return {
           text,
           confirmation: {

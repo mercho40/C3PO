@@ -20,7 +20,7 @@ export type AuthPageData = {
 };
 
 /**
- * Everything /login and /signup need before rendering.
+ * Everything /login needs before rendering.
  *
  * `/health` is public and cheap; it also doubles as the "is back up at all"
  * probe for a visitor with no session cookie, whom the session hook never

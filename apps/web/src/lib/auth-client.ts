@@ -38,7 +38,7 @@ const AUTH_ERRORS: Record<string, string> = {
   PROVIDER_NOT_FOUND: "Ese método de ingreso no está habilitado.",
   TOO_MANY_REQUESTS: "Demasiados intentos. Esperá un momento y probá de nuevo.",
   // Public sign-up is closed (apps/back auth.ts); an admin makes accounts with
-  // apps/back/scripts/create-user.ts. /signup stays, and says so.
+  // apps/back/scripts/create-user.ts. No page signs up any more.
   EMAIL_PASSWORD_SIGN_UP_DISABLED:
     "El registro está cerrado. Pedile una cuenta a un admin.",
   // Back refused the request because of WHERE it came from: the console's

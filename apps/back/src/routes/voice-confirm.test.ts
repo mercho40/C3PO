@@ -200,4 +200,25 @@ describe("spoken confirmation on /voice/transcribe", () => {
     expect(told[0]?.[1]).toContain("El operador confirmó y se ejecutó pick");
     expect(told[1]?.[1]).toContain("El operador canceló pick");
   });
+
+  test("each stage of the request is timed in the log", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    restore.push(() => log.mockRestore());
+    refuse("c1");
+    await say("?chatId=chat_1&pending=c1");
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    expect(
+      lines.some((l) =>
+        /^\[voice\] transcribe 64 B: upload \d+ ms, transcribe \d+ ms, confirm \d+ ms$/.test(
+          l,
+        ),
+      ),
+    ).toBe(true);
+    heard = "hola";
+    await say("?chatId=chat_1");
+    const last = log.mock.calls[log.mock.calls.length - 1];
+    expect(String(last?.[0])).toMatch(
+      /^\[voice\] transcribe 64 B: upload \d+ ms, transcribe \d+ ms$/,
+    );
+  });
 });

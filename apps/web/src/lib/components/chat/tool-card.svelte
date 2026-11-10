@@ -39,6 +39,8 @@
   const confirmable = $derived(onconfirmed ? needsConfirmation(part) : null);
   let running = $state(false);
   let outcome = $state<SkillOutcome | null>(null);
+  // False while back still holds the call (nothing ran): the button stays usable.
+  let final = $state(false);
 
   // One press is the whole action: back grants this exact call (these
   // arguments, shown beside the button: Tool.Input is collapsed here) and runs
@@ -55,6 +57,7 @@
         "confirm",
       );
       outcome = r.outcome;
+      final = r.final;
       if (r.message) onconfirmed?.(r.message);
     } finally {
       running = false;
@@ -89,15 +92,17 @@
     <div class="flex flex-wrap items-center gap-2 px-3 pb-3">
       <Button
         size="sm"
-        disabled={running || outcome !== null || live}
+        disabled={running || final || live}
         onclick={() => confirm(confirmable)}
         title={live ? "Esperá a que el agente termine su turno" : undefined}
       >
         {running
           ? `Ejecutando ${confirmable}…`
-          : outcome
+          : final
             ? `Confirmado: ${confirmable}`
-            : `Confirmar ${confirmable}`}
+            : outcome
+              ? `Reintentar ${confirmable}`
+              : `Confirmar ${confirmable}`}
       </Button>
       <code
         class="max-w-full min-w-0 truncate readout text-xs text-ink-mute"

@@ -13,11 +13,13 @@
  */
 import { Chat } from "@ai-sdk/svelte";
 import { DefaultChatTransport, type UIMessage } from "ai";
+import { untrack } from "svelte";
 import { PUBLIC_API_URL } from "$app/env/public";
 import { ADMIN_REQUIRED_HINT } from "#lib/chat/chat-error.js";
 import { decideCall } from "#lib/chat/confirm.js";
 import { newId } from "#lib/chat/ids.js";
 import type { MenuItem, VoiceLine } from "#lib/webxr/menu-layer.js";
+import { estop } from "./estop.svelte";
 import { redirectToLogin } from "./poller.svelte";
 import type { StopLatch } from "./stop-latch.svelte";
 import {
@@ -30,7 +32,7 @@ import {
   voiceMenu,
   type VoicePhase,
 } from "./voice-panel";
-import { concat, downsample, encodeWav, TARGET_RATE } from "./wav";
+import { concat, downsample, encodeWav, TARGET_RATE, trimSilence } from "./wav";
 // no-inline: a same-origin file, not a data: URL, is what every worklet loader accepts.
 import workletUrl from "./mic-capture.worklet.js?url&no-inline";
 
@@ -46,6 +48,9 @@ type VoiceConfirmation = {
 
 const MAX_TALK_S = 30; // the backend takes ~60 s; nobody holds B that long on purpose
 const MIN_TALK_S = 0.3; // a tap is not an utterance
+// The wait on /voice/transcribe is deliberate (a «confirmo» may be running the
+// call), but a request whose answer never comes must not hold the panel forever.
+const REPLY_TIMEOUT_MS = 60_000;
 
 export class VrVoice {
   /** Voice mode: the headset menu shows the conversation instead of gestures. */
@@ -66,6 +71,9 @@ export class VrVoice {
   #startedAt = 0;
   #stateLogged = false;
   #opening = false; // a second tap during the permission prompt must not open a second mic
+  /** Bumped per upload, by PARAR and by the give-up: a reply to an older one is dropped. */
+  #request = 0;
+  #unwatchStop: () => void;
 
   constructor(latch: StopLatch) {
     this.#latch = latch;
@@ -82,6 +90,13 @@ export class VrVoice {
           return res;
         },
       }),
+    });
+    // PARAR drops the utterance in flight: nothing said before the stop reaches
+    // the agent after it, and the panel is free again at once.
+    this.#unwatchStop = $effect.root(() => {
+      $effect(() => {
+        if (estop.phase === "sending") untrack(() => this.#abandon(null));
+      });
     });
   }
 
@@ -215,6 +230,7 @@ export class VrVoice {
 
   async #finish(): Promise<void> {
     if (!this.#recording || !this.#ctx) return;
+    const recordMs = Math.round(performance.now() - this.#startedAt);
     this.#recording = false;
     this.#node?.port.postMessage(false);
     const samples = concat(this.#chunks);
@@ -232,19 +248,36 @@ export class VrVoice {
     // one call on screen only, before any model sees it (voice.ts): with a call
     // on screen this request may also run it, so say so while it waits.
     const shown = this.#shown;
-    this.phase = shown ? "deciding" : "transcribing";
+    const req = ++this.#request;
+    const giveUp = setTimeout(() => {
+      if (req === this.#request)
+        this.#abandon(
+          shown
+            ? "Sin respuesta en 60 s: si dijiste «confirmo», puede haberse ejecutado."
+            : "Sin respuesta en 60 s: probá de nuevo.",
+        );
+    }, REPLY_TIMEOUT_MS);
     try {
-      const wav = encodeWav(
+      const speech = trimSilence(
         downsample(samples, this.#ctx.sampleRate, TARGET_RATE),
       );
+      if (speech.length === 0) {
+        this.phase = "idle";
+        this.error = "No se oyó nada: hablá más cerca del visor.";
+        return;
+      }
+      this.phase = shown ? "deciding" : "transcribing";
+      const wav = encodeWav(speech);
       const q = new URLSearchParams({ chatId: this.#chat.id });
       if (shown) q.set("pending", shown.id);
+      const sentAt = performance.now();
       const res = await fetch(`${PUBLIC_API_URL}/voice/transcribe?${q}`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "audio/wav" },
         body: new Blob([wav.buffer as ArrayBuffer], { type: "audio/wav" }),
       });
+      if (req !== this.#request) return;
       if (res.status === 401) redirectToLogin("expired");
       if (res.status === 403) {
         this.phase = "idle";
@@ -256,6 +289,11 @@ export class VrVoice {
         error?: string;
         confirmation?: VoiceConfirmation;
       };
+      if (req !== this.#request) return;
+      // Back logs its own split of the second figure (upload, transcribe).
+      console.info(
+        `[vr-voice] record ${recordMs} ms (${(speech.length / TARGET_RATE).toFixed(1)} s sent), upload+transcribe ${Math.round(performance.now() - sentAt)} ms`,
+      );
       if (!res.ok) throw new Error(body.error ?? String(res.status));
       const text = (body.text ?? "").trim();
       this.phase = "idle";
@@ -267,11 +305,29 @@ export class VrVoice {
         this.#spoken(body.confirmation);
         return;
       }
-      void this.#chat.sendMessage({ text });
+      const askedAt = performance.now();
+      void this.#chat
+        .sendMessage({ text })
+        .then(() =>
+          console.info(
+            `[vr-voice] agent ${Math.round(performance.now() - askedAt)} ms`,
+          ),
+        );
     } catch (e) {
+      if (req !== this.#request) return;
       this.phase = "idle";
       this.error = `No se pudo transcribir (${e instanceof Error ? e.message : "error"}).`;
+    } finally {
+      clearTimeout(giveUp);
     }
+  }
+
+  /** Stop waiting on the utterance in flight; its reply, when it comes, is dropped. */
+  #abandon(error: string | null): void {
+    this.cancelTalk();
+    this.#request++;
+    this.phase = "idle";
+    this.error = error;
   }
 
   /** A `voice:*` menu selection. True when handled. */
@@ -337,6 +393,7 @@ export class VrVoice {
   }
 
   destroy(): void {
+    this.#unwatchStop();
     this.#releaseMic();
     void this.#chat.stop();
   }
