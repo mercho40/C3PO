@@ -41,6 +41,9 @@ class _Sampler:
     def get_state(self):
         return {"pose": {"x_meters_world": 0.0, "y_meters_world": 0.0, "yaw_radians_world": 0.0}}
 
+    def latest_pose(self):
+        return 0.0, 0.0, 0.0
+
 
 def test_no_lease_is_no_conflict():
     assert teleop_conflict() is None

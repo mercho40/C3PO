@@ -146,6 +146,43 @@ async def test_look_around_stops_at_the_first_failed_turn(monkeypatch, mem):
     assert out["turned_degrees"] == 0.0
 
 
+def _look_around_tasks():
+    from bridge.skills.task_runtime import get_registry
+
+    return [t for t in get_registry().list_active() if t.skill_name == "look_around"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_a_dwell_ends_the_sweep_at_once(monkeypatch, mem):
+    """PARAR's soft path (soft_stop) cancels every registry task; a dwell must hear it."""
+    import asyncio
+
+    from bridge.skills.task_runtime import get_registry
+
+    monkeypatch.setattr(server, "SIM_MODE", "real")  # real dwells
+    monkeypatch.setattr(server, "LOOK_DWELL_S", 5.0)
+    fake = FakeTurn()
+    monkeypatch.setattr(server, "turn", fake)
+
+    sweep = asyncio.ensure_future(server.look_around(None, total_degrees=360))
+    await asyncio.sleep(0.05)  # inside the first dwell
+    [task] = _look_around_tasks()
+    get_registry().cancel(task.task_id)
+    out = await asyncio.wait_for(sweep, 1.0)
+
+    assert (out["status"], out["stopped_reason"]) == ("stopped", "cancelled")
+    assert fake.calls == []
+    assert task.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_finished_sweep_leaves_no_running_task(monkeypatch, mem):
+    monkeypatch.setattr(server, "turn", FakeTurn())
+    out = await server.look_around(None, total_degrees=120)
+    assert out["status"] == "ok"
+    assert _look_around_tasks() == []
+
+
 # -- wiring --------------------------------------------------------------------
 
 
@@ -184,3 +221,19 @@ def test_a_failing_listener_does_not_cost_the_report():
     link.on_report = boom
     assert link._ingest_report(_report())
     assert link.latest_report()[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_look_around_is_refused_while_a_walk_runs(monkeypatch, mem):
+    from bridge.skills.task_runtime import get_registry
+
+    fake = FakeTurn()
+    monkeypatch.setattr(server, "turn", fake)
+    walking = get_registry().create("walk_to")
+    try:
+        out = await server.look_around(None, total_degrees=360)
+    finally:
+        walking.status = "completed"
+    assert (out["status"], out["error"]) == ("failed", "walk_task_active")
+    assert fake.calls == []
+    assert _look_around_tasks() == []

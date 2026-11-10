@@ -16,7 +16,11 @@ Two gates live here, and both sit on a path the LLM cannot route around:
    * the person-distance rule: a fresh `person` detection inside
      PERSON_SLOW_M scales speed by PERSON_SLOW_FACTOR, inside PERSON_STOP_M
      stops the base;
-   * the stale-perception policy, for AUTONOMOUS sources only (Nav2 today);
+   * the stale-perception policy, for AUTONOMOUS sources only (Nav2 and
+     go_to_object's walk);
+   * the blind rule, for Nav2's cmd_vel only: zero unless a fresh world
+     summary says the lidar is online. Nav2 steers on the lidar costmap;
+     go_to_object steers on the camera, so a lidar fault must not stop it;
    * the geofence, while the Nav2 gate is armed: zero further than
      SAFETY_GEOFENCE_M from where arm_navigation found the robot, or with no
      fresh odometry pose to measure. Manual driving is never fenced;
@@ -341,12 +345,17 @@ def _geofence_block() -> str | None:
 
 
 def govern(
-    vx: float, vy: float, vyaw: float, *, autonomous: bool = False
+    vx: float, vy: float, vyaw: float, *, autonomous: bool = False, nav2: bool = False
 ) -> tuple[float, float, float]:
-    """The velocity that may actually reach the legs for this request."""
+    """The velocity that may actually reach the legs for this request.
+
+    `nav2` marks Nav2's cmd_vel, the one source that steers on the lidar costmap;
+    it is autonomous too.
+    """
     global _last, _last_at, _last_reason
+    autonomous = autonomous or nav2
     factor, reason = speed_factor(autonomous=autonomous)
-    if autonomous and not obstacles_fresh():
+    if nav2 and not obstacles_fresh():
         # Nav2 keeps planning on its last costmap when the sensor goes quiet, and
         # Humble's collision monitor ignores a stale source: blind, so it fails open.
         factor, reason = 0.0, "obstacle_source_stale"

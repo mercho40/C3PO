@@ -29,8 +29,16 @@ from typing import Any
 import structlog
 
 from bridge import safety
-from bridge.skills._locomotion import DEFAULT_HEIGHT, send_velocity_async, teleop_conflict
+from bridge.skills._locomotion import (
+    DEFAULT_HEIGHT,
+    TELEOP_TAKEOVER,
+    arm_hold_conflict,
+    fsm_conflict,
+    send_velocity_async,
+    teleop_conflict,
+)
 from bridge.skills.task_runtime import get_registry
+from bridge.skills.walk_to import WALK_SKILLS
 
 log = structlog.get_logger(__name__)
 
@@ -56,6 +64,10 @@ MAX_DURATION_S = 3.0
 # How often the setpoint is re-issued. Well inside the firmware's 1 s duration,
 # and the same tick the loop already used to watch for cancellation.
 REISSUE_PERIOD_S = 0.05
+
+# How long to wait for a preempted walk to end before driving anyway. walk_to and
+# turn end on a 0.4 s zero burst, navigate_to's monitor within NAV_POLL_S (0.25 s).
+PREEMPT_WAIT_S = 1.0
 
 
 async def run(
@@ -103,6 +115,45 @@ async def run(
             task.ended_at = time.time()
             log.warning("walk_velocity.teleop_active", task_id=task.task_id)
             return task.to_dict()
+        # A zero call is a stop (the headset's stop pulses), and neither check below may refuse it.
+        moving = any((clamped_vx, clamped_vy, clamped_vyaw))
+        conflict = arm_hold_conflict() if moving else None
+        if conflict is not None:
+            task.status = "failed"
+            task.phase = "arm_held"
+            task.error = conflict
+            task.ended_at = time.time()
+            log.warning("walk_velocity.arm_held", task_id=task.task_id)
+            return task.to_dict()
+        conflict = fsm_conflict() if moving else None
+        if conflict is not None:
+            task.status = "failed"
+            task.phase = "fsm_not_walkable"
+            task.error = conflict
+            task.ended_at = time.time()
+            log.warning("walk_velocity.fsm_not_walkable", task_id=task.task_id)
+            return task.to_dict()
+
+        # Decision 11.6b: deliberate operator input preempts an agent walk. Never another
+        # walk_velocity: the headset renews its walk with overlapping 1 s calls.
+        registry = get_registry()
+        preempted = [
+            t
+            for t in registry.list_active()
+            if t.skill_name in WALK_SKILLS and t.skill_name != "walk_velocity"
+        ]
+        for other in preempted:
+            registry.cancel(other.task_id)
+        if preempted:
+            log.warning(
+                "walk_velocity.preempted",
+                task_id=task.task_id,
+                preempted=[t.task_id for t in preempted],
+            )
+        # Let their stop bursts finish first, so ours is the only commander on the base.
+        wait_until = time.monotonic() + PREEMPT_WAIT_S
+        while any(t.status == "running" for t in preempted) and time.monotonic() < wait_until:
+            await asyncio.sleep(REISSUE_PERIOD_S)
 
         setpoint = (clamped_vx, clamped_vy, clamped_vyaw, DEFAULT_HEIGHT)
         code = await send_velocity_async(*setpoint)
@@ -124,9 +175,14 @@ async def run(
         # Monotonic: an NTP step mid-walk must not stretch or cut the walk.
         deadline = time.monotonic() + clamped_duration
         cancelled = False
+        taken_over = False
         while (remaining := deadline - time.monotonic()) > 0:
             if task.cancel_event.is_set():
                 cancelled = True
+                break
+            # The headset took over mid-walk: the person in the room wins, as in walk_to.
+            if teleop_conflict() is not None:
+                taken_over = True
                 break
             task.progress = max(0.0, min(0.999, 1.0 - remaining / max(clamped_duration, 1e-6)))
             await asyncio.sleep(min(REISSUE_PERIOD_S, remaining))
@@ -138,6 +194,11 @@ async def run(
         if cancelled:
             task.status = "cancelled"
             task.phase = "cancelled"
+        elif taken_over:
+            task.status = "failed"
+            task.phase = "teleop_takeover"
+            task.error = TELEOP_TAKEOVER
+            log.warning("walk_velocity.teleop_takeover", task_id=task.task_id)
         else:
             task.status = "completed"
             task.phase = "duration_elapsed"

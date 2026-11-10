@@ -156,13 +156,14 @@ def test_person_distance_scales_every_source(sent, link, range_m, expected):
     assert sent[-1][0] == pytest.approx(expected)
 
 
-def test_stale_perception_stops_autonomous_motion_only(sent, link):
+def test_stale_perception_slows_autonomous_motion_only(sent, link):
     link.age = 1.5  # older than PERCEPTION_STALE_S: the lidar reading is stale too
     _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
     assert sent[-1][0] == 0.3  # the console walk pad works without perception
     safety.reset()
+    # go_to_object's walk: autonomous, not Nav2, so a stale lidar slows it (person rule), never zeroes it.
     _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
-    assert sent[-1][0] == 0.0
+    assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
 
 
 @pytest.mark.parametrize(
@@ -679,7 +680,7 @@ def _battery(monkeypatch, soc, *, age_s=0.0):
 
     sampler = state.StateSampler()
     if soc is not None:
-        sampler._bms = state._BmsSnapshot(received_at=time.time() - age_s, soc_pct=soc)
+        sampler._bms = state._BmsSnapshot(received_at=time.monotonic() - age_s, soc_pct=soc)
     monkeypatch.setattr(state, "_sampler_singleton", sampler)
 
 
@@ -757,10 +758,22 @@ def test_nav2_does_not_drive_blind(sent, link, report, age):
     link.report, link.age = report, age
     perception_link._default_forward(0.3, 0.0, 0.3)
     assert sent[-1][:3] == (0.0, 0.0, 0.0)
+    assert safety.status()["last_reason"] == "obstacle_source_stale"
     # People driving still move: the console pad and walk_to are not Nav2.
     safety.reset()
     _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
     assert sent[-1][0] == 0.3
+
+
+def test_go_to_object_walks_with_the_lidar_faulted(sent, link):
+    """d6acd8b's blind rule is Nav2's: go_to_object steers on the camera, not the costmap."""
+    link.report = _report(lidar_online=False)  # the Mid-360S scan fault, detector fresh
+    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
+    assert sent[-1][0] == 0.3
+    # ...and the person rule still applies to it.
+    link.report = _report(person(1.0), lidar_online=False)
+    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
+    assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
 
 
 def test_nav2_drives_when_the_lidar_reports(sent, link):

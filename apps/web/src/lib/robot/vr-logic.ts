@@ -25,18 +25,19 @@ import type { TeleopStatus } from "#lib/teleop/stream.js";
 /**
  * Postures in which the robot is running a walk program.
  *
- * Walking needs one (FSM 500/501 — `walk_velocity` is refused with an RPC error
- * from anything else), and so does every dedicated gesture tool: each declares
- * `fsm_state_in_{walk,walk_waist,run}`. The firmware refuses gestures from any
- * other state with 7302, which used to arrive as a bare "Falló" — the "go debug
- * the robot" signal for a robot that is simply standing still.
+ * Walking needs one: FSM 500/501. `run` is FSM 802 (R2+A on the remote), where
+ * SetVelocity answers 0 and the legs ignore it, so the bridge's walk tools
+ * refuse it (`fsm_not_walkable`) and the walk pad must not call it ready.
  *
- * `run` is FSM 802, a label the bridge itself calls suspect; it is included
- * because a gesture has executed on hardware from exactly that id (wave,
- * 2026-08-15), and refusing to let the operator try would be the page guessing.
+ * Every dedicated gesture tool declares `fsm_state_in_{walk,walk_waist,run}`.
+ * The firmware refuses gestures from any other state with 7302, which used to
+ * arrive as a bare "Falló" — the "go debug the robot" signal for a robot that is
+ * simply standing still. `run` is in that list because a gesture has executed
+ * on hardware from exactly that id (wave, 2026-08-15), and refusing to let the
+ * operator try would be the page guessing.
  */
-export const WALK_FSM = ["walk", "walk_waist", "run"] as const;
-export const GESTURE_FSM = WALK_FSM;
+export const WALK_FSM = ["walk", "walk_waist"] as const;
+export const GESTURE_FSM = [...WALK_FSM, "run"] as const;
 
 /**
  * The one-shot gestures, each its own bridge tool. ONE list for the page's

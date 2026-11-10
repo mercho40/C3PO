@@ -100,13 +100,20 @@ def _get_publisher() -> Any:
 
 
 def send_velocity(
-    vx: float, vy: float, vyaw: float, height: float, *, autonomous: bool = False
+    vx: float,
+    vy: float,
+    vyaw: float,
+    height: float,
+    *,
+    autonomous: bool = False,
+    nav2: bool = False,
 ) -> int | None:
     """Send one body-frame velocity setpoint, by whatever channel this target uses.
 
     `height` applies to the sim channel only; see the module docstring.
-    `autonomous` marks a source with no person in its loop (Nav2): it gets the
-    safety governor's stale-perception policy on top of the shared rules.
+    `autonomous` marks a source with no person in its loop (Nav2, go_to_object):
+    it gets the safety governor's stale-perception policy on top of the shared
+    rules. `nav2` marks Nav2's cmd_vel alone, which also gets the blind rule.
 
     Returns the robot's RPC code on real hardware (0 = acknowledged), and None
     in sim, where the setpoint is a fire-and-forget publish with no ack.
@@ -131,7 +138,7 @@ def send_velocity(
             # headset, Nav2) still cannot move the robot while PARAR stands.
             log.warning("locomotion.refused_stop_standing", vx=vx, vy=vy, vyaw=vyaw)
             vx = vy = vyaw = 0.0
-        vx, vy, vyaw = safety.govern(vx, vy, vyaw, autonomous=autonomous)
+        vx, vy, vyaw = safety.govern(vx, vy, vyaw, autonomous=autonomous, nav2=nav2)
 
         code, _ = g1_rpc.call_set_velocity(vx, vy, vyaw, VELOCITY_DURATION_S)
         if code != 0:
@@ -256,8 +263,75 @@ def teleop_conflict() -> str | None:
     )
 
 
+def arm_hold_conflict() -> str | None:
+    """Why the base must not walk now because this process holds the arms, or None.
+
+    move_arm(hold=True), pick and reach leave `rt/arm_sdk` engaged after they
+    return, and walking under arm_sdk weight is untried on this robot (BACKLOG
+    §12). The headset's own arms renew the teleop lease, so teleop_conflict
+    already covers those. Checked here, not in ArmSdkDriver.engage, so the
+    headset's arms are never refused for the operator looking around.
+    """
+    from bridge.teleop.arm_sdk import get_driver
+
+    if not get_driver().engaged:
+        return None
+    return (
+        "the arms are held on rt/arm_sdk (move_arm, pick or reach), and walking under "
+        "arm_sdk weight is untried on this robot. Call release_arm_control (or "
+        "stop_everything) first, then walk."
+    )
+
+
+def fsm_conflict() -> str | None:
+    """Why a fresh FSM reading says the legs will not take velocity now, or None.
+
+    In 802 (Run, R2+A on the remote) SetVelocity answers code 0 and nothing moves,
+    so a walk stood still until its timeout and reported completed. Gated like
+    ArmSdkDriver's FSM check, except that an unknown or stale reading is allowed:
+    sim has no FSM poller, and a slow poll must not block a walk. Never creates
+    the sampler.
+    """
+    from bridge.sdk import g1_protocol
+    from bridge.sdk.state import existing_sampler
+    from bridge.skills._g1_request import WALK_FSM_IDS
+    from bridge.teleop.arm_sdk import MAX_FSM_AGE_S
+
+    sampler = existing_sampler()
+    if sampler is None:
+        return None
+    state = sampler.get_arm_state()
+    fsm_id, age = state["fsm_id"], state["fsm_age_s"]
+    if fsm_id is None or age is None or age > MAX_FSM_AGE_S or fsm_id in WALK_FSM_IDS:
+        return None
+    return (
+        f"the robot is in FSM {fsm_id} ({g1_protocol.mode_label(fsm_id)}), not a walk "
+        "program (500/501), so it would acknowledge every velocity and not move. Run damp, "
+        "prepare, then start_walking_waist, and check that get_state's fsm_id reads 501."
+    )
+
+
 #: The error a running walk or turn ends with when the headset takes over.
 TELEOP_TAKEOVER = (
     "the operator in the headset took over and is driving the robot, so this motion "
     "ended. Do not retry it while they drive."
 )
+
+#: The error a walk or turn refuses or ends with when odometry stops arriving.
+POSE_STALE = (
+    "pose_stale: odometry has not updated for over a second, so the robot would steer "
+    "on a frozen position. Check get_state's faults (stale_pose) and the bridge's odom "
+    "subscription before retrying."
+)
+
+
+def pose_stale(sampler: Any) -> bool:
+    """True when the sampler's newest pose is older than safety.POSE_STALE_S, or it has none.
+
+    `get_state()` keeps returning the last pose after odometry stops, so a loop
+    reading only that would keep driving toward a target it never gets closer to.
+    """
+    from bridge.safety import POSE_STALE_S
+
+    pose = sampler.latest_pose()
+    return pose is None or pose[2] > POSE_STALE_S
