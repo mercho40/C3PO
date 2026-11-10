@@ -107,6 +107,10 @@ c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the t
 `bun run dev:robot`. Anything still dialling `g1-orin.local:8001` gets a refused connection;
 `apps/back` logs the tunnel line when that happens (`unreachableHint`).
 `scripts/robot_session.sh [host]` does the whole Mac side in one command (tunnel, robot internet, `bun run dev:robot`, a status table, the robot-side `export`/`c3po up` lines); open the console at `http://localhost:3001`.
+The table's `agent` row makes one real model call (`apps/back/scripts/smoke-agent.ts`), so it
+can take up to 60 s and needs `AGENT_API_KEY` in `apps/back/.env`. A ✗ there means a wrong
+`AGENT_MODEL`, a dead key, a gateway out of reach, or a model that never calls a tool: the
+chat would do nothing. Off campus, the TIC AI gateway does not answer.
 
 **Open the console as `http://localhost:3001`, never `http://127.0.0.1:3001`.** Vite
 listens on `127.0.0.1` (`apps/web/package.json` `dev`), but the browser must use the name:
@@ -246,6 +250,13 @@ The granular commands below are retained for diagnostics and partial-stack work:
 | `c3po camera take`                      | Performs the explicit vendor-camera takeover                        |
 | `c3po logs`                             | Follows `c3po-bridge.service` in journald                           |
 
+`c3po status` has a `bridge at boot` line. Anything but `enabled` is a problem: the bridge,
+and `stop_everything` with it, would be gone after the next reboot. `c3po install` enables
+it. `c3po preflight` warns, and does not block, when the person rule is off
+(`SAFETY_PERSON_RULE`), when the geofence is off (`SAFETY_GEOFENCE_M` ≤ 0), or when a PARAR
+still stands. On the Mac, `./scripts/preflight.sh` says whether the teleop socket wants a
+token (§6).
+
 Starting either stack stops the other. The systemd bridge boot path still starts no sensor;
 only an explicit `c3po up` profile can compose perception or teleop around it. No profile
 arms Nav2 or opens the bridge motion gate.
@@ -271,16 +282,47 @@ a Claude Code tool call. `back` aborts every running agent turn when a PARAR, a
 `abortAllTurns`). A stop that reaches the bridge any other way (headset grips, Claude
 Code) ends the turns within about 0.5 s: while a turn runs, `agent/stop-watch.ts` polls
 `/safety/status` for a new `stopped_at`. An aborted turn cancels the bridge call it was waiting on, so a
-running `walk_to` stops too. While the stop stands,
-nothing moves:
+running `walk_to` stops too. Every stop through `back`, and every «Reanudar», also drops the
+pending «Confirmar» cards: a card shown before a PARAR cannot run after «Reanudar». Ask again.
+
+The bridge does not need `back` to stop what it is running. A stop that only stamps the
+sentinel (the headset's grips, over the teleop socket) is run in the bridge's MCP process
+too: it polls the sentinel at 10 Hz and runs `stop_everything` itself, without stamping it
+again. So an arm move, a `walk_to` or a Nav2 goal already running there stops even with
+`back` down. The bridge log says `stop_everything.foreign_stop`.
+
+While the stop stands, nothing moves:
 
 - the bridge refuses every non-T0 tool except `damp` (`safety.tool_refusal`);
 - `_locomotion` zeroes every velocity;
 - `arm_sdk` refuses to engage.
 
+**What PARAR sends, and when it damps.** The zero-velocity burst goes first: about 20 zero
+setpoints at 50 Hz over 0.4 s. Each one waits for its reply on its own thread, so one slow
+reply no longer holds the others. Replies count until 0.3 s after the last setpoint
+(`STOP_ACK_GRACE_S`, a guess until the real reply time is measured on the robot). The sport
+client is built before the burst starts, so a stop on a client that was never used (its
+first Init takes at least 0.7 s) is not lost. Opening the hands and stopping speech start
+beside the burst, never ahead of it. Damp follows only when no setpoint was acknowledged or
+the burst raised, that is, when the robot never heard the stop (or with
+`STOP_EVERYTHING_DAMP=always`). Damp is then retried for at most 4 s. In the result:
+
+- `stop_burst_sent` and `stop_burst_acked`: setpoints sent and acknowledged. One ack is
+  enough: no Damp, and the robot stays standing at zero velocity.
+- `real_damp_fallback_reason`: `null` when Damp did not run; otherwise
+  `burst_unacknowledged`, `burst_failed` or `policy_always`.
+- `real_damp_fallback_succeeded`: `true` or `false` when the robot answered the Damp.
+  `null` when Damp did not run, or when the 4 s ran out with a Damp still unanswered. That
+  last case also sets `real_damp_fallback_unconfirmed: true`: the Damp was sent and may still
+  land, so the console judges the stop by telemetry. Only `false` shows as a failed stop.
+
 PARAR also stops the robot's own Spanish speech (`g1_rpc.stop_play`, sent beside the
 zero-velocity burst, never ahead of it), and cuts off any utterance still being sent.
 Firmware TTS and the co-tenant's speech are out of its reach.
+
+**`soft_stop` ("stop walking")** closes the Nav2 gate, cancels the Nav2 goal and every task
+(a `look_around` sweep too), and sends the same zero burst. It never latches and never
+damps. `heard: false` in its result means the robot did not acknowledge it: press PARAR.
 
 **The spoken stop: say «emergencia» or «pará, pará».** On synthesised speech they were
 heard 13 and 14 times out of 15. A flat «detener» was heard only 7 of 15 times (a
@@ -288,17 +330,46 @@ shouted «¡detener!» 14 of 15), and a single «pará», «alto» or «stop» i
 phrase at all. None of this is validated on a stressed human voice yet (pending robot
 test).
 
-**Nav2 limits** (`safety.govern`, autonomous setpoints only; manual driving is never
-limited by them):
+**Autonomous limits** (`safety.govern`). Only two sources are autonomous: Nav2's cmd_vel
+and `go_to_object`'s camera walk. The walk pad, the headset, `walk_to`, `turn` and
+`walk_velocity` are never limited by these:
 
-- zero velocity unless a world summary ≤ 1 s old says the lidar is online
+- Nav2's cmd_vel: zero unless a world summary ≤ 1 s old says the lidar is online
   (`obstacle_source_stale`);
-- a geofence while the Nav2 gate is open: zero velocity further than
+- `go_to_object`'s camera walk: zero unless a world summary ≤ 1 s old says the detector is
+  online (`perception_stale`), whatever `SAFETY_PERSON_RULE` and `SAFETY_STALE_POLICY` say.
+  It does not need the lidar: with the Mid-360S faulted it still walks, and it stops within
+  about 1 s of the detector going quiet;
+- a geofence while the Nav2 gate is open, on both sources: zero velocity further than
   `SAFETY_GEOFENCE_M` (default 3 m; 0 turns it off) from where `arm_navigation` found
   the robot (`outside_geofence`), or with no odometry pose under 1 s old
   (`geofence_pose_unknown`). Renewing an open gate keeps the centre. To recover, drive
   back by hand or re-arm on the spot. `arm_navigation` and `/safety/status` report
   `obstacles_fresh` and `geofence`.
+
+**Walks, one at a time.** `walk_to`, `turn`, `walk_velocity`, `navigate_to` and
+`look_around` are walks. `walk_to` (and so `go_to_object`'s camera walk), `turn`,
+`look_around` and the Nav2 tools refuse while another walk runs (`walk_task_active`); a new
+Nav2 goal still replaces the old one. A `walk_velocity` that moves the robot counts as the
+operator's input (the console walk pad, or the headset when it drives through `back`
+rather than the teleop stream; decision 11.6b), and it always wins: it cancels a running `walk_to`, `turn`, `navigate_to` or `look_around`, and waits up to 1 s
+for it to stop before its own setpoints go out. When it cancels a `navigate_to`, it first
+closes the Nav2 gate (`operator_preempt`): use Nav2 again only after a new
+`arm_navigation`. `look_around` runs as a task (its `task_id` is in the reply), so
+`cancel_task` or `soft_stop` ends it mid-pause or mid-turn.
+
+**When a walk refuses or stops** (the phase is in the task result):
+
+- `fsm_not_walkable` (`walk_to`, `turn`, `walk_velocity`): an FSM reading under 5 s old is
+  outside 500/501, for example 802 after R2+A (§5). An unknown or stale reading does not
+  refuse.
+- `arm_held` (every walk; the reason `arm_held` for the Nav2 tools): this bridge holds the
+  arms on `rt/arm_sdk` (`move_arm` with `hold`, `pick`, `reach`), and walking under arm_sdk
+  weight is untried. Call `release_arm_control` first.
+- `pose_stale` (`walk_to`, `turn`): the odometry pose is over 1 s old, at the start or
+  mid-walk. The walk stops instead of going on toward a target it can no longer measure.
+
+A `walk_velocity` of zero is a stop, and none of these refuses it.
 
 The latch survives bridge and teleop restarts. Only «Reanudar» clears it. It is admin
 only, from the console's «PARAR ACTIVO» chip or the headset menu. `back`'s
@@ -359,6 +430,17 @@ to verify per deploy target:
   three in one change and exercise one real `/agent` turn before shipping. npm
   publishes `ai-v6`/`ai-v5` dist-tags on all three if a line must be walked back.
 
+**Sign-in is rate limited**, per client address: Better Auth's default for sign-in is 3
+tries in 10 s, then 429, which the login page shows as «Demasiados intentos. Esperá un
+momento y probá de nuevo.». `/get-session` is exempt, and PARAR never goes through the
+limiter. The address is the TCP peer: `lib/auth-plugin.ts` overwrites `X-Forwarded-For`
+with it, because any client can write that header. That is right while browsers reach
+`back` directly. **A TLS proxy in front of `back`** would make every browser one address,
+so one bucket, and one person could lock everyone out: the plugin would then have to keep
+the proxy's `X-Forwarded-For`, and `advanced.ipAddress.trustedProxies` would have to list
+the proxy. There is no sign-up page: accounts are made
+from `apps/back` with `bun scripts/create-user.ts <email> <name> [--admin]`.
+
 ### `apps/bridge` → G1 Jetson
 
 A git checkout at `~/c3po`; Python and `uv` under `~/.local`; CycloneDDS prebuilt on the
@@ -416,6 +498,15 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
   explicit `PATH` and does not depend on a login shell.
 - **Boot unit.** `c3po install` installs and enables `c3po-bridge.service`. The unit
   directly supervises the interpreter, claims no sensor, and issues no motion command.
+- **What was deployed.** `c3po install` (since 31b2d64) writes `~/.c3po/deployed` as
+  `<sha> <UTC time>`. When the commit changes, the one it replaces goes to
+  `~/.c3po/previous-deploy` as a bare sha, and the loaded unit goes to
+  `/var/lib/c3po/previous-c3po-bridge.service` (with `~/.c3po/unit-backup-for` naming the
+  commit that copy was taken for). Re-installing the same commit changes none of them. The
+  rollback below reads them.
+- **The first call after `c3po restart`.** The bridge answers `back`'s old MCP session
+  with 404, and `back` now sends that call once more on a fresh session. So a PARAR right
+  after a restart goes out instead of showing «La orden de parada no salió».
 - **Root boundary.** Unit files are copied root-owned into `/etc/systemd/system`; PID 1
   never follows a symlink into the user-writable checkout. A merge does not update a loaded
   unit until `c3po install` validates, copies and reloads it.
@@ -423,15 +514,33 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
 **Rollback.** This is the one recipe; the runbooks point here. Pushing an older commit does
 not work: git refuses it as a non-fast-forward on `incoming`, and `git merge --ff-only` with
 an older commit only says "Already up to date". The robot already has every commit it ran,
-so roll back on the robot itself:
+and `c3po install` records the one it deployed before, so roll back on the robot itself:
 
 ```bash
 # On the robot (ssh -t: install asks for the sudo password):
 cd ~/c3po
-git status --short                 # must print nothing; stop if it does
-git reflog -5                      # HEAD@{0} runs now; HEAD@{1} ran before the last deploy
-git checkout --detach 'HEAD@{1}'   # or a sha from that list
+git status --short                     # must print nothing; stop if it does
+cat ~/.c3po/deployed                   # runs now: "<sha> <UTC time>"
+cat ~/.c3po/previous-deploy            # ran before it: a bare sha
+git checkout --detach "$(cat ~/.c3po/previous-deploy)"
 ./scripts/robot/c3po install && c3po restart
+cat ~/.c3po/deployed                   # must now name the commit you checked out
+```
+
+No `~/.c3po/previous-deploy` means only one install has been recorded so far (the first with
+this installer, 31b2d64). Then take the commit from `git reflog -5` (`HEAD@{1}` is usually
+the one before the last merge) and check that out instead. Never check out a commit older
+than be8001b (2026-08-22): its installer is the old full-stack one and would revive the
+retired perception unit and repair timer. `git merge-base --is-ancestor be8001b <sha>`
+must succeed. After a rollback, `previous-deploy` names the commit you left.
+
+If the last `cat ~/.c3po/deployed` still names the newer commit (an installer older than
+31b2d64 records nothing), record the one now running, so the next install keeps the right
+unit:
+
+```bash
+printf '%s %s\n' "$(git rev-parse HEAD)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ~/.c3po/deployed
+rm -f ~/.c3po/unit-backup-for
 ```
 
 The checkout is now detached, and its branch still points at the newer commit. To go
@@ -442,25 +551,25 @@ cd ~/c3po && git checkout - && git status -sb   # back on the branch; check its 
 git merge --ff-only incoming && ./scripts/robot/c3po install && c3po restart
 ```
 
-`c3po install` from the older checkout installs that checkout's unit, after backing up the
-current one to the root-owned `/var/lib/c3po/previous-c3po-bridge.service`. Every commit
-since be8001b (2026-08-22) has this installer. Never run the installer of an older commit:
-it is the old full-stack one, and it would revive the retired perception unit and repair
-timer. For a target that old, check it out as above, then restore the backed-up unit and
-only that checkout's user commands:
+**The unit backup.** Each install that moves to a new commit first copies the loaded unit
+to the root-owned `/var/lib/c3po/previous-c3po-bridge.service`, and writes that new commit
+to `~/.c3po/unit-backup-for`. Installing the same commit again, or retrying an install that
+failed half way, keeps the copy. So while `unit-backup-for` names the commit in
+`deployed`, the copy is the unit that ran the commit in `previous-deploy`. `c3po install`
+from the older checkout installs that checkout's own unit, so the copy is needed only when
+that install fails: the older code must not run under the newer unit. Check, then restore:
 
 ```bash
+[ "$(cat ~/.c3po/unit-backup-for)" = "$(cut -d' ' -f1 ~/.c3po/deployed)" ] && echo "copy ok"
 sudo install -o root -g root -m 0644 \
   /var/lib/c3po/previous-c3po-bridge.service \
   /etc/systemd/system/c3po-bridge.service
-sudo systemctl daemon-reload
-if [ -x ./scripts/robot/install_robot_scripts.sh ]; then
-  SKIP_LOGROTATE=1 ./scripts/robot/install_robot_scripts.sh
-elif [ -x ./scripts/robot/c3po ]; then
-  ln -sf "$PWD/scripts/robot/c3po" ~/.local/bin/c3po
-fi
-sudo systemctl restart c3po-bridge.service
+sudo systemctl daemon-reload && sudo systemctl restart c3po-bridge.service
 ```
+
+No `copy ok` means the failed install got as far as replacing the copy with the newer unit:
+do not restore it, stop and look. After a restore, record the running commit with the two
+lines above.
 
 A rollback leaves the perception images as they are. `c3po perception build` on the
 older checkout rebuilds them, if the rollback is about perception code.
@@ -499,6 +608,11 @@ Bring-up must end in **501**: the bring-up panel's «1 · Amortiguar → 2 · Pr
 3 · Habilitar marcha» is `damp` → `prepare` → `start_walking_waist`. Read `get_state`
 `fsm_id` after every `SetFsmId`, because rpc 0 proves nothing (`docs/ROBOT-API.md` §12:
 `SetFsmId(99999)` also answers 0).
+
+Since d8de62f the bridge refuses the walk instead of standing still for its whole timeout:
+`walk_to`, `turn` and a moving `walk_velocity` end with phase `fsm_not_walkable` while a
+fresh FSM reading is outside 500/501 (§4, "Walks, one at a time"). The headset's walk pad
+warns in 802 too. A gesture still runs from 802.
 
 ### Putting a Quest on the console
 
@@ -937,11 +1051,22 @@ A SIGILL here means MPPI got installed by accident.
 | `DATABASE_URL`          |  —  |  ✅  | **never** |
 | `BETTER_AUTH_SECRET`    | ✅  |  ✅  |     —     |
 | `SAFETY_CONFIRM_SECRET` |  —  |  ✅  |    ✅     |
+| `TELEOP_SECRET`         |  —  |  ✅  |    ✅     |
 | `GEMINI_API_KEY`        |  —  |  —   |    ✅     |
 
 `SAFETY_CONFIRM_SECRET` is the same value in `apps/back/.env` and `apps/bridge/.env`;
 without it no Confirmar or «Reanudar» works (§4). `GEMINI_API_KEY` is for the bridge's
 vision tools only (`vlm.py`); BACKLOG §12 has the data terms.
+
+`TELEOP_SECRET` is the same value in `apps/back/.env` and the robot's `apps/bridge/.env`.
+With it, every connection to the teleop socket (8767) needs a one-use token that `back`
+mints, with its expiry read off the robot's clock (the bridge's HTTP `Date` header), so the
+Mac's clock does not matter. Empty on the robot: any LAN client can open 8767 and drive.
+Set on the robot but not in `back`: every headset connect is refused with 401. After a
+change, restart `back` and `c3po up teleop`. `./scripts/preflight.sh` on the Mac reads
+which it is: the socket answers a plain GET with 401 when it wants a token, 426 when it
+does not. It reports OK (401, and `back` has the secret), BAD (401, `back` has none) or
+WARN (426).
 
 **Faces are pixelated before any frame goes to a cloud model.** `vlm.blur_faces`
 (OpenCV Haar, frontal and profile) runs inside `vlm.generate` (Gemini) and behind
@@ -951,8 +1076,32 @@ is not sent (`vlm_unavailable`, or 503 with the reason). The operator's own feed
 blurred. `C3PO_FACE_BLUR=0` turns it off; do that only with a paid key. Recall on real
 expo frames is a pending robot test.
 
+**What the blur misses.** The face detector runs on a copy at most 640 px wide and finds
+nothing under 20 px of it. On the 1920 px videohub feed a 14 cm face is never found past
+about 3.2 m (4.3 m on the vision container's 640 px feed). Closer faces may be found; how
+often is not measured yet. So a visitor more than about 3 m away can reach Gemini
+unblurred. `cd apps/bridge && uv run python scripts/face_blur_eval.py` prints these limits,
+and `--images DIR` (with a `labels.csv`) reports recall, precision and the blur's latency
+on that machine.
+
 Other settings added on 2026-11-07: `HEADSET_SPEAK_REPLY=1` in `apps/back/.env` makes
 the robot say a completed headset reply (B8, default off).
+
+Added on 2026-11-10:
+
+- `C3PO_ALLOW_PICK=1` in `apps/bridge/.env` (e120012, with the arms work): `pick` and
+  `place` refuse in `SIM_MODE=real` with `pick_disabled_until_gantry_test` unless it is set.
+  Set it only for the gantry touch check (test-day `manipulation.md`), after I1. Restart
+  the bridge after a change.
+- `C3PO_VISION_CLASS_CONF` in `~/.c3po/perception.env`, for example
+  `cooker=0.6,thumbtack=off`: a confidence bar per class, above `C3PO_VISION_CONF`.
+  `person` is refused, because the person rule reads that label. Bad entries are logged
+  and skipped. The vision image must be rebuilt once to read it
+  (`c3po perception build vision`); after that a change takes effect at the next
+  `c3po up`. The vision container's start log prints `class_conf=` with what took effect.
+- `DDS_INTERFACE`: blank now means `eth0` in `SIM_MODE=real` (3cd70d6). An explicit value
+  still wins, and a host without `eth0` falls back with `dds.interface_not_found` in the
+  log.
 
 **The robot holds no agent or database credentials**, because the agent runs in `back`.
 That is a real security property: the robot is physically accessible, shared with
@@ -982,7 +1131,14 @@ first destructive migration is cheaper than after. Local-dev workarounds live in
 
 CI (`.github/workflows/ci.yml`) runs TypeScript/Svelte type-checks, back and web unit
 tests, prettier, the perception harness's Ruff + pytest gates, and the bridge's Ruff +
-mypy + pytest gates. There is **no CD**: web is automatic on Vercel;
+mypy + pytest gates. Since 2026-11-10 it also checks that each `uv.lock` matches its
+`pyproject.toml` (`uv lock --check`, the same rule as the robot's `uv sync --locked`), runs
+the vision tests under the container's Python 3.8 and numpy 1.24.4 and fails on a skip, and
+runs `chats.ts` against a `postgres:16` service (the `back-db` job). A separate workflow,
+`nav-image.yml`, builds the nav image on an arm64 runner with the robot's classic Docker
+builder and pushes nothing: on PRs and pushes to `main` that touch `apps/perception/nav/`
+or `apps/perception/bringup/`, weekly, and by hand. Neither new job has run
+on GitHub yet. There is **no CD**: web is automatic on Vercel;
 `back` would need a runner that can reach the LAN box (self-hosted, or a manual
 `make deploy`); the bridge deploy is the push in §5.
 
@@ -1035,7 +1191,11 @@ Plain facts, not a roadmap. Each stays here until fixed.
 
 - **The Mid-360S scan module is faulted** (HMS `0x02100003`, 2026-11-03;
   `docs/ROBOT-HARDWARE.md` §4.6, BACKLOG 4.1). There is no FAST-LIO, no `/scan` and no
-  Nav2 obstacle data. `go_to_object` is camera-only, with no obstacle avoidance.
+  Nav2 obstacle data. `go_to_object` is camera-only, with no obstacle avoidance. It needs a
+  live detector, not the lidar (§4, "Autonomous limits"). Object memory records with the
+  bridge's vendor odometry instead (86dc075), in a frame named `vendor_odom@<bridge start>`:
+  after a bridge restart the older entries are still listed, but with no distance or
+  bearing from here.
 - **The planned `back` target host is unreachable.** `perrobot` (10.40.5.4) does not
   answer ping from the dev machine — a different VLAN, the same constraint that blocks
   sim→Mac DDS (§1). Deploying `back` needs that resolved or a different host.
