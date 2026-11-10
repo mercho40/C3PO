@@ -73,20 +73,20 @@ each developer writes their own; `apps/bridge/README.md` lists the two entries i
 
 The port map, in one place:
 
-| Service                    | Host                    | Port  | Notes                                                                   |
-| -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------------- |
-| `apps/back` HTTP           | **loopback** by default | 3000  | cookie auth; `BACK_HOST=0.0.0.0` only on a LAN box behind TLS (§5)      |
-| `apps/web` dev             | dev machine             | 3001  | Vite; open `http://localhost:3001`, never `127.0.0.1:3001` (below)      |
-| `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it |
-| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                         |
-| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback       |
-| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`     |
-| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge, relayed to browsers by `apps/back` on 3000   |
-| VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; unauthenticated   |
-| Internet proxy             | Mac, **loopback**       | 8899  | `scripts/robot_internet.py`; public :80/:443 only                       |
-| Internet proxy, robot end  | Jetson, **loopback**    | 18899 | the `ssh -R` of that proxy; alive only while the ssh session is         |
-| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                        |
-| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                      |
+| Service                    | Host                    | Port  | Notes                                                                                                                                           |
+| -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/back` HTTP           | **loopback** by default | 3000  | cookie auth; `BACK_HOST=0.0.0.0` only on a LAN box behind TLS (§5)                                                                              |
+| `apps/web` dev             | dev machine             | 3001  | Vite; open `http://localhost:3001`, never `127.0.0.1:3001` (below)                                                                              |
+| `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it                                                                         |
+| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                                                                                                 |
+| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback                                                                               |
+| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`                                                                             |
+| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge, relayed to browsers by `apps/back` on 3000                                                                           |
+| VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; `TELEOP_ORIGINS` check, plus a one-use token from `apps/back` when `TELEOP_SECRET` is set |
+| Internet proxy             | Mac, **loopback**       | 8899  | `scripts/robot_internet.py`; public :80/:443 only                                                                                               |
+| Internet proxy, robot end  | Jetson, **loopback**    | 18899 | the `ssh -R` of that proxy; alive only while the ssh session is                                                                                 |
+| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                                                                                                |
+| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                                                                                              |
 
 `DDS_DOMAIN_ID`: Isaac Sim is `1`, the real G1 is `0` (set per host in `apps/bridge/.env`;
 see `apps/bridge/.env.example`).

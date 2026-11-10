@@ -58,16 +58,16 @@ engine, and Gemini `look`.
 
 ## 3. Perception 🟠🟡
 
-| #   | Item                                                                                                                                                                                                    | Size |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| 3.1 | Camera extrinsic: measure pitch, height and forward offset. Make it the default, or read it from the URDF `d435_joint` (audit §3.1).                                                                    | S 🤖 |
-| 3.2 | ✅ D3 (tested at 47.6°; the real pitch is still 3.1) — The plane fallback is inverted while the pitch is wrong (`grounding.py`): tables are rejected and walls accepted. Fixed by 3.1, then add a test. | S    |
-| 3.3 | ✅ D1 — Make YOLOE and the pitch persistent: `c3po up` should read `~/.c3po/perception.env`. Today `yoloe.env` must be sourced by hand after every boot.                                                | S    |
-| 3.4 | ✅ D4 · pending robot test — Camera USB wedge (`VIDIOC_S_FMT errno=5`) after a container restart: do the `hardware_reset()` automatically on that error at detector start.                              | S    |
-| 3.5 | YOLOE false positives ("cooker", "toaster", "thumbtack"): tune the vocabulary and per-class thresholds; compare the prompt-free vs text-prompt engines.                                                 | M    |
-| 3.6 | ✅ D5 — `world_model_publisher` stamps `stamp_unix=now` instead of the capture time.                                                                                                                    | S    |
-| 3.7 | Capture a YOLOE test set (`perception.md` §5) and record recall per class.                                                                                                                              | M 🤖 |
-| 3.8 | Range errors at the image edges (45–100% long, bearing off by up to 18°): undistort or use depth-to-point, not centre-ray range.                                                                        | M    |
+| #   | Item                                                                                                                                                                                                                                                                                    | Size |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 3.1 | Camera extrinsic: measure pitch, height and forward offset. Make it the default, or read it from the URDF `d435_joint` (audit §3.1).                                                                                                                                                    | S 🤖 |
+| 3.2 | ✅ D3 (tested at 47.6°; the real pitch is still 3.1) — The plane fallback is inverted while the pitch is wrong (`grounding.py`): tables are rejected and walls accepted. Fixed by 3.1, then add a test.                                                                                 | S    |
+| 3.3 | ✅ D1 — Make YOLOE and the pitch persistent: `c3po up` should read `~/.c3po/perception.env`. Today `yoloe.env` must be sourced by hand after every boot.                                                                                                                                | S    |
+| 3.4 | ✅ D4 · pending robot test — Camera USB wedge (`VIDIOC_S_FMT errno=5`) after a container restart: do the `hardware_reset()` automatically on that error at detector start.                                                                                                              | S    |
+| 3.5 | YOLOE false positives ("cooker", "toaster", "thumbtack"): tune the vocabulary and per-class thresholds; compare the prompt-free vs text-prompt engines.                                                                                                                                 | M    |
+| 3.6 | ✅ D5 — `world_model_publisher` stamps `stamp_unix=now` instead of the capture time.                                                                                                                                                                                                    | S    |
+| 3.7 | Capture a YOLOE test set (`perception.md` §5) and record recall per class.                                                                                                                                                                                                              | M 🤖 |
+| 3.8 | ✅ closed: it was the pitch (audit §3.1 lists the edge errors under its 0° pitch finding, and D2 made the URDF's 47.6° the default; ACTION-PLAN I14) — Range errors at the image edges (45–100% long, bearing off by up to 18°): undistort or use depth-to-point, not centre-ray range. | M    |
 
 ## 4. Navigation 🟡
 
