@@ -341,8 +341,9 @@ check_contains "migration refuses an activating perception unit" \
     "$install_stack_source"
 check_not_contains "PID 1 never follows unit symlinks into the writable checkout" \
     'sudo ln -sf "$here/$unit"' "$install_stack_source"
-check_contains "install_stack backs the unit up only through the changed-unit check" \
-    'backup_unit_if_changed "/etc/systemd/system/$unit" "$stage/$unit"' "$install_stack_source"
+check_contains "install_stack backs the unit up only through the new-commit check" \
+    'backup_unit_if_new_commit "/etc/systemd/system/$unit" "/var/lib/c3po/previous-$unit"' \
+    "$install_stack_source"
 check_contains "install_stack records the deployed commit in ~/.c3po" \
     'record_deploy "$here/../.." "$HOME/.c3po"' "$install_stack_source"
 
@@ -366,23 +367,29 @@ commit_in two; c2="$(head_of)"
 check "a new commit is recorded as deployed" "$c2" "$(first_field "$deploy_dir/deployed")"
 check "re-installing the same commit keeps the one before it" "$c1" \
     "$(first_field "$deploy_dir/previous-deploy")"
+# The runbooks check out "$(cat ~/.c3po/previous-deploy)": a bare commit, no time.
+check "previous-deploy is the bare commit" "$c1" "$(cat "$deploy_dir/previous-deploy")"
 check_contains "the record carries a UTC time" "Z" "$(cut -d' ' -f2 "$deploy_dir/deployed")"
 
-backup_with() {  # <live content or -> <staged content>: prints the backup afterwards
+backup_with() {  # <live content or -> : runs the backup against the repo and record above
     (
         sudo() { "$@"; }
         chown() { :; }
         rm -f "$install_tmp/live"
         [ "$1" = - ] || printf '%s\n' "$1" >"$install_tmp/live"
-        printf '%s\n' "$2" >"$install_tmp/staged"
-        backup_unit_if_changed "$install_tmp/live" "$install_tmp/staged" "$install_tmp/backup"
+        backup_unit_if_new_commit "$install_tmp/live" "$install_tmp/backup" \
+            "$install_tmp/repo" "$deploy_dir"
     )
     cat "$install_tmp/backup" 2>/dev/null
 }
 printf 'older\n' >"$install_tmp/backup"
-check "no loaded unit leaves the backup alone" "older" "$(backup_with - new)"
-check "re-installing the loaded unit keeps the older backup" "older" "$(backup_with same same)"
-check "a changed unit backs up the loaded one" "loaded" "$(backup_with loaded new)"
+commit_in three
+check "no loaded unit leaves the backup alone" "older" "$(backup_with -)"
+# deployed is c2 and HEAD is c3: the unit B ran under is the rollback copy, even
+# if C ships the same unit, or a rollback to B would run under A's.
+check "new commit, same unit: the backup is the loaded unit" "loaded" "$(backup_with loaded)"
+(HOME="$install_tmp/home"; record_deploy "$install_tmp/repo" "$HOME/.c3po")
+check "same commit re-install keeps the backup" "loaded" "$(backup_with newer)"
 rm -rf "$install_tmp"
 
 bridge_unit_source="$(cat "$repo/scripts/robot/c3po-bridge.service")"
