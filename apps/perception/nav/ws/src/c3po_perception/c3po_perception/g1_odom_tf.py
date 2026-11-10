@@ -52,26 +52,13 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from tf2_ros import TransformBroadcaster
 from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 
-
-def quat_to_rpy(x, y, z, w):
-    roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
-    pitch = math.asin(max(-1.0, min(1.0, 2.0 * (w * y - z * x))))
-    yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-    return roll, pitch, yaw
-
-
-def rpy_to_quat(roll, pitch, yaw):
-    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
-    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
-    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
-    return (sr * cp * cy - cr * sp * sy,
-            cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy,
-            cr * cp * cy + sr * sp * sy)
-
-
-# Rx(pi) as a quaternion. The mount correction, in one constant.
-RX180 = (1.0, 0.0, 0.0, 0.0)
+from c3po_perception.odom_math import (
+    RX180,
+    differentiated_twist,
+    fastlio_twist,
+    flat_pose,
+    rpy_to_quat,
+)
 
 
 class G1OdomTf(Node):
@@ -193,56 +180,16 @@ class G1OdomTf(Node):
         self.static_bc.sendTransform([t1, t2, t3])
 
     def on_odom(self, msg: Odometry) -> None:
-        q = msg.pose.pose.orientation
-        # msg is camera_init -> body. Re-express in odom by composing the static
-        # Rx(pi): under (x,y,z) -> (x,-y,-z) the position maps directly and the
-        # quaternion conjugates in y,z.
-        x = msg.pose.pose.position.x
-        y = -msg.pose.pose.position.y
-        # z would be `-position.z + self.h`, and it is deliberately NOT computed:
-        # base_footprint is the flat frame by definition, published below with
-        # translation.z = 0.0, and Nav2's costmaps are 2-D. Carrying a height
-        # here would be a value nothing consumes and everything could
-        # misinterpret. Same reason roll and pitch are discarded — the footprint
-        # frame is yaw-only, so a pitching torso must not rotate the costmap.
-        ox, oy, oz, ow = q.x, -q.y, -q.z, q.w
-        _roll, _pitch, yaw = quat_to_rpy(ox, oy, oz, ow)
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        # The frame maths lives in odom_math (stdlib-only) so it can be tested.
+        x, y, yaw = flat_pose(p.x, p.y, q.x, q.y, q.z, q.w)
 
         now = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self.twist_source == "fastlio":
-            # Already body-frame from the patch; body is roll-pi from base_link,
-            # so y and z flip.
-            self._v = [msg.twist.twist.linear.x,
-                       -msg.twist.twist.linear.y,
-                       -msg.twist.twist.angular.z]
-        elif self._last is not None:
-            t0, x0, y0, yaw0 = self._last
-            dt = now - t0
-            if 1e-3 < dt < 0.5:
-                dyaw = math.atan2(math.sin(yaw - yaw0), math.cos(yaw - yaw0))
-                c, s = math.cos(yaw), math.sin(yaw)
-                a = 0.35
-                self._v[0] += a * (((x - x0) * c + (y - y0) * s) / dt - self._v[0])
-                self._v[1] += a * ((-(x - x0) * s + (y - y0) * c) / dt - self._v[1])
-                self._v[2] += a * (dyaw / dt - self._v[2])
-            elif dt >= 0.5:
-                # A GAP LONGER THAN HALF A SECOND MAKES THE OLD VELOCITY A LIE.
-                #
-                # This used to leave `self._v` untouched, so the estimate from
-                # before the stall went out on a message stamped NOW and
-                # Nav2's controller_server read it as the robot's present
-                # velocity. That is "a failed tick republishing the last good
-                # value without ageing it" — the rule `detector.py` and
-                # `stream.py` both state, applied to a number instead of a
-                # picture.
-                #
-                # Zero rather than hold: SET_VELOCITY carries a 1 s firmware
-                # deadman, so after a gap this long the robot has almost
-                # certainly stopped, and zero is the closer estimate. `dt` too
-                # SMALL is left alone deliberately — that is two samples in the
-                # same millisecond, where the old estimate is still the best
-                # one available and dividing by dt would explode.
-                self._v = [0.0, 0.0, 0.0]
+            t = msg.twist.twist
+            self._v = fastlio_twist(t.linear.x, t.linear.y, t.angular.z)
+        else:
+            self._v = differentiated_twist(self._v, self._last, now, x, y, yaw)
         self._last = (now, x, y, yaw)
 
         tf = TransformStamped()

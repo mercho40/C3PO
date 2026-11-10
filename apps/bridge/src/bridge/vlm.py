@@ -80,6 +80,9 @@ class VlmError(RuntimeError):
 #: Detection runs on a copy at most this wide: ~35 ms for three passes on a
 #: Mac at 640x360; the blur itself is applied at full resolution.
 _DETECT_W = 640
+#: Haar's smallest face, in pixels of that copy: 60 px on a 1920-wide frame.
+#: scripts/face_blur_eval.py turns it into a distance.
+_MIN_FACE_PX = 20
 #: Each detected box grows by this fraction per side, to cover hair and chin.
 _PAD = 0.25
 #: The face becomes this many blocks across: unrecognisable, still a head.
@@ -108,13 +111,30 @@ def _faces(gray: Any) -> list[tuple[int, int, int, int]]:
     import cv2
 
     frontal, profile = _cascades()
-    found = [tuple(b) for b in frontal.detectMultiScale(gray, 1.1, 3, minSize=(20, 20))]
-    found += [tuple(b) for b in profile.detectMultiScale(gray, 1.1, 3, minSize=(20, 20))]
+    size = (_MIN_FACE_PX, _MIN_FACE_PX)
+    found = [tuple(b) for b in frontal.detectMultiScale(gray, 1.1, 3, minSize=size)]
+    found += [tuple(b) for b in profile.detectMultiScale(gray, 1.1, 3, minSize=size)]
     width = gray.shape[1]
     # The profile cascade only knows one side; the mirror finds the other.
-    for x, y, w, h in profile.detectMultiScale(cv2.flip(gray, 1), 1.1, 3, minSize=(20, 20)):
+    for x, y, w, h in profile.detectMultiScale(cv2.flip(gray, 1), 1.1, 3, minSize=size):
         found.append((width - x - w, y, w, h))
     return [(int(x), int(y), int(w), int(h)) for x, y, w, h in found]
+
+
+def face_regions(img: Any) -> list[tuple[int, int, int, int]]:
+    """(x0, y0, x1, y1) in `img`'s own pixels that blur_faces pixelates: each face, padded."""
+    import cv2
+
+    h, w = img.shape[:2]
+    scale = min(1.0, _DETECT_W / w)
+    small = cv2.resize(img, (round(w * scale), round(h * scale))) if scale < 1 else img
+    regions = []
+    for fx, fy, fw, fh in _faces(cv2.equalizeHist(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY))):
+        pad_x, pad_y = fw * _PAD, fh * _PAD
+        x0, y0 = max(0, int((fx - pad_x) / scale)), max(0, int((fy - pad_y) / scale))
+        x1, y1 = min(w, int((fx + fw + pad_x) / scale)), min(h, int((fy + fh + pad_y) / scale))
+        regions.append((x0, y0, x1, y1))
+    return regions
 
 
 def blur_faces(jpeg: bytes) -> bytes:
@@ -133,16 +153,10 @@ def blur_faces(jpeg: bytes) -> bytes:
     img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise VlmError("the camera frame did not decode, so faces could not be blurred; not sent")
-    h, w = img.shape[:2]
-    scale = min(1.0, _DETECT_W / w)
-    small = cv2.resize(img, (round(w * scale), round(h * scale))) if scale < 1 else img
-    faces = _faces(cv2.equalizeHist(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)))
-    if not faces:
+    regions = face_regions(img)
+    if not regions:
         return jpeg
-    for fx, fy, fw, fh in faces:
-        pad_x, pad_y = fw * _PAD, fh * _PAD
-        x0, y0 = max(0, int((fx - pad_x) / scale)), max(0, int((fy - pad_y) / scale))
-        x1, y1 = min(w, int((fx + fw + pad_x) / scale)), min(h, int((fy + fh + pad_y) / scale))
+    for x0, y0, x1, y1 in regions:
         roi = img[y0:y1, x0:x1]
         if roi.size:
             blocks = cv2.resize(roi, (_BLOCKS, _BLOCKS), interpolation=cv2.INTER_AREA)
@@ -150,7 +164,7 @@ def blur_faces(jpeg: bytes) -> bytes:
     ok, out = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         raise VlmError("re-encoding the face-blurred frame failed; not sent")
-    log.info("vlm.faces_blurred", count=len(faces))
+    log.info("vlm.faces_blurred", count=len(regions))
     return bytes(out.tobytes())
 
 

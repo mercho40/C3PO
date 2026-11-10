@@ -17,9 +17,12 @@ starts a new one.
 The frame is recorded per entry and never assumed. Today the report's pose is
 FAST-LIO's `/odom` — NOT the vendor odometry `walk_to` and landmarks use — and
 it re-origins whenever the nav container restarts. A later map frame (Phase 3
-relocalization) only has to put `pose_frame` in the report; entries from
-another frame are kept but get no distance/bearing, because a point in one
-frame measured against a pose in another is a confident wrong answer.
+relocalization) only has to put `pose_frame` in the report. A report with no
+pose (lidar down, FAST-LIO not running) falls back to the bridge's vendor
+odometry under VENDOR_FRAME, a name unique to this bridge run, because that
+origin resets when the robot reboots. Entries from another frame are kept but
+get no distance/bearing, because a point in one frame measured against a pose
+in another is a confident wrong answer.
 
 Forgetting ("forget when re-observed absent"): when an entry's spot is inside
 the camera's view, in depth range and not hidden behind something nearer, a
@@ -83,6 +86,11 @@ MAX_ENTRIES = 200
 # The pose frame when the report does not name one: world_model_publisher reads
 # FAST-LIO's /odom.
 DEFAULT_FRAME = "odom"
+# The frame of the vendor-odometry fallback. Its origin resets on reboot, so the
+# name carries this bridge run's start: another run's entries never match it.
+VENDOR_FRAME = f"vendor_odom@{int(time.time())}"
+# A vendor pose older than this is not where the robot is (safety.POSE_STALE_S).
+VENDOR_POSE_STALE_S = 1.0
 
 # Spanish words people say -> the detector's (COCO, English) labels. Not a
 # translator: a query that matches nothing returns the known labels instead,
@@ -158,6 +166,30 @@ def egocentric(pose: dict[str, float], x: float, y: float) -> tuple[float, float
     dx, dy = x - float(pose["x_m"]), y - float(pose["y_m"])
     bearing = math.degrees(math.atan2(dy, dx)) - float(pose["yaw_deg"])
     return math.hypot(dx, dy), _norm180(bearing)
+
+
+def vendor_pose() -> dict[str, float] | None:
+    """The bridge's newest vendor-odometry pose in the report's shape, or None when not fresh.
+
+    Never creates the sampler, like safety._pose_now.
+    """
+    from bridge.sdk.state import existing_sampler
+
+    sampler = existing_sampler()
+    latest = sampler.latest_pose() if sampler is not None else None
+    now = sampler.pose_at(time.monotonic()) if sampler is not None else None
+    if latest is None or latest[2] > VENDOR_POSE_STALE_S or now is None:
+        return None
+    return {"x_m": now[0], "y_m": now[1], "yaw_deg": math.degrees(now[2])}
+
+
+def report_pose(report: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
+    """(pose, frame) a report's detections are placed with: FAST-LIO's, else the vendor fallback."""
+    pose = report.get("pose")
+    if isinstance(pose, dict):
+        return pose, str(report.get("pose_frame") or DEFAULT_FRAME)
+    fallback = vendor_pose()
+    return None if fallback is None else (fallback, VENDOR_FRAME)
 
 
 # -- label matching --------------------------------------------------------------
@@ -423,17 +455,18 @@ class ObjectMemory:
     def observe_report(self, report: dict[str, Any]) -> None:
         """Feed one perception report (`world_model_publisher`'s wire shape).
 
-        A report with no pose, or whose detector is offline, says nothing about
-        where things are — and must not count as "looked and saw nothing".
+        A report with no pose (and no fresh vendor one), or whose detector is
+        offline, says nothing about where things are — and must not count as
+        "looked and saw nothing".
         """
-        pose = report.get("pose")
-        if not report.get("detector_online") or not isinstance(pose, dict):
+        if not report.get("detector_online"):
             return
+        located = report_pose(report)
         objects = report.get("objects")
-        if not isinstance(objects, list):
+        if located is None or not isinstance(objects, list):
             return
         try:
-            self.observe(pose, objects, frame=str(report.get("pose_frame") or DEFAULT_FRAME))
+            self.observe(located[0], objects, frame=located[1])
         except (KeyError, TypeError, ValueError) as exc:
             log.warning("object_memory.bad_report", error=str(exc))
 

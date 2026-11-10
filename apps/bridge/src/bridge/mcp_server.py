@@ -2959,12 +2959,11 @@ MEMORY_SUMMARY_MAX = 6
 
 
 def _memory_pose() -> tuple[dict | None, str | None]:
-    """The pose memory entries are measured against: the perception report's.
-
-    Not the bridge's vendor odometry — that is a different frame (see
-    object_memory's docstring). None when no fresh report has a pose.
+    """The pose memory entries are measured against: the perception report's,
+    else the vendor odometry under this run's frame (object_memory.report_pose).
+    None when there is no fresh report, or neither pose.
     """
-    from bridge.object_memory import DEFAULT_FRAME
+    from bridge.object_memory import report_pose
 
     try:
         from bridge.sdk.perception_link import get_link
@@ -2973,9 +2972,9 @@ def _memory_pose() -> tuple[dict | None, str | None]:
     except Exception:
         log.exception("object_memory.pose_failed")
         return None, None
-    if not report or not isinstance(report.get("pose"), dict):
+    if not report:
         return None, None
-    return report["pose"], str(report.get("pose_frame") or DEFAULT_FRAME)
+    return report_pose(report) or (None, None)
 
 
 def _with_object_memory(build):  # noqa: ANN001, ANN202
@@ -3043,7 +3042,8 @@ def recall_object(
     `seen_count`. `x_m`/`y_m` are in `frame` (perception's odometry — the same
     frame Nav2 calls `odom`), which is NOT the frame `walk_to` uses: pass them as
     `navigate_to(x, y, frame=frame)` when navigation is armed, otherwise turn by
-    `bearing_deg` and walk by `distance_m`.
+    `bearing_deg` and walk by `distance_m`. A `vendor_odom@...` frame (lidar down)
+    is not Nav2's: turn and walk.
 
     `not_found` comes with `known_labels`: everything in memory. If one of them
     is what was asked for under another name, call again with that label. Not
