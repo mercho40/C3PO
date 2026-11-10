@@ -332,9 +332,10 @@ async def run(height: float = DEFAULT_HEIGHT, *, signal: bool = True) -> dict[st
             damp_reason = "burst_failed"
         elif burst_acked == 0:
             damp_reason = "burst_unacknowledged"
+    # True when the budget ran out on an attempt still in flight: that Damp was
+    # sent and may yet land, so it is neither a success nor a failure.
+    damp_unconfirmed = False
     if damp_reason is not None:
-        from unitree_sdk2py.rpc.internal import RPC_ERR_CLIENT_API_TIMEOUT
-
         from bridge.sdk import g1_protocol, g1_rpc
 
         budget_exhausted = False
@@ -345,10 +346,10 @@ async def run(height: float = DEFAULT_HEIGHT, *, signal: bool = True) -> dict[st
             async with asyncio.timeout(REAL_DAMP_TOTAL_BUDGET_S):
                 for attempt in range(1, REAL_DAMP_MAX_ATTEMPTS + 1):
                     real_damp_attempts = attempt
-                    # What an attempt the budget stops waiting for reports. One
-                    # can sit on the sport client's 10 s timeout; it is sent
-                    # anyway and finishes on its own thread.
-                    real_damp_rpc_code = RPC_ERR_CLIENT_API_TIMEOUT
+                    # None while unanswered. One attempt can sit on the sport
+                    # client's 10 s timeout; it is sent anyway and finishes on
+                    # its own thread.
+                    real_damp_rpc_code = None
                     real_damp_rpc_code, _ = await _on_own_thread(
                         g1_rpc.call_sport, g1_protocol.Mode.DAMP
                     )
@@ -363,6 +364,7 @@ async def run(height: float = DEFAULT_HEIGHT, *, signal: bool = True) -> dict[st
                         await asyncio.sleep(REAL_DAMP_RETRY_DELAY_S)
         except TimeoutError:
             budget_exhausted = True
+            damp_unconfirmed = real_damp_rpc_code is None
             log.warning(
                 "stop_everything.real_damp_fallback.budget_exhausted",
                 attempts=real_damp_attempts,
@@ -373,7 +375,7 @@ async def run(height: float = DEFAULT_HEIGHT, *, signal: bool = True) -> dict[st
             reason=damp_reason,
             rpc_code=real_damp_rpc_code,
             attempts=real_damp_attempts,
-            succeeded=real_damp_rpc_code == 0,
+            succeeded=None if damp_unconfirmed else real_damp_rpc_code == 0,
             budget_exhausted=budget_exhausted,
         )
 
@@ -408,11 +410,12 @@ async def run(height: float = DEFAULT_HEIGHT, *, signal: bool = True) -> dict[st
         "hands_relaxed": hands_relaxed,
         "real_damp_fallback_rpc_code": real_damp_rpc_code,
         "real_damp_fallback_attempts": real_damp_attempts,
-        # None when Damp did not run (sim, or the stop landed): the console
-        # reads only `False` as a failed stop.
+        # None when Damp did not run (sim, or the stop landed) or is still
+        # unanswered: the console reads only `False` as a failed stop.
         "real_damp_fallback_succeeded": (
-            (real_damp_rpc_code == 0) if damp_reason is not None else None
+            None if damp_reason is None or damp_unconfirmed else real_damp_rpc_code == 0
         ),
+        "real_damp_fallback_unconfirmed": damp_unconfirmed,
         "real_damp_fallback_reason": damp_reason,
         # False: this process is latched, but the teleop stream reads only the
         # sentinel file and never heard this stop. A driving headset may still drive.

@@ -213,7 +213,8 @@ async def test_real_damp_retries_stop_at_the_time_budget(monkeypatch):
 
     # Stopped after the first over-budget attempt rather than using all three.
     assert attempts == 1, f"expected budget to halt retries, got {attempts} attempts"
-    assert result["real_damp_fallback_succeeded"] is False
+    assert result["real_damp_fallback_succeeded"] is None  # sent, not yet answered
+    assert result["real_damp_fallback_unconfirmed"] is True
     assert result["real_damp_fallback_attempts"] == 1
 
 
@@ -472,8 +473,10 @@ async def test_a_damp_that_never_answers_ends_at_the_budget(monkeypatch):
 
     assert time.monotonic() - started < 1.5
     assert damp_calls == [g1_protocol.Mode.DAMP]  # it went out; the answer did not come back
-    assert result["real_damp_fallback_rpc_code"] == 3104
-    assert result["real_damp_fallback_succeeded"] is False
+    # Not False: the console reads that as a failed stop, and this Damp may still land.
+    assert result["real_damp_fallback_rpc_code"] is None
+    assert result["real_damp_fallback_succeeded"] is None
+    assert result["real_damp_fallback_unconfirmed"] is True
 
 
 async def test_a_retry_the_budget_ran_out_on_is_not_counted_as_sent(monkeypatch):
@@ -493,6 +496,9 @@ async def test_a_retry_the_budget_ran_out_on_is_not_counted_as_sent(monkeypatch)
     assert damp_calls == [g1_protocol.Mode.DAMP]
     assert result["real_damp_fallback_attempts"] == len(damp_calls)
     assert result["real_damp_fallback_rpc_code"] == 3104
+    # Answered, and refused: a failure, not an unconfirmed Damp.
+    assert result["real_damp_fallback_succeeded"] is False
+    assert result["real_damp_fallback_unconfirmed"] is False
     assert time.monotonic() - started < 1.5
 
 
