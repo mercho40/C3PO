@@ -454,6 +454,10 @@ does not stream at rest and has no software trigger (D6.3, `ROBOT-HARDWARE.md` �
 
 ### D6.3 — No cloud. The whole loop runs on the robot, and needs no GPU
 
+**Partly superseded by D10 (2026-11-10):** this is now the Local engine, one of two.
+The OpenAI Realtime engine (cloud) can be chosen per session, and vision uses Gemini.
+The spoken stop below is unchanged.
+
 **Decided:** **no cloud anywhere in the voice path.** D6.2's one cloud hop (Deepgram via
 `back`) is removed. The LAN H100 is a _last resort_ for training only — it needs a
 professor's permission, so nothing on the critical path may assume it.
@@ -660,6 +664,45 @@ So `TELEOP_ARM_ENABLED` and `TELEOP_HAND_ENABLED` are not configuration. They ar
 that a human has done the corresponding check. Head-yaw turning and the walk axis are _not_
 gated, because they ride on `_locomotion.send_velocity_async` — already-vetted machinery with
 a hardware clamp and a firmware deadman under it.
+
+## D10 — Cloud models beside the local stop (autonomy, as shipped)
+
+**Status:** written 2026-11-10 from the code and the git log, because
+`docs/autonomy/PLAN.md` §0.1 asked for it. **The rationale was not recorded.** This
+section says what shipped and where; it does not say why.
+
+**What shipped:**
+
+- **Two voice engines, chosen per session** on /voice (3cf0ddb, 2026-10-27):
+  «Local (transcripción + agente)» and «OpenAI Realtime (voz a voz)». Local is D6.3's
+  loop: the robot transcribes, TIC AI answers, Piper speaks. Realtime is speech to speech
+  over `wss://api.openai.com/v1/realtime` (`OPENAI_REALTIME_MODEL`, default
+  `gpt-realtime-2.1`), with `gpt-4o-mini-transcribe` for its transcript, so the audio
+  leaves campus. `VOICE_ENGINE` only sets the default (`legacy` in `.env.example`), and
+  `back` offers Realtime only when `OPENAI_API_KEY` is set (`voice/engine.ts`). Realtime
+  first arrived in 1eef615 (2026-08-24), whose message has no body.
+- **The headset's push-to-talk** sends its WAV from `back` to TIC AI's `tic-transcript`
+  (`voice/transcribe.ts`), not to the robot.
+- **The spoken stop stays on the robot.** While either engine's stream from the bridge is
+  connected, the bridge acts on the stop phrase itself (`mcp_server.py` `_local_stop`).
+  No network and no model sit between the phrase and the stop. D6.3's warning still holds:
+  it is a convenience, not the safety story.
+- **Vision uses a cloud model.** The bridge's `look`, `find_object` and `verify` call
+  Gemini Robotics-ER 2 (`vlm.py`, 132f243). Without Gemini they answer from the detector
+  alone, with a note (G4). Faces are pixelated before any frame goes to a cloud model
+  (03153df). `back`'s own `look` and `verify` use TIC AI (`VISION_MODEL`, default
+  `AGENT_MODEL`). `GEMINI_API_KEY` lives in `apps/bridge/.env`, so the robot now holds one
+  cloud credential.
+- **The planner is still TIC AI** (`AGENT_MODEL=tic-chat`), as in D5.1. The eval suite
+  exists (`docs/autonomy/eval`, 32 tasks), but no planner choice made from it is recorded.
+
+**What it changes here:** D6.3's "no cloud anywhere in the voice path" describes the Local
+engine only. D6.3's "the robot still holds no credentials" is no longer true for vision.
+D5.1 stands.
+
+**What PLAN.md intended** (§0.1): "cloud voice allowed, local stop + offline fallback
+kept", and "planner model chosen by eval, not by provider". The first matches what shipped;
+the Local engine is the offline fallback. The second has not happened.
 
 ---
 
