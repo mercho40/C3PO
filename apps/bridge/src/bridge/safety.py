@@ -18,9 +18,12 @@ Two gates live here, and both sit on a path the LLM cannot route around:
      stops the base;
    * the stale-perception policy, for AUTONOMOUS sources only (Nav2 and
      go_to_object's walk);
-   * the blind rule, for Nav2's cmd_vel only: zero unless a fresh world
-     summary says the lidar is online. Nav2 steers on the lidar costmap;
-     go_to_object steers on the camera, so a lidar fault must not stop it;
+   * the blind rule, for Nav2's cmd_vel: zero unless a fresh world summary
+     says the lidar is online. Nav2 steers on the lidar costmap;
+   * the blind rule for every other autonomous source (go_to_object's walk):
+     zero unless a fresh world summary says the detector is online, whatever
+     PERSON_RULE and STALE_POLICY say. It steers on the camera, so a lidar
+     fault alone must not stop it, but no perception at all must;
    * the geofence, while the Nav2 gate is armed: zero further than
      SAFETY_GEOFENCE_M from where arm_navigation found the robot, or with no
      fresh odometry pose to measure. Manual driving is never fenced;
@@ -268,6 +271,22 @@ def obstacles_fresh() -> bool:
     )
 
 
+def perception_fresh() -> bool:
+    """Whether the detector is live: a fresh world summary with the detector online.
+
+    Independent of PERSON_RULE and STALE_POLICY, like obstacles_fresh.
+    """
+    from bridge.sdk.perception_link import existing_link
+
+    link = existing_link()
+    if link is None:
+        return False
+    report, age = link.latest_report()
+    return bool(
+        report and age is not None and age <= PERCEPTION_STALE_S and report.get("detector_online")
+    )
+
+
 def _pose_now() -> tuple[float, float] | None:
     """The robot's (x, y) in vendor odometry, or None when there is none fresher than POSE_STALE_S.
 
@@ -359,6 +378,9 @@ def govern(
         # Nav2 keeps planning on its last costmap when the sensor goes quiet, and
         # Humble's collision monitor ignores a stale source: blind, so it fails open.
         factor, reason = 0.0, "obstacle_source_stale"
+    elif autonomous and not nav2 and not perception_fresh():
+        # go_to_object has no obstacle avoidance: with no live detector it walks blind.
+        factor, reason = 0.0, "perception_stale"
     if autonomous and (fence := _geofence_block()):
         # Zero, not "inward only": Nav2's goal is what took it out, and recovery
         # is the operator's (teleop is never fenced) or a fresh arm here.

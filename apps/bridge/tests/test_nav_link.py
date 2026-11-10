@@ -452,3 +452,26 @@ async def test_operator_velocity_preempting_a_goal_cancels_it_in_nav2(rig, monke
     assert result["status"] == "completed"
     assert get_registry().get(out["task_id"]).status == "cancelled"
     assert {"v": 1, "cancel": True, "id": out["goal_id"]} in sent
+
+
+async def test_operator_velocity_preempting_a_goal_closes_the_gate(rig, monkeypatch):
+    """11.6b: a cancel event alone left Nav2's cmd_vel reaching the legs beside the operator's."""
+    from bridge.sdk import g1_rpc
+    from bridge.skills import _locomotion, walk_velocity
+
+    server, nav, gate, _sent, _ = await _armed(rig)
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (0, ""))
+    forwarded: list[tuple[float, float, float]] = []
+    monkeypatch.setattr(gate, "_forward", lambda *v: forwarded.append(v))
+    out = await server.navigate_to(x=1.0, y=0.0)
+    nav._ingest_status(status(goal_rec(out["goal_id"], "active", dist=1.0)))
+    assert gate._apply_cmd_vel(0.3, 0.0, 0.0)  # Nav2 is steering
+
+    result = await walk_velocity.run(vx=0.0, vy=0.0, vyaw=0.0, duration_s=0.1)  # the stop pulse
+
+    assert result["status"] == "completed"
+    assert not gate.is_enabled()
+    assert not gate._apply_cmd_vel(0.3, 0.0, 0.0)  # Nav2's next tick is dropped
+    gate._tick()
+    assert all(v == (0.0, 0.0, 0.0) for v in forwarded)

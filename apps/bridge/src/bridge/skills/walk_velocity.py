@@ -142,6 +142,13 @@ async def run(
             for t in registry.list_active()
             if t.skill_name in WALK_SKILLS and t.skill_name != "walk_velocity"
         ]
+        if any(t.skill_name == "navigate_to" for t in preempted):
+            # Gate first, like soft_stop: a cancel event alone leaves Nav2's cmd_vel and
+            # the link's re-issue reaching the legs between our setpoints.
+            from bridge.sdk.perception_link import existing_link
+
+            if (link := existing_link()) is not None:
+                link.disable(reason="operator_preempt")
         for other in preempted:
             registry.cancel(other.task_id)
         if preempted:

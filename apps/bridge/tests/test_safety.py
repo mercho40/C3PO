@@ -156,14 +156,25 @@ def test_person_distance_scales_every_source(sent, link, range_m, expected):
     assert sent[-1][0] == pytest.approx(expected)
 
 
-def test_stale_perception_slows_autonomous_motion_only(sent, link):
-    link.age = 1.5  # older than PERCEPTION_STALE_S: the lidar reading is stale too
+@pytest.mark.parametrize(
+    ("person_rule", "policy"), [(True, "slow"), (False, "slow"), (True, "ignore")]
+)
+@pytest.mark.parametrize(
+    ("report", "age"), [(_report(), 1.5), (None, None), (_report(detector_online=False), 0.1)]
+)
+def test_stale_perception_stops_autonomous_motion_only(
+    sent, link, monkeypatch, person_rule, policy, report, age
+):
+    """go_to_object has no obstacle avoidance: no live detector is zero, whatever the person rule says."""
+    monkeypatch.setattr(safety, "PERSON_RULE", person_rule)
+    monkeypatch.setattr(safety, "STALE_POLICY", policy)
+    link.report, link.age = report, age
     _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
     assert sent[-1][0] == 0.3  # the console walk pad works without perception
     safety.reset()
-    # go_to_object's walk: autonomous, not Nav2, so a stale lidar slows it (person rule), never zeroes it.
     _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
-    assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
+    assert sent[-1][0] == 0.0
+    assert safety.status()["last_reason"] == "perception_stale"
 
 
 @pytest.mark.parametrize(

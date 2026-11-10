@@ -176,6 +176,36 @@ async def test_a_cancel_during_a_dwell_ends_the_sweep_at_once(monkeypatch, mem):
 
 
 @pytest.mark.asyncio
+async def test_a_cancel_mid_turn_stops_the_turn(monkeypatch, mem):
+    """cancel_task on look_around: the turn in progress is its own task and must hear it too."""
+    import asyncio
+
+    from bridge.skills.task_runtime import get_registry
+
+    turns = []
+
+    async def slow_turn(ctx, delta_yaw_radians, timeout_s, tolerance_degrees):
+        t = get_registry().create("turn")  # what skills.turn.run registers
+        turns.append(t)
+        try:
+            await asyncio.wait_for(t.cancel_event.wait(), 5.0)
+            t.status = "cancelled"
+        except TimeoutError:
+            t.status = "completed"
+        return {"status": t.status, "phase": t.status, "error": None}
+
+    monkeypatch.setattr(server, "turn", slow_turn)
+    sweep = asyncio.ensure_future(server.look_around(None, total_degrees=360))
+    await asyncio.sleep(0.05)  # inside the first turn
+    [task] = _look_around_tasks()
+    get_registry().cancel(task.task_id)
+    out = await asyncio.wait_for(sweep, 1.0)
+
+    assert (out["status"], out["stopped_reason"]) == ("stopped", "cancelled")
+    assert [t.status for t in turns] == ["cancelled"]
+
+
+@pytest.mark.asyncio
 async def test_a_finished_sweep_leaves_no_running_task(monkeypatch, mem):
     monkeypatch.setattr(server, "turn", FakeTurn())
     out = await server.look_around(None, total_degrees=120)
