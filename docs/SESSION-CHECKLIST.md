@@ -6,7 +6,10 @@ project's history came from testing step 4 while step 1 was quietly broken.
 
 Everything here uses tools that already exist (`c3po` — including `c3po status`
 and `c3po preflight` — and `headset_check.py`). Nothing in this file needs to be
-maintained separately from them.
+maintained separately from them. This file is the general order. The dated list
+of what to test at the next session is
+[test-day/return-checklist.md](autonomy/test-day/return-checklist.md); the expo
+stand has its own, [DEMO-RUNBOOK.md](DEMO-RUNBOOK.md).
 
 **Read §0 before touching anything.** It is the step that is new, and skipping it
 means testing yesterday's code while believing it is today's.
@@ -17,32 +20,26 @@ means testing yesterday's code while believing it is today's.
 
 The robot runs from a git checkout at `~/c3po`, but
 `/etc/systemd/system/c3po-bridge.service` is a root-owned **copy**, not a
-symlink into it. A `git pull` alone changes nothing systemd runs: the unit
+symlink into it. A merge alone changes nothing systemd runs: the unit
 updates only when `./scripts/robot/c3po install` validates, copies and reloads it
 — **and only from a branch that contains the change**.
 
-A pull on the wrong branch is a no-op that reports success, and the install then
-faithfully re-copies the old config. Check what you got; do not assume.
+The robot has no internet on the cable, so the branch is pushed from the Mac,
+exactly as in `docs/OPERATIONS.md` §5. A merge on the wrong branch is a no-op
+that reports success, and the install then faithfully re-copies the old config.
+Check what you got; do not assume.
 
 ```bash
-ssh c3po                     # or: ssh unitree@g1-orin.local
+# On the Mac:
+git push ssh://unitree@192.168.123.164/home/unitree/c3po feat/autonomy:refs/heads/incoming
+# On the robot (ssh -t, in your own terminal: install asks for the sudo password):
 cd ~/c3po
-git fetch --all
-git status -sb               # WHICH BRANCH is this checkout on?
-git pull
+git status -sb               # WHICH BRANCH is this checkout on? Local changes? Stop and ask.
+git merge --ff-only incoming # refuses a diverged checkout: stop and look, never force
 ```
 
-If the robot is on `main`, the work must be merged first (PR #3). If you want it
-without merging — only with the repo owner's OK — check out the branch
-explicitly, after noting what to roll back to:
-
-```bash
-git rev-parse HEAD | tee ~/.c3po/previous-deploy
-git checkout integrate/october && git pull
-```
-
-What that branch needs proven on hardware, in order, is in
-[BRANCH-TEST-PLAN.md](BRANCH-TEST-PLAN.md).
+What to test on hardware next, in order, is in
+[test-day/return-checklist.md](autonomy/test-day/return-checklist.md).
 
 **Then prove the file actually changed before restarting anything:**
 
@@ -50,7 +47,7 @@ What that branch needs proven on hardware, in order, is in
 grep BRIDGE_HOST ~/c3po/scripts/robot/c3po-bridge.service   # must say 127.0.0.1
 ```
 
-If it still says `0.0.0.0`, the pull did not bring the change and everything
+If it still says `0.0.0.0`, the merge did not bring the change and everything
 below is testing the old build. Stop and fix that first.
 
 ```bash
@@ -61,11 +58,14 @@ ss -ltnp | grep 8001                                        # must NOT say 0.0.0
 
 ### The tunnel, and why one is enough
 
-`/mcp` and `/camera/*` are routes on the **same process, same port**. One forward
-covers the console, the agent and the headset picture:
+`/mcp` and `/camera/*` are routes on the **same process, same port**, so the 8001
+forward covers the console, the agent and the headset picture. The headset's
+teleop stream is the one other port, 8767. One ssh carries both forwards:
 
 ```bash
-ssh -N -L 8001:127.0.0.1:8001 -o ControlMaster=no c3po      # keep this running
+./scripts/robot_tunnel.sh c3po                               # keeps 8001 and 8767 up
+# or by hand:
+ssh -N -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 -o ControlMaster=no c3po
 ```
 
 `ControlMaster=no` is not decoration: a forward on a shared master evaporates
@@ -184,7 +184,7 @@ sentence you read rather than a fortnight of confusion. If it fires, kill the
 process it names and start the dev server from here:
 
 ```bash
-bun run dev          # from the repo root: 3000 + 3001
+C3PO_ROBOT_HOST=localhost bun run dev:robot   # from the repo root: 3000 + 3001, teleop via the tunnel's 8767
 ```
 
 Confirm what is actually being served before putting the headset on:
@@ -297,7 +297,7 @@ headset's PARAR button and the console dispatch the same call.
 - **BOTH perception containers are running older code than this checkout.**
   This was stated as a vision-only problem and that was wrong. The nav container
   mounts `config` and `logs` and nothing else — `ros2 launch c3po_perception`
-  resolves the package from **inside the image** — so a `git pull` on the robot
+  resolves the package from **inside the image** — so a deploy on the robot
   updates the files on disk and changes nothing about what runs.
 
   Inert until `c3po perception build` is re-run:
@@ -330,11 +330,9 @@ headset's PARAR button and the console dispatch the same call.
 
 ## Rollback
 
-The bridge is a git checkout, so rollback is a checkout:
-
-```bash
-cd ~/c3po && git checkout <sha> && c3po restart
-```
+The bridge is a git checkout, so rollback is a checkout on the robot, then
+`c3po install` and `c3po restart`. Use the exact commands in `docs/OPERATIONS.md`
+§5 ("Rollback"): pushing an older commit to `incoming` does not work.
 
 If the bridge will not start at all, `bridge_sync` now refuses to start it when
 the Unitree SDK patch fails to apply — deliberately. An unpatched SDK gives a

@@ -150,3 +150,31 @@ Over about 8 s each: try `THINKING_LEVEL = "low"` in `vlm.py` and compare answer
 
 Flip `works_real=True` in `_VLM_META` (and on `ask_user`), with the date in a comment,
 in a separate commit. Update the catalogue line in `docs/autonomy/research/00-current-state.md` §2.4.
+
+## 10. Faces are blurred before upload (pending robot test)
+
+Code: `vlm.blur_faces` (03153df), on unless `C3PO_FACE_BLUR=0`. Run it any time after step 3,
+at the expo or with people standing where visitors will. You need faces that are small,
+tilted and backlit, and people 2–4 m from the robot.
+
+On the Mac, through the tunnel:
+
+```sh
+time curl -s http://127.0.0.1:8001/camera/frame.jpg -o sharp.jpg
+time curl -s http://127.0.0.1:8001/camera/cloud_frame.jpg -o cloud.jpg
+open sharp.jpg cloud.jpg
+```
+
+**Expect:** every face in `sharp.jpg` is pixelated in `cloud.jpg`, and nothing else visibly
+changes. `c3po logs` on the robot shows `vlm.faces_blurred` with the number of faces it found. If
+`cloud.jpg` does not open, `cat cloud.jpg`: a 503 is JSON that says why the frame was not
+sent.
+
+Record, for about 10 frames: faces in view, faces blurred, faces missed (and how: small,
+tilted, backlit, far), and the two `time` results. The difference is the blur's cost on the
+Orin.
+
+Then check that blurring does not break the tools. With people in view:
+`look(question="¿Cuántas personas hay?")` still counts them, and `look` still reports a raised
+hand or a wave. If recall is poor or `look` stops seeing people, write it down here. Do not turn
+the blur off on the free tier (BACKLOG §12).

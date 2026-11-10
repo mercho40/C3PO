@@ -6,10 +6,12 @@ that have already cost real debugging time. How the system fits together is
 reverse-engineered control API is `docs/ROBOT-API.md`; why choices were made is
 `docs/DECISIONS.md`. Per-app dev docs live in each app's README.
 
-**Standing next to the robot with a session to run?** `docs/SESSION-CHECKLIST.md`
-is the ordered runbook — deploy, verify, headset, then motion — and it starts
-with the deploy step that silently does nothing if the robot's checkout is on
-the wrong branch. This file is the reference; that one is the sequence.
+**Standing next to the robot with a session to run?** Start from
+`docs/autonomy/test-day/return-checklist.md`: the one dated sheet of what to test
+next, in order. `docs/SESSION-CHECKLIST.md` is the general order — deploy, verify,
+headset, then motion — and it starts with the deploy step that silently does nothing
+if the robot's checkout is on the wrong branch. For the expo stand, run
+`docs/DEMO-RUNBOOK.md`. This file is the reference; those are the sequences.
 
 ---
 
@@ -71,20 +73,20 @@ each developer writes their own; `apps/bridge/README.md` lists the two entries i
 
 The port map, in one place:
 
-| Service                    | Host                    | Port  | Notes                                                                   |
-| -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------------- |
-| `apps/back` HTTP           | **loopback** by default | 3000  | cookie auth; `BACK_HOST=0.0.0.0` only on a LAN box behind TLS (§5)      |
-| `apps/web` dev             | dev machine             | 3001  | Vite; open `http://localhost:3001`, never `127.0.0.1:3001` (below)      |
-| `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it |
-| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                         |
-| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback       |
-| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`     |
-| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge, relayed to browsers by `apps/back` on 3000   |
-| VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; unauthenticated   |
-| Internet proxy             | Mac, **loopback**       | 8899  | `scripts/robot_internet.py`; public :80/:443 only                       |
-| Internet proxy, robot end  | Jetson, **loopback**    | 18899 | the `ssh -R` of that proxy; alive only while the ssh session is         |
-| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                        |
-| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                      |
+| Service                    | Host                    | Port  | Notes                                                                                                                                           |
+| -------------------------- | ----------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/back` HTTP           | **loopback** by default | 3000  | cookie auth; `BACK_HOST=0.0.0.0` only on a LAN box behind TLS (§5)                                                                              |
+| `apps/web` dev             | dev machine             | 3001  | Vite; open `http://localhost:3001`, never `127.0.0.1:3001` (below)                                                                              |
+| `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it                                                                         |
+| `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                                                                                                 |
+| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback                                                                               |
+| Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`                                                                             |
+| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge, relayed to browsers by `apps/back` on 3000                                                                           |
+| VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; `TELEOP_ORIGINS` check, plus a one-use token from `apps/back` when `TELEOP_SECRET` is set |
+| Internet proxy             | Mac, **loopback**       | 8899  | `scripts/robot_internet.py`; public :80/:443 only                                                                                               |
+| Internet proxy, robot end  | Jetson, **loopback**    | 18899 | the `ssh -R` of that proxy; alive only while the ssh session is                                                                                 |
+| Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                                                                                                |
+| G1 internal DDS            | control board           | 7400+ | multicast, wired internal LAN only                                                                                                              |
 
 `DDS_DOMAIN_ID`: Isaac Sim is `1`, the real G1 is `0` (set per host in `apps/bridge/.env`;
 see `apps/bridge/.env.example`).
@@ -379,6 +381,19 @@ grants exactly `systemctl {start,stop,restart} c3po-bridge.service`, plus the tw
 commands `systemctl stop master_service` and `pkill -9 -x videohub_pc4`. Every other sudo
 command still needs `ssh -t` and the password.
 
+**After the autonomy PRs merge** (#7 → #8 → #9 into `integrate/october`, then #3 into
+`main`), keep deploying `feat/autonomy`. On the Mac, bring `main` into it first, then push as
+above:
+
+```bash
+git fetch origin && git switch feat/autonomy && git merge origin/main
+# run the tests, then the push above
+```
+
+Never push `main` to the robot. If the PRs land as a squash or a rebase, `main` does not
+contain the commits the robot runs, so `git merge --ff-only incoming` refuses, and the only
+way past that is a force, which this section forbids.
+
 Re-running the installer is intentional: unit and root-owned config changes are applied
 and validated in the same operation. `c3po restart` restarts only the bridge; perception
 containers are untouched. `bridge_sync` handles dependency changes and re-applies the SDK
@@ -405,10 +420,50 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
   never follows a symlink into the user-writable checkout. A merge does not update a loaded
   unit until `c3po install` validates, copies and reloads it.
 
-Rollback uses the root-owned `/var/lib/c3po/previous-c3po-bridge.service` backup created
-before each install. Restore the checkout and that unit, then restore only the old user PATH
-commands—never run the old full-stack installer, because it would revive the retired
-perception unit and repair timer. Exact commands are in `MONDAY-RUNBOOK.md`.
+**Rollback.** This is the one recipe; the runbooks point here. Pushing an older commit does
+not work: git refuses it as a non-fast-forward on `incoming`, and `git merge --ff-only` with
+an older commit only says "Already up to date". The robot already has every commit it ran,
+so roll back on the robot itself:
+
+```bash
+# On the robot (ssh -t: install asks for the sudo password):
+cd ~/c3po
+git status --short                 # must print nothing; stop if it does
+git reflog -5                      # HEAD@{0} runs now; HEAD@{1} ran before the last deploy
+git checkout --detach 'HEAD@{1}'   # or a sha from that list
+./scripts/robot/c3po install && c3po restart
+```
+
+The checkout is now detached, and its branch still points at the newer commit. To go
+forward again, push the fix to `incoming` as above, then on the robot:
+
+```bash
+cd ~/c3po && git checkout - && git status -sb   # back on the branch; check its name
+git merge --ff-only incoming && ./scripts/robot/c3po install && c3po restart
+```
+
+`c3po install` from the older checkout installs that checkout's unit, after backing up the
+current one to the root-owned `/var/lib/c3po/previous-c3po-bridge.service`. Every commit
+since be8001b (2026-08-22) has this installer. Never run the installer of an older commit:
+it is the old full-stack one, and it would revive the retired perception unit and repair
+timer. For a target that old, check it out as above, then restore the backed-up unit and
+only that checkout's user commands:
+
+```bash
+sudo install -o root -g root -m 0644 \
+  /var/lib/c3po/previous-c3po-bridge.service \
+  /etc/systemd/system/c3po-bridge.service
+sudo systemctl daemon-reload
+if [ -x ./scripts/robot/install_robot_scripts.sh ]; then
+  SKIP_LOGROTATE=1 ./scripts/robot/install_robot_scripts.sh
+elif [ -x ./scripts/robot/c3po ]; then
+  ln -sf "$PWD/scripts/robot/c3po" ~/.local/bin/c3po
+fi
+sudo systemctl restart c3po-bridge.service
+```
+
+A rollback leaves the perception images as they are. `c3po perception build` on the
+older checkout rebuilds them, if the rollback is about perception code.
 
 ### When the robot ignores everything
 

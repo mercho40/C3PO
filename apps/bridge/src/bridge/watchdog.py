@@ -52,7 +52,9 @@ a real robot is:
 
   1. the firmware's 1 s `SET_VELOCITY` deadman — it stops a walking robot
      within a second of the bridge going quiet, below our software entirely;
-  2. losing the SSH connection kills this process outright, which triggers (1);
+  2. not the SSH link any more: the bridge runs as the `c3po-bridge` systemd unit,
+     so losing SSH no longer kills it, and a skill already running carries on to
+     its own end (a `walk_velocity` lasts at most 3 s);
   3. the physical e-stop, which outranks all of it.
 """
 

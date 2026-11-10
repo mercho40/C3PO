@@ -224,11 +224,7 @@ until both feet bear weight (rope slack, still attached), wait ~5 s** →
 
 ## G. Rollback
 
-```bash
-cd ~/c3po
-git checkout "$(cat ~/.c3po/previous-deploy)"
-./scripts/robot/c3po install && c3po restart
-```
+As in `docs/OPERATIONS.md` §5 ("Rollback"), to the commit in `~/.c3po/previous-deploy`.
 
 After a rollback the **old** `run_c3po` is back, and it stops gemm unasked:
 no `c3po up` / `c3po start` without the other team's OK. The bridge also binds

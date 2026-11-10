@@ -11,26 +11,28 @@ Bun + Turborepo monorepo.
 ```
 apps/
   back/         Elysia API + Better Auth + Drizzle/PostgreSQL — control plane (port 3000)
-  web/          SvelteKit 5 operator console (port 3001)
+  web/          SvelteKit (Svelte 5) operator console (port 3001)
   bridge/       Python 3.12 sidecar (uv) — MCP server, Unitree SDK, DDS
   perception/   ROS 2 perception + navigation containers for the robot's Jetson
 docs/           Architecture, decisions, operations, robot reference
 scripts/robot/  Onboard implementation; one operator CLI: `c3po`
-packages/       Reserved for shared TS packages
+packages/
+  robot-scripts/  Turbo `test` task for the shell scripts (scripts/tests/run.sh; fails without shellcheck)
 ```
 
 ## Documentation
 
-| Doc                                                | What it answers                                                       |
-| -------------------------------------------------- | --------------------------------------------------------------------- |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)     | How the system fits together — layers, topology, safety model         |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md)           | Why it is built this way — decision records with rationale            |
-| [`docs/OPERATIONS.md`](docs/OPERATIONS.md)         | Deploying and operating — topology, stack controls, addressing        |
-| [`docs/ROBOT-API.md`](docs/ROBOT-API.md)           | The G1's reverse-engineered control API — services, api_ids, FSM      |
-| [`docs/ROBOT-HARDWARE.md`](docs/ROBOT-HARDWARE.md) | What the physical robot presents — network, peripherals, cohabitation |
-| [`docs/MONDAY-RUNBOOK.md`](docs/MONDAY-RUNBOOK.md) | Ordered first hardware window — gates, pass criteria, rollbacks       |
-| [`docs/autonomy/`](docs/autonomy/README.md)        | Research and the phased autonomy plan (perception, nav, arms)         |
-| `apps/*/README.md`                                 | Developing each app                                                   |
+| Doc                                                                 | What it answers                                                       |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                      | How the system fits together — layers, topology, safety model         |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md)                            | Why it is built this way — decision records with rationale            |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md)                          | Deploying and operating — topology, stack controls, addressing        |
+| [`docs/ROBOT-API.md`](docs/ROBOT-API.md)                            | The G1's reverse-engineered control API — services, api_ids, FSM      |
+| [`docs/ROBOT-HARDWARE.md`](docs/ROBOT-HARDWARE.md)                  | What the physical robot presents — network, peripherals, cohabitation |
+| [`return-checklist.md`](docs/autonomy/test-day/return-checklist.md) | The next robot session — the one dated list of what to test, in order |
+| [`docs/DEMO-RUNBOOK.md`](docs/DEMO-RUNBOOK.md)                      | The expo stand — what to show, its limits, what to do when it breaks  |
+| [`docs/autonomy/`](docs/autonomy/README.md)                         | Research and the phased autonomy plan (perception, nav, arms)         |
+| `apps/*/README.md`                                                  | Developing each app                                                   |
 
 ## Quickstart
 

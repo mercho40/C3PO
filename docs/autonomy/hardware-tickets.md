@@ -39,7 +39,7 @@ Neither BrainCo hand on our G1 EDU (robot `<robot SN / order number>`) responds.
 
 - **Hardware:** the hands sit behind the FTDI FT4232H (`0403:6011`), which shows up as `/dev/ttyUSB0`–`3`.
 - **Before:** on an earlier session the vendor `brainco_hand_server` (from `xr_teleoperate/vendor/brainco_hand_service`) bound the **right** hand on `/dev/ttyUSB1`: hardware_type 6, sku_type 1 (medium right), firmware **1.0.22.U**, serial **BCXTR2124J2600024**, Modbus RTU slave 0x7f at 460800 baud. The **left** hand never answered on any port ("Failed to get device info").
-- **Now** (2026-11-03 and 2026-11-05): neither hand answers on any of the 4 lines, through our driver or the vendor `brainco_hand_server`.
+- **Now** (2026-11-03 and 2026-11-06): neither hand answers on any of the 4 lines, through our driver or the vendor `brainco_hand_server`.
 - **Not yet checked:** hand power, and the wrist connectors. Please tell us the safe way to inspect them.
 
 We need to know:

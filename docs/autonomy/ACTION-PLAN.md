@@ -4,7 +4,7 @@ Scoped by 9 read-only agents that read the code, one per work package (WP). A, B
 
 **How to read it.** Work runs in **waves**. Inside a wave, the listed branches edit disjoint files and can run in parallel. Each subtask lands only with its tests green. A critic issue marked _apply_ is folded into the subtask when it's implemented.
 
-**Status (2026-11-04):** waves 0, 1 and 2 done. Wave 2 also closed backlog 1.5 (X15) and the cross-check's person-rule item (X16), and gated zero_torque. 🟢 done · 🔵 in progress · ⚪ todo. Robot-only steps are in §4.
+**Status (2026-11-10):** waves 0, 1 and 2 done. Wave 2 also closed backlog 1.5 (X15) and the cross-check's person-rule item (X16), and gated zero_torque. Wave 3 is done except nav-depth (E5–E8); B8 is in code, pending a robot test. Wave 4 is done except F10's triggers. Wave 5: I4 partly done, I5/I6 superseded, the rest open. §10 lists the pending robot tests. 🟢 done · 🔵 in progress · ⚪ todo. Robot-only steps are in §4.
 
 ## 1. Waves
 
@@ -18,30 +18,30 @@ Scoped by 9 read-only agents that read the code, one per work package (WP). A, B
 - 🟢 F6 robot_internet.py 80/443 only
 - 🟢 F3 c3po.sudoers
 - 🟢 G5 pin today's go_to_object tool body
-- ⚪ 8.3 push feat/autonomy once the user says so
+- 🟢 8.3 push feat/autonomy (stacked PRs #7→#8→#9 into integrate/october)
 
 _Why:_ Unblocks everything after it. A green CI and a pinned test baseline make every later change checkable. F4 must land before A2/A4 because it changes the FastMCP base class that GovernedMCP.call_tool overrides. F8 must land before B1, and G5 before E2-E4, because each pins behavior the next one changes. Every item is S, all of WP F fits on one branch (scripts/tests/run.sh is shared inside F), and none touches A, B or C files except test_safety.py, which F4 adapts first.
 
 ### Wave 1
 
-- ⚪ Branch bridge-gate: A1 then A2 then A4 then A6 (estop.py, safety.py, GovernedMCP.call_tool, /safety/confirm, state.py battery)
-- ⚪ Branch voice-stop: B1 then B2 (listen.py and mcp_server voice route, then loop.ts/conversation.ts/routes/voice.ts)
-- ⚪ Branch back-hardening: B3 (with G6's test), B5 (bind 127.0.0.1), B6 (disableSignUp plus social providers plus a bootstrap emailVerified check plus create-user, which also handles 8.5)
-- ⚪ Branch web-safety: C1 no-JS PARAR, C2 battery banner (thresholds aligned to A6)
-- ⚪ Branch perception-geometry: D4 then D2 then D3 (detector.py and grounding.py serial), then D1 (after F1's build.py)
-- ⚪ C3 XR texture upload (camera-layer.ts only)
+- 🟢 Branch bridge-gate: A1 then A2 then A4 then A6 (estop.py, safety.py, GovernedMCP.call_tool, /safety/confirm, state.py battery)
+- 🟢 Branch voice-stop: B1 then B2 (listen.py and mcp_server voice route, then loop.ts/conversation.ts/routes/voice.ts)
+- 🟢 Branch back-hardening: B3 (with G6's test), B5 (bind 127.0.0.1), B6 (disableSignUp plus social providers plus a bootstrap emailVerified check plus create-user, which also handles 8.5)
+- 🟢 Branch web-safety: C1 no-JS PARAR, C2 battery banner (thresholds aligned to A6)
+- 🟢 Branch perception-geometry: D4 then D2 then D3 (detector.py and grounding.py serial), then D1 (after F1's build.py)
+- 🟢 C3 XR texture upload (camera-layer.ts only)
 
 _Why:_ Safety first: the PARAR latch (11.2), arg-bound grants (11.1), confirmation for high-danger T1 (1.3), the battery refusal (1.10), the spoken stop on the legacy engine (1.1/1.2), the turn leak (11.8), loopback plus closed sign-up (1.4), the pre-hydration PARAR (1.9), and the camera pitch everything perception depends on (3.1/3.2). The six branches touch disjoint files. B1 shares mcp_server.py with the bridge-gate branch but in a different region (:4013-4035), so merge B1 after bridge-gate.
 
 ### Wave 2
 
-- ⚪ Branch confirm-ui (after wave-1 bridge-gate): A3 then A5 then B7 (skills.ts, vr-voice.svelte.ts and tool-card shared, so one branch)
-- ⚪ Branch runtime: B4 then G3 then G7 (runtime.ts serial, on top of B3)
-- ⚪ Branch teleop: C6 then C7 (teleop server, walk_to/turn yield, estop lease on top of A1), then 1.5 Origin allowlist and token
-- ⚪ Branch perception-age: D5 (owns the world_model_publisher age field) plus E1 tests only, plus the person rule using capture age in safety.py (after A6)
-- ⚪ Branch eval: G1 then G2
-- ⚪ G4 Gemini fallback (mcp_server look/find/verify; merge after bridge-gate)
-- ⚪ H1 ROBOT-API.md
+- 🟢 Branch confirm-ui (after wave-1 bridge-gate): A3 then A5 then B7 (skills.ts, vr-voice.svelte.ts and tool-card shared, so one branch)
+- 🟢 Branch runtime: B4 then G3 then G7 (runtime.ts serial, on top of B3)
+- 🟢 Branch teleop: C6 then C7 (teleop server, walk_to/turn yield, estop lease on top of A1), then 1.5 Origin allowlist and token
+- 🟢 Branch perception-age: D5 (owns the world_model_publisher age field) plus E1 tests only, plus the person rule using capture age in safety.py (after A6)
+- 🟢 Branch eval: G1 then G2
+- 🟢 G4 Gemini fallback (mcp_server look/find/verify; merge after bridge-gate)
+- 🟢 H1 ROBOT-API.md
 
 _Why:_ A3/A5 need A2/A4's bridge contract. B7 shares skills.ts and vr-voice with them, so all three go on one branch instead of three. The runtime.ts chain can only be serial. C7 needs A1's estop.py, and E3 later needs C7's walk_to.py. D5 must define the age field before E2 consumes it. Each branch is disjoint from the others in this wave.
 
@@ -49,30 +49,30 @@ _Why:_ A3/A5 need A2/A4's bridge contract. B7 shares skills.ts and vr-voice with
 
 - 🟢 Branch go-to-object: E2 (pose at capture, reject older than 0.5 s) then E3 (closed loop, monotonic deadline) then E4 (Nav2 goal only when the gate is already armed; depends on A4)
 - ⚪ Branch nav-depth: E5 (after D5 in detector.py) and E6 in parallel, then E7, then E8 (after D1 on spec.py and scripts/robot/c3po), plus the gate failing closed on a stale depth cloud
-- 🟡 Branch headset-voice: 🟢 C4, C5, C8; ⚪ B8 (needs the robot) (only if the lease decision is b), then B8 (after B2 and B7)
+- 🟢 Branch headset-voice: C4, C5, C8; B8 in code (104fd9a, adc1cf4), pending a robot test (§10)
 - 🟢 F7 robot_session.sh (after F6)
 
 _Why:_ Capability work that rests on the wave-1/2 gate. E4 must not exist before a person is the only one who can arm Nav2 (A4). E3 builds on C7's yield. The vr-voice chain starts only after confirm-ui has finished editing that file. E5 waits for D5 to finish with detector.py.
 
 ### Wave 4
 
-- ⚪ H2 then H3 then (H4, H5 including A7's safety.md and preflight copy, H6, H7)
-- ⚪ H8 closes the BACKLOG once (absorbs A7's BACKLOG edit)
-- ⚪ F10 then F9 (CI on push, voice job), once 8.3 has pushed the branch
+- 🟢 H2 then H3 then (H4, H5 including A7's safety.md and preflight copy, H6, H7)
+- 🟢 H8 closes the BACKLOG once (absorbs A7's BACKLOG edit)
+- 🔵 F10 then F9 (CI on push, voice job): F9 done (8af37d0); F10 partly, superseded PR runs are cancelled but push still runs on main only
 
 _Why:_ The docs describe what merged, so they come after the code. OPERATIONS.md, README.md, the test-day docs and BACKLOG.md are each touched by several WPs, and writing each once avoids churn. CI changes only matter once the branch is on GitHub.
 
 ### Wave 5
 
 - ⚪ I1 / I2 (kinematics plus manipulation, after D5)
-- ⚪ I4 sim harness (pyproject/uv.lock rebased on F4), then I17, then I18 (after 5.5 on the robot)
-- ⚪ I5 then I6 (toolApproval; last in the runtime.ts, skills.ts and vr-voice chains; reuses A2's arg-bound grant)
+- 🔵 I4 sim harness (pyproject/uv.lock rebased on F4): the arm twin runs in CI (82d9f0c); then I17, then I18 (after 5.5 on the robot)
+- Superseded: I5 then I6 (toolApproval). One-press Confirmar (76995ad, 2026-11-05) fixed the same problem; see I5.
 - ⚪ I7 then I9 or I8
-- ⚪ I12 (after E5), I14 (after D2/E5), I15 (after E8)
+- ⚪ I12 (after E5), I15 (after E8). I14 is closed with backlog 3.8 (it was the pitch).
 - ⚪ I11 (drop I10 or fold it into E6, see inconsistencies)
 - ⚪ I3 only if I1/I2 fall short; I13/I16 on the robot
 
-_Why:_ Design-grade and M/L items. Each one sits at the end of a file chain already ordered above, and none is needed for safety. I5/I6 deliberately replace the A3 Confirmar UI, so they come after it rather than racing it.
+_Why:_ Design-grade and M/L items. Each one sits at the end of a file chain already ordered above, and none is needed for safety. I5/I6 were to replace the A3 Confirmar UI; one-press Confirmar (76995ad, 2026-11-05) replaced the A3 flow instead.
 
 ## 2. Decisions
 
@@ -228,6 +228,7 @@ These are the scoping agents' recommendations. **They are the defaults unless yo
 - **[I] 7.1: which tools go through in-stream approval, and what happens to the old refuse→Confirmar path?**
   - Options: T2 only; keep the refusal path for the legacy and realtime voice engines; T2 plus 1.3's arm_navigation and start_walking_waist in typed chat (approval enforced in back only, since the bridge has no T1 grant); Replace the refusal path everywhere (needs approvals in voice/loop.ts and realtime.ts too)
   - **Recommendation:** T2 plus the two 1.3 tools in typed chat; keep the refusal path for legacy and realtime voice. The bridge's T2 grant stays the real limit; the 1.3 tools get a back-side human gate, which is what 1.3 asks for.
+  - **Superseded by one-press Confirmar (76995ad, 2026-11-05).** `back` keeps the refused call (owner, chat, exact arguments, 2 min), and one Confirmar runs it once with those arguments, in /chat, on /voice and in the headset (also a spoken «confirmo» there). The model is told not to retry. Whether to keep a native approval UI as an optional extra is open.
 - **[I] 6.3: where does better STT go after silence trimming?**
   - Options: Stay on tic-transcript with I7's trimming; decide after measuring and after the 6.7 benchmark; OpenAI Realtime transcription proxied through back (cloud, audio leaves campus, OPENAI_API_KEY already used by realtime.ts); WhisperLive (faster-whisper) self-hosted on a LAN GPU
   - **Recommendation:** Stay on tic-transcript and measure first (I7). Build streaming (I9) only if release-to-text is the dominant delay, and pick the provider after 6.7.
@@ -450,7 +451,9 @@ Not checked: the svelte tool-card has no component test, so the Eden body typing
 - **Risk:** Accounts with role 'user' lose chat and voice, which effectively makes them view-only. Check that the operators who need it are admins (ADMIN_EMAILS or the B6 script) before shipping.
 - _apply (minor)_: The console's voice-chip path is missing. apps/web/src/lib/robot/voice-loop.ts:127-139 turns a 403 from /voice/start into 'El servidor rechazó el pedido: admin_required'. The plan maps the error only in chat-error.ts and vr-voice. **Fix:** Add a 403/admin_required branch in voice-loop.ts with the same Spanish text, and a case in apps/web/tests/voice-loop.test.ts. Optionally, vr-control already has isAdmin (+page.svelte:86): hide «Hablar con el robot» for non-admins instead of failing after a recording.
 
-#### ⚪ B8: The robot speaks the headset's agent reply `S`
+#### 🟢 B8: The robot speaks the headset's agent reply `S`
+
+_Done in code (104fd9a, adc1cf4), behind `HEADSET_SPEAK_REPLY=1`; pending a robot test (§10)._
 
 - **Backlog:** 6.1 · **Depends on:** B7, B2
 - **Files:** `apps/back/src/voice/conversation.ts`, `apps/back/src/voice/conversation.test.ts`, `apps/back/src/routes/agent.ts`
@@ -530,6 +533,8 @@ Left out and not checked:
 - _apply (minor)_: SvelteKit runs actions BEFORE the (protected) layout load, so the layout's `if (!locals.user) redirect` does not guard the action. Auth then rests on back alone. That is correct today (back's auth guard, skills.ts:76), but the plan does not say so. **Fix:** Add a one-line comment in +page.server.ts saying that back's session guard is the authority and that a 401 classifies as 'expired'. No extra check is needed.
 
 #### 🟢 C2: Battery warning under the topbar: warn under 25 %, strong alert under 15 % `S`
+
+_Shipped with the strong alert at 20 % or less, not 15 %, to match A6 (`format.ts` `batteryWarning`)._
 
 - **Backlog:** 1.10 · **Depends on:** —
 - **Files:** `apps/web/src/lib/robot/format.ts`, `apps/web/src/lib/components/shell/battery-banner.svelte`, `apps/web/src/routes/(protected)/+layout.svelte`, `apps/web/tests/robot-format.test.ts`
@@ -790,6 +795,7 @@ _Notes:_ I checked all five items against the feat/autonomy worktree (3bfd0c9). 
 - **Done when:** On the robot, `c3po up nav2-depth`, then the lifecycle manage_nodes command 0: all seven nodes go ACTIVE with the gate closed. /c3po/costmap (console live map) shows a 30 cm box at 1 m and no phantom floor arc out to 2.5 m. Removing the box clears it within a few seconds.
 - **Risk:** Humble's parameter spellings for VoxelLayer and the pointcloud source are only proven at activation, and a wrong one takes Nav2 down (nav2_params.yaml:401-403). A wrong extrinsic either marks the floor (fails closed: nothing plans) or misses obstacles (fails open), so 3.1 must land first. There is a blind zone of about 0.45 m in front of the feet under a 47.6-degree head, and the waist sway is not modelled. Humble's collision monitor ignores a stale cloud and fails open; decision 4 covers that.
 - _apply (blocker)_: Nothing tells the bridge whether the depth cloud is arriving. Humble's collision monitor skips a stale source (source_timeout 1.0, nav2_params.yaml:413), and the audit (audit/README.md:95) already flags this fail-open with /scan. Decision 4 only covers the detector heartbeat: safety.person_proximity (safety.py:141-166) looks at report age and detector_online, never at the cloud. If the cloud stops reaching the nav container while the heartbeat goes on, Nav2 drives on its only obstacle sensor with nothing in the costmap, at full governed speed. Causes include a typename or QoS mismatch, a dropped large sample, or a starved costmap/monitor reader. Only robot step 4 (a manual `ros2 topic hz`) would catch it. **Fix:** In depth mode, world_model_publisher subscribes to /c3po/depth_points. It reports detector_online=false, plus a note, once the cloud is more than 1 s old. That routes cloud loss through the existing stale_policy=stop path with no bridge change and no change to the report keys. Add a nav-side test of the rule (pure helper). Add a preflight line that runs `docker exec c3po-perception-nav ... ros2 topic hz /c3po/depth_points` with a timeout and blocks if no cloud arrives.
+  - **No longer enough after d6acd8b.** The bridge now zeroes every Nav2 setpoint unless a world summary ≤ 1 s old says `lidar_online` (`safety.obstacles_fresh()`), whatever `detector_online` says. With the lidar faulted, nav2-depth gets zero velocity even with a live cloud. So nav2-depth must make `safety.obstacles_fresh()` accept a fresh depth cloud (§9), and that freshness check is where cloud loss must close the gate.
 - _apply (major)_: The tests check that the depth sources exist. They do not check that the MERGED config has no lidar source left. A /scan or /cloud_registered_body source still in the local or global obstacle_layer observation_sources, or in collision_monitor observation_sources, never updates with the lidar faulted, and the controller aborts. nav2.launch.py:196-208 documents exactly this failure. 'Global_costmap gets the same two sources' is also ambiguous. A 2-D ObstacleLayer raytraces through low obstacles to the floor points behind them and clears them; that is the reason VoxelLayer is used at all. **Fix:** Add a merged-YAML test: load nav2_params.yaml, then nav2_depth.yaml with later-wins semantics. Assert that every observation source topic of local_costmap, global_costmap and collision_monitor is /c3po/depth_points, with no livox_frame or base_footprint scan source left. Use VoxelLayer in the global costmap too, and say so explicitly.
 - _apply (minor)_: The costmap check (robot step 6) is done standing still. The waist joint is not in TF, and the gait pitches the pelvis. With a 47.6° head, 1–2° of unmodelled torso pitch moves floor points at 2.5 m by 4–9 cm, about min_obstacle_height. The new limits keep max_vel_theta at 0.40 while the governor caps yaw at 0.30 rad/s (safety.py:82), so DWB plans turns that are not executed. **Fix:** Repeat step 6 while the robot steps in place on the gantry, and consider obstacle_max_range ≈ 2.0 m. Set FollowPath max_vel_theta and the smoother's max and min theta to ±0.30.
 - _apply (minor)_: Nothing in the mechanism enforces 'nobody walks nav2-depth before 3.1'. DEFAULT_CAMERA_EXTRINSIC has pitch 0 and z 0.55, unmeasured (grounding.py:188-194), and depth.launch.py would use those defaults without saying anything. **Fix:** depth.launch.py raises unless C3PO_CAMERA_PITCH_DEG is set, until 3.1 makes the measured value the default. The preflight blocks the same way. Test it.
@@ -952,7 +958,9 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 - **Done when:** test_a_raising_stop_callback_is_survived and its siblings pass under CPU load. No `time.sleep(<constant>)` is left as a synchronisation point in the file.
 - **Risk:** drain() has 20 call sites, and all of them use finite sources, so every thread ends. Any test that relied on reading while the thread was still alive would now fail visibly; none was found.
 
-#### ⚪ F9: Run the spoken-stop tests in CI (vosk + piper), and fail rather than skip `S`
+#### 🟢 F9: Run the spoken-stop tests in CI (vosk + piper), and fail rather than skip `S`
+
+_Done (8af37d0, dd18ce6). First CI run 42433939292: the `voice` job ran 85 tests and passed._
 
 - **Backlog:** 9.1 · **Depends on:** F1, F10
 - **Files:** `apps/bridge/scripts/install_piper.sh`, `.github/workflows/ci.yml`, `apps/bridge/tests/test_listen.py`
@@ -961,7 +969,9 @@ Main risk: a wrong camera extrinsic makes the depth costmap fail open (missed ob
 - **Done when:** CI bridge job log shows test_listen.py with 0 skipped among the needs_audio tests, and the job fails when vosk is missing.
 - **Risk:** These 9 tests have never run against the current phrase list, so they may expose a real decode gap. That is the point: escalate it, do not hide it. The piper x86_64 binary on ubuntu-latest is unverified. CI downloads from alphacephei.com, huggingface.co and github.com (cached after the first run). The vosk installer's own check uses the bridge venv python, so it must run after uv sync.
 
-#### ⚪ F10: CI on every push, cancel superseded runs, run web tests once `S`
+#### 🔵 F10: CI on every push, cancel superseded runs, run web tests once `S`
+
+_Partly: superseded PR runs are cancelled (`concurrency` in ci.yml). Push still triggers on `main` only._
 
 - **Backlog:** 9.3 · **Depends on:** F1
 - **Files:** `.github/workflows/ci.yml`
@@ -1199,18 +1209,18 @@ _Notes:_ The whole package is documentation, so no code, test suite or invariant
 
 ### WP I: Bigger and research-grade items (design only)
 
-| Backlog | Open? | Evidence                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 5.3     | yes   | apps/bridge/src/bridge/kinematics.py:1-23 says pure Python with no Pinocchio, and lists self-collision under 'What it does not model'. kinematics.py:309 says 'Roll about that axis is left free' (a rank-5 task). apps/bridge/pyproject.toml has no pin, pink or coal. The prerequisite execution fixes from audit §4 step 1 are done in e002c0a (straight lines and URDF limits, manipulation.py:72-84, :121-1 |
-| 5.4     | yes   | SIM_MODE=mujoco_local is only a name: g1_protocol.py:131 maps it to SIM_TOPICS, and _locomotion.py:7 publishes Isaac's rt/run_command/cmd, which unitree_mujoco does not read. ARCHITECTURE.md:279 says 'unused today'. arm_sdk.py:253 refuses any SIM_MODE other than real. There is no mujoco dependency. test-day/manipulation.md:126 says 'Not built: ... MuJoCo sim twin'.                                  |
-| 7.1     | yes   | apps/back/src/agent/runtime.ts:406 calls streamText with no toolApproval and no experimental_toolApprovalSecret. Today a T2 call goes: bridge refusal (safety.py tool_refusal), then needsConfirmation (web/src/lib/chat/tool-part.ts:114), then POST /skills/:name/confirm (back/src/routes/skills.ts:290), then a 'Confirmado: podés ejecutar' user message (web/src/lib/robot/vr-voice.svelte.ts:214-237), th |
-| 6.3     | yes   | vr-voice.svelte.ts:110-120 records with a ScriptProcessor (6.2's AudioWorklet is not done yet). It uses push-to-talk and uploads the whole WAV. back/src/voice/transcribe.ts posts it to the non-streaming tic-transcript. There is no VAD anywhere in apps/web.                                                                                                                                                 |
-| 7.6     | yes   | PARTLY DONE in the bridge, not in back. object_memory.py stores a label-keyed table (merge, forget-on-miss, JSON on disk). Tools exist: recall_object and list_objects (mcp_server.py:2839ff), plus a memory section in describe_surroundings. 'llave' maps to keys/key (object_memory.py:122), and vocab.txt has key (L629) and keys (L1234). It does not work on the real robot: recall_object has works_real= |
-| 3.5     | yes   | There is one global threshold, C3PO_VISION_CONF=0.35 (detector.py:146). cooker (vocab.txt:327), thumbtack (L1107) and toaster (L1116) are LVIS classes baked into the engine. tools/export_yoloe_onnx.py:7-24 already supports the prompt-free -pf checkpoint. tools/eval_recall.py measures recall only and counts no false positives.                                                                          |
-| 3.8     | yes   | The code ALREADY uses depth-to-point. ground_box deprojects the box centre with the median optical-axis depth (grounding.py:652 deproject_pixel_to_camera, then camera_to_base); it is not a centre-ray range. The 45-100 % edge error is listed in audit §3.1 as a consequence of DEFAULT_CAMERA_EXTRINSIC pitch_deg=0.0 (grounding.py:192) against the URDF's 47.6°, which is 3.1, still open. Every grounding |
-| 4.7     | yes   | apps/perception/nav/Dockerfile:14 is FROM ros:humble-ros-base-jammy, with ros-humble-* packages at L20-29 and L177-199. bringup/spec.py:19 has NAV_IMAGE='c3po/perception-nav:humble'. bringup/cli.py:277 and :440 and nav/entrypoint.sh:7 hardcode humble.                                                                                                                                                      |
-| 4.6     | yes   | BLOCKED. ROBOT-API.md:234-241: slam_operate (1801/1802/1804/1102/1901) needs both the unitree_slam AND lidar_driver services switched on, and the Mid-360S is faulted (4.1). ROBOT-API.md:1899 says 1102 pose navigation is a second motion commander. scripts/robot/_common.sh:247 lists unitree_slam in OTHER_COMMANDER_PATTERNS, so `c3po up` refuses while it runs.                                          |
-| 5.6     | yes   | There is no Kimodo code or doc in the repo (only BACKLOG.md and audit §7 #10). Gestures today are firmware presets (skills/gesture.py) or move_arm through arm_pose.slew. derive_tier (skill_meta.py:65-70) makes gesture with danger != low into T2. Kimodo exists upstream (nv-tlabs/kimodo, checkpoints Kimodo-G1-RP-v1 and Kimodo-G1-SEED-v1, MuJoCo qpos CSV output), per a web check; licence and CSV layo |
+| Backlog | Open? | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 5.3     | yes   | apps/bridge/src/bridge/kinematics.py:1-23 says pure Python with no Pinocchio, and lists self-collision under 'What it does not model'. kinematics.py:309 says 'Roll about that axis is left free' (a rank-5 task). apps/bridge/pyproject.toml has no pin, pink or coal. The prerequisite execution fixes from audit §4 step 1 are done in e002c0a (straight lines and URDF limits, manipulation.py:72-84, :121-1                                                                     |
+| 5.4     | yes   | SIM_MODE=mujoco_local is only a name: g1_protocol.py:131 maps it to SIM_TOPICS, and _locomotion.py:7 publishes Isaac's rt/run_command/cmd, which unitree_mujoco does not read. ARCHITECTURE.md:279 says 'unused today'. arm_sdk.py:253 refuses any SIM_MODE other than real. There is no mujoco dependency. test-day/manipulation.md:126 says 'Not built: ... MuJoCo sim twin'.                                                                                                      |
+| 7.1     | no    | Superseded by one-press Confirmar (76995ad, 2026-11-05). Before it: apps/back/src/agent/runtime.ts:406 calls streamText with no toolApproval and no experimental_toolApprovalSecret. Today a T2 call goes: bridge refusal (safety.py tool_refusal), then needsConfirmation (web/src/lib/chat/tool-part.ts:114), then POST /skills/:name/confirm (back/src/routes/skills.ts:290), then a 'Confirmado: podés ejecutar' user message (web/src/lib/robot/vr-voice.svelte.ts:214-237), th |
+| 6.3     | yes   | vr-voice.svelte.ts:110-120 records with a ScriptProcessor (6.2's AudioWorklet is not done yet). It uses push-to-talk and uploads the whole WAV. back/src/voice/transcribe.ts posts it to the non-streaming tic-transcript. There is no VAD anywhere in apps/web.                                                                                                                                                                                                                     |
+| 7.6     | yes   | PARTLY DONE in the bridge, not in back. object_memory.py stores a label-keyed table (merge, forget-on-miss, JSON on disk). Tools exist: recall_object and list_objects (mcp_server.py:2839ff), plus a memory section in describe_surroundings. 'llave' maps to keys/key (object_memory.py:122), and vocab.txt has key (L629) and keys (L1234). It does not work on the real robot: recall_object has works_real=                                                                     |
+| 3.5     | yes   | There is one global threshold, C3PO_VISION_CONF=0.35 (detector.py:146). cooker (vocab.txt:327), thumbtack (L1107) and toaster (L1116) are LVIS classes baked into the engine. tools/export_yoloe_onnx.py:7-24 already supports the prompt-free -pf checkpoint. tools/eval_recall.py measures recall only and counts no false positives.                                                                                                                                              |
+| 3.8     | no    | Closed: it was the pitch. The code ALREADY uses depth-to-point. ground_box deprojects the box centre with the median optical-axis depth (grounding.py:652 deproject_pixel_to_camera, then camera_to_base); it is not a centre-ray range. The 45-100 % edge error is listed in audit §3.1 as a consequence of DEFAULT_CAMERA_EXTRINSIC pitch_deg=0.0 (grounding.py:192) against the URDF's 47.6°, which is 3.1, still open. Every grounding                                           |
+| 4.7     | yes   | apps/perception/nav/Dockerfile:14 is FROM ros:humble-ros-base-jammy, with ros-humble-* packages at L20-29 and L177-199. bringup/spec.py:19 has NAV_IMAGE='c3po/perception-nav:humble'. bringup/cli.py:277 and :440 and nav/entrypoint.sh:7 hardcode humble.                                                                                                                                                                                                                          |
+| 4.6     | yes   | BLOCKED. ROBOT-API.md:234-241: slam_operate (1801/1802/1804/1102/1901) needs both the unitree_slam AND lidar_driver services switched on, and the Mid-360S is faulted (4.1). ROBOT-API.md:1899 says 1102 pose navigation is a second motion commander. scripts/robot/_common.sh:247 lists unitree_slam in OTHER_COMMANDER_PATTERNS, so `c3po up` refuses while it runs.                                                                                                              |
+| 5.6     | yes   | There is no Kimodo code or doc in the repo (only BACKLOG.md and audit §7 #10). Gestures today are firmware presets (skills/gesture.py) or move_arm through arm_pose.slew. derive_tier (skill_meta.py:65-70) makes gesture with danger != low into T2. Kimodo exists upstream (nv-tlabs/kimodo, checkpoints Kimodo-G1-RP-v1 and Kimodo-G1-SEED-v1, MuJoCo qpos CSV output), per a web check; licence and CSV layo                                                                     |
 
 #### ⚪ I1: Capsule self/table clearance check in the pure-Python arm planner `M`
 
@@ -1239,16 +1249,20 @@ _Notes:_ The whole package is documentation, so no code, test suite or invariant
 - **Done when:** `uv sync --extra ik` works on the Mac and the Orin. Import time and RSS are measured on the Orin and recorded. The planner chooses pink only when asked.
 - **Risk:** About 100 MB of compiled wheels (cmeel-boost 36 MB, scipy 36 MB, assimp 14 MB, pin 9 MB) in the process that owns the stop, which kinematics.py:4-6 argues against. numpy>=2 is required by cmeel-boost (the bridge has numpy 2.4.4, which is fine). Wheel install on the JP5 uv Python is unverified.
 
-#### ⚪ I4: MuJoCo Menagerie G1 arm twin as a pytest harness (no DDS, no SIM_MODE change) `M`
+#### 🔵 I4: MuJoCo Menagerie G1 arm twin as a pytest harness (no DDS, no SIM_MODE change) `M`
+
+_Partly done: the twin runs in CI (82d9f0c; run 42433939292: 16 passed, 6 xfailed). The driver-in-the-loop tests are still open._
 
 - **Backlog:** 5.4 · **Depends on:** —
 - **Files:** `apps/bridge/pyproject.toml`, `apps/bridge/uv.lock`, `apps/bridge/scripts/fetch_menagerie_g1.sh`, `apps/bridge/.gitignore`, `apps/bridge/tests/sim/conftest.py`, `apps/bridge/tests/sim/plant.py`, `apps/bridge/tests/sim/test_arm_twin.py`, `.github/workflows/ci.yml`
 - **Change:** Add dependency group `sim = ["mujoco==3.17.0"]` (cp312 wheels for macOS arm64 and linux aarch64/x86_64), never a runtime dependency. fetch_menagerie_g1.sh downloads google-deepmind/mujoco_menagerie unitree_g1 at the pinned commit 98a70c569c4c (g1.xml plus 51 asset files, about 36 MB) into apps/bridge/.cache/menagerie (gitignored). plant.py loads g1.xml, welds the pelvis to the world (no balance policy needed) and uses its existing position actuators; the joint names match the URDF's. A fake publisher replaces ArmSdkDriver._get_publisher. Its Write(cmd) reads the REAL _build_command output: motor_cmd[15..28].q, waist slots 12-14, weight slot 29. It applies the documented blend q = q_fw·(1−w) + q_cmd·w against a fixed firmware posture, sets ctrl, and steps 0.02 s. A fake sampler serves get_arm_state() (arm_q and waist_q from qpos, lowstate_age_s=0, fsm_id=500, mode_machine). SIM_MODE='real' and TELEOP_ARM_ENABLED=1 are monkeypatched in-process only, as tests/test_manipulation.py:89 already does. Leave mujoco_local alone. A locomotion twin is out of scope (see decisions).
-- **Tests:** (1) Parity: the MuJoCo wrist_yaw_link pose against kinematics.forward for 100 random q, < 2 mm; if this fails, stop and document the model difference. (2) The audit §1.2 regression: request_release mid-slew moves the TCP < 2 cm beyond what the blend explains during the 2 s ramp. (3) execute(plan_pick(...)) through the real driver: max TCP deviation from the planned lines < 1.5 cm, no arm-torso contact (mjData.ncon filtered by body), no joint past its limits. Mark them @pytest.mark.sim. The CI job fetches the assets and fails on skip; the lesson from 9.1 is that tests which always skip are worthless.
+- **Tests:** (1) Parity: the MuJoCo wrist_yaw_link pose against kinematics.forward for 100 random q, < 2 mm; if this fails, stop and document the model difference. (2) The audit §1.2 regression: request_release mid-slew moves the TCP < 2 cm beyond what the blend explains during the 2 s ramp. (Already covered without MuJoCo: `test_request_release_freezes_a_move_in_progress`, apps/bridge/tests/test_teleop_arm_sdk.py:312, added with the fix in baf1894.) (3) execute(plan_pick(...)) through the real driver: max TCP deviation from the planned lines < 1.5 cm, no arm-torso contact (mjData.ncon filtered by body), no joint past its limits. Mark them @pytest.mark.sim. The CI job fetches the assets and fails on skip; the lesson from 9.1 is that tests which always skip are worthless.
 - **Done when:** `uv run --group sim pytest -m sim` is green locally and in CI. Test (2) fails on a scratch revert of baf1894's request_release, which proves it would have caught the bug.
 - **Risk:** Menagerie g1.xml may not match rev_1_0 URDF offsets (unverified, test 1 decides). Actuator gains differ from the real kp 60/kd 1.5, so the dynamics are qualitative. The firmware posture under blend is unknown, so it is assumed arms-down. 36 MB of assets fetched in CI.
 
 #### ⚪ I5: Native toolApproval for T2 in the typed-chat and headset agent turn `M`
+
+_Superseded by one-press Confirmar (76995ad, 2026-11-05): one press runs the refused call with its stored arguments, and the model reads the outcome instead of retrying. This design is kept for the record. Whether to keep a native approval UI as an optional extra is open._
 
 - **Backlog:** 7.1 · **Depends on:** —
 - **Files:** `apps/back/src/agent/runtime.ts`, `apps/back/src/agent/turns.ts`, `apps/back/src/routes/agent.ts`, `apps/back/src/routes/skills.ts`, `apps/back/src/bridge/client.ts`, `apps/back/src/agent/runtime.test.ts`
@@ -1258,6 +1272,8 @@ _Notes:_ The whole package is documentation, so no code, test suite or invariant
 - **Risk:** The approval is still a second POST to /agent, so this is one conversation turn but not one HTTP request. Until 1.4 lands, any session could POST /agent, but (c) checks admin itself. A per-tool-name grant (11.1) is still a race window of milliseconds; do 11.1 too. convertToModelMessages must carry approval parts from the persisted chat (chat persistence path untested for approvals).
 
 #### ⚪ I6: Aprobar/Rechazar in the console chat and the headset menu `S`
+
+_Superseded with I5 by one-press Confirmar (76995ad, 2026-11-05)._
 
 - **Backlog:** 7.1 · **Depends on:** I5
 - **Files:** `apps/web/src/routes/(protected)/chat/+page.svelte`, `apps/web/src/lib/components/chat/tool-card.svelte`, `apps/web/src/lib/chat/tool-part.ts`, `apps/web/src/lib/robot/voice-panel.ts`, `apps/web/src/lib/robot/vr-voice.svelte.ts`, `apps/web/tests/chat-logic.test.ts`
@@ -1331,6 +1347,8 @@ _Notes:_ The whole package is documentation, so no code, test suite or invariant
 
 #### ⚪ I14: Prove edge-of-image grounding at the real pitch; switch to per-sample depth-to-point only if it fails `S`
 
+_Closed with backlog 3.8, not built: the audit lists the edge errors under its 0° pitch finding (audit §3.1), and D2 made the URDF's 47.6° the default. The acceptance check below cannot pass as written. It compares `range_m` with the cube's centre, but `ground_box` takes the median depth of the faces it sees. A ray-cast of this exact test (2026-11-10; fx 615 at 640×480 and a pelvis 0.79 m above the floor, both assumed) gave `range_m` 8–11 % short at 1 m and 1.5 m, the distances where the whole cube is in view, while `near_m` was within 3 cm of the near face. At 47.6° a floor cube at 3 m straight ahead is out of view._
+
 - **Backlog:** 3.8 · **Depends on:** backlog:3.1
 - **Files:** `apps/perception/tests/test_grounding.py`, `apps/perception/vision/c3po_vision/grounding.py`
 - **Change:** First, a test. Add REAL_CAM = CameraExtrinsic(..., pitch_deg=47.6). Render a synthetic aligned depth image of a 0.3 m cube on the floor at positions across the FOV (centre, edges, corners, 1–3 m) through the pinhole at REAL_CAM. Call ground_box on the cube's box and compare with the true centre. If range error < 5 % and bearing error < 2° everywhere, close 3.8 as 'it was the pitch (3.1)'. ground_box already deprojects (grounding.py:652). Only if it fails: change ground_box to deproject every inner-region sample (u, v, z) through camera_to_base and take the median of x and y, instead of deprojecting the box centre at the median depth. That needs a sample_depths_m variant that also returns pixel coordinates (grounding.py:281). Use the mask centroid when a mask exists. Stdlib only, Python 3.8.
@@ -1378,11 +1396,11 @@ _Notes:_ The whole package is documentation, so no code, test suite or invariant
 
 - [ ] 5.3 (I1/I2): time plan_pick on the Orin with the capsule check, p50/p95, and confirm it does not stall the 50 Hz arm loop (or move it to asyncio.to_thread). Then a gantry reach with a table under the hand: the 0° tilt must be refused.
 - [ ] 5.4 (I4): on a gantry, compare one real reach's TCP path (arm_state FK over time) with the twin's prediction for the same plan. This calibrates how far to trust the twin.
-- [ ] 7.1 (I5/I6): console Aprobar on a confirmed reach. Press PARAR between the request and Aprobar: the approval must be refused, and Reanudar must not revive it. In the Quest headset menu, approve from the voice menu: index 0 must be 'Volver'.
+- Superseded with I5/I6, not to run: 7.1 (I5/I6): console Aprobar on a confirmed reach. Press PARAR between the request and Aprobar: the approval must be refused, and Reanudar must not revive it. In the Quest headset menu, approve from the voice menu: index 0 must be 'Volver'.
 - [ ] 6.3 (I7/I8): on the Quest, record 10 utterances, check transcription quality after trimming and the latency breakdown. In expo-like noise, compare the energy gate with Silero.
 - [ ] 7.6 (I10): with the lidar off, let the robot see objects (keys, a backpack), walk away, then ask '¿dónde viste las llaves?'. Tape-measure distance and bearing from the new pose, then flip recall_object works_real.
 - [ ] 3.5 (I13): capture the 3.7 test set and run eval_recall for both engines on the Orin TRT path. Confirm cooker, toaster and thumbtack are gone with the thresholds and that cup, wallet and keys recall did not drop.
-- [ ] 3.8 (I14): after the 3.1 pitch fix, put tape-measured objects at the image corners at 1 m and 2 m. Range must be within 5 % and bearing within 2°.
+- [ ] 3.8 (I14), kept as a check of the 3.1 pitch only: after the 3.1 pitch fix, put tape-measured objects at the image corners at 1 m and 2 m. Tape to the object's front and compare with `near_m`, not `range_m` (that is the object's middle). Within 5 % and bearing within 2°.
 - [ ] 4.7 (I15): `docker version` on the Orin (>= 20.10.10 for Noble images). Run the Jazzy image's fake stack on the robot before any real-lidar run.
 - [ ] 4.6 (I16): once the Mid-360S works (4.1), with c3po down, switch unitree_slam and lidar_driver on, run slam_probe (map, relocalise, read the pose), then switch them off. Do not touch gemm files.
 - [ ] 5.6 (I18): after 5.5's wrist-sign check, on a gantry with TELEOP_ARM_ENABLED=1, a confirmed play_gesture with a person watching. Try PARAR mid-clip.
@@ -1449,29 +1467,29 @@ What I skipped or did not check:
 
 ### Items no WP covers yet (robot-independent)
 
-- 1.5 (M): teleop WebSocket Origin allowlist plus a token from apps/back. No WP covers it. teleop/server.py:919 calls serve(handle_client, TELEOP_HOST, TELEOP_PORT) with no origins and no token, and scripts/robot/run_teleop:59 defaults to 0.0.0.0. Put it in WP C after C6/C7, because those two edit the same server.py.
+- ✅ Done (8629255, C6/X15). 1.5 (M): teleop WebSocket Origin allowlist plus a token from apps/back. No WP covers it. teleop/server.py:919 calls serve(handle_client, TELEOP_HOST, TELEOP_PORT) with no origins and no token, and scripts/robot/run_teleop:59 defaults to 0.0.0.0. Put it in WP C after C6/C7, because those two edit the same server.py.
 - 1.8, the code part only: pin DDS_INTERFACE=eth0. apps/bridge/.env.example:19 leaves it blank, and nothing in scripts/robot sets it (only lidar_service.py:47 reads it). The firmware read and update stay robot-only.
 - 11.1, partly: A2 binds the grant to the arguments only. The backlog item asks for the arguments AND the chat id. The chat id never reaches the bridge today: back's callTool(name, args) in bridge/client.ts:182 carries no context.
-- 6.1, partly: B8 wires the headset reply to speech. Piper to PlayStream already exists in skills/tts.py. But apps/bridge/scripts/install_piper.sh:21 still downloads rhasspy/piper 2023.11.14-2, not OHF-Voice/piper1-gpl v1.8.0. Nothing covers that switch.
+- 6.1, partly: B8 wires the headset reply to speech. Piper to PlayStream already exists in skills/tts.py. apps/bridge/scripts/install_piper.sh downloads rhasspy/piper 2023.11.14-2, not OHF-Voice/piper1-gpl v1.8.0. Won't do unless the binary breaks: decision [B] in §2 keeps the pinned rhasspy/piper 2023.11.14-2 binary.
 - 6.5 (M): camera over WebRTC instead of MJPEG. The code needs no robot; checking it needs the Jetson.
 - 6.6: the AEC configuration half of the stand audio kit. The mic purchase is hardware, not code.
 - 6.7 (M, research): benchmark STT on OpenSLR 61, offline.
-- 7.2, partly: G7 writes one structured log line per turn. The item asks for experimental_telemetry to Langfuse/OTel. This is a reasonable zero-dependency deviation, but the backlog should say so.
-- 8.3: feat/autonomy has no upstream; `git branch -r` shows only origin/integrate/october. Pushing needs the user's go-ahead. Until then, F9/F10 (CI on every push) have no effect.
-- 8.4: decide what happens to the uncommitted WIP in the main checkout (feat/real-g1-dispatch-and-hardening). This is a decision for the user, not code.
+- ✅ BACKLOG 7.2 now records this deviation. 7.2, partly: G7 writes one structured log line per turn. The item asks for experimental_telemetry to Langfuse/OTel. This is a reasonable zero-dependency deviation, but the backlog should say so.
+- ✅ Done: stacked PRs #7→#8→#9 into integrate/october; the first CI run is 42433939292. 8.3: feat/autonomy has no upstream; `git branch -r` shows only origin/integrate/october. Pushing needs the user's go-ahead. Until then, F9/F10 (CI on every push) have no effect.
+- ✅ 8.4, as BACKLOG 8.4 says: superseded by feat/autonomy, it's ported to 516c5ec, and the WIP was stashed in the main checkout on 2026-11-07. It was: decide what happens to the uncommitted WIP in the main checkout (feat/real-g1-dispatch-and-hardening).
 - 8.5: delete or rotate operador@c3po.local. B6's new apps/back/scripts/create-user.ts could do it, but B6 does not list it.
-- §12 safety architecture: a geofence and a heartbeat watchdog. `grep geofence apps/bridge/src` finds nothing.
-- §12 Gemini data terms: use a paid key or blur faces before upload. There is no blur anywhere in the bridge. Separately, the ER 2 pointing JSON format and the thinking_level setting are not checked by G4.
-- §12 Livox: pin a livox_ros_driver2 commit and SDK2 >= 1.3.3, and raise FAST-LIO `blind`. These are Dockerfile and config edits. Only I15 touches apps/perception/nav/Dockerfile, and I15 is a different change.
-- Audit §1.4, not in the backlog or any WP: camera_relay.upstream_status() runs synchronously inside the async camera routes (mcp_server.py ~4208 and ~4236). That is a blocking urlopen of up to 1.5 s (camera_relay.py:64) on the bridge event loop, and it can stall stop_everything over HTTP. Fix: asyncio.to_thread.
-- Audit §1.4: the stop burst, velocity and FSM poller share one sport client and one timeout (sdk/g1_rpc.py:45-53, 83). Also, skills/gesture.py and skills/_g1_request.py catch only Exception, so a CancelledError can pin a task as running.
-- Audit §1.4: the walk_to deadline uses time.time() (skills/walk_to.py:129,134), and the Jetson has no RTC. This matters more once 8.1 brings NTP. E3 rewrites walk_to.py; fold the time.monotonic() change into E3.
-- Audit §1.4: the bridge cmd_vel gate ignores the freshness of its obstacle source (it ignores lidar_online in perception_link). E7/E8 add sources:=depth, but no subtask closes the gate when the depth cloud goes stale. Without it, Nav2 fails open.
-- Stop paths that do not abort agent turns: only name === 'stop_everything' in routes/skills.ts:233 and the voice loop (loop.ts:193,224) call abortAllTurns. soft_stop through /invoke and the /tasks estop mode (routes/tasks.ts) do not.
-- The person rule ignores capture age: safety.person_proximity (safety.py:141-166) checks the REPORT age against PERCEPTION_STALE_S=1.0. Meanwhile world_model_publisher re-emits objects for up to DETECTOR_OFFLINE_AFTER_S=1.5 with stamp_unix=now (world_model_publisher.py:72,250). D5/E1 add the age field, but no WP makes the person rule or the T2 reach check use it.
-- Audit §2: admin-bootstrap.ts:56-66 promotes any account whose email matches ADMIN_EMAILS, without checking emailVerified. Also, auth.ts:35-45 enables GitHub/Google sign-in, and B6's emailAndPassword.disableSignUp does not stop OAuth from creating users implicitly.
-- Audit §2: /agent accepts messages: t.Array(t.Any()) (routes/agent.ts:142), so a client can forge assistant and tool history. Also, javascript: links in the model's markdown are not stripped (response.svelte). Neither is in any WP. The bridge gate still holds against both, so they are lower priority.
-- Audit §5: Realtime error events are fatal, an odd-length PCM chunk throws (voice/pcm.ts:13), and the abort signal never reaches a tool's execute, so a 300 s walk_to can outlast the 240 s turn budget (runtime.ts:310-314). None of these is in a WP.
+- ✅ Geofence done (0553c27); the heartbeat watchdog is still open. §12 safety architecture: a geofence and a heartbeat watchdog. `grep geofence apps/bridge/src` finds nothing.
+- ✅ Face blur done (03153df). The ER 2 pointing format and `thinking_level: medium` have been in vlm.py since 132f243. §12 Gemini data terms: use a paid key or blur faces before upload. There is no blur anywhere in the bridge. Separately, the ER 2 pointing JSON format and the thinking_level setting are not checked by G4.
+- ✅ The Livox pin is done: pinned to Livox-SDK2 v1.3.1 and livox_ros_driver2 1.2.6 as a matched pair (`apps/perception/nav/Dockerfile`, since 2a04421, 2026-08-19). No Livox-SDK2 tag ≥ 1.3.3 exists: the newest tag is v1.3.1 (checked 2026-11-10). Raising FAST-LIO `blind` (0.5 m today) is still open. §12 Livox: pin a livox_ros_driver2 commit and SDK2 >= 1.3.3, and raise FAST-LIO `blind`. These are Dockerfile and config edits. Only I15 touches apps/perception/nav/Dockerfile, and I15 is a different change.
+- ✅ Done (5e4c03c, §9). Audit §1.4, not in the backlog or any WP: camera_relay.upstream_status() runs synchronously inside the async camera routes (mcp_server.py ~4208 and ~4236). That is a blocking urlopen of up to 1.5 s (camera_relay.py:64) on the bridge event loop, and it can stall stop_everything over HTTP. Fix: asyncio.to_thread.
+- Partly: the CancelledError half is done (7925935, §9); the shared sport client is open. Audit §1.4: the stop burst, velocity and FSM poller share one sport client and one timeout (sdk/g1_rpc.py:45-53, 83). Also, skills/gesture.py and skills/_g1_request.py catch only Exception, so a CancelledError can pin a task as running.
+- ✅ Done: walk_to's deadline uses time.monotonic(). Audit §1.4: the walk_to deadline uses time.time() (skills/walk_to.py:129,134), and the Jetson has no RTC. This matters more once 8.1 brings NTP. E3 rewrites walk_to.py; fold the time.monotonic() change into E3.
+- ✅ Done for the lidar (d6acd8b, §9); nav-depth must add its cloud. Audit §1.4: the bridge cmd_vel gate ignores the freshness of its obstacle source (it ignores lidar_online in perception_link). E7/E8 add sources:=depth, but no subtask closes the gate when the depth cloud goes stale. Without it, Nav2 fails open.
+- ✅ Done (cf5d136, §9). Stop paths that do not abort agent turns: only name === 'stop_everything' in routes/skills.ts:233 and the voice loop (loop.ts:193,224) call abortAllTurns. soft_stop through /invoke and the /tasks estop mode (routes/tasks.ts) do not.
+- ✅ Done (wave 2, perception-age): a person whose `age_s` is over 1 s marks the reading not fresh, and its range is kept (`safety.person_proximity`). The person rule ignores capture age: safety.person_proximity (safety.py:141-166) checks the REPORT age against PERCEPTION_STALE_S=1.0. Meanwhile world_model_publisher re-emits objects for up to DETECTOR_OFFLINE_AFTER_S=1.5 with stamp_unix=now (world_model_publisher.py:72,250). D5/E1 add the age field, but no WP makes the person rule or the T2 reach check use it.
+- ✅ Done (B6): admin bootstrap checks emailVerified, and each social provider has disableSignUp. Audit §2: admin-bootstrap.ts:56-66 promotes any account whose email matches ADMIN_EMAILS, without checking emailVerified. Also, auth.ts:35-45 enables GitHub/Google sign-in, and B6's emailAndPassword.disableSignUp does not stop OAuth from creating users implicitly.
+- ✅ Done (984bd5d, 3672bcd, §10). Audit §2: /agent accepts messages: t.Array(t.Any()) (routes/agent.ts:142), so a client can forge assistant and tool history. Also, javascript: links in the model's markdown are not stripped (response.svelte). Neither is in any WP. The bridge gate still holds against both, so they are lower priority.
+- ✅ Done (d87836a, 4d77169). Audit §5: Realtime error events are fatal, an odd-length PCM chunk throws (voice/pcm.ts:13), and the abort signal never reaches a tool's execute, so a 300 s walk_to can outlast the 240 s turn budget (runtime.ts:310-314). None of these is in a WP.
 - Already done or partly done, for the record. 6.8 is done: vr-voice.svelte.ts:55-61 posts to /agent with a Chat id, and agent.ts:74-96 ensureChat persists it (default channel 'text'), so it appears in the console Chat. 9.3 is partly done: ci.yml already runs back, web, bridge and perception, plus svelte-check through check-types, but only on push to main and on PRs.
 
 ### Files touched by several WPs (merge order)
@@ -1565,7 +1583,7 @@ Pending for the robot session:
 - robot_session.sh with the cable: five ✓, Ctrl-C leaves no ssh/bun/python child.
 - B8 and E5–E8 (depth-only Nav2) start after the S0 robot spike.
 
-Open minors: a second `walk_to` can still start while one runs (no_active_walk_task not enforced); walk_velocity reports per-axis clamped values; Confirmar buttons show the raw `confirmation_not_configured` code.
+Minors, all closed since: one walk at a time and walk_velocity reports what it sent (f3fe129); Confirmar shows «Falta configurar la confirmación» instead of the raw `confirmation_not_configured` code (76995ad, through `skill-outcome.ts`).
 
 ## 8. After the 2026-11-05 robot session
 
@@ -1614,7 +1632,7 @@ Done off the robot, each with tests that fail without the fix:
 - ✅ F10, partly: concurrency cancels superseded PR runs; triggers unchanged.
 - ✅ The back tests pass under `--randomize` (`client.test.ts` and `catalogue.test.ts` load private module instances).
 
-Still open off the robot: I1 (arm-link clearance), the heartbeat watchdog, the external-stop watcher (11.3), the Livox SDK version, the shared sport client, the Piper switch to piper1-gpl, and the heavier I4 driver-in-the-loop tests.
+Still open off the robot: I1 (arm-link clearance), the heartbeat watchdog, the external-stop watcher (11.3), the shared sport client, and the heavier I4 driver-in-the-loop tests.
 
 ### Pending robot test
 
@@ -1624,11 +1642,11 @@ Code is done; each needs the robot (or the Quest) to confirm:
 - [ ] The spoken stop with real voices at 1 m and 3 m; record «detener» (safety.md 13).
 - [ ] Geofence trips at about 3 m and odometry stays under 1 s old while Nav2 drives (safety.md 14).
 - [ ] Nav2 armed with the lidar faulted: `obstacles_fresh: false`, `obstacle_source_stale` (safety.md 15).
-- [ ] A headset PARAR ends back's agent turns within about 0.5 s (stop-watch).
-- [ ] A cancelled gesture releases the arm on the real arm service.
-- [ ] B8 with Piper on the robot and the Quest (`HEADSET_SPEAK_REPLY=1`).
-- [ ] Face blur recall on expo frames (small, tilted, backlit faces, people 2–4 m away), its latency on the Orin, and that `look` still recognises people and gestures.
+- [ ] A headset PARAR ends back's agent turns within about 0.5 s (stop-watch) (return-checklist §6).
+- [ ] A cancelled gesture releases the arm on the real arm service (safety.md 16).
+- [ ] B8 with Piper on the robot and the Quest (`HEADSET_SPEAK_REPLY=1`) (return-checklist §6, safety.md 12).
+- [ ] Face blur recall on expo frames (small, tilted, backlit faces, people 2–4 m away), its latency on the Orin, and that `look` still recognises people and gestures (vlm.md §10).
 - [ ] Whether the arm really touches the torso in the planned picks (after I1, on the gantry).
-- [ ] Realtime voice error codes seen live (`VOICE_ENGINE=realtime`).
-- [ ] In the browser: a `javascript:` link in a reply is plain text; typed chat send, reload and Retry; VR push-to-talk and spoken confirm after the history change.
-- [ ] The first CI run of the `voice` job and the MuJoCo step (GitHub).
+- [ ] Realtime voice error codes seen live (`VOICE_ENGINE=realtime`) (return-checklist §7).
+- [ ] In the browser: a `javascript:` link in a reply is plain text; typed chat send, reload and Retry; VR push-to-talk and spoken confirm after the history change. The browser part needs no robot (return-checklist, "Before the session"); the VR part is return-checklist §6.
+- [x] The first CI run of the `voice` job and the MuJoCo step (GitHub): run 42433939292 passed. The `voice` job ran 85 tests (1 xfail, the 4 whisper tests skipped). The MuJoCo step: 16 passed, 6 xfailed (the six pick plans, I1's acceptance test).
