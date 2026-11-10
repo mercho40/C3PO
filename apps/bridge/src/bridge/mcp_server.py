@@ -862,8 +862,8 @@ async def stop_everything() -> dict:
 async def soft_stop() -> dict:
     """Stop walking and stay standing — zero velocity, never goes limp.
 
-    Closes the Nav2 gate, cancels running tasks and sends a ~0.4 s zero-velocity
-    burst. Unlike stop_everything it does not latch the e-stop, does not let go
+    Closes the Nav2 gate, cancels the Nav2 goal and running tasks, and sends a
+    ~0.4 s zero-velocity burst. Unlike stop_everything it does not latch the e-stop, does not let go
     of the arms or hands, and never damps — so it cannot drop the robot. Use it
     to end a walk. If the result says `heard: false`, the robot did not
     acknowledge the stop: call stop_everything.
@@ -4764,6 +4764,8 @@ async def _run_streamable_http() -> None:
     from starlette.middleware.cors import CORSMiddleware
     from starlette.types import ASGIApp
 
+    from bridge.skills.stop_everything import watching_foreign_stops
+
     app: ASGIApp = mcp.streamable_http_app()
     if BRIDGE_CORS_ORIGINS:
         app = CORSMiddleware(
@@ -4778,7 +4780,16 @@ async def _run_streamable_http() -> None:
         port=BRIDGE_PORT,
         log_level=mcp.settings.log_level.lower(),
     )
-    await uvicorn.Server(config).serve()
+    async with watching_foreign_stops():
+        await uvicorn.Server(config).serve()
+
+
+async def _run_stdio() -> None:
+    """FastMCP's stdio transport, with the same foreign-stop watcher as HTTP."""
+    from bridge.skills.stop_everything import watching_foreign_stops
+
+    async with watching_foreign_stops():
+        await mcp.run_stdio_async()
 
 
 def main() -> None:
@@ -4936,7 +4947,7 @@ def main() -> None:
         asyncio.run(_run_streamable_http())
     else:
         log.info("c3po-bridge.start", sim_mode=SIM_MODE, transport="stdio")
-        mcp.run()  # default transport is stdio
+        asyncio.run(_run_stdio())  # default transport is stdio
 
 
 if __name__ == "__main__":

@@ -8,11 +8,12 @@ and there only when the robot did not acknowledge the zero-velocity burst.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
 
-from bridge.sdk import g1_rpc
+from bridge.sdk import g1_protocol, g1_rpc
 from bridge.skills import _locomotion, stop_everything, walk_velocity
 from bridge.skills.task_runtime import get_registry
 
@@ -364,3 +365,179 @@ async def test_outside_real_mode_the_stop_does_not_touch_the_speaker(monkeypatch
 
     assert calls == []
     assert result["speech_stop_rpc_code"] is None
+
+
+async def test_a_wall_clock_step_does_not_cut_the_damp_retries_short(monkeypatch):
+    """The robot has no RTC: NTP steps its wall clock forward after boot.
+
+    A deadline on time.time() then read as long past after one failed attempt,
+    and the burst's duration came out as hours.
+    """
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    _burst_unacknowledged(monkeypatch)
+    monkeypatch.setattr(stop_everything, "REAL_DAMP_RETRY_DELAY_S", 0.0)
+    real_time = time.time
+    step = iter(range(0, 10**6, 3600))
+    monkeypatch.setattr(time, "time", lambda: real_time() + next(step))
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: (3104, None))
+
+    result = await stop_everything.run()
+
+    assert result["real_damp_fallback_attempts"] == stop_everything.REAL_DAMP_MAX_ATTEMPTS
+    assert result["stop_burst_duration_s"] < 1.0
+
+
+def _real_burst(monkeypatch, call_set_velocity):
+    """The real stop_motion_sync (the autouse fixture fakes it) on a fake link."""
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", _locomotion.stop_motion_sync)
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", call_set_velocity)
+
+
+async def test_one_hung_velocity_reply_does_not_damp_a_robot_that_heard_the_rest(monkeypatch):
+    """A1: the burst waited on each 10 s ack in turn, so one slow reply ate it,
+    acked came back 0 and the fallback damped a robot standing on the floor."""
+    hang = threading.Event()
+    calls: list = []
+
+    def call_set_velocity(*a):
+        first = not calls
+        calls.append(a)
+        if first:
+            hang.wait(5.0)
+            return 3104, None
+        return 0, ""
+
+    _real_burst(monkeypatch, call_set_velocity)
+    damp_calls: list = []
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (0, ""))
+
+    started = time.monotonic()
+    try:
+        result = await stop_everything.run()
+    finally:
+        hang.set()
+
+    assert damp_calls == []
+    assert result["stop_burst_acked"] > 0
+    assert result["real_damp_fallback_reason"] is None
+    assert time.monotonic() - started < 2.0
+
+
+async def test_a_burst_nobody_answers_still_damps_within_the_budget(monkeypatch):
+    hang = threading.Event()
+
+    def call_set_velocity(*a):
+        hang.wait(5.0)
+        return 3104, None
+
+    _real_burst(monkeypatch, call_set_velocity)
+    damp_calls: list = []
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (0, ""))
+
+    started = time.monotonic()
+    try:
+        result = await stop_everything.run()
+    finally:
+        hang.set()
+
+    assert damp_calls == [g1_protocol.Mode.DAMP]
+    assert result["real_damp_fallback_reason"] == "burst_unacknowledged"
+    assert result["real_damp_fallback_succeeded"] is True
+    assert time.monotonic() - started < 2.0
+
+
+async def test_a_damp_that_never_answers_ends_at_the_budget(monkeypatch):
+    """The budget was checked only after an attempt returned: one attempt on the
+    10 s sport timeout held the stop's answer for 10 s, not 4."""
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    _burst_unacknowledged(monkeypatch)
+    monkeypatch.setattr(stop_everything, "REAL_DAMP_TOTAL_BUDGET_S", 0.2)
+    hang = threading.Event()
+    damp_calls: list = []
+
+    def call_sport(mode):
+        damp_calls.append(mode)
+        hang.wait(5.0)
+        return 0, ""
+
+    monkeypatch.setattr(g1_rpc, "call_sport", call_sport)
+
+    started = time.monotonic()
+    try:
+        result = await stop_everything.run()
+    finally:
+        hang.set()
+
+    assert time.monotonic() - started < 1.5
+    assert damp_calls == [g1_protocol.Mode.DAMP]  # it went out; the answer did not come back
+    assert result["real_damp_fallback_rpc_code"] == 3104
+    assert result["real_damp_fallback_succeeded"] is False
+
+
+async def test_a_retry_the_budget_ran_out_on_is_not_counted_as_sent(monkeypatch):
+    """asyncio.wait_for given no time left cancels its attempt before it starts.
+    The budget ran out in the pause before a retry, and that retry was counted
+    as a Damp attempt although nothing went out."""
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    _burst_unacknowledged(monkeypatch)
+    monkeypatch.setattr(stop_everything, "REAL_DAMP_TOTAL_BUDGET_S", 0.2)
+    monkeypatch.setattr(stop_everything, "REAL_DAMP_RETRY_DELAY_S", 0.3)
+    damp_calls: list = []
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (3104, None))
+
+    started = time.monotonic()
+    result = await stop_everything.run()
+
+    assert damp_calls == [g1_protocol.Mode.DAMP]
+    assert result["real_damp_fallback_attempts"] == len(damp_calls)
+    assert result["real_damp_fallback_rpc_code"] == 3104
+    assert time.monotonic() - started < 1.5
+
+
+async def test_a_full_default_executor_does_not_hold_the_stop(monkeypatch):
+    """asyncio.to_thread queues on the loop's shared executor, which camera
+    streams, voice long-polls and RPCs hung on a bad link can fill. The hand
+    release and the zero burst waited behind them, and a Damp attempt still
+    queued when its budget ran out was cancelled without being sent."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from bridge.teleop import hands
+
+    class FakeHandDriver(hands.HandDriver):
+        name = "brainco"
+        sides = ("right",)
+
+        def send(self, side, grip):
+            pass
+
+    monkeypatch.setattr(hands, "get_driver", lambda: FakeHandDriver())
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    monkeypatch.setattr(stop_everything, "REAL_DAMP_TOTAL_BUDGET_S", 0.3)
+    monkeypatch.setattr(stop_everything, "SPEECH_STOP_WAIT_S", 0.05)
+    burst_at: list[float] = []
+
+    def burst(**kwargs):
+        burst_at.append(time.monotonic())
+        return 20, 0  # unheard, so Damp has to go out too
+
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", burst)
+    damp_calls: list = []
+    monkeypatch.setattr(g1_rpc, "call_sport", lambda mode: damp_calls.append(mode) or (0, ""))
+
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+    release = threading.Event()
+    busy = loop.run_in_executor(None, release.wait, 2.0)
+    started = time.monotonic()
+    try:
+        result = await stop_everything.run()
+    finally:
+        release.set()
+        await busy
+
+    assert burst_at and burst_at[0] - started < 0.2
+    assert damp_calls == [g1_protocol.Mode.DAMP]
+    assert result["real_damp_fallback_succeeded"] is True
+    assert result["hands_relaxed"] is True

@@ -177,3 +177,63 @@ async def test_cancel_stops_before_next_step(monkeypatch):
     # not this.
     assert len(calls) == 2
     assert calls[-1] == int(g1_protocol.Gesture.RELEASE_ARM)
+
+
+@pytest.mark.asyncio
+async def test_an_ended_turn_mid_gesture_releases_after_it_lands(monkeypatch):
+    """back aborts the MCP request (PARAR, closed tab): CancelledError, not the
+    cancel_event. That path sent no RELEASE_ARM, so the arm stayed latched."""
+    monkeypatch.setattr(dance, "SIM_MODE", "real")
+    sent: list[int] = []
+    gate = threading.Event()
+
+    def call_arm(g: int) -> tuple[int, str]:
+        if g != int(g1_protocol.Gesture.RELEASE_ARM):
+            gate.wait(2.0)
+        sent.append(g)
+        return 0, ""
+
+    monkeypatch.setattr(g1_rpc, "call_arm", call_arm)
+    call = asyncio.ensure_future(dance.run())
+    await asyncio.sleep(0.05)  # inside the first gesture's dispatch
+    call.cancel()
+    await asyncio.sleep(0.05)
+    assert sent == []  # nothing released while the gesture still runs
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    for _ in range(200):
+        if len(sent) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert sent == [int(g1_protocol.Gesture.BOTH_HANDS_UP), int(g1_protocol.Gesture.RELEASE_ARM)]
+
+
+@pytest.mark.asyncio
+async def test_an_ended_turn_between_steps_releases_the_latched_gesture(monkeypatch):
+    monkeypatch.setattr(dance, "SIM_MODE", "real")
+    sent: list[int] = []
+    monkeypatch.setattr(g1_rpc, "call_arm", lambda g: sent.append(g) or (0, ""))
+
+    class Ctx:
+        reports = 0
+
+        async def report_progress(self, progress, total, message):
+            self.reports += 1
+            if self.reports == 2:  # before the release step: BOTH_HANDS_UP is latched
+                await asyncio.sleep(10)
+
+    ctx = Ctx()
+    call = asyncio.ensure_future(dance.run(ctx))
+    for _ in range(200):
+        if ctx.reports == 2:
+            break
+        await asyncio.sleep(0.01)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    for _ in range(200):
+        if len(sent) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert sent == [int(g1_protocol.Gesture.BOTH_HANDS_UP), int(g1_protocol.Gesture.RELEASE_ARM)]
