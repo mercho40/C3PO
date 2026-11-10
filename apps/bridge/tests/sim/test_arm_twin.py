@@ -282,3 +282,77 @@ def test_pick_plan_keeps_the_arm_out_of_the_body(twin, target):
             key = f"{phase}: {mine} in {other}"
             hits[key] = max(hits.get(key, 0.0), depth)
     assert not hits, {k: f"{v * 1000:.0f} mm" for k, v in sorted(hits.items())}
+
+
+# --- the driver in the loop (A39) ------------------------------------------------------------
+
+
+class _Wire:
+    """The fake rt/arm_sdk publisher: the right arm's q out of every LowCmd_ written."""
+
+    def __init__(self):
+        self.right = []
+
+    def Write(self, cmd):  # noqa: N802 - the SDK's name
+        self.right.append([cmd.motor_cmd[arm_sdk.RIGHT_ARM_BASE + i].q for i in range(7)])
+
+
+class _SteppedDriver(arm_sdk.ArmSdkDriver):
+    """The real driver with its 50 Hz tick (weight ramp, slew, LowCmd_ build, publish) stepped
+    by hand after each command until it settles, instead of by its asyncio loop and the clock.
+    engage() skips the lowstate/FSM gates, which have their own tests."""
+
+    def __init__(self, start):
+        super().__init__()
+        self._publisher = _Wire()
+        self._current, self._target = list(start), list(start)
+        self._waist_hold = [0.0, 0.0, 0.0]
+
+    async def engage(self):
+        self._engaged = True
+
+    def command(self, left, right):
+        super().command(left, right)
+        while self._weight < 1.0 or any(
+            abs(t - c) > 1e-9 for t, c in zip(self._target, self._current, strict=True)
+        ):
+            self._weight = min(1.0, self._weight + arm_sdk.CONTROL_PERIOD_S / arm_sdk.RAMP_S)
+            self._slew()
+            self._publish()
+
+
+@pytest.mark.parametrize("target", PICK_TARGETS)
+async def test_the_driver_carries_the_pick_plan_into_the_model_untouched(twin, target, monkeypatch):
+    # execute(plan_pick) through the real driver: every frame it would put on the wire, the
+    # per-joint slew between waypoints included, is a pose of the twin's arm.
+    class Hand:
+        name, sides = "fake", ("right",)
+
+        def send_shape(self, side, closures):
+            pass
+
+    steps = [(k, ph, 0.0 if k == "wait" else v) for k, ph, v in _pick(target)]
+    driver = _SteppedDriver([*HANGING["left"], *HANGING["right"]])
+    monkeypatch.setattr(m, "SIM_MODE", "real")
+    monkeypatch.setattr(m, "_abort_reason", lambda allow_person: None)  # own tests
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: driver)
+    monkeypatch.setattr(m.hands, "get_driver", Hand)
+    out = await m.execute(m.get_registry().create("pick"), "right", steps, summary={})
+    assert out["status"] == "completed", out
+
+    # The frames follow the plan: each waypoint reached, in order, every joint moving straight
+    # from one waypoint to the next (the slew never overshoots or reorders).
+    frames, i, prev = driver._publisher.right, 0, HANGING["right"]
+    for n, q in enumerate(_arm_qs(steps)):
+        while max(abs(f - t) for f, t in zip(frames[i], q, strict=True)) > 1e-6:
+            box = zip(frames[i], prev, q, strict=True)
+            assert all(min(a, b) - 1e-9 <= f <= max(a, b) + 1e-9 for f, a, b in box), n
+            i += 1
+        prev = q
+    assert i == len(frames) - 1
+
+    hits = {}
+    for f in frames:
+        for mine, other, depth in _body_contacts(twin, "right", f):
+            hits[f"{mine} in {other}"] = max(hits.get(f"{mine} in {other}", 0.0), depth)
+    assert not hits, {k: f"{v * 1000:.1f} mm" for k, v in sorted(hits.items())}
