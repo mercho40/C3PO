@@ -10,10 +10,14 @@ on:
     branches: [main]
     paths:
       - "apps/perception/nav/**"
+      # The package check below imports bringup/build.py (and its spec.py).
+      - "apps/perception/bringup/**"
       - ".github/workflows/nav-image.yml"
   pull_request:
     paths:
       - "apps/perception/nav/**"
+      # The package check below imports bringup/build.py (and its spec.py).
+      - "apps/perception/bringup/**"
       - ".github/workflows/nav-image.yml"
   schedule:
     - cron: "17 6 * * 1"

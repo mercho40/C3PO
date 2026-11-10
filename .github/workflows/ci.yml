@@ -145,6 +145,9 @@ jobs:
       # test_grounding.py is not among them: it imports the bridge (3.12).
       - name: Vision tests under the container's python 3.8 and numpy 1.24.4
         working-directory: apps/perception
+        # An explicit bash is -eo pipefail; the default is -e only, so a failing
+        # pytest piped into tee passed the step.
+        shell: bash
         run: |
           uv run --no-project --python 3.8 --with numpy==1.24.4 --with pytest==8.3.5 \
             python -m pytest -q -rs -p no:cacheprovider \
