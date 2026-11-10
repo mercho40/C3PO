@@ -413,12 +413,17 @@ video_holder_kind() {
 # previous-deploy (record_deploy). Re-installing the same commit keeps it: a
 # second run would overwrite the copy with the unit it just installed.
 backup_unit_if_new_commit() {  # <live unit> <backup> <checkout> <deploy dir>
+    local head
     sudo test -e "$1" || return 0
-    [ "$(cut -d' ' -f1 "$4/deployed" 2>/dev/null)" = "$(git -C "$3" rev-parse HEAD 2>/dev/null)" ] &&
-        return 0
+    head="$(git -C "$3" rev-parse HEAD 2>/dev/null)"
+    [ "$(cut -d' ' -f1 "$4/deployed" 2>/dev/null)" = "$head" ] && return 0
+    # A retry after an install that swapped the unit but died before
+    # record_deploy: the live unit is already the new one, so keep the backup.
+    [ "$(cat "$4/unit-backup-for" 2>/dev/null)" = "$head" ] && return 0
     sudo cp -L "$1" "$2"
     sudo chown root:root "$2"
     sudo chmod 0644 "$2"
+    mkdir -p "$4" && printf '%s\n' "$head" >"$4/unit-backup-for"
 }
 
 # <dir>/deployed is "<commit> <UTC time>"; when the commit changes, the commit

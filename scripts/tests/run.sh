@@ -388,6 +388,7 @@ check "no loaded unit leaves the backup alone" "older" "$(backup_with -)"
 # deployed is c2 and HEAD is c3: the unit B ran under is the rollback copy, even
 # if C ships the same unit, or a rollback to B would run under A's.
 check "new commit, same unit: the backup is the loaded unit" "loaded" "$(backup_with loaded)"
+check "a retry after a half-done install keeps the backup" "loaded" "$(backup_with half-installed)"
 (HOME="$install_tmp/home"; record_deploy "$install_tmp/repo" "$HOME/.c3po")
 check "same commit re-install keeps the backup" "loaded" "$(backup_with newer)"
 rm -rf "$install_tmp"
