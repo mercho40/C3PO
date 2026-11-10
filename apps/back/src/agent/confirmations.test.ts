@@ -12,6 +12,7 @@ import {
   listPending,
   normalizeUtterance,
   notePending,
+  restorePending,
   takePending,
   type PendingConfirmation,
 } from "./confirmations";
@@ -117,5 +118,24 @@ describe("two admins' cards", () => {
     expect(takePending("call_1", "u1", "pick", p.args)).toMatchObject({
       ownerId: "u1",
     });
+  });
+});
+
+describe("a failed grant puts the card back", () => {
+  beforeEach(() => clearPending());
+
+  test("but not after a PARAR cleared the cards while it was in flight", () => {
+    const { at: _, ...p } = call("c1");
+    notePending(p);
+    const taken = takePending("c1", "u1", "pick", p.args);
+    if (typeof taken === "string") throw new Error(taken);
+    restorePending(taken);
+    expect(listPending("u1", "chat_1").map((q) => q.id)).toEqual(["c1"]);
+
+    const again = takePending("c1", "u1", "pick", p.args);
+    if (typeof again === "string") throw new Error(again);
+    clearPending();
+    restorePending(again);
+    expect(listPending("u1", "chat_1")).toEqual([]);
   });
 });
