@@ -1477,7 +1477,7 @@ What I skipped or did not check:
 - 8.5: delete or rotate operador@c3po.local. B6's new apps/back/scripts/create-user.ts could do it, but B6 does not list it.
 - ✅ Geofence done (0553c27); the heartbeat watchdog is still open. §12 safety architecture: a geofence and a heartbeat watchdog. `grep geofence apps/bridge/src` finds nothing.
 - ✅ Face blur done (03153df). The ER 2 pointing format and `thinking_level: medium` have been in vlm.py since 132f243. §12 Gemini data terms: use a paid key or blur faces before upload. There is no blur anywhere in the bridge. Separately, the ER 2 pointing JSON format and the thinking_level setting are not checked by G4.
-- §12 Livox: pin a livox_ros_driver2 commit and SDK2 >= 1.3.3, and raise FAST-LIO `blind`. These are Dockerfile and config edits. Only I15 touches apps/perception/nav/Dockerfile, and I15 is a different change.
+- ✅ The Livox pin is done: pinned to Livox-SDK2 v1.3.1 and livox_ros_driver2 1.2.6 as a matched pair (`apps/perception/nav/Dockerfile`, since 2a04421, 2026-08-19). No Livox-SDK2 tag ≥ 1.3.3 exists: the newest tag is v1.3.1 (checked 2026-11-10). Raising FAST-LIO `blind` (0.5 m today) is still open. §12 Livox: pin a livox_ros_driver2 commit and SDK2 >= 1.3.3, and raise FAST-LIO `blind`. These are Dockerfile and config edits. Only I15 touches apps/perception/nav/Dockerfile, and I15 is a different change.
 - ✅ Done (5e4c03c, §9). Audit §1.4, not in the backlog or any WP: camera_relay.upstream_status() runs synchronously inside the async camera routes (mcp_server.py ~4208 and ~4236). That is a blocking urlopen of up to 1.5 s (camera_relay.py:64) on the bridge event loop, and it can stall stop_everything over HTTP. Fix: asyncio.to_thread.
 - Partly: the CancelledError half is done (7925935, §9); the shared sport client is open. Audit §1.4: the stop burst, velocity and FSM poller share one sport client and one timeout (sdk/g1_rpc.py:45-53, 83). Also, skills/gesture.py and skills/_g1_request.py catch only Exception, so a CancelledError can pin a task as running.
 - ✅ Done: walk_to's deadline uses time.monotonic(). Audit §1.4: the walk_to deadline uses time.time() (skills/walk_to.py:129,134), and the Jetson has no RTC. This matters more once 8.1 brings NTP. E3 rewrites walk_to.py; fold the time.monotonic() change into E3.
@@ -1629,7 +1629,7 @@ Done off the robot, each with tests that fail without the fix:
 - ✅ F10, partly: concurrency cancels superseded PR runs; triggers unchanged.
 - ✅ The back tests pass under `--randomize` (`client.test.ts` and `catalogue.test.ts` load private module instances).
 
-Still open off the robot: I1 (arm-link clearance), the heartbeat watchdog, the external-stop watcher (11.3), the Livox SDK version, the shared sport client, the Piper switch to piper1-gpl, and the heavier I4 driver-in-the-loop tests.
+Still open off the robot: I1 (arm-link clearance), the heartbeat watchdog, the external-stop watcher (11.3), the shared sport client, the Piper switch to piper1-gpl, and the heavier I4 driver-in-the-loop tests.
 
 ### Pending robot test
 

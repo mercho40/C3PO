@@ -168,6 +168,7 @@ engine, and Gemini `look`.
   - The official waist hold is `g1_arm7_sdk_dds_example` at kp 60 / kd 1.5, which is what we ship.
 - **Livox:**
   - Mid-360S support arrived in livox_ros_driver2 1.2.5 and SDK2 1.3.0; current versions are 1.2.8 and 1.5.2. Pin a driver commit, SDK ≥ 1.3.3.
+  - ✅ Already pinned to Livox-SDK2 v1.3.1 and livox_ros_driver2 1.2.6 as a matched pair (`apps/perception/nav/Dockerfile`, since 2a04421, 2026-08-19). No Livox-SDK2 tag ≥ 1.3.3 exists: the newest tag is v1.3.1 (checked 2026-11-10).
   - Open bugs to watch: SDK2 #125 (control commands time out on Mid-360S) and driver #240 (no topics after an upgrade; fixed by lidar firmware).
   - FAST-LIO `ROS2` branch: `lidar_type 1`, `scan_line 4`, `timestamp_unit 3`, CustomMsg; raise `blind` to filter out the robot's own body.
 - **VLA models (GR00T, pi0, OpenVLA) are not realistic on Orin NX with JetPack 5.** GR00T-WBC needs JP6 and TRT 10.7. Realistic: train ACT or SmolVLA with unitree_lerobot for one arm task, and run it on a laptop GPU off the robot.
@@ -179,4 +180,4 @@ engine, and Gemini `look`.
 - ✅ Geofence (safety architecture): `SAFETY_GEOFENCE_M`, default 3 m, around where `arm_navigation` found the robot; Nav2 only (0553c27). Pending robot test. The heartbeat watchdog is still open.
 - ✅ Gemini data terms: faces pixelated before upload, failing closed, `C3PO_FACE_BLUR` (03153df). Recall on real expo frames is a pending robot test.
 - ✅ ER 2 pointing format: `point` asks for `[{"point": [y, x], "label"}]`, 0–1000, at most 10 items, with `thinking_level: medium` (132f243). Not yet checked against a live reply (test-day `vlm.md` step 3).
-- Still open: the Livox SDK2 ≥ 1.3.3 pin and FAST-LIO `blind`.
+- Still open: FAST-LIO `blind` (0.5 m in `fastlio_mid360_g1.yaml`; whether that filters out the robot's body is untested). The Livox pin is done (above).
