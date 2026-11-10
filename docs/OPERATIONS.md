@@ -331,8 +331,8 @@ phrase at all. None of this is validated on a stressed human voice yet (pending 
 test).
 
 **Autonomous limits** (`safety.govern`). Only two sources are autonomous: Nav2's cmd_vel
-and `go_to_object`'s camera walk. The walk pad, the headset, `walk_to`, `turn` and
-`walk_velocity` are never limited by these:
+and `go_to_object`'s camera walk. The walk pad, the headset, `turn`, `walk_velocity` and a
+`walk_to` called on its own are never limited by these:
 
 - Nav2's cmd_vel: zero unless a world summary ≤ 1 s old says the lidar is online
   (`obstacle_source_stale`);
@@ -352,8 +352,9 @@ and `go_to_object`'s camera walk. The walk pad, the headset, `walk_to`, `turn` a
 `look_around` and the Nav2 tools refuse while another walk runs (`walk_task_active`); a new
 Nav2 goal still replaces the old one. A `walk_velocity` that moves the robot counts as the
 operator's input (the console walk pad, or the headset when it drives through `back`
-rather than the teleop stream; decision 11.6b), and it always wins: it cancels a running `walk_to`, `turn`, `navigate_to` or `look_around`, and waits up to 1 s
-for it to stop before its own setpoints go out. When it cancels a `navigate_to`, it first
+rather than the teleop stream; decision 11.6b), and it always wins: it cancels a running
+`walk_to`, `turn`, `navigate_to` or `look_around`, and waits up to 1 s for it to stop
+before its own setpoints go out. When it cancels a `navigate_to`, it first
 closes the Nav2 gate (`operator_preempt`): use Nav2 again only after a new
 `arm_navigation`. `look_around` runs as a task (its `task_id` is in the reply), so
 `cancel_task` or `soft_stop` ends it mid-pause or mid-turn.
@@ -557,19 +558,22 @@ to `~/.c3po/unit-backup-for`. Installing the same commit again, or retrying an i
 failed half way, keeps the copy. So while `unit-backup-for` names the commit in
 `deployed`, the copy is the unit that ran the commit in `previous-deploy`. `c3po install`
 from the older checkout installs that checkout's own unit, so the copy is needed only when
-that install fails: the older code must not run under the newer unit. Check, then restore:
+that install fails: the older code must not run under the newer unit. This restores it
+only when the check holds:
 
 ```bash
-[ "$(cat ~/.c3po/unit-backup-for)" = "$(cut -d' ' -f1 ~/.c3po/deployed)" ] && echo "copy ok"
-sudo install -o root -g root -m 0644 \
-  /var/lib/c3po/previous-c3po-bridge.service \
-  /etc/systemd/system/c3po-bridge.service
-sudo systemctl daemon-reload && sudo systemctl restart c3po-bridge.service
+if [ "$(cat ~/.c3po/unit-backup-for)" = "$(cut -d' ' -f1 ~/.c3po/deployed)" ]; then
+  sudo install -o root -g root -m 0644 \
+    /var/lib/c3po/previous-c3po-bridge.service \
+    /etc/systemd/system/c3po-bridge.service
+  sudo systemctl daemon-reload && sudo systemctl restart c3po-bridge.service
+else
+  echo "the copy is the newer unit: not restored"
+fi
 ```
 
-No `copy ok` means the failed install got as far as replacing the copy with the newer unit:
-do not restore it, stop and look. After a restore, record the running commit with the two
-lines above.
+"Not restored" means the failed install got as far as replacing the copy with the newer
+unit: stop and look. After a restore, record the running commit with the two lines above.
 
 A rollback leaves the perception images as they are. `c3po perception build` on the
 older checkout rebuilds them, if the rollback is about perception code.
@@ -1093,8 +1097,8 @@ Added on 2026-11-10:
   `place` refuse in `SIM_MODE=real` with `pick_disabled_until_gantry_test` unless it is set.
   Set it only for the gantry touch check (test-day `manipulation.md`), after I1. Restart
   the bridge after a change.
-- `C3PO_VISION_CLASS_CONF` in `~/.c3po/perception.env`, for example
-  `cooker=0.6,thumbtack=off`: a confidence bar per class, above `C3PO_VISION_CONF`.
+- `C3PO_VISION_CLASS_CONF` in `~/.c3po/perception.env`, quoted, for example
+  `C3PO_VISION_CLASS_CONF="cooker=0.6,thumbtack=off"`: a confidence bar per class, above `C3PO_VISION_CONF`.
   `person` is refused, because the person rule reads that label. Bad entries are logged
   and skipped. The vision image must be rebuilt once to read it
   (`c3po perception build vision`); after that a change takes effect at the next
@@ -1137,8 +1141,7 @@ the vision tests under the container's Python 3.8 and numpy 1.24.4 and fails on 
 runs `chats.ts` against a `postgres:16` service (the `back-db` job). A separate workflow,
 `nav-image.yml`, builds the nav image on an arm64 runner with the robot's classic Docker
 builder and pushes nothing: on PRs and pushes to `main` that touch `apps/perception/nav/`
-or `apps/perception/bringup/`, weekly, and by hand. Neither new job has run
-on GitHub yet. There is **no CD**: web is automatic on Vercel;
+or `apps/perception/bringup/`, weekly, and by hand. Neither new job has run on GitHub yet. There is **no CD**: web is automatic on Vercel;
 `back` would need a runner that can reach the LAN box (self-hosted, or a manual
 `make deploy`); the bridge deploy is the push in §5.
 
