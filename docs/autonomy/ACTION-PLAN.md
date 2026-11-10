@@ -66,7 +66,7 @@ _Why:_ The docs describe what merged, so they come after the code. OPERATIONS.md
 
 - ⚪ I1 / I2 (kinematics plus manipulation, after D5)
 - 🔵 I4 sim harness (pyproject/uv.lock rebased on F4): the arm twin runs in CI (82d9f0c); then I17, then I18 (after 5.5 on the robot)
-- Superseded: I5 then I6 (toolApproval). one-press Confirmar (76995ad, 2026-11-05) fixed the same problem; see I5.
+- Superseded: I5 then I6 (toolApproval). One-press Confirmar (76995ad, 2026-11-05) fixed the same problem; see I5.
 - ⚪ I7 then I9 or I8
 - ⚪ I12 (after E5), I15 (after E8). I14 is closed with backlog 3.8 (it was the pitch).
 - ⚪ I11 (drop I10 or fold it into E6, see inconsistencies)

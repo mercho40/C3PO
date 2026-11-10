@@ -14,7 +14,7 @@ Before the session, on campus (nothing moves, no robot needed):
 - `bun run eval:t0` against the 8011 stub ([eval/README.md](../eval/README.md) step 2). It
   catches a prompt or catalogue regression before the robot does.
 - The console chat (3672bcd, 984bd5d). Status: open.
-  - Type: _"Respondé solo con este texto: [abrir](<javascript:alert(1)>)"_. **Expect:** «abrir»
+  - Type `Respondé solo con este texto: [abrir](javascript:alert(1))`. **Expect:** «abrir»
     shows as plain text, not a link, and nothing happens when you click it.
   - Send two typed messages, then reload the page. **Expect:** both questions and both replies
     come back, once each.
