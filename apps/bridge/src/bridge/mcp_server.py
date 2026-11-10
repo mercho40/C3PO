@@ -482,7 +482,8 @@ async def go_to_object(
 
     refusal = _nav_refusal()
     nav_pose = None
-    if refusal is None and active_walk() is not None:
+    # navigate_to aside: a new goal replaces the running one, as in _nav_refusal.
+    if refusal is None and active_walk(ignore=("navigate_to",)) is not None:
         refusal = {"reason": "walk_task_active"}  # the no_active_walk_task precondition
     if refusal is None:
         from bridge.sdk.nav_link import get_nav_link
@@ -533,7 +534,7 @@ async def go_to_object(
 
     from bridge.skills.walk_to import run as run_walk_to
 
-    # autonomous: a model-chosen walk with no obstacle avoidance, so stale perception slows it (person rule).
+    # autonomous: a model-chosen walk with no obstacle avoidance, so no live detector stops it.
     result = await run_walk_to(
         target_x=tx,
         target_y=ty,
@@ -862,8 +863,8 @@ async def stop_everything() -> dict:
 async def soft_stop() -> dict:
     """Stop walking and stay standing — zero velocity, never goes limp.
 
-    Closes the Nav2 gate, cancels running tasks and sends a ~0.4 s zero-velocity
-    burst. Unlike stop_everything it does not latch the e-stop, does not let go
+    Closes the Nav2 gate, cancels the Nav2 goal and running tasks, and sends a
+    ~0.4 s zero-velocity burst. Unlike stop_everything it does not latch the e-stop, does not let go
     of the arms or hands, and never damps — so it cannot drop the robot. Use it
     to end a walk. If the result says `heard: false`, the robot did not
     acknowledge the stop: call stop_everything.
@@ -1559,6 +1560,7 @@ async def gesture(
             "stale_lowstate",
             "gesture_contention",
             "settle_timeout",
+            "teleop_active",
         ],
     )
 )
@@ -2185,6 +2187,14 @@ _NAV_FIX = {
         "A person in the headset is driving the robot; Nav2 would be a second commander "
         "on the base. Wait until they let go, then try again."
     ),
+    "arm_held": (
+        "The arms are held on rt/arm_sdk (move_arm, pick or reach), and walking under "
+        "arm_sdk weight is untried on this robot. Call release_arm_control first."
+    ),
+    "walk_task_active": (
+        "Another walk (walk_to, turn, walk_velocity or look_around) is driving the base; "
+        "Nav2 would be a second commander. cancel_task it or wait, then try again."
+    ),
 }
 
 
@@ -2192,11 +2202,16 @@ def _nav_refusal() -> dict | None:
     """Why a goal must not be sent right now, or None if it may."""
     from bridge.sdk.nav_link import get_nav_link
     from bridge.sdk.perception_link import get_link
-    from bridge.skills._locomotion import teleop_conflict
+    from bridge.skills._locomotion import arm_hold_conflict, teleop_conflict
+    from bridge.skills.walk_to import active_walk
 
     status, _ = get_nav_link().latest_status()
     if teleop_conflict() is not None:
         reason = "teleop_active"
+    elif arm_hold_conflict() is not None:
+        reason = "arm_held"
+    elif active_walk(ignore=("navigate_to",)) is not None:  # a new goal replaces the old one
+        reason = "walk_task_active"
     elif status is None:
         reason = "nav_relay_offline"
     elif not status.get("nav2_ready"):
@@ -2662,7 +2677,7 @@ async def listen(
             items = listener.poll()
 
     diag = listener.diagnostics()
-    source = listen_skill.describe_audio_source()
+    source = await asyncio.to_thread(listen_skill.describe_audio_source)  # runs `arecord -l`
     speech = [i for i in items if i["kind"] == "speech"]
     stops = [i for i in items if i["kind"] == "stop"]
 
@@ -2945,12 +2960,11 @@ MEMORY_SUMMARY_MAX = 6
 
 
 def _memory_pose() -> tuple[dict | None, str | None]:
-    """The pose memory entries are measured against: the perception report's.
-
-    Not the bridge's vendor odometry — that is a different frame (see
-    object_memory's docstring). None when no fresh report has a pose.
+    """The pose memory entries are measured against: the perception report's,
+    else the vendor odometry under this run's frame (object_memory.report_pose).
+    None when there is no fresh report, or neither pose.
     """
-    from bridge.object_memory import DEFAULT_FRAME
+    from bridge.object_memory import report_pose
 
     try:
         from bridge.sdk.perception_link import get_link
@@ -2959,9 +2973,9 @@ def _memory_pose() -> tuple[dict | None, str | None]:
     except Exception:
         log.exception("object_memory.pose_failed")
         return None, None
-    if not report or not isinstance(report.get("pose"), dict):
+    if not report:
         return None, None
-    return report["pose"], str(report.get("pose_frame") or DEFAULT_FRAME)
+    return report_pose(report) or (None, None)
 
 
 def _with_object_memory(build):  # noqa: ANN001, ANN202
@@ -3029,7 +3043,8 @@ def recall_object(
     `seen_count`. `x_m`/`y_m` are in `frame` (perception's odometry — the same
     frame Nav2 calls `odom`), which is NOT the frame `walk_to` uses: pass them as
     `navigate_to(x, y, frame=frame)` when navigation is armed, otherwise turn by
-    `bearing_deg` and walk by `distance_m`.
+    `bearing_deg` and walk by `distance_m`. A `vendor_odom@...` frame (lidar down)
+    is not Nav2's: turn and walk.
 
     `not_found` comes with `known_labels`: everything in memory. If one of them
     is what was asked for under another name, call again with that label. Not
@@ -3139,8 +3154,9 @@ async def look_around(
 
     THE ROBOT PHYSICALLY ROTATES: each step is a `turn` call with all of its
     checks (teleop conflict, pose, cancel). A full circle takes ~45 s. Stops at
-    the first failed turn or as soon as stop_everything is pressed. Refuses
-    without moving when perception is offline — turning blind updates nothing.
+    the first failed turn, or as soon as its task is cancelled (cancel_task,
+    soft_stop, stop_everything), pauses included. Refuses without moving when
+    perception is offline — turning blind updates nothing.
 
     Returns `new_objects` (first seen during this sweep), `seen_again`, and
     `forgotten` (remembered here but now looked at and absent), each with
@@ -3148,12 +3164,21 @@ async def look_around(
     """
     from bridge import estop
     from bridge.object_memory import get_object_memory
+    from bridge.skills.task_runtime import get_registry
+    from bridge.skills.walk_to import active_walk
 
     if _memory_pose()[0] is None:
         return {
             "status": "failed",
             "error": "perception_offline",
             "message": "No fresh perception report with a pose: nothing to look with.",
+            "env": SIM_MODE,
+        }
+    if (running := active_walk()) is not None:
+        return {
+            "status": "failed",
+            "error": "walk_task_active",
+            "message": f"walk task {running} is still running; cancel_task it or wait.",
             "env": SIM_MODE,
         }
 
@@ -3164,19 +3189,62 @@ async def look_around(
     steps = max(1, round(total_degrees / LOOK_STEP_DEG))
     step_rad = math.radians(total_degrees / steps)
 
+    # A registry task, so cancel_task, soft_stop and stop_everything reach the sweep,
+    # dwells included: a bare sleep heard none of them.
+    task = get_registry().create("look_around")
+
+    async def look() -> None:
+        try:
+            await asyncio.wait_for(task.cancel_event.wait(), dwell)
+        except TimeoutError:
+            pass
+
     turned = 0.0
     stopped: str | None = None
-    await asyncio.sleep(dwell)  # look before the first turn, too
-    for _ in range(steps):
-        if estop.last_stop_at() > started:
-            stopped = "stop_everything"
-            break
-        result = await turn(ctx, delta_yaw_radians=step_rad, timeout_s=30.0, tolerance_degrees=5.0)
-        if result.get("status") not in ("ok", "completed"):
-            stopped = f"turn_{result.get('status')}: {result.get('error') or result.get('phase')}"
-            break
-        turned += math.degrees(step_rad)
-        await asyncio.sleep(dwell)
+    try:
+        await look()  # look before the first turn, too
+        for _ in range(steps):
+            if estop.last_stop_at() > started:
+                stopped = "stop_everything"
+                break
+            if task.cancel_event.is_set():
+                break
+            step = asyncio.ensure_future(
+                turn(ctx, delta_yaw_radians=step_rad, timeout_s=30.0, tolerance_degrees=5.0)
+            )
+            heard = asyncio.ensure_future(task.cancel_event.wait())
+            try:
+                await asyncio.wait((step, heard), return_when=asyncio.FIRST_COMPLETED)
+            except BaseException:
+                step.cancel()  # as a plain await did: the sweep's own cancellation reaches the turn
+                raise
+            finally:
+                heard.cancel()
+            if not step.done():
+                # cancel_task names the sweep; the turn is its own registry task. While it
+                # runs no other turn can, so every running turn is this one.
+                registry = get_registry()
+                for t in registry.list_active():
+                    if t.skill_name == "turn":
+                        registry.cancel(t.task_id)
+            result = await step
+            if task.cancel_event.is_set():
+                break
+            if result.get("status") not in ("ok", "completed"):
+                stopped = f"turn_{result.get('status')}: {result.get('error') or result.get('phase')}"
+                break
+            turned += math.degrees(step_rad)
+            await look()
+        if stopped is None and task.cancel_event.is_set():
+            stopped = "cancelled"
+    except BaseException:
+        stopped = stopped or "exception"
+        raise
+    finally:
+        # Never left "running": the registry reaps only finished tasks.
+        cancelled = task.cancel_event.is_set()
+        task.status = "cancelled" if cancelled else "failed" if stopped else "completed"
+        task.phase, task.ended_at = stopped or "done", time.time()
 
     pose, frame = _memory_pose()
     now = time.time()
@@ -3185,6 +3253,7 @@ async def look_around(
     return {
         "status": "stopped" if stopped else "ok",
         **({"stopped_reason": stopped} if stopped else {}),
+        "task_id": task.task_id,
         "turned_degrees": round(turned, 1),
         "new_objects": [e.describe(pose, frame, now) for e in after if e.id not in before],
         "seen_again": [
@@ -3748,8 +3817,14 @@ _ARM_META: dict[str, Any] = dict(
         "base_moving",
         "settle_timeout",
         "hand_unavailable",
+        "teleop_active",
     ],
 )
+#: pick and place also refuse on the robot until C3PO_ALLOW_PICK=1 (skills/manipulation.py).
+_PICK_META = {
+    **_ARM_META,
+    "typical_failure_modes": [*_ARM_META["typical_failure_modes"], "pick_disabled_until_gantry_test"],
+}
 
 _SideAuto = Annotated[
     Literal["auto", "left", "right"],
@@ -3758,7 +3833,7 @@ _SideAuto = Annotated[
 _Side = Annotated[Literal["left", "right"], Field(description="Which arm.")]
 
 
-@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 15.0}))
+@mcp.tool(meta=skill_meta(**{**_PICK_META, "expected_duration_s": 15.0}))
 async def pick(
     ctx: Context,
     label: Annotated[
@@ -3801,7 +3876,7 @@ async def pick(
     return {**await manipulation.pick(label, side, shape, track_id, ctx=ctx), "env": SIM_MODE}
 
 
-@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 12.0}))
+@mcp.tool(meta=skill_meta(**{**_PICK_META, "expected_duration_s": 12.0}))
 async def place(
     ctx: Context,
     side: _Side = "right",
@@ -4381,7 +4456,7 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
 
         listener = listen_skill.get_mic_listener()
         diag = listener.diagnostics()
-        source = listen_skill.describe_audio_source()
+        source = await asyncio.to_thread(listen_skill.describe_audio_source)  # runs `arecord -l`
         items = listener.recent(120.0) if diag["running"] else []
         return JSONResponse(
             {
@@ -4715,6 +4790,8 @@ async def _run_streamable_http() -> None:
     from starlette.middleware.cors import CORSMiddleware
     from starlette.types import ASGIApp
 
+    from bridge.skills.stop_everything import watching_foreign_stops
+
     app: ASGIApp = mcp.streamable_http_app()
     if BRIDGE_CORS_ORIGINS:
         app = CORSMiddleware(
@@ -4729,7 +4806,16 @@ async def _run_streamable_http() -> None:
         port=BRIDGE_PORT,
         log_level=mcp.settings.log_level.lower(),
     )
-    await uvicorn.Server(config).serve()
+    async with watching_foreign_stops():
+        await uvicorn.Server(config).serve()
+
+
+async def _run_stdio() -> None:
+    """FastMCP's stdio transport, with the same foreign-stop watcher as HTTP."""
+    from bridge.skills.stop_everything import watching_foreign_stops
+
+    async with watching_foreign_stops():
+        await mcp.run_stdio_async()
 
 
 def main() -> None:
@@ -4887,7 +4973,7 @@ def main() -> None:
         asyncio.run(_run_streamable_http())
     else:
         log.info("c3po-bridge.start", sim_mode=SIM_MODE, transport="stdio")
-        mcp.run()  # default transport is stdio
+        asyncio.run(_run_stdio())  # default transport is stdio
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
+import threading
 import time
 from typing import Any
 
@@ -100,13 +101,20 @@ def _get_publisher() -> Any:
 
 
 def send_velocity(
-    vx: float, vy: float, vyaw: float, height: float, *, autonomous: bool = False
+    vx: float,
+    vy: float,
+    vyaw: float,
+    height: float,
+    *,
+    autonomous: bool = False,
+    nav2: bool = False,
 ) -> int | None:
     """Send one body-frame velocity setpoint, by whatever channel this target uses.
 
     `height` applies to the sim channel only; see the module docstring.
-    `autonomous` marks a source with no person in its loop (Nav2): it gets the
-    safety governor's stale-perception policy on top of the shared rules.
+    `autonomous` marks a source with no person in its loop (Nav2, go_to_object):
+    it gets the safety governor's stale-perception policy on top of the shared
+    rules. `nav2` marks Nav2's cmd_vel alone, which also gets the blind rule.
 
     Returns the robot's RPC code on real hardware (0 = acknowledged), and None
     in sim, where the setpoint is a fire-and-forget publish with no ack.
@@ -131,7 +139,7 @@ def send_velocity(
             # headset, Nav2) still cannot move the robot while PARAR stands.
             log.warning("locomotion.refused_stop_standing", vx=vx, vy=vy, vyaw=vyaw)
             vx = vy = vyaw = 0.0
-        vx, vy, vyaw = safety.govern(vx, vy, vyaw, autonomous=autonomous)
+        vx, vy, vyaw = safety.govern(vx, vy, vyaw, autonomous=autonomous, nav2=nav2)
 
         code, _ = g1_rpc.call_set_velocity(vx, vy, vyaw, VELOCITY_DURATION_S)
         if code != 0:
@@ -191,20 +199,74 @@ async def stop_motion(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -
         await asyncio.sleep(LOOP_PERIOD_S)
 
 
+#: How long the stop burst keeps counting acks after its last setpoint. A reply
+#: slower than this counts as unheard. A guess until the real SET_VELOCITY ack
+#: latency is measured on the robot.
+STOP_ACK_GRACE_S = 0.3
+
+
 def stop_motion_sync(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) -> tuple[int, int]:
     """Blocking variant of stop_motion for sync skills (e.g. stop_everything).
 
     Returns `(sent, acked)`: how many zero setpoints went out, and how many the
     robot acknowledged with code 0. In sim nothing is acknowledged, so `acked`
     stays 0 there; only real-hardware callers should read it.
+
+    On real each setpoint waits for its ack on its own thread, so the burst
+    keeps its 50 Hz schedule however the robot answers. It used to wait in
+    line: SET_VELOCITY has SPORT_TIMEOUT_S (10 s) of headroom, so one hung reply
+    held the whole burst, it came back `acked == 0`, and stop_everything damped
+    a standing robot. Acks count until STOP_ACK_GRACE_S after the last
+    setpoint. Concurrent calls are safe on the vendor client: it matches each
+    reply to its request by id, and the walk loops already call it from
+    several threads.
     """
-    sent = acked = 0
+    codes: list[int | None] = []
+    errors: list[Exception] = []
+
+    def send_one() -> None:
+        try:
+            codes.append(send_velocity(0, 0, 0, height))
+        except Exception as exc:
+            errors.append(exc)
+
+    if SIM_MODE == "real":
+        from bridge.sdk import g1_rpc
+
+        # The client's first Init takes >= 0.7 s. Built inside the window, the
+        # whole burst queued on it and every ack landed past the grace: a
+        # standing robot that heard the stop was damped. The first setpoint
+        # waited on this Init before too. A failure here is left to each
+        # setpoint, which retries it and reports it.
+        try:
+            g1_rpc._get_sport_client()
+        except Exception:
+            log.warning("locomotion.stop_burst.client_init_failed", exc_info=True)
+
+    threads: list[threading.Thread] = []
+    sent = 0
     deadline = time.monotonic() + duration_s
     while time.monotonic() < deadline:
         sent += 1
-        if send_velocity(0, 0, 0, height) == 0:
-            acked += 1
+        if SIM_MODE == "real":
+            thread = threading.Thread(target=send_one, name="stop-burst", daemon=True)
+            thread.start()
+            threads.append(thread)
+        else:
+            send_velocity(0, 0, 0, height)  # a publish: it never waits
         time.sleep(LOOP_PERIOD_S)
+    grace_end = time.monotonic() + STOP_ACK_GRACE_S
+    for thread in threads:
+        thread.join(max(0.0, grace_end - time.monotonic()))
+    acked = codes.count(0)
+    if errors and not acked:
+        # Nothing landed and something raised: stop_everything reports it and damps.
+        raise errors[0]
+    if errors:
+        # The robot heard the rest, so no Damp; but a raise is never silent.
+        log.warning(
+            "locomotion.stop_burst.setpoint_raised", count=len(errors), error=repr(errors[0])
+        )
     return sent, acked
 
 
@@ -256,8 +318,75 @@ def teleop_conflict() -> str | None:
     )
 
 
+def arm_hold_conflict() -> str | None:
+    """Why the base must not walk now because this process holds the arms, or None.
+
+    move_arm(hold=True), pick and reach leave `rt/arm_sdk` engaged after they
+    return, and walking under arm_sdk weight is untried on this robot (BACKLOG
+    §12). The headset's own arms renew the teleop lease, so teleop_conflict
+    already covers those. Checked here, not in ArmSdkDriver.engage, so the
+    headset's arms are never refused for the operator looking around.
+    """
+    from bridge.teleop.arm_sdk import get_driver
+
+    if not get_driver().engaged:
+        return None
+    return (
+        "the arms are held on rt/arm_sdk (move_arm, pick or reach), and walking under "
+        "arm_sdk weight is untried on this robot. Call release_arm_control (or "
+        "stop_everything) first, then walk."
+    )
+
+
+def fsm_conflict() -> str | None:
+    """Why a fresh FSM reading says the legs will not take velocity now, or None.
+
+    In 802 (Run, R2+A on the remote) SetVelocity answers code 0 and nothing moves,
+    so a walk stood still until its timeout and reported completed. Gated like
+    ArmSdkDriver's FSM check, except that an unknown or stale reading is allowed:
+    sim has no FSM poller, and a slow poll must not block a walk. Never creates
+    the sampler.
+    """
+    from bridge.sdk import g1_protocol
+    from bridge.sdk.state import existing_sampler
+    from bridge.skills._g1_request import WALK_FSM_IDS
+    from bridge.teleop.arm_sdk import MAX_FSM_AGE_S
+
+    sampler = existing_sampler()
+    if sampler is None:
+        return None
+    state = sampler.get_arm_state()
+    fsm_id, age = state["fsm_id"], state["fsm_age_s"]
+    if fsm_id is None or age is None or age > MAX_FSM_AGE_S or fsm_id in WALK_FSM_IDS:
+        return None
+    return (
+        f"the robot is in FSM {fsm_id} ({g1_protocol.mode_label(fsm_id)}), not a walk "
+        "program (500/501), so it would acknowledge every velocity and not move. Run damp, "
+        "prepare, then start_walking_waist, and check that get_state's fsm_id reads 501."
+    )
+
+
 #: The error a running walk or turn ends with when the headset takes over.
 TELEOP_TAKEOVER = (
     "the operator in the headset took over and is driving the robot, so this motion "
     "ended. Do not retry it while they drive."
 )
+
+#: The error a walk or turn refuses or ends with when odometry stops arriving.
+POSE_STALE = (
+    "pose_stale: odometry has not updated for over a second, so the robot would steer "
+    "on a frozen position. Check get_state's faults (stale_pose) and the bridge's odom "
+    "subscription before retrying."
+)
+
+
+def pose_stale(sampler: Any) -> bool:
+    """True when the sampler's newest pose is older than safety.POSE_STALE_S, or it has none.
+
+    `get_state()` keeps returning the last pose after odometry stops, so a loop
+    reading only that would keep driving toward a target it never gets closer to.
+    """
+    from bridge.safety import POSE_STALE_S
+
+    pose = sampler.latest_pose()
+    return pose is None or pose[2] > POSE_STALE_S

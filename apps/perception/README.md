@@ -420,7 +420,11 @@ error. **The rebuild carrying that pin has not run yet.**
   every run (a shell export still wins; only `bringup/spec.py: PERSISTENT_ENV_KEYS`
   are taken from the file) — they pass through
   (`bringup/spec.py: VISION_ENV_PASSTHROUGH`). Steps:
-  `docs/autonomy/test-day/perception.md`.
+  `docs/autonomy/test-day/perception.md`. A class that keeps showing up where
+  it is not gets its own bar the same way, with no re-export:
+  `C3PO_VISION_CLASS_CONF="cooker=0.6,thumbtack=off"` (only above
+  `C3PO_VISION_CONF`; `person` is refused because the person rule reads it; the
+  start log prints what took effect). See `detector.py: parse_class_conf`.
 
 ## File map
 

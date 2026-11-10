@@ -15,12 +15,14 @@ Added here, because these skills move the arm without a human choosing each join
 
 * every waypoint must solve IK (within 1 cm, fingers within 10°) AND sit inside WORKSPACE,
   or nothing moves at all;
-* a per-tick abort: a person inside arm's reach (except `handover`), or the base walking;
+* a per-tick abort: a person inside arm's reach (except `handover`), the base walking, or the
+  headset driving (the teleop lease; that refuses the start too);
 * grasp targets come only from a detection younger than FRESH_DETECTION_S, never from object
   memory: memory is where the wallet *was*, and a grasp needs where it *is*.
 
 Not here (say so instead of pretending): wrist-camera refinement, force sensing (the BrainCo
-reports no reliable contact), self-collision beyond the box, regrasp on a miss. The caller
+reports no reliable contact), self-collision beyond arm-vs-torso (ARM_CAPSULES), regrasp on a
+miss. The caller
 checks success with `verify("¿tenés <x> en la mano?")`.
 
 SIM_MODE=stub returns the full plan (waypoints, IK errors) without moving, so the planner and
@@ -30,16 +32,18 @@ the eval suite can exercise pick/place on a laptop.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import math
 import os
 import time
-from typing import Any, Literal
+from collections.abc import Callable, Sequence
+from typing import Any, Literal, TypeVar
 
 import structlog
 
-from bridge import kinematics, safety
+from bridge import estop, kinematics, safety
 from bridge.skills import arm_pose
-from bridge.skills.task_runtime import get_registry
+from bridge.skills.task_runtime import Task, get_registry
 from bridge.teleop import arm_sdk, hands
 from bridge.teleop.retarget import ArmAngles
 
@@ -97,15 +101,36 @@ SHOULDER_BACK_RAD = 0.7
 #: the model how to walk when a target is out of reach.
 COMFORT_X_M = 0.30
 COMFORT_Y_OUT_M = 0.05
-#: The torso no arm point may enter, torso_link (x, y, z) ranges. x and z: the URDF torso
-#: inertia's equivalent solid box (0.11 x 0.18 x 0.27 m about the COM at z=0.15), rounded out,
-#: z down to the waist. y: that box says +-0.09 (the shoulder joints sit at +-0.10), but the
-#: tuck pose for a target far out to the side passes the forearm 0.088 m off the midline.
-#: shortcut: y narrowed to 0.08, points only, no link radius, no mesh (not vendored); measure
-#: the torso's flank at belly height and use the STL hull with capsule arm links once a
-#: crossing is seen to clip, or the tuck pose grazes the torso on the robot.
-TORSO_BOX = ((-0.06, 0.06), (-0.08, 0.08), (-0.05, 0.30))
-_ARM_POINTS = ("elbow", "wrist", "wrist", "wrist", "hand")  # joint_origins[3:] and the TCP
+#: The torso no arm link may come near, torso_link (x, y, z) ranges: the bounds of MuJoCo
+#: Menagerie unitree_g1's torso_link collision meshes (torso_link_rev_1_0.STL + logo_link),
+#: rounded out 1 mm. Not head_link: it starts at z=0.28, above and behind the hand's workspace.
+TORSO_BOX = ((-0.070, 0.085), (-0.109, 0.109), (-0.010, 0.313))
+#: The same meshes narrow away from the shoulders: |y| stays under the line through each pair
+#: of (z, |y|) points, edges of their convex hull seen from the front, +1 mm. The box alone
+#: puts the belly 1 cm wider than it is, and the upper arm hangs only ~2 cm off it.
+TORSO_FLANKS = (
+    ((0.008, 0.069), (0.063, 0.093)),
+    ((0.083, 0.098), (0.218, 0.109)),
+    ((0.218, 0.109), (0.246, 0.104)),
+)
+#: Each arm link as a capsule that holds its Menagerie collision geometry: (name, a, b, t0, t1,
+#: radius m), the t0..t1 stretch of the line from point a to point b of kinematics.forward
+#: (joint_origins 0-6, then 7 = the TCP). tests/sim checks every vertex is inside.
+#: shortcut: the hand is wrist_yaw_link's radius out to the TCP (the model's hand has no
+#: collision geom); measure the BrainCo Revo2's palm and widen "hand" if it is thicker.
+ARM_CAPSULES = (
+    ("shoulder", 1, 2, 0.3, 0.7, 0.036),  # shoulder_roll_link: a 0.03 m cylinder
+    ("upper_arm", 2, 3, 0.0, 1.0, 0.049),  # shoulder_yaw_link, elbow motor bulge inward
+    ("forearm", 3, 4, 0.0, 1.0, 0.044),  # elbow_link
+    ("wrist", 4, 5, 0.0, 1.0, 0.031),  # wrist_roll_link
+    ("wrist", 5, 6, 0.0, 1.0, 0.035),  # wrist_pitch_link
+    ("hand", 6, 7, 0.0, 1.0, 0.031),  # wrist_yaw_link
+)
+#: The first pose of a pick (the tuck) or place (above) holds the upper arm at least this far
+#: out from the body (shoulder roll; URDF: out is negative for the right arm), tried in order.
+#: IK's nearest tuck had it 5-20° in: the upper arm folded back along the flank, into the
+#: torso on every pick in the twin. 0.7 plans the low and far picks, 0.35 the places.
+SHOULDER_OUT_RAD = (0.7, 0.35)
 
 
 class PlanError(Exception):
@@ -148,11 +173,12 @@ def _solve(
     p: tuple[float, float, float],
     pointing: tuple[float, float, float] | None,
     seed: list[float] | None,
+    joint_limits: list[tuple[float, float]] | None = None,
 ) -> tuple[float, ...]:
     why = in_workspace(side, p)
     if why:
         raise PlanError(f"{name}: {why}")
-    r = kinematics.solve(side, p, pointing, seed=seed)
+    r = kinematics.solve(side, p, pointing, seed=seed, joint_limits=joint_limits)
     if not r.reached:
         raise PlanError(
             f"{name}: out of reach (closest {r.position_error_m * 100:.0f} cm off, "
@@ -240,15 +266,43 @@ def _check_clear(
             )
 
 
+def _torso_gap(p: Sequence[float]) -> float:
+    """How far `p` is outside TORSO_BOX and TORSO_FLANKS, 0 inside: never more than the true
+    distance (exact off the box faces), and convex in `p`."""
+    gap = math.hypot(*(max(lo - v, 0.0, v - hi) for v, (lo, hi) in zip(p, TORSO_BOX, strict=True)))
+    for (za, ya), (zb, yb) in TORSO_FLANKS:
+        k = (yb - ya) / (zb - za)
+        gap = max(gap, (abs(p[1]) - ya - k * (p[2] - za)) / math.hypot(1.0, k))
+    return gap
+
+
+def _segment_gap(a: Sequence[float], b: Sequence[float]) -> float:
+    """The least _torso_gap along a -> b. Convex along the segment, so a ternary search."""
+
+    def at(t: float) -> float:
+        return _torso_gap([u + (v - u) * t for u, v in zip(a, b, strict=True)])
+
+    lo, hi = 0.0, 1.0
+    for _ in range(25):  # (2/3)^25 of a link: under 0.1 mm
+        m1, m2 = lo + (hi - lo) / 3, hi - (hi - lo) / 3
+        lo, hi = (lo, m2) if at(m1) < at(m2) else (m1, hi)
+    return at((lo + hi) / 2)
+
+
 def _check_torso(side: Side, name: str, qs: list[tuple[float, ...]]) -> None:
-    """PlanError if any pose puts the elbow, wrist or hand inside TORSO_BOX."""
+    """PlanError if any pose brings an arm link's capsule (ARM_CAPSULES) into the torso."""
     for i, q in enumerate(qs):
         hp = kinematics.forward(side, q)
-        for part, p in zip(_ARM_POINTS, (*hp.joint_origins[3:], hp.position), strict=True):
-            if all(lo < v < hi for v, (lo, hi) in zip(p, TORSO_BOX, strict=True)):
+        pts = (*hp.joint_origins, hp.position)
+        for part, a, b, t0, t1, r in ARM_CAPSULES:
+            ends = [
+                [u + (v - u) * t for u, v in zip(pts[a], pts[b], strict=True)] for t in (t0, t1)
+            ]
+            gap = _segment_gap(*ends) - r
+            if gap < 0:
                 raise PlanError(
-                    f"{name} {i + 1}/{len(qs)}: the {part} would pass through the torso at "
-                    f"({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}) m — pick a target further out "
+                    f"{name} {i + 1}/{len(qs)}: the {part} would pass through the torso "
+                    f"({-gap * 1000:.0f} mm into its clearance) — pick a target further out "
                     f"on the {side} arm's own side"
                 )
 
@@ -264,12 +318,21 @@ def _joint_path(q_from: list[float], q_to: tuple[float, ...]) -> list[tuple[floa
     ]
 
 
+def _arm_out_limits(side: Side, out: float) -> list[tuple[float, float]]:
+    """kinematics.limits with the shoulder roll held `out` rad out from the body."""
+    lim = kinematics.limits(side)
+    lo, hi = lim[1]
+    lim[1] = (max(lo, out), hi) if side == "left" else (lo, min(hi, -out))
+    return lim
+
+
 def _transit(
     side: Side,
     pre: tuple[float, float, float],
     d: kinematics.Vec3,
     clear_z: float,
     seed: list[float] | None,
+    out: float,
 ) -> list[tuple[str, tuple[float, ...]]]:
     """From wherever the arm is to `pre` without sweeping through the surface:
     rise close to the body ("clear"), forward above the surface ("over"), straight down
@@ -283,7 +346,7 @@ def _transit(
     for edge in sorted({min(x, pre[0]) for x in TUCK_X_M}):
         tuck = (edge, y, top)
         try:
-            q_tuck = _solve(side, "clear", tuck, d, seed)
+            q_tuck = _solve(side, "clear", tuck, d, seed, _arm_out_limits(side, out))
             if seed is None:
                 rise = [q_tuck]  # no measured pose (stub, tests): nothing to rise from
             else:
@@ -293,6 +356,7 @@ def _transit(
                 # forearm swings out horizontally at desk height (robot, 2026-11-05).
                 back = list(seed)
                 back[0] = max(seed[0], q_tuck[0], SHOULDER_BACK_RAD)  # URDF pitch: + is back
+                back[1] = q_tuck[1]  # and out: pitched back, the hanging arm passes the flank
                 bent = (back[0], *q_tuck[1:])
                 rise = (
                     _joint_path(seed, tuple(back))
@@ -327,17 +391,17 @@ def plan_pick(
     """
     clear_z = target[2] + SURFACE_MARGIN_M
     errors = []
-    for tilt in APPROACH_TILTS_DEG:
+    for out, tilt in itertools.product(SHOULDER_OUT_RAD, APPROACH_TILTS_DEG):
         d = _approach(side, target, tilt)
         grasp = _offset(target, d, GRASP_DEPTH_OFFSET_M)
         pre = _offset(grasp, d, -PREGRASP_BACK_M)
         lifted = (grasp[0], grasp[1], grasp[2] + LIFT_M)
         try:
-            transit = _transit(side, pre, d, clear_z, seed)
+            transit = _transit(side, pre, d, clear_z, seed, out)
             approach = _line(side, "grasp", pre, grasp, d, transit[-1][1])
             lift = _line(side, "lift", grasp, lifted, d, approach[-1])
         except PlanError as exc:
-            errors.append(f"tilt {tilt:.0f}°: {exc}")
+            errors.append(f"tilt {tilt:.0f}°, shoulder {math.degrees(out):.0f}° out: {exc}")
             continue
         return [
             ("hand", "open", "open"),
@@ -356,10 +420,22 @@ def plan_place(
     """Lower onto `target`, open, then the reverse of a pick's transit: straight up clear of
     the surface ("retreat"), back toward the body ("withdraw"). Releasing the arm afterwards
     lowers it beside the body, behind the desk edge."""
+    errors = []
+    for out in SHOULDER_OUT_RAD:
+        try:
+            return _plan_place(side, target, seed, out)
+        except PlanError as exc:
+            errors.append(f"shoulder {math.degrees(out):.0f}° out: {exc}")
+    raise PlanError("; ".join(errors))
+
+
+def _plan_place(
+    side: Side, target: tuple[float, float, float], seed: list[float] | None, out: float
+) -> list[Step]:
     d = _approach(side, target, 0.0)
     above = (target[0], target[1], target[2] + LIFT_M)
     clear = (target[0], target[1], max(above[2], target[2] + SURFACE_MARGIN_M))
-    q_above = _solve(side, "above", above, d, seed)
+    q_above = _solve(side, "above", above, d, seed, _arm_out_limits(side, out))
     _check_torso(side, "above", [q_above])
     down = _line(side, "down", above, target, d, q_above)
     up = _line(side, "retreat", target, clear, d, down[-1])
@@ -501,6 +577,9 @@ def choose_side(requested: str, p: tuple[float, float, float]) -> Side:
 
 
 def _abort_reason(allow_person: bool) -> str | None:
+    if estop.teleop_is_driving():
+        # The headset (its own process) drives the base or holds the arms on rt/arm_sdk.
+        return "teleop_active"
     if safety.base_moving():
         return "base_moving"
     if safety.PERSON_RULE and not allow_person:
@@ -530,7 +609,7 @@ def _plan_dict(steps: list[Step]) -> list[dict[str, Any]]:
 
 
 async def execute(
-    name: str,
+    task: Task,
     side: Side,
     steps: list[Step],
     *,
@@ -539,8 +618,9 @@ async def execute(
     hold: bool = True,
     ctx: Any | None = None,
 ) -> dict[str, Any]:
-    """Run a planned step list on one arm. Returns the task dict."""
-    task = get_registry().create(name)
+    """Run a planned step list on one arm, as `task` (created before planning). Returns the
+    task dict."""
+    name = task.skill_name
     task.result = {**summary, "side": side, "plan": _plan_dict(steps)}
     log.info(f"{name}.requested", task_id=task.task_id, side=side, sim_mode=SIM_MODE, **summary)
 
@@ -556,6 +636,9 @@ async def execute(
         task.ended_at = time.time()
         return task.to_dict()
 
+    if task.cancel_event.is_set():
+        # A stop arrived while the plan was computed off the loop: nothing has moved yet.
+        return done("cancelled", "cancelled", note="Stopped before anything moved.")
     if SIM_MODE == "stub":
         return done("completed", "stub", note="Stub mode — planned only, nothing moved.")
     if SIM_MODE != "real":
@@ -653,16 +736,75 @@ async def execute(
         return done("failed", "exception", repr(exc), hand_closed=hand_closed)
 
 
-def _refused(name: str, error: str, **extra: Any) -> dict[str, Any]:
+def _refused(task: Task, error: str, **extra: Any) -> dict[str, Any]:
     """A plan that never reached the arm. Shaped like a task dict so callers need one path."""
-    task = get_registry().create(name)
     task.status, task.phase, task.error = "failed", "planning", error
     task.result = {"moved": False, **extra}
     task.ended_at = time.time()
     return task.to_dict()
 
 
+#: Pick and place stay refused on the robot until the gantry touch check (test-day
+#: manipulation.md) shows the planned arm clears the torso. This flag lifts the fence for that
+#: check and after it; read per call. Stub mode plans freely: nothing moves there.
+ALLOW_PICK_ENV = "C3PO_ALLOW_PICK"
+
+
+def _fenced(task: Task) -> dict[str, Any] | None:
+    if SIM_MODE != "real" or os.environ.get(ALLOW_PICK_ENV) == "1":
+        return None
+    return _refused(
+        task,
+        "pick_disabled_until_gantry_test",
+        note=(
+            f"{task.skill_name} is off on the robot until the gantry touch check passes (test-day "
+            f"manipulation.md). Nothing moved. For that check: {ALLOW_PICK_ENV}=1 in "
+            "apps/bridge/.env, then restart the bridge."
+        ),
+    )
+
+
 # --- the four skills --------------------------------------------------------------------------
+#
+# Each creates its task BEFORE planning, so a stop during the plan finds it (execute checks the
+# cancel), and plans in a worker thread: pure-Python IK takes ~1 s for a refused pick, and the
+# event loop runs the 50 Hz arm hold and the stop.
+
+
+_T = TypeVar("_T")
+
+
+async def _off_loop(task: Task, fn: Callable[..., _T], *args: Any) -> _T:
+    """`fn(*args)` in a worker thread. Anything but a PlanError (the caller refuses those)
+    ends `task` here, or it would stay "running" with no skill behind it."""
+    try:
+        return await asyncio.to_thread(fn, *args)
+    except PlanError:
+        raise
+    except BaseException as exc:
+        cancelled = isinstance(exc, asyncio.CancelledError)
+        task.status = "cancelled" if cancelled else "failed"
+        task.phase, task.error = ("cancelled", None) if cancelled else ("exception", repr(exc))
+        task.ended_at = time.time()
+        raise
+
+
+def _plan_pick(
+    arm: Side, side: str, target: tuple[float, float, float], shape: str
+) -> tuple[Side, list[Step]]:
+    """(arm, steps) on `arm`, else on the other arm when `side` is auto and its hand is
+    configured. PlanError says how to walk if neither plans."""
+    try:
+        return arm, plan_pick(arm, target, shape, _measured_q(arm))
+    except PlanError as exc:
+        other: Side = "left" if arm == "right" else "right"
+        configured = hands.get_driver().sides
+        if side == "auto" and (not configured or other in configured):
+            try:
+                return other, plan_pick(other, target, shape, _measured_q(other))
+            except PlanError:
+                pass
+        raise PlanError(f"{exc}. {reach_advice(arm, target)}") from None
 
 
 async def pick(
@@ -672,32 +814,26 @@ async def pick(
     track_id: int | None = None,
     ctx: Any | None = None,
 ) -> dict[str, Any]:
+    task = get_registry().create("pick")
+    if (fenced := _fenced(task)) is not None:
+        return fenced
     if shape not in hands.SHAPES or shape == "open":
-        return _refused(
-            "pick", f"unknown_shape_{shape}", shapes=sorted(set(hands.SHAPES) - {"open"})
-        )
+        return _refused(task, f"unknown_shape_{shape}", shapes=sorted(set(hands.SHAPES) - {"open"}))
     try:
         target, obj = detected_target(label, track_id)
     except PlanError as exc:
-        return _refused("pick", str(exc))
+        return _refused(task, str(exc))
     arm = choose_side(side, target)
     if SIM_MODE == "real" and _measured_q(arm) is None:
         # Without the start pose the rise is one unchecked slew: the desk-edge hit.
         return _refused(
-            "pick",
+            task,
             "no measured arm pose (arm state offline): cannot plan a path clear of the surface",
         )
     try:
-        steps = plan_pick(arm, target, shape, _measured_q(arm))
+        arm, steps = await _off_loop(task, _plan_pick, arm, side, target, shape)
     except PlanError as exc:
-        other: Side = "left" if arm == "right" else "right"
-        configured = hands.get_driver().sides
-        if side != "auto" or (configured and other not in configured):
-            return _refused("pick", f"{exc}. {reach_advice(arm, target)}")
-        try:
-            arm, steps = other, plan_pick(other, target, shape, _measured_q(other))
-        except PlanError:
-            return _refused("pick", f"{exc}. {reach_advice(arm, target)}")
+        return _refused(task, str(exc))
     summary = {
         "object": {
             k: obj.get(k) for k in ("label", "track_id", "confidence", "range_m", "depth_source")
@@ -706,7 +842,7 @@ async def pick(
         "shape": shape,
         "next": f"verify('¿tenés {obj.get('label')} en la mano?') — no contact sensing here",
     }
-    return await execute("pick", arm, steps, summary=summary, ctx=ctx)
+    return await execute(task, arm, steps, summary=summary, ctx=ctx)
 
 
 async def place(
@@ -716,6 +852,9 @@ async def place(
     ctx: Any | None = None,
 ) -> dict[str, Any]:
     """Put down what the hand holds: onto a detected surface/object, or `drop_m` below here."""
+    task = get_registry().create("place")
+    if (fenced := _fenced(task)) is not None:
+        return fenced
     seed = _measured_q(side)
     try:
         if label:
@@ -726,20 +865,21 @@ async def place(
                 raise PlanError("no measured arm pose to place from")
             here = kinematics.forward(side, seed).position
             target = (here[0], here[1], here[2] - max(0.0, min(drop_m, 0.15)))
-        steps = plan_place(side, target, seed)
+        steps = await _off_loop(task, plan_place, side, target, seed)
     except PlanError as exc:
-        return _refused("place", str(exc))
+        return _refused(task, str(exc))
     summary = {"target_torso_m": [round(v, 3) for v in target], "onto": label}
-    return await execute("place", side, steps, summary=summary, hold=False, ctx=ctx)
+    return await execute(task, side, steps, summary=summary, hold=False, ctx=ctx)
 
 
 async def handover(side: Side, ctx: Any | None = None) -> dict[str, Any]:
     """Hold the hand out at chest height for a person to take what it holds."""
+    task = get_registry().create("handover")
     p = handover_point(side)
     try:
-        q = _solve(side, "handover", p, (1.0, 0.0, 0.0), _measured_q(side))
+        q = await _off_loop(task, _solve, side, "handover", p, (1.0, 0.0, 0.0), _measured_q(side))
     except PlanError as exc:
-        return _refused("handover", str(exc))
+        return _refused(task, str(exc))
     summary = {
         "target_torso_m": list(p),
         "next": (
@@ -748,7 +888,7 @@ async def handover(side: Side, ctx: Any | None = None) -> dict[str, Any]:
         ),
     }
     return await execute(
-        "handover", side, [("arm", "extend", q)], summary=summary, allow_person=True, ctx=ctx
+        task, side, [("arm", "extend", q)], summary=summary, allow_person=True, ctx=ctx
     )
 
 
@@ -760,14 +900,15 @@ async def reach(
     hold: bool = True,
     ctx: Any | None = None,
 ) -> dict[str, Any]:
+    task = get_registry().create("reach")
     p = kinematics.camera_to_torso(point) if frame == "camera" else tuple(float(v) for v in point)
     pointing = {"forward": (1.0, 0.0, 0.0), "down": (0.0, 0.0, -1.0), "free": None}[fingers]
     try:
-        q = _solve(side, "reach", p, pointing, _measured_q(side))  # type: ignore[arg-type]
+        q = await _off_loop(task, _solve, side, "reach", p, pointing, _measured_q(side))
     except PlanError as exc:
-        return _refused("reach", str(exc))
+        return _refused(task, str(exc))
     summary = {"target_torso_m": [round(v, 3) for v in p], "fingers": fingers}
-    return await execute("reach", side, [("arm", "reach", q)], summary=summary, hold=hold, ctx=ctx)
+    return await execute(task, side, [("arm", "reach", q)], summary=summary, hold=hold, ctx=ctx)
 
 
 def arm_state() -> dict[str, Any]:

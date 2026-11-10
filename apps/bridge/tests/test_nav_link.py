@@ -251,6 +251,25 @@ def test_stop_everything_cancels_before_the_first_await():
     assert src.index("nav.cancel(None)") < src.index("await ")
 
 
+async def test_soft_stop_cancels_the_nav2_goal(rig, monkeypatch):
+    """A goal left active walks the robot again as soon as the gate is re-armed."""
+    from bridge.skills import stop_everything
+
+    sent = rig[3]
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", lambda **kwargs: (20, 20))
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
+    await stop_everything.soft_stop()
+    assert {"v": 1, "cancel": True} in sent
+
+
+def test_soft_stop_cancels_before_the_first_await():
+    from bridge.skills import stop_everything
+
+    src = pathlib.Path(stop_everything.__file__).read_text()
+    src = src.split("async def soft_stop(", 1)[-1].split("async def run(", 1)[0]
+    assert src.index("nav.cancel(None)") < src.index("await ")
+
+
 # --- landmarks: only a pose in a frame Nav2 owns ----------------------------
 
 
@@ -380,3 +399,79 @@ def test_the_relay_status_is_what_the_bridge_and_landmarks_accept(relay):
     )
     assert link._ingest_status(json.dumps(no_tf))
     assert lm.nav_pose_from_status(no_tf) is None
+
+
+async def test_refused_while_the_arms_are_held(rig, monkeypatch):
+    from types import SimpleNamespace
+
+    from bridge.teleop import arm_sdk
+
+    server, _nav, _gate, sent, _ = await _armed(rig)
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: SimpleNamespace(engaged=True))
+    out = await server.navigate_to(x=1.0, y=0.0)
+    assert (out["status"], out["reason"]) == ("refused", "arm_held")
+    assert "release_arm_control" in out["how_to_fix"]
+    assert sent == []
+
+
+async def test_refused_while_another_walk_runs(rig):
+    server, _nav, _gate, sent, _ = await _armed(rig)
+    walking = get_registry().create("walk_to")
+    try:
+        out = await server.navigate_to(x=1.0, y=0.0)
+    finally:
+        walking.status = "completed"
+    assert (out["status"], out["reason"]) == ("refused", "walk_task_active")
+    assert sent == []
+
+
+async def test_a_new_goal_still_replaces_the_running_one(rig):
+    server, nav, _gate, sent, _ = await _armed(rig)
+    first = await server.navigate_to(x=1.0, y=0.0)
+    second = await server.navigate_to(x=2.0, y=0.0)
+    assert second["status"] == "started"
+    assert get_registry().get(first["task_id"]).cancel_event.is_set()
+    await asyncio.sleep(0.05)
+    server.cancel_navigation()
+    await asyncio.sleep(0.05)
+
+
+async def test_operator_velocity_preempting_a_goal_cancels_it_in_nav2(rig, monkeypatch):
+    """11.6b: walk_velocity cancels navigate_to's task, and the goal must not stay active in Nav2."""
+    from bridge.sdk import g1_rpc
+    from bridge.skills import _locomotion, walk_velocity
+
+    server, nav, _gate, sent, _ = await _armed(rig)
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (0, ""))
+    out = await server.navigate_to(x=1.0, y=0.0)
+    nav._ingest_status(status(goal_rec(out["goal_id"], "active", dist=1.0)))
+
+    result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.1)
+
+    assert result["status"] == "completed"
+    assert get_registry().get(out["task_id"]).status == "cancelled"
+    assert {"v": 1, "cancel": True, "id": out["goal_id"]} in sent
+
+
+async def test_operator_velocity_preempting_a_goal_closes_the_gate(rig, monkeypatch):
+    """11.6b: a cancel event alone left Nav2's cmd_vel reaching the legs beside the operator's."""
+    from bridge.sdk import g1_rpc
+    from bridge.skills import _locomotion, walk_velocity
+
+    server, nav, gate, _sent, _ = await _armed(rig)
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (0, ""))
+    forwarded: list[tuple[float, float, float]] = []
+    monkeypatch.setattr(gate, "_forward", lambda *v: forwarded.append(v))
+    out = await server.navigate_to(x=1.0, y=0.0)
+    nav._ingest_status(status(goal_rec(out["goal_id"], "active", dist=1.0)))
+    assert gate._apply_cmd_vel(0.3, 0.0, 0.0)  # Nav2 is steering
+
+    result = await walk_velocity.run(vx=0.0, vy=0.0, vyaw=0.0, duration_s=0.1)  # the stop pulse
+
+    assert result["status"] == "completed"
+    assert not gate.is_enabled()
+    assert not gate._apply_cmd_vel(0.3, 0.0, 0.0)  # Nav2's next tick is dropped
+    gate._tick()
+    assert all(v == (0.0, 0.0, 0.0) for v in forwarded)

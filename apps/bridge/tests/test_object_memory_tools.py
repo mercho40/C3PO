@@ -146,6 +146,73 @@ async def test_look_around_stops_at_the_first_failed_turn(monkeypatch, mem):
     assert out["turned_degrees"] == 0.0
 
 
+def _look_around_tasks():
+    from bridge.skills.task_runtime import get_registry
+
+    return [t for t in get_registry().list_active() if t.skill_name == "look_around"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_a_dwell_ends_the_sweep_at_once(monkeypatch, mem):
+    """PARAR's soft path (soft_stop) cancels every registry task; a dwell must hear it."""
+    import asyncio
+
+    from bridge.skills.task_runtime import get_registry
+
+    monkeypatch.setattr(server, "SIM_MODE", "real")  # real dwells
+    monkeypatch.setattr(server, "LOOK_DWELL_S", 5.0)
+    fake = FakeTurn()
+    monkeypatch.setattr(server, "turn", fake)
+
+    sweep = asyncio.ensure_future(server.look_around(None, total_degrees=360))
+    await asyncio.sleep(0.05)  # inside the first dwell
+    [task] = _look_around_tasks()
+    get_registry().cancel(task.task_id)
+    out = await asyncio.wait_for(sweep, 1.0)
+
+    assert (out["status"], out["stopped_reason"]) == ("stopped", "cancelled")
+    assert fake.calls == []
+    assert task.status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_mid_turn_stops_the_turn(monkeypatch, mem):
+    """cancel_task on look_around: the turn in progress is its own task and must hear it too."""
+    import asyncio
+
+    from bridge.skills.task_runtime import get_registry
+
+    turns = []
+
+    async def slow_turn(ctx, delta_yaw_radians, timeout_s, tolerance_degrees):
+        t = get_registry().create("turn")  # what skills.turn.run registers
+        turns.append(t)
+        try:
+            await asyncio.wait_for(t.cancel_event.wait(), 5.0)
+            t.status = "cancelled"
+        except TimeoutError:
+            t.status = "completed"
+        return {"status": t.status, "phase": t.status, "error": None}
+
+    monkeypatch.setattr(server, "turn", slow_turn)
+    sweep = asyncio.ensure_future(server.look_around(None, total_degrees=360))
+    await asyncio.sleep(0.05)  # inside the first turn
+    [task] = _look_around_tasks()
+    get_registry().cancel(task.task_id)
+    out = await asyncio.wait_for(sweep, 1.0)
+
+    assert (out["status"], out["stopped_reason"]) == ("stopped", "cancelled")
+    assert [t.status for t in turns] == ["cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_sweep_leaves_no_running_task(monkeypatch, mem):
+    monkeypatch.setattr(server, "turn", FakeTurn())
+    out = await server.look_around(None, total_degrees=120)
+    assert out["status"] == "ok"
+    assert _look_around_tasks() == []
+
+
 # -- wiring --------------------------------------------------------------------
 
 
@@ -184,3 +251,43 @@ def test_a_failing_listener_does_not_cost_the_report():
     link.on_report = boom
     assert link._ingest_report(_report())
     assert link.latest_report()[0] is not None
+
+
+@pytest.mark.asyncio
+async def test_look_around_is_refused_while_a_walk_runs(monkeypatch, mem):
+    from bridge.skills.task_runtime import get_registry
+
+    fake = FakeTurn()
+    monkeypatch.setattr(server, "turn", fake)
+    walking = get_registry().create("walk_to")
+    try:
+        out = await server.look_around(None, total_degrees=360)
+    finally:
+        walking.status = "completed"
+    assert (out["status"], out["error"]) == ("failed", "walk_task_active")
+    assert fake.calls == []
+    assert _look_around_tasks() == []
+
+
+def test_recall_measures_from_the_vendor_odometry_when_the_lidar_pose_is_missing(monkeypatch):
+    """Lidar down: the tools read the same per-run frame the memory recorded in."""
+    import time
+
+    from bridge.sdk import state
+
+    memory = om.ObjectMemory()
+    monkeypatch.setattr(om, "_memory_singleton", memory)
+    link = _link()
+    assert link._ingest_report(_report(pose=None))
+    monkeypatch.setattr(pl, "_link_singleton", link)
+    sampler = state.StateSampler()
+    sampler._pose_history.append((time.monotonic(), 0.0, 0.0, 0.0))
+    monkeypatch.setattr(state, "_sampler_singleton", sampler)
+
+    memory.observe(ORIGIN, [{"label": "tv", "range_m": 1.0, "bearing_deg": 0.0}], frame=om.VENDOR_FRAME)
+    memory.observe(ORIGIN, [{"label": "tv", "range_m": 3.0, "bearing_deg": 0.0}], frame="vendor_odom@1")
+    out = server.recall_object(query="tele")
+    by_frame = {o["frame"]: o for o in out["objects"]}
+    assert "note" not in out
+    assert by_frame[om.VENDOR_FRAME]["distance_m"] == 1.0
+    assert "distance_m" not in by_frame["vendor_odom@1"], "another run's origin"

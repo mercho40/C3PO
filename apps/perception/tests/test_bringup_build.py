@@ -7,6 +7,9 @@ the refusals.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from bringup.build import (
@@ -63,6 +66,47 @@ def test_the_word_mount_in_a_comment_is_not_a_problem():
 def test_each_problem_is_reported_separately():
     text = "# syntax=docker/dockerfile:1\nFROM --platform=linux/arm64 x\nRUN --mount=type=cache y\n"
     assert len(dockerfile_problems(text)) == 3
+
+
+# --- the real Dockerfiles ---------------------------------------------------
+
+REAL_DOCKERFILES = [
+    Path(__file__).resolve().parents[1] / d / "Dockerfile" for d in ("nav", "vision")
+]
+# shortcut: a tag is told from a branch by its shape (v1.2.3), not by asking the remote.
+TAG = re.compile(r"^v?\d+(\.\d+)+$")
+GIT_SOURCE = re.compile(r"git\s+(?:-C\s+\S+\s+)?(?:clone|fetch)\b[^&|;]*")
+
+
+def _git_sources(text: str) -> list:
+    """Every `git clone` / `git fetch` outside comments, with ARG defaults filled in."""
+    args = dict(re.findall(r"^ARG[ \t]+(\w+)=(\S+)", text, re.MULTILINE))
+    text = re.sub(r"\$\{(\w+)\}", lambda m: args.get(m.group(1), m.group(0)), text)
+    lines = text.replace("\\\n", " ").splitlines()
+    return [c for line in lines if not line.lstrip().startswith("#") for c in GIT_SOURCE.findall(line)]
+
+
+@pytest.mark.parametrize("path", REAL_DOCKERFILES, ids=lambda p: p.parent.name)
+def test_the_real_dockerfiles_are_classic_builder_only(path):
+    assert dockerfile_problems(path.read_text()) == []
+
+
+@pytest.mark.parametrize("path", REAL_DOCKERFILES, ids=lambda p: p.parent.name)
+def test_every_source_the_real_dockerfiles_fetch_is_pinned(path):
+    """A clone of a moving branch builds whatever upstream is that day.
+
+    FAST-LIO's ROS2 branch is how the twist patch stopped applying, found on the
+    robot mid-build (584a7e6). So a clone names a release tag, and an untagged
+    upstream is fetched by its full commit.
+    """
+    sources = _git_sources(path.read_text())
+    assert sources, "found no git clone or fetch — the parser no longer reads this file"
+    for cmd in sources:
+        if re.match(r"git\s+clone", cmd):
+            ref = re.search(r"(?:-b|--branch)\s+(\S+)", cmd)
+            assert ref and TAG.match(ref.group(1)), cmd
+        else:
+            assert re.search(r"\b[0-9a-f]{40}\b", cmd), cmd
 
 
 # --- refusing early ---------------------------------------------------------

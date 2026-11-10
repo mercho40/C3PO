@@ -46,9 +46,10 @@ hardware ordered (lead times are the long pole).
       adds Realtime voice, `move_arm`, `set_hand`, `gesture`). Merges are mercho40's call — ask first.
 - [ ] Fix the doc/code drift list in [00 §7 "Doc and code drift"](research/00-current-state.md)
       (stale `walk_velocity`/`describe_surroundings` docstrings, `turn` works_real, landmarks are a JSON file not DB, TIC AI hostname).
-- [ ] New decision records in `docs/DECISIONS.md`: **D10 Autonomy architecture** (this plan),
+- [x] New decision records in `docs/DECISIONS.md`: **D10 Autonomy architecture** (this plan),
       superseding D6.3 (cloud voice allowed, local stop + offline fallback kept) and D5.1
-      (planner model chosen by eval, not by provider).
+      (planner model chosen by eval, not by provider). D10 was written 2026-11-10 from the
+      code and git log; the rationale was not recorded, and D5.1 still stands.
 
 ### 0.2 Safety governor (before anything new moves) — [05 §C.2](research/05-references-voice-safety.md), [03 §5](research/03-mapping-navigation.md), [04 §7](research/04-manipulation.md)
 
@@ -62,7 +63,8 @@ hardware ordered (lead times are the long pole).
 - [ ] Arm the link watchdog (currently disarmed, [00 §2.5](research/00-current-state.md)). Re-checked: still blocked on fire-and-forget skills (`watchdog.py`).
 - [ ] Wireless dead-man e-stop (e.g. RoboSavvy G1-EStop) — order it.
 - [x] Tests: every gate has a pytest that proves the LLM path cannot bypass it (`apps/bridge/tests/test_safety.py`).
-- [ ] Hardware checks: [test-day/safety.md](test-day/safety.md). Spoken T2 confirmation and a console Confirm button are still open.
+- [ ] Hardware checks: [test-day/safety.md](test-day/safety.md). The console Confirmar worked on the robot
+      (2026-11-03). The headset's spoken «confirmo» is built (76995ad) but has not run on a Quest.
 
 ### 0.3 G1 security — [05 §C.4](research/05-references-voice-safety.md)
 
@@ -85,11 +87,14 @@ hardware ordered (lead times are the long pole).
 
 ### 0.5 Evaluation harness — [03 §7](research/03-mapping-navigation.md), [05 §C.5](research/05-references-voice-safety.md)
 
-- [ ] A 30-task **Spanish task suite** (`docs/autonomy/eval/tasks.yaml`): command, start state, success rule, tier.
+- [x] A 30-task **Spanish task suite** (`docs/autonomy/eval/tasks.yaml`): command, start state, success rule, tier.
+      It has 32 tasks, 3 phrasings each.
 - [ ] Log per run: success, interventions, e-stops, safety-gate trips, LLM calls, voice latency p95.
 - [ ] Ladder every feature climbs: **mock skills → Isaac Sim → gantry/tether → lab → expo.**
 
 **Exit:** governor merged with tests; hardware ordered; eval suite written; D10 written.
+As of 2026-11-10: the governor, the eval suite and D10 are done. The hardware in §0.4 is
+not marked as ordered.
 
 ---
 

@@ -1,14 +1,34 @@
 # Back at the robot: what to test, in order
 
-Written 2026-11-03 while the operators were away. Everything here is on `feat/autonomy`
-and on the robot. One person holds the Unitree remote for every step that moves.
+Written 2026-11-03 while the operators were away; last updated 2026-11-10. This is the one
+dated sheet for the next robot session. `docs/SESSION-CHECKLIST.md` is the general order,
+and the expo stand runs from `docs/DEMO-RUNBOOK.md`. Everything here is on `feat/autonomy`:
+deploy it first, as in `docs/OPERATIONS.md` §5. One person holds the Unitree remote for every
+step that moves.
 
 Console: http://localhost:3001 (`operador@c3po.local`). Robot in the gantry unless a step
 says otherwise.
 
-Before the session, on campus: `bun run eval:t0` against the 8011 stub
-([eval/README.md](../eval/README.md) step 2). Nothing moves; it catches a prompt or catalogue
-regression before the robot does.
+Before the session, on campus (nothing moves, no robot needed):
+
+- `bun run eval:t0` against the 8011 stub ([eval/README.md](../eval/README.md) step 2). It
+  catches a prompt or catalogue regression before the robot does.
+- The four stand tasks (314e6e6), against the same stub. Status: open; nothing has run them
+  against a model yet. From `apps/back`:
+  `BRIDGE_URL=http://127.0.0.1:8011/mcp bun scripts/eval-agent.ts --ids t1-saludar,t1-stand-sin-posturas,t0-no-sentarte,t1-veni-hacia-mi --expect-env stub`.
+  **Expect:** a wave and no posture or walk for `t1-saludar`; no dance, squat, sit_g1 or
+  lie_up for the other two; `go_to_object` on the person for `t1-veni-hacia-mi`. Record the
+  run directory.
+- The first GitHub runs of `nav-image.yml` (the nav image on an arm64 runner) and the
+  `back-db` job (`chats.ts` on Postgres 16). Status: open. Neither has run on GitHub. A red
+  nav build there is a finding about the Dockerfile, not about the robot.
+- The console chat (3672bcd, 984bd5d). Status: open.
+  - Type `Respondé solo con este texto: [abrir](javascript:alert(1))`. **Expect:** «abrir»
+    shows as plain text, not a link, and nothing happens when you click it.
+  - Send two typed messages, then reload the page. **Expect:** both questions and both replies
+    come back, once each.
+  - If a reply fails and the error banner offers **Reintentar**, press it. **Expect:** a new
+    reply replaces the failed one, and the question is not shown twice.
 
 Status marks: ✅ verified on the date given · open · blocked (with the BACKLOG id).
 
@@ -87,17 +107,43 @@ Status: blocked. The Mid-360S scan module is faulted (BACKLOG 4.1).
 
 ## 6. The headset: voice, Confirmar and PARAR (15 min, on a real Quest)
 
-Status: open. Built in d8d5db7, 56aae23 and cad99bb; never run on a Quest.
+Status: open. Built in d8d5db7, 56aae23 and cad99bb; never run on a Quest. Push-to-talk and
+«confirmo» also check 984bd5d, which changed how `back` reads the chat history.
 
-| Do                                                    | Expect                                                                             |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Hold B or Y and speak («Hablar con el robot»).        | The WAV goes to `/voice/transcribe` and runs as a voice-mode turn.                 |
-| Ask for an arm move, then «Confirmar» in the VR menu. | The refused call runs once. A spoken «confirmo» does the same with one call shown. |
-| Hold both grips 300 ms.                               | PARAR: the robot stops and the latch stands.                                       |
-| «Reanudar» in the VR menu.                            | The latch clears.                                                                  |
+| Do                                                                                                                                                                                                                                                                           | Expect                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hold B or Y and speak («Hablar con el robot»).                                                                                                                                                                                                                               | The WAV goes to `/voice/transcribe` and runs as a voice-mode turn.                                                                                                                                                                                          |
+| Ask for an arm move, then «Confirmar» in the VR menu.                                                                                                                                                                                                                        | The refused call runs once. A spoken «confirmo» does the same with one call shown.                                                                                                                                                                          |
+| Hold both grips 300 ms.                                                                                                                                                                                                                                                      | PARAR: the robot stops and the latch stands.                                                                                                                                                                                                                |
+| «Reanudar» in the VR menu.                                                                                                                                                                                                                                                   | The latch clears.                                                                                                                                                                                                                                           |
+| In /chat on the Mac, ask _"¿Qué ves? Contame con detalle."_ While the reply is still coming, hold both grips 300 ms.                                                                                                                                                         | The chat turn ends (aborted) within about 0.5 s, although this stop never went through `back`. `back`'s log shows `[stop-watch] bridge stop at …: aborted 1 turn(s)`. «Reanudar» after.                                                                     |
+| Set the same `TELEOP_SECRET` in `apps/back/.env` and the robot's `apps/bridge/.env`, restart `back`, and `c3po up teleop` again. Run `./scripts/preflight.sh` on the Mac (on the cable: `C3PO_ROBOT_HOST=192.168.123.164 ./scripts/preflight.sh`), then connect the headset. | `preflight.sh` says "teleop socket requires a token, and apps/back has TELEOP_SECRET". The headset connects and drives. `curl -s -o /dev/null -w '%{http_code}' http://192.168.123.164:8767/` from the Mac answers 401 (426 means the robot has no secret). |
+| Set `HEADSET_SPEAK_REPLY=1` in `apps/back/.env` and restart `back`. Ask a question with B or Y.                                                                                                                                                                              | The robot says the reply out loud after it shows in the panel. A PARAR while it speaks cuts it off (`safety.md` step 12).                                                                                                                                   |
 
 Also check, from BACKLOG §2: the mic inside immersive-vr, the B/Y and grip indices, panel
 readability, and transcription quality.
+
+## 7. Voice on the Realtime engine (10 min)
+
+Status: open (d87836a). Needs `OPENAI_API_KEY` in `apps/back/.env`, and the robot's microphone
+delivering audio (/voice warns when none has arrived). Nothing needs to move.
+
+| Do                                                                                                                                             | Expect                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| On /voice choose «OpenAI Realtime (voz a voz)» and start. Talk while the robot answers, and ask _"¿qué ves?"_ and keep talking while it looks. | The session stays up. `back`'s log may show `[voice/realtime] recoverable error` with a code such as `conversation_already_has_active_response` or `rate_limit_exceeded`; the conversation goes on. Write down every code seen. |
+| Any other error.                                                                                                                               | The session ends and /voice shows the error. Note the code: if it was routine, it belongs in `RECOVERABLE_ERROR_CODES` (`apps/back/src/voice/realtime.ts`).                                                                     |
+
+## 8. Deploy records and a rollback, end to end (15 min, nothing moves)
+
+Status: open (31b2d64, 462fe6d, 31697d9). Robot damped on the gantry. Each line runs on the
+robot (`ssh -t`: install asks for the sudo password).
+
+| Do                                                                                                                               | Expect                                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| After the deploy: `cat ~/.c3po/deployed ~/.c3po/previous-deploy ~/.c3po/unit-backup-for`                                         | `deployed` is `<HEAD> <UTC time>`; `previous-deploy` is a bare sha (the commit before, if one was recorded); `unit-backup-for` is HEAD              |
+| `sudo ls -l /var/lib/c3po/previous-c3po-bridge.service`, then `./scripts/robot/c3po install` again, then the same `ls` and `cat` | Nothing changed: same time on the backup, same three files                                                                                          |
+| Roll back as in `docs/OPERATIONS.md` §5 ("Rollback"), then `c3po status`                                                         | The bridge answers on the older commit. `deployed` names it (if not, record it as the recipe says), and `previous-deploy` names the commit you left |
+| Go forward again as in the same section                                                                                          | `deployed` names the newer commit again, the bridge answers, and `/safety/status` reads as it did                                                   |
 
 ## If something goes wrong
 
@@ -107,3 +153,6 @@ readability, and transcription quality.
   `.env` files nothing clears it: set it, restart `back` and the bridge, then **Reanudar**.
 - Tools refused with "needs an operator's confirmation": that is the T2 gate, press the card's
   **Confirmar**.
+- A walk refused with `fsm_not_walkable`: the robot is not in 501 (802 after R2+A). Redo the
+  bring-up. With `arm_held`: `release_arm_control` first. With `walk_task_active`: another
+  walk runs; `cancel_task` it or wait.

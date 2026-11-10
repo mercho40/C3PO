@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
+import threading
 
 import pytest
 
 from bridge import kinematics, safety
 from bridge.sdk import perception_link
+from bridge.skills.task_runtime import get_registry
 from bridge.skills import manipulation as m
 from bridge.teleop import arm_sdk, hands
 from bridge.teleop.retarget import ArmAngles
@@ -101,6 +104,7 @@ def real(monkeypatch):
         m, "_measured_q", lambda side: list(arm._t[0:7] if side == "left" else arm._t[7:14])
     )
     monkeypatch.setattr(safety, "PERSON_RULE", True)
+    monkeypatch.setenv(m.ALLOW_PICK_ENV, "1")  # past the gantry fence; its own tests drop it
     safety.reset()
     return arm, hand
 
@@ -209,12 +213,18 @@ def test_the_hand_never_sweeps_through_the_desk_on_the_way_to_pre_grasp(target):
     # Robot, 2026-11-05: one slew hanging -> pre-grasp swung the hand into the desk edge.
     # In front of the body the hand stays above the surface + margin; the only way down
     # is straight down onto pre-grasp, over the object's footprint.
+    # The tuck is the closest TUCK_X_M point the arm clears the torso from: the desk incident's
+    # thermos still rises at the first; REACHABLE's 0.16 m tuck folds the wrist into the chest.
     steps = m.plan_pick("right", target, "power", HANGING)
     pre = kinematics.forward("right", last_q(steps, "pre_grasp")).position
+    edge = kinematics.forward("right", last_q(steps, "clear")).position[0]
     clear_z = target[2] + m.SURFACE_MARGIN_M
     tol = kinematics.POS_TOL_M
+    assert min(abs(edge - x) for x in m.TUCK_X_M) < tol
+    if target == THERMOS:
+        assert edge < m.TUCK_X_M[0] + tol
     for x, y, z in arm_path(steps, HANGING, "pre_grasp"):
-        if x > m.TUCK_X_M[0] + tol:
+        if x > edge + tol:
             descending = math.hypot(x - pre[0], y - pre[1]) < 0.02 and z >= pre[2] - tol
             assert z >= clear_z - tol or descending, (x, y, z)
 
@@ -225,7 +235,7 @@ def test_the_place_retreat_lifts_clear_before_pulling_back():
     withdraw = [kinematics.forward("right", s[2]).position for s in steps if s[1] == "withdraw"]
     assert retreat[-1][2] >= REACHABLE[2] + m.SURFACE_MARGIN_M - kinematics.POS_TOL_M
     assert all(p[2] >= retreat[-1][2] - kinematics.POS_TOL_M for p in withdraw)
-    assert withdraw[-1][0] <= m.TUCK_X_M[0] + kinematics.POS_TOL_M  # back beside the body
+    assert withdraw[-1][0] <= m.TUCK_X_M[-1] + kinematics.POS_TOL_M  # back toward the body
 
 
 def test_a_hand_already_low_in_front_is_refused_not_swept_back():
@@ -235,10 +245,29 @@ def test_a_hand_already_low_in_front_is_refused_not_swept_back():
 
 
 def test_a_path_through_the_torso_is_refused():
-    # Right arm placing just across the midline: the wrist sat at (0.01, -0.03, 0.08) m above
-    # it and withdrawing drove it further in, inside the chest. The workspace box allows it.
+    # Right arm placing just across the midline, close in: withdrawing drives the forearm into
+    # the chest. The workspace box allows it.
     with pytest.raises(m.PlanError, match=r"\d+/\d+: the \w+ would pass through the torso"):
-        m.plan_place("right", (0.12, 0.12, 0.0), None)
+        m.plan_place("right", (0.14, 0.05, 0.05), None)
+
+
+def test_the_hanging_arms_clear_the_torso():
+    m._check_torso("right", "hanging", [HANGING])
+    m._check_torso("left", "hanging", [[HANGING[0], -HANGING[1], *HANGING[2:]]])
+
+
+def test_an_upper_arm_folded_along_the_flank_is_refused():
+    # The old tuck for (0.26, -0.30, -0.05): every joint point outside the box, but the upper
+    # arm and forearm 23-44 mm into the torso's hull in the MuJoCo twin.
+    folded = [math.radians(v) for v in (39, 19, 11, -12, -19, -23, -33)]
+    with pytest.raises(m.PlanError, match=r"clear 1/1: the \w+ would pass through the torso"):
+        m._check_torso("right", "clear", [folded])
+
+
+@pytest.mark.parametrize("seed", [HANGING, None])
+def test_the_tuck_holds_the_upper_arm_out_from_the_body(seed):
+    tuck = last_q(m.plan_pick("right", REACHABLE, "power", seed), "clear")
+    assert tuck[1] <= -min(m.SHOULDER_OUT_RAD) + 1e-9  # URDF right shoulder roll: - is out
 
 
 def test_every_planned_pose_is_inside_the_urdf_limits():
@@ -453,7 +482,7 @@ def test_a_height_no_walk_can_fix_says_so():
 async def test_auto_side_tries_the_other_arm_before_giving_up(monkeypatch, real):
     _arm, hand = real
     hand.sides = ("left", "right")
-    see(monkeypatch, cup(p=(0.32, -0.01, -0.03)))
+    see(monkeypatch, cup(p=(0.30, 0.0, 0.05)))  # right's side (y <= 0), the left arm reaches
     plan = m.plan_pick
 
     def right_fails(side, *a):
@@ -492,3 +521,146 @@ async def test_a_pick_without_the_measured_arm_pose_refuses_on_the_robot(monkeyp
     out = await m.pick("cup", side="right")
     assert out["phase"] == "planning" and "measured arm pose" in out["error"]
     assert not arm.engaged and not arm.commands
+
+
+# --- the gantry fence (no pick until the planner's torso clearance is checked on the robot) ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["pick", "place"])
+async def test_pick_and_place_refuse_on_the_robot_until_the_fence_is_lifted(
+    monkeypatch, real, skill
+):
+    arm, _hand = real
+    monkeypatch.delenv(m.ALLOW_PICK_ENV)
+    planned = []
+    monkeypatch.setattr(m, "plan_pick", lambda *a: planned.append(a))
+    monkeypatch.setattr(m, "plan_place", lambda *a: planned.append(a))
+    see(monkeypatch, cup())
+    out = await (m.pick("cup") if skill == "pick" else m.place("right", label="cup"))
+    assert out["status"] == "failed" and out["error"] == "pick_disabled_until_gantry_test"
+    assert out["result"]["moved"] is False and m.ALLOW_PICK_ENV in out["result"]["note"]
+    assert planned == [] and not arm.engaged and arm.commands == []
+
+
+@pytest.mark.asyncio
+async def test_the_lifted_fence_lets_pick_and_place_run(monkeypatch, real):
+    arm, _hand = real
+    see(monkeypatch, cup())
+    assert (await m.pick("cup"))["status"] == "completed"
+    picked = len(arm.commands)
+    out = await m.place("right")  # set it down below the hand
+    assert out["status"] == "completed", out
+    assert len(arm.commands) > picked
+
+
+@pytest.mark.asyncio
+async def test_the_fence_leaves_stub_planning_alone(monkeypatch):
+    monkeypatch.delenv(m.ALLOW_PICK_ENV, raising=False)
+    see(monkeypatch, cup())
+    out = await m.pick("cup")
+    assert out["phase"] == "stub" and out["result"]["plan"]
+
+
+# --- the headset wins (A4): no second rt/arm_sdk commander from this process ------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["pick", "reach", "handover"])
+async def test_arm_skills_refuse_while_the_headset_drives(monkeypatch, real, skill):
+    from bridge import estop
+
+    arm, _hand = real
+    see(monkeypatch, cup())
+    estop.renew_teleop_lease()
+    out = await {
+        "pick": lambda: m.pick("cup"),
+        "reach": lambda: m.reach("right", (0.30, -0.15, 0.10)),
+        "handover": lambda: m.handover("right"),
+    }[skill]()
+    assert out["phase"] == "refused:teleop_active" and out["error"] == "teleop_active"
+    assert not arm.engaged and arm.commands == []
+
+
+@pytest.mark.asyncio
+async def test_the_headset_taking_over_mid_pick_aborts_it(monkeypatch, real):
+    from bridge import estop
+
+    arm, _hand = real
+    see(monkeypatch, cup())
+    arm.on_command = estop.renew_teleop_lease
+    out = await m.pick("cup")
+    assert out["phase"] == "aborted:teleop_active"
+    assert arm.release_requested and len(arm.commands) == 1
+
+
+# --- planning off the event loop (A11) ------------------------------------------------------
+
+
+async def _stop_while_planning(monkeypatch, skill, start):
+    """Run `start()` with planning held open in its worker thread; cancel the task the skill
+    registered meanwhile, as stop_everything does, then let planning finish."""
+    release = threading.Event()
+
+    def held(real):
+        def wrapper(*a, **k):
+            assert release.wait(2.0), "planning ran on the event loop"
+            return real(*a, **k)
+
+        return wrapper
+
+    for name in ("plan_pick", "plan_place", "_solve"):
+        monkeypatch.setattr(m, name, held(getattr(m, name)))
+    registry = get_registry()
+    before = {t.task_id for t in registry.list_active()}
+    running = asyncio.ensure_future(start())
+    mine = []
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        mine = [t for t in registry.list_active() if t.task_id not in before]
+        if mine:
+            break
+    release.set()
+    assert mine and mine[0].skill_name == skill, "no task to cancel while the plan is computed"
+    assert registry.cancel(mine[0].task_id)
+    out = await asyncio.wait_for(running, 5.0)
+    assert out["task_id"] == mine[0].task_id
+    return out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["pick", "place", "reach", "handover"])
+async def test_a_stop_during_planning_finds_the_task_and_nothing_moves(monkeypatch, real, skill):
+    arm, _hand = real
+    see(monkeypatch, cup())
+    if skill == "place":  # from where a pick leaves the hand
+        await m.pick("cup")
+        arm.commands.clear()
+        arm.engaged = False
+    start = {
+        "pick": lambda: m.pick("cup"),
+        "place": lambda: m.place("right"),
+        "reach": lambda: m.reach("right", (0.30, -0.15, 0.10)),
+        "handover": lambda: m.handover("right"),
+    }[skill]
+    out = await _stop_while_planning(monkeypatch, skill, start)
+    assert out["status"] == "cancelled", out
+    assert not arm.engaged and arm.commands == []
+
+
+@pytest.mark.asyncio
+async def test_a_pick_cancelled_while_planning_does_not_stay_running(monkeypatch, real):
+    # FastMCP cancels the coroutine (client gone, timeout); the worker thread finishes alone.
+    see(monkeypatch, cup())
+    release = threading.Event()
+    plan = m.plan_pick
+    monkeypatch.setattr(m, "plan_pick", lambda *a: release.wait(2.0) and plan(*a))
+    before = {t.task_id for t in get_registry().list_active()}
+    running = asyncio.ensure_future(m.pick("cup"))
+    await asyncio.sleep(0.05)
+    (task,) = [t for t in get_registry().list_active() if t.task_id not in before]
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    release.set()
+    assert task.status == "cancelled" and task.ended_at is not None

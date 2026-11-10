@@ -218,6 +218,77 @@ def test_observe_report_reads_the_wire_shape_and_pose_frame():
     assert sorted((e.label, e.frame) for e in mem.list_all()) == [("tv", "map"), ("tv", "odom")]
 
 
+# -- vendor odometry fallback (lidar down) ----------------------------------------
+
+
+@pytest.fixture
+def vendor_at(monkeypatch):
+    """Put a bridge state sampler in place whose newest vendor-odometry pose is (x, y, yaw_deg)."""
+    import time
+
+    from bridge.sdk import state
+
+    def place(x: float, y: float, yaw_deg: float, age_s: float = 0.0) -> None:
+        sampler = state.StateSampler()
+        sampler._pose_history.append((time.monotonic() - age_s, x, y, math.radians(yaw_deg)))
+        monkeypatch.setattr(state, "_sampler_singleton", sampler)
+
+    monkeypatch.setattr(state, "_sampler_singleton", None)
+    return place
+
+
+def _no_lidar(*objects: dict) -> dict:
+    return {"pose": None, "detector_online": True, "objects": list(objects)}
+
+
+def test_without_a_lidar_pose_the_vendor_odometry_places_it_in_this_runs_frame(vendor_at):
+    vendor_at(1.0, 0.0, 90.0)  # facing +y
+    mem, clock = memory()
+    clock.t += 0.25
+    mem.observe_report(_no_lidar(det("cup", 2.0, 0.0)))
+    [entry] = mem.list_all()
+    assert (entry.x_m, entry.y_m) == (pytest.approx(1.0), pytest.approx(2.0))
+    assert entry.frame == om.VENDOR_FRAME
+    # The vendor origin resets on reboot: the frame names this run, never a bare "odom".
+    assert om.VENDOR_FRAME.startswith("vendor_odom@") and om.VENDOR_FRAME != om.DEFAULT_FRAME
+
+
+def test_a_memory_from_another_runs_odometry_is_never_mixed_with_this_one(tmp_path, vendor_at):
+    path = tmp_path / "objects.json"
+    path.write_text(json.dumps({"objects": [{
+        "id": "obj_0", "label": "cup", "x_m": 1.0, "y_m": 2.0, "frame": "vendor_odom@1",
+        "first_seen": 900.0, "last_seen": 900.0,
+    }]}))
+    vendor_at(1.0, 0.0, 90.0)
+    mem, clock = memory(path)
+    clock.t += 0.25
+    mem.observe_report(_no_lidar(det("cup", 2.0, 0.0)))  # same numbers, this run's origin
+    old, new = sorted(mem.list_all(), key=lambda e: e.first_seen)
+    assert (old.frame, old.seen_count) == ("vendor_odom@1", 1), "not merged into this run's"
+    pose = om.vendor_pose()
+    assert "distance_m" not in old.describe(pose, om.VENDOR_FRAME, clock.t)
+    assert new.describe(pose, om.VENDOR_FRAME, clock.t)["distance_m"] == 2.0
+
+
+def test_the_lidar_pose_is_preferred_when_the_report_has_one(vendor_at):
+    vendor_at(5.0, 5.0, 180.0)
+    mem, clock = memory()
+    clock.t += 0.25
+    mem.observe_report({"pose": ORIGIN, "detector_online": True, "objects": [det("cup", 2.0, 0.0)]})
+    [entry] = mem.list_all()
+    assert (entry.x_m, entry.y_m, entry.frame) == (pytest.approx(2.0), pytest.approx(0.0), "odom")
+
+
+def test_with_no_fresh_pose_at_all_the_report_is_still_dropped(vendor_at):
+    mem, clock = memory()
+    clock.t += 0.25
+    mem.observe_report(_no_lidar(det("cup", 2.0, 0.0)))  # no sampler
+    vendor_at(1.0, 0.0, 0.0, age_s=5.0)  # a sampler whose odometry went quiet
+    clock.t += 0.25
+    mem.observe_report(_no_lidar(det("cup", 2.0, 0.0)))
+    assert mem.list_all() == []
+
+
 def test_forget_by_id_and_all():
     mem, clock = memory()
     look(mem, clock, ORIGIN, [det("cup", 2.0, 0.0), det("tv", 3.0, 20.0)])

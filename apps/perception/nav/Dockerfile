@@ -102,12 +102,19 @@ RUN cd src/livox_ros_driver2 \
 # its humble branch ships no livox driver, its README still says catkin_make,
 # and it is map-relative localization rather than SLAM. The upside-down mount is
 # handled by a static TF in our launch file, not by anything in here.
-ARG FASTLIO_REF=ROS2
-RUN git clone --recursive --depth 1 -b ${FASTLIO_REF} \
-      https://github.com/hku-mars/FAST_LIO.git src/fast_lio \
+#
+# Upstream has no tags, so it is fetched BY COMMIT: the ROS2 head when the
+# robot's image was built (2026-08-20), the one the twist patch was generated
+# against. The branch has moved since (an Ouster-only fix), and a moved branch
+# is how the patch was rejected once already. To move the pin, regenerate the
+# patch against the new commit in the same change.
+ARG FASTLIO_COMMIT=a4743b095409588842a5b30ddfa27e29d2f99164
+RUN git init -q src/fast_lio \
+ && git -C src/fast_lio fetch -q --depth 1 https://github.com/hku-mars/FAST_LIO.git ${FASTLIO_COMMIT} \
+ && git -C src/fast_lio checkout -q FETCH_HEAD \
  && git -C src/fast_lio submodule update --init --recursive \
  && test -f src/fast_lio/include/ikd-Tree/ikd_Tree.h \
-      || (echo "FATAL: ikd-Tree submodule missing (clone without --recursive?)" && false)
+      || (echo "FATAL: ikd-Tree submodule missing" && false)
 
 # Three upstream defects that only bite on Humble/aarch64. Each sed is followed
 # by an assertion, because a sed that silently fails to match is exactly how you

@@ -130,3 +130,28 @@ def test_a_spent_token_is_forgotten_once_it_has_expired():
     assert srv.spend_token(_token(1000), now=999.5) is False
     srv.spend_token(_token(2000), now=1001.0)
     assert _token(1000) not in srv._spent
+
+
+async def test_the_bridge_stamps_its_own_clock_on_every_http_response(monkeypatch):
+    """apps/back mints the token's expiry from the bridge's HTTP `Date` header.
+
+    The Jetson has no RTC, so the laptop's clock is not the one `token_valid`
+    reads; uvicorn's Date header is this machine's clock. It is on by default,
+    and this keeps the bridge's own uvicorn config from turning it off.
+    """
+    import uvicorn
+
+    from bridge import mcp_server
+
+    configs: list[uvicorn.Config] = []
+
+    class _Server:
+        def __init__(self, config: uvicorn.Config) -> None:
+            configs.append(config)
+
+        async def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr(uvicorn, "Server", _Server)
+    await mcp_server._run_streamable_http()
+    assert [c.date_header for c in configs] == [True]

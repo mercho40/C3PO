@@ -61,14 +61,15 @@ def _refusal(ip: str, port: int) -> str | None:
 async def _connect(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     """Open host:port only if EVERY address it resolves to passes _refusal."""
     infos = await asyncio.get_running_loop().getaddrinfo(host.strip("[]"), port, type=socket.SOCK_STREAM)
+    # str(): typeshed types the host as str | int, but a TCP lookup always gives a str.
     for *_, sockaddr in infos:
-        if reason := _refusal(sockaddr[0], port):
+        if reason := _refusal(str(sockaddr[0]), port):
             raise _Refused(f"{host}:{port}: {reason}")
     # Connect to the checked IPs, never the name: a second lookup could rebind to a private address.
     error: OSError = OSError(f"{host} did not resolve")
     for *_, sockaddr in infos:
         try:
-            return await asyncio.open_connection(sockaddr[0], port)
+            return await asyncio.open_connection(str(sockaddr[0]), port)
         except OSError as exc:
             error = exc
     raise error
