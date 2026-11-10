@@ -4,6 +4,8 @@
 
 set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
 root="/home/unitree/c3po/scripts/robot"
 bin_dir="${BIN_DIR:-$HOME/.local/bin}"
 
@@ -49,14 +51,11 @@ sudo systemd-analyze verify "$stage/$unit" >/dev/null
 sudo logrotate --debug "$stage/c3po.logrotate" >/dev/null
 sudo visudo -cf "$stage/c3po.sudoers" >/dev/null
 
-# Preserve exactly the currently loaded bridge unit for a one-unit rollback.
-# -L dereferences the legacy checkout symlink; the backup itself is root-owned.
+# Preserve the currently loaded bridge unit for a one-unit rollback, when this
+# install replaces it. -L dereferences the legacy checkout symlink; the backup
+# itself is root-owned.
 sudo install -d -o root -g root -m 0755 /var/lib/c3po
-if sudo test -e "/etc/systemd/system/$unit"; then
-    sudo cp -L "/etc/systemd/system/$unit" "/var/lib/c3po/previous-$unit"
-    sudo chown root:root "/var/lib/c3po/previous-$unit"
-    sudo chmod 0644 "/var/lib/c3po/previous-$unit"
-fi
+backup_unit_if_changed "/etc/systemd/system/$unit" "$stage/$unit" "/var/lib/c3po/previous-$unit"
 
 # Retire the old automatic perception/repair layer. Stop the timer and any
 # already-triggered repair job, then refuse to remove a live perception unit:
@@ -109,6 +108,8 @@ done
 
 sudo systemctl daemon-reload
 sudo systemctl enable c3po-bridge.service >/dev/null
+record_deploy "$here/../.." "$HOME/.c3po" ||
+    echo "install_stack: installed, but could not record the commit in ~/.c3po/deployed" >&2
 
 cat <<'EOF'
 

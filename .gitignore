@@ -26,7 +26,6 @@ coverage
 # Build Outputs
 build
 dist
-**/**/server
 
 
 # Debug
