@@ -223,6 +223,41 @@ async def test_the_watcher_skips_old_stops_and_this_process_own(monkeypatch):
     assert runs == [{"signal": False}]  # once per stop, and without re-stamping
 
 
+async def test_the_watcher_runs_a_stop_stamped_after_the_clock_stepped_back(monkeypatch):
+    """Stamps were ordered: after a backward wall-clock step every new stamp was
+    older than the last one seen, and every headset PARAR was ignored here."""
+    import asyncio
+
+    from bridge.skills import stop_everything
+
+    runs: list[dict] = []
+
+    async def fake_run(**kwargs):
+        runs.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(stop_everything, "run", fake_run)
+    monkeypatch.setattr(stop_everything, "FOREIGN_STOP_POLL_S", 0.01)
+    now = time.time()
+    _stamp_elsewhere(now)  # seen at start: already latched
+
+    watcher = asyncio.create_task(stop_everything.watch_foreign_stops())
+    try:
+        await asyncio.sleep(0.05)
+        monkeypatch.setattr(estop, "_signalled_at", now - 7200.0)  # our own, after the step
+        _stamp_elsewhere(now - 7200.0)
+        await asyncio.sleep(0.05)
+        assert runs == []
+        _stamp_elsewhere(now - 3600.0)  # the headset's PARAR, still older than `now`
+        await asyncio.sleep(0.05)
+        estop.sentinel_path().unlink()  # a missing file is not a stop
+        await asyncio.sleep(0.05)
+    finally:
+        watcher.cancel()
+
+    assert runs == [{"signal": False}]
+
+
 async def test_a_failing_stop_is_not_retried_and_the_watcher_lives_on(monkeypatch):
     """Retrying the same stamp would resend Damp every poll."""
     import asyncio

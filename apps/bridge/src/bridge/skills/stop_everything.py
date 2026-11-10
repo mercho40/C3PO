@@ -408,19 +408,23 @@ async def watch_foreign_stops() -> None:
     The headset's PARAR down the teleop socket only stamps the sentinel
     (teleop/server.py `raise_stop`). That latches this process, but an arm
     move, a walk_to or a Nav2 monitor already running here went on, and with
-    apps/back down nothing else stops them. A stamp more than 1 ms newer than
+    apps/back down nothing else stops them. A new stamp more than 1 ms away from
     this process's own last stop is someone else's. A stamp from before the
     watcher started is already latched and is not run again, and each stamp
     is run once, failed or not: retrying it would resend Damp every poll.
+
+    Any change of stamp is a new stop, not only a later one: after the wall
+    clock steps back, every new stamp is older than the last, and ordering
+    them ignored every headset PARAR.
     """
     seen = estop._file_stop_at()
     while True:
         await asyncio.sleep(FOREIGN_STOP_POLL_S)
         stamp = estop._file_stop_at()
-        if stamp <= seen:
-            continue
+        if stamp == seen or not stamp:
+            continue  # unchanged, or no file to read (deleted, or a failed stat)
         seen = stamp
-        if stamp <= estop._signalled_at + 1e-3:
+        if abs(stamp - estop._signalled_at) <= 1e-3:
             continue  # this process's own stop: its run() did the work
         log.warning("stop_everything.foreign_stop", stamped_at=stamp)
         try:
