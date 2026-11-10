@@ -67,7 +67,7 @@ import contextlib
 import os
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, TypeVar
 
 import structlog
@@ -125,20 +125,31 @@ def _on_own_thread(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> async
     return asyncio.wrap_future(done)
 
 
-async def _zero_burst(height: float) -> tuple[int, int, str | None, float]:
-    """The soft-stop tier: `(sent, acked, error, duration_s)` of a zero burst."""
+def _zero_burst(height: float) -> Awaitable[tuple[int, int, str | None, float]]:
+    """The soft-stop tier: `(sent, acked, error, duration_s)` of a zero burst.
+
+    The burst starts on the call, not on the await, so `run` can start it
+    ahead of the hand and speech RPCs and await it after them.
+    """
     start = time.monotonic()
+    burst: asyncio.Future[tuple[int, int]] = asyncio.get_running_loop().create_future()
     try:
-        sent, acked = await _on_own_thread(
-            stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S
-        )
-        return sent, acked, None, time.monotonic() - start
+        burst = _on_own_thread(stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S)
     except Exception as exc:
-        # Not fatal, and not the end of the stop: a burst that raised is a
-        # burst the robot may never have heard, which is exactly when the
-        # Damp fallback in `run` has to run. It used to propagate and skip it.
-        log.exception("stop_everything.burst_failed")
-        return 0, 0, f"{type(exc).__name__}: {exc}", time.monotonic() - start
+        burst.set_exception(exc)
+
+    async def outcome() -> tuple[int, int, str | None, float]:
+        try:
+            sent, acked = await burst
+            return sent, acked, None, time.monotonic() - start
+        except Exception as exc:
+            # Not fatal, and not the end of the stop: a burst that raised is a
+            # burst the robot may never have heard, which is exactly when the
+            # Damp fallback in `run` has to run. It used to propagate and skip it.
+            log.exception("stop_everything.burst_failed")
+            return 0, 0, f"{type(exc).__name__}: {exc}", time.monotonic() - start
+
+    return outcome()
 
 
 async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
@@ -269,41 +280,43 @@ async def run(height: float = DEFAULT_HEIGHT, *, signal: bool = True) -> dict[st
         cancelled_task_ids=cancelled_ids,
     )
 
+    # Off-thread from here down. Every cancel_event above is already set, so
+    # the skills are stopping themselves whatever happens next; what this buys
+    # is an event loop that can still answer a second stop press or a state
+    # poll while these blocking DDS calls are in flight.
+    # THE ZERO BURST FIRST: the zero setpoints are what stop the robot, so the
+    # hand and voice RPCs below start beside it, never ahead of it. A slow
+    # BrainCo write awaited here used to hold the first setpoint.
+    burst = _zero_burst(height)
+
     # OPEN THE HANDS. A BrainCo has no firmware dead-man (teleop/hands.py) — a
     # grip commanded via set_hand outlives every task and both bursts below,
     # so the stop is the release path of last resort the hands module demands.
     # Off-thread (it publishes DDS) and never fatal, same as the arms above.
     # NullHandDriver makes this a no-op wherever hands are unconfigured.
-    hands_relaxed = False
+    hand_relax: asyncio.Future[None] | None = None
     try:
         from bridge.teleop.hands import get_driver as _get_hand_driver
 
         hand_driver = _get_hand_driver()
         if hand_driver.sides:
-            await _on_own_thread(hand_driver.relax)
-            hands_relaxed = True
+            hand_relax = _on_own_thread(hand_driver.relax)
     except Exception:
         log.exception("stop_everything.hand_relax_failed")
 
-    # Off-thread from here down. Every cancel_event above is already set, so
-    # the skills are stopping themselves whatever happens next; what this buys
-    # is an event loop that can still answer a second stop press or a state
-    # poll while these blocking DDS calls are in flight.
     # STOP TALKING. Our own Spanish speech only (PlayStream under app "c3po");
     # firmware TTS and the co-tenant's assistant cannot be stopped from here.
-    # Started beside the burst, never ahead of it: the voice RPC can be slow
-    # and the zero setpoints are what stop the robot.
     speech_stop: asyncio.Future[tuple[int, str | None]] | None = None
     if SIM_MODE == "real":
         try:
             from bridge.sdk import g1_rpc as _g1_rpc
 
             _g1_rpc.cancel_pcm_playback()
-            speech_stop = asyncio.ensure_future(asyncio.to_thread(_g1_rpc.stop_play))
+            speech_stop = _on_own_thread(_g1_rpc.stop_play)
         except Exception:
             log.exception("stop_everything.speech_stop_failed")
 
-    burst_sent, burst_acked, burst_error, duration = await _zero_burst(height)
+    burst_sent, burst_acked, burst_error, duration = await burst
 
     # Zero velocity stops the gait and leaves the robot balanced; damp zeroes
     # joint stiffness, which drops a standing robot. So damp only when the
@@ -363,6 +376,15 @@ async def run(height: float = DEFAULT_HEIGHT, *, signal: bool = True) -> dict[st
             succeeded=real_damp_rpc_code == 0,
             budget_exhausted=budget_exhausted,
         )
+
+    # Awaited after Damp, which must not wait on a slow hand write either.
+    hands_relaxed = False
+    if hand_relax is not None:
+        try:
+            await hand_relax
+            hands_relaxed = True
+        except Exception:
+            log.exception("stop_everything.hand_relax_failed")
 
     speech_stop_rpc_code: int | None = None
     if speech_stop is not None:

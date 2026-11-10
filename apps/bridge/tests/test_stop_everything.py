@@ -541,3 +541,34 @@ async def test_a_full_default_executor_does_not_hold_the_stop(monkeypatch):
     assert damp_calls == [g1_protocol.Mode.DAMP]
     assert result["real_damp_fallback_succeeded"] is True
     assert result["hands_relaxed"] is True
+    assert result["speech_stop_rpc_code"] == 0
+
+
+async def test_a_slow_hand_release_does_not_hold_the_first_zero_setpoint(monkeypatch):
+    """The hand relax was awaited before the burst started, so a slow BrainCo
+    DDS write held the zero setpoints that actually stop the robot."""
+    from bridge.teleop import hands
+
+    class SlowHandDriver(hands.HandDriver):
+        name = "brainco"
+        sides = ("right",)
+
+        def send(self, side, grip):
+            time.sleep(0.5)
+
+    monkeypatch.setattr(hands, "get_driver", lambda: SlowHandDriver())
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    burst_at: list[float] = []
+
+    def burst(**kwargs):
+        burst_at.append(time.monotonic())
+        return 20, 20
+
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", burst)
+    monkeypatch.setattr(g1_rpc, "stop_play", lambda: time.sleep(0.5) or (0, None))
+
+    started = time.monotonic()
+    result = await stop_everything.run()
+
+    assert burst_at and burst_at[0] - started < 0.1
+    assert result["hands_relaxed"] is True
