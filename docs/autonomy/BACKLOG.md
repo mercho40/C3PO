@@ -130,12 +130,12 @@ engine, and Gemini `look`.
 
 ## 9. Tests and CI 🟠
 
-| #   | Item                                                                                                                                                                    | Size |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| 9.1 | ✅ the `voice` CI job runs them on real vosk + piper · pending first CI run — The spoken-stop tests never run (all 13 skips are `test_listen.py`); make them run in CI. | S    |
-| 9.2 | ✅ F8 — `test_mic_listener` timing flake under full-suite load.                                                                                                         | S    |
-| 9.3 | ✅ partly: back, web, bridge and perception run on PRs (F1) — CI for web, back, bridge and perception on every push, plus svelte-check.                                 | S    |
-| 9.4 | ✅ F2 — `graphify-out` is ignored only through `.git/info/exclude`; add it to `.gitignore`.                                                                             | S    |
+| #   | Item                                                                                                                                                                                         | Size |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 9.1 | ✅ the `voice` CI job runs them on real vosk + piper; first CI run 42433939292 passed (85 tests) — The spoken-stop tests never run (all 13 skips are `test_listen.py`); make them run in CI. | S    |
+| 9.2 | ✅ F8 — `test_mic_listener` timing flake under full-suite load.                                                                                                                              | S    |
+| 9.3 | ✅ partly: back, web, bridge and perception run on PRs (F1) — CI for web, back, bridge and perception on every push, plus svelte-check.                                                      | S    |
+| 9.4 | ✅ F2 — `graphify-out` is ignored only through `.git/info/exclude`; add it to `.gitignore`.                                                                                                  | S    |
 
 ## 10. Docs
 
@@ -178,4 +178,5 @@ engine, and Gemini `look`.
 
 - ✅ Geofence (safety architecture): `SAFETY_GEOFENCE_M`, default 3 m, around where `arm_navigation` found the robot; Nav2 only (0553c27). Pending robot test. The heartbeat watchdog is still open.
 - ✅ Gemini data terms: faces pixelated before upload, failing closed, `C3PO_FACE_BLUR` (03153df). Recall on real expo frames is a pending robot test.
-- Still open: the Livox SDK2 ≥ 1.3.3 pin, FAST-LIO `blind`, and the ER 2 pointing format.
+- ✅ ER 2 pointing format: `point` asks for `[{"point": [y, x], "label"}]`, 0–1000, at most 10 items, with `thinking_level: medium` (132f243). Not yet checked against a live reply (test-day `vlm.md` step 3).
+- Still open: the Livox SDK2 ≥ 1.3.3 pin and FAST-LIO `blind`.
