@@ -1467,7 +1467,7 @@ What I skipped or did not check:
 - ✅ Done (8629255, C6/X15). 1.5 (M): teleop WebSocket Origin allowlist plus a token from apps/back. No WP covers it. teleop/server.py:919 calls serve(handle_client, TELEOP_HOST, TELEOP_PORT) with no origins and no token, and scripts/robot/run_teleop:59 defaults to 0.0.0.0. Put it in WP C after C6/C7, because those two edit the same server.py.
 - 1.8, the code part only: pin DDS_INTERFACE=eth0. apps/bridge/.env.example:19 leaves it blank, and nothing in scripts/robot sets it (only lidar_service.py:47 reads it). The firmware read and update stay robot-only.
 - 11.1, partly: A2 binds the grant to the arguments only. The backlog item asks for the arguments AND the chat id. The chat id never reaches the bridge today: back's callTool(name, args) in bridge/client.ts:182 carries no context.
-- 6.1, partly: B8 wires the headset reply to speech. Piper to PlayStream already exists in skills/tts.py. But apps/bridge/scripts/install_piper.sh:21 still downloads rhasspy/piper 2023.11.14-2, not OHF-Voice/piper1-gpl v1.8.0. Nothing covers that switch.
+- 6.1, partly: B8 wires the headset reply to speech. Piper to PlayStream already exists in skills/tts.py. apps/bridge/scripts/install_piper.sh downloads rhasspy/piper 2023.11.14-2, not OHF-Voice/piper1-gpl v1.8.0. Won't do unless the binary breaks: decision [B] in §2 keeps the pinned rhasspy/piper 2023.11.14-2 binary.
 - 6.5 (M): camera over WebRTC instead of MJPEG. The code needs no robot; checking it needs the Jetson.
 - 6.6: the AEC configuration half of the stand audio kit. The mic purchase is hardware, not code.
 - 6.7 (M, research): benchmark STT on OpenSLR 61, offline.
@@ -1629,7 +1629,7 @@ Done off the robot, each with tests that fail without the fix:
 - ✅ F10, partly: concurrency cancels superseded PR runs; triggers unchanged.
 - ✅ The back tests pass under `--randomize` (`client.test.ts` and `catalogue.test.ts` load private module instances).
 
-Still open off the robot: I1 (arm-link clearance), the heartbeat watchdog, the external-stop watcher (11.3), the shared sport client, the Piper switch to piper1-gpl, and the heavier I4 driver-in-the-loop tests.
+Still open off the robot: I1 (arm-link clearance), the heartbeat watchdog, the external-stop watcher (11.3), the shared sport client, and the heavier I4 driver-in-the-loop tests.
 
 ### Pending robot test
 
