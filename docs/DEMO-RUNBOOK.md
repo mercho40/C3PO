@@ -24,7 +24,7 @@ The lidar is faulted and the hands are dead (`docs/autonomy/hardware-tickets.md`
 4. Start perception on the robot: `c3po perception up perception`.
 5. At **/vr-control**: «1 · Amortiguar» → «2 · Preparar» → lower the gantry until the feet carry weight → «3 · Habilitar marcha». Only FSM **501** walks: check `get_state` before each walk.
 6. Smoke test: say "hola", `wave`, `look`, and `describe_surroundings`, from /chat or /voice.
-7. Battery: read it on the console's topbar chip, and watch it during the day. At the amber «Batería baja» banner (under 25 %), finish the current round, press PARAR, then «1 · Amortiguar» with the robot on the gantry, and charge. At 20 % or less the banner turns red («Batería crítica»), and under 20 % the bridge refuses arm moves and long walks.
+7. Battery: read it on the console's topbar chip, and watch it during the day. At the amber «Batería baja» banner (under 25 %), finish the current round, press PARAR, then «1 · Amortiguar» with the robot on the gantry, and charge. At 20 % or less the banner turns red («Batería crítica»), and under 20 % the bridge refuses `walk_to`, `go_to_object` and the T2 arm tools; gestures and `turn` still run.
 
 ## 2. The loop to show
 
