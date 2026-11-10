@@ -209,6 +209,60 @@ def _body_contacts(twin, side, q):
     return out
 
 
+def _vertices(twin, body, skip=()):
+    """Every collision-geom vertex of `body` in torso_link at the current pose, but for the
+    meshes in `skip` (a cylinder by its two rim circles, which span its hull)."""
+    model, data = twin
+    t = model.body("torso_link").id
+    rt, pt = data.xmat[t].reshape(3, 3), data.xpos[t]
+    out = []
+    for g in range(model.ngeom):
+        if model.geom_bodyid[g] != model.body(body).id or not model.geom_contype[g]:
+            continue
+        if model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:
+            mid = model.geom_dataid[g]
+            if model.mesh(mid).name in skip:
+                continue
+            a, n = model.mesh_vertadr[mid], model.mesh_vertnum[mid]
+            v = model.mesh_vert[a : a + n]
+        else:
+            assert model.geom_type[g] == mujoco.mjtGeom.mjGEOM_CYLINDER
+            r, h = model.geom_size[g][:2]
+            th = np.linspace(0, 2 * np.pi, 256, endpoint=False)
+            ring = np.stack([r * np.cos(th), r * np.sin(th), np.zeros_like(th)], 1)
+            v = np.concatenate([ring + (0, 0, -h), ring + (0, 0, h)])
+        world = v @ data.geom_xmat[g].reshape(3, 3).T + data.geom_xpos[g]
+        out.append((world - pt) @ rt)
+    return np.concatenate(out)
+
+
+def test_the_torso_model_contains_the_torso_meshes(twin):
+    # TORSO_BOX and TORSO_FLANKS must hold every point MuJoCo collides as the torso, or a
+    # clear plan can still touch. The head sits above the arm's workspace and is left out.
+    _pose(twin, {})
+    outside = [p for p in _vertices(twin, "torso_link", skip=("head_link",)) if m._torso_gap(p)]
+    assert not outside, f"{len(outside)} torso vertices outside the model, e.g. {outside[0]}"
+
+
+@pytest.mark.parametrize("side", SIDES)
+def test_each_arm_capsule_contains_its_links_collision_geometry(twin, side):
+    rng = random.Random(7)
+    chain = kinematics.arm_chain(side)
+    for _ in range(5):
+        q = [rng.uniform(lo, hi) for lo, hi in kinematics.limits(side)]
+        _pose(twin, {side: q})
+        hp = kinematics.forward(side, q)
+        pts = (*hp.joint_origins, hp.position)
+        for part, a, b, t0, t1, r in m.ARM_CAPSULES:
+            link = chain[a].name.replace("_joint", "_link")
+            p0, p1 = (np.add(pts[a], np.subtract(pts[b], pts[a]) * t) for t in (t0, t1))
+            ab = p1 - p0
+            v = _vertices(twin, link)
+            t = np.clip((v - p0) @ ab / (ab @ ab), 0.0, 1.0)
+            reach = float(np.linalg.norm(v - (p0 + np.outer(t, ab)), axis=1).max())
+            assert reach <= r, f"{link} ({part}) reaches {reach * 1000:.1f} mm > {r * 1000:.1f}"
+
+
 def test_hanging_and_handover_poses_touch_nothing(twin):
     # Baseline: if these touched, every contact below would be noise from the hulls.
     for side in SIDES:
@@ -217,15 +271,10 @@ def test_hanging_and_handover_poses_touch_nothing(twin):
         assert _body_contacts(twin, side, q) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="TORSO_BOX tests joint points against y=±0.08 m; the torso mesh reaches ±0.097 m at "
-    "belly height and the links have thickness. Every pick here puts an arm link 6-51 mm into "
-    "the torso's hull (an upper bound: MuJoCo collides convex hulls). I1's capsule clearance "
-    "should make this pass; then drop the xfail.",
-)
 @pytest.mark.parametrize("target", PICK_TARGETS)
 def test_pick_plan_keeps_the_arm_out_of_the_body(twin, target):
+    # Every commanded pose, against every mesh hull MuJoCo collides (both arms, legs, head).
+    # Before the capsule check every one of these put an arm link 6-51 mm into the torso.
     steps = _pick(target)
     hits = {}
     for phase, q in ((ph, q) for kind, ph, q in steps if kind == "arm"):

@@ -213,12 +213,18 @@ def test_the_hand_never_sweeps_through_the_desk_on_the_way_to_pre_grasp(target):
     # Robot, 2026-11-05: one slew hanging -> pre-grasp swung the hand into the desk edge.
     # In front of the body the hand stays above the surface + margin; the only way down
     # is straight down onto pre-grasp, over the object's footprint.
+    # The tuck is the closest TUCK_X_M point the arm clears the torso from: the desk incident's
+    # thermos still rises at the first; REACHABLE's 0.16 m tuck folds the wrist into the chest.
     steps = m.plan_pick("right", target, "power", HANGING)
     pre = kinematics.forward("right", last_q(steps, "pre_grasp")).position
+    edge = kinematics.forward("right", last_q(steps, "clear")).position[0]
     clear_z = target[2] + m.SURFACE_MARGIN_M
     tol = kinematics.POS_TOL_M
+    assert min(abs(edge - x) for x in m.TUCK_X_M) < tol
+    if target == THERMOS:
+        assert edge < m.TUCK_X_M[0] + tol
     for x, y, z in arm_path(steps, HANGING, "pre_grasp"):
-        if x > m.TUCK_X_M[0] + tol:
+        if x > edge + tol:
             descending = math.hypot(x - pre[0], y - pre[1]) < 0.02 and z >= pre[2] - tol
             assert z >= clear_z - tol or descending, (x, y, z)
 
@@ -229,7 +235,7 @@ def test_the_place_retreat_lifts_clear_before_pulling_back():
     withdraw = [kinematics.forward("right", s[2]).position for s in steps if s[1] == "withdraw"]
     assert retreat[-1][2] >= REACHABLE[2] + m.SURFACE_MARGIN_M - kinematics.POS_TOL_M
     assert all(p[2] >= retreat[-1][2] - kinematics.POS_TOL_M for p in withdraw)
-    assert withdraw[-1][0] <= m.TUCK_X_M[0] + kinematics.POS_TOL_M  # back beside the body
+    assert withdraw[-1][0] <= m.TUCK_X_M[-1] + kinematics.POS_TOL_M  # back toward the body
 
 
 def test_a_hand_already_low_in_front_is_refused_not_swept_back():
@@ -239,10 +245,29 @@ def test_a_hand_already_low_in_front_is_refused_not_swept_back():
 
 
 def test_a_path_through_the_torso_is_refused():
-    # Right arm placing just across the midline: the wrist sat at (0.01, -0.03, 0.08) m above
-    # it and withdrawing drove it further in, inside the chest. The workspace box allows it.
+    # Right arm placing just across the midline, close in: withdrawing drives the forearm into
+    # the chest. The workspace box allows it.
     with pytest.raises(m.PlanError, match=r"\d+/\d+: the \w+ would pass through the torso"):
-        m.plan_place("right", (0.12, 0.12, 0.0), None)
+        m.plan_place("right", (0.14, 0.05, 0.05), None)
+
+
+def test_the_hanging_arms_clear_the_torso():
+    m._check_torso("right", "hanging", [HANGING])
+    m._check_torso("left", "hanging", [[HANGING[0], -HANGING[1], *HANGING[2:]]])
+
+
+def test_an_upper_arm_folded_along_the_flank_is_refused():
+    # The old tuck for (0.26, -0.30, -0.05): every joint point outside the box, but the upper
+    # arm and forearm 23-44 mm into the torso's hull in the MuJoCo twin.
+    folded = [math.radians(v) for v in (39, 19, 11, -12, -19, -23, -33)]
+    with pytest.raises(m.PlanError, match=r"clear 1/1: the \w+ would pass through the torso"):
+        m._check_torso("right", "clear", [folded])
+
+
+@pytest.mark.parametrize("seed", [HANGING, None])
+def test_the_tuck_holds_the_upper_arm_out_from_the_body(seed):
+    tuck = last_q(m.plan_pick("right", REACHABLE, "power", seed), "clear")
+    assert tuck[1] <= -min(m.SHOULDER_OUT_RAD) + 1e-9  # URDF right shoulder roll: - is out
 
 
 def test_every_planned_pose_is_inside_the_urdf_limits():
@@ -457,7 +482,7 @@ def test_a_height_no_walk_can_fix_says_so():
 async def test_auto_side_tries_the_other_arm_before_giving_up(monkeypatch, real):
     _arm, hand = real
     hand.sides = ("left", "right")
-    see(monkeypatch, cup(p=(0.32, -0.01, -0.03)))
+    see(monkeypatch, cup(p=(0.30, 0.0, 0.05)))  # right's side (y <= 0), the left arm reaches
     plan = m.plan_pick
 
     def right_fails(side, *a):

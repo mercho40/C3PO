@@ -21,7 +21,8 @@ Added here, because these skills move the arm without a human choosing each join
   memory: memory is where the wallet *was*, and a grasp needs where it *is*.
 
 Not here (say so instead of pretending): wrist-camera refinement, force sensing (the BrainCo
-reports no reliable contact), self-collision beyond the box, regrasp on a miss. The caller
+reports no reliable contact), self-collision beyond arm-vs-torso (ARM_CAPSULES), regrasp on a
+miss. The caller
 checks success with `verify("¿tenés <x> en la mano?")`.
 
 SIM_MODE=stub returns the full plan (waypoints, IK errors) without moving, so the planner and
@@ -31,10 +32,11 @@ the eval suite can exercise pick/place on a laptop.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import math
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypeVar
 
 import structlog
@@ -99,15 +101,36 @@ SHOULDER_BACK_RAD = 0.7
 #: the model how to walk when a target is out of reach.
 COMFORT_X_M = 0.30
 COMFORT_Y_OUT_M = 0.05
-#: The torso no arm point may enter, torso_link (x, y, z) ranges. x and z: the URDF torso
-#: inertia's equivalent solid box (0.11 x 0.18 x 0.27 m about the COM at z=0.15), rounded out,
-#: z down to the waist. y: that box says +-0.09 (the shoulder joints sit at +-0.10), but the
-#: tuck pose for a target far out to the side passes the forearm 0.088 m off the midline.
-#: shortcut: y narrowed to 0.08, points only, no link radius, no mesh (not vendored); measure
-#: the torso's flank at belly height and use the STL hull with capsule arm links once a
-#: crossing is seen to clip, or the tuck pose grazes the torso on the robot.
-TORSO_BOX = ((-0.06, 0.06), (-0.08, 0.08), (-0.05, 0.30))
-_ARM_POINTS = ("elbow", "wrist", "wrist", "wrist", "hand")  # joint_origins[3:] and the TCP
+#: The torso no arm link may come near, torso_link (x, y, z) ranges: the bounds of MuJoCo
+#: Menagerie unitree_g1's torso_link collision meshes (torso_link_rev_1_0.STL + logo_link),
+#: rounded out 1 mm. Not head_link: it starts at z=0.28, above and behind the hand's workspace.
+TORSO_BOX = ((-0.070, 0.085), (-0.109, 0.109), (-0.010, 0.313))
+#: The same meshes narrow away from the shoulders: |y| stays under the line through each pair
+#: of (z, |y|) points, edges of their convex hull seen from the front, +1 mm. The box alone
+#: puts the belly 1 cm wider than it is, and the upper arm hangs only ~2 cm off it.
+TORSO_FLANKS = (
+    ((0.008, 0.069), (0.063, 0.093)),
+    ((0.083, 0.098), (0.218, 0.109)),
+    ((0.218, 0.109), (0.246, 0.104)),
+)
+#: Each arm link as a capsule that holds its Menagerie collision geometry: (name, a, b, t0, t1,
+#: radius m), the t0..t1 stretch of the line from point a to point b of kinematics.forward
+#: (joint_origins 0-6, then 7 = the TCP). tests/sim checks every vertex is inside.
+#: shortcut: the hand is wrist_yaw_link's radius out to the TCP (the model's hand has no
+#: collision geom); measure the BrainCo Revo2's palm and widen "hand" if it is thicker.
+ARM_CAPSULES = (
+    ("shoulder", 1, 2, 0.3, 0.7, 0.036),  # shoulder_roll_link: a 0.03 m cylinder
+    ("upper_arm", 2, 3, 0.0, 1.0, 0.049),  # shoulder_yaw_link, elbow motor bulge inward
+    ("forearm", 3, 4, 0.0, 1.0, 0.044),  # elbow_link
+    ("wrist", 4, 5, 0.0, 1.0, 0.031),  # wrist_roll_link
+    ("wrist", 5, 6, 0.0, 1.0, 0.035),  # wrist_pitch_link
+    ("hand", 6, 7, 0.0, 1.0, 0.031),  # wrist_yaw_link
+)
+#: The first pose of a pick (the tuck) or place (above) holds the upper arm at least this far
+#: out from the body (shoulder roll; URDF: out is negative for the right arm), tried in order.
+#: IK's nearest tuck had it 5-20° in: the upper arm folded back along the flank, into the
+#: torso on every pick in the twin. 0.7 plans the low and far picks, 0.35 the places.
+SHOULDER_OUT_RAD = (0.7, 0.35)
 
 
 class PlanError(Exception):
@@ -150,11 +173,12 @@ def _solve(
     p: tuple[float, float, float],
     pointing: tuple[float, float, float] | None,
     seed: list[float] | None,
+    joint_limits: list[tuple[float, float]] | None = None,
 ) -> tuple[float, ...]:
     why = in_workspace(side, p)
     if why:
         raise PlanError(f"{name}: {why}")
-    r = kinematics.solve(side, p, pointing, seed=seed)
+    r = kinematics.solve(side, p, pointing, seed=seed, joint_limits=joint_limits)
     if not r.reached:
         raise PlanError(
             f"{name}: out of reach (closest {r.position_error_m * 100:.0f} cm off, "
@@ -242,15 +266,43 @@ def _check_clear(
             )
 
 
+def _torso_gap(p: Sequence[float]) -> float:
+    """How far `p` is outside TORSO_BOX and TORSO_FLANKS, 0 inside: never more than the true
+    distance (exact off the box faces), and convex in `p`."""
+    gap = math.hypot(*(max(lo - v, 0.0, v - hi) for v, (lo, hi) in zip(p, TORSO_BOX, strict=True)))
+    for (za, ya), (zb, yb) in TORSO_FLANKS:
+        k = (yb - ya) / (zb - za)
+        gap = max(gap, (abs(p[1]) - ya - k * (p[2] - za)) / math.hypot(1.0, k))
+    return gap
+
+
+def _segment_gap(a: Sequence[float], b: Sequence[float]) -> float:
+    """The least _torso_gap along a -> b. Convex along the segment, so a ternary search."""
+
+    def at(t: float) -> float:
+        return _torso_gap([u + (v - u) * t for u, v in zip(a, b, strict=True)])
+
+    lo, hi = 0.0, 1.0
+    for _ in range(25):  # (2/3)^25 of a link: under 0.1 mm
+        m1, m2 = lo + (hi - lo) / 3, hi - (hi - lo) / 3
+        lo, hi = (lo, m2) if at(m1) < at(m2) else (m1, hi)
+    return at((lo + hi) / 2)
+
+
 def _check_torso(side: Side, name: str, qs: list[tuple[float, ...]]) -> None:
-    """PlanError if any pose puts the elbow, wrist or hand inside TORSO_BOX."""
+    """PlanError if any pose brings an arm link's capsule (ARM_CAPSULES) into the torso."""
     for i, q in enumerate(qs):
         hp = kinematics.forward(side, q)
-        for part, p in zip(_ARM_POINTS, (*hp.joint_origins[3:], hp.position), strict=True):
-            if all(lo < v < hi for v, (lo, hi) in zip(p, TORSO_BOX, strict=True)):
+        pts = (*hp.joint_origins, hp.position)
+        for part, a, b, t0, t1, r in ARM_CAPSULES:
+            ends = [
+                [u + (v - u) * t for u, v in zip(pts[a], pts[b], strict=True)] for t in (t0, t1)
+            ]
+            gap = _segment_gap(*ends) - r
+            if gap < 0:
                 raise PlanError(
-                    f"{name} {i + 1}/{len(qs)}: the {part} would pass through the torso at "
-                    f"({p[0]:.2f}, {p[1]:.2f}, {p[2]:.2f}) m — pick a target further out "
+                    f"{name} {i + 1}/{len(qs)}: the {part} would pass through the torso "
+                    f"({-gap * 1000:.0f} mm into its clearance) — pick a target further out "
                     f"on the {side} arm's own side"
                 )
 
@@ -266,12 +318,21 @@ def _joint_path(q_from: list[float], q_to: tuple[float, ...]) -> list[tuple[floa
     ]
 
 
+def _arm_out_limits(side: Side, out: float) -> list[tuple[float, float]]:
+    """kinematics.limits with the shoulder roll held `out` rad out from the body."""
+    lim = kinematics.limits(side)
+    lo, hi = lim[1]
+    lim[1] = (max(lo, out), hi) if side == "left" else (lo, min(hi, -out))
+    return lim
+
+
 def _transit(
     side: Side,
     pre: tuple[float, float, float],
     d: kinematics.Vec3,
     clear_z: float,
     seed: list[float] | None,
+    out: float,
 ) -> list[tuple[str, tuple[float, ...]]]:
     """From wherever the arm is to `pre` without sweeping through the surface:
     rise close to the body ("clear"), forward above the surface ("over"), straight down
@@ -285,7 +346,7 @@ def _transit(
     for edge in sorted({min(x, pre[0]) for x in TUCK_X_M}):
         tuck = (edge, y, top)
         try:
-            q_tuck = _solve(side, "clear", tuck, d, seed)
+            q_tuck = _solve(side, "clear", tuck, d, seed, _arm_out_limits(side, out))
             if seed is None:
                 rise = [q_tuck]  # no measured pose (stub, tests): nothing to rise from
             else:
@@ -295,6 +356,7 @@ def _transit(
                 # forearm swings out horizontally at desk height (robot, 2026-11-05).
                 back = list(seed)
                 back[0] = max(seed[0], q_tuck[0], SHOULDER_BACK_RAD)  # URDF pitch: + is back
+                back[1] = q_tuck[1]  # and out: pitched back, the hanging arm passes the flank
                 bent = (back[0], *q_tuck[1:])
                 rise = (
                     _joint_path(seed, tuple(back))
@@ -329,17 +391,17 @@ def plan_pick(
     """
     clear_z = target[2] + SURFACE_MARGIN_M
     errors = []
-    for tilt in APPROACH_TILTS_DEG:
+    for out, tilt in itertools.product(SHOULDER_OUT_RAD, APPROACH_TILTS_DEG):
         d = _approach(side, target, tilt)
         grasp = _offset(target, d, GRASP_DEPTH_OFFSET_M)
         pre = _offset(grasp, d, -PREGRASP_BACK_M)
         lifted = (grasp[0], grasp[1], grasp[2] + LIFT_M)
         try:
-            transit = _transit(side, pre, d, clear_z, seed)
+            transit = _transit(side, pre, d, clear_z, seed, out)
             approach = _line(side, "grasp", pre, grasp, d, transit[-1][1])
             lift = _line(side, "lift", grasp, lifted, d, approach[-1])
         except PlanError as exc:
-            errors.append(f"tilt {tilt:.0f}°: {exc}")
+            errors.append(f"tilt {tilt:.0f}°, shoulder {math.degrees(out):.0f}° out: {exc}")
             continue
         return [
             ("hand", "open", "open"),
@@ -358,10 +420,22 @@ def plan_place(
     """Lower onto `target`, open, then the reverse of a pick's transit: straight up clear of
     the surface ("retreat"), back toward the body ("withdraw"). Releasing the arm afterwards
     lowers it beside the body, behind the desk edge."""
+    errors = []
+    for out in SHOULDER_OUT_RAD:
+        try:
+            return _plan_place(side, target, seed, out)
+        except PlanError as exc:
+            errors.append(f"shoulder {math.degrees(out):.0f}° out: {exc}")
+    raise PlanError("; ".join(errors))
+
+
+def _plan_place(
+    side: Side, target: tuple[float, float, float], seed: list[float] | None, out: float
+) -> list[Step]:
     d = _approach(side, target, 0.0)
     above = (target[0], target[1], target[2] + LIFT_M)
     clear = (target[0], target[1], max(above[2], target[2] + SURFACE_MARGIN_M))
-    q_above = _solve(side, "above", above, d, seed)
+    q_above = _solve(side, "above", above, d, seed, _arm_out_limits(side, out))
     _check_torso(side, "above", [q_above])
     down = _line(side, "down", above, target, d, q_above)
     up = _line(side, "retreat", target, clear, d, down[-1])
