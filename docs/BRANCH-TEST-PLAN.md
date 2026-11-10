@@ -117,7 +117,7 @@ ssh c3po-wire true || ssh c3po true          # cable (192.168.77.1) or Wi-Fi (g1
 ssh c3po                                     # or c3po-wire; the rest runs on the robot
 cd ~/c3po
 git status -sb                               # note the branch; local changes? stop and ask
-mkdir -p ~/.c3po && git rev-parse HEAD | tee ~/.c3po/previous-deploy   # what to roll back to
+mkdir -p ~/.c3po && [ -f ~/.c3po/deployed ] || git rev-parse HEAD > ~/.c3po/previous-deploy  # bare sha; later installs record it
 git fetch origin && git checkout integrate/october && git pull
 grep BRIDGE_HOST scripts/robot/c3po-bridge.service  # must say 127.0.0.1
 ./scripts/robot/c3po install && c3po restart
@@ -224,9 +224,11 @@ until both feet bear weight (rope slack, still attached), wait ~5 s** →
 
 ## G. Rollback
 
-As in `docs/OPERATIONS.md` §5 ("Rollback"), to the commit in `~/.c3po/previous-deploy`.
+As in `docs/OPERATIONS.md` §5 ("Rollback"), to the commit in `~/.c3po/previous-deploy`
+(a bare sha: `git checkout --detach "$(cat ~/.c3po/previous-deploy)"`).
 
-After a rollback the **old** `run_c3po` is back, and it stops gemm unasked:
+After a rollback to a commit from before this branch (main @ 73d56a0), the **old**
+`run_c3po` is back, and it stops gemm unasked:
 no `c3po up` / `c3po start` without the other team's OK. The bridge also binds
 `0.0.0.0` again.
 

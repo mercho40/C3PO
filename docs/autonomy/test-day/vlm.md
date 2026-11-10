@@ -178,3 +178,25 @@ Then check that blurring does not break the tools. With people in view:
 `look(question="¿Cuántas personas hay?")` still counts them, and `look` still reports a raised
 hand or a wave. If recall is poor or `look` stops seeing people, write it down here. Do not turn
 the blur off on the free tier (BACKLOG §12).
+
+**Measure it with the script (6f3a730).** Keep the `sharp.jpg` frames (rename them
+`expo_001.jpg`, …) in one directory, and write a `labels.csv` beside them with one row per
+face, box corners in that image's pixels, and an empty row for a frame with no face:
+
+```csv
+file,x0,y0,x1,y1
+expo_001.jpg,812,240,880,318
+expo_002.jpg,,,,
+```
+
+Copy the directory to the robot, then run the same script there, so the latency is the
+Orin's:
+
+```sh
+cd ~/c3po/apps/bridge && uv run python scripts/face_blur_eval.py --images ~/blur-frames
+```
+
+**Expect:** first the distance limit (on the 1920 px videohub feed a 14 cm face is never
+found past about 3.2 m), then recall, precision and the `blur_faces` latency. Record all
+three. Faces further away than the limit are missed by design: note how many visitors stood
+there. Delete the frames from the robot and the Mac afterwards: they show real people.
