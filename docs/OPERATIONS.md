@@ -1093,9 +1093,9 @@ the robot say a completed headset reply (B8, default off).
 
 Added on 2026-11-10:
 
-- `C3PO_ALLOW_PICK=1` in `apps/bridge/.env` (e120012, with the arms work): `pick` and
+- `C3PO_ALLOW_PICK=1` in `apps/bridge/.env` (e120012): `pick` and
   `place` refuse in `SIM_MODE=real` with `pick_disabled_until_gantry_test` unless it is set.
-  Set it only for the gantry touch check (test-day `manipulation.md`), after I1. Restart
+  Set it only for the gantry touch check (test-day `manipulation.md`). I1 (dba2a35) keeps every arm link clear of the torso in the planner, and common targets need the desk edge at least 0.24 m in front of the torso. Restart
   the bridge after a change.
 - `C3PO_VISION_CLASS_CONF` in `~/.c3po/perception.env`, quoted, for example
   `C3PO_VISION_CLASS_CONF="cooker=0.6,thumbtack=off"`: a confidence bar per class, above `C3PO_VISION_CONF`.

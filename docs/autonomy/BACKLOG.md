@@ -51,7 +51,7 @@ engine, and Gemini `look`.
 - [ ] Spoken "para" during a walk (after 1.1).
 - [ ] VR «Hablar con el robot» on the Quest 🥽: the mic inside immersive-vr, B/Y and grip indices, panel readability, transcription quality.
 - [ ] Walking with the headset's arms engaged while the waist is held. Never tried.
-- [ ] `pick` / `place` end to end (needs the hand, §5). Only after I1: until then they refuse on the robot unless `C3PO_ALLOW_PICK=1` (e120012, on work2/arms).
+- [ ] `pick` / `place` end to end (needs the hand, §5). I1 is done (dba2a35); they still refuse on the robot unless `C3PO_ALLOW_PICK=1` (e120012) until the gantry touch check.
 - [ ] Person rule against a tape-measured person (after the pitch fix).
 - [ ] `safety.md` step 3 (kill the bridge mid-walk) and step 4 (`soft_stop`; it now also cancels the Nav2 goal, 358de2f).
 - [ ] Re-run the nav image build (cut off by the battery).
@@ -83,14 +83,14 @@ engine, and Gemini `look`.
 
 ## 5. Arms and hands 🟡
 
-| #   | Item                                                                                                                                                                                                                                                                                                       | Size |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| 5.1 | **Right BrainCo hand doesn't answer on any ttyUSB.** Check power and the wrist connector; try the official `unitreerobotics/brainco_hand_service`.                                                                                                                                                         | S 🤖 |
-| 5.2 | Measure `TELEOP_BRAINCO_OPEN_AT` (read the state with the hand visibly open), then `set_hand`, then `pick`.                                                                                                                                                                                                | S 🤖 |
-| 5.3 | `pin` + `pink` + `coal`: 6-D IK with roll control and self/table collision checks (audit §4).                                                                                                                                                                                                              | M    |
-| 5.4 | ✅ partly (I4): twin green in CI (`tests/sim`, Menagerie G1 rev 98a70c5, mujoco 3.9.0 `sim` extra); the driver-in-the-loop test is still open, being built with I1 on work2/arms — MuJoCo Menagerie G1 twin as the arm test harness. It would have caught the release and sweep bugs before the robot did. | M    |
-| 5.5 | Wrist joint signs are unverified. Confirm them with a firmware gesture plus `arm_state`, like today's shoulder check.                                                                                                                                                                                      | S 🤖 |
-| 5.6 | Gestures from text (Kimodo-G1, offline, replayed arm-only through the arm_sdk caps).                                                                                                                                                                                                                       | L 🔵 |
+| #   | Item                                                                                                                                                                                                                                                                                                            | Size |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 5.1 | **Right BrainCo hand doesn't answer on any ttyUSB.** Check power and the wrist connector; try the official `unitreerobotics/brainco_hand_service`.                                                                                                                                                              | S 🤖 |
+| 5.2 | Measure `TELEOP_BRAINCO_OPEN_AT` (read the state with the hand visibly open), then `set_hand`, then `pick`.                                                                                                                                                                                                     | S 🤖 |
+| 5.3 | `pin` + `pink` + `coal`: 6-D IK with roll control and self/table collision checks (audit §4).                                                                                                                                                                                                                   | M    |
+| 5.4 | ✅ partly (I4): twin green in CI (`tests/sim`, Menagerie G1 rev 98a70c5, mujoco 3.9.0 `sim` extra); the driver-in-the-loop test runs every pick through the real arm driver (51dd094) — MuJoCo Menagerie G1 twin as the arm test harness. It would have caught the release and sweep bugs before the robot did. | M    |
+| 5.5 | Wrist joint signs are unverified. Confirm them with a firmware gesture plus `arm_state`, like today's shoulder check.                                                                                                                                                                                           | S 🤖 |
+| 5.6 | Gestures from text (Kimodo-G1, offline, replayed arm-only through the arm_sdk caps).                                                                                                                                                                                                                            | L 🔵 |
 
 ## 6. Voice and VR 🟡
 

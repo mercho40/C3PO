@@ -64,7 +64,7 @@ _Why:_ The docs describe what merged, so they come after the code. OPERATIONS.md
 
 ### Wave 5
 
-- ⚪ I1 / I2 (kinematics plus manipulation, after D5). I1 is being built on work2/arms; until it lands, `pick` and `place` refuse on the robot unless `C3PO_ALLOW_PICK=1` (e120012, same branch)
+- 🟢 I1 (dba2a35, 51dd094) · ⚪ I2 (kinematics plus manipulation, after D5). `pick` and `place` refuse on the robot unless `C3PO_ALLOW_PICK=1` (e120012) until the gantry touch check
 - 🔵 I4 sim harness (pyproject/uv.lock rebased on F4): the arm twin runs in CI (82d9f0c); then I17, then I18 (after 5.5 on the robot)
 - Superseded: I5 then I6 (toolApproval). One-press Confirmar (76995ad, 2026-11-05) fixed the same problem; see I5.
 - 🟢 I7 (6125923, §11); ⚪ then I9 or I8
@@ -1222,9 +1222,9 @@ _Notes:_ The whole package is documentation, so no code, test suite or invariant
 | 4.6     | yes   | BLOCKED. ROBOT-API.md:234-241: slam_operate (1801/1802/1804/1102/1901) needs both the unitree_slam AND lidar_driver services switched on, and the Mid-360S is faulted (4.1). ROBOT-API.md:1899 says 1102 pose navigation is a second motion commander. scripts/robot/_common.sh:247 lists unitree_slam in OTHER_COMMANDER_PATTERNS, so `c3po up` refuses while it runs.                                                                                                              |
 | 5.6     | yes   | There is no Kimodo code or doc in the repo (only BACKLOG.md and audit §7 #10). Gestures today are firmware presets (skills/gesture.py) or move_arm through arm_pose.slew. derive_tier (skill_meta.py:65-70) makes gesture with danger != low into T2. Kimodo exists upstream (nv-tlabs/kimodo, checkpoints Kimodo-G1-RP-v1 and Kimodo-G1-SEED-v1, MuJoCo qpos CSV output), per a web check; licence and CSV layo                                                                     |
 
-#### ⚪ I1: Capsule self/table clearance check in the pure-Python arm planner `M`
+#### 🟢 I1: Capsule self/table clearance check in the pure-Python arm planner `M`
 
-_Being built on work2/arms, with the fence that keeps `pick` and `place` refused on the robot until `C3PO_ALLOW_PICK=1` (e120012). Open in this branch._
+_I1 is done (dba2a35): every arm link is a capsule fitted to the Menagerie collision meshes, checked against the torso box plus its flanks (y ±0.109 m) on every commanded pose, and the tuck holds the shoulder out. The twin now passes all six picks (31 sim tests, the strict xfail removed), and 51dd094 runs each pick through the real arm driver frame by frame. `pick` and `place` still refuse on the robot unless `C3PO_ALLOW_PICK=1` (e120012) until the gantry touch check passes._
 
 - **Backlog:** 5.3 · **Depends on:** —
 - **Files:** `apps/bridge/src/bridge/kinematics.py`, `apps/bridge/src/bridge/skills/manipulation.py`, `apps/bridge/tests/test_kinematics.py`, `apps/bridge/tests/test_manipulation.py`
@@ -1251,9 +1251,9 @@ _Being built on work2/arms, with the fence that keeps `pick` and `place` refused
 - **Done when:** `uv sync --extra ik` works on the Mac and the Orin. Import time and RSS are measured on the Orin and recorded. The planner chooses pink only when asked.
 - **Risk:** About 100 MB of compiled wheels (cmeel-boost 36 MB, scipy 36 MB, assimp 14 MB, pin 9 MB) in the process that owns the stop, which kinematics.py:4-6 argues against. numpy>=2 is required by cmeel-boost (the bridge has numpy 2.4.4, which is fine). Wheel install on the JP5 uv Python is unverified.
 
-#### 🔵 I4: MuJoCo Menagerie G1 arm twin as a pytest harness (no DDS, no SIM_MODE change) `M`
+#### 🟢 I4: MuJoCo Menagerie G1 arm twin as a pytest harness (no DDS, no SIM_MODE change) `M`
 
-_Partly done: the twin runs in CI (82d9f0c; run 42433939292: 16 passed, 6 xfailed). The driver-in-the-loop test is still open, being built with I1 on work2/arms._
+_Done: the twin runs in CI (82d9f0c), and the driver-in-the-loop test runs every pick through the real `ArmSdkDriver` with a fake publisher (51dd094). With I1 it is 31 passed, no xfail._
 
 - **Backlog:** 5.4 · **Depends on:** —
 - **Files:** `apps/bridge/pyproject.toml`, `apps/bridge/uv.lock`, `apps/bridge/scripts/fetch_menagerie_g1.sh`, `apps/bridge/.gitignore`, `apps/bridge/tests/sim/conftest.py`, `apps/bridge/tests/sim/plant.py`, `apps/bridge/tests/sim/test_arm_twin.py`, `.github/workflows/ci.yml`
@@ -1603,9 +1603,9 @@ Pending for the next robot session, in order:
 - Deploy bridge then back; rebuild the vision image (near_m); restart perception on it.
 - go_to_object to the chair: tape-measure the gap against `clearance_m`.
 - `arm_state` with the arm hanging, then by hand: shoulder pitch + must swing the arm BACK (URDF). If it is the other way, the "clear" phase swings the hand forward: stop.
-- First pick on the gantry, nobody within 1 m, ~0.3 m clear behind the right arm: the hand must stay above the desk until it is over the object. The desk edge must be ≥ 0.16 m in front of the torso.
+- First pick on the gantry, nobody within 1 m, ~0.3 m clear behind the right arm: the hand must stay above the desk until it is over the object. The desk edge must be ≥ 0.24 m in front of the torso (≥ 0.16 m before I1, dba2a35).
 - Confirm flow: one Confirmar per pick from /chat, from the /voice panel, and a spoken «confirmo» on the Quest.
-- Torso box (`manipulation.TORSO_BOX`, y narrowed to ±0.08 m from the inertia box's ±0.09): with a tape, measure the torso's half-width at belly height. If it is ≥ 0.09 m, widen the box and move the far-side test target (0.26, -0.30, -0.05). Watch the tuck pose on that side: the forearm passes ~0.088 m from the midline.
+- Torso model (`manipulation.TORSO_BOX` y ±0.109 m plus `TORSO_FLANKS`, from the Menagerie meshes since dba2a35): with a tape, check the torso's half-width at belly height is no wider than the model. Measure the BrainCo palm: if it is thicker than 0.031 m, widen the hand capsule in `ARM_CAPSULES`. Watch the shoulder-out tuck: the elbow now juts out to the side.
 - verify now runs in back on the school vision model (Gemini only for find_object's pointing): after a simulated pick, check that `verify('¿la mano derecha sostiene la taza?')` answers no, with a reason.
 - E2/E3 leftovers: chair moved mid-walk, covered chair → target_lost.
 
@@ -1668,7 +1668,7 @@ Done off the robot, each with tests that fail without the fix. Stop and safety:
 - ✅ `soft_stop` cancels the Nav2 goal, like `stop_everything` (358de2f). `look_around` is a registry task: `cancel_task` or `soft_stop` ends it mid-pause, and mid-turn (2e7153e, 9c41e17).
 - ✅ A confirmation card from before PARAR cannot run after «Reanudar», and a grant that fails after PARAR does not put its card back (ed438e8, 6554e27). Pending cards are keyed by owner and call id (15891f6). A failed grant leaves the card usable as «Reintentar» (af94892).
 - ✅ `walk_to` and `turn` stop with `pose_stale` when odometry freezes (0e60c9e).
-- ✅ Walks refuse with `arm_held` while this process holds the arms on `rt/arm_sdk`; a zero `walk_velocity` is a stop and is never refused (b029ff7, 0ffe568). The other half, arm skills yielding to the headset, is on work2/arms (7e11216), not merged here.
+- ✅ Walks refuse with `arm_held` while this process holds the arms on `rt/arm_sdk`; a zero `walk_velocity` is a stop and is never refused (b029ff7, 0ffe568). The other half: arm skills and `move_arm` refuse while the headset drives (7e11216).
 - ✅ Walks refuse with `fsm_not_walkable` in a fresh non-walk FSM (802), and the headset pad no longer calls 802 walkable (d8de62f, 0f725d2).
 - ✅ One velocity commander: an operator `walk_velocity` cancels a running `walk_to`, `turn`, `navigate_to` or `look_around` (decision 11.6b), closes the Nav2 gate first when it preempts `navigate_to`, and the other walks refuse with `walk_task_active`. A running `navigate_to` goal no longer makes `go_to_object` refuse (bd00b8c, 64725f7, a120908, 90ca6cf).
 - ✅ The lidar rule zeroes Nav2's cmd_vel only. `go_to_object`'s camera walk gets zero unless a world summary ≤ 1 s old says `detector_online`, whatever `SAFETY_PERSON_RULE` and `SAFETY_STALE_POLICY` say; it no longer needs the lidar (1bd2637, 01074e6, 6d7dd0f). This was a regression from d6acd8b.
@@ -1680,7 +1680,8 @@ Done off the robot, each with tests that fail without the fix. Stop and safety:
 - ✅ Sign-in is rate limited per real client address (2afa2d1). The sign-up page is gone (90f724c).
 - ✅ `smoke-vision.ts` uploads the face-blurred frame (5f5bd5f). `smoke-agent.ts` reaches the gateway over https (d2993b2); which gateway host is right is still open.
 - ✅ Turn, the FSM wait and the state sampler's ages use the monotonic clock (2a96f35).
-- 🔵 "No pick until I1" is enforced in code: `pick` and `place` refuse in `SIM_MODE=real` with `pick_disabled_until_gantry_test` unless `C3PO_ALLOW_PICK=1` (e120012). It is on work2/arms with the planning-off-the-loop fix (6fccfc0), not merged here yet. I1 and the I4 driver-in-the-loop test are still being built there.
+- ✅ `pick` and `place` refuse in `SIM_MODE=real` with `pick_disabled_until_gantry_test` unless `C3PO_ALLOW_PICK=1` (e120012). Planning runs off the event loop, and a PARAR during planning finds the task (6fccfc0).
+- ✅ I1 is done (dba2a35): every arm link is a capsule fitted to the Menagerie collision meshes, checked against the torso box plus its flanks (y ±0.109 m) on every commanded pose, and the tuck holds the shoulder out. The twin now passes all six picks (31 sim tests, the strict xfail removed), and 51dd094 runs each pick through the real arm driver frame by frame. `pick` and `place` still refuse on the robot unless `C3PO_ALLOW_PICK=1` (e120012) until the gantry touch check passes. Common targets now need the desk edge at least 0.24 m in front of `torso_link` (a 0.16 m tuck folds the wrist into the chest). A refused pick can take about twice as long to plan (two shoulder settings).
 
 Expo and capability:
 
@@ -1709,7 +1710,7 @@ Not done on purpose: E5's pure part (the depth PointCloud2), which waits for the
 
 Docs in the same pass: the runbooks agree on deploy and tunnel (6b82846), I5/I6 and backlog 7.1 are superseded (0482fb5), the plan and backlog statuses (7197a94, ac11033, bcbaca8, 0a11076), D10 in DECISIONS (c8f0b3c), deploying `feat/autonomy` with `main` merged in (9ed4b1c), and the test-day rows for §10 (cc906cf, 71977d0).
 
-Still open off the robot: I1 (arm-link clearance) and the I4 driver-in-the-loop test (work2/arms); the heartbeat watchdog; E5–E8 (depth-only Nav2, a decision first); a separate short-timeout velocity client for the stop, only if the ack latency below says it is needed; the AI gateway host; FAST-LIO `blind`; 8.5 (the `operador@c3po.local` password); and F10's push triggers.
+Still open off the robot: the heartbeat watchdog; E5–E8 (depth-only Nav2, a decision first); a separate short-timeout velocity client for the stop, only if the ack latency below says it is needed; the AI gateway host; FAST-LIO `blind`; 8.5 (the `operador@c3po.local` password); and F10's push triggers.
 
 ### Pending robot test (third pass)
 
