@@ -223,6 +223,19 @@ def stop_motion_sync(height: float = DEFAULT_HEIGHT, duration_s: float = 0.4) ->
         except Exception as exc:
             errors.append(exc)
 
+    if SIM_MODE == "real":
+        from bridge.sdk import g1_rpc
+
+        # The client's first Init takes >= 0.7 s. Built inside the window, the
+        # whole burst queued on it and every ack landed past the grace: a
+        # standing robot that heard the stop was damped. The first setpoint
+        # waited on this Init before too. A failure here is left to each
+        # setpoint, which retries it and reports it.
+        try:
+            g1_rpc._get_sport_client()
+        except Exception:
+            log.warning("locomotion.stop_burst.client_init_failed", exc_info=True)
+
     threads: list[threading.Thread] = []
     sent = 0
     deadline = time.monotonic() + duration_s
