@@ -58,14 +58,18 @@ real values rather than `UNKNOWN`.
 
 ## 3. Install the simplified stack
 
-Record the pre-deploy commit before pulling. The software e-stop disappears briefly during
-the restart, so keep the physical e-stop in reach and do this before any motion test.
+Record the pre-deploy commit before pulling, as a bare sha, but only while
+`~/.c3po/deployed` does not exist: after that `c3po install` records it itself, and a sha
+written by hand would point a rollback at the commit now running. The software e-stop
+disappears briefly during the restart, so keep the physical e-stop in reach and do this
+before any motion test.
 
 ```bash
 cd ~/c3po
-printf 'previous=%s\n' "$(git rev-parse HEAD)" | tee ~/.c3po/previous-deploy
+mkdir -p ~/.c3po && [ -f ~/.c3po/deployed ] || git rev-parse HEAD > ~/.c3po/previous-deploy
 ./scripts/robot/c3po install
 c3po restart
+cat ~/.c3po/deployed ~/.c3po/previous-deploy   # runs now; what a rollback goes back to
 systemctl is-active c3po-bridge
 curl -sS http://127.0.0.1:8001/telemetry/gate
 c3po status
@@ -82,10 +86,10 @@ Pass if both starts become `active`, the gate reports closed, `c3po status` read
 systemd-owned PID, and stopping the bridge never stops perception containers. Also confirm
 that `~/.local/bin` exposes `c3po` rather than the old lifecycle command set.
 
-If it fails, roll back as in `docs/OPERATIONS.md` §5 ("Rollback"), to the commit recorded
-above (`cut -d= -f2 ~/.c3po/previous-deploy`). Do **not** run the old full-stack installer:
-it would restore the retired perception unit and repair timer. That recipe says when to
-restore the backed-up unit instead.
+If it fails, roll back as in `docs/OPERATIONS.md` §5 ("Rollback"), to the commit in
+`~/.c3po/previous-deploy`. Do **not** run the old full-stack installer: it would restore the
+retired perception unit and repair timer. That recipe says when to restore the backed-up
+unit instead.
 
 This rollback keeps perception foreground-only. Do not continue to sensor or motion tests
 after a rollback.

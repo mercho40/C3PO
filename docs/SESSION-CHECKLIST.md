@@ -35,8 +35,13 @@ git push ssh://unitree@192.168.123.164/home/unitree/c3po feat/autonomy:refs/head
 # On the robot (ssh -t, in your own terminal: install asks for the sudo password):
 cd ~/c3po
 git status -sb               # WHICH BRANCH is this checkout on? Local changes? Stop and ask.
+mkdir -p ~/.c3po && [ -f ~/.c3po/deployed ] || git rev-parse HEAD > ~/.c3po/previous-deploy
 git merge --ff-only incoming # refuses a diverged checkout: stop and look, never force
 ```
+
+The `previous-deploy` line matters only once: until an install has written
+`~/.c3po/deployed`, it records the commit to roll back to, as a bare sha. After that,
+`c3po install` keeps both files itself (`docs/OPERATIONS.md` §5, "Rollback").
 
 What to test on hardware next, in order, is in
 [test-day/return-checklist.md](autonomy/test-day/return-checklist.md).
@@ -330,9 +335,10 @@ headset's PARAR button and the console dispatch the same call.
 
 ## Rollback
 
-The bridge is a git checkout, so rollback is a checkout on the robot, then
-`c3po install` and `c3po restart`. Use the exact commands in `docs/OPERATIONS.md`
-§5 ("Rollback"): pushing an older commit to `incoming` does not work.
+The bridge is a git checkout, so rollback is a checkout on the robot of the commit in
+`~/.c3po/previous-deploy`, then `c3po install` and `c3po restart`. Use the exact commands
+in `docs/OPERATIONS.md` §5 ("Rollback"): pushing an older commit to `incoming` does not
+work.
 
 If the bridge will not start at all, `bridge_sync` now refuses to start it when
 the Unitree SDK patch fails to apply — deliberately. An unpatched SDK gives a
