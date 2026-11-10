@@ -213,7 +213,8 @@ async def test_real_damp_retries_stop_at_the_time_budget(monkeypatch):
 
     # Stopped after the first over-budget attempt rather than using all three.
     assert attempts == 1, f"expected budget to halt retries, got {attempts} attempts"
-    assert result["real_damp_fallback_succeeded"] is False
+    assert result["real_damp_fallback_succeeded"] is None  # sent, not yet answered
+    assert result["real_damp_fallback_unconfirmed"] is True
     assert result["real_damp_fallback_attempts"] == 1
 
 
@@ -472,8 +473,10 @@ async def test_a_damp_that_never_answers_ends_at_the_budget(monkeypatch):
 
     assert time.monotonic() - started < 1.5
     assert damp_calls == [g1_protocol.Mode.DAMP]  # it went out; the answer did not come back
-    assert result["real_damp_fallback_rpc_code"] == 3104
-    assert result["real_damp_fallback_succeeded"] is False
+    # Not False: the console reads that as a failed stop, and this Damp may still land.
+    assert result["real_damp_fallback_rpc_code"] is None
+    assert result["real_damp_fallback_succeeded"] is None
+    assert result["real_damp_fallback_unconfirmed"] is True
 
 
 async def test_a_retry_the_budget_ran_out_on_is_not_counted_as_sent(monkeypatch):
@@ -493,6 +496,9 @@ async def test_a_retry_the_budget_ran_out_on_is_not_counted_as_sent(monkeypatch)
     assert damp_calls == [g1_protocol.Mode.DAMP]
     assert result["real_damp_fallback_attempts"] == len(damp_calls)
     assert result["real_damp_fallback_rpc_code"] == 3104
+    # Answered, and refused: a failure, not an unconfirmed Damp.
+    assert result["real_damp_fallback_succeeded"] is False
+    assert result["real_damp_fallback_unconfirmed"] is False
     assert time.monotonic() - started < 1.5
 
 
@@ -540,4 +546,35 @@ async def test_a_full_default_executor_does_not_hold_the_stop(monkeypatch):
     assert burst_at and burst_at[0] - started < 0.2
     assert damp_calls == [g1_protocol.Mode.DAMP]
     assert result["real_damp_fallback_succeeded"] is True
+    assert result["hands_relaxed"] is True
+    assert result["speech_stop_rpc_code"] == 0
+
+
+async def test_a_slow_hand_release_does_not_hold_the_first_zero_setpoint(monkeypatch):
+    """The hand relax was awaited before the burst started, so a slow BrainCo
+    DDS write held the zero setpoints that actually stop the robot."""
+    from bridge.teleop import hands
+
+    class SlowHandDriver(hands.HandDriver):
+        name = "brainco"
+        sides = ("right",)
+
+        def send(self, side, grip):
+            time.sleep(0.5)
+
+    monkeypatch.setattr(hands, "get_driver", lambda: SlowHandDriver())
+    monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
+    burst_at: list[float] = []
+
+    def burst(**kwargs):
+        burst_at.append(time.monotonic())
+        return 20, 20
+
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", burst)
+    monkeypatch.setattr(g1_rpc, "stop_play", lambda: time.sleep(0.5) or (0, None))
+
+    started = time.monotonic()
+    result = await stop_everything.run()
+
+    assert burst_at and burst_at[0] - started < 0.1
     assert result["hands_relaxed"] is True

@@ -228,6 +228,31 @@ def test_a_slow_reply_inside_the_grace_window_still_counts(monkeypatch):
     assert acked == sent
 
 
+def test_a_burst_on_a_cold_sport_client_is_still_heard(monkeypatch):
+    """The vendor client's first Init takes >= 0.7 s. Built inside the burst's
+    window, every setpoint queued on it, acked came back 0, and the stop damped
+    a standing robot that heard it."""
+
+    class ColdClient:
+        def __init__(self, *a, **kw):
+            time.sleep(0.75)
+
+        def Init(self):
+            pass
+
+        def call_raw(self, api_id, parameter):
+            return 0, ""
+
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "_sport_client", None)
+    monkeypatch.setattr(g1_rpc, "_G1Client", ColdClient)
+
+    sent, acked = _locomotion.stop_motion_sync(height=0.78, duration_s=0.4)
+
+    assert sent >= 10
+    assert acked == sent
+
+
 # --------------------------------------------------------------------------
 # SET_VELOCITY parameter shape
 # --------------------------------------------------------------------------
