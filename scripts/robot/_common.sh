@@ -405,3 +405,39 @@ video_holder_kind() {
         *) echo other ;;
     esac
 }
+
+# --- install bookkeeping ---------------------------------------------------
+
+# Keep the loaded unit as the rollback copy whenever this install moves to a new
+# commit, even with an identical unit, so it is always the unit that ran
+# previous-deploy (record_deploy). Re-installing the same commit keeps it: a
+# second run would overwrite the copy with the unit it just installed.
+backup_unit_if_new_commit() {  # <live unit> <backup> <checkout> <deploy dir>
+    local head
+    sudo test -e "$1" || return 0
+    head="$(git -C "$3" rev-parse HEAD 2>/dev/null)"
+    [ "$(cut -d' ' -f1 "$4/deployed" 2>/dev/null)" = "$head" ] && return 0
+    # A retry after an install that swapped the unit but died before
+    # record_deploy: the live unit is already the new one, so keep the backup.
+    [ "$(cat "$4/unit-backup-for" 2>/dev/null)" = "$head" ] && return 0
+    sudo cp -L "$1" "$2"
+    sudo chown root:root "$2"
+    sudo chmod 0644 "$2"
+    mkdir -p "$4" && printf '%s\n' "$head" >"$4/unit-backup-for"
+}
+
+# <dir>/deployed is "<commit> <UTC time>"; when the commit changes, the commit
+# it replaces becomes <dir>/previous-deploy, bare, the one a rollback checks
+# out. Re-installing the same commit keeps both, for the same reason as the
+# unit backup.
+record_deploy() {  # <checkout> <dir>
+    local commit last
+    commit="$(git -C "$1" rev-parse HEAD)" || return 1
+    mkdir -p "$2"
+    last="$(cut -d' ' -f1 "$2/deployed" 2>/dev/null || true)"
+    if [ -n "$last" ] && [ "$last" != "$commit" ]; then
+        printf '%s\n' "$last" >"$2/previous-deploy"
+        rm -f "$2/deployed"
+    fi
+    [ -f "$2/deployed" ] || printf '%s %s\n' "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$2/deployed"
+}

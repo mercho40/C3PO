@@ -99,6 +99,10 @@ row bridge  "127.0.0.1:8001/telemetry/gate through the tunnel" curl -s -m3 -o /d
 proxy_ok; proxy_rc=$?
 row proxy   "Mac :8899 + robot -> Gemini (HTTP ${proxy_code:-none})" test "$proxy_rc" = 0
 row back    "127.0.0.1:3000/health" curl -sf -m3 -o /dev/null http://127.0.0.1:3000/health
+# back's /health is static, so ask the model itself (this Mac's internet, as back uses it).
+# perl's alarm bounds it: macOS has no `timeout`, and a hung gateway must not hold the table.
+row agent   "AGENT_MODEL makes a tool call (bun apps/back/scripts/smoke-agent.ts)" \
+    perl -e 'alarm shift; exec @ARGV' 60 bun apps/back/scripts/smoke-agent.ts
 web_up() {  # vite's first start takes longer than the 8 s above
     for _ in $(seq 1 15); do curl -s -m3 -o /dev/null http://127.0.0.1:3001 && return 0; sleep 2; done
     return 1

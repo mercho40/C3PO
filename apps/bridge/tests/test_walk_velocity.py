@@ -113,3 +113,149 @@ async def test_cancel_stops_early_and_sends_zero_velocity(monkeypatch):
     assert result["duration_s"] < 1.0
     assert calls[0][0] == 0.1
     assert calls[-1][:3] == (0.0, 0.0, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_refused_while_the_arms_are_held(monkeypatch):
+    from types import SimpleNamespace
+
+    from bridge.teleop import arm_sdk
+
+    calls = _record(monkeypatch)
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: SimpleNamespace(engaged=True))
+
+    result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.2)
+
+    assert (result["status"], result["phase"]) == ("failed", "arm_held")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_stop_still_goes_out_while_the_arms_are_held(monkeypatch):
+    """The headset's stop pulses are zero walk_velocity calls: refusing one refuses a stop."""
+    from types import SimpleNamespace
+
+    from bridge.teleop import arm_sdk
+
+    calls = _record(monkeypatch)
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: SimpleNamespace(engaged=True))
+
+    result = await walk_velocity.run(vx=0.0, vy=0.0, vyaw=0.0, duration_s=0.1)
+
+    assert result["status"] == "completed"
+    assert calls and all(c[:3] == (0.0, 0.0, 0.0) for c in calls)
+
+
+# --- decision 11.6b: deliberate operator input preempts an agent walk -------
+
+
+def _agent_walk(skill: str, events: list[str]):
+    """A registry task like walk_to's, whose loop ends (after its stop burst) when cancelled."""
+    from bridge.skills.task_runtime import get_registry
+
+    task = get_registry().create(skill)
+
+    async def loop():
+        await task.cancel_event.wait()
+        await asyncio.sleep(0.05)  # the walk's own stop_motion
+        task.status = "cancelled"
+        events.append(f"{skill}_ended")
+
+    return task, asyncio.ensure_future(loop())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["walk_to", "turn", "navigate_to", "look_around"])
+async def test_operator_velocity_cancels_an_agent_walk_and_waits_for_it(monkeypatch, skill):
+    events: list[str] = []
+    monkeypatch.setattr(
+        g1_rpc, "call_set_velocity", lambda *a: events.append("setpoint") or (0, "")
+    )
+    task, loop = _agent_walk(skill, events)
+    try:
+        result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.1)
+        await asyncio.wait_for(loop, 1.0)
+    finally:
+        if task.status == "running":
+            task.status = "failed"  # never cancelled: do not leak a running walk into later tests
+
+    assert task.status == "cancelled"
+    assert result["status"] == "completed"
+    assert events[0] == f"{skill}_ended"  # no setpoint of ours while the walk still steered
+
+
+@pytest.mark.asyncio
+async def test_operator_velocity_never_cancels_another_walk_velocity(monkeypatch):
+    """The headset renews its walk by overlapping 1 s calls; cancelling would stutter it."""
+    from bridge.skills.task_runtime import get_registry
+
+    _record(monkeypatch)
+    renewing = get_registry().create("walk_velocity")
+    try:
+        result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.1)
+    finally:
+        renewing.status = "completed"  # no loop runs it here
+    assert result["status"] == "completed"
+    assert not renewing.cancel_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_a_running_walk_velocity_yields_to_the_headset_and_still_stops(monkeypatch):
+    from bridge import estop
+
+    calls: list[tuple] = []
+
+    def record(vx, vy, vyaw, d):
+        calls.append((vx, vy, vyaw))
+        if len(calls) == 3:
+            estop.renew_teleop_lease()
+        return 0, ""
+
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", record)
+
+    result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=2.0)
+
+    assert (result["status"], result["phase"]) == ("failed", "teleop_takeover")
+    assert len(calls) == 4 and calls[-1] == (0.0, 0.0, 0.0)  # three setpoints, then only zero
+
+
+def _fsm(monkeypatch, fsm_id, age_s=0.5):
+    from types import SimpleNamespace
+
+    reading = SimpleNamespace(get_arm_state=lambda: {"fsm_id": fsm_id, "fsm_age_s": age_s})
+    monkeypatch.setattr("bridge.sdk.state.existing_sampler", lambda: reading)
+
+
+@pytest.mark.asyncio
+async def test_refused_in_a_fresh_non_walk_fsm(monkeypatch):
+    """In 802 (R2+A) SetVelocity answers 0 and the legs ignore it: a walk that only looks done."""
+    calls = _record(monkeypatch)
+    _fsm(monkeypatch, 802)
+
+    result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.2)
+
+    assert (result["status"], result["phase"]) == ("failed", "fsm_not_walkable")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_stop_still_goes_out_in_a_non_walk_fsm(monkeypatch):
+    calls = _record(monkeypatch)
+    _fsm(monkeypatch, 802)
+
+    result = await walk_velocity.run(vx=0.0, vy=0.0, vyaw=0.0, duration_s=0.1)
+
+    assert result["status"] == "completed"
+    assert calls and all(c[:3] == (0.0, 0.0, 0.0) for c in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fsm_id, age_s", [(501, 0.5), (802, 30.0), (None, None)])
+async def test_walks_in_501_or_on_a_stale_or_missing_reading(monkeypatch, fsm_id, age_s):
+    calls = _record(monkeypatch)
+    _fsm(monkeypatch, fsm_id, age_s)
+
+    result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.1)
+
+    assert result["status"] == "completed"
+    assert calls[0][0] == 0.1

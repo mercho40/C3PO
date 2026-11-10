@@ -56,7 +56,7 @@ layers after the expensive colcon build rebuild (one apt layer plus our
 package), not the 8-minute PCL build. `c3po restart` says the bridge answers
 on 8001.
 
-**Rollback:** `git checkout <previous branch> && ./scripts/robot/c3po install && c3po restart`. The old nav image tag is overwritten, so a rebuild on the old branch is needed to fully revert the container (~2 min for the top layers).
+**Rollback:** as in `docs/OPERATIONS.md` §5 ("Rollback"). The old nav image tag is overwritten, so a rebuild on the old branch is needed to fully revert the container (~2 min for the top layers).
 
 ## 2. Sensor-free rehearsal: `nav2-fake`, gate CLOSED
 

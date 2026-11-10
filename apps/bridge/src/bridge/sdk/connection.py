@@ -155,8 +155,8 @@ def init_dds(
     the SDK was already initialized).
 
     `interface` pins CycloneDDS to one NIC by name. Leave it unset on a
-    developer machine, where autodetermine is right. **Set it to `eth0` when
-    running onboard the G1's Jetson**: that host has `eth0`, `wlan0` and
+    developer machine, where autodetermine is right. **Onboard the G1's Jetson
+    it must be `eth0`, so real mode defaults to that**: that host has `eth0`, `wlan0` and
     `docker0`, and CycloneDDS otherwise picks among them arbitrarily — it says
     so itself, `selected arbitrarily from: eth0, docker0, wlan0`. Only `eth0`
     reaches the control board, so landing on either of the others means seeing
@@ -170,6 +170,10 @@ def init_dds(
     if sim_mode is None:
         sim_mode = os.environ.get("SIM_MODE")
     unicast = wants_unicast(sim_mode)
+    # Real mode runs onboard, and the robot's .env (gitignored) often leaves this
+    # blank. A host without eth0 still falls back loudly below.
+    if not interface and (sim_mode or "").strip().lower() == "real":
+        interface = "eth0"
 
     pinned, reason = resolve_interface(interface, available_interfaces())
     xml_path = _write_peer_xml(robot_host, pinned, domain_id, unicast=unicast)

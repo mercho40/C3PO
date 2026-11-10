@@ -440,6 +440,25 @@ async def test_nav2_is_not_used_while_a_walk_is_running(tool):
     assert tool.sent == []
 
 
+async def test_a_running_goal_is_replaced_not_refused(tool):
+    """Like navigate_to itself (_nav_refusal): a new goal supersedes the running one."""
+    from bridge.skills.task_runtime import get_registry
+
+    old = get_registry().create("navigate_to")
+    tool.nav._ingest_status(nav_status())
+    tool.gate.enable(reason="operator", ttl_s=60)
+    tool.objects = [chair(2.0)]
+    try:
+        out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    finally:
+        old.status = "cancelled"  # no monitor is looping on it to end it
+    assert (out["status"], out["via"]) == ("started", "nav2")
+    assert "x" in tool.sent[-1]
+    get_registry().cancel(out["task_id"])
+    await asyncio.sleep(0.05)  # its monitor ends the new goal's task, so no walk leaks
+    assert get_registry().get(out["task_id"]).status == "cancelled"
+
+
 # --- near_m: the robot's FRONT stops stop_distance_m from the object's NEAR side ----
 
 

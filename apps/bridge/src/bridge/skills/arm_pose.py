@@ -198,6 +198,12 @@ async def slew(
         await asyncio.sleep(period)
 
 
+def _teleop_active() -> str | None:
+    from bridge.estop import teleop_is_driving
+
+    return "teleop_active" if teleop_is_driving() else None
+
+
 async def run(
     side: Side,
     joints_deg: dict[str, float],
@@ -250,6 +256,17 @@ async def run(
         task.ended_at = time.time()
         return task.to_dict()
 
+    if _teleop_active():
+        # Checked here, not in ArmSdkDriver.engage: the headset's own arm control engages too.
+        task.status = "failed"
+        task.phase = "teleop_active"
+        task.error = (
+            "a person in the headset is driving the robot or holding its arms; a second "
+            "rt/arm_sdk commander would fight them. Wait until they let go."
+        )
+        task.ended_at = time.time()
+        return task.to_dict()
+
     driver = arm_sdk.get_driver()
     try:
         # In any non-real mode the driver's own preconditions refuse with the
@@ -278,9 +295,12 @@ async def run(
             "The slew never settled inside its deadline; authority "
             "is being handed back to the built-in controller."
         ),
+        "aborted:teleop_active": (
+            "The headset took over mid-slew; arm authority is ramping back down."
+        ),
     }
     try:
-        failure = await slew(driver, task, left, right, ctx)
+        failure = await slew(driver, task, left, right, ctx, abort=_teleop_active)
         if failure == "driver_failed":
             # The publish loop died underneath us (its failure latch has
             # the details). Do not report a pose that was never held.

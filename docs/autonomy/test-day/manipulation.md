@@ -82,13 +82,12 @@ measure from the wrist-yaw axis to the centre of the closed `power` grip. Put th
 
 ## 5. First pick, off the gantry, standing (15 min)
 
-> ⚠️ **Do not run `pick` until ACTION-PLAN I1 is done.** The MuJoCo twin
-> (`apps/bridge/tests/sim/test_arm_twin.py`, a strict xfail) puts an arm link 6–51 mm
-> into the torso in all six planned picks, mostly in the clear, over and pre-grasp
-> phases. `TORSO_BOX` checks joint points against y = ±0.08 m, but the torso is about
-> ±0.10 m wide at belly height and the links have thickness. The depths are upper
-> bounds (convex hulls), and whether the real arm touches is a pending robot test, but
-> 5–6 cm is not a margin to discover on the robot.
+> ⚠️ **`pick` refuses on the robot until `C3PO_ALLOW_PICK=1` is set in apps/bridge/.env.**
+> Set it only for this section, on the gantry, after the touch check below. I1 (dba2a35)
+> checks every arm link as a capsule against the torso, and the MuJoCo twin now finds no
+> contact in any of the six planned picks, but the real arm has not been tried. Watch the
+> new shoulder-out tuck (the elbow juts out to the side) and keep the desk edge at least
+> 0.24 m in front of the torso. Remove the flag again when the section is done.
 
 Setup: an **opaque** plastic cup or a TV remote on a counter or high table, **0.80–0.95 m above
 the floor**, 25–35 cm in front of the chest, a little to the right. The G1 arm is short (~0.48 m

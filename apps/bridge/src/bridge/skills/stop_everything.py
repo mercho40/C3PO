@@ -26,10 +26,11 @@ still there for an operator who wants the robot limp.
 
 **Two tiers, and `soft_stop` is the first one on its own.** The zero burst
 (`_zero_burst`) is the soft stop: velocity to zero, the robot left standing.
-`soft_stop` runs just that tier — close the nav gate, cancel tasks, burst —
-for "stop walking" without a latch or a fall risk. `stop_everything` runs the
-same burst and keeps everything that makes it the e-stop: the cross-process
-sentinel, arms and hands let go, and Damp when the burst was not heard.
+`soft_stop` runs just that tier — close the nav gate, cancel the Nav2 goal and
+the tasks, burst — for "stop walking" without a latch or a fall risk.
+`stop_everything` runs the same burst and keeps everything that makes it the
+e-stop: the cross-process sentinel, arms and hands let go, and Damp when the
+burst was not heard.
 
 **Cancellation happens synchronously, before anything can block.** Every
 `cancel_event` is set at the top of `run()` with no awaits in between, so the
@@ -46,12 +47,13 @@ Meanwhile the Damp fallback below can retry 3x against a 10 s client timeout,
 so a degraded link — the case the retry exists for — could wedge the whole
 event loop for ~30 s. During that window a second stop press and every
 `get_state` poll went unanswered: the e-stop made the robot unreachable
-precisely when the operator was pressing it again. The RPCs now go through
-`asyncio.to_thread`, and the retry loop carries a total time budget on top.
+precisely when the operator was pressing it again. The RPCs now run on
+threads of their own (`_on_own_thread`), and the retry loop carries a total
+time budget on top.
 
 When it runs, the real-hardware Damp fallback retries up to REAL_DAMP_MAX_ATTEMPTS times on
 RPC failure (a dropped packet shouldn't mean a silently-failed e-stop), but
-stops retrying once REAL_DAMP_TOTAL_BUDGET_S has elapsed. The sim-mode path
+stops retrying, and waiting, once REAL_DAMP_TOTAL_BUDGET_S has elapsed. The sim-mode path
 (task cancellation + zero-velocity burst) stays fast and single-shot.
 
 Returns a list of cancelled task IDs and the duration of the stop burst.
@@ -60,12 +62,17 @@ Returns a list of cancelled task IDs and the duration of the stop burst.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextlib
 import os
+import threading
 import time
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, TypeVar
 
 import structlog
 
+from bridge import estop
 from bridge.estop import signal_stop
 from bridge.skills._locomotion import DEFAULT_HEIGHT, stop_motion_sync
 from bridge.skills.task_runtime import get_registry
@@ -82,7 +89,8 @@ REAL_DAMP_RETRY_DELAY_S = 0.15
 # Ceiling on the whole retry loop. Each attempt can sit on the sport client's
 # 10 s timeout, so attempt-count alone bounds this at ~30 s — far too long for
 # the call an operator makes when something is going wrong. Past this budget we
-# stop retrying and report honestly rather than keep trying in silence.
+# stop retrying, and stop waiting on the attempt in flight, and report honestly
+# rather than keep trying in silence.
 REAL_DAMP_TOTAL_BUDGET_S = 4.0
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
@@ -92,28 +100,64 @@ SPEECH_STOP_WAIT_S = 1.0
 # acknowledged. "always": damp after every stop, the pre-2026-10-15 behaviour.
 DAMP_POLICY = os.environ.get("STOP_EVERYTHING_DAMP", "on_failure").strip().lower()
 
+_T = TypeVar("_T")
 
-async def _zero_burst(height: float) -> tuple[int, int, str | None, float]:
-    """The soft-stop tier: `(sent, acked, error, duration_s)` of a zero burst."""
-    start = time.time()
+
+def _on_own_thread(fn: Callable[..., _T], /, *args: Any, **kwargs: Any) -> asyncio.Future[_T]:
+    """Start `fn` now, on a thread of its own, and return a future for its answer.
+
+    Not asyncio.to_thread: that queues on the loop's shared executor, which
+    camera streams, voice long-polls and RPCs hung on a bad link can fill. The
+    stop waited behind them, and a Damp attempt still queued when its budget
+    ran out was cancelled without being sent. Cancelling this future gives up
+    only the wait; the call itself always runs.
+    """
+    done: concurrent.futures.Future[_T] = concurrent.futures.Future()
+    done.set_running_or_notify_cancel()
+
+    def work() -> None:
+        try:
+            done.set_result(fn(*args, **kwargs))
+        except BaseException as exc:
+            done.set_exception(exc)
+
+    threading.Thread(target=work, name="stop-rpc", daemon=True).start()
+    return asyncio.wrap_future(done)
+
+
+def _zero_burst(height: float) -> Awaitable[tuple[int, int, str | None, float]]:
+    """The soft-stop tier: `(sent, acked, error, duration_s)` of a zero burst.
+
+    The burst starts on the call, not on the await, so `run` can start it
+    ahead of the hand and speech RPCs and await it after them.
+    """
+    start = time.monotonic()
+    burst: asyncio.Future[tuple[int, int]] = asyncio.get_running_loop().create_future()
     try:
-        sent, acked = await asyncio.to_thread(
-            stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S
-        )
-        return sent, acked, None, time.time() - start
+        burst = _on_own_thread(stop_motion_sync, height=height, duration_s=STOP_BURST_DURATION_S)
     except Exception as exc:
-        # Not fatal, and not the end of the stop: a burst that raised is a
-        # burst the robot may never have heard, which is exactly when the
-        # Damp fallback in `run` has to run. It used to propagate and skip it.
-        log.exception("stop_everything.burst_failed")
-        return 0, 0, f"{type(exc).__name__}: {exc}", time.time() - start
+        burst.set_exception(exc)
+
+    async def outcome() -> tuple[int, int, str | None, float]:
+        try:
+            sent, acked = await burst
+            return sent, acked, None, time.monotonic() - start
+        except Exception as exc:
+            # Not fatal, and not the end of the stop: a burst that raised is a
+            # burst the robot may never have heard, which is exactly when the
+            # Damp fallback in `run` has to run. It used to propagate and skip it.
+            log.exception("stop_everything.burst_failed")
+            return 0, 0, f"{type(exc).__name__}: {exc}", time.monotonic() - start
+
+    return outcome()
 
 
 async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     """Halt the base and stay standing. Never damps, never latches.
 
     Same order as `run` for the parts it shares: gate first, synchronously,
-    so Nav2's next tick cannot undo the burst; then cancellation; then zeros.
+    so Nav2's next tick cannot undo the burst; then the Nav2 goal; then
+    cancellation; then zeros.
     Arms and hands are left alone — `stop_everything` is the stop for those.
     """
     try:
@@ -122,6 +166,16 @@ async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
         get_link().disable(reason="soft_stop")
     except Exception:
         log.exception("soft_stop.gate_close_failed")
+
+    # A goal left active walks the robot again the moment the gate is re-armed.
+    try:
+        from bridge.sdk.nav_link import get_nav_link
+
+        nav = get_nav_link()
+        if nav.can_publish:
+            nav.cancel(None)
+    except Exception:
+        log.exception("soft_stop.nav_cancel_failed")
 
     registry = get_registry()
     cancelled_ids = [t.task_id for t in registry.list_active() if registry.cancel(t.task_id)]
@@ -141,13 +195,18 @@ async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     }
 
 
-async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
-    """Cancel all running tasks and send a zero-velocity burst."""
+async def run(height: float = DEFAULT_HEIGHT, *, signal: bool = True) -> dict[str, Any]:
+    """Cancel all running tasks and send a zero-velocity burst.
+
+    `signal=False` runs a stop another process already stamped (see
+    `watch_foreign_stops`) without stamping it again: a newer stamp than the
+    one the operator saw makes /safety/ack refuse with 409.
+    """
     # Cross-process first, and before any await: the teleop stream runs in its
     # own process with its own TaskRegistry, so the cancellation below cannot
     # reach it. Found on the robot when PARAR left it turning for another 27
     # degrees. See bridge/estop.py.
-    sentinel_written = signal_stop()
+    sentinel_written = signal_stop() if signal else None
     from bridge import safety
 
     safety.clear_confirmations("stop_everything")
@@ -221,41 +280,43 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
         cancelled_task_ids=cancelled_ids,
     )
 
+    # Off-thread from here down. Every cancel_event above is already set, so
+    # the skills are stopping themselves whatever happens next; what this buys
+    # is an event loop that can still answer a second stop press or a state
+    # poll while these blocking DDS calls are in flight.
+    # THE ZERO BURST FIRST: the zero setpoints are what stop the robot, so the
+    # hand and voice RPCs below start beside it, never ahead of it. A slow
+    # BrainCo write awaited here used to hold the first setpoint.
+    burst = _zero_burst(height)
+
     # OPEN THE HANDS. A BrainCo has no firmware dead-man (teleop/hands.py) — a
     # grip commanded via set_hand outlives every task and both bursts below,
     # so the stop is the release path of last resort the hands module demands.
     # Off-thread (it publishes DDS) and never fatal, same as the arms above.
     # NullHandDriver makes this a no-op wherever hands are unconfigured.
-    hands_relaxed = False
+    hand_relax: asyncio.Future[None] | None = None
     try:
         from bridge.teleop.hands import get_driver as _get_hand_driver
 
         hand_driver = _get_hand_driver()
         if hand_driver.sides:
-            await asyncio.to_thread(hand_driver.relax)
-            hands_relaxed = True
+            hand_relax = _on_own_thread(hand_driver.relax)
     except Exception:
         log.exception("stop_everything.hand_relax_failed")
 
-    # Off-thread from here down. Every cancel_event above is already set, so
-    # the skills are stopping themselves whatever happens next; what this buys
-    # is an event loop that can still answer a second stop press or a state
-    # poll while these blocking DDS calls are in flight.
     # STOP TALKING. Our own Spanish speech only (PlayStream under app "c3po");
     # firmware TTS and the co-tenant's assistant cannot be stopped from here.
-    # Started beside the burst, never ahead of it: the voice RPC can be slow
-    # and the zero setpoints are what stop the robot.
     speech_stop: asyncio.Future[tuple[int, str | None]] | None = None
     if SIM_MODE == "real":
         try:
             from bridge.sdk import g1_rpc as _g1_rpc
 
             _g1_rpc.cancel_pcm_playback()
-            speech_stop = asyncio.ensure_future(asyncio.to_thread(_g1_rpc.stop_play))
+            speech_stop = _on_own_thread(_g1_rpc.stop_play)
         except Exception:
             log.exception("stop_everything.speech_stop_failed")
 
-    burst_sent, burst_acked, burst_error, duration = await _zero_burst(height)
+    burst_sent, burst_acked, burst_error, duration = await burst
 
     # Zero velocity stops the gait and leaves the robot balanced; damp zeroes
     # joint stiffness, which drops a standing robot. So damp only when the
@@ -271,42 +332,61 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
             damp_reason = "burst_failed"
         elif burst_acked == 0:
             damp_reason = "burst_unacknowledged"
+    # True when the budget ran out on an attempt still in flight: that Damp was
+    # sent and may yet land, so it is neither a success nor a failure.
+    damp_unconfirmed = False
     if damp_reason is not None:
         from bridge.sdk import g1_protocol, g1_rpc
 
-        deadline = time.time() + REAL_DAMP_TOTAL_BUDGET_S
         budget_exhausted = False
-        for attempt in range(1, REAL_DAMP_MAX_ATTEMPTS + 1):
-            real_damp_attempts = attempt
-            real_damp_rpc_code, _ = await asyncio.to_thread(
-                g1_rpc.call_sport, g1_protocol.Mode.DAMP
-            )
-            if real_damp_rpc_code == 0:
-                break
+        try:
+            # One deadline over the whole loop, not a wait_for per attempt: a
+            # wait_for given no time left (the budget ran out in the pause
+            # before a retry) cancels its attempt before it is sent.
+            async with asyncio.timeout(REAL_DAMP_TOTAL_BUDGET_S):
+                for attempt in range(1, REAL_DAMP_MAX_ATTEMPTS + 1):
+                    real_damp_attempts = attempt
+                    # None while unanswered. One attempt can sit on the sport
+                    # client's 10 s timeout; it is sent anyway and finishes on
+                    # its own thread.
+                    real_damp_rpc_code = None
+                    real_damp_rpc_code, _ = await _on_own_thread(
+                        g1_rpc.call_sport, g1_protocol.Mode.DAMP
+                    )
+                    if real_damp_rpc_code == 0:
+                        break
+                    log.warning(
+                        "stop_everything.real_damp_fallback.retry",
+                        attempt=attempt,
+                        rpc_code=real_damp_rpc_code,
+                    )
+                    if attempt < REAL_DAMP_MAX_ATTEMPTS:
+                        await asyncio.sleep(REAL_DAMP_RETRY_DELAY_S)
+        except TimeoutError:
+            budget_exhausted = True
+            damp_unconfirmed = real_damp_rpc_code is None
             log.warning(
-                "stop_everything.real_damp_fallback.retry",
-                attempt=attempt,
-                rpc_code=real_damp_rpc_code,
+                "stop_everything.real_damp_fallback.budget_exhausted",
+                attempts=real_damp_attempts,
+                budget_s=REAL_DAMP_TOTAL_BUDGET_S,
             )
-            if time.time() >= deadline:
-                # One slow attempt can consume the whole budget on its own.
-                budget_exhausted = True
-                log.warning(
-                    "stop_everything.real_damp_fallback.budget_exhausted",
-                    attempts=real_damp_attempts,
-                    budget_s=REAL_DAMP_TOTAL_BUDGET_S,
-                )
-                break
-            if attempt < REAL_DAMP_MAX_ATTEMPTS:
-                await asyncio.sleep(REAL_DAMP_RETRY_DELAY_S)
         log.warning(
             "stop_everything.real_damp_fallback",
             reason=damp_reason,
             rpc_code=real_damp_rpc_code,
             attempts=real_damp_attempts,
-            succeeded=real_damp_rpc_code == 0,
+            succeeded=None if damp_unconfirmed else real_damp_rpc_code == 0,
             budget_exhausted=budget_exhausted,
         )
+
+    # Awaited after Damp, which must not wait on a slow hand write either.
+    hands_relaxed = False
+    if hand_relax is not None:
+        try:
+            await hand_relax
+            hands_relaxed = True
+        except Exception:
+            log.exception("stop_everything.hand_relax_failed")
 
     speech_stop_rpc_code: int | None = None
     if speech_stop is not None:
@@ -330,13 +410,67 @@ async def run(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
         "hands_relaxed": hands_relaxed,
         "real_damp_fallback_rpc_code": real_damp_rpc_code,
         "real_damp_fallback_attempts": real_damp_attempts,
-        # None when Damp did not run (sim, or the stop landed): the console
-        # reads only `False` as a failed stop.
+        # None when Damp did not run (sim, or the stop landed) or is still
+        # unanswered: the console reads only `False` as a failed stop.
         "real_damp_fallback_succeeded": (
-            (real_damp_rpc_code == 0) if damp_reason is not None else None
+            None if damp_reason is None or damp_unconfirmed else real_damp_rpc_code == 0
         ),
+        "real_damp_fallback_unconfirmed": damp_unconfirmed,
         "real_damp_fallback_reason": damp_reason,
         # False: this process is latched, but the teleop stream reads only the
         # sentinel file and never heard this stop. A driving headset may still drive.
         "sentinel_written": sentinel_written,
     }
+
+
+#: How often the MCP process looks for a stop another process signalled.
+FOREIGN_STOP_POLL_S = 0.1
+
+
+async def watch_foreign_stops() -> None:
+    """Run the stop here for a PARAR another process signalled, until cancelled.
+
+    The headset's PARAR down the teleop socket only stamps the sentinel
+    (teleop/server.py `raise_stop`). That latches this process, but an arm
+    move, a walk_to or a Nav2 monitor already running here went on, and with
+    apps/back down nothing else stops them. A new stamp more than 1 ms away from
+    this process's own last stop is someone else's. A stamp from before the
+    watcher started is already latched and is not run again, and each stamp
+    is run once, failed or not: retrying it would resend Damp every poll.
+
+    Any change of stamp is a new stop, not only a later one: after the wall
+    clock steps back, every new stamp is older than the last, and ordering
+    them ignored every headset PARAR.
+    """
+    seen = estop._file_stop_at()
+    while True:
+        await asyncio.sleep(FOREIGN_STOP_POLL_S)
+        stamp = estop._file_stop_at()
+        if stamp == seen or not stamp:
+            continue  # unchanged, or no file to read (deleted, or a failed stat)
+        seen = stamp
+        if abs(stamp - estop._signalled_at) <= 1e-3:
+            continue  # this process's own stop: its run() did the work
+        log.warning("stop_everything.foreign_stop", stamped_at=stamp)
+        try:
+            await run(signal=False)
+        except Exception:
+            log.exception("stop_everything.foreign_stop_failed")
+
+
+@contextlib.asynccontextmanager
+async def watching_foreign_stops() -> AsyncIterator[None]:
+    """`watch_foreign_stops` for as long as the server serves.
+
+    Process-wide, not FastMCP's lifespan: over streamable HTTP that is entered
+    once per MCP session, so with apps/back down there would be no watcher.
+    Not in stub, where the stop_everything tool itself does nothing.
+    """
+    if SIM_MODE == "stub":
+        yield
+        return
+    watcher = asyncio.create_task(watch_foreign_stops())
+    try:
+        yield
+    finally:
+        watcher.cancel()

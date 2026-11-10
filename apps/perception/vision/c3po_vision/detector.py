@@ -84,7 +84,7 @@ import re
 import signal
 import sys
 import time
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # Stdlib-only at module scope (Pillow and numpy are lazy inside it), so this
 # import keeps the "importable on a Mac" property the docstring above claims.
@@ -146,6 +146,48 @@ COLOR_FPS = int(os.environ.get("C3PO_VISION_COLOR_FPS", "30"))
 
 CONF_THRESHOLD = float(os.environ.get("C3PO_VISION_CONF", "0.35"))
 NMS_IOU = float(os.environ.get("C3PO_VISION_IOU", "0.45"))
+
+
+def parse_class_conf(raw: str, floor: float) -> Tuple[Dict[str, float], List[str]]:
+    """`C3PO_VISION_CLASS_CONF` -> ({label: threshold}, ["entry (why it was ignored)"]).
+
+    `cooker=0.6, toaster=0.6, thumbtack=off`: a comma-separated list of
+    label=threshold, label exactly as in the labels file (inner spaces kept; quote
+    the value in perception.env), `off` to drop the class. A bad entry is
+    reported and skipped, never fatal. Only RAISING a bar works: the decoder
+    already dropped everything under `floor` (C3PO_VISION_CONF). `person` is
+    refused: bridge.safety's person rule reads that label, and a higher bar for
+    it hides people from the stop and slow distances.
+    """
+    conf: Dict[str, float] = {}
+    ignored: List[str] = []
+    for entry in raw.split(","):
+        label, sep, value = (part.strip() for part in entry.partition("="))
+        if not (label or value):
+            continue
+        if not sep or not label:
+            ignored.append(f"{entry.strip()} (expected label=threshold)")
+            continue
+        if label == "person":
+            ignored.append(f"{entry.strip()} (person follows C3PO_VISION_CONF)")
+            continue
+        if value.lower() == "off":
+            conf[label] = float("inf")
+            continue
+        try:
+            threshold = float(value)
+        except ValueError:
+            threshold = float("nan")
+        if not floor < threshold <= 1.0:
+            ignored.append(f"{entry.strip()} (needs a number above {floor} and at most 1, or off)")
+            continue
+        conf[label] = threshold
+    return conf, ignored
+
+
+CLASS_CONF, CLASS_CONF_IGNORED = parse_class_conf(
+    os.environ.get("C3PO_VISION_CLASS_CONF", ""), CONF_THRESHOLD
+)
 
 # Above this in base_link the thing is ceiling, signage or a light fitting, and
 # the robot is 1.3 m tall. Reporting them costs tokens and invites the model to
@@ -1026,6 +1068,10 @@ def ground_all(
     your wallet over there but cannot tell how far" still reaches the memory.
     """
     cap = MAX_OBJECTS_ON_WIRE if max_objects is None else max_objects
+    if CLASS_CONF:  # before the tracker, so a dropped class never takes a track id
+        detections = [
+            d for d in detections if d[1] >= CLASS_CONF.get(label_for(labels, d[0]), 0.0)
+        ]
     names = [label_for(labels, d[0]) for d in detections]
     ids: list[Optional[int]] = (
         list(tracker.update([(n, tuple(d[2])) for n, d in zip(names, detections)]))
@@ -1104,6 +1150,7 @@ def run() -> int:
 
     log("start", fake=fake, dry_run=dry_run, hz=TICK_HZ, domain=DOMAIN_ID,
         topic=OBJECTS_TOPIC, conf=CONF_THRESHOLD,
+        class_conf=",".join(f"{k}={v}" for k, v in CLASS_CONF.items()) or "none",
         extrinsic=(
             f"x={extrinsic.x_m:.3f} y={extrinsic.y_m:.3f} z={extrinsic.z_m:.3f} "
             f"pitch={extrinsic.pitch_deg:.1f} yaw={extrinsic.yaw_deg:.1f}"
@@ -1112,6 +1159,8 @@ def run() -> int:
             "env" if any(k.startswith("C3PO_CAMERA_") for k in os.environ)
             else "URDF d435_joint (CAD)"
         ))
+    if CLASS_CONF_IGNORED:
+        log("class_conf.ignored", entries="; ".join(CLASS_CONF_IGNORED))
 
     source = SyntheticSource() if fake else RealSenseSource()
     source.start()
@@ -1134,6 +1183,9 @@ def run() -> int:
     else:
         detector = TensorRTDetector()
         labels = load_labels(LABELS_PATH)
+    unknown = sorted(set(CLASS_CONF) - set(labels))
+    if unknown:
+        log("class_conf.unknown_labels", labels=",".join(unknown), effect="no effect")
 
     publisher = StdoutPublisher() if dry_run else ObjectsPublisher()
     publisher.start()

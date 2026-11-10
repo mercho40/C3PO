@@ -23,11 +23,11 @@ ssh c3po 'cat ~/.c3po/objects.json'
 
 ## 1. Deploy and bring-up
 
-| #   | Do                                                           | Expect                                                                                          |
-| --- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| 1.1 | Deploy `feat/autonomy` (the push in `docs/OPERATIONS.md` §5) | Bridge answers; `list_objects` → `{"count": 0, ...}` (or what an earlier run left)              |
-| 1.2 | `c3po up perception` (Livox + RealSense)                     | `describe_surroundings` → `sources.detector: ok` and a `pose`. Without both, memory stays empty |
-| 1.3 | `forget_object("all")`                                       | Clean slate for the checks below                                                                |
+| #   | Do                                                           | Expect                                                                                                                                                            |
+| --- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.1 | Deploy `feat/autonomy` (the push in `docs/OPERATIONS.md` §5) | Bridge answers; `list_objects` → `{"count": 0, ...}` (or what an earlier run left)                                                                                |
+| 1.2 | `c3po up perception` (Livox + RealSense)                     | `describe_surroundings` → `sources.detector: ok` and a `pose`. Without the detector memory stays empty; without the lidar pose it records in vendor odometry (§8) |
+| 1.3 | `forget_object("all")`                                       | Clean slate for the checks below                                                                                                                                  |
 
 ## 2. Walk past objects
 
@@ -54,11 +54,12 @@ each one for a few seconds.
 
 Robot standing in open space, nobody within 1 m, operator holding the remote.
 
-| #   | Do                                                     | Expect                                                                                         |
-| --- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| 4.1 | Put an object behind the robot; `look_around()`        | Six 60° turns with a 2 s pause each, ~45 s. `new_objects` has the object behind                |
-| 4.2 | Repeat; press PARAR during the second turn             | Robot stops; result `status: stopped`, `stopped_reason: stop_everything` (or `turn_cancelled`) |
-| 4.3 | `c3po perception stop`, wait 3 s, then `look_around()` | `error: perception_offline`, and the robot does **not** move                                   |
+| #   | Do                                                                                                                  | Expect                                                                                                                                                               |
+| --- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 4.1 | Put an object behind the robot; `look_around()`                                                                     | Six 60° turns with a 2 s pause each, ~45 s. `new_objects` has the object behind                                                                                      |
+| 4.2 | Repeat; press PARAR during the second turn                                                                          | Robot stops; result `status: stopped`, `stopped_reason: cancelled` (PARAR cancels the sweep's task; `stop_everything` or `turn_cancelled` also count)                |
+| 4.3 | `c3po perception stop`, wait 3 s, then `look_around()`                                                              | `error: perception_offline`, and the robot does **not** move                                                                                                         |
+| 4.4 | Pending robot test. `look_around()` again; during a turn, `cancel_task` with the `task_id` from `list_active_tasks` | The turn in progress stops at once, not after its 60° step. Result `status: stopped`, `stopped_reason: cancelled`. A `soft_stop` during a pause ends it the same way |
 
 ## 5. Forgetting
 
@@ -99,3 +100,17 @@ Record the run directory in the session notes.
 - Forgetting thresholds (8 frames, ±30°, 0.5–3 m) are reasoned, not measured.
 - Whether `tic-chat` calls `recall_object` for "¿dónde dejé…?" without a
   prompt hint is exactly what step 7 measures.
+
+## 8. Lidar down: memory on vendor odometry (pending robot test)
+
+With FAST-LIO down the report has no pose, and memory falls back to the bridge's vendor
+odometry when it is under 1 s old (86dc075). Entries go in a frame named
+`vendor_odom@<bridge start>`. Run this with the lidar faulted (or without the nav stage),
+after `forget_object("all")`.
+
+| #   | Do                                                           | Expect                                                                                                          |
+| --- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| 8.1 | Walk past the cup, bottle and chair as in §2; `list_objects` | One entry per object, each with `frame` `vendor_odom@<number>`, the same number for all of them                 |
+| 8.2 | Tape from the robot to the cup                               | `distance_m` within ±0.3 m and the `bearing_deg` sign right, as in 2.2                                          |
+| 8.3 | `c3po restart` (bridge only), then `list_objects`            | The old entries are still listed, with the old frame and no `distance_m` or `bearing_deg`: another run's origin |
+| 8.4 | Face the cup again for a few seconds                         | A new entry in the new `vendor_odom@` frame, with a distance. The old one is not merged into it                 |
