@@ -13,6 +13,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
+# Nothing here writes to the repo, so the token cannot either.
+permissions:
+  contents: read
+
 jobs:
   typescript:
     name: TypeScript and shell — checks and tests
@@ -73,23 +77,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       # Keep package tests behind Turbo so local and CI task selection use the
-      # same package boundaries and cache keys.
+      # same package boundaries and cache keys. @repo/web here is the headset's
+      # suite (`bun test` in apps/web); a second step used to run it again.
       - name: back, web, and robot-script tests
         run: bun run test -- --filter=@repo/back --filter=@repo/web --filter=@repo/robot-scripts
-
-      # THE HEADSET'S TESTS WERE NOT RUN BY ANYTHING UNTIL 2026-08-27.
-      #
-      # 210 of them: the camera layer's silent-black failure modes, the menu
-      # and radar placement, the per-eye stereo geometry, the teleop protocol,
-      # the MJPEG liveness logic. Every one of them guards something that has
-      # already gone wrong in a real session with somebody wearing the thing,
-      # and none of them could fail the build.
-      #
-      # `bun test` in apps/back was added and apps/web was not — the whole
-      # suite is one line, needs no services, and takes ~18 s.
-      - name: apps/web unit tests
-        working-directory: apps/web
-        run: bun test
 
       # The note that used to live here said `prettier --check` failed on ~122
       # files, mostly vendored shadcn-svelte components, and that gating it
@@ -106,6 +97,49 @@ jobs:
       - name: Formatting
         run: bunx prettier --check "**/*.{ts,tsx,svelte,json,md}"
 
+  # Every other back test mocks drizzle, so who may read or write a chat, and
+  # what concurrent appends do to `seq`, had never run against Postgres. Its
+  # own process: those mocks are process-wide (see the test's header).
+  back-db:
+    name: back — chat persistence on Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: c3po
+          POSTGRES_PASSWORD: c3po
+          POSTGRES_DB: c3po_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - run: bun install --frozen-lockfile
+
+      # As in the typescript job; DATABASE_URL below overrides the example's.
+      - name: Seed .env from .env.example
+        run: |
+          cp apps/back/.env.example apps/back/.env
+          echo 'BETTER_AUTH_SECRET=ci-placeholder-not-a-secret-0000000000' \
+            >> apps/back/.env
+
+      - name: chats.ts on Postgres
+        working-directory: apps/back
+        env:
+          C3PO_DB_TEST: "1"
+          DATABASE_URL: postgres://c3po:c3po@localhost:5432/c3po_test
+        run: bun test src/db/chats.db.test.ts
+
   perception:
     name: Perception — lint, Stage 0 tests
     runs-on: ubuntu-latest
@@ -113,10 +147,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.12.3"
 
       # Explicit and frozen, so a CI run cannot quietly resolve a different
       # dependency set than the lockfile pins. Carried over from the duplicate
       # `perception` job this one absorbed.
+      # --frozen below trusts uv.lock as it is; the robot syncs with --locked,
+      # which refuses a lock that no longer matches pyproject.toml. Check that
+      # here, so a stale lock fails CI and not a deploy.
+      - name: uv.lock matches pyproject.toml
+        working-directory: apps/perception
+        run: uv lock --check
+
       - name: Install perception test harness
         working-directory: apps/perception
         run: uv sync --frozen --group dev
@@ -137,6 +180,26 @@ jobs:
       - name: Stage 0 tests
         working-directory: apps/perception
         run: uv run --project . pytest -q
+
+      # THE DECODE-HEAD TESTS SKIP ABOVE: they need numpy, which the harness
+      # deliberately does not install. So the vision files that import only
+      # c3po_vision run again here under the vision image's own pins, python
+      # 3.8 and numpy 1.24.4 (vision/Dockerfile), and any skip fails the step.
+      # test_grounding.py is not among them: it imports the bridge (3.12).
+      - name: Vision tests under the container's python 3.8 and numpy 1.24.4
+        working-directory: apps/perception
+        # An explicit bash is -eo pipefail; the default is -e only, so a failing
+        # pytest piped into tee passed the step.
+        shell: bash
+        run: |
+          uv run --no-project --python 3.8 --with numpy==1.24.4 --with pytest==8.3.5 \
+            python -m pytest -q -rs -p no:cacheprovider \
+            tests/test_decode_head.py tests/test_depth_and_tracking.py \
+            tests/test_realsense_source.py tests/test_stream.py | tee "$RUNNER_TEMP/vision.txt"
+          if grep -qE '[0-9]+ skipped' "$RUNNER_TEMP/vision.txt"; then
+            echo "a vision test skipped in the step that exists to run it" >&2
+            exit 1
+          fi
 
       # THE PYTHON 3.8 SYNTAX FLOOR IS LOAD-BEARING.
       #
@@ -201,6 +264,13 @@ jobs:
           cmake --build /tmp/cyclonedds-build --target install -j "$(nproc)"
 
       - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.12.3"
+
+      # The robot's bridge_sync uses --locked; see the perception job.
+      - name: uv.lock matches pyproject.toml
+        working-directory: apps/bridge
+        run: uv lock --check
 
       - name: Install bridge deps
         working-directory: apps/bridge
@@ -217,16 +287,23 @@ jobs:
       # unbound name in one of those surfaces at the worst possible moment.
       - name: ruff
         working-directory: apps/bridge
-        run: uv run ruff check src tests scripts
+        run: >
+          uv run ruff check src tests scripts
+          ../../scripts/robot_internet.py ../../scripts/robot/lidar_service.py
 
       # `scripts` too, for the same reason ruff covers it: those are the files
       # somebody runs standing next to a humanoid with an e-stop in their hand.
       # It found two real typing faults in `arm_sign_check.py` the first time
       # it ran — a driver variable holding two incompatible types on what
       # looked like one path, in the script that MOVES THE ARMS.
+      #
+      # The two root robot scripts too: robot_internet.py runs on the Mac and
+      # lidar_service.py on the robot with this venv, and neither had a check.
       - name: mypy
         working-directory: apps/bridge
-        run: uv run mypy src scripts
+        run: >
+          uv run mypy src scripts
+          ../../scripts/robot_internet.py ../../scripts/robot/lidar_service.py
 
       - name: pytest
         working-directory: apps/bridge
@@ -291,6 +368,8 @@ jobs:
           cmake --build /tmp/cyclonedds-build --target install -j "$(nproc)"
 
       - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.12.3"
 
       # `--extra voice` is vosk 0.3.45, pinned by uv.lock like everything else.
       - name: Install bridge deps with the voice extra
@@ -304,8 +383,8 @@ jobs:
       # THE MODELS ARE NOT ON PyPI, so uv.lock cannot pin them; the installers
       # do. install_vosk.sh pins vosk-model-small-es-0.42 (alphacephei.com) to
       # its exact byte count, install_piper.sh pins piper release 2023.11.14-2
-      # (github.com) and checks the es_AR-daniela-high voice (huggingface.co)
-      # against the server's Content-Length. Keying the cache on the two
+      # (github.com) and the es_AR-daniela-high voice (huggingface.co) to a
+      # commit and a sha256 per file. Keying the cache on the two
       # scripts means changing a pin there is what invalidates it — there is no
       # second copy of the model names in this file to drift.
       #
