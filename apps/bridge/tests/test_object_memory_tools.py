@@ -184,3 +184,27 @@ def test_a_failing_listener_does_not_cost_the_report():
     link.on_report = boom
     assert link._ingest_report(_report())
     assert link.latest_report()[0] is not None
+
+
+def test_recall_measures_from_the_vendor_odometry_when_the_lidar_pose_is_missing(monkeypatch):
+    """Lidar down: the tools read the same per-run frame the memory recorded in."""
+    import time
+
+    from bridge.sdk import state
+
+    memory = om.ObjectMemory()
+    monkeypatch.setattr(om, "_memory_singleton", memory)
+    link = _link()
+    assert link._ingest_report(_report(pose=None))
+    monkeypatch.setattr(pl, "_link_singleton", link)
+    sampler = state.StateSampler()
+    sampler._pose_history.append((time.monotonic(), 0.0, 0.0, 0.0))
+    monkeypatch.setattr(state, "_sampler_singleton", sampler)
+
+    memory.observe(ORIGIN, [{"label": "tv", "range_m": 1.0, "bearing_deg": 0.0}], frame=om.VENDOR_FRAME)
+    memory.observe(ORIGIN, [{"label": "tv", "range_m": 3.0, "bearing_deg": 0.0}], frame="vendor_odom@1")
+    out = server.recall_object(query="tele")
+    by_frame = {o["frame"]: o for o in out["objects"]}
+    assert "note" not in out
+    assert by_frame[om.VENDOR_FRAME]["distance_m"] == 1.0
+    assert "distance_m" not in by_frame["vendor_odom@1"], "another run's origin"
