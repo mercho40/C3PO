@@ -15,6 +15,7 @@ const skill = (name: string, dangerLevel: "low" | "medium" | "high") =>
     dangerLevel,
     description: `${name} description`,
     parameters: { type: "object", properties: {} },
+    works: { sim: true, real: true },
   }) as never;
 
 describe("OpenAI Realtime session contract", () => {

@@ -133,34 +133,40 @@ describe("buildSystemPrompt", () => {
     ]);
   });
 
+  // Watched on both targets: only the rule under test decides.
+  const works = { sim: true, real: true };
+
   test("the model is never handed a way to drop the robot", () => {
     for (const mode of ["operator", "voice"] as const) {
       expect(
-        offeredInMode({ name: "zero_torque", dangerLevel: "high" }, mode),
+        offeredInMode(
+          { name: "zero_torque", dangerLevel: "high", works },
+          mode,
+        ),
       ).toBe(false);
     }
     // Not even typed: a "make it safe" after PARAR must not collapse the robot.
     for (const mode of ["operator", "voice"] as const) {
-      expect(offeredInMode({ name: "damp", dangerLevel: "low" }, mode)).toBe(
-        false,
-      );
+      expect(
+        offeredInMode({ name: "damp", dangerLevel: "low", works }, mode),
+      ).toBe(false);
     }
   });
 
   test("overheard speech is never offered a high-danger skill", () => {
-    const high = { name: "arm_navigation", dangerLevel: "high" };
-    const low = { name: "wave", dangerLevel: "low" };
+    const high = { name: "arm_navigation", dangerLevel: "high", works };
+    const low = { name: "wave", dangerLevel: "low", works };
     expect(offeredInMode(high, "voice")).toBe(false);
     expect(offeredInMode(low, "voice")).toBe(true);
-    expect(offeredInMode({ name: "say", dangerLevel: "low" }, "voice")).toBe(
-      false,
-    );
+    expect(
+      offeredInMode({ name: "say", dangerLevel: "low", works }, "voice"),
+    ).toBe(false);
     // A typed operator turn keeps the full catalogue.
     expect(offeredInMode(high, "operator")).toBe(true);
   });
 
   test("voice is offered T2 skills: the bridge's console confirmation gates them", () => {
-    const t2 = { name: "move_arm", dangerLevel: "high", tier: "T2" };
+    const t2 = { name: "move_arm", dangerLevel: "high", tier: "T2", works };
     expect(offeredInMode(t2, "voice")).toBe(true);
     expect(
       offeredInMode(
@@ -174,6 +180,45 @@ describe("buildSystemPrompt", () => {
       offeredInMode({ ...t2, name: "arm_navigation", tier: "T1" }, "voice"),
     ).toBe(false);
     expect(offeredInMode(t2, "operator")).toBe(true);
+  });
+
+  test("voice is not offered a posture nobody has watched work: the bridge sends it live", () => {
+    const never = { sim: false, real: false };
+    const t1 = (name: string, tier?: string) =>
+      offeredInMode({ name, dangerLevel: "low", tier, works: never }, "voice");
+    for (const name of ["squat", "sit_g1", "dance", "lie_up"])
+      expect(t1(name, "T1")).toBe(false);
+    // An older bridge's catalogue has no tier: that is not T0.
+    expect(t1("squat")).toBe(false);
+    // Watched on one target is enough.
+    expect(
+      offeredInMode(
+        {
+          name: "wave",
+          dangerLevel: "low",
+          tier: "T1",
+          works: { sim: false, real: true },
+        },
+        "voice",
+      ),
+    ).toBe(true);
+    // T0 never moves, T2 waits for «Confirmar», cancel_navigation only ends motion.
+    expect(t1("arm_state", "T0")).toBe(true);
+    expect(t1("pick", "T2")).toBe(true);
+    expect(t1("cancel_navigation", "T1")).toBe(true);
+    // A typed operator turn keeps them.
+    expect(
+      offeredInMode(
+        { name: "squat", dangerLevel: "low", tier: "T1", works: never },
+        "operator",
+      ),
+    ).toBe(true);
+  });
+
+  test("the prompt never says an untested skill produces no motion", async () => {
+    const prompt = await buildSystemPrompt();
+    expect(prompt).not.toContain("produce no motion");
+    expect(prompt).toContain("untested motion, not a no-op");
   });
 
   test("every skill is listed with its actual sim/real availability tag", async () => {

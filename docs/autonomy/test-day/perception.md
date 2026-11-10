@@ -147,6 +147,17 @@ is not, measure the mount and put the numbers in `~/.c3po/perception.env`
 (`C3PO_CAMERA_PITCH_DEG=…`, no rebuild), then read it again. Write down both. This changes
 every range: person rule, object memory, `find_object`.
 
+**Per-class bars (pending robot test, 8575b2d).** Only on a vision image rebuilt from this
+branch (`c3po perception build vision`). For each class that fired on the wrong thing in
+the sanity check above, add a bar to `~/.c3po/perception.env`, for example
+`C3PO_VISION_CLASS_CONF="cooker=0.6,thumbtack=off"` (quoted), then `c3po perception stop` and
+`c3po up` again. **Expect:** `docker logs c3po-perception-vision` shows the start line with
+`class_conf=cooker=0.6,thumbtack=inf` (`off` is printed as `inf`), `class_conf.ignored` for
+any entry it refused (a `person` entry always is), and `class_conf.unknown_labels` for a name
+the vocabulary does not have. The named classes stop showing up where they did; every
+other class, and `person` above all, is still reported as before. Write down each bar you
+kept.
+
 ## 5. Capture the test set (~50 classes x 0.5 / 1.5 / 3 m, ~10 frames each)
 
 The capture opens the camera itself, so stop the detector first (`c3po perception stop`).

@@ -31,7 +31,14 @@ export type PendingConfirmation = {
 /** How long a refusal stays confirmable. Older, the world has moved on: ask again. */
 export const PENDING_TTL_MS = 120_000;
 
+// Keyed by owner AND call id: the id is the model's, and two admins' turns can
+// mint the same one; keyed by id alone, the second card replaced the first.
 const pending = new Map<string, PendingConfirmation>();
+const keyOf = (ownerId: string, id: string) => JSON.stringify([ownerId, id]);
+// Bumped by every clearPending; a taken card remembers the epoch it was taken
+// in, so a grant that fails after a PARAR cannot put it back.
+let stopEpoch = 0;
+const takenIn = new WeakMap<PendingConfirmation, number>();
 
 /** Key order independent, so the bound-arguments check compares values. */
 export function canonicalArgs(v: unknown): string {
@@ -55,16 +62,16 @@ export function notePending(
   now = Date.now(),
 ): void {
   const key = canonicalArgs(p.args);
-  for (const [id, q] of pending) {
+  for (const [k, q] of pending) {
     // The same call asked again replaces the older card instead of stacking.
     const same =
       q.ownerId === p.ownerId &&
       q.chatId === p.chatId &&
       q.tool === p.tool &&
       canonicalArgs(q.args) === key;
-    if (same || !fresh(q, now)) pending.delete(id);
+    if (same || !fresh(q, now)) pending.delete(k);
   }
-  pending.set(p.id, { ...p, at: now });
+  pending.set(keyOf(p.ownerId, p.id), { ...p, at: now });
 }
 
 export function listPending(
@@ -89,11 +96,12 @@ export function takePending(
   args: unknown,
   now = Date.now(),
 ): PendingConfirmation | "not_pending" | "args_mismatch" {
-  const p = pending.get(id);
-  if (!p || p.ownerId !== ownerId || !fresh(p, now)) return "not_pending";
+  const p = pending.get(keyOf(ownerId, id));
+  if (!p || !fresh(p, now)) return "not_pending";
   if (p.tool !== tool || canonicalArgs(p.args) !== canonicalArgs(args))
     return "args_mismatch";
-  pending.delete(id);
+  pending.delete(keyOf(ownerId, id));
+  takenIn.set(p, stopEpoch);
   return p;
 }
 
@@ -103,19 +111,24 @@ export function dropPending(
   ownerId: string,
   tool: string,
 ): PendingConfirmation | null {
-  const p = pending.get(id);
-  if (!p || p.ownerId !== ownerId || p.tool !== tool) return null;
-  pending.delete(id);
+  const p = pending.get(keyOf(ownerId, id));
+  if (!p || p.tool !== tool) return null;
+  pending.delete(keyOf(ownerId, id));
   return p;
 }
 
-/** Back on the list: the grant failed, so nothing ran. */
+/**
+ * Back on the list: the grant failed, so nothing ran. Unless a PARAR cleared
+ * the cards while it was in flight: the stop wins, the card stays gone.
+ */
 export function restorePending(p: PendingConfirmation): void {
-  pending.set(p.id, p);
+  if ((takenIn.get(p) ?? stopEpoch) !== stopEpoch) return;
+  pending.set(keyOf(p.ownerId, p.id), p);
 }
 
-/** Tests only. */
+/** Every card, everyone's: PARAR and «Reanudar» (turns.ts, routes/safety.ts). */
 export function clearPending(): void {
+  stopEpoch++;
   pending.clear();
 }
 

@@ -108,16 +108,16 @@ export async function appendMessage(opts: {
   // `generateMessageId` (see routes/agent.ts).
   const id = opts.id || crypto.randomUUID();
 
-  const write = (messageId: string) =>
-    db
+  const write = (tx: Pick<typeof db, "insert">, messageId: string) =>
+    tx
       .insert(chatMessage)
       .values({
         id: messageId,
         chatId: opts.chatId,
         role: opts.role,
         parts: opts.parts,
-        // Computed in the INSERT so concurrent appends can't both read the same
-        // max and collide; the unique (chat_id, seq) index is the backstop.
+        // Read under the chat row's lock (below), so two appends never share
+        // a max; the unique (chat_id, seq) index is the backstop.
         seq: sql`(select coalesce(max(${chatMessage.seq}), 0) + 1 from ${chatMessage} where ${chatMessage.chatId} = ${opts.chatId})`,
       })
       .onConflictDoUpdate({
@@ -133,20 +133,24 @@ export async function appendMessage(opts: {
       })
       .returning({ id: chatMessage.id });
 
-  // No row back means the id exists but belongs to another chat, so `setWhere`
-  // held the update back. Keep the message; give it an id of our own.
-  let finalId = id;
-  if ((await write(id)).length === 0) {
-    finalId = crypto.randomUUID();
-    await write(finalId);
-  }
+  // The chat row's lock first, held to commit: a concurrent append to the same
+  // chat waits, then its max(seq) sees this row. Without it both read the same
+  // max, and all but one failed on the (chat_id, seq) index.
+  return db.transaction(async (tx) => {
+    await tx
+      .update(chat)
+      .set({ updatedAt: new Date() })
+      .where(eq(chat.id, opts.chatId));
 
-  await db
-    .update(chat)
-    .set({ updatedAt: new Date() })
-    .where(eq(chat.id, opts.chatId));
-
-  return finalId;
+    // No row back means the id exists but belongs to another chat, so `setWhere`
+    // held the update back. Keep the message; give it an id of our own.
+    let finalId = id;
+    if ((await write(tx, id)).length === 0) {
+      finalId = crypto.randomUUID();
+      await write(tx, finalId);
+    }
+    return finalId;
+  });
 }
 
 /**

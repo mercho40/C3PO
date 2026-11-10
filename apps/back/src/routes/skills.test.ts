@@ -653,6 +653,44 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
     expect(fed[0]).toStartWith("El operador confirmó y se ejecutó pick");
     expect(fed[1]).toBe("Confirmado: ejecuté pick.");
   });
+
+  // The bridge mints a fresh grant on Confirmar, so only back can void the card.
+  test("a card asked before PARAR is not confirmable after «Reanudar»", async () => {
+    const { safetyRoutes } = await import("./safety");
+    refuse();
+    expect((await invoke("stop_everything", {})).status).toBe(200);
+    const ack = await safetyRoutes.handle(
+      new Request("http://localhost/safety/ack", { method: "POST" }),
+    );
+    expect(ack.status).toBe(200);
+    const res = await post("pick", "confirm", { callId: "call_1", args: pick });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe("not_pending");
+    expect(bridge.callTool).not.toHaveBeenCalledWith("pick", pick);
+  });
+
+  test("PARAR alone voids it", async () => {
+    refuse();
+    await invoke("stop_everything", {});
+    const res = await post("pick", "confirm", { callId: "call_1", args: pick });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(409);
+  });
+
+  test("so does «Reanudar» after a stop back never saw (headset, remote)", async () => {
+    const { safetyRoutes } = await import("./safety");
+    refuse();
+    await safetyRoutes.handle(
+      new Request("http://localhost/safety/ack", { method: "POST" }),
+    );
+    const res = await post("pick", "confirm", { callId: "call_1", args: pick });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(409);
+    expect(forwarded.some((f) => f.url.endsWith("/safety/confirm"))).toBe(
+      false,
+    );
+  });
 });
 
 /**

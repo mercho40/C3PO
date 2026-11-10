@@ -59,9 +59,9 @@ async def _await_fsm(target: int, timeout_s: float) -> int | None:
 
     from bridge.sdk.state import get_sampler
 
-    deadline = time.time() + timeout_s
+    deadline = time.monotonic() + timeout_s  # an NTP step must not move it
     latest: int | None = None
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         try:
             latest = get_sampler().get_arm_state().get("fsm_id")
         except Exception as exc:

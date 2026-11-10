@@ -163,3 +163,30 @@ def test_peer_xml_embeds_pinned_interface_and_host():
     # Unicast peers only: multicast is what we can't rely on across the Mac's
     # Wi-Fi, and onboard the peer address is enough to find the control board.
     assert "<AllowMulticast>false</AllowMulticast>" in xml
+
+
+# --- the onboard default ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("sim_mode", "interface", "expected"),
+    [
+        ("real", None, "eth0"),  # the robot's gitignored .env leaves DDS_INTERFACE blank
+        ("real", "wlan0", "wlan0"),  # an explicit value still wins
+        ("isaac", None, None),  # a dev machine keeps autodetermine
+    ],
+)
+def test_real_mode_pins_eth0_when_nothing_is_set(monkeypatch, sim_mode, interface, expected):
+    """Onboard, autodetermine picks among eth0/wlan0/docker0 arbitrarily."""
+    import sys
+    import types
+
+    pinned = []
+    fake = types.SimpleNamespace(ChannelFactoryInitialize=lambda d, nic: pinned.append(nic))
+    monkeypatch.setitem(sys.modules, "unitree_sdk2py.core.channel", fake)
+    monkeypatch.setattr(connection, "available_interfaces", lambda: ["lo", "eth0", "wlan0"])
+    monkeypatch.delenv("CYCLONEDDS_URI", raising=False)
+
+    connection.init_dds(robot_host="127.0.0.1", interface=interface, sim_mode=sim_mode)
+
+    assert pinned == [expected]

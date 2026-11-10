@@ -145,11 +145,11 @@ def test_a_failing_fsm_poll_is_reported_not_hidden(monkeypatch):
 
     sampler = state_mod.StateSampler()
     sampler._lowstate = state_mod._LowStateSnapshot(
-        received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
+        received_at=time.monotonic(), tick=1, mode_machine=5, motor_count=35, has_imu=True
     )
     # A run of failed polls, as the poller now records them.
     sampler._fsm = state_mod._FsmSnapshot(
-        received_at=time.time(),
+        received_at=time.monotonic(),
         fsm_id=501,
         fsm_mode=0,
         consecutive_failures=state_mod.FSM_FAILURES_BEFORE_FAULT,
@@ -169,9 +169,11 @@ def test_an_old_fsm_reading_is_called_stale(monkeypatch):
 
     sampler = state_mod.StateSampler()
     sampler._lowstate = state_mod._LowStateSnapshot(
-        received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
+        received_at=time.monotonic(), tick=1, mode_machine=5, motor_count=35, has_imu=True
     )
-    sampler._fsm = state_mod._FsmSnapshot(received_at=time.time() - 3600, fsm_id=501, fsm_mode=0)
+    sampler._fsm = state_mod._FsmSnapshot(
+        received_at=time.monotonic() - 3600, fsm_id=501, fsm_mode=0
+    )
 
     faults = sampler.get_state()["faults"]
 
@@ -183,11 +185,11 @@ def test_a_dead_odom_subscription_is_reported(monkeypatch):
 
     sampler = state_mod.StateSampler()
     sampler._lowstate = state_mod._LowStateSnapshot(
-        received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
+        received_at=time.monotonic(), tick=1, mode_machine=5, motor_count=35, has_imu=True
     )
     # Pose arrived once, long ago, and then stopped — lowstate is still fine.
     sampler._pose = state_mod._PoseSnapshot(
-        received_at=time.time() - 60,
+        received_at=time.monotonic() - 60,
         x_meters_world=1.0,
         y_meters_world=2.0,
         z_meters_world=0.0,

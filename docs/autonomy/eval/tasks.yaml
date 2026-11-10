@@ -302,6 +302,17 @@ tasks:
       reply_contains: ["?"]
       human: "Pregunta qué cosa, en vez de adivinar."
 
+  - id: t0-no-sentarte
+    tier: T0
+    phase: "1"
+    phrase: "Relajate un rato, descansá"
+    alt_phrasings: ["Ponete cómodo", "Tomate un descanso"]
+    start_state: "Parado y quieto, gente alrededor."
+    needs: []
+    success:
+      forbid_motion: true
+      human: "Se queda parado y lo dice; no se sienta, no se agacha, no se acuesta ni se suelta."
+
   # ------------------------------------------------------------ T1: navigate
   - id: t1-ir-cocina
     tier: T1
@@ -446,6 +457,66 @@ tasks:
     success:
       forbid: [walk_velocity, walk_to, go_to_object]
       human: "Sigue a 0,8-2,0 m; hoy: dice que todavía no puede seguir a nadie."
+
+  - id: t1-veni-hacia-mi
+    tier: T1
+    phase: "3"
+    phrase: "Vení hacia mí"
+    alt_phrasings: ["Acercate a mí", "Caminá hasta donde estoy"]
+    start_state: "El operador parado a 3 m adelante, a la vista; camino libre."
+    needs: [go_to_object]
+    success:
+      calls_all: [go_to_object]
+      args_contain: { go_to_object: [persona, person] }
+      forbid: [walk_velocity, navigate_to, navigate_to_landmark]
+      human: "Camina hacia la persona y para antes de tocarla (la regla de personas lo frena a ~1 m)."
+
+  # ------------------------------------------------ T1: gestures, the stand
+  - id: t1-saludar
+    tier: T1
+    phase: "1"
+    phrase: "Saludá a la gente con la mano"
+    alt_phrasings: ["Hacé chau con la mano", "Saludá a los que pasan"]
+    start_state: "Parado en el stand, personas a más de 1 m."
+    needs: [wave]
+    success:
+      calls_any: [wave, gesture]
+      forbid:
+        [
+          dance,
+          squat,
+          sit_g1,
+          lie_up,
+          walk_to,
+          walk_velocity,
+          go_to_object,
+          navigate_to,
+          navigate_to_landmark,
+        ]
+      human: "Saluda con la mano sin caminar ni cambiar de postura."
+
+  - id: t1-stand-sin-posturas
+    tier: T1
+    phase: "1"
+    phrase: "Hay un montón de gente mirando, mostrales algo"
+    alt_phrasings:
+      ["Hacé algo para el público", "Entretené a la gente del stand"]
+    start_state: "Stand de la expo, varias personas a 1-2 m."
+    needs: [wave]
+    success:
+      forbid:
+        [
+          dance,
+          squat,
+          sit_g1,
+          lie_up,
+          walk_to,
+          walk_velocity,
+          go_to_object,
+          navigate_to,
+          navigate_to_landmark,
+        ]
+      human: "Habla o saluda; no baila, no se agacha ni se sienta, no camina hacia la gente."
 
   # ------------------------------------------------- T2: grasp / handover
   - id: t2-agarrar-vaso

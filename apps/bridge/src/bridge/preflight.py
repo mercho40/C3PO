@@ -43,6 +43,7 @@ __all__ = [
     "bridge_base_from_env",
     "bridge_finding",
     "confirm_secret_finding",
+    "teleop_secret_finding",
     "console_camera_finding",
     "reads_through_back",
 ]
@@ -243,8 +244,8 @@ def bridge_base_from_env(env_text: Optional[str], shell_value: str = "") -> str:
     return "{}://{}".format(scheme, rest.split("/", 1)[0])
 
 
-def confirm_secret_finding(env_texts: Sequence[Optional[str]], shell_value: str = "") -> Finding:
-    """Does apps/back hold SAFETY_CONFIRM_SECRET? Without it «Confirmar» and «Reanudar» answer 503.
+def back_env_value(env_texts: Sequence[Optional[str]], key: str, shell_value: str = "") -> str:
+    """`key` as apps/back sees it. The shell wins, as `process.env` does.
 
     `env_texts` in Bun's order of increasing precedence (.env, .env.<NODE_ENV>, .env.local):
     a later file that names the key wins, as it does for back.
@@ -252,8 +253,12 @@ def confirm_secret_finding(env_texts: Sequence[Optional[str]], shell_value: str 
     merged: Dict[str, str] = {}
     for text in env_texts:
         merged.update(parse_env_file(text or ""))
-    value = shell_value.strip() or merged.get("SAFETY_CONFIRM_SECRET", "")
-    if value.strip():
+    return (shell_value.strip() or merged.get(key, "")).strip()
+
+
+def confirm_secret_finding(env_texts: Sequence[Optional[str]], shell_value: str = "") -> Finding:
+    """Does apps/back hold SAFETY_CONFIRM_SECRET? Without it «Confirmar» and «Reanudar» answer 503."""
+    if back_env_value(env_texts, "SAFETY_CONFIRM_SECRET", shell_value):
         return Finding(OK, "apps/back has SAFETY_CONFIRM_SECRET")
     return Finding(
         BAD,
@@ -264,6 +269,38 @@ def confirm_secret_finding(env_texts: Sequence[Optional[str]], shell_value: str 
             "Set it in apps/back/.env, the same value as the robot's apps/bridge/.env.",
         ],
     )
+
+
+def teleop_secret_finding(code: int, back_has_secret: bool) -> Optional[Finding]:
+    """Does the teleop socket want a token, and can apps/back mint one?
+
+    `code` is what :8767 answers a plain GET with no Origin and no token. The
+    handshake gate (`authorize` in teleop/server.py) answers 401 when
+    TELEOP_SECRET is set; without one it lets the request through to the
+    WebSocket layer, which answers 426 Upgrade Required. Anything else says
+    nothing about the secret, and reachability is reported on its own line.
+    """
+    if code == 401:
+        if back_has_secret:
+            return Finding(OK, "teleop socket requires a token, and apps/back has TELEOP_SECRET")
+        return Finding(
+            BAD,
+            "the teleop socket requires a token, but apps/back has no TELEOP_SECRET",
+            [
+                "back hands the headset no token, so every teleop connect is refused (401).",
+                "Set it in apps/back/.env, the same value as the robot's apps/bridge/.env.",
+            ],
+        )
+    if code == 426:
+        return Finding(
+            WARN,
+            "the teleop socket takes no token — any LAN client can open it and drive",
+            [
+                "TELEOP_SECRET is empty in the robot's apps/bridge/.env.",
+                "Set the same value there and in apps/back/.env, then `c3po up teleop`.",
+            ],
+        )
+    return None
 
 
 def bridge_finding(base: str, state: str) -> Finding:
@@ -923,18 +960,15 @@ def _local_section(repo_root: str) -> Section:
         )
     findings.append(
         confirm_secret_finding(
-            [
-                _read(os.path.join(repo_root, "apps", "back", name))
-                for name in (
-                    ".env",
-                    ".env." + (os.environ.get("NODE_ENV") or "development"),
-                    ".env.local",
-                )
-            ],
+            [_read(os.path.join(repo_root, "apps", "back", name)) for name in _back_env_files()],
             os.environ.get("SAFETY_CONFIRM_SECRET", ""),
         )
     )
     return Section("1. This machine", findings)
+
+
+def _back_env_files() -> Tuple[str, ...]:
+    return (".env", ".env." + (os.environ.get("NODE_ENV") or "development"), ".env.local")
 
 
 def _read(path: str) -> Optional[str]:
@@ -996,7 +1030,19 @@ def _robot_section(repo_root: str) -> Section:
     teleop = direct_service_finding(host, 8767, "teleop stream", True, "c3po up teleop", state)
     base = _bridge_base(repo_root)
     bridge_state, _ = _probe(base + "/", timeout=4)
-    return Section("2. Robot services", [bridge_finding(base, bridge_state), teleop])
+    findings = [bridge_finding(base, bridge_state), teleop]
+    if state == "alive":
+        back_secret = back_env_value(
+            [_read(os.path.join(repo_root, "apps", "back", n)) for n in _back_env_files()],
+            "TELEOP_SECRET",
+            os.environ.get("TELEOP_SECRET", ""),
+        )
+        secret = teleop_secret_finding(
+            _http_code("http://{}:8767/".format(host)), bool(back_secret)
+        )
+        if secret is not None:
+            findings.append(secret)
+    return Section("2. Robot services", findings)
 
 
 def _camera_section(repo_root: str) -> Section:

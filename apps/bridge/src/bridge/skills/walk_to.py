@@ -27,8 +27,12 @@ from bridge.skills._locomotion import (
     MAX_FWD_VEL,
     MAX_LAT_VEL,
     MAX_YAW_VEL,
+    POSE_STALE,
     TELEOP_TAKEOVER,
+    arm_hold_conflict,
+    fsm_conflict,
     maybe_report_progress,
+    pose_stale,
     teleop_conflict,
     send_velocity_async,
     stop_motion,
@@ -38,14 +42,20 @@ from bridge.skills.task_runtime import get_registry
 log = structlog.get_logger(__name__)
 
 RETARGET_PERIOD_S = 1.0
-# The skills behind the no_active_walk_task precondition: each loops velocity setpoints.
-WALK_SKILLS = ("walk_to", "turn", "walk_velocity")
+# The skills behind the no_active_walk_task precondition: each puts velocity on the base,
+# navigate_to through Nav2's cmd_vel and look_around through its turns.
+WALK_SKILLS = ("walk_to", "turn", "walk_velocity", "navigate_to", "look_around")
 
 
-def active_walk() -> str | None:
-    """The task_id of a walk already running, or None."""
+def active_walk(ignore: tuple[str, ...] = ()) -> str | None:
+    """The task_id of a walk already running, skills in `ignore` aside, or None."""
     return next(
-        (t.task_id for t in get_registry().list_active() if t.skill_name in WALK_SKILLS), None
+        (
+            t.task_id
+            for t in get_registry().list_active()
+            if t.skill_name in WALK_SKILLS and t.skill_name not in ignore
+        ),
+        None,
     )
 
 
@@ -94,6 +104,22 @@ async def run(
         task.ended_at = time.time()
         log.warning("walk_to.teleop_active", task_id=task.task_id)
         return task.to_dict()
+    conflict = arm_hold_conflict()
+    if conflict is not None:
+        task.status = "failed"
+        task.phase = "arm_held"
+        task.error = conflict
+        task.ended_at = time.time()
+        log.warning("walk_to.arm_held", task_id=task.task_id)
+        return task.to_dict()
+    conflict = fsm_conflict()
+    if conflict is not None:
+        task.status = "failed"
+        task.phase = "fsm_not_walkable"
+        task.error = conflict
+        task.ended_at = time.time()
+        log.warning("walk_to.fsm_not_walkable", task_id=task.task_id)
+        return task.to_dict()
 
     sampler = get_sampler()
 
@@ -115,6 +141,13 @@ async def run(
             task.error = "no pose available — sim_state hasn't been received"
             task.ended_at = time.time()
             log.warning("walk_to.no_pose", task_id=task.task_id)
+            return task.to_dict()
+        if pose_stale(sampler):
+            task.status = "failed"
+            task.phase = "pose_stale"
+            task.error = POSE_STALE
+            task.ended_at = time.time()
+            log.warning("walk_to.pose_stale", task_id=task.task_id)
             return task.to_dict()
 
         start_x = float(pose["x_meters_world"])
@@ -156,6 +189,7 @@ async def run(
         arrived = False
         cancelled = False
         taken_over = False
+        stale = False
         lost = False
         next_retarget = time.monotonic() + RETARGET_PERIOD_S
 
@@ -168,6 +202,9 @@ async def run(
             # no velocity, and the robot would hold our last setpoint.
             if teleop_conflict() is not None:
                 taken_over = True
+                break
+            if pose_stale(sampler):
+                stale = True
                 break
 
             state = sampler.get_state()
@@ -234,6 +271,11 @@ async def run(
             task.phase = "teleop_takeover"
             task.error = TELEOP_TAKEOVER
             log.warning("walk_to.teleop_takeover", task_id=task.task_id)
+        elif stale:
+            task.status = "failed"
+            task.phase = "pose_stale"
+            task.error = POSE_STALE
+            log.warning("walk_to.pose_stale", task_id=task.task_id)
         elif lost:
             task.status = "failed"
             task.phase = "target_lost"
