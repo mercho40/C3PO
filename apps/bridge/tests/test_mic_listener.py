@@ -758,3 +758,28 @@ def test_the_listener_upgrades_without_anyone_speaking(monkeypatch):
 
     texts = [i["text"] for i in items if i["kind"] == "speech"]
     assert texts == ["GPU TEXT"], texts
+
+
+async def test_the_voice_route_and_listen_look_up_audio_devices_off_the_event_loop(monkeypatch):
+    # describe_audio_source runs `arecord -l` (5 s timeout); on the loop it stalls the 50 Hz
+    # arm hold and the stop.
+    from bridge import mcp_server
+    from bridge.skills import listen as listen_mod
+
+    loop_thread = threading.get_ident()
+    threads = []
+
+    def describe():
+        threads.append(threading.get_ident())
+        return {"source": "multicast", "always_on": False}
+
+    lis, *_ = make([])
+    monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
+    monkeypatch.setattr(listen_mod, "describe_audio_source", describe)
+    monkeypatch.setattr(listen_mod, "available", lambda: (True, ""))
+    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(lis, "start", lambda: None)
+    response = await mcp_server.voice_json(None)
+    assert response.status_code == 200
+    await mcp_server.listen(wait_s=0)
+    assert len(threads) == 2 and loop_thread not in threads

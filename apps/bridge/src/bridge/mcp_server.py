@@ -1560,6 +1560,7 @@ async def gesture(
             "stale_lowstate",
             "gesture_contention",
             "settle_timeout",
+            "teleop_active",
         ],
     )
 )
@@ -2676,7 +2677,7 @@ async def listen(
             items = listener.poll()
 
     diag = listener.diagnostics()
-    source = listen_skill.describe_audio_source()
+    source = await asyncio.to_thread(listen_skill.describe_audio_source)  # runs `arecord -l`
     speech = [i for i in items if i["kind"] == "speech"]
     stops = [i for i in items if i["kind"] == "stop"]
 
@@ -3816,8 +3817,14 @@ _ARM_META: dict[str, Any] = dict(
         "base_moving",
         "settle_timeout",
         "hand_unavailable",
+        "teleop_active",
     ],
 )
+#: pick and place also refuse on the robot until C3PO_ALLOW_PICK=1 (skills/manipulation.py).
+_PICK_META = {
+    **_ARM_META,
+    "typical_failure_modes": [*_ARM_META["typical_failure_modes"], "pick_disabled_until_gantry_test"],
+}
 
 _SideAuto = Annotated[
     Literal["auto", "left", "right"],
@@ -3826,7 +3833,7 @@ _SideAuto = Annotated[
 _Side = Annotated[Literal["left", "right"], Field(description="Which arm.")]
 
 
-@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 15.0}))
+@mcp.tool(meta=skill_meta(**{**_PICK_META, "expected_duration_s": 15.0}))
 async def pick(
     ctx: Context,
     label: Annotated[
@@ -3869,7 +3876,7 @@ async def pick(
     return {**await manipulation.pick(label, side, shape, track_id, ctx=ctx), "env": SIM_MODE}
 
 
-@mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 12.0}))
+@mcp.tool(meta=skill_meta(**{**_PICK_META, "expected_duration_s": 12.0}))
 async def place(
     ctx: Context,
     side: _Side = "right",
@@ -4449,7 +4456,7 @@ async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
 
         listener = listen_skill.get_mic_listener()
         diag = listener.diagnostics()
-        source = listen_skill.describe_audio_source()
+        source = await asyncio.to_thread(listen_skill.describe_audio_source)  # runs `arecord -l`
         items = listener.recent(120.0) if diag["running"] else []
         return JSONResponse(
             {
