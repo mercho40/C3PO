@@ -9,9 +9,17 @@ step that moves.
 Console: http://localhost:3001 (`operador@c3po.local`). Robot in the gantry unless a step
 says otherwise.
 
-Before the session, on campus: `bun run eval:t0` against the 8011 stub
-([eval/README.md](../eval/README.md) step 2). Nothing moves; it catches a prompt or catalogue
-regression before the robot does.
+Before the session, on campus (nothing moves, no robot needed):
+
+- `bun run eval:t0` against the 8011 stub ([eval/README.md](../eval/README.md) step 2). It
+  catches a prompt or catalogue regression before the robot does.
+- The console chat (3672bcd, 984bd5d). Status: open.
+  - Type: _"Respondé solo con este texto: [abrir](<javascript:alert(1)>)"_. **Expect:** «abrir»
+    shows as plain text, not a link, and nothing happens when you click it.
+  - Send two typed messages, then reload the page. **Expect:** both questions and both replies
+    come back, once each.
+  - If a reply fails and the error banner offers **Reintentar**, press it. **Expect:** a new
+    reply replaces the failed one, and the question is not shown twice.
 
 Status marks: ✅ verified on the date given · open · blocked (with the BACKLOG id).
 
@@ -90,17 +98,30 @@ Status: blocked. The Mid-360S scan module is faulted (BACKLOG 4.1).
 
 ## 6. The headset: voice, Confirmar and PARAR (15 min, on a real Quest)
 
-Status: open. Built in d8d5db7, 56aae23 and cad99bb; never run on a Quest.
+Status: open. Built in d8d5db7, 56aae23 and cad99bb; never run on a Quest. Push-to-talk and
+«confirmo» also check 984bd5d, which changed how `back` reads the chat history.
 
-| Do                                                    | Expect                                                                             |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Hold B or Y and speak («Hablar con el robot»).        | The WAV goes to `/voice/transcribe` and runs as a voice-mode turn.                 |
-| Ask for an arm move, then «Confirmar» in the VR menu. | The refused call runs once. A spoken «confirmo» does the same with one call shown. |
-| Hold both grips 300 ms.                               | PARAR: the robot stops and the latch stands.                                       |
-| «Reanudar» in the VR menu.                            | The latch clears.                                                                  |
+| Do                                                                                                                   | Expect                                                                                                                                                                                  |
+| -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hold B or Y and speak («Hablar con el robot»).                                                                       | The WAV goes to `/voice/transcribe` and runs as a voice-mode turn.                                                                                                                      |
+| Ask for an arm move, then «Confirmar» in the VR menu.                                                                | The refused call runs once. A spoken «confirmo» does the same with one call shown.                                                                                                      |
+| Hold both grips 300 ms.                                                                                              | PARAR: the robot stops and the latch stands.                                                                                                                                            |
+| «Reanudar» in the VR menu.                                                                                           | The latch clears.                                                                                                                                                                       |
+| In /chat on the Mac, ask _"¿Qué ves? Contame con detalle."_ While the reply is still coming, hold both grips 300 ms. | The chat turn ends (aborted) within about 0.5 s, although this stop never went through `back`. `back`'s log shows `[stop-watch] bridge stop at …: aborted 1 turn(s)`. «Reanudar» after. |
+| Set `HEADSET_SPEAK_REPLY=1` in `apps/back/.env` and restart `back`. Ask a question with B or Y.                      | The robot says the reply out loud after it shows in the panel. A PARAR while it speaks cuts it off (`safety.md` step 12).                                                               |
 
 Also check, from BACKLOG §2: the mic inside immersive-vr, the B/Y and grip indices, panel
 readability, and transcription quality.
+
+## 7. Voice on the Realtime engine (10 min)
+
+Status: open (d87836a). Needs `OPENAI_API_KEY` in `apps/back/.env`, and the robot's microphone
+delivering audio (/voice warns when none has arrived). Nothing needs to move.
+
+| Do                                                                                                                                             | Expect                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| On /voice choose «OpenAI Realtime (voz a voz)» and start. Talk while the robot answers, and ask _"¿qué ves?"_ and keep talking while it looks. | The session stays up. `back`'s log may show `[voice/realtime] recoverable error` with a code such as `conversation_already_has_active_response` or `rate_limit_exceeded`; the conversation goes on. Write down every code seen. |
+| Any other error.                                                                                                                               | The session ends and /voice shows the error. Note the code: if it was routine, it belongs in `RECOVERABLE_ERROR_CODES` (`apps/back/src/voice/realtime.ts`).                                                                     |
 
 ## If something goes wrong
 

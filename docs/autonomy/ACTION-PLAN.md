@@ -1624,11 +1624,11 @@ Code is done; each needs the robot (or the Quest) to confirm:
 - [ ] The spoken stop with real voices at 1 m and 3 m; record «detener» (safety.md 13).
 - [ ] Geofence trips at about 3 m and odometry stays under 1 s old while Nav2 drives (safety.md 14).
 - [ ] Nav2 armed with the lidar faulted: `obstacles_fresh: false`, `obstacle_source_stale` (safety.md 15).
-- [ ] A headset PARAR ends back's agent turns within about 0.5 s (stop-watch).
-- [ ] A cancelled gesture releases the arm on the real arm service.
-- [ ] B8 with Piper on the robot and the Quest (`HEADSET_SPEAK_REPLY=1`).
-- [ ] Face blur recall on expo frames (small, tilted, backlit faces, people 2–4 m away), its latency on the Orin, and that `look` still recognises people and gestures.
+- [ ] A headset PARAR ends back's agent turns within about 0.5 s (stop-watch) (return-checklist §6).
+- [ ] A cancelled gesture releases the arm on the real arm service (safety.md 16).
+- [ ] B8 with Piper on the robot and the Quest (`HEADSET_SPEAK_REPLY=1`) (return-checklist §6, safety.md 12).
+- [ ] Face blur recall on expo frames (small, tilted, backlit faces, people 2–4 m away), its latency on the Orin, and that `look` still recognises people and gestures (vlm.md §10).
 - [ ] Whether the arm really touches the torso in the planned picks (after I1, on the gantry).
-- [ ] Realtime voice error codes seen live (`VOICE_ENGINE=realtime`).
-- [ ] In the browser: a `javascript:` link in a reply is plain text; typed chat send, reload and Retry; VR push-to-talk and spoken confirm after the history change.
-- [ ] The first CI run of the `voice` job and the MuJoCo step (GitHub).
+- [ ] Realtime voice error codes seen live (`VOICE_ENGINE=realtime`) (return-checklist §7).
+- [ ] In the browser: a `javascript:` link in a reply is plain text; typed chat send, reload and Retry; VR push-to-talk and spoken confirm after the history change. The browser part needs no robot (return-checklist, "Before the session"); the VR part is return-checklist §6.
+- [x] The first CI run of the `voice` job and the MuJoCo step (GitHub): run 42433939292 passed. The `voice` job ran 85 tests (1 xfail, the 4 whisper tests skipped). The MuJoCo step: 16 passed, 6 xfailed (the six pick plans, I1's acceptance test).
