@@ -381,6 +381,19 @@ grants exactly `systemctl {start,stop,restart} c3po-bridge.service`, plus the tw
 commands `systemctl stop master_service` and `pkill -9 -x videohub_pc4`. Every other sudo
 command still needs `ssh -t` and the password.
 
+**After the autonomy PRs merge** (#7 → #8 → #9 into `integrate/october`, then #3 into
+`main`), keep deploying `feat/autonomy`. On the Mac, bring `main` into it first, then push as
+above:
+
+```bash
+git fetch origin && git switch feat/autonomy && git merge origin/main
+# run the tests, then the push above
+```
+
+Never push `main` to the robot. If the PRs land as a squash or a rebase, `main` does not
+contain the commits the robot runs, so `git merge --ff-only incoming` refuses, and the only
+way past that is a force, which this section forbids.
+
 Re-running the installer is intentional: unit and root-owned config changes are applied
 and validated in the same operation. `c3po restart` restarts only the bridge; perception
 containers are untouched. `bridge_sync` handles dependency changes and re-applies the SDK
