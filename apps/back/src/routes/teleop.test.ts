@@ -2,7 +2,15 @@
  * /teleop/token: admins only, and the token is the one the bridge checks.
  * Auth is mocked as in safety.test.ts.
  */
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
 
 let sessionUser: { id: string; role: string | null } | null = null;
 mock.module("#back/lib/auth.js", () => ({
@@ -22,11 +30,25 @@ const get = () =>
   teleopRoutes.handle(new Request("http://localhost/teleop/token"));
 
 const savedSecret = process.env.TELEOP_SECRET;
+const realFetch = globalThis.fetch;
+/** What the bridge answers back's clock probe: a Date header, or nothing. */
+let bridgeDate: string | null = null;
+let probed: string[] = [];
 
 describe("/teleop/token", () => {
   beforeEach(() => {
     sessionUser = null;
     process.env.TELEOP_SECRET = "s3cret";
+    bridgeDate = null;
+    probed = [];
+    globalThis.fetch = (async (url: string) => {
+      probed.push(String(url));
+      if (bridgeDate === null) throw new TypeError("fetch failed");
+      return new Response("{}", { headers: { date: bridgeDate } });
+    }) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
   });
 
   afterAll(() => {
@@ -49,6 +71,16 @@ describe("/teleop/token", () => {
     const now = Date.now() / 1000;
     expect(exp).toBeGreaterThan(now);
     expect(exp).toBeLessThanOrEqual(now + TELEOP_TOKEN_TTL_S + 1);
+  });
+
+  // The Jetson has no RTC: its clock, which checks the expiry, is not ours.
+  test("the expiry is minted on the robot's clock, read off the bridge", async () => {
+    sessionUser = { id: "u1", role: "admin" };
+    const robotNow = Math.floor(Date.now() / 1000) - 2 * 3600;
+    bridgeDate = new Date(robotNow * 1000).toUTCString();
+    const { token } = (await (await get()).json()) as { token: string };
+    expect(Number(token.split(".")[0])).toBe(robotNow + TELEOP_TOKEN_TTL_S);
+    expect(probed.map((u) => new URL(u).pathname)).toEqual(["/safety/status"]);
   });
 
   test("no secret: a null token, so the bridge's no-secret mode still works", async () => {

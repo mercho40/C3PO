@@ -57,6 +57,11 @@ export const auth = betterAuth({
     },
   },
   trustedOrigins: [env.WEB_URL],
+  // Better Auth only turns this on under NODE_ENV=production, which nothing
+  // here sets. Keyed on the socket address (auth-plugin.ts): the browser signs
+  // in straight to back. /get-session is exempt: the console's server hooks
+  // ask it for every operator from one address, and a token is not guessable.
+  rateLimit: { enabled: true, customRules: { "/get-session": false } },
   // Joined session reads — one query instead of N on getSession.
   // Lives under advanced.database; better-auth 1.7 dropped `experimental.joins`.
   advanced: { database: { joins: true } },

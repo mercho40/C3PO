@@ -27,7 +27,7 @@ if (await envFile.exists()) {
   }
 }
 
-const BASE_URL = process.env.AGENT_BASE_URL ?? "http://ia.ort.edu.ar/api/v1";
+const BASE_URL = process.env.AGENT_BASE_URL ?? "https://ia.ort.edu.ar/api/v1";
 const MODEL = process.env.AGENT_MODEL ?? "tic-chat";
 const API_KEY = process.env.AGENT_API_KEY;
 

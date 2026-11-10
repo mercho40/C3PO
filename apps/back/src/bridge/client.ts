@@ -15,7 +15,10 @@
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { bridgeUrl, unreachableHint } from "./url";
 
@@ -113,6 +116,17 @@ export function sessionLost(err: unknown): boolean {
 }
 
 /**
+ * Whether the bridge no longer knows our session, as after `c3po restart`.
+ * Its session manager answers 404 before the request reaches any tool (MCP
+ * spec: 404 means "start a new session"), so the request is safe to send ONCE
+ * more on a fresh session. Without that, the first call after a restart, PARAR
+ * included, failed as an unreachable bridge.
+ */
+export function sessionGone(err: unknown): boolean {
+  return err instanceof StreamableHTTPError && err.code === 404;
+}
+
+/**
  * Give up on a session after `sessionLost`. Clears the shared slot only if it
  * still holds THIS session: a failure that lands after a reconnect must not
  * drop — and leak — the newer one.
@@ -185,6 +199,8 @@ export async function callTool(
   // Aborting it cancels the call on the bridge, on purpose: an agent turn
   // nobody follows any more must not keep a walk going. Never for a stop.
   signal?: AbortSignal,
+  /** Internal: this is the one retry after `sessionGone`. */
+  retried = false,
 ): Promise<unknown> {
   // A timeout CANCELS the call on the bridge (`notifications/cancelled`),
   // which for a skill halfway through moving the robot — or stopping it — is
@@ -210,6 +226,7 @@ export async function callTool(
     // session, and closing the session would take PARAR in flight with it.
     if (signal?.aborted) throw new BridgeToolError(name, "aborted");
     if (sessionLost(err)) abandon(pending, client);
+    if (sessionGone(err) && !retried) return callTool(name, args, signal, true);
     throw failure(name, err);
   }
 
@@ -242,7 +259,10 @@ export async function callTool(
  */
 const LIST_TOOLS_TIMEOUT_MS = 3000;
 
-export async function listTools(): Promise<
+export async function listTools(
+  /** Internal: this is the one retry after `sessionGone`. */
+  retried = false,
+): Promise<
   Array<{
     name: string;
     description?: string;
@@ -270,6 +290,7 @@ export async function listTools(): Promise<
     // A slow catalogue refresh is a timeout, and the session is still carrying
     // whatever else is in flight — so only a lost session is torn down.
     if (sessionLost(err)) abandon(pending, client);
+    if (sessionGone(err) && !retried) return listTools(true);
     throw new BridgeUnavailableError(err);
   }
 }
