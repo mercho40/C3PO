@@ -11,25 +11,28 @@ Bun + Turborepo monorepo.
 ```
 apps/
   back/         Elysia API + Better Auth + Drizzle/PostgreSQL — control plane (port 3000)
-  web/          SvelteKit 5 operator console (port 3001)
+  web/          SvelteKit (Svelte 5) operator console (port 3001)
   bridge/       Python 3.12 sidecar (uv) — MCP server, Unitree SDK, DDS
   perception/   ROS 2 perception + navigation containers for the robot's Jetson
 docs/           Architecture, decisions, operations, robot reference
 scripts/robot/  Onboard implementation; one operator CLI: `c3po`
-packages/       Reserved for shared TS packages
+packages/
+  robot-scripts/  Turbo `test` task for the shell scripts (scripts/tests/run.sh; fails without shellcheck)
 ```
 
 ## Documentation
 
-| Doc                                                | What it answers                                                       |
-| -------------------------------------------------- | --------------------------------------------------------------------- |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)     | How the system fits together — layers, topology, safety model         |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md)           | Why it is built this way — decision records with rationale            |
-| [`docs/OPERATIONS.md`](docs/OPERATIONS.md)         | Deploying and operating — topology, stack controls, addressing        |
-| [`docs/ROBOT-API.md`](docs/ROBOT-API.md)           | The G1's reverse-engineered control API — services, api_ids, FSM      |
-| [`docs/ROBOT-HARDWARE.md`](docs/ROBOT-HARDWARE.md) | What the physical robot presents — network, peripherals, cohabitation |
-| [`docs/MONDAY-RUNBOOK.md`](docs/MONDAY-RUNBOOK.md) | Ordered first hardware window — gates, pass criteria, rollbacks       |
-| `apps/*/README.md`                                 | Developing each app                                                   |
+| Doc                                                                 | What it answers                                                       |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                      | How the system fits together — layers, topology, safety model         |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md)                            | Why it is built this way — decision records with rationale            |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md)                          | Deploying and operating — topology, stack controls, addressing        |
+| [`docs/ROBOT-API.md`](docs/ROBOT-API.md)                            | The G1's reverse-engineered control API — services, api_ids, FSM      |
+| [`docs/ROBOT-HARDWARE.md`](docs/ROBOT-HARDWARE.md)                  | What the physical robot presents — network, peripherals, cohabitation |
+| [`return-checklist.md`](docs/autonomy/test-day/return-checklist.md) | The next robot session — the one dated list of what to test, in order |
+| [`docs/DEMO-RUNBOOK.md`](docs/DEMO-RUNBOOK.md)                      | The expo stand — what to show, its limits, what to do when it breaks  |
+| [`docs/autonomy/`](docs/autonomy/README.md)                         | Research and the phased autonomy plan (perception, nav, arms)         |
+| `apps/*/README.md`                                                  | Developing each app                                                   |
 
 ## Quickstart
 
@@ -47,8 +50,9 @@ cd apps/back && bun run db:migrate && cd ../..
 bun run dev
 
 # Real robot instead. The bridge only listens on the robot's loopback, so
-# tunnel to it first (the `c3po` ssh alias is g1-orin.local, by mDNS):
-ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po
+# tunnel to it first. robot_tunnel.sh keeps 8001 and 8767 up. On the cable,
+# pass your cable ssh alias instead (addressing: docs/OPERATIONS.md §2):
+./scripts/robot_tunnel.sh c3po
 bun run dev:robot
 ```
 
@@ -60,15 +64,16 @@ entries.
 
 ## Commands
 
-| Command               | Description                                           |
-| --------------------- | ----------------------------------------------------- |
-| `bun run dev`         | Start the existing local development servers          |
-| `bun run dev:robot`   | Start API and web against the robot (tunnel first)    |
-| `bun run start`       | Start production builds against the configured bridge |
-| `bun run build`       | Build the monorepo                                    |
-| `bun run check-types` | Type-check across the monorepo                        |
-| `bun run test`        | Test across the monorepo                              |
-| `bun run format`      | Format with Prettier                                  |
+| Command                    | Description                                                             |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `bun run dev`              | Start the existing local development servers                            |
+| `bun run dev:robot`        | Start API and web against the robot (tunnel first)                      |
+| `scripts/robot_session.sh` | Robot session on the Mac: tunnel, robot internet, console, status table |
+| `bun run start`            | Start production builds against the configured bridge                   |
+| `bun run build`            | Build the monorepo                                                      |
+| `bun run check-types`      | Type-check across the monorepo                                          |
+| `bun run test`             | Test across the monorepo                                                |
+| `bun run format`           | Format with Prettier                                                    |
 
 On the robot, the corresponding integrated surface is `c3po up [profile]` and
 `c3po down`; see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). Per-app commands
