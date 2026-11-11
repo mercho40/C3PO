@@ -238,7 +238,8 @@ RECOVER_ATTEMPTS = 5
 # its own reconnect failing, the EIO it hit doing so, and every read after that.
 # A plain "Frame didn't arrive within N" is NOT here: that is a slow frame.
 _CAMERA_LOST = re.compile(
-    r"disconnected|errno=5\b|cannot be called before start\(\)", re.IGNORECASE
+    r"disconnected|errno=(?:5|19)\b|no such device|cannot be called before start\(\)",
+    re.IGNORECASE,
 )
 
 

@@ -203,6 +203,8 @@ def test_a_slow_frame_is_not_a_lost_camera(monkeypatch):
 @pytest.mark.parametrize("msg, lost", [
     (LOST, True),
     ("wait_for_frames cannot be called before start()", True),
+    ("xioctl(VIDIOC_QBUF) failed, errno=19 Last Error: No such device", True),
+    ("map_device_descriptor: No such device", True),
     (TIMEOUT, False),
     ("incomplete frameset from the D435i", False),
 ])
