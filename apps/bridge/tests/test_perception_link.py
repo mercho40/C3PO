@@ -286,6 +286,18 @@ def test_a_fresh_report_is_returned_with_its_age():
     assert link.reports_received == 1
 
 
+def test_a_detections_support_surface_reaches_the_arm_planner_intact():
+    # skills/manipulation.py reads latest_report()["objects"] raw: nothing may strip it.
+    support = {"z_m": 0.012, "near_edge_m": 0.334, "inliers": 120, "rms_m": 0.0021,
+               "stamp_unix": 999_999.75}
+    cup = {"label": "cup", "range_m": 0.55, "bearing_deg": 1.0, "cam_xyz": [0.0, 0.1, 0.6],
+           "support": support}
+    link, _clock, _sent = make_link()
+    assert link._ingest_report(a_report(objects=[cup])) is True
+    report, _age = link.latest_report()
+    assert report is not None and report["objects"][0]["support"] == support
+
+
 def test_a_report_older_than_the_offline_threshold_is_dropped_entirely():
     # Returned-with-a-big-age would let a caller decide to trust it. Handing
     # back None routes it through world_model.build()'s explicit offline

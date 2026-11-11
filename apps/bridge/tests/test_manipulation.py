@@ -20,7 +20,12 @@ REACHABLE = (0.30, -0.15, 0.05)  # torso_link: counter height, in front of the r
 HANGING = [0.0, -0.15, 0.0, 1.5, 0.0, 0.0, 0.0]
 #: The thermos on the desk, 2026-11-05: planned fine, then the hand hit the desk edge.
 THERMOS = (0.35, -0.16, -0.03)
-PICK_PHASES = ["open", "clear", "over", "pre_grasp", "grasp", "close", "closing", "lift"]
+PICK_PHASES = [
+    *("curl", "curling", "clear", "over", "pre_grasp", "open", "opening"),
+    *("grasp", "close", "closing", "lift"),
+]
+#: The summary's own stamp (FakeLink); a detection's capture is this minus its age_s.
+STAMP = 1_000.0
 
 
 def to_optical(p):
@@ -36,7 +41,8 @@ class FakeLink:
         self.objects, self.age = objects, age
 
     def latest_report(self):
-        return {"detector_online": True, "objects": self.objects, "objects_omitted": 0}, self.age
+        report = {"stamp_unix": STAMP, "detector_online": True, "objects": self.objects}
+        return {**report, "objects_omitted": 0}, self.age
 
 
 class FakeArm:
@@ -151,7 +157,7 @@ def last_q(steps, phase):
     return [s[2] for s in steps if s[1] == phase][-1]
 
 
-def test_a_pick_plan_opens_first_and_lifts_last():
+def test_a_pick_plan_curls_first_opens_at_pre_grasp_and_lifts_last():
     steps = m.plan_pick("right", REACHABLE, "power", None)
     assert phases(steps) == PICK_PHASES
     grasp = kinematics.forward("right", last_q(steps, "grasp")).position
@@ -372,7 +378,8 @@ async def test_pick_runs_the_plan_in_order_and_holds(monkeypatch, real):
     out = await m.pick("cup", shape="pinch")
     assert out["status"] == "completed", out
     assert out["phase"] == "holding" and out["result"]["hand_closed"] is True
-    assert [s for _, s in hand.shapes] == [hands.SHAPES["open"], hands.SHAPES["pinch"]]
+    shapes = [s for _, s in hand.shapes]
+    assert shapes == [hands.SHAPES[m.TRANSIT_SHAPE], hands.SHAPES["open"], hands.SHAPES["pinch"]]
     assert all(left is None for left, _ in arm.commands)  # only the right arm moved
     assert not arm.release_requested
 
@@ -407,7 +414,7 @@ async def test_a_person_arriving_during_the_grasp_close_aborts(monkeypatch, real
 
     def send_then_person(side, closures):
         real_send(side, closures)
-        if len(hand.shapes) == 2:  # the close, after the open
+        if len(hand.shapes) == 3:  # the close, after the curl and the open
             see(monkeypatch, cup(), person(0.4))
 
     hand.send_shape = send_then_person
@@ -469,13 +476,211 @@ async def test_an_out_of_reach_pick_says_how_to_walk(monkeypatch, real):
     out = await m.pick("cup", side="right")
     assert out["phase"] == "planning" and not arm.engaged
     assert "0.05 m forward" in out["error"] and "0.14 m to the LEFT" in out["error"]
+    # The same walk, for the agent to act on and the console to show.
+    res = out["result"]
+    assert res["reason"] in m.PLAN_REASONS and not res["moved"]
+    assert {k: res["advice"][k] for k in ("step_forward_m", "step_left_m")} == {
+        "step_forward_m": 0.05,
+        "step_left_m": 0.14,
+    }
+    assert res["note"].startswith("Acercate ~0.05 m y correte ~0.14 m a la izquierda")
     m.plan_pick("right", (0.30, -0.15, -0.03), "power", None)  # where that walk puts it
 
 
 def test_a_height_no_walk_can_fix_says_so():
     with pytest.raises(m.PlanError):
         m.plan_pick("right", (0.30, -0.15, -0.28), "power", None)
-    assert "walking will not fix" in m.reach_advice("right", (0.30, -0.15, -0.28))
+    text, advice, hint = m.reach_advice("right", (0.30, -0.15, -0.28))
+    assert "walking will not fix" in text and "too low" in text
+    assert advice == {"problem": "too_low", "object_z_m": -0.28}
+    assert "muy bajo" in hint and "-0.28" in hint
+
+
+# --- the table perception reports under the object ------------------------------------------
+
+
+def support(z_m=0.03, near_edge_m=0.25, stamp=STAMP - 0.2, **kw):
+    """A detection's `support`: base_link (pelvis) height and range, like range_m."""
+    return {"z_m": z_m, "near_edge_m": near_edge_m, "inliers": 900, "rms_m": 0.004,
+            "stamp_unix": stamp, **kw}  # fmt: skip
+
+
+def test_a_reported_support_becomes_the_table_in_torso_link(monkeypatch):
+    # The edge 0.25 m out along the object's 20° bearing, the top 3 cm above the pelvis: through
+    # the URDF's pelvis -> torso_link (waist at zero) like the camera point.
+    see(monkeypatch, cup(bearing_deg=20.0, age_s=0.2, support=support()))
+    p, obj = m.detected_target("cup", None)
+    edge_x, top_z = m.support_table(obj, p)
+    torso = kinematics.base_to_torso((0.0, 0.0, 0.0))
+    assert torso == pytest.approx((0.0039635, 0.0, -0.044))
+    assert (edge_x, top_z) == pytest.approx((0.25 * math.cos(math.radians(20)) + 0.0039635, -0.014))
+    # No edge: the old desk-edge proxy. An edge beyond the object: no further than the object.
+    assert m.support_table({"support": support(near_edge_m=None)}, p)[0] == m.TUCK_X_M[0]
+    assert m.support_table({"support": support(near_edge_m=2.0)}, p)[0] == p[0]
+    for bad in ({"z_m": float("nan")}, {"z_m": "high"}, {"near_edge_m": -1.0}, {"z_m": None}):
+        assert m.support_table({"support": {**support(), **bad}}, p) is None
+
+
+def test_the_supports_camera_points_put_the_table_in_the_objects_frame(monkeypatch):
+    # The vision side's C3PO_CAMERA_* override moved z_m / near_edge_m (its base_link); the
+    # cam_* points are measurements and go through camera_to_torso like the cup's cam_xyz.
+    top, near = (0.32, -0.20, -0.02), (0.22, -0.18, 0.01)  # torso_link: the near end higher
+    see(monkeypatch, cup(age_s=0.2, support=support(
+        z_m=0.30, near_edge_m=0.60, cam_top_xyz=to_optical(top), cam_near_xyz=to_optical(near))))
+    p, obj = m.detected_target("cup", None)
+    assert p == pytest.approx(REACHABLE)
+    assert m.support_table(obj, p) == pytest.approx((0.22, 0.01))
+    # Malformed points: the base_link fields, as from a perception without them.
+    for bad in ({"cam_near_xyz": None}, {"cam_top_xyz": [0.1, 0.2]}, {"cam_top_xyz": "up"}):
+        s = {**support(), "cam_top_xyz": to_optical(top), "cam_near_xyz": to_optical(near), **bad}
+        assert m.support_table({"support": s}, p) == m.support_table({"support": support()}, p)
+
+
+def test_a_support_from_another_frame_is_dropped(monkeypatch):
+    # Same capture = the support's stamp is the summary's stamp minus the object's age_s.
+    see(monkeypatch, cup(age_s=0.2, support=support(stamp=STAMP - 0.7)))
+    _p, obj = m.detected_target("cup", None)
+    assert "support" not in obj and m.support_table(obj, REACHABLE) is None
+    see(monkeypatch, cup(age_s=0.2, support=support()))
+    assert "support" in m.detected_target("cup", None)[1]
+
+
+@pytest.mark.asyncio
+async def test_pick_plans_against_the_reported_table(monkeypatch):
+    see(monkeypatch, cup(age_s=0.2, support=support(z_m=-0.10 + 0.044)))  # top z=-0.10
+    out = await m.pick("cup", side="right")
+    assert out["phase"] == "stub", out
+    assert out["result"]["table_torso_m"] == pytest.approx([0.254, -0.10], abs=1e-3)
+    # The object only 2 cm above the table top: the hand would hit it, so nothing plans.
+    see(monkeypatch, cup(age_s=0.2, support=support(z_m=0.03 + 0.044)))
+    out = await m.pick("cup", side="right")
+    assert out["phase"] == "planning" and out["result"]["reason"] == "table_clearance"
+    assert out["result"]["advice"]["part"] == "hand" and "tocaría la mesa" in out["result"]["note"]
+
+
+def test_a_lower_reported_surface_never_lowers_the_hand():
+    # The object's own z (+ margin) stays the floor of the over-the-surface path.
+    over = last_q(m.plan_pick("right", REACHABLE, "power", HANGING, (0.20, -0.10)), "over")
+    assert kinematics.forward("right", over).position[2] == pytest.approx(
+        REACHABLE[2] + m.SURFACE_MARGIN_M, abs=kinematics.POS_TOL_M
+    )
+
+
+def test_every_arm_capsule_keeps_clear_of_the_table_box():
+    table = (0.20, -0.07)  # the object's centre 12 cm over it: room for the open hand
+    for kind, _phase, q in m.plan_pick("right", REACHABLE, "power", HANGING, table):
+        if kind == "arm":
+            m._check_torso("right", "replay", [q], table)  # raises if any capsule is inside
+    with pytest.raises(m.PlanError, match="would touch the table") as err:
+        m.plan_pick("right", REACHABLE, "power", HANGING, (0.20, 0.03))
+    assert err.value.reason == "table_clearance" and err.value.part == "hand"
+
+
+#: The object 7 cm over the top: room for the open hand at the object, not on the way there.
+LOW_ON_TABLE, LOW_TABLE = (0.31, -0.16, 0.12), (0.24, 0.05)
+
+
+def test_a_transit_that_clears_only_with_the_hand_curled_plans():
+    # The hand opened first: rising to the tuck, its open fingers met the table.
+    steps = m.plan_pick("right", LOW_ON_TABLE, "power", HANGING, LOW_TABLE)
+    transit = [q for kind, ph, q in steps if kind == "arm" and ph in ("clear", "over", "pre_grasp")]
+    with pytest.raises(m.PlanError, match="would touch the table"):
+        m._check_torso("right", "open hand", transit, LOW_TABLE)
+    m._check_torso("right", "curled", transit, LOW_TABLE, hand_open=False)
+    m._check_torso("right", "opening", transit[-1:], LOW_TABLE)  # opens clear of the table
+
+
+def test_a_hand_that_would_open_into_the_table_at_pre_grasp_refuses():
+    # Curled, the arm gets there; the fingers sweeping open at pre-grasp would hit the top.
+    with pytest.raises(m.PlanError, match="open 1/1: the hand would touch the table") as err:
+        m.plan_pick("right", (0.40, -0.15, -0.09), "power", HANGING, (0.21, -0.12))
+    assert err.value.reason == "table_clearance" and err.value.part == "hand"
+
+
+@pytest.mark.asyncio
+async def test_the_hand_opens_at_pre_grasp_not_before(monkeypatch, real):
+    arm, hand = real
+    see(monkeypatch, cup())
+    at = []  # (shape, arm commands so far, the arm's pose) as each shape is sent
+    hand.send_shape = lambda side, c: at.append((c, len(arm.commands), arm._t[7:14]))
+    out = await m.pick("cup")
+    assert out["status"] == "completed", out
+    (curl, n_curl, _), (opened, n_open, q_open), _close = at
+    assert curl == hands.SHAPES[m.TRANSIT_SHAPE] and n_curl == 0  # before the arm moves
+    pre = next(e for e in out["result"]["plan"] if e["phase"] == "pre_grasp")
+    assert opened == hands.SHAPES["open"] and n_open > 0
+    assert [math.degrees(v) for v in q_open] == pytest.approx(pre["q_deg"], abs=0.06)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_before_pre_grasp_never_opens_the_hand(monkeypatch, real):
+    arm, hand = real
+    see(monkeypatch, cup())
+    registry = get_registry()
+    before = {t.task_id for t in registry.list_active()}
+
+    def stop_at_the_third_waypoint():
+        if len(arm.commands) == 3:
+            for t in registry.list_active():
+                if t.task_id not in before:
+                    registry.cancel(t.task_id)
+
+    arm.on_command = stop_at_the_third_waypoint
+    out = await m.pick("cup")
+    assert out["status"] == "cancelled" and out["result"]["failed_at"] == "clear", out
+    sent = [s for _, s in hand.shapes]
+    assert hands.SHAPES["open"] not in sent and sent == [hands.SHAPES[m.TRANSIT_SHAPE]]
+    assert out["result"]["hand_closed"] is True and "open_hands" in out["result"]["note"]
+
+
+def test_an_object_beyond_the_table_edge_says_walking_stops_at_the_edge():
+    text, advice, hint = m.reach_advice("right", (0.60, -0.15, 0.05), (0.20, -0.05))
+    assert advice == {"problem": "behind_table_edge", "behind_edge_m": 0.4}
+    assert "0.40 m behind the table edge" in text and "detrás del borde" in hint
+
+
+def test_a_robot_hugging_the_table_is_told_to_step_back():
+    # The edge 20 cm from the torso: closer than walking's standoff, so back off to it.
+    text, advice, hint = m.reach_advice("right", REACHABLE, (0.20, -0.07))
+    assert advice == {"step_back_m": 0.05}
+    assert "0.05 m back" in text and hint.startswith("Alejate ~0.05 m")
+
+
+def test_walking_to_a_table_stops_with_its_edge_a_standoff_ahead():
+    # The hips reach x ~0.10 at desk height: walking leaves the edge 0.25 m out, not 0.16.
+    _text, advice, _hint = m.reach_advice("right", (0.60, -0.15, 0.05), (0.45, -0.07))
+    assert advice == {"step_forward_m": round(0.45 - m.WALK_EDGE_STANDOFF_M, 2)}
+    assert m.WALK_EDGE_STANDOFF_M == 0.25
+    # 0.26 m behind an edge 0.36 m out: walking up to the standoff leaves it out of reach.
+    _text, advice, _hint = m.reach_advice("right", (0.62, -0.15, 0.05), (0.36, -0.07))
+    assert advice == {"problem": "behind_table_edge", "behind_edge_m": 0.26}
+
+
+def test_open_fingertips_never_go_below_the_table_top():
+    # Review sweep scene 253: tilts 0 and 30 met the table, the planner fell through to 60
+    # nose-down with the TCP 4.6 cm over the top and open fingertips 2.3 cm under it.
+    target, (edge, top) = (0.374, -0.257, 0.087), (0.197, 0.024)
+    try:
+        steps = m.plan_pick("right", target, "power", HANGING, (edge, top))
+    except m.PlanError as exc:
+        assert exc.reason == "table_clearance" and exc.part == "hand"
+        return
+    for kind, phase, q in steps:
+        if kind == "arm":
+            hp = kinematics.forward("right", q)
+            tip = [p + m.FINGER_M * d for p, d in zip(hp.position, hp.pointing, strict=True)]
+            assert tip[0] < edge or tip[2] > top, (phase, tip)
+
+
+def test_a_place_withdraws_the_palm_behind_a_near_table_edge_or_refuses():
+    # Releasing lowers the arm from where the withdraw ends: never with the palm over the top.
+    target = (0.30, -0.25, 0.05)
+    steps = m.plan_place("right", target, HANGING, (0.20, -0.05))
+    x = kinematics.forward("right", last_q(steps, "withdraw")).position[0]
+    assert x <= 0.20 - m.HAND_OPEN_RADIUS_M - m.TABLE_CLEARANCE_M + kinematics.POS_TOL_M
+    with pytest.raises(m.PlanError, match="behind the table edge") as err:
+        m.plan_place("right", target, HANGING, (0.12, -0.05))
+    assert err.value.reason == "table_clearance" and err.value.part == "hand"
 
 
 @pytest.mark.asyncio

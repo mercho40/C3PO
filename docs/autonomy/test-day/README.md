@@ -93,6 +93,8 @@ Record: success, wall time, number of LLM steps, any intervention. Try 3 phrasin
 | Saved map / localization                | unset `C3PO_NAV_SLAM`                                                 | prefix on `c3po up nav2…`                 |
 | Arm skills                              | `TELEOP_ARM_ENABLED=0` (hands: `TELEOP_HAND_ENABLED=0`)               | bridge `.env`                             |
 | MPPI                                    | `C3PO_NAV_CONTROLLER=dwb` (default)                                   | prefix on `c3po up nav2…`                 |
+| Operator face gate                      | `C3PO_FACE_GATE=` (empty)                                             | bridge `.env`                             |
+| Table under each object (`support`)     | `C3PO_VISION_SUPPORT=0`                                               | `~/.c3po/perception.env`, then `c3po up`  |
 | YOLOE → YOLO11n                         | `C3PO_ENGINE` / `C3PO_LABELS` back to the yolo11n plan + `labels.txt` | vision container env (`perception.md` §8) |
 
 ## Known limits — not bugs to file tomorrow
