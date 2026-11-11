@@ -3871,9 +3871,9 @@ async def pick(
     """Pick up an object the head camera sees right now — a physical arm and hand move.
 
     Needs a FRESH detection of it with depth (turn toward it / look first). Plans the
-    whole motion before moving: open hand, raise it beside the body (shoulder back,
+    whole motion before moving: curl the hand, raise it beside the body (shoulder back,
     elbow up) to 8 cm above the object, forward over the surface, straight down to
-    pre-grasp 10 cm short, grasp, close, lift 8 cm, then HOLD. Refuses without moving
+    pre-grasp 10 cm short, open the hand, grasp, close, lift 8 cm, then HOLD. Refuses without moving
     if any pose is out of reach — the G1 arm is short: ~30 cm in front of the
     shoulder, at counter height — and then says how far to walk (walk_velocity) to
     make it reachable. There is no touch sensing: call verify('¿tenés X en la mano?')

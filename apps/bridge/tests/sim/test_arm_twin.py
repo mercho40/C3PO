@@ -24,7 +24,7 @@ from bridge import kinematics
 from bridge.skills import arm_pose
 from bridge.skills import manipulation as m
 from bridge.teleop import arm_sdk
-from bridge.teleop.retarget import JOINT_NAMES, LIMITS, ArmAngles
+from bridge.teleop.retarget import JOINT_NAMES, LIMITS
 
 pytestmark = pytest.mark.sim
 
@@ -371,20 +371,49 @@ WALKS = {"step_forward_m", "step_back_m", "step_left_m", "step_right_m", "proble
 @pytest.fixture(scope="module")
 def table_twin():
     """The twin with a box table (moved per scene) and, on each wrist_yaw_link, the planner's
-    hand capsule out to the TCP: the model's hand has no collision geometry of its own."""
+    hand open (TABLE_CAPSULES: out past the TCP to the fingertips, palm-wide) and curled
+    (ARM_CAPSULES: up to the TCP), one colliding at a time (_hand). The model's hand has no
+    collision geometry of its own."""
     spec = mujoco.MjSpec.from_file(str(MODEL))
     # A mocap body, not a world geom: MuJoCo's broadphase never re-bounds a moved world geom.
     table = spec.worldbody.add_body(name="table", mocap=True, pos=[0, 0, -10])
     table.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[1.0, 1.5, 0.5])
-    (_part, *_, radius) = m.ARM_CAPSULES[-1]
     for side in SIDES:
-        spec.body(f"{side}_wrist_yaw_link").add_geom(
-            type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-            fromto=[0, 0, 0, kinematics.GRASP_TCP_M, 0, 0],
-            size=[radius, 0, 0],
-        )
+        for state, (_part, _a, _b, t0, t1, radius) in (
+            ("open", m.TABLE_CAPSULES[-1]),
+            ("curled", m.ARM_CAPSULES[-1]),
+        ):
+            spec.body(f"{side}_wrist_yaw_link").add_geom(
+                name=f"{side}_hand_{state}",
+                type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+                fromto=[t0 * kinematics.GRASP_TCP_M, 0, 0, t1 * kinematics.GRASP_TCP_M, 0, 0],
+                size=[radius, 0, 0],
+            )
     model = spec.compile()
-    return model, mujoco.MjData(model)
+    twin = model, mujoco.MjData(model)
+    for side in SIDES:
+        _hand(twin, side, True)
+    return twin
+
+
+def _hand(twin, side, is_open):
+    """The twin's `side` hand open or curled: only that capsule collides."""
+    model, _ = twin
+    for state, on in (("open", is_open), ("curled", not is_open)):
+        g = model.geom(f"{side}_hand_{state}").id
+        model.geom_contype[g] = model.geom_conaffinity[g] = int(on)
+
+
+class _Hand:
+    """The hand execute() drives: each shape it sends, after how many frames the arm published."""
+
+    name, sides = "fake", SIDES
+
+    def __init__(self, driver):
+        self.driver, self.sent = driver, []
+
+    def send_shape(self, side, closures):
+        self.sent.append((len(getattr(self.driver._publisher, side)), closures))
 
 
 def _scene(rng):
@@ -411,9 +440,10 @@ def _place_table(twin, table):
     data.mocap_pos[model.body("table").mocapid[0]] = (t[0] + edge + 1.0, t[1], t[2] + top - 0.5)
 
 
-def test_random_tables_every_plan_clears_torso_and_table(table_twin, monkeypatch):
-    # Every plan the planner RETURNS, through the real driver's slew: no frame puts the arm or
-    # the hand into the torso or the table. Every refusal: a known reason, and advice.
+async def test_random_tables_every_plan_clears_torso_and_table(table_twin, monkeypatch):
+    # Every plan the planner RETURNS, run by execute() through the real driver's slew: no frame
+    # puts the arm or the hand into the torso or the table, the hand curled or open as execute()
+    # commanded it at that frame. Every refusal: a known reason, and advice.
     model, data = table_twin
     _pose(table_twin, {})
     feet = [
@@ -423,6 +453,8 @@ def test_random_tables_every_plan_clears_torso_and_table(table_twin, monkeypatch
     assert data.xpos[model.body("torso_link").id][2] - floor == pytest.approx(0.837, abs=2e-3)
 
     monkeypatch.setattr(m, "_measured_q", lambda side: list(HANGING[side]))
+    monkeypatch.setattr(m, "SIM_MODE", "real")
+    monkeypatch.setattr(m, "_abort_reason", lambda allow_person: None)  # own tests
     rng = random.Random(20261111)
     plans, refused, hits = 0, collections.Counter(), {}
     for n in range(SCENES):
@@ -437,16 +469,27 @@ def test_random_tables_every_plan_clears_torso_and_table(table_twin, monkeypatch
         plans += 1
         _place_table(table_twin, table)
         driver = _SteppedDriver([*HANGING["left"], *HANGING["right"]])
-        for q in _arm_qs(steps):
-            angles = ArmAngles(*q)
-            driver.command(*((angles, None) if side == "left" else (None, angles)))
-        for f in getattr(driver._publisher, side):
+        hand = _Hand(driver)
+        monkeypatch.setattr(arm_sdk, "get_driver", lambda: driver)
+        monkeypatch.setattr(m.hands, "get_driver", lambda: hand)
+        steps = [(k, ph, 0.0 if k == "wait" else v) for k, ph, v in steps]
+        out = await m.execute(m.get_registry().create("pick"), side, steps, summary={})
+        assert out["status"] == "completed", (n, out)
+        # Open from the frame the open went out at (the pre-grasp pose: the fingers sweep there).
+        frames = getattr(driver._publisher, side)
+        (opened,) = [i - 1 for i, c in hand.sent if c == m.hands.SHAPES["open"]]
+        assert frames[opened] == pytest.approx(list(_last(steps, "pre_grasp"))), (n, hand.sent)
+        for i, f in enumerate(frames):
+            _hand(table_twin, side, i >= opened)
             for mine, body, depth in _body_contacts(table_twin, side, f):
                 key = f"scene {n} ({side}, table {height:.2f} m): {mine} in {body}"
                 hits[key] = max(hits.get(key, 0.0), depth)
     print(f"\n{SCENES} table scenes: {plans} planned, refused {dict(refused)}")
     assert not hits, {k: f"{v * 1000:.1f} mm" for k, v in sorted(hits.items())}
-    assert plans >= SCENES // 10, "a sweep that plans nothing checks no trajectory"
+    # Curled through the transit, the open hand (TABLE_CAPSULES) still needs ~5 cm under the
+    # TCP at the object, and the rest refuse on reach, torso and surface (1/20, 3/200 plan):
+    # the floor is "some", not a tenth.
+    assert plans >= max(1, SCENES // 100), "a sweep that plans nothing checks no trajectory"
 
 
 def test_the_twin_table_catches_a_plan_that_ignores_it(table_twin):
@@ -454,6 +497,7 @@ def test_the_twin_table_catches_a_plan_that_ignores_it(table_twin):
     # under the cup's centre the hand goes into the twin's table; the table-aware plan refuses.
     target, table = PICK_TARGETS[0], (0.20, PICK_TARGETS[0][2] - 0.01)
     _place_table(table_twin, table)
+    _hand(table_twin, "right", True)
     into = {
         f"{phase}: {mine}"
         for kind, phase, q in _pick(target)
