@@ -25,6 +25,7 @@ export async function transcribe(
   audio: ArrayBuffer,
   contentType: string,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs = 30_000,
 ): Promise<string> {
   const key = process.env.AGENT_API_KEY;
   if (!key) throw new TranscribeError(503, "AGENT_API_KEY is not set");
@@ -46,7 +47,7 @@ export async function transcribe(
       method: "POST",
       headers: { Authorization: `Bearer ${key}` },
       body: form,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new TranscribeError(502, "transcription_unavailable");

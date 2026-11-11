@@ -44,7 +44,11 @@ import {
 } from "#back/agent/confirmations.js";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 import { VoiceConversation } from "#back/voice/conversation.js";
-import { bridgeVoiceEvents, bridgeVoiceStatus } from "#back/voice/events.js";
+import {
+  bridgeUtteranceAudio,
+  bridgeVoiceEvents,
+  bridgeVoiceStatus,
+} from "#back/voice/events.js";
 import { VoiceLoop } from "#back/voice/loop.js";
 import { RealtimeVoiceSession } from "#back/voice/realtime.js";
 import {
@@ -229,6 +233,14 @@ function getLoop(): VoiceLoop {
             }),
       runAgent: runAgentOnUtterance,
       events: bridgeVoiceEvents,
+      // Bridge C3PO_STT=back: the robot mic's utterances, transcribed by ia-tic.
+      transcribeAudio: async (audioId) =>
+        transcribe(
+          await bridgeUtteranceAudio(audioId, AbortSignal.timeout(2_000)),
+          "audio/wav",
+          fetch,
+          5_000,
+        ),
       inputStatus: bridgeVoiceStatus,
       log: (event, detail) => console.log(`[voice] ${event}`, detail ?? ""),
     });

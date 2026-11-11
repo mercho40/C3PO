@@ -240,6 +240,7 @@ function eventHarness(
     stopFails?: boolean;
     agentFails?: boolean;
     runAgent?: VoiceLoopDeps["runAgent"];
+    transcribeAudio?: VoiceLoopDeps["transcribeAudio"];
   } = {},
 ) {
   const queue: VoiceInputEvent[] = [];
@@ -291,12 +292,17 @@ function eventHarness(
         });
       }
     },
+    transcribeAudio: opts.transcribeAudio,
     log: (event) => logs.push(event),
     sleep: async () => {},
   });
 
   const push = (kind: VoiceInputEvent["kind"], text: string) => {
-    queue.push({ seq: ++seq, kind, text });
+    queue.push(
+      kind === "audio"
+        ? { seq: ++seq, kind, text: "", audio_id: text }
+        : { seq: ++seq, kind, text },
+    );
     wake?.();
   };
   return {
@@ -503,6 +509,71 @@ describe("VoiceLoop event path", () => {
     await until(() => h.runs.length === 1);
     h.runs[0]!.release();
     expect(h.connects()).toBe(1);
+    await h.loop.stop();
+  });
+
+  test("robot-mic audio is transcribed and runs the agent with the text", async () => {
+    const asked: string[] = [];
+    const h = eventHarness({
+      transcribeAudio: async (id) => {
+        asked.push(id);
+        return "caminá hasta la puerta";
+      },
+    });
+    h.loop.start();
+    h.push("audio", "ab12");
+    await until(() => h.runs.length === 1);
+    expect(asked).toEqual(["ab12"]);
+    expect(h.texts()).toEqual(["caminá hasta la puerta"]);
+    expect(h.logs).toContain("voice.utterance");
+    h.runs[0]!.release();
+    await h.loop.stop();
+  });
+
+  test("a failed transcription is recorded and runs no agent", async () => {
+    const h = eventHarness({
+      transcribeAudio: async () => {
+        throw new Error("transcription_unavailable");
+      },
+    });
+    h.loop.start();
+    h.push("audio", "ab12");
+    await until(() => h.logs.includes("voice.transcribe_failed"));
+    expect(h.loop.snapshot().lastError).toBe("transcription_unavailable");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.runs).toEqual([]);
+    await h.loop.stop();
+  });
+
+  test("a stop while transcribing drops the utterance and is not delayed", async () => {
+    let finish: (text: string) => void = () => {};
+    const h = eventHarness({
+      transcribeAudio: () => new Promise((r) => (finish = r)),
+    });
+    h.loop.start();
+    h.push("audio", "ab12");
+    h.push("stop", "emergencia");
+    await until(() => h.calls.includes("stop_everything"));
+    finish("caminá");
+    await until(() => h.logs.includes("voice.dropped_after_stop"));
+    expect(h.runs).toEqual([]);
+    await h.loop.stop();
+  });
+
+  test("speech events never touch the transcriber", async () => {
+    let asked = 0;
+    const h = eventHarness({
+      transcribeAudio: async () => {
+        asked += 1;
+        return "x";
+      },
+    });
+    h.loop.start();
+    h.push("speech", "hola");
+    await until(() => h.runs.length === 1);
+    expect(h.texts()).toEqual(["hola"]);
+    expect(asked).toBe(0);
+    h.runs[0]!.release();
     await h.loop.stop();
   });
 });
