@@ -395,27 +395,42 @@ A `pick` or `place` that cannot plan moves nothing. Its task ends `failed` in ph
   tocaría la mesa: el objeto es muy bajo para agarrarlo. Caminar no lo arregla.»
 
 When perception reports the table under the object (`support`, below), the planner keeps
-every arm link 1 cm clear of it, and forward advice never brings the table edge closer than
-0.16 m to the torso. The hand still passes 8 cm over the object itself: a report can never
-lower it. Without a report the old rule stands: keep the desk edge at least 0.24 m in front
-of the torso. An object whose centre is less than about 4–6 cm above the table top (a phone
-or a wallet lying flat) is refused with `table_clearance`. The planner takes the table's
-front edge as square to the robot, so an edge seen at an angle is nearer on one side: stand
-square to the table. `pick` and `place` still refuse on the robot unless `C3PO_ALLOW_PICK=1`
+every arm link 1 cm clear of it, and forward advice keeps the table edge at least 0.25 m
+from the torso (`WALK_EDGE_STANDOFF_M`, e346c31). The hand still passes 8 cm over the
+object itself: a report can never lower it. Without a report the old rule stands: keep the
+desk edge at least 0.24 m in front of the torso.
+
+A pick curls the hand (`power`, 0.8 s) before the arm moves and opens it only at the
+10 cm pre-grasp (1439ace). From there on the table check models the open hand: 9 cm past
+the tool point to the fingertips and 4 cm wide (`FINGER_M`, `HAND_OPEN_RADIUS_M`). Both are
+guesses until the BrainCo Revo2 is measured. Until then most tabletop picks refuse with
+`table_clearance`: in the simulator's random table scenes only 1 in 20 (3 in 200) plan, and
+those objects sit at least 10 cm above the top. A phone or a wallet lying flat always
+refuses. A pick that starts with something already in the hand drops it when the hand
+opens at pre-grasp. A place withdraws until the palm is behind the reported edge before it
+releases the arm, and refuses with `table_clearance` when the edge is too close for that
+(about 0.2 m or nearer). The planner takes the table's front edge as square to the robot,
+so an edge seen at an angle is nearer on one side: stand square to the table. `pick` and `place` still refuse on the robot unless `C3PO_ALLOW_PICK=1`
 (§6).
 
 **The table under each object.** The vision container fits the surface under the nearest
-four non-person detections and adds `support` to each: `z_m` (the top's height in base_link,
-the pelvis; negative below it), `near_edge_m` (the range of the nearest edge along the
-object's bearing, `null` when the edge is out of view), `inliers`, `rms_m` and `stamp_unix`
-(4d3b662). The planner uses it only when it comes from the same frame as the object.
+four non-person detections and adds `support` to each: `z_m` (the top's highest point
+between its near end and the object, in base_link, the pelvis; negative below it),
+`near_edge_m` (the range of the nearest edge along the object's bearing; `null` when the
+edge is out of view or something over the table, such as a hand, hides its near part),
+`inliers`, `rms_m`, `stamp_unix` (4d3b662), and `cam_top_xyz` / `cam_near_xyz`: the top
+under the object and at its near end, in the camera optical frame (58ac1d0). The bridge
+puts those two through the same camera mount as the object (e346c31), so a `C3PO_CAMERA_*`
+override on the vision side cannot put the table and the object in different frames.
+Without them it falls back to `z_m` and `near_edge_m`. The planner uses a support only when it comes from the
+same frame as the object.
 `C3PO_VISION_SUPPORT=0` in `~/.c3po/perception.env` turns it off at the next `c3po up`; the
 planner then falls back to the old rule. The vision image must be rebuilt once for it
 (`c3po perception build vision`).
 
 ### The operator face gate
 
-Off unless `C3PO_FACE_GATE` names skills (17cf24a). Each named skill then also needs the
+Off unless `C3PO_FACE_GATE` is set (17cf24a). Each gated skill then also needs the
 enrolled operator's face, live, in front of the head camera. It is one more gate on top of
 the login and «Confirmar», never instead of them. It runs after every other check (PARAR,
 battery, the person rule, the confirmation), for every caller: the console, the agent and
@@ -427,56 +442,73 @@ Setup, once per robot and operator:
 
 1. Rebuild the vision image from this branch and bring perception up
    (`c3po perception build vision`, then `c3po up`). The gate reads the vision container's
-   camera and depth, so the vision container must hold the camera. If videohub holds it,
-   every gated call refuses with `operator_face_check_unavailable`.
+   camera and its `/depth_points` (3ec5e99), so the vision container must hold the camera.
+   If videohub holds it, or the image is older than `/depth_points`, every gated call
+   refuses with `operator_face_check_unavailable`.
 2. On the robot, with the proxy exported as for the builds:
    `bash ~/c3po/apps/bridge/scripts/install_face_models.sh`. It fetches YuNet and SFace from
    opencv_zoo, pinned by commit and sha256, into `~/.c3po/face/models`, and ends with
    `OK — models in …`. Re-running only fetches what is missing or wrong.
 3. Enroll, on the robot, with the operator alone in front of the head camera, within
    1.5 m: `cd ~/c3po/apps/bridge && .venv/bin/python scripts/face_enroll.py`. The operator
-   reads the consent text and answers `s`. It needs 5 frames with exactly one live face
-   and ends with `enrolled: …/operator.npy`. Re-running replaces the operator;
-   `--delete` forgets them.
-4. In `apps/bridge/.env`: `C3PO_FACE_GATE=pick,place,handover,reach`. Never add `set_hand`:
-   a handover ends with `set_hand shape open`, which must not wait on a face. Restart the
-   bridge (`c3po restart`). `c3po logs` shows `face_gate.on` with the gated tools and
-   `max_m`.
+   reads the consent text and answers `s`. It needs 5 frames with exactly one live face,
+   all of the same person, and ends with `enrolled: …/operator.npy`. Re-running replaces
+   the operator; `--delete` forgets them. An interrupted run leaves
+   `~/.c3po/face/.operator.npy.tmp`, and saving refuses until `--delete` removes it.
+4. In `apps/bridge/.env`: `C3PO_FACE_GATE=confirm`. Restart the bridge (`c3po restart`).
+   `c3po logs` shows `face_gate.on` with the gated tools and `max_m`.
+
+`confirm` is a class: every tool that needs «Confirmar» (T2, and high-danger T1). Use it
+rather than a list of names: with only `pick` gated, `move_arm` and `set_hand` could do
+the same work without a face. Tool names can be added after it, comma-separated. A name
+that is no tool does not stop the bridge: it is dropped, the gate widens to `confirm`, and
+`c3po logs` shows the error `face_gate.unknown_names` with that entry (371dd0b).
 
 Settings, in `apps/bridge/.env`, read when the bridge starts:
 
-| Key                    | Default        | Meaning                                   |
-| ---------------------- | -------------- | ----------------------------------------- |
-| `C3PO_FACE_GATE`       | empty (off)    | comma-separated skills that need the face |
-| `C3PO_FACE_GATE_MAX_M` | `1.5`          | a face farther than this does not count   |
-| `C3PO_FACE_DIR`        | `~/.c3po/face` | models and the enrollment (owner-only)    |
+| Key                    | Default        | Meaning                                 |
+| ---------------------- | -------------- | --------------------------------------- |
+| `C3PO_FACE_GATE`       | empty (off)    | `confirm` and/or tool names, comma list |
+| `C3PO_FACE_GATE_MAX_M` | `1.5`          | a face farther than this does not count |
+| `C3PO_FACE_DIR`        | `~/.c3po/face` | models and the enrollment (owner-only)  |
 
 **What counts as a live face.** YuNet finds it and SFace matches it against the enrolled
-vectors (cosine 0.363). Then the depth from the same frame must show a face 0.11–0.20 m wide
-at its distance, with at least 1 cm of relief, within `C3PO_FACE_GATE_MAX_M`. That stops a
-phone screen and a flat print. It is not anti-spoofing: a mask or a curved, life-size print
-is beyond it. The check gives up after 1.5 s and refuses on any failure. It runs off the
-event loop, so a PARAR is never held up by it.
+vectors (cosine 0.363). Then the bridge asks the vision container for the depth at YuNet's
+five landmarks (eyes, nose, mouth corners) in the same frame (`/depth_points`) and turns
+them into 3-D points. The nose must stand at least 1.5 cm in front of the plane through the
+eyes and mouth corners (`MIN_NOSE_M`), whatever the tilt of that plane, so a print or a
+screen fails flat or tilted (cc17f68). The face must also be 0.11–0.20 m wide at its
+distance, within `C3PO_FACE_GATE_MAX_M`. It is not anti-spoofing: a mask, or a print bent
+sharply around the nose, still passes. The 1.5 cm is not yet measured on the robot's D435.
+The check gives up after 1.5 s and refuses on any failure, or at once while another check
+is still running. It runs on its own thread, off the event loop, so a PARAR is never held
+up by it.
+
+**The headset cannot pass it.** It covers the face. To run a gated skill, the operator
+stands at the robot without the headset, faces the head camera and retries.
 
 **What the operator sees when it refuses.** Nothing moves. In chat the console shows an
 amber «Rechazado» card with one of these hints; a skill invoked from the console shows the
 hint as its result:
 
-| Bridge reason                     | Console says                                                                   | Do                                                                                                             |
-| --------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `operator_face_not_seen`          | «No veo al operador: ponete de frente a la cámara, a menos de 1,5 m»           | Face the head camera, within 1.5 m, and retry once. Only the enrolled operator counts.                         |
-| `operator_face_not_live`          | «Reconocí al operador, pero no en persona (¿foto, pantalla o muy lejos?)»      | The face was matched but was too far, had no depth, or looked flat or the wrong size. Stand closer, in person. |
-| `operator_face_not_enrolled`      | «No hay operador registrado: corré face_enroll.py en el robot»                 | Enroll (step 3). An enrollment file others can read or write is ignored, too.                                  |
-| `operator_face_check_unavailable` | «No se pudo verificar la cara del operador (¿contenedor de visión o modelos?)» | Check the vision container is up and holds the camera, and the models are installed. Do not retry in a loop.   |
+| Bridge reason                     | Console says                                                                                                                      | Do                                                                                                              |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `operator_face_not_seen`          | «No veo al operador: parate junto al robot, sin el visor, de frente y cerca de la cámara de la cabeza, y reintentá»               | Stand at the robot without the headset, face the head camera and retry once. Only the enrolled operator counts. |
+| `operator_face_not_live`          | «Reconocí al operador, pero no en persona (¿foto, pantalla o muy lejos?): parate junto al robot, cerca de la cámara de la cabeza» | The face was matched but was too far, had no depth, or looked flat or the wrong size. Stand closer, in person.  |
+| `operator_face_not_enrolled`      | «No hay operador registrado: corré face_enroll.py en el robot»                                                                    | Enroll (step 3). An enrollment file others can read or write is ignored, too.                                   |
+| `operator_face_check_unavailable` | «No se pudo verificar la cara del operador (¿contenedor de visión o modelos?)»                                                    | Check the vision container is up and holds the camera, and the models are installed. Do not retry in a loop.    |
 
-`c3po logs | grep face_gate` gives the detail and how long each check took (`ms`). The
-console's 1,5 m is fixed text: it does not follow `C3PO_FACE_GATE_MAX_M`. A «Confirmar»
-spent on a call the face gate then refuses is gone: press «Confirmar» again after facing
-the camera.
+A refusal carries only the reason code and a fixed hint. The measurements (distance,
+width, nose margin) go only to the bridge log: `c3po logs | grep face_gate` gives them and
+how long each check took (`ms`). The console names the head camera, not a distance
+(a80cc7e). A face refusal does not spend the «Confirmar»: retry within its 30 s and no new
+confirmation is needed. After 30 s, confirm again.
 
 **Privacy.** Only SFace feature vectors are stored, in `~/.c3po/face/operator.npy` on the
 robot (file 0600, directory 0700). No image is kept, nothing leaves the robot, and neither
-faces nor feature vectors are logged. `face_enroll.py --delete` removes the operator.
+faces nor feature vectors are logged. The bridge ignores an enrollment that is a symlink,
+belongs to another user, can be read or written by others, or holds a NaN or zero row.
+`face_enroll.py --delete` removes the operator.
 
 **To turn it off**, at the stand or anywhere: `C3PO_FACE_GATE=` (empty), then
 `c3po restart`.

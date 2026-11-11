@@ -158,12 +158,16 @@ the vocabulary does not have. The named classes stop showing up where they did; 
 other class, and `person` above all, is still reported as before. Write down each bar you
 kept.
 
-**The table under the object (pending robot test, 4d3b662).** Only on a vision image rebuilt
-from this branch. Each of the nearest four non-person objects may now carry `support`: `z_m`
-is the height of the surface it stands on in base_link (the pelvis; negative below it),
-`near_edge_m` the horizontal range of that surface's nearest edge along the object's
-bearing (`null` when the edge is out of view), plus `inliers`, `rms_m` and `stamp_unix`. The
-arm planner uses it (`manipulation.md` §8). Read it with
+**The table under the object (pending robot test, 4d3b662, 58ac1d0).** Only on a vision
+image rebuilt from this branch. Each of the nearest four non-person objects may now carry
+`support`: `z_m` is the highest point of the surface it stands on, between its near end and
+the object, in base_link (the pelvis; negative below it). `near_edge_m` is the horizontal
+range of that surface's nearest edge along the object's bearing. It is `null` when the edge
+is out of view, and also when something over the table (a hand, an arm) hides its near
+part: an edge needs a drop below it. Then `inliers`, `rms_m`, `stamp_unix`, and
+`cam_top_xyz` / `cam_near_xyz`, the top under the object and at its near end in the camera
+optical frame (the convention of the object's `cam_xyz`). The arm planner uses it
+(`manipulation.md` §8). Read it with
 `docker exec c3po-perception-nav /entrypoint.sh ros2 topic echo --once /c3po/world_summary`.
 
 1. Speed first. With four or more objects on a table in view, read `mean_tick_ms` on the
@@ -179,6 +183,10 @@ arm planner uses it (`manipulation.md` §8). Read it with
    ahead, and about 1.06× it at ±20° (the range along the bearing to a square edge). `null`
    only when the edge is below the image. Write down every reading with `inliers` and
    `rms_m`.
+3. Occluded edge. The cup straight ahead, then lay a hand or a forearm flat on the near
+   part of the table, between the edge and the cup. **Expect:** `near_edge_m` is `null`
+   while the hand is there (not the distance to the hand), and comes back within about
+   3 cm of the tape when the hand is gone. `z_m` does not jump by the hand's thickness.
 
 ## 5. Capture the test set (~50 classes x 0.5 / 1.5 / 3 m, ~10 frames each)
 
