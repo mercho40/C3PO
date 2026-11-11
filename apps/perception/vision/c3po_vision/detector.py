@@ -19,7 +19,8 @@ WHAT THIS PUBLISHES, AND WHY EVERY TICK
 exactly `world_model.Observation`'s keyword arguments — plus ADDITIVE
 fields older consumers ignore: `track_id` (tracking.py), `cam_xyz` (optical-frame point, m), `depth_source`
 ("direct" | "plane", grounding.ground_box) and, for "direct" only, `near_m` (the near face's range), and
-`support` (grounding.fit_support: the surface under the object, base_link; absent if none). `unranged` (also additive) holds
+`support` (grounding.fit_support: the surface under the object, base_link, and the same top in
+the optical frame as cam_top_xyz / cam_near_xyz; absent if none). `unranged` (also additive) holds
 what was SEEN but could not be ranged — label, bearing_deg, confidence,
 track_id, depth_source "invalid" — kept out of `objects` because a thing with
 no range is not an obstacle at range 0. D2.2 option 1: this
@@ -1141,6 +1142,8 @@ def ground_all(
                 "inliers": s.inliers,
                 "rms_m": round(s.rms_m, 4),
                 "stamp_unix": None if stamp is None else round(stamp, 3),
+                "cam_top_xyz": [round(v, 3) for v in s.cam_top_xyz],
+                "cam_near_xyz": [round(v, 3) for v in s.cam_near_xyz],
             }
     objects = [entry[1] for entry in grounded[:cap]]
     unranged.sort(key=lambda o: o["confidence"], reverse=True)

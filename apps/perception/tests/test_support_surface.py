@@ -16,6 +16,7 @@ import types
 import pytest
 from c3po_vision import detector
 from c3po_vision.grounding import DEFAULT_CAMERA_EXTRINSIC as EXTR
+from c3po_vision.grounding import CameraExtrinsic, base_to_camera, camera_to_base
 from test_depth_and_tracking import INTR, fill, pitched_scene
 from test_object_age import _publisher
 
@@ -178,6 +179,60 @@ def test_the_kill_switch_turns_it_off_and_reaches_the_container(monkeypatch):
     monkeypatch.setenv("C3PO_VISION_SUPPORT", "1")
     assert "support" in objects(depth, box)
     assert vision_env_passthrough({"C3PO_VISION_SUPPORT": "0"}) == {"C3PO_VISION_SUPPORT": "0"}
+
+
+@pytest.mark.parametrize("near, far", [(0.0, 0.50), (0.0, 0.42), (0.25, 0.45)])
+def test_something_over_the_near_part_of_the_table_never_pushes_its_edge_out(near, far):
+    # A hand or forearm 12 cm over the desk hides the desk between `near` and `far` (base x):
+    # what is seen below the last visible top pixel is ABOVE the plane, not a drop off it.
+    depth = desk(0.0, 0.30)
+    for v in range(INTR.height):
+        dx, _dy, dz = _ray(INTR.cx, v)
+        if near <= EXTR.x_m + (0.0 - EXTR.z_m) / dz * dx <= far:
+            depth[v] = [round((0.12 - EXTR.z_m) / dz * 1000)] * INTR.width
+    s = objects(depth, put_cup(depth, 0.70, 0.0))["support"]
+    assert abs(s["z_m"]) < 0.01
+    assert s["near_edge_m"] is None
+
+
+def test_a_top_tilted_toward_the_robot_reports_its_highest_point_not_the_one_under_the_cup():
+    # The top falls 6 deg away from the robot (or the pelvis pitches back): 2.6 cm higher at
+    # the edge than under a cup 0.25 m in, and the arm comes in over the edge.
+    edge, k = 0.30, math.tan(math.radians(-6.0))
+    depth = desk(0.0, edge, slope_deg=-6.0)
+    s = objects(depth, put_cup(depth, edge + 0.25, 0.25 * k))["support"]
+    assert abs(s["z_m"] - 0.0) < 0.006   # the top at the edge
+    assert s["near_edge_m"] is not None and abs(s["near_edge_m"] - edge) < 0.01
+
+
+def test_the_optical_frame_top_is_the_same_plane_as_the_base_link_one():
+    depth = desk(-0.05, 0.35)
+    obj = objects(depth, put_cup(depth, 0.60, -0.05, 0.1))
+    s = obj["support"]
+    near = camera_to_base(s["cam_near_xyz"], EXTR)
+    top = camera_to_base(s["cam_top_xyz"], EXTR)
+    b = math.radians(obj["bearing_deg"])
+    assert near[0] * math.cos(b) + near[1] * math.sin(b) == pytest.approx(s["near_edge_m"], abs=2e-3)
+    assert max(near[2], top[2]) == pytest.approx(s["z_m"], abs=2e-3)
+    assert math.hypot(top[0], top[1]) == pytest.approx(obj["range_m"], abs=0.01)
+    assert base_to_camera(camera_to_base((0.1, -0.2, 0.9), EXTR), EXTR) == pytest.approx(
+        (0.1, -0.2, 0.9))
+
+
+def test_an_extrinsic_override_moves_the_base_link_table_but_not_the_optical_one():
+    # C3PO_CAMERA_PITCH_DEG 2 deg off the CAD mount the arm side uses: z_m / near_edge_m are in
+    # the override's frame, the cam_* points are measurements, the same in any frame.
+    depth = desk(0.0, 0.35)
+    box = put_cup(depth, 0.60, 0.0)
+    override = CameraExtrinsic(EXTR.x_m, EXTR.y_m, EXTR.z_m, EXTR.pitch_deg + 2.0, EXTR.yaw_deg)
+    found, _o, _u = detector.ground_all([(0, 0.9, box)], depth, INTR, override, ["cup"], 0.001)
+    s = found[0]["support"]
+    assert abs(s["z_m"]) > 0.01   # in the override's frame the top moved by more than a margin
+    cad_top = camera_to_base(s["cam_top_xyz"], EXTR)
+    cad_near = camera_to_base(s["cam_near_xyz"], EXTR)
+    cad_cup = camera_to_base(found[0]["cam_xyz"], EXTR)
+    assert abs(max(cad_top[2], cad_near[2])) < 0.005 and abs(cad_near[0] - 0.35) < 0.01
+    assert abs(cad_cup[0] - 0.60) < 0.01   # and the cup, in the same frame as its table
 
 
 # --- the wire -------------------------------------------------------------------
