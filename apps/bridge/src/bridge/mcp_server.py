@@ -145,13 +145,18 @@ class GovernedMCP(FastMCP):
                 args_key = _canonical_args(tool, arguments)
             except ValidationError as exc:
                 invalid = f"invalid arguments for {name}: {exc}"
-        refusal = safety.tool_refusal(name, meta, args_key)
+        face = face_gate.gated(name, meta)
+        refusal = safety.tool_refusal(name, meta, args_key, spend=not face)
         if invalid is not None and not estop.stop_is_standing():
             # PARAR first; else not "get a confirmation", which /safety/confirm would refuse too.
             refusal = invalid
-        if refusal is None:
-            # Last, on top of every check above: a face never stands in for a confirmation.
-            refusal = await face_gate.refusal(name)
+        if refusal is None and face:
+            # On top of every check above (a face never stands in for a confirmation), and
+            # before the grant is spent, so a face refusal leaves it for one retry.
+            refusal = await face_gate.refusal(name, meta)
+            if refusal is None:
+                # Again, spending the grant: a PARAR may have come during the check.
+                refusal = safety.tool_refusal(name, meta, args_key)
         if refusal is not None:
             raise ToolError(refusal)
         return await super().call_tool(name, arguments)
@@ -4829,6 +4834,7 @@ def main() -> None:
     ``http://{BRIDGE_HOST}:{BRIDGE_PORT}/mcp`` — how ``apps/back`` connects.
     """
     if face_gate.GATED:
+        face_gate.check_config(t.name for t in mcp._tool_manager.list_tools())
         # Before serving, not in a thread: a cold `import cv2` holds the GIL for seconds,
         # which would stall a stop, and would spend the first gated call's TIMEOUT_S.
         face_gate.warm()
