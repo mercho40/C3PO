@@ -23,7 +23,11 @@
  * Plain module, no runes, so `bun test` can load it.
  */
 
-import { classifySkillResult } from "../robot/skill-outcome";
+import {
+  classifySkillResult,
+  REFUSAL_HINTS,
+  refusalCode,
+} from "../robot/skill-outcome";
 
 /** The slice of an AI SDK tool UI part this module reads. */
 export type ToolPartLike = {
@@ -190,7 +194,7 @@ export function classifyToolPart(
       }
       const toolError = /^tool_error:\s*/.exec(wrapped);
       const words = toolError ? wrapped.slice(toolError[0].length) : wrapped;
-      // Two refusals are the safety gate working, not a failure: shown amber,
+      // Refusals are the safety gates working, not a failure: shown amber,
       // with what the operator can do about it.
       if (words.includes("needs an operator's confirmation")) {
         return base({
@@ -208,6 +212,16 @@ export function classifyToolPart(
           note: "PARAR sigue activo: «Reanudar» en la barra superior.",
           detail: words,
           defaultOpen: false,
+        });
+      }
+      const refused = refusalCode(words);
+      if (refused) {
+        return base({
+          label: "Rechazado",
+          tone: "warn",
+          note: REFUSAL_HINTS[refused],
+          detail: words,
+          defaultOpen: true,
         });
       }
       return base({
