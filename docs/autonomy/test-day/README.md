@@ -85,18 +85,20 @@ Record: success, wall time, number of LLM steps, any intervention. Try 3 phrasin
 
 ## Rollback flags (restart the affected process after changing)
 
-| Feature                                 | Flag → safe value                                                     | Where                                     |
-| --------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------- |
-| Person slow/stop rule                   | `SAFETY_PERSON_RULE=off`                                              | bridge `.env`                             |
-| Stale-perception policy                 | `SAFETY_STALE_POLICY=ignore`                                          | bridge `.env`                             |
-| T2 confirmation gate                    | `SAFETY_T2_CONFIRM=off` (only with e-stop in hand)                    | bridge `.env`                             |
-| Collision Monitor (if Nav2 won't start) | `C3PO_NAV_COLLISION_MONITOR=0`                                        | prefix on `c3po up nav2…`                 |
-| Saved map / localization                | unset `C3PO_NAV_SLAM`                                                 | prefix on `c3po up nav2…`                 |
-| Arm skills                              | `TELEOP_ARM_ENABLED=0` (hands: `TELEOP_HAND_ENABLED=0`)               | bridge `.env`                             |
-| MPPI                                    | `C3PO_NAV_CONTROLLER=dwb` (default)                                   | prefix on `c3po up nav2…`                 |
-| Operator face gate                      | `C3PO_FACE_GATE=` (empty)                                             | bridge `.env`                             |
-| Table under each object (`support`)     | `C3PO_VISION_SUPPORT=0`                                               | `~/.c3po/perception.env`, then `c3po up`  |
-| YOLOE → YOLO11n                         | `C3PO_ENGINE` / `C3PO_LABELS` back to the yolo11n plan + `labels.txt` | vision container env (`perception.md` §8) |
+| Feature                                 | Flag → safe value                                                                                                       | Where                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Person slow/stop rule                   | `SAFETY_PERSON_RULE=off`                                                                                                | bridge `.env`                             |
+| Stale-perception policy                 | `SAFETY_STALE_POLICY=ignore`                                                                                            | bridge `.env`                             |
+| T2 confirmation gate                    | `SAFETY_T2_CONFIRM=off` (only with e-stop in hand)                                                                      | bridge `.env`                             |
+| Collision Monitor (if Nav2 won't start) | `C3PO_NAV_COLLISION_MONITOR=0`                                                                                          | prefix on `c3po up nav2…`                 |
+| Saved map / localization                | unset `C3PO_NAV_SLAM`                                                                                                   | prefix on `c3po up nav2…`                 |
+| Arm skills                              | `TELEOP_ARM_ENABLED=0` (hands: `TELEOP_HAND_ENABLED=0`)                                                                 | bridge `.env`                             |
+| MPPI                                    | `C3PO_NAV_CONTROLLER=dwb` (default)                                                                                     | prefix on `c3po up nav2…`                 |
+| Face gate                               | «Caras» → «Pedir cara para acciones peligrosas» off; else `rm ~/.c3po/face/settings.json` and `C3PO_FACE_GATE=` (empty) | console, or robot + bridge `.env`         |
+| Face greeter                            | «Caras» → both «Saludar» switches off; else `C3PO_FACE_GREET=` (empty) and no settings.json                             | console, or bridge `.env`                 |
+| Robot-mic STT through back              | `C3PO_STT=` (empty: Whisper on the robot)                                                                               | bridge `.env`                             |
+| Table under each object (`support`)     | `C3PO_VISION_SUPPORT=0`                                                                                                 | `~/.c3po/perception.env`, then `c3po up`  |
+| YOLOE → YOLO11n                         | `C3PO_ENGINE` / `C3PO_LABELS` back to the yolo11n plan + `labels.txt`                                                   | vision container env (`perception.md` §8) |
 
 ## Known limits — not bugs to file tomorrow
 

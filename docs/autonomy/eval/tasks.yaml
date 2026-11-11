@@ -434,6 +434,24 @@ tasks:
       args_contain: { go_to_object: [silla, chair] }
       human: "Para a menos de 1,0 m de la silla sin tocarla."
 
+  # go_to_object's `choose` (efeb898). args_contain matches any one text, so the
+  # chair itself is t1-acercate-silla's check and this one checks the side.
+  - id: t1-silla-izquierda
+    tier: T1
+    phase: "3"
+    phrase: "Andá a la silla de la izquierda"
+    alt_phrasings:
+      [
+        "Acercate a la silla que está a tu izquierda",
+        "Ponete al lado de la silla de la izquierda",
+      ]
+    start_state: "Tres sillas visibles a 1,5–3 m, de izquierda a derecha."
+    needs: [go_to_object]
+    success:
+      calls_any: [go_to_object]
+      args_contain: { go_to_object: [left] }
+      human: "Va a la silla de más a la izquierda y para a menos de 1,0 m sin tocarla."
+
   - id: t1-recorrer
     tier: T1
     phase: "4"

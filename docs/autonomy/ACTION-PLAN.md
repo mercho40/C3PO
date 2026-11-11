@@ -1784,3 +1784,54 @@ Code is done; each needs the robot to confirm. Rebuild the vision image first (`
 - [ ] A pick with a `C3PO_CAMERA_PITCH_DEG` override keeps table and object together (manipulation.md 25).
 - [ ] A low or flat object is refused with `table_clearance`, and nothing moves (manipulation.md 19).
 - [ ] Walk advice from a refused pick, and the Spanish hints in the console and spoken; the 0.25 m standoff against the hips and the real walking error (manipulation.md 20–21).
+
+## 13. Robot session and follow-up, 2026-11-11
+
+Built and tried on the robot, then fixed off it after review. Each commit has tests.
+
+Faces (the gate, the greeter and the console):
+
+- ✅ Several people can be enrolled, each a superadmin or an operator. Both roles pass the gate; the best match wins. The old `operator.npy` moves into `~/.c3po/face/people/<id>/` as a superadmin on first load, and still passes while it cannot move (e0257b4, 16bd283).
+- ✅ The greeter: with `C3PO_FACE_GREET=1` (or the console switch) the robot says `C3PO_FACE_GREETING` when an enrolled person comes into view, once per person per `C3PO_FACE_GREET_COOLDOWN_S` (default 300 s). With «Saludar a desconocidos» on, a live stranger hears `C3PO_FACE_GREETING_UNKNOWN` once per visit, at most once per `C3PO_FACE_GREET_UNKNOWN_COOLDOWN_S` (120 s); only a count is kept. It speaks through `say`, so PARAR cuts it, and it never moves (516c879, e0257b4).
+- ✅ Liveness on the median of up to 5 frames: identity needs the same person in most frames with a face, and each landmark's depth is the median of at least 3 readings (5 px patch). `MIN_NOSE_M` stays 1.5 cm; `C3PO_FACE_GATE_MAX_M` now defaults to 1.2 m (c3fba90). Measured today on one frame at a time: live in 5 of 8 frames at 0.5 m, 3 of 6 at 1.0 m, 0 of 8 at 1.5 m, where faces are about 60 px.
+- ✅ One photo per enrolled person: a 160 px crop of the face that consented, 0600 on the robot. The console shows it only to an admin, after a «Confirmar» (e0257b4, e5c481d, 527e0d4).
+- ✅ `~/.c3po/face/settings.json` (gate, greet, greet_unknown) overrides `C3PO_FACE_GATE` and `C3PO_FACE_GREET` live. When it turns the gate off over a set `C3PO_FACE_GATE`, the boot log says `face_gate.env_overridden`. A file the bridge cannot trust reads as gate on (16bd283).
+- ✅ `face_enroll.py --name --role [--replace]`, `--list`, `--delete NAME`, `--delete-all`, with a consent text in English and Spanish. A name that exists is refused without `--replace`. Enrollment ends within 20 s and never leaves half a person (e0257b4, 16bd283).
+- ✅ The «Caras» page (`/faces`, admins only): the three switches, the people with «Ver cara» and «Borrar», «Agregar persona», and the stranger counter. Every action asks «Confirmar» first; PARAR voids open cards. Enroll errors read in Spanish by the bridge's code, and a name that exists asks «Ya existe <nombre>: ¿reemplazar?» (e5c481d, 527e0d4, 9ed79d4).
+- ✅ Face boxes over the camera on `/live-camera`, the `/vr-control` mirror and the Quest's XR view: the name in green, «Desconocido» in amber, «¿foto?» dimmed when the face failed liveness. They come from the greeter's checks, so they update only while a greet switch is on. `apps/back` relays `/face/seen` to signed-in users (9f08db8, aa05697, 9ed79d4).
+- ✅ The face models' `cv2` loads before the bridge serves on any robot with the models installed, so a first check or a switch never stalls a stop (16bd283).
+- ✅ A PARAR during Piper's synthesis now plays nothing: `say` captures the play generation before it synthesises (16bd283).
+
+Voice, camera and perception:
+
+- ✅ `C3PO_STT=back`: the bridge keeps Vosk and the spoken stop, and hands each utterance's WAV to `apps/back`, which transcribes it with ia-tic's `tic-transcript` (b350499, f7c7cd1). Only speech with words is sent, and the segment holding a stop phrase never is (120677a). A transcription from before a restart is dropped, audio older than 6 s is dropped (`voice.dropped_stale`), spoken order is kept, and the timeout grows with the clip: 4 s + 0.25 s per second, at most 12 s (3a22fd0).
+- ✅ The spoken stop is armed per subscriber, so a page closing the voice event stream no longer disarms the voice loop's (120677a).
+- ✅ The console reads the camera straight from the bridge by default: `bun run dev:robot` sets `PUBLIC_ROBOT_CAM_URL=http://localhost:8001/camera` (aa05697). CORS is granted only on the camera routes and `/face/seen`, not site-wide (ea7df76). `quest_setup.sh` forwards the port dev:robot uses (2da711d), and `scripts/quest_reverse.sh` does the headset's `adb reverse` in one step (bec7441).
+- ✅ `C3PO_VISION_STREAM_HZ` is read from `~/.c3po/perception.env`, default 10 (2d23256). Measured today: 10 fps, against 4 fps before.
+- ✅ The detector recovers the D435 after a USB drop: it logs `camera.lost`, resets and reopens the camera (`camera.reset`, `camera.reopened`), and gives up after 60 s or 5 failed reopens (2334c95, f5481bb). Needs the vision image rebuild.
+- ✅ `go_to_object` takes `choose`: `nearest` by default, or `farthest`, `left`, `right`, `center`, `confidence`. A match already inside the stop distance is skipped while another is further; when all are, nothing walks and the phase is `already_within_stop_distance`. The walk stays locked on the chosen object (efeb898).
+- ✅ `scripts/hand_probe.py` asks the BrainCo hands directly over Modbus, read-only; the old DDS listener is `scripts/hand_dds_probe.py` (a6d8fa5). Step by step: `test-day/hand-and-gantry.md` (e8fb641).
+
+What the session showed:
+
+- The D435 points about 48° down. A standing adult's face is out of view: to enroll or be recognised, a person crouches so their face is about chest-high to the robot, 0.5–0.8 m away.
+- The face check cannot pass with the Quest on: it covers the face.
+- ia-tic can be down: `502 upstream_unreachable` on every model while `/models` answers 200. The fallback that worked was Gemini through its OpenAI-compatible endpoint (OPERATIONS §4, "When ia-tic is down").
+- The USB-Ethernet adapter and the RealSense dropped together twice. Route the cable so it is not pulled, and do not use the hub.
+- Enrolled on the robot: Oliver (superadmin) and Simon (operator). Nicolas and Mia are still to enroll.
+- The greeting cooldown on the robot was left at `C3PO_FACE_GREET_COOLDOWN_S=30` for testing.
+
+### Pending robot test (2026-11-11)
+
+Rebuild the vision image first (`c3po perception build vision`): the camera recovery needs it.
+
+- [ ] Put `C3PO_FACE_GREET_COOLDOWN_S=300` back in the robot's `apps/bridge/.env` (or delete the line) and `c3po restart`.
+- [ ] Camera unplug and replug after the rebuild: `camera.lost`, `camera.reset`, `camera.reopened`, detections come back without a container restart (perception.md §4).
+- [ ] `hand_probe.py` on both hands (hand-and-gantry.md steps 1–3).
+- [ ] Enroll Nicolas and Mia, crouched, from the «Caras» page or `face_enroll.py` (safety.md 25).
+- [ ] The stranger greeting: once per visit, not again until the person leaves and 120 s pass (safety.md 34).
+- [ ] Name boxes on `/live-camera`, the `/vr-control` mirror and in the Quest: green name, amber «Desconocido», «¿foto?» for a photo (safety.md 35).
+- [ ] `settings.json` over the env: the «Pedir cara para acciones peligrosas» switch off logs `face_gate.env_overridden` at the next boot (safety.md 36).
+- [ ] Robot-mic voice on `tic-transcript` with `C3PO_STT=back`, and the spoken stop in that mode (return-checklist §9).
+- [ ] Quest push-to-talk with the camera on 8001 and `quest_reverse.sh` (return-checklist §6).
+- [ ] `go_to_object` with `choose` and several chairs in view: nearest, «la de la izquierda», and every chair inside the stop (return-checklist §3).
