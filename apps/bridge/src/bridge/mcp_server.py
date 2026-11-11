@@ -77,11 +77,6 @@ DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
 BRIDGE_TRANSPORT = os.environ.get("BRIDGE_TRANSPORT", "stdio")
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8001"))
-BRIDGE_CORS_ORIGINS = tuple(
-    origin.strip()
-    for origin in os.environ.get("BRIDGE_CORS_ORIGINS", "").split(",")
-    if origin.strip()
-)
 
 # How much longer than the byte-derived estimate `say(wait_for_completion=True)`
 # will wait for `play_state` to drop. Playback runs slightly past the estimate
@@ -4248,8 +4243,14 @@ async def face_people(request):  # noqa: ANN001, ANN201 - starlette types
 async def face_seen(request):  # noqa: ANN001, ANN201 - starlette types
     """The faces of the greeter's last check, as boxes in /frame.jpg pixels, for the console
     to draw. Names and roles of enrolled people only; a stranger is a box. Fresh only while
-    greet or greet_unknown is on (age_s grows otherwise)."""
-    return _no_store(face_gate.seen())
+    greet or greet_unknown is on (age_s grows otherwise).
+
+    Readable cross-origin like /camera/*: the boxes are drawn over that picture."""
+    from starlette.responses import JSONResponse
+
+    from bridge.sdk.camera_relay import camera_headers
+
+    return JSONResponse(face_gate.seen(), headers=camera_headers(_origin_of(request)))
 
 
 @mcp.custom_route("/face/settings", methods=["POST"])
@@ -4935,24 +4936,25 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
+def _http_app():  # noqa: ANN202 - starlette types
+    """The ASGI app exactly as served, so tests can check its headers.
+
+    NO CORS MIDDLEWARE. A site-wide one made every GET readable from the
+    console origin: voice events, utterance WAVs, raw mic PCM, /face/people.
+    The camera routes and /face/seen add the header themselves (camera_headers),
+    and the console only sends them simple GETs, so no preflight is needed.
+    """
+    return mcp.streamable_http_app()
+
+
 async def _run_streamable_http() -> None:
-    """Run FastMCP with narrowly scoped browser origins for direct camera access."""
+    """Run FastMCP's streamable-http transport for apps/back and the camera."""
     import uvicorn
-    from starlette.middleware.cors import CORSMiddleware
-    from starlette.types import ASGIApp
 
     from bridge.skills.stop_everything import watching_foreign_stops
 
-    app: ASGIApp = mcp.streamable_http_app()
-    if BRIDGE_CORS_ORIGINS:
-        app = CORSMiddleware(
-            app,
-            allow_origins=list(BRIDGE_CORS_ORIGINS),
-            allow_methods=["GET"],
-            allow_headers=["*"],
-        )
     config = uvicorn.Config(
-        app,
+        _http_app(),
         host=BRIDGE_HOST,
         port=BRIDGE_PORT,
         log_level=mcp.settings.log_level.lower(),
