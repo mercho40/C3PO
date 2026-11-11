@@ -196,6 +196,11 @@ def test_the_camera_stream_binds_loopback_unless_someone_says_otherwise():
     assert vision.env["C3PO_VISION_STREAM_HOST"] == "127.0.0.1"
 
 
+def test_the_stream_defaults_to_the_detector_rate():
+    """The detector runs at 10 Hz; streaming at 5 halved what the operator saw."""
+    assert by_name(build("nav2"))[VISION].env["C3PO_VISION_STREAM_HZ"] == "10"
+
+
 def test_the_stream_host_can_be_overridden_deliberately():
     vision = by_name(build("nav2", env={"C3PO_VISION_STREAM_HOST": "0.0.0.0"}))[VISION]
     assert vision.env["C3PO_VISION_STREAM_HOST"] == "0.0.0.0"

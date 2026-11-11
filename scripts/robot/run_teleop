@@ -154,7 +154,8 @@ cat <<'DIRECT'
   teleop:  ws://g1-orin.local:8767                  direct, on the LAN
   bridge:  http://127.0.0.1:8001/mcp                loopback only — through
            ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po
-  camera:  http://localhost:3000/camera             via apps/back, behind its login
+  camera:  http://localhost:8001/camera             the bridge, through the same tunnel
+           (http://localhost:3000/camera = via apps/back, behind its login)
 
   The Quest's WebXR secure-context path still needs HTTPS/WSS or the existing
   adb reverse setup; desktop development needs no forward for 8767.

@@ -26,6 +26,7 @@
   import { browser } from "$app/env";
   import { RotateCw } from "@lucide/svelte";
   import CamOverlay from "#lib/components/robot/cam-overlay.svelte";
+  import FaceBoxes from "#lib/components/robot/face-boxes.svelte";
   import type {
     RobotCamState,
     RobotCamStatus,
@@ -74,6 +75,7 @@
   // Keyed to the URL rather than a boolean, so a reconnect — which always
   // hands out a fresh URL — clears it without an effect writing state back.
   const broken = $derived(url !== null && failedUrl === url);
+  let imgEl: HTMLImageElement | null = $state(null);
 
   // Backoff for automatic retries after an image error: a source that keeps
   // failing must not be hammered at 2 Hz, and one that recovers should be
@@ -147,8 +149,10 @@
       alt="Cámara del robot"
       onerror={onImgError}
       onload={onImgLoad}
+      bind:this={imgEl}
       class="absolute inset-0 z-10 size-full object-contain"
     />
+    <FaceBoxes img={imgEl} {url} {compact} />
   {/if}
 
   {#if copy.overlay}

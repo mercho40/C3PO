@@ -152,6 +152,12 @@ class FakeCanvas {
     fillText: (t: string) => {
       this.texts.push(t);
     },
+    globalAlpha: 1,
+    drawn: 0,
+    drawImage: () => {
+      this.ctx.drawn += 1;
+    },
+    measureText: () => ({ width: 10 }),
   };
   getContext(kind: string) {
     return kind === "2d" ? this.ctx : null;
@@ -216,6 +222,19 @@ describe("attach", () => {
       // a 401, and the same black view.
       expect(made[0].crossOrigin).toBe("use-credentials");
       expect(made[0].src).toBe("http://localhost:3000/camera/stream.mjpg");
+    });
+  });
+
+  test("the bridge directly gets an anonymous CORS request", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      // The bridge answers Allow-Origin without Allow-Credentials, so a
+      // credentialed request to it is refused and the headset goes black.
+      new CameraLayer(gl).setStreamUrl(
+        "http://localhost:8001/camera/stream.mjpg",
+        false,
+      );
+      expect(made[0].crossOrigin).toBe("anonymous");
     });
   });
 
@@ -914,6 +933,58 @@ describe("uploads — once per new picture, not per eye per frame", () => {
       made[1].arrive();
       layer.draw(true, null, 1);
       expect(uploads(calls, "RGB")).toBe(2);
+    });
+  });
+});
+
+describe("face boxes in the headset", () => {
+  const seen = (age_s: number) => ({
+    stamp: 1,
+    width: 960,
+    height: 720,
+    age_s,
+    faces: [
+      {
+        box: [10, 10, 50, 50] as [number, number, number, number],
+        name: "Ana",
+        role: null,
+        known: true,
+        live: true,
+      },
+    ],
+  });
+  const uploads = (calls: { fn: string; args: unknown[] }[]) =>
+    calls.filter((c) => c.fn === "texImage2D").map((c) => c.args[5]);
+
+  test("fresh faces are composed into the frame: one upload, from the canvas", () => {
+    withFakeImage((made, canvases) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.setFaces(seen(0.2), Date.now());
+      layer.draw(true, null, 1000);
+      const src = uploads(calls);
+      expect(src.length).toBe(1);
+      const canvas = src[0] as FakeCanvas;
+      expect(canvases).toContain(canvas);
+      expect(canvas.width).toBe(960);
+      expect(canvas.ctx.drawn).toBe(1);
+      expect(canvas.texts).toContain("Ana");
+    });
+  });
+
+  test("stale or no faces upload the bare picture", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.setFaces(seen(2.5), Date.now());
+      layer.draw(true, null, 1000);
+      layer.setFaces(null, Date.now());
+      layer.draw(true, null, 1000 + UPLOAD_MIN_INTERVAL_MS);
+      expect(uploads(calls)).toEqual([made[0], made[0]]);
     });
   });
 });

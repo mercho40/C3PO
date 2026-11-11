@@ -787,6 +787,32 @@ check "an unused port is not mistaken for a stranger" "nothing" "$(_classify 393
 
 wait 2>/dev/null || true
 
+echo "== quest_reverse.sh =="
+# A fake adb: `devices` lists $FAKE_DEVICES, `reverse` records its ports.
+quest_stub="$(mktemp -d)"
+cat >"$quest_stub/adb" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    devices) printf 'List of devices attached\n%s' "${FAKE_DEVICES:-}" ;;
+    reverse) echo "$2" >>"$FAKE_LOG" ;;
+esac
+STUB
+chmod +x "$quest_stub/adb"
+quest_out="$(PATH="$quest_stub:$PATH" FAKE_LOG="$quest_stub/log" BACK_PORT=3010 \
+    FAKE_DEVICES=$'1WMHH\tdevice\n' bash "$repo/scripts/quest_reverse.sh" 2>&1)"
+check "quest_reverse: forwards console, back, bridge and teleop" \
+    "tcp:3001 tcp:3010 tcp:8001 tcp:8767" "$(tr '\n' ' ' <"$quest_stub/log" | sed 's/ $//')"
+check_contains "quest_reverse: prints the headset URL" \
+    "http://localhost:3001/vr-control" "$quest_out"
+rm -f "$quest_stub/log"
+quest_rc=0
+quest_none="$(PATH="$quest_stub:$PATH" FAKE_LOG="$quest_stub/log" FAKE_DEVICES=$'1WMHH\tunauthorized\n' \
+    bash "$repo/scripts/quest_reverse.sh" 2>&1)" || quest_rc=$?
+check "quest_reverse: no authorised device fails" "1" "$quest_rc"
+check_contains "quest_reverse: and says why" "no Quest attached" "$quest_none"
+check "quest_reverse: and forwards nothing" "no" "$([ -e "$quest_stub/log" ] && echo yes || echo no)"
+rm -rf "$quest_stub"
+
 echo "== shellcheck =="
 if command -v shellcheck >/dev/null 2>&1; then
     while IFS= read -r script; do

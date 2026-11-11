@@ -35,7 +35,7 @@ VISION_ENV_PASSTHROUGH = (
 
 #: What `~/.c3po/perception.env` may set. An explicit list, so a persisted
 #: C3PO_TAKE_OVER=1, C3PO_VISION_FAKE=1 or C3PO_NAV_* never becomes a silent default.
-PERSISTENT_ENV_KEYS = VISION_ENV_PASSTHROUGH + ("C3PO_LIDAR_SOURCE",)
+PERSISTENT_ENV_KEYS = VISION_ENV_PASSTHROUGH + ("C3PO_LIDAR_SOURCE", "C3PO_VISION_STREAM_HZ")
 
 
 def vision_env_passthrough(env: Dict[str, str]) -> Dict[str, str]:
@@ -380,7 +380,8 @@ def containers_for(
                     "C3PO_VISION_STREAM": env.get("C3PO_VISION_STREAM", "1"),
                     "C3PO_VISION_STREAM_HOST": env.get("C3PO_VISION_STREAM_HOST", "127.0.0.1"),
                     "C3PO_VISION_STREAM_PORT": env.get("C3PO_VISION_STREAM_PORT", "8081"),
-                    "C3PO_VISION_STREAM_HZ": env.get("C3PO_VISION_STREAM_HZ", "5"),
+                    # 10 = the detector's own rate; streaming faster repeats frames.
+                    "C3PO_VISION_STREAM_HZ": env.get("C3PO_VISION_STREAM_HZ", "10"),
                     **vision_env_passthrough(env),
                 },
                 device_cgroup_rules=("c 81:* rmw", "c 189:* rmw"),
