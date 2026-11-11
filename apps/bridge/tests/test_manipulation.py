@@ -20,7 +20,10 @@ REACHABLE = (0.30, -0.15, 0.05)  # torso_link: counter height, in front of the r
 HANGING = [0.0, -0.15, 0.0, 1.5, 0.0, 0.0, 0.0]
 #: The thermos on the desk, 2026-11-05: planned fine, then the hand hit the desk edge.
 THERMOS = (0.35, -0.16, -0.03)
-PICK_PHASES = ["open", "clear", "over", "pre_grasp", "grasp", "close", "closing", "lift"]
+PICK_PHASES = [
+    *("curl", "curling", "clear", "over", "pre_grasp", "open", "opening"),
+    *("grasp", "close", "closing", "lift"),
+]
 #: The summary's own stamp (FakeLink); a detection's capture is this minus its age_s.
 STAMP = 1_000.0
 
@@ -154,7 +157,7 @@ def last_q(steps, phase):
     return [s[2] for s in steps if s[1] == phase][-1]
 
 
-def test_a_pick_plan_opens_first_and_lifts_last():
+def test_a_pick_plan_curls_first_opens_at_pre_grasp_and_lifts_last():
     steps = m.plan_pick("right", REACHABLE, "power", None)
     assert phases(steps) == PICK_PHASES
     grasp = kinematics.forward("right", last_q(steps, "grasp")).position
@@ -375,7 +378,8 @@ async def test_pick_runs_the_plan_in_order_and_holds(monkeypatch, real):
     out = await m.pick("cup", shape="pinch")
     assert out["status"] == "completed", out
     assert out["phase"] == "holding" and out["result"]["hand_closed"] is True
-    assert [s for _, s in hand.shapes] == [hands.SHAPES["open"], hands.SHAPES["pinch"]]
+    shapes = [s for _, s in hand.shapes]
+    assert shapes == [hands.SHAPES[m.TRANSIT_SHAPE], hands.SHAPES["open"], hands.SHAPES["pinch"]]
     assert all(left is None for left, _ in arm.commands)  # only the right arm moved
     assert not arm.release_requested
 
@@ -410,7 +414,7 @@ async def test_a_person_arriving_during_the_grasp_close_aborts(monkeypatch, real
 
     def send_then_person(side, closures):
         real_send(side, closures)
-        if len(hand.shapes) == 2:  # the close, after the open
+        if len(hand.shapes) == 3:  # the close, after the curl and the open
             see(monkeypatch, cup(), person(0.4))
 
     hand.send_shape = send_then_person
@@ -570,6 +574,63 @@ def test_every_arm_capsule_keeps_clear_of_the_table_box():
     with pytest.raises(m.PlanError, match="would touch the table") as err:
         m.plan_pick("right", REACHABLE, "power", HANGING, (0.20, 0.03))
     assert err.value.reason == "table_clearance" and err.value.part == "hand"
+
+
+#: The object 7 cm over the top: room for the open hand at the object, not on the way there.
+LOW_ON_TABLE, LOW_TABLE = (0.31, -0.16, 0.12), (0.24, 0.05)
+
+
+def test_a_transit_that_clears_only_with_the_hand_curled_plans():
+    # The hand opened first: rising to the tuck, its open fingers met the table.
+    steps = m.plan_pick("right", LOW_ON_TABLE, "power", HANGING, LOW_TABLE)
+    transit = [q for kind, ph, q in steps if kind == "arm" and ph in ("clear", "over", "pre_grasp")]
+    with pytest.raises(m.PlanError, match="would touch the table"):
+        m._check_torso("right", "open hand", transit, LOW_TABLE)
+    m._check_torso("right", "curled", transit, LOW_TABLE, hand_open=False)
+    m._check_torso("right", "opening", transit[-1:], LOW_TABLE)  # opens clear of the table
+
+
+def test_a_hand_that_would_open_into_the_table_at_pre_grasp_refuses():
+    # Curled, the arm gets there; the fingers sweeping open at pre-grasp would hit the top.
+    with pytest.raises(m.PlanError, match="open 1/1: the hand would touch the table") as err:
+        m.plan_pick("right", (0.40, -0.15, -0.09), "power", HANGING, (0.21, -0.12))
+    assert err.value.reason == "table_clearance" and err.value.part == "hand"
+
+
+@pytest.mark.asyncio
+async def test_the_hand_opens_at_pre_grasp_not_before(monkeypatch, real):
+    arm, hand = real
+    see(monkeypatch, cup())
+    at = []  # (shape, arm commands so far, the arm's pose) as each shape is sent
+    hand.send_shape = lambda side, c: at.append((c, len(arm.commands), arm._t[7:14]))
+    out = await m.pick("cup")
+    assert out["status"] == "completed", out
+    (curl, n_curl, _), (opened, n_open, q_open), _close = at
+    assert curl == hands.SHAPES[m.TRANSIT_SHAPE] and n_curl == 0  # before the arm moves
+    pre = next(e for e in out["result"]["plan"] if e["phase"] == "pre_grasp")
+    assert opened == hands.SHAPES["open"] and n_open > 0
+    assert [math.degrees(v) for v in q_open] == pytest.approx(pre["q_deg"], abs=0.06)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_before_pre_grasp_never_opens_the_hand(monkeypatch, real):
+    arm, hand = real
+    see(monkeypatch, cup())
+    registry = get_registry()
+    before = {t.task_id for t in registry.list_active()}
+
+    def stop_at_the_third_waypoint():
+        if len(arm.commands) == 3:
+            for t in registry.list_active():
+                if t.task_id not in before:
+                    registry.cancel(t.task_id)
+
+    arm.on_command = stop_at_the_third_waypoint
+    out = await m.pick("cup")
+    assert out["status"] == "cancelled" and out["result"]["failed_at"] == "clear", out
+    sent = [s for _, s in hand.shapes]
+    assert hands.SHAPES["open"] not in sent and sent == [hands.SHAPES[m.TRANSIT_SHAPE]]
+    assert out["result"]["hand_closed"] is True and "open_hands" in out["result"]["note"]
 
 
 def test_an_object_beyond_the_table_edge_says_walking_stops_at_the_edge():

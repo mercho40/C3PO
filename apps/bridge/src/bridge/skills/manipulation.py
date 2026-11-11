@@ -5,7 +5,7 @@ The HomeBody/HERO pattern, sized to what this robot has today:
     fresh detection (cam_xyz) --URDF camera mount--> torso_link point
         --> approach direction --> pre-grasp, grasp, lift waypoints
         --> IK for every waypoint BEFORE anything moves (kinematics.solve)
-        --> open hand, slew, slew, close shape, slew --> hold
+        --> curl hand, slew to pre-grasp, open hand, slew, close shape, slew --> hold
 
 Everything protective is inherited, not re-implemented: the rt/arm_sdk driver (gapless engage
 from the measured pose, 2 s weight ramp, 0.6 rad/s slew, stale-lowstate and FSM gates, the
@@ -136,9 +136,10 @@ SHOULDER_OUT_RAD = (0.7, 0.35)
 Table = tuple[float, float]
 #: Every arm capsule stays this far from the table box, on every commanded pose.
 TABLE_CLEARANCE_M = 0.01
-#: The hand opens before it comes in, so against the table it is the open hand: out past the
-#: TCP to the fingertips, palm-wide. With the fingers level a grasp needs its centre ~5 cm
-#: (radius + clearance) above the top; tipped down, the fingertips reach FINGER_M lower.
+#: From the opening at pre-grasp on (and holding something, in place), against the table the
+#: hand is the open hand: out past the TCP to the fingertips, palm-wide. With the fingers level
+#: a grasp needs its centre ~5 cm (radius + clearance) above the top; tipped down, the
+#: fingertips reach FINGER_M lower.
 #: shortcut: FINGER_M and the radius are a guess (TCP = palm centre); measure the BrainCo Revo2
 #: open, TCP to fingertip and palm half-width, and set both.
 FINGER_M = 0.09
@@ -147,6 +148,9 @@ TABLE_CAPSULES = (
     *ARM_CAPSULES[:-1],
     ("hand", 6, 7, 0.0, 1.0 + FINGER_M / kinematics.GRASP_TCP_M, HAND_OPEN_RADIUS_M),
 )
+#: A pick curls the hand into this before the arm moves and opens it only at pre-grasp, so up
+#: to there it is ARM_CAPSULES' "hand": its rest pose is open (hands.py), fingers out past the TCP.
+TRANSIT_SHAPE = "power"
 #: Walking toward a table stops with its edge this far ahead of torso_link: the hip_roll_links
 #: reach x ~0.10 at desk heights, and open-loop steps, sway, edge error and an edge seen at an
 #: angle (the square-edge shortcut in support_table) each eat a few cm of what is left.
@@ -257,6 +261,7 @@ def _line(
     pointing: tuple[float, float, float] | None,
     q_start: tuple[float, ...],
     table: Table | None = None,
+    hand_open: bool = True,
 ) -> list[tuple[float, ...]]:
     """IK for every LINE_STEP_M along start -> end, each seeded by the last; ends at `end`.
 
@@ -289,7 +294,7 @@ def _line(
         ]
         out.append(q)
         prev = q
-    _check_torso(side, name, out, table)
+    _check_torso(side, name, out, table, hand_open)
     return out
 
 
@@ -370,10 +375,15 @@ def _capsule(
 
 
 def _check_torso(
-    side: Side, name: str, qs: list[tuple[float, ...]], table: Table | None = None
+    side: Side,
+    name: str,
+    qs: list[tuple[float, ...]],
+    table: Table | None = None,
+    hand_open: bool = True,
 ) -> None:
     """PlanError if any pose brings an arm link's capsule (ARM_CAPSULES) into the torso, or
-    one of TABLE_CAPSULES (the hand open) within TABLE_CLEARANCE_M of the table box."""
+    one of TABLE_CAPSULES (the hand open; ARM_CAPSULES if not `hand_open`) within
+    TABLE_CLEARANCE_M of the table box."""
     box = None
     if table is not None:
         edge, top = table
@@ -397,7 +407,7 @@ def _check_torso(
                     part,
                 )
         if box is not None:
-            for part, a, b, t0, t1, r in TABLE_CAPSULES:
+            for part, a, b, t0, t1, r in TABLE_CAPSULES if hand_open else ARM_CAPSULES:
                 seg = _capsule(pts, a, b, t0, t1)
                 need = r + TABLE_CLEARANCE_M
                 gap = _segment_gap(seg[0], seg[1], lambda p: _box_gap(p, box), need) - need
@@ -442,6 +452,7 @@ def _transit(
     """From wherever the arm is to `pre` without sweeping through the surface:
     rise close to the body ("clear"), forward above the surface ("over"), straight down
     onto pre-grasp ("pre_grasp"). The descent is vertical, over the object's own footprint.
+    The hand is curled all the way (TRANSIT_SHAPE): against the table, ARM_CAPSULES.
     """
     top = max(clear_z, pre[2])
     # Rise beside the body, on the arm's own side: never across the torso.
@@ -471,16 +482,16 @@ def _transit(
                     + _joint_path(list(bent), q_tuck)
                 )
             _check_clear(side, "clear", rise, edge, clear_z)
-            _check_torso(side, "clear", rise, table)
+            _check_torso(side, "clear", rise, table, hand_open=False)
             break
         except PlanError as exc:
             errors.append(exc)
     else:
         raise _most_telling(errors)
     above = (pre[0], pre[1], top)
-    over = _line(side, "over", tuck, above, d, rise[-1], table)
+    over = _line(side, "over", tuck, above, d, rise[-1], table, hand_open=False)
     _check_clear(side, "over", over, edge, clear_z)
-    down = _line(side, "pre_grasp", above, pre, d, over[-1], table)
+    down = _line(side, "pre_grasp", above, pre, d, over[-1], table, hand_open=False)
     return [
         *(("clear", q) for q in rise),
         *(("over", q) for q in over),
@@ -505,7 +516,7 @@ def plan_pick(
     seed: list[float] | None,
     table: Table | None = None,
 ) -> list[Step]:
-    """Open, clear, over, pre-grasp, grasp, close, lift — every pose solved, or PlanError.
+    """Curl, clear, over, pre-grasp, open, grasp, close, lift — every pose solved, or PlanError.
 
     The hand passes SURFACE_MARGIN_M over the reported table top, or over the object's own
     z without one or when that is higher (it is above the real desk top, so it errs high).
@@ -519,14 +530,19 @@ def plan_pick(
         lifted = (grasp[0], grasp[1], grasp[2] + LIFT_M)
         try:
             transit = _transit(side, pre, d, clear_z, seed, out, table)
+            # The fingers sweep open at pre-grasp: the open hand must clear the table there.
+            _check_torso(side, "open", [transit[-1][1]], table)
             approach = _line(side, "grasp", pre, grasp, d, transit[-1][1], table)
             lift = _line(side, "lift", grasp, lifted, d, approach[-1], table)
         except PlanError as exc:
             errors.append((f"tilt {tilt:.0f}°, shoulder {math.degrees(out):.0f}° out", exc))
             continue
         return [
-            ("hand", "open", "open"),
+            ("hand", "curl", TRANSIT_SHAPE),
+            ("wait", "curling", CLOSE_SETTLE_S),
             *(("arm", phase, q) for phase, q in transit),
+            ("hand", "open", "open"),
+            ("wait", "opening", CLOSE_SETTLE_S),
             *(("arm", "grasp", q) for q in approach),
             ("hand", "close", shape),
             ("wait", "closing", CLOSE_SETTLE_S),
