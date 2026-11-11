@@ -109,10 +109,12 @@ __all__ = [
     "CameraExtrinsic",
     "Grounded",
     "Intrinsics",
+    "Support",
     "camera_to_base",
     "clamp_box",
     "deproject_pixel_to_camera",
     "fit_plane",
+    "fit_support",
     "ground_box",
     "inner_region",
     "median_depth_m",
@@ -571,8 +573,12 @@ def fit_plane(
     tol_m: float = 0.015,
     min_inlier_fraction: float = 0.5,
     seed: int = 0,
+    max_tilt_deg: float | None = None,
 ) -> tuple[tuple[float, float, float], float] | None:
     """RANSAC plane n.p = d (|n| = 1) or None. Seeded, so a frame replays exactly.
+
+    `max_tilt_deg` skips every hypothesis whose normal is further than that from
+    the points' own +z — only meaningful for points in a z-up frame (base_link).
 
     shortcut: the best 3-point hypothesis, no least-squares refit — the 1.5 cm
     inlier band is already below the D435i's noise at a metre; refit if the
@@ -581,6 +587,7 @@ def fit_plane(
     if len(points) < 12:
         return None
     rng = random.Random(seed)
+    min_nz = -1.0 if max_tilt_deg is None else math.cos(math.radians(max_tilt_deg))
     best: tuple[tuple[float, float, float], float] | None = None
     best_count = 0
     for _ in range(iterations):
@@ -589,7 +596,7 @@ def fit_plane(
         bx, by, bz = p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]
         nx, ny, nz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
         norm = math.sqrt(nx * nx + ny * ny + nz * nz)
-        if norm < 1e-9:
+        if norm < 1e-9 or abs(nz) < min_nz * norm:
             continue
         nx, ny, nz = nx / norm, ny / norm, nz / norm
         d = nx * p1[0] + ny * p1[1] + nz * p1[2]
@@ -723,6 +730,150 @@ def ground_box(
         near_m=near,
         p_opt=(float(p_opt[0]), float(p_opt[1]), float(p_opt[2])),
     )
+
+
+# --- the surface an object stands on, for the arm ------------------------------
+#
+# Not the glass fallback above (that wants a DEPTH); this reports the SURFACE: how
+# high its top is and where its near edge is, so the arm planner stops treating the
+# object's own height and a constant as the desk (desk-edge hit, robot 2026-11-05).
+SUPPORT_MAX_TILT_DEG = 12.0   # a table or a floor; a ramp or a sofa back is not one
+SUPPORT_BELOW_M = 0.10        # the top may sit this far under the object's bottom pixel...
+SUPPORT_ABOVE_M = 0.03        # ...or this far over it (a loose box, depth noise)
+SUPPORT_MIN_INLIERS = 30
+SUPPORT_MAX_RMS_M = 0.0075   # a flat top at D435 noise is ~1-5 mm; rougher is not a surface to trust
+
+
+@dataclass(frozen=True)
+class Support:
+    """The near-horizontal plane under one detection, in base_link (the Grounded frame)."""
+
+    z_m: float                  # the plane's height at the object's (x_m, y_m)
+    near_edge_m: float | None   # HORIZONTAL range, along bearing_deg, of its edge nearest the
+    #                             robot (range_m's convention); None if the edge is not in view
+    inliers: int
+    rms_m: float
+
+
+def fit_support(
+    box: Sequence[float],
+    depth: Any,
+    g: Grounded,
+    intr: Intrinsics,
+    *,
+    extr: CameraExtrinsic = DEFAULT_CAMERA_EXTRINSIC,
+    depth_scale: float = 0.001,
+    min_depth_m: float = MIN_VALID_DEPTH_M,
+    max_depth_m: float = MAX_VALID_DEPTH_M,
+    max_points: int = 256,
+    tol_m: float = 0.015,
+    seed: int = 0,
+) -> Support | None:
+    """The table (or floor) top under `box`, or None. Stdlib, seeded, ~max_points lookups.
+
+    Samples a stride grid from the box's lower half down to the image bottom, half a box
+    wider each side, skipping the box itself; keeps points within the height window under
+    the object's bottom pixel; RANSACs a plane within SUPPORT_MAX_TILT_DEG of level and
+    least-squares refits it. The near edge is the lowest plane pixel on the bearing line
+    (refined to the exact row), and only if something that is NOT the plane is seen
+    below it — a surface that runs off the image bottom has no edge in view.
+    """
+    width = intr.width or (len(depth[0]) if len(depth) else 0)
+    height = intr.height or len(depth)
+    clipped = clamp_box(box, width, height)
+    if clipped is None:
+        return None
+    x0, y0, x1, y1 = clipped
+    w, h = x1 - x0, y1 - y0
+    uc = min(width - 1, (x0 + x1) // 2)
+    # The object's bottom: where the bottom-centre pixel's ray reaches the object's range.
+    # Range, not optical depth: a pitched camera sees a vertical face at one range but
+    # at a depth that grows down the face.
+    cb, sb = math.cos(math.radians(g.bearing_deg)), math.sin(math.radians(g.bearing_deg))
+    rx, ry, rz = camera_to_base(deproject_pixel_to_camera(uc, y1, 1.0, intr),
+                                CameraExtrinsic(0.0, 0.0, 0.0, extr.pitch_deg, extr.yaw_deg))
+    if rx * cb + ry * sb < 1e-6:
+        return None  # the bottom pixel looks away from the object: nothing below to fit
+    t = (g.range_m - extr.x_m * cb - extr.y_m * sb) / (rx * cb + ry * sb)
+    z_bot = extr.z_m + t * rz
+    lo, hi = z_bot - SUPPORT_BELOW_M, z_bot + SUPPORT_ABOVE_M
+
+    def point(u: int, v: int) -> tuple[float, float, float] | None:
+        raw = depth[v][u]
+        z = float(raw) * depth_scale if raw else 0.0
+        if not min_depth_m <= z <= max_depth_m:
+            return None
+        return camera_to_base(deproject_pixel_to_camera(u, v, z, intr), extr)
+
+    rx0, rx1, ry0 = max(0, x0 - w // 2), min(width, x1 + w // 2), y0 + h // 2
+    side = max(1, math.isqrt(max(1, max_points)))
+    sx, sy = _stride_for(rx1 - rx0, side), _stride_for(height - ry0, side)
+    seen: list[tuple[int, int, tuple[float, float, float]]] = []  # (u, v, p), all valid
+    cand: list[tuple[float, float, float]] = []
+    for v in range(ry0, height, sy):
+        for u in range(rx0, rx1, sx):
+            if x0 <= u < x1 and v < y1:
+                continue  # the object itself
+            p = point(u, v)
+            if p is None:
+                continue
+            seen.append((u, v, p))
+            if lo - tol_m <= p[2] <= hi + tol_m:
+                cand.append(p)
+    if len(cand) < SUPPORT_MIN_INLIERS:
+        return None
+    plane = fit_plane(cand, tol_m=tol_m, seed=seed, max_tilt_deg=SUPPORT_MAX_TILT_DEG)
+    if plane is None:
+        return None
+    (nx, ny, nz), d = plane
+    a, b, c = -nx / nz, -ny / nz, d / nz  # as z = a x + b y + c; nz is near 1 (level)
+
+    def on(p: tuple[float, float, float]) -> bool:
+        return abs(p[2] - a * p[0] - b * p[1] - c) < tol_m
+
+    # Least squares on the hypothesis' inliers, then once more on the refit's own:
+    # a noisy 3-point hypothesis is tilted enough to swap table points for front-face ones.
+    for _ in range(2):
+        inl = [p for p in cand if on(p)]
+        n = len(inl)
+        if n < SUPPORT_MIN_INLIERS:
+            return None
+        mx, my, mz = (sum(p[i] for p in inl) / n for i in range(3))
+        sxx = sum((p[0] - mx) ** 2 for p in inl)
+        syy = sum((p[1] - my) ** 2 for p in inl)
+        sxy = sum((p[0] - mx) * (p[1] - my) for p in inl)
+        sxz = sum((p[0] - mx) * (p[2] - mz) for p in inl)
+        syz = sum((p[1] - my) * (p[2] - mz) for p in inl)
+        det = sxx * syy - sxy * sxy
+        if abs(det) < 1e-12:
+            return None  # inliers on a line: no plane to speak of
+        a, b = (sxz * syy - syz * sxy) / det, (syz * sxx - sxz * sxy) / det
+        c = mz - a * mx - b * my
+    rms = math.sqrt(sum((p[2] - a * p[0] - b * p[1] - c) ** 2 for p in inl) / n)
+    z_m = a * g.x_m + b * g.y_m + c
+    if (rms > SUPPORT_MAX_RMS_M or not lo <= z_m <= hi
+            or math.degrees(math.atan(math.hypot(a, b))) > SUPPORT_MAX_TILT_DEG):
+        return None
+
+    # The edge: the lowest plane point in the sampled column whose edge lies on the bearing
+    # line (image columns fan out from it), if that column sees something else below it.
+    edge = None
+    lowest: dict[int, tuple[int, tuple[float, float, float]]] = {}
+    for u, v, p in seen:
+        if on(p) and v > lowest.get(u, (-1, p))[0]:
+            lowest[u] = (v, p)
+    if lowest:
+        u_e = min(lowest, key=lambda u: abs(lowest[u][1][1] * cb - lowest[u][1][0] * sb))
+        v_e, p_e = lowest[u_e]
+        if any(u == u_e and v > v_e and not on(p) for u, v, p in seen):
+            for v in range(v_e + 1, min(height, v_e + sy)):  # the rows the stride skipped
+                p = point(u_e, v)
+                if p is not None:
+                    if not on(p):
+                        break
+                    p_e = p
+            edge = p_e[0] * cb + p_e[1] * sb
+    return Support(z_m=z_m, near_edge_m=edge, inliers=n, rms_m=rms)
 
 
 def to_observation(

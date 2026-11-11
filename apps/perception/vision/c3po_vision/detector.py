@@ -18,7 +18,8 @@ WHAT THIS PUBLISHES, AND WHY EVERY TICK
 `objects` are ALREADY EGOCENTRIC — label, range_m, bearing_deg, confidence,
 exactly `world_model.Observation`'s keyword arguments — plus ADDITIVE
 fields older consumers ignore: `track_id` (tracking.py), `cam_xyz` (optical-frame point, m), `depth_source`
-("direct" | "plane", grounding.ground_box) and, for "direct" only, `near_m` (the near face's range). `unranged` (also additive) holds
+("direct" | "plane", grounding.ground_box) and, for "direct" only, `near_m` (the near face's range), and
+`support` (grounding.fit_support: the surface under the object, base_link; absent if none). `unranged` (also additive) holds
 what was SEEN but could not be ranged — label, bearing_deg, confidence,
 track_id, depth_source "invalid" — kept out of `objects` because a thing with
 no range is not an obstacle at range 0. D2.2 option 1: this
@@ -96,6 +97,7 @@ from c3po_vision.grounding import (
     CameraExtrinsic,
     Intrinsics,
     clamp_box,
+    fit_support,
     ground_box,
     ray_bearing_deg,
     to_observation,
@@ -201,6 +203,12 @@ MAX_DEPTH_M = float(os.environ.get("C3PO_VISION_MAX_DEPTH_M", str(MAX_VALID_DEPT
 # depth is distrusted and the support plane is tried (grounding.ground_box).
 # <= 0 disables the plane fallback entirely.
 BEHIND_M = float(os.environ.get("C3PO_VISION_BEHIND_M", "0.30"))
+
+# The surface each non-person detection stands on (grounding.fit_support), for the arm
+# planner. On unless C3PO_VISION_SUPPORT=0; read in ground_all so a test can flip it.
+SUPPORT_ENV = "C3PO_VISION_SUPPORT"
+# Only the nearest few: pure Python inside the 10 Hz tick, ~1 ms a fit on a Mac, a few on the Jetson.
+SUPPORT_PER_FRAME = 4
 
 ENGINE_PATH = os.environ.get("C3PO_ENGINE", "/opt/c3po/engines/yolo11n.fp16.plan")
 
@@ -1052,6 +1060,7 @@ def ground_all(
     depth_scale: float,
     tracker: Optional[IouTracker] = None,
     max_objects: Optional[int] = None,
+    stamp: Optional[float] = None,
 ) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
     """2-D detections -> wire objects. Returns (objects, omitted, unranged).
 
@@ -1068,6 +1077,7 @@ def ground_all(
     your wallet over there but cannot tell how far" still reaches the memory.
     """
     cap = MAX_OBJECTS_ON_WIRE if max_objects is None else max_objects
+    support_on = _env_flag(SUPPORT_ENV, "1")
     if CLASS_CONF:  # before the tracker, so a dropped class never takes a track id
         detections = [
             d for d in detections if d[1] >= CLASS_CONF.get(label_for(labels, d[0]), 0.0)
@@ -1077,7 +1087,7 @@ def ground_all(
         list(tracker.update([(n, tuple(d[2])) for n, d in zip(names, detections)]))
         if tracker is not None else [None] * len(detections)
     )
-    grounded: list[tuple[float, dict[str, Any]]] = []
+    grounded: list[tuple[float, dict[str, Any], Any, Any]] = []
     unranged: list[dict[str, Any]] = []
     for det, label, track_id in zip(detections, names, ids):
         confidence, box = det[1], det[2]
@@ -1112,10 +1122,27 @@ def ground_all(
             obj["cam_xyz"] = [round(v, 3) for v in g.p_opt]
         if track_id is not None:
             obj["track_id"] = track_id
-        grounded.append((g.range_m, obj))
+        grounded.append((g.range_m, obj, g, box))
 
-    grounded.sort(key=lambda pair: pair[0])
-    objects = [obj for _rng, obj in grounded[:cap]]
+    grounded.sort(key=lambda entry: entry[0])
+    budget = SUPPORT_PER_FRAME if support_on else 0
+    for _rng, obj, g, box in grounded[:cap]:
+        if budget <= 0:
+            break
+        if obj["label"] == "person":
+            continue
+        budget -= 1
+        s = fit_support(box, depth, g, intrinsics, extr=extrinsic, depth_scale=depth_scale,
+                        min_depth_m=MIN_DEPTH_M, max_depth_m=MAX_DEPTH_M)
+        if s is not None:
+            obj["support"] = {
+                "z_m": round(s.z_m, 3),
+                "near_edge_m": None if s.near_edge_m is None else round(s.near_edge_m, 3),
+                "inliers": s.inliers,
+                "rms_m": round(s.rms_m, 4),
+                "stamp_unix": None if stamp is None else round(stamp, 3),
+            }
+    objects = [entry[1] for entry in grounded[:cap]]
     unranged.sort(key=lambda o: o["confidence"], reverse=True)
     return objects, max(0, len(grounded) - cap), unranged[:cap]
 
@@ -1242,7 +1269,7 @@ def run() -> int:
                 )
             objects, omitted, unranged = ground_all(
                 detections, depth, intrinsics, extrinsic, labels, source.depth_scale,
-                tracker=tracker,
+                tracker=tracker, stamp=captured,
             )
         # BLIND EXCEPT, DELIBERATE: the whole point. A tick can fail in CUDA, in TensorRT,
         # in pyrealsense2 or in numpy, and the correct response to every one of
