@@ -57,7 +57,7 @@ load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 # These must follow load_env_file above; ruff's E402 is silenced per import
 # rather than for the file, so a genuinely misplaced import still fails.
-from bridge import safety, watchdog  # noqa: E402
+from bridge import face_gate, safety, watchdog  # noqa: E402
 from bridge.skill_meta import meta as skill_meta  # noqa: E402
 from bridge.watchdog import get_watchdog  # noqa: E402
 
@@ -149,6 +149,9 @@ class GovernedMCP(FastMCP):
         if invalid is not None and not estop.stop_is_standing():
             # PARAR first; else not "get a confirmation", which /safety/confirm would refuse too.
             refusal = invalid
+        if refusal is None:
+            # Last, on top of every check above: a face never stands in for a confirmation.
+            refusal = await face_gate.refusal(name)
         if refusal is not None:
             raise ToolError(refusal)
         return await super().call_tool(name, arguments)
@@ -4825,6 +4828,11 @@ def main() -> None:
     ``BRIDGE_TRANSPORT=http`` to serve FastMCP's streamable-http transport at
     ``http://{BRIDGE_HOST}:{BRIDGE_PORT}/mcp`` — how ``apps/back`` connects.
     """
+    if face_gate.GATED:
+        # Before serving, not in a thread: a cold `import cv2` holds the GIL for seconds,
+        # which would stall a stop, and would spend the first gated call's TIMEOUT_S.
+        face_gate.warm()
+        log.warning("face_gate.on", tools=sorted(face_gate.GATED), max_m=face_gate.MAX_M)
     # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #
