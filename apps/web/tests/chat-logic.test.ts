@@ -66,6 +66,14 @@ describe("safety refusals read as the gate working, not as errors", () => {
     expect(d.label).toBe("Detenido (PARAR)");
     expect(d.note).toContain("Reanudar");
   });
+  test("a face-gate refusal is amber with the Spanish hint", () => {
+    const d = card(
+      "tool_error: refused (operator_face_not_live): pick needs the enrolled operator's live face",
+    );
+    expect(d.label).toBe("Rechazado");
+    expect(d.tone).toBe("warn");
+    expect(d.note).toContain("foto");
+  });
   test("any other bridge refusal is still an error", () => {
     expect(card("tool_error: refused: a person is 0.40 m away").tone).toBe(
       "error",

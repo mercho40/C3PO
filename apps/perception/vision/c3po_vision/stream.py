@@ -3,6 +3,7 @@
     GET /stream.mjpg   multipart/x-mixed-replace   what an <img> renders
     GET /frame.jpg     one JPEG                    for a poll or a screenshot
     GET /status        JSON                        how old the last frame is
+    GET /depth_box     JSON                        depth inside a box of a /frame.jpg
 
 This exists because `detector.py` already owns the RealSense and `/dev/videoN`
 is single-owner: whoever wants to show the operator a picture has to be the
@@ -63,7 +64,8 @@ import socket
 import sys
 import threading
 import time
-from collections import namedtuple
+import urllib.parse
+from collections import deque, namedtuple
 from typing import Any, Callable, Dict, Optional, Tuple
 
 # The multipart boundary. Arbitrary, but it must not appear in JPEG payloads —
@@ -122,6 +124,14 @@ _WAKE_S = 0.25
 # browser — can be exercised on a machine with no camera and no numpy.
 RawFrame = namedtuple("RawFrame", ["width", "height", "rgb"])
 
+#: Depth frames kept, newest last, so /depth_box can answer for the frame a client
+#: fetched from /frame.jpg after a newer one arrived (5 Hz: ~0.8 s of history).
+DEPTH_KEEP = 4
+
+#: At most this many depth pixels are read per side of a box: a 200 px face box is
+#: read every 4th pixel, ~2.5k values, which pure Python sorts in about a millisecond.
+DEPTH_BOX_SAMPLES = 50
+
 
 def _log(event: str, **fields: Any) -> None:
     """Same one-line stderr format as detector.log, duplicated on purpose.
@@ -133,6 +143,31 @@ def _log(event: str, **fields: Any) -> None:
     parts = [f"{k}={v}" for k, v in sorted(fields.items())]
     sys.stderr.write("[stream] {} {}\n".format(event, " ".join(parts)))
     sys.stderr.flush()
+
+
+def depth_box_stats(depth: Any, box: Tuple[int, int, int, int], depth_scale: float) -> Dict[str, Any]:
+    """Median depth, relief (p90 - p10) and valid share inside `box` of a depth frame.
+
+    `depth` is rows of raw units (numpy HxW or a list of lists), 0 = no reading;
+    `box` is (x0, y0, x1, y1) in its pixels. Pure Python so the laptop suite runs it.
+    Raises ValueError on a box with no pixels inside the frame.
+    """
+    height, width = len(depth), len(depth[0])
+    x0, x1 = max(0, box[0]), min(width, box[2])
+    y0, y1 = max(0, box[1]), min(height, box[3])
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError("box is empty or outside the frame")
+    step = max(1, max(x1 - x0, y1 - y0) // DEPTH_BOX_SAMPLES)
+    raw = [int(v) for row in depth[y0:y1:step] for v in row[x0:x1:step]]
+    valid = sorted(v for v in raw if v > 0)
+    out = {"valid_frac": round(len(valid) / len(raw), 3), "median_m": None, "relief_m": None}
+    if valid:
+        def q(p: float) -> float:
+            return valid[min(len(valid) - 1, int(p * len(valid)))] * depth_scale
+
+        out["median_m"] = round(q(0.5), 4)
+        out["relief_m"] = round(q(0.9) - q(0.1), 4)
+    return out
 
 
 def encode_jpeg(frame: Any, quality: int, scale: float) -> Tuple[bytes, int, int]:
@@ -195,11 +230,20 @@ class _Latest:
         self._jpeg = b""
         self._dims = (0, 0)
         self._encoded_dims = (0, 0)
+        # (stamp, depth, fx, depth_scale), sharing the stamp of the colour frame offered with it.
+        self._depths = deque(maxlen=DEPTH_KEEP)  # type: Any
         self.offered = 0
         self.clients = 0
         self.closed = False
 
-    def offer(self, frame: Any, stamp: float) -> None:
+    def offer(
+        self,
+        frame: Any,
+        stamp: float,
+        depth: Any = None,
+        fx: Optional[float] = None,
+        depth_scale: float = 0.001,
+    ) -> None:
         if isinstance(frame, RawFrame):
             copied, dims = frame, (frame.width, frame.height)
         else:
@@ -212,6 +256,9 @@ class _Latest:
             # Recorded here, not at encode time: `/status` has to be able to say
             # what the camera is producing before anyone has asked for a JPEG.
             self._dims = dims
+            if depth is not None and fx:
+                # A copy for the same reason as the colour frame.
+                self._depths.append((stamp, depth.copy(), float(fx), depth_scale))
             self.offered += 1
             self._cv.notify_all()
 
@@ -223,6 +270,14 @@ class _Latest:
     def snapshot(self) -> Tuple[int, Any, float]:
         with self._cv:
             return self._seq, self._frame, self._stamp
+
+    def depth_at(self, stamp: Optional[float]) -> Optional[Tuple[float, Any, float, float]]:
+        """The depth offered with the colour frame of this stamp (None: the newest), or None."""
+        with self._cv:
+            for entry in reversed(self._depths):
+                if stamp is None or entry[0] == stamp:
+                    return entry
+        return None
 
     def wait_for_newer(self, seq: int, deadline: float) -> Tuple[int, Any, float]:
         """Block until a frame newer than `seq` exists, or the deadline passes.
@@ -331,6 +386,8 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                 return self._status()
             if path == "/frame.jpg":
                 return self._frame()
+            if path == "/depth_box":
+                return self._depth_box()
             if path == "/transcribe/status":
                 return self._transcribe_status()
             if path in ("/stream.mjpg", "/"):
@@ -402,15 +459,54 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
             self._headers("application/json", {"Content-Length": str(len(body))})
             self.wfile.write(body)
 
+        def _json(self, code: int, payload: Dict[str, Any]) -> None:
+            body = json.dumps(payload).encode("ascii")
+            if code == 200:
+                self._headers("application/json", {"Content-Length": str(len(body))})
+            else:
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+            self.wfile.write(body)
+
+        def _depth_box(self) -> None:
+            """GET /depth_box?x0=&y0=&x1=&y1=[&stamp=] — the bridge's face-liveness check.
+
+            The box is in /frame.jpg's pixels (so C3PO_VISION_STREAM_SCALE is undone
+            here) and `fx` is returned in them too. `stamp` is /frame.jpg's
+            X-Frame-Stamp: the answer is for THAT frame's depth or a 503, never
+            another moment's.
+            """
+            query = urllib.parse.parse_qs(self.path.partition("?")[2])
+            try:
+                x0, y0, x1, y1 = (float(query[k][0]) for k in ("x0", "y0", "x1", "y1"))
+                stamp = float(query["stamp"][0]) if "stamp" in query else None
+            except (KeyError, ValueError):
+                return self._json(400, {"error": "need numeric x0, y0, x1, y1 (and optional stamp)"})
+            entry = latest.depth_at(stamp)
+            if entry is None:
+                return self._json(503, {"error": "no depth for that frame"})
+            at, depth, fx, depth_scale = entry
+            box = (round(x0 / scale), round(y0 / scale), round(x1 / scale), round(y1 / scale))
+            try:
+                stats = depth_box_stats(depth, box, depth_scale)
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+            self._json(200, {"v": 1, "stamp": at, "fx": fx * scale, **stats})
+
         def _frame(self) -> None:
-            seq, frame, _stamp = latest.snapshot()
+            seq, frame, stamp = latest.snapshot()
             if seq == 0 or frame is None:
                 # 503, not 404: the endpoint exists and the camera has simply
                 # not produced anything yet. 404 would read as a wrong URL.
                 self.send_error(503, "no frame yet")
                 return
             data = latest.jpeg(seq, frame, quality, scale)
-            self._headers("image/jpeg", {"Content-Length": str(len(data))})
+            # The key /depth_box takes, so a client can ask for this frame's depth.
+            self._headers(
+                "image/jpeg", {"Content-Length": str(len(data)), "X-Frame-Stamp": repr(stamp)}
+            )
             self.wfile.write(data)
 
         def _stream(self) -> None:
@@ -550,8 +646,15 @@ class FrameStream:
             )
             self.running = False
 
-    def offer(self, frame: Any, stamp: Optional[float] = None) -> None:
-        """Hand over a colour frame from a tick that SUCCEEDED. Never raises."""
+    def offer(
+        self,
+        frame: Any,
+        stamp: Optional[float] = None,
+        depth: Any = None,
+        fx: Optional[float] = None,
+        depth_scale: float = 0.001,
+    ) -> None:
+        """Hand over a colour frame from a tick that SUCCEEDED, and its aligned depth. Never raises."""
         if not self.running or frame is None:
             return
         now = time.time() if stamp is None else stamp
@@ -559,7 +662,7 @@ class FrameStream:
             return
         self._next_at = now + self._min_interval
         try:
-            self._latest.offer(frame, now)
+            self._latest.offer(frame, now, depth, fx, depth_scale)
         except Exception as exc:  # noqa: BLE001 — a video bug must not stop the detector
             _log("offer.failed", error=repr(exc))
 
