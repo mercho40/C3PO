@@ -7,18 +7,19 @@ autonomy workstreams). Deploy it once; the per-area checklists below each say "d
 Order matters: **nothing new moves before the safety checks pass**, and nothing moves on
 its own before it has moved on the gantry.
 
-| #   | Area                                            | Checklist                                                                    | Moves the robot?      | Status 2026-11-03                                             |
-| --- | ----------------------------------------------- | ---------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------- |
-| 0   | Prep (tonight / before leaving)                 | this file §0                                                                 | no                    | —                                                             |
-| 1   | Deploy + rebuild images                         | this file §1                                                                 | no                    | done; nav build cut off by the battery (4.5), re-run          |
-| 2   | Safety governor                                 | [`safety.md`](safety.md)                                                     | gantry                | partial: latch, «Reanudar» and «Confirmar» ✅; steps 3-4 open |
-| 3   | Vision tools (look / find_object / verify)      | [`vlm.md`](vlm.md) §1–5                                                      | no                    | ✅ Gemini `look`                                              |
-| 4   | YOLOE engine, speed, sanity                     | [`perception.md`](perception.md) §2–4                                        | no                    | partial: engine and 40 ms ✅; pitch and test set open         |
-| 5   | Object memory + `look_around`                   | [`memory-eval.md`](memory-eval.md) §1–6                                      | turns in place        | open                                                          |
-| 6   | Nav2 goals, map, landmark                       | [`nav.md`](nav.md) §2–7                                                      | gantry → 0.5 m → room | blocked: Mid-360S faulted (4.1)                               |
-| 6b  | Arms: URDF check, reach, shapes, pick, handover | [`manipulation.md`](manipulation.md)                                         | arms (gantry → stand) | partial: URDF sign and reach ✅; hands blocked (5.1)          |
-| 7   | **Put together:** "buscá la billetera"          | this file §7                                                                 | yes                   | not run                                                       |
-| 8   | Measure: eval T0 subset, YOLOE test-set capture | [`memory-eval.md`](memory-eval.md) §7, [`perception.md`](perception.md) §5–7 | little                | open                                                          |
+| #   | Area                                                         | Checklist                                                                    | Moves the robot?      | Status 2026-11-03                                             |
+| --- | ------------------------------------------------------------ | ---------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------- |
+| 0   | Prep (tonight / before leaving)                              | this file §0                                                                 | no                    | —                                                             |
+| 1   | Deploy + rebuild images                                      | this file §1                                                                 | no                    | done; nav build cut off by the battery (4.5), re-run          |
+| 2   | Safety governor                                              | [`safety.md`](safety.md)                                                     | gantry                | partial: latch, «Reanudar» and «Confirmar» ✅; steps 3-4 open |
+| 3   | Vision tools (look / find_object / verify)                   | [`vlm.md`](vlm.md) §1–5                                                      | no                    | ✅ Gemini `look`                                              |
+| 4   | YOLOE engine, speed, sanity                                  | [`perception.md`](perception.md) §2–4                                        | no                    | partial: engine and 40 ms ✅; pitch and test set open         |
+| 5   | Object memory + `look_around`                                | [`memory-eval.md`](memory-eval.md) §1–6                                      | turns in place        | open                                                          |
+| 6   | Nav2 goals, map, landmark                                    | [`nav.md`](nav.md) §2–7                                                      | gantry → 0.5 m → room | blocked: Mid-360S faulted (4.1)                               |
+| 6b  | Arms: URDF check, reach, shapes, pick, handover              | [`manipulation.md`](manipulation.md)                                         | arms (gantry → stand) | partial: URDF sign and reach ✅; hands blocked (5.1)          |
+| 6c  | Hands: serial probe, real driver, measure, first gantry pick | [`hand-and-gantry.md`](hand-and-gantry.md)                                   | hands, arms (gantry)  | new 2026-11-11: run before 6b §5                              |
+| 7   | **Put together:** "buscá la billetera"                       | this file §7                                                                 | yes                   | not run                                                       |
+| 8   | Measure: eval T0 subset, YOLOE test-set capture              | [`memory-eval.md`](memory-eval.md) §7, [`perception.md`](perception.md) §5–7 | little                | open                                                          |
 
 Someone holds the e-stop for every step from 2 on. Rollback flags are at the bottom.
 
