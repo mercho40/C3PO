@@ -1732,3 +1732,44 @@ Code is done; each needs the robot (or the Quest, or GitHub) to confirm:
 - [ ] `c3po install` twice, then a rollback and forward again, end to end (return-checklist §8).
 - [ ] The first runs of `nav-image.yml` and the `back-db` job on GitHub (return-checklist, "Before the session").
 - [ ] `eval-agent.ts --ids` with the four stand tasks, on the campus network (return-checklist, "Before the session").
+
+## 12. Fourth pass, 2026-11-11
+
+Done off the robot, each with tests. Operator face gate (an extra gate, off by default):
+
+- ✅ The vision container answers depth for the frame it just served: `/frame.jpg` carries `X-Frame-Stamp`, and `GET /depth_box?x0=&y0=&x1=&y1=&stamp=` returns the median depth, the relief (p90 − p10), the valid share and `fx` for that frame's aligned depth. It keeps the last four depth frames; a stamp it no longer has is a 503, never another moment's depth (14f8d84). Needs the vision image rebuild.
+- ✅ Skills named in `C3PO_FACE_GATE` also need the enrolled operator's live face in front of the head camera (17cf24a). The check runs last in `GovernedMCP.call_tool`, after PARAR, battery, the person rule and the confirmation, so `/invoke`, the agent and Claude Code all meet it. YuNet finds the face, SFace matches it (cosine 0.363), and the depth from the same frame must show a face 0.11–0.20 m wide with at least 1 cm of relief, within `C3PO_FACE_GATE_MAX_M` (default 1.5 m). It runs off the event loop, gives up after 1.5 s and fails closed. Stops and releases are never gated. Empty means off. A confirmation spent on a call the face gate then refuses must be given again. Models: `apps/bridge/scripts/install_face_models.sh` (opencv_zoo, pinned by commit and sha256). Enrollment: `apps/bridge/scripts/face_enroll.py` on the robot (consent prompt, `--delete`). Only SFace feature vectors are stored, owner-only, on the robot.
+- ✅ The console says in Spanish why the face gate refused, in the invoke result and as an amber «Rechazado» card in chat (29c06f0).
+
+Table-aware pick and place:
+
+- ✅ Each non-person detection may carry `support`: the surface it stands on, as `z_m` (height in base_link, the pelvis), `near_edge_m` (range of its nearest edge along the bearing, `null` if the edge is out of view), `inliers`, `rms_m` and `stamp_unix`. A RANSAC plane within 12° of level, for the nearest four objects. `C3PO_VISION_SUPPORT=0` turns it off. Needs the vision image rebuild (4d3b662).
+- ✅ `pick` and `place` plan around the reported table (dbf876c). A support from the same capture becomes a box; every arm capsule must clear it by 1 cm on every commanded pose. A report can never lower the hand: the path still passes 8 cm over the object's own height. Without a support the old rule stands (the object's height and the 0.16–0.24 m desk-edge proxy). A refusal keeps its English error and adds `result.reason`, `result.advice` (`step_forward_m`, `step_back_m`, `step_left_m`, `step_right_m`, or a `problem`) and a short Spanish hint in `result.note`, for example «Acercate ~0.05 m y correte ~0.14 m a la izquierda, después mirá de nuevo.». Forward advice never brings the table edge closer than 0.16 m to the torso. The pick result reports `table_torso_m`.
+- ✅ The MuJoCo twin plans picks over 20 random table scenes in CI (`C3PO_SIM_SCENES=200` for the full sweep: 26 planned, 0 contacts), runs every returned plan through the real arm driver against the table, and checks that every refusal carries a reason, advice and a hint (b2ee6c1).
+
+Limits of this pass:
+
+- The face gate checks liveness from depth. That stops a phone screen and a flat print. It is not anti-spoofing: a mask or a curved life-size print is beyond it. It sits on top of the login and the confirmation, never instead of them.
+- The face gate needs the vision container to hold the camera. If videohub holds it, every gated call refuses with `operator_face_check_unavailable`.
+- The console's «No veo al operador» hint says 1,5 m whatever `C3PO_FACE_GATE_MAX_M` is set to.
+- Angled edge: the planner takes the table's front face as square to the robot through the one edge point perception reports. An edge seen at an angle is nearer on one side.
+- Flat objects: an object whose centre is less than about 4–6 cm above the table top is refused with `table_clearance` (the hand capsule is 3.1 cm thick plus 1 cm clearance). A phone or a wallet lying flat cannot be picked.
+
+Still open off the robot: the heartbeat watchdog; E5–E8 (depth-only Nav2, a decision first); a separate short-timeout velocity client for the stop, only if the ack latency says it is needed; the AI gateway host; FAST-LIO `blind`; 8.5 (the `operador@c3po.local` password); F10's push triggers; the angled table edge (needs the edge's direction from perception); flat objects (needs a different grasp, for example from above); and 6-D IK with palm roll (BACKLOG 5.3). The support-plane shortcut in the planner is done (dbf876c).
+
+### Pending robot test (fourth pass)
+
+Code is done; each needs the robot to confirm. Rebuild the vision image first (`c3po perception build vision`): the face gate, the support and the planner's table all need it.
+
+- [ ] Install the face models and enroll the operator; the gate comes on after a bridge restart (safety.md 25).
+- [ ] The operator matches at 0.5, 1 and 1.5 m; someone else does not (safety.md 26).
+- [ ] A photo on a phone and a printed photo are refused as not live, and the real face still passes at 1.5 m with the 1 cm relief threshold (safety.md 27).
+- [ ] The check's time on the Orin against the 1.5 s budget, and the first gated call after a bridge start (safety.md 28).
+- [ ] A PARAR during a gated check is not delayed (safety.md 29).
+- [ ] With videohub holding the camera, gated calls refuse with `operator_face_check_unavailable` (safety.md 30).
+- [ ] The Spanish face hints read well in the console and when the agent says them (safety.md 31).
+- [ ] Reported table height and edge against a tape, at 2–3 heights and at 0° and ±20° (perception.md §4).
+- [ ] Vision `mean_tick_ms` stays inside the 10 Hz budget after the rebuild (perception.md §4).
+- [ ] A gantry pick with the table reported, behind `C3PO_ALLOW_PICK=1`; the hand's real gap above the table against the planned one (manipulation.md 17–18).
+- [ ] A low or flat object is refused with `table_clearance`, and nothing moves (manipulation.md 19).
+- [ ] Walk advice from a refused pick, and the Spanish hints in the console and spoken (manipulation.md 20–21).

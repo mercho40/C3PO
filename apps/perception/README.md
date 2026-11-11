@@ -92,6 +92,13 @@ Three things about it are load-bearing and are argued in the module header:
 `C3PO_VISION_STREAM=0` turns it off. `perception_up` sets the defaults and
 prints the URL.
 
+`/frame.jpg` carries its capture stamp in `X-Frame-Stamp`, and
+`GET /depth_box?x0=&y0=&x1=&y1=&stamp=` returns the median depth, the relief
+(p90 − p10), the valid share and `fx` inside that box of that frame's aligned
+depth (box and `fx` in `/frame.jpg` pixels). The last four depth frames are kept;
+a stamp no longer held is a 503, never another moment's depth. The bridge's
+operator face gate reads it for liveness (`docs/OPERATIONS.md` §4).
+
 ## DDS domain isolation
 
 Everything perception publishes lives on **its own DDS domain (42), bound to
@@ -425,6 +432,10 @@ error. **The rebuild carrying that pin has not run yet.**
   `C3PO_VISION_CLASS_CONF="cooker=0.6,thumbtack=off"` (only above
   `C3PO_VISION_CONF`; `person` is refused because the person rule reads it; the
   start log prints what took effect). See `detector.py: parse_class_conf`.
+  The nearest four non-person objects also carry `support`, the surface they
+  stand on (`z_m` in base_link, `near_edge_m` along the bearing, `inliers`,
+  `rms_m`, `stamp_unix`; `grounding.py: fit_support`), which the arm planner
+  plans around. `C3PO_VISION_SUPPORT=0` turns it off.
 
 ## File map
 
