@@ -21,12 +21,12 @@
 //
 // REACHABILITY
 // ------------
-// `PUBLIC_ROBOT_CAM_URL` points at apps/back (`http://localhost:3000/camera`),
-// which relays the bridge's `/camera/*` behind Better Auth — the same path
-// `/telemetry/*` and the costmap take. The browser never talks to the bridge's
-// port, which also serves the unauthenticated `/mcp`. Hence
-// `credentials: "include"` below: the session cookie is what gets the picture.
-// apps/back reaches the bridge at its own BRIDGE_URL.
+// `dev:robot` points `PUBLIC_ROBOT_CAM_URL` at the bridge's own `/camera/*`
+// (`http://localhost:8001/camera`, through the ssh tunnel): 10 fps with no
+// relay hop. The bridge grants CORS to the console origin for those read-only
+// routes only, without credentials. Pointed at apps/back instead
+// (`http://localhost:3000/camera`), the relay sits behind Better Auth and the
+// session cookie is what gets the picture. `camCredentials` picks which.
 //
 // The bridge relays whichever of TWO servers currently owns the one physical
 // camera — the vendor's videohub feed (1920x1080) or apps/perception's vision
@@ -43,6 +43,8 @@
 //   "timeout"      no answer within STATUS_TIMEOUT_MS
 //   "HTTP 503"     a non-OK answer, optionally followed by ": <the bridge's own
 //                  words>" (its `hint`, else its `error`), verbatim
+
+import { sameOrigin } from "./health";
 
 export type RobotCamState =
   "connecting" | "live" | "stale" | "error" | "closed";
@@ -148,9 +150,22 @@ export function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/${path}`;
 }
 
+/**
+ * The session cookie only for apps/back's relay (same origin as the API). The
+ * bridge on 8001 grants CORS without `Allow-Credentials`, so a cookie sent
+ * there makes the browser hide every answer — a working camera read as "cors".
+ */
+export function camCredentials(
+  camBase: string,
+  apiUrl: string,
+): "include" | "omit" {
+  return sameOrigin(camBase, apiUrl) ? "include" : "omit";
+}
+
 export function connectRobotCamera(
   baseUrl: string,
   callbacks: RobotCamCallbacks,
+  credentials: RequestCredentials = "include",
 ): RobotCamHandle {
   let timer: ReturnType<typeof setInterval> | null = null;
   let closed = false;
@@ -211,9 +226,9 @@ export function connectRobotCamera(
     try {
       const res = await fetch(endpoint(baseUrl, "status"), {
         cache: "no-store",
-        // The feed is served by apps/back behind Better Auth; without the
-        // session cookie every poll is a 401 and the panel reads "error".
-        credentials: "include",
+        // apps/back's relay needs the session cookie (else 401); the bridge
+        // must not get one (see camCredentials).
+        credentials,
         signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
       });
       if (!res.ok) throw new HttpError(res.status, await bridgeWords(res));

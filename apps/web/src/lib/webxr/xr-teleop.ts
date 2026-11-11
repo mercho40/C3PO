@@ -25,6 +25,7 @@
  * Never live-tested against an actual headset.
  */
 
+import type { FaceSeen } from "#lib/robot/face-seen.js";
 import { CameraLayer, type CameraReason } from "./camera-layer";
 import {
   MenuLayer,
@@ -574,6 +575,8 @@ export class XrTeleopSession {
   #menu: MenuLayer | null = null;
   #scan: ScanLayer | null = null;
   #pendingStreamUrl = "";
+  #pendingStreamCreds = true;
+  #pendingFaces: [FaceSeen | null, number] = [null, 0];
   #pendingLive = true;
   #pendingReason: CameraReason = null;
   #cameraBroken = false;
@@ -613,9 +616,16 @@ export class XrTeleopSession {
    * the source hands out a new cache-busted URL each time, and reusing the old
    * one is a retry that does nothing.
    */
-  setCameraStream(url: string): void {
+  setCameraStream(url: string, withCredentials = true): void {
     this.#pendingStreamUrl = url;
-    this.#camera?.setStreamUrl(url);
+    this.#pendingStreamCreds = withCredentials;
+    this.#camera?.setStreamUrl(url, withCredentials);
+  }
+
+  /** Who the camera sees, drawn into the picture; see `#lib/robot/face-seen`. */
+  setCameraFaces(seen: FaceSeen | null, receivedAt: number): void {
+    this.#pendingFaces = [seen, receivedAt];
+    this.#camera?.setFaces(seen, receivedAt);
   }
 
   /** Tell the view whether the feed is still live. Stale is dimmed, not hidden. */
@@ -855,7 +865,11 @@ export class XrTeleopSession {
         // apply whatever the page last told us so a reconnect that happened
         // during startup is not lost.
         if (this.#pendingStreamUrl)
-          this.#camera.setStreamUrl(this.#pendingStreamUrl);
+          this.#camera.setStreamUrl(
+            this.#pendingStreamUrl,
+            this.#pendingStreamCreds,
+          );
+        this.#camera.setFaces(...this.#pendingFaces);
         this.#camera.setLive(this.#pendingLive);
         // Applied before the first frame, so a session entered while the feed
         // is already down opens on the reason rather than on a blank field
