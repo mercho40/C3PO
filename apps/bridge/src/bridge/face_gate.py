@@ -77,6 +77,8 @@ NOT_SEEN = "operator_face_not_seen"
 NOT_LIVE = "operator_face_not_live"
 NOT_ENROLLED = "operator_face_not_enrolled"
 UNAVAILABLE = "operator_face_check_unavailable"
+#: Only a background check sees this; a gated call never does.
+BUSY = "busy"
 
 
 #: The class token: every tool that needs the operator's confirmation.
@@ -136,6 +138,8 @@ _models: tuple[Any, Any] | None = None
 #: Held from submit to the end of a check, so a wedged check refuses the next at once
 #: instead of queueing it. A plain Lock: the worker releases what the loop acquired.
 _busy = threading.Lock()
+#: The running check is the greeter's, which a gated call waits out. Loop-only state.
+_background = False
 #: Not asyncio's default executor: a check wedged on the vision container must not
 #: take the workers asyncio.to_thread hands damp and the rest.
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face_gate")
@@ -153,24 +157,42 @@ def temp_path() -> Path:
     return FACE_DIR / ".operator.npy.tmp"
 
 
-def save_enrollment(features: Any) -> Path:
-    """Write the operator's feature vectors, owner-only, atomically. Never images."""
-    import numpy as np
+def name_path() -> Path:
+    return FACE_DIR / "operator.json"
 
+
+def _save_owner_only(path: Path, data: bytes) -> Path:
+    """Write `data` to `path`, owner-only, atomically."""
     FACE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(FACE_DIR, 0o700)
-    path, tmp = enrollment_path(), temp_path()
+    tmp = path.with_name(f".{path.name}.tmp")
     try:
         # EXCL + NOFOLLOW: never write through a file or link someone left there.
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
         raise Unavailable(f"{tmp} is left from an interrupted run: run with --delete") from None
     with os.fdopen(fd, "wb") as f:
-        np.save(f, np.asarray(features, dtype=np.float32))
+        f.write(data)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
     return path
+
+
+def save_enrollment(features: Any) -> Path:
+    """Write the operator's feature vectors, owner-only, atomically. Never images."""
+    import io
+
+    import numpy as np
+
+    buf = io.BytesIO()
+    np.save(buf, np.asarray(features, dtype=np.float32))
+    return _save_owner_only(enrollment_path(), buf.getvalue())
+
+
+def save_name(name: str) -> Path:
+    """The operator's display name, for the greeter. Nothing biometric."""
+    return _save_owner_only(name_path(), json.dumps({"name": name}).encode())
 
 
 def _owner_only(st: os.stat_result, kind: str) -> bool:
@@ -210,6 +232,26 @@ def enrolled() -> Any:
         log.warning("face_gate.enrollment_ignored", reason="nan_or_zero_vector")
         return None
     return features
+
+
+def enrolled_name() -> str | None:
+    """The enrolled operator's display name, or None (none set, or the file is not trustworthy)."""
+    try:
+        folder = os.lstat(FACE_DIR)
+        fd = os.open(name_path(), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:  # missing, or a symlink
+        return None
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not (stat.S_ISDIR(folder.st_mode) and stat.S_ISREG(st.st_mode)):
+            return None
+        if not (_owner_only(folder, "directory") and _owner_only(st, "file")):
+            return None
+        try:
+            name = json.loads(f.read(4096)).get("name")
+        except (ValueError, AttributeError):
+            return None
+    return (name.strip() or None) if isinstance(name, str) else None
 
 
 def models() -> tuple[Any, Any]:
@@ -366,6 +408,35 @@ def _run_check() -> tuple[str, str] | None:
         _busy.release()
 
 
+async def live_check(*, background: bool = False) -> tuple[str, str] | None:
+    """`_check` on the gate's own worker, bounded by TIMEOUT_S; any failure is an outcome, never a pass.
+
+    A background check (the greeter) never waits: (BUSY, ...) when a check is running. A
+    gated call waits out a background check, up to TIMEOUT_S, instead of being refused by it;
+    any other running check refuses it at once.
+    """
+    global _background
+    deadline = time.monotonic() + TIMEOUT_S
+    while not _busy.acquire(blocking=False):
+        if background:
+            return BUSY, "another face check is still running"
+        if not _background or time.monotonic() >= deadline:
+            return UNAVAILABLE, "another face check is still running"
+        await asyncio.sleep(0.02)
+    _background = background
+    try:
+        job = asyncio.get_running_loop().run_in_executor(_pool, _run_check)
+    except BaseException:
+        _busy.release()
+        raise
+    try:
+        return await asyncio.wait_for(job, TIMEOUT_S)
+    except TimeoutError:
+        return UNAVAILABLE, f"the check took longer than {TIMEOUT_S} s"
+    except Exception as exc:  # noqa: BLE001 - every failure to check is a refusal, never a pass
+        return UNAVAILABLE, f"the check failed ({exc})"
+
+
 def gated(name: str, meta: dict[str, Any] | None = None) -> bool:
     """Whether a call of this tool (with this `_meta`) needs the operator's face."""
     if name in NEVER_GATED:
@@ -398,21 +469,7 @@ async def refusal(name: str, meta: dict[str, Any] | None = None) -> str | None:
     if not gated(name, meta):
         return None
     started = time.monotonic()
-    outcome: tuple[str, str] | None
-    if not _busy.acquire(blocking=False):
-        outcome = UNAVAILABLE, "another face check is still running"
-    else:
-        try:
-            job = asyncio.get_running_loop().run_in_executor(_pool, _run_check)
-        except BaseException:
-            _busy.release()
-            raise
-        try:
-            outcome = await asyncio.wait_for(job, TIMEOUT_S)
-        except TimeoutError:
-            outcome = UNAVAILABLE, f"the check took longer than {TIMEOUT_S} s"
-        except Exception as exc:  # noqa: BLE001 - every failure to check is a refusal, never a pass
-            outcome = UNAVAILABLE, f"the check failed ({exc})"
+    outcome = await live_check()
     ms = round((time.monotonic() - started) * 1000)
     if outcome is None:
         log.warning("face_gate.passed", tool=name, ms=ms)

@@ -57,7 +57,7 @@ load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 # These must follow load_env_file above; ruff's E402 is silenced per import
 # rather than for the file, so a genuinely misplaced import still fails.
-from bridge import face_gate, safety, watchdog  # noqa: E402
+from bridge import face_gate, face_greet, safety, watchdog  # noqa: E402
 from bridge.skill_meta import meta as skill_meta  # noqa: E402
 from bridge.watchdog import get_watchdog  # noqa: E402
 
@@ -4106,7 +4106,8 @@ async def safety_status(request):  # noqa: ANN001, ANN201 - starlette types
     """The governor's caps, flags, last command and the nearest person. Read-only."""
     from starlette.responses import JSONResponse
 
-    return JSONResponse(safety.status(), headers={"Cache-Control": "no-store"})
+    body = {**safety.status(), "face_greet": face_greet.status()}
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
 @mcp.custom_route("/safety/confirm", methods=["POST"])
@@ -4814,15 +4815,20 @@ async def _run_streamable_http() -> None:
         port=BRIDGE_PORT,
         log_level=mcp.settings.log_level.lower(),
     )
-    async with watching_foreign_stops():
+    async with watching_foreign_stops(), face_greet.greeting_operator(_greet):
         await uvicorn.Server(config).serve()
+
+
+async def _greet(text: str) -> None:
+    """The greeter speaks through `say` itself, so PARAR's stop_play cuts it like any speech."""
+    await say(text)
 
 
 async def _run_stdio() -> None:
     """FastMCP's stdio transport, with the same foreign-stop watcher as HTTP."""
     from bridge.skills.stop_everything import watching_foreign_stops
 
-    async with watching_foreign_stops():
+    async with watching_foreign_stops(), face_greet.greeting_operator(_greet):
         await mcp.run_stdio_async()
 
 
@@ -4839,6 +4845,8 @@ def main() -> None:
         # which would stall a stop, and would spend the first gated call's TIMEOUT_S.
         face_gate.warm()
         log.warning("face_gate.on", tools=sorted(face_gate.GATED), max_m=face_gate.MAX_M)
+    elif face_greet.ON and SIM_MODE != "stub":
+        face_gate.warm()  # the same reason: not on the loop's first greeter tick
     # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #

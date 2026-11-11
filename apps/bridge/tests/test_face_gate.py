@@ -7,6 +7,7 @@ models when scripts/install_face_models.sh has put them under C3PO_FACE_DIR.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import stat
 import sys
@@ -467,6 +468,31 @@ def test_enrollment_is_owner_only_features_and_delete_removes_it(scene, capsys, 
 
     assert face_enroll.main(["--delete"]) == 0
     assert not path.exists()
+
+
+def test_enrollment_name_is_owner_only_and_delete_removes_it(scene, monkeypatch):
+    _face(scene, 10, OPERATOR)
+    monkeypatch.setattr(face_enroll, "INTERVAL_S", 0.0)
+
+    assert face_enroll.main(["--yes", "--frames", "2", "--name", " Oliver "]) == 0
+    path = face_gate.name_path()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert json.loads(path.read_text()) == {"name": "Oliver"}
+    assert face_gate.enrolled_name() == "Oliver"
+    os.chmod(path, 0o644)
+    assert face_gate.enrolled_name() is None  # others could have written it
+    os.chmod(path, 0o600)
+
+    assert face_enroll.main(["--delete"]) == 0
+    assert not path.exists() and face_gate.enrolled_name() is None
+
+
+def test_re_enrolling_without_a_name_drops_the_old_one(scene, monkeypatch):
+    _face(scene, 10, OPERATOR)
+    monkeypatch.setattr(face_enroll, "INTERVAL_S", 0.0)
+    face_gate.save_name("Someone else")
+    assert face_enroll.main(["--yes", "--frames", "2"]) == 0
+    assert not face_gate.name_path().exists()
 
 
 def test_enrollment_refuses_two_faces_and_a_flat_face(scene, monkeypatch):

@@ -1,6 +1,7 @@
 """Enroll the operator's face for the face gate (bridge/face_gate.py). Run ON the robot, as the operator.
 
     .venv/bin/python scripts/face_enroll.py            # look at the head camera, within 1.5 m
+    .venv/bin/python scripts/face_enroll.py --name Oliver   # ...and the greeter says "Hola Oliver"
     .venv/bin/python scripts/face_enroll.py --delete   # forget the operator
 
 Needs the vision container serving /frame.jpg and /depth_points (it holds the camera) and
@@ -8,7 +9,9 @@ the models from scripts/install_face_models.sh. Every frame must hold exactly on
 must pass the same liveness check the gate uses, and all frames must be the same person.
 Only the SFace feature vectors are
 written, to ~/.c3po/face/operator.npy (0600); no image is kept, nothing leaves the robot,
-and nothing about the face is printed or logged. Re-running replaces the operator.
+and nothing about the face is printed or logged. Re-running replaces the operator. --name
+also writes ~/.c3po/face/operator.json ({"name": ...}, 0600) for bridge/face_greet.py;
+enrolling without it removes an old one, which named the operator being replaced.
 """
 
 from __future__ import annotations
@@ -34,12 +37,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frames", type=int, default=5, help="frames to enroll from (default 5)")
     parser.add_argument("--delete", action="store_true", help="delete the enrolled operator")
     parser.add_argument("--yes", action="store_true", help="consent without the prompt")
+    parser.add_argument("--name", type=_name, help="the operator's display name, for the greeting")
     args = parser.parse_args(argv)
     path = face_gate.enrollment_path()
 
     if args.delete:
         # The temp file too: an interrupted enrollment leaves one, and saving refuses it.
         face_gate.temp_path().unlink(missing_ok=True)
+        for leftover in (face_gate.name_path(), face_gate.name_path().with_name(".operator.json.tmp")):
+            leftover.unlink(missing_ok=True)
         try:
             path.unlink()
         except FileNotFoundError:
@@ -85,10 +91,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         print(f"enrolled: {face_gate.save_enrollment(features)}")
+        if args.name:
+            print(f"name: {face_gate.save_name(args.name)}")
+        else:
+            face_gate.name_path().unlink(missing_ok=True)
     except face_gate.Unavailable as exc:
         print(f"not enrolled: {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+def _name(raw: str) -> str:
+    name = " ".join(raw.split())
+    if not 0 < len(name) <= 40 or not name.isprintable():
+        raise argparse.ArgumentTypeError("a name of 1 to 40 printable characters")
+    return name
 
 
 def same_person(features: list[object]) -> bool:
