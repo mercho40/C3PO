@@ -1,134 +1,269 @@
-"""Settle which hands are fitted to this robot. Subscribes only; writes nothing.
+"""Does a BrainCo hand answer on its serial line? Reads only; nothing moves.
 
-`docs/ROBOT-HARDWARE.md` has been unable to conclude whether this G1
-carries **Dex3-1** (7 DoF, three fingers, radians) or **BrainCo Revo2** (6 DoF,
-five fingers, [0,1]) — there is real evidence on both sides, and the two have
-incompatible topics, types, motor counts *and units*. Until it is settled,
-`bridge.teleop.hands` refuses to publish anything at all.
+The chain is ttyUSB -> `brainco_hand_server` (vendor) -> `rt/brainco/{side}/*`
+-> the bridge. Since 2026-11-03 nothing answers at the end of it, and the
+vendor server only says "Failed to get device info". This asks the hands
+directly, without the server, so a silent hand is a silent hand.
 
-That doc calls this probe "the highest-value action in the section", and it is
-also the cheapest: **a single received message decides the argument**, and this
-script opens no publisher, so there is no way for it to move a finger.
-
-    ssh c3po                      # must run onboard: these are DDS topics
+    ssh c3po
     cd ~/c3po/apps/bridge
-    SIM_MODE=real ROBOT_HOST=127.0.0.1 DDS_INTERFACE=eth0 \
-        uv run python scripts/hand_probe.py
+    sudo .venv/bin/python scripts/hand_probe.py                 # every /dev/ttyUSB*
+    sudo .venv/bin/python scripts/hand_probe.py /dev/ttyUSB1    # one line
 
-Note the two things it cannot tell you. Silence is not proof of absence: a
-`brainco_hand_server` is started by hand with an explicit `--serial` per hand,
-so a hand that exists but whose server was never launched stays quiet. And a
-Dex3's state would come from a resident service on the *control board*, which
-we cannot log into — Unitree states they deploy no services on the Jetson — so
-its silence says nothing about the Jetson at all. **A positive result is
-conclusive; a negative one is not.** If everything is silent, the answer is
-still one glance at the wrists: three fingers is Dex3-1, five is BrainCo.
+Protocol, from `docs/ROBOT-HARDWARE.md` §7.1 (the vendor server's own log of
+the right hand binding on this robot): Modbus RTU, 460800 baud, 8N1, slave
+126 = left, 127 = right. Each port gets one Modbus "read holding registers"
+(function 0x03) per slave id. A Modbus read changes nothing on the device.
+
+shortcut: the register map is in BrainCo's closed SDK, not in this repo, so
+the default register (0) is a guess. That does not matter for the question:
+a hand that is alive answers a read of an address it lacks with a Modbus
+exception, which still has its slave id (= its side) and a valid CRC. Pass
+`--register N` once the device-info address is known.
+
+No `--move-test`: our hand driver speaks DDS to the vendor server, not this
+serial protocol, so there is no motion frame in this repo to reuse. Move a
+hand through the bridge (`set_hand`) once the server binds it.
+
+Exit: 0 both hands answered, 1 one did, 2 none, 3 refused (port in use).
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
+import glob
 import os
+import select
 import sys
+import termios
 import time
-from typing import Any
+import tty
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
 
-DEFAULT_SECONDS = 15.0
-
-
-def _candidates() -> list[tuple[str, str, str]]:
-    """(label, topic, type-name) for every hand this robot might carry."""
-    return [
-        # Dex3-1. `rt/lf/...` is the variant this robot's topic list shows;
-        # the plain name is what the official docs and the sim both use.
-        ("dex3-left", "rt/lf/dex3/left/state", "HandState_"),
-        ("dex3-right", "rt/lf/dex3/right/state", "HandState_"),
-        ("dex3-left (unprefixed)", "rt/dex3/left/state", "HandState_"),
-        ("dex3-right (unprefixed)", "rt/dex3/right/state", "HandState_"),
-        # BrainCo Revo2, from the running brainco_hand_server.
-        ("brainco-left", "rt/brainco/left/state", "MotorStates_"),
-        ("brainco-right", "rt/brainco/right/state", "MotorStates_"),
-        # Inspire, for completeness -- a G1-EDU Ultimate C/D would have these.
-        ("inspire", "rt/inspire/state", "MotorStates_"),
-    ]
+BAUD = 460800
+SLAVES = {126: "left", 127: "right"}
+READ_HOLDING = 0x03
+# A reply is ~10 bytes (~0.2 ms at 460800); the vendor polls at 100 Hz. 0.2 s is generous.
+REPLY_TIMEOUT_S = 0.2
+# The vendor server re-probes every port at start: never race it for a line.
+VENDOR_SERVER = "brainco_hand_server"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seconds", type=float, default=DEFAULT_SECONDS)
-    args = parser.parse_args()
+def crc16(data: bytes) -> int:
+    """CRC-16/MODBUS (poly 0xA001 reflected, init 0xFFFF)."""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return crc
 
-    from bridge.sdk.connection import init_dds
 
-    init_dds(
-        robot_host=os.environ.get("ROBOT_HOST", "127.0.0.1"),
-        domain_id=int(os.environ.get("DDS_DOMAIN_ID", "0")),
-        interface=os.environ.get("DDS_INTERFACE") or None,
+def _with_crc(body: bytes) -> bytes:
+    return body + crc16(body).to_bytes(2, "little")
+
+
+def read_request(slave: int, register: int, count: int = 1) -> bytes:
+    """Read holding registers: slave, 0x03, address, count, CRC (low byte first)."""
+    return _with_crc(
+        bytes([slave, READ_HOLDING]) + register.to_bytes(2, "big") + count.to_bytes(2, "big")
     )
 
-    from unitree_sdk2py.core.channel import ChannelSubscriber
-    from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorStates_
-    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandState_
 
-    types: dict[str, Any] = {"HandState_": HandState_, "MotorStates_": MotorStates_}
-    seen: dict[str, dict[str, Any]] = {}
-    subscribers = []
+@dataclass(frozen=True)
+class Reply:
+    slave: int
+    registers: tuple[int, ...] = ()
+    exception: int | None = None
 
-    def make_handler(label: str, topic: str):
-        def handler(msg: Any) -> None:
-            if label in seen:
-                return
-            motors = getattr(msg, "motor_state", None) or getattr(msg, "states", None) or []
-            seen[label] = {
-                "topic": topic,
-                "motors": len(motors),
-                "q": [round(float(m.q), 4) for m in motors],
-            }
-            print(f"  ANSWERED  {label:<26} {topic}  ({len(motors)} motors)")
+    @property
+    def side(self) -> str:
+        return SLAVES.get(self.slave, f"slave {self.slave}")
 
-        return handler
+    def describe(self) -> str:
+        if self.exception is not None:
+            return f"Modbus exception {self.exception} (alive; register not readable)"
+        return "registers " + ", ".join(f"0x{r:04x}" for r in self.registers)
 
-    print(f"Listening for {args.seconds:.0f}s. Nothing is published by this script.\n")
-    for label, topic, type_name in _candidates():
-        sub = ChannelSubscriber(topic, types[type_name])
-        sub.Init(make_handler(label, topic), 10)
-        subscribers.append(sub)
-        print(f"  subscribed  {label:<26} {topic}")
-    print()
 
-    deadline = time.time() + args.seconds
-    while time.time() < deadline and len(seen) < len(subscribers):
-        time.sleep(0.2)
+def parse_reply(frame: bytes, slave: int) -> Reply | None:
+    """A valid answer from `slave` to a 0x03 read, or None for silence/noise."""
+    if len(frame) < 5 or frame[0] != slave:
+        return None
+    if frame[1] == READ_HOLDING | 0x80:
+        body = frame[:3]
+        if frame[3:5] != crc16(body).to_bytes(2, "little"):
+            return None
+        return Reply(slave=slave, exception=frame[2])
+    if frame[1] != READ_HOLDING:
+        return None
+    n = frame[2]
+    body = frame[: 3 + n]
+    if n % 2 or len(frame) < 5 + n or frame[3 + n : 5 + n] != crc16(body).to_bytes(2, "little"):
+        return None
+    regs = tuple(int.from_bytes(body[3 + i : 5 + i], "big") for i in range(0, n, 2))
+    return Reply(slave=slave, registers=regs)
 
-    print("\n--- result ---")
-    if not seen:
+
+class Line(Protocol):
+    def write(self, data: bytes) -> None: ...
+    def read(self, timeout: float) -> bytes: ...
+    def close(self) -> None: ...
+
+
+class SerialLine:
+    """Raw 8N1 tty at BAUD, stdlib only (pyserial is not in the bridge's venv)."""
+
+    def __init__(self, path: str) -> None:
+        speed = getattr(termios, "B460800", None)
+        if speed is None:
+            raise OSError("this OS has no 460800 baud constant; run it on the robot")
+        self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        try:
+            fcntl.ioctl(self.fd, termios.TIOCEXCL)  # nobody else opens it while we probe
+            tty.setraw(self.fd)
+            attrs = termios.tcgetattr(self.fd)
+            attrs[2] |= termios.CLOCAL | termios.CREAD
+            attrs[2] &= ~(termios.CSTOPB | termios.PARENB | getattr(termios, "CRTSCTS", 0))
+            attrs[4] = attrs[5] = speed
+            termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
+            termios.tcflush(self.fd, termios.TCIOFLUSH)
+        except BaseException:
+            os.close(self.fd)
+            raise
+
+    def write(self, data: bytes) -> None:
+        os.write(self.fd, data)
+        termios.tcdrain(self.fd)
+
+    def read(self, timeout: float) -> bytes:
+        """Everything until the line goes quiet (or the timeout, if nothing came)."""
+        got = b""
+        deadline = time.monotonic() + timeout
+        while (left := deadline - time.monotonic()) > 0:
+            ready, _, _ = select.select([self.fd], [], [], left if not got else min(left, 0.01))
+            if not ready:
+                if got:
+                    break
+                continue
+            got += os.read(self.fd, 256)
+        return got
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+
+@dataclass
+class PortResult:
+    port: str
+    opened: bool
+    error: str = ""
+    received: int = 0
+    replies: tuple[Reply, ...] = ()
+
+
+def probe_line(line: Line, register: int) -> tuple[int, tuple[Reply, ...]]:
+    """Ask each slave id once. Returns (bytes received, valid replies)."""
+    received = 0
+    replies = []
+    for slave in SLAVES:
+        request = read_request(slave, register)
+        line.write(request)
+        frame = line.read(REPLY_TIMEOUT_S)
+        received += len(frame)
+        # An RS485 adapter that hears itself hands our own request back first.
+        frame = frame.removeprefix(request)
+        reply = parse_reply(frame, slave)
+        if reply is not None:
+            replies.append(reply)
+    return received, tuple(replies)
+
+
+def holders(port: str, proc: Path = Path("/proc")) -> list[str]:
+    """'pid name' of every process with `port` open, plus any vendor hand server."""
+    target = os.path.realpath(port)
+    found = []
+    for pid_dir in proc.glob("[0-9]*"):
+        try:
+            name = (pid_dir / "cmdline").read_bytes().replace(b"\0", b" ").decode().strip()
+        except OSError:
+            continue
+        hit = VENDOR_SERVER in name
+        if not hit:
+            try:
+                hit = any(os.path.realpath(fd) == target for fd in (pid_dir / "fd").iterdir())
+            except OSError:  # not ours to read (run with sudo) or gone
+                pass
+        if hit:
+            found.append(f"{pid_dir.name} {name[:80]}")
+    return found
+
+
+def run(
+    ports: list[str], register: int, open_line: Callable[[str], Line] = SerialLine
+) -> tuple[int, list[PortResult]]:
+    results = []
+    for port in ports:
+        try:
+            line = open_line(port)
+        except OSError as exc:
+            results.append(PortResult(port, opened=False, error=str(exc)))
+            continue
+        try:
+            received, replies = probe_line(line, register)
+        finally:
+            line.close()
+        results.append(PortResult(port, opened=True, received=received, replies=replies))
+    sides = {r.side for res in results for r in res.replies}
+    code = 0 if {"left", "right"} <= sides else 1 if sides else 2
+    return code, results
+
+
+def report(results: list[PortResult]) -> str:
+    out = []
+    for res in results:
+        if not res.opened:
+            out.append(f"{res.port}: opened no ({res.error})")
+            continue
+        head = f"{res.port}: opened yes, {res.received} bytes received"
+        if not res.replies:
+            out.append(f"{head}, silent" + (" (noise, no valid frame)" if res.received else ""))
+        for r in res.replies:
+            out.append(f"{head}, {r.side} hand (slave {r.slave}): {r.describe()}")
+    return "\n".join(out)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("ports", nargs="*", help="default: every /dev/ttyUSB*")
+    parser.add_argument("--register", type=int, default=0, help="holding register (default 0)")
+    args = parser.parse_args(argv)
+
+    ports = args.ports or sorted(glob.glob("/dev/ttyUSB*"))
+    if not ports:
+        print("No /dev/ttyUSB* at all: the FT4232H is not enumerated (lsusb | grep 0403:6011).")
+        return 2
+    busy = {p: h for p in ports if (h := holders(p))}
+    if busy:
+        for port, procs in busy.items():
+            print(f"{port}: in use by " + "; ".join(procs))
         print(
-            "Nothing answered. That is NOT evidence the robot has no hands — see this\n"
-            "script's docstring. Next step is a physical look at the wrists:\n"
-            "  three fingers, 7 DoF  -> Dex3-1     (radians, rt/dex3/{side}/cmd)\n"
-            "  five fingers, 6 DoF   -> BrainCo    ([0,1],  rt/brainco/{side}/cmd)"
+            "Refusing: two programs on one RS485 line garble each other.\n"
+            "Free it: `sudo pkill -f brainco_hand_server` for the vendor server; any other\n"
+            "holder, stop that process (the bridge never opens a ttyUSB). Then re-run."
         )
-        return 1
-
-    for label, info in seen.items():
-        print(f"{label:<26} {info['topic']}  motors={info['motors']}")
-        print(f"{'':<26} q = {info['q']}")
-
-    dex3 = any(k.startswith("dex3") for k in seen)
-    brainco = any(k.startswith("brainco") for k in seen)
-    print()
-    if dex3 and not brainco:
-        print("=> Dex3-1.  Set TELEOP_HAND_TYPE=dex3")
-    elif brainco and not dex3:
-        print(
-            "=> BrainCo Revo2.  Set TELEOP_HAND_TYPE=brainco\n"
-            "   You STILL need TELEOP_BRAINCO_OPEN_AT: BrainCo never documents which end\n"
-            "   of [0,1] is an open hand. Read it off the `q` values above with the hand\n"
-            "   physically open, then set 0 or 1 to match."
-        )
-    else:
-        print("=> Both answered. Read the wrists; do not guess which one teleop should drive.")
-    return 0
+        return 3
+    print(f"Modbus RTU {BAUD} 8N1, register {args.register}, slaves 126 (left) and 127 (right).\n")
+    code, results = run(ports, args.register)
+    print(report(results))
+    print(["\nBoth hands answered.", "\nOnly one hand answered.", "\nNo hand answered."][code])
+    return code
 
 
 if __name__ == "__main__":

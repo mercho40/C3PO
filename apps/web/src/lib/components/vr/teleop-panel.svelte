@@ -195,7 +195,7 @@
       <code>TELEOP_ARM_ENABLED=1</code> en el puente, después de verificar los
       signos de cada articulación con <code>scripts/arm_sign_check.py</code>, al
       lado del robot. Los dedos siguen apagados hasta resolver qué manos tiene
-      puestas este robot (<code>scripts/hand_probe.py</code>).
+      puestas este robot (<code>scripts/hand_dds_probe.py</code>).
     </p>
   </DetailsNote>
 </section>
