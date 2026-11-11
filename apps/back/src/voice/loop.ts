@@ -82,6 +82,11 @@ export type VoiceLoopOptions = {
    *  Setting it false only stops THIS loop from acting: the bridge acts on the
    *  phrase itself while a legacy subscriber is connected. */
   actOnStopPhrase?: boolean;
+  /** Robot-mic audio still waiting for its transcription to START this long
+   *  after it was heard is dropped: a command acted on late is a different
+   *  command. The transcription itself is bounded by transcribeAudio's own
+   *  timeout (scaled to the clip), so this bounds only the queue. */
+  staleAudioMs?: number;
 };
 
 export type VoiceLoopState = {
@@ -96,6 +101,7 @@ export type VoiceLoopState = {
 };
 
 const DEFAULT_POLL_MS = 1000;
+const DEFAULT_STALE_AUDIO_MS = 6000;
 
 export class VoiceLoop {
   private readonly deps: Required<
@@ -104,8 +110,11 @@ export class VoiceLoop {
     VoiceLoopDeps;
   private readonly pollMs: number;
   private readonly actOnStopPhrase: boolean;
+  private readonly staleAudioMs: number;
 
   private stopping = false;
+  /** Bumped by stop(): a transcription from before it must not run after a start(). */
+  private generation = 0;
   private task: Promise<void> | null = null;
   private eventAbort: AbortController | null = null;
   // Instance-wide and never reset: a turn aborted by stop() settles only after
@@ -130,6 +139,7 @@ export class VoiceLoop {
     this.deps = deps;
     this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
     this.actOnStopPhrase = options.actOnStopPhrase ?? true;
+    this.staleAudioMs = options.staleAudioMs ?? DEFAULT_STALE_AUDIO_MS;
   }
 
   snapshot(): VoiceLoopState {
@@ -148,6 +158,7 @@ export class VoiceLoop {
    *  On the event path it aborts the turn in flight and does not wait for it. */
   async stop(): Promise<void> {
     this.stopping = true;
+    this.generation += 1;
     this.pending = [];
     this.turnAbort?.abort(new Error("voice conversation ended"));
     this.eventAbort?.abort();
@@ -238,7 +249,17 @@ export class VoiceLoop {
       return;
     }
     const stopsBefore = this.state.stopsTriggered;
+    const generation = this.generation;
+    const heardAt = Date.now();
     this.transcribeTail = this.transcribeTail.then(async () => {
+      if (generation !== this.generation) return;
+      if (Date.now() - heardAt > this.staleAudioMs) {
+        this.log("voice.dropped_stale", {
+          waitedMs: Date.now() - heardAt,
+          seq: event.seq,
+        });
+        return;
+      }
       let text: string;
       try {
         text = await transcribe(audioId);
@@ -251,7 +272,8 @@ export class VoiceLoop {
         });
         return;
       }
-      if (this.stopping) return;
+      // Heard by a loop that has since been stopped (and maybe restarted).
+      if (this.stopping || generation !== this.generation) return;
       // Said before a stop that landed while it was being transcribed.
       if (this.state.stopsTriggered !== stopsBefore) {
         this.log("voice.dropped_after_stop", { text, seq: event.seq });

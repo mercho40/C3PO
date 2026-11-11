@@ -55,6 +55,7 @@ import {
   MAX_AUDIO_BYTES,
   TranscribeError,
   transcribe,
+  transcribeTimeoutMs,
 } from "#back/voice/transcribe.js";
 import {
   availableEngines,
@@ -234,13 +235,18 @@ function getLoop(): VoiceLoop {
       runAgent: runAgentOnUtterance,
       events: bridgeVoiceEvents,
       // Bridge C3PO_STT=back: the robot mic's utterances, transcribed by ia-tic.
-      transcribeAudio: async (audioId) =>
-        transcribe(
-          await bridgeUtteranceAudio(audioId, AbortSignal.timeout(2_000)),
+      transcribeAudio: async (audioId) => {
+        const wav = await bridgeUtteranceAudio(
+          audioId,
+          AbortSignal.timeout(2_000),
+        );
+        return transcribe(
+          wav,
           "audio/wav",
           fetch,
-          5_000,
-        ),
+          transcribeTimeoutMs(wav.byteLength),
+        );
+      },
       inputStatus: bridgeVoiceStatus,
       log: (event, detail) => console.log(`[voice] ${event}`, detail ?? ""),
     });

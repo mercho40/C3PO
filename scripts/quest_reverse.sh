@@ -15,7 +15,8 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 back_port="${BACK_PORT:-}"
 if [ -z "$back_port" ] && [ -f "$repo/apps/back/.env" ]; then
-    back_port=$(sed -n 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    # `PORT=3000`, `PORT="3000"`, `export PORT=3000`: all three are valid .env.
+    back_port=$(sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}PORT[[:space:]]*=[[:space:]]*["'\'']\{0,1\}\([0-9][0-9]*\).*/\2/p' \
         "$repo/apps/back/.env" | tail -n 1)
 fi
 back_port="${back_port:-3000}"
@@ -38,6 +39,7 @@ for port in 3001 "$back_port" 8001 8767; do
     fi
     echo "✓ quest localhost:$port -> this machine :$port"
 done
+echo "✓ 8001 is forwarded for the camera; /mcp on it stays closed to pages (POST application/json only, and the bridge grants no preflight)"
 
 cat <<'DONE'
 
