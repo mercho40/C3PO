@@ -11,8 +11,8 @@ class is the setting to use: no tool calls a confirmation-tier tool in Python.
 `C3PO_FACE_GATE` is a comma list of tool names and the class token `confirm` (every tool
 `safety.needs_confirmation` holds for: T2, and high-danger T1). Empty = off. The stop and
 release skills are never gated, whatever it says. A name that is no tool of this bridge
-makes main() refuse to start (`check_config`): a misspelling must not leave a skill
-unguarded while the operator thinks it is guarded.
+widens the gate to `confirm` and is logged as an error (`check_config`): a misspelling
+must not leave a skill unguarded, and the bridge must still start (it is the only stop).
 
 FAILS CLOSED. No enrollment, no models, no vision container, a stale frame, depth from
 another moment, any exception, another check still running, or no answer within
