@@ -47,7 +47,9 @@ neither faces nor features are logged.
 
 SETTINGS. FACE_DIR/settings.json ({"gate", "greet", "greet_unknown"}, written by
 /face/settings) overrides the environment, live: gate on with C3PO_FACE_GATE empty gates
-the `confirm` class; gate off gates nothing.
+the `confirm` class; gate off gates nothing. One that exists but cannot be trusted (mode,
+owner, a symlink, not JSON) reads as gate ON: a gate the console turned on never comes
+back off by itself.
 """
 
 from __future__ import annotations
@@ -105,6 +107,8 @@ UNKNOWN = "unknown_face"
 
 ROLES = ("superadmin", "operator")
 _ID = re.compile(r"[0-9a-f]{12}\Z")
+#: The single-operator layout's id while it cannot be migrated (see `people`).
+LEGACY_ID = "operator"
 
 
 #: The class token: every tool that needs the operator's confirmation.
@@ -152,6 +156,8 @@ MAX_FACES = 3
 
 #: Enrollment: pause between accepted frames, so the vectors are not all one instant.
 ENROLL_INTERVAL_S = 0.4
+#: A whole enrollment, below apps/back's 30 s relay timeout: past it, nothing is stored.
+ENROLL_DEADLINE_S = 20.0
 #: The console's photo: the face box padded by this much of its size, at most PHOTO_PX.
 PHOTO_PAD = 0.25
 PHOTO_PX = 160
@@ -181,6 +187,8 @@ _busy = threading.Lock()
 _background = False
 #: settings.json as last read or written; None = read it on next use.
 _stored: dict[str, Any] | None = None
+#: The old layout could not be migrated: not retried (nor logged) until the bridge restarts.
+_migration_stuck = False
 #: The last frame a background check looked at, for /face/seen: boxes, who, live. No features.
 _seen: dict[str, Any] = {"stamp": None, "width": None, "height": None, "faces": []}
 #: Not asyncio's default executor: a check wedged on the vision container must not
@@ -193,7 +201,7 @@ class Unavailable(Exception):
 
 
 class Refused(Unavailable):
-    """Enrollment saw the camera but not one live person: `code` is no_live_face or not_same_person."""
+    """Enrollment refused: `code` is no_live_face, not_same_person or exists."""
 
     def __init__(self, code: str, reason: str) -> None:
         super().__init__(reason)
@@ -241,9 +249,14 @@ def _save_owner_only(path: Path, data: bytes) -> Path:
         # EXCL + NOFOLLOW: never write through a file or link someone left there.
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
-        raise Unavailable(
-            f"{tmp} is left from an interrupted run: run face_enroll.py with --delete"
-        ) from None
+        st = os.lstat(tmp)
+        if not (stat.S_ISREG(st.st_mode) and st.st_uid == os.geteuid()):
+            raise Unavailable(
+                f"{tmp} is left from an interrupted run: run face_enroll.py with --delete"
+            ) from None
+        # A power cut's leftover: a plain file of ours, in folders just made ours alone.
+        os.unlink(tmp)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
         f.flush()
@@ -385,22 +398,32 @@ def public(p: dict[str, Any]) -> dict[str, Any]:
 
 def _migrate() -> None:
     """operator.npy (+ operator.json) into people/ as a superadmin; the old files go only
-    once the new ones read back. Any failure is logged and leaves them in place."""
-    if not os.path.lexists(enrollment_path()):
+    once the new ones read back. Never over someone enrolled since under that name. Any
+    failure is logged once and leaves them in place (passing as LEGACY_ID) until a restart."""
+    global _migration_stuck
+    if _migration_stuck or not os.path.lexists(enrollment_path()):
         return
     with _lock:
         try:
             features = enrolled()
             if features is None:
                 return
-            p = add_person(enrolled_name() or "Oliver", "superadmin", features)
+            name = enrolled_name() or "Oliver"
+            if any(p["name"].casefold() == name.casefold() for p in people_listing()):
+                raise Unavailable(f"someone is already enrolled as {name}")
+            p = add_person(name, "superadmin", features)
             if person(p["id"]) is None:
                 raise Unavailable("the migrated person does not read back")
             for old in (name_path(), enrollment_path()):
                 old.unlink(missing_ok=True)
             log.warning("face_gate.migrated", person=p["id"])
         except Exception as exc:  # noqa: BLE001 - the old enrollment still passes, below
-            log.error("face_gate.migration_failed", error=str(exc))
+            _migration_stuck = True
+            log.error(
+                "face_gate.migration_failed",
+                error=str(exc),
+                fix=f"the old enrollment stays as id {LEGACY_ID!r}: delete it, or fix and restart",
+            )
 
 
 def people() -> list[dict[str, Any]]:
@@ -418,7 +441,7 @@ def people() -> list[dict[str, Any]]:
     if legacy is not None:  # migration failed: never lose the operator
         name = enrolled_name() or "Oliver"
         found.append(
-            {"id": "operator", "name": name, "role": "superadmin", "enrolled_at": None}
+            {"id": LEGACY_ID, "name": name, "role": "superadmin", "enrolled_at": None}
             | {"has_photo": False, "features": legacy}
         )
     return found
@@ -433,13 +456,18 @@ def add_person(name: str, role: str, features: Any, photo: bytes | None = None) 
         same = [p["id"] for p in people_listing() if p["name"].casefold() == name.casefold()]
         pid = same[0] if same else secrets.token_hex(6)
         folder = people_dir() / pid
-        _save_owner_only(folder / "features.npy", _npy(features))
-        if photo is not None:
-            _save_owner_only(folder / "photo.jpg", photo)
-        else:
-            (folder / "photo.jpg").unlink(missing_ok=True)
-        info = {"id": pid, "name": name, "role": role, "enrolled_at": round(time.time(), 3)}
-        _save_owner_only(folder / "person.json", json.dumps(info).encode())  # last: now a person
+        try:
+            _save_owner_only(folder / "features.npy", _npy(features))
+            if photo is not None:
+                _save_owner_only(folder / "photo.jpg", photo)
+            else:
+                (folder / "photo.jpg").unlink(missing_ok=True)
+            info = {"id": pid, "name": name, "role": role, "enrolled_at": round(time.time(), 3)}
+            _save_owner_only(folder / "person.json", json.dumps(info).encode())  # last: a person
+        except BaseException:
+            if not same:  # a half-written new person: no biometrics without a person.json
+                shutil.rmtree(folder, ignore_errors=True)
+            raise
     return info | {"has_photo": photo is not None}
 
 
@@ -452,12 +480,29 @@ def people_listing() -> list[dict[str, Any]]:
     return [public(p) for p in map(person, ids) if p is not None]
 
 
+def _forget_legacy() -> None:
+    for old in (enrollment_path(), temp_path(), name_path()):
+        old.unlink(missing_ok=True)
+    name_path().with_name(".operator.json.tmp").unlink(missing_ok=True)
+
+
+def _forget_seen() -> None:
+    """/face/seen must not keep naming someone who was just deleted."""
+    global _seen
+    _seen = {"stamp": None, "width": None, "height": None, "faces": []}
+
+
 def delete_person(pid: str) -> bool:
-    """Remove a person's folder, features, photo and all. False when there is no such id."""
-    if not _ID.match(pid) or not os.path.lexists(people_dir() / pid):
-        return False
+    """Remove a person's folder, features, photo and all (LEGACY_ID: the old layout's files).
+    False when there is no such id."""
     with _lock:
-        shutil.rmtree(people_dir() / pid)  # refuses a symlinked folder; never follows one inside
+        if pid == LEGACY_ID and os.path.lexists(enrollment_path()):
+            _forget_legacy()
+        elif _ID.match(pid) and os.path.lexists(people_dir() / pid):
+            shutil.rmtree(people_dir() / pid)  # refuses a symlinked folder; never follows one
+        else:
+            return False
+        _forget_seen()
     return True
 
 
@@ -466,16 +511,26 @@ def delete_all() -> None:
     with _lock:
         if os.path.lexists(people_dir()):
             shutil.rmtree(people_dir())
-        for old in (enrollment_path(), temp_path(), name_path()):
-            old.unlink(missing_ok=True)
-        name_path().with_name(".operator.json.tmp").unlink(missing_ok=True)
+        _forget_legacy()
+        settings_path().with_name(f".{settings_path().name}.tmp").unlink(missing_ok=True)
+        _forget_seen()
 
 
 def settings() -> dict[str, bool]:
     """{"gate", "greet", "greet_unknown"}: settings.json over the environment's defaults."""
     global _stored
     if _stored is None:
-        _stored = _json(settings_path()) or {}
+        stored = _json(settings_path())
+        if stored is None and os.path.lexists(settings_path()):
+            # Fail closed: it may be the console's "gate on"; off would unguard every skill.
+            log.error(
+                "face_gate.settings_untrusted",
+                path=str(settings_path()),
+                gate="on",
+                fix="switch any setting in the console to rewrite it (0600, folders 0700)",
+            )
+            stored = {"gate": True}
+        _stored = stored or {}
     defaults = {
         "gate": bool(GATED),
         "greet": os.environ.get("C3PO_FACE_GREET", "") == "1",
@@ -489,13 +544,16 @@ def settings() -> dict[str, bool]:
 def update_settings(changes: dict[str, bool]) -> dict[str, bool]:
     """Merge and persist (0600); applies at once. Unknown keys or non-bool values: ValueError."""
     global _stored
-    current = settings()
-    if not set(changes) <= set(current) or not all(isinstance(v, bool) for v in changes.values()):
-        raise ValueError(f"settings take booleans for {', '.join(sorted(current))}")
-    new = current | changes
-    _save_owner_only(settings_path(), json.dumps(new).encode())
-    _stored = new
-    return dict(new)
+    with _lock:  # read, merge, write: two at once must not lose one
+        current = settings()
+        if not set(changes) <= set(current) or not all(
+            isinstance(v, bool) for v in changes.values()
+        ):
+            raise ValueError(f"settings take booleans for {', '.join(sorted(current))}")
+        new = current | changes
+        _save_owner_only(settings_path(), json.dumps(new).encode())
+        _stored = new
+        return dict(new)
 
 
 def models_installed() -> bool:
@@ -507,14 +565,14 @@ def models() -> tuple[Any, Any]:
     global _models
     with _lock:
         if _models is None:
-            import cv2
-
             paths = [FACE_DIR / "models" / name for name in (YUNET, SFACE)]
             missing = [p.name for p in paths if not p.is_file()]
-            if missing:
+            if missing:  # before the import: a cold `import cv2` holds the GIL for seconds
                 raise Unavailable(
                     f"missing {', '.join(missing)}: run scripts/install_face_models.sh"
                 )
+            import cv2
+
             _models = (
                 cv2.FaceDetectorYN.create(str(paths[0]), "", (320, 320), DETECT_SCORE),
                 cv2.FaceRecognizerSF.create(str(paths[1]), ""),
@@ -702,6 +760,7 @@ def _look(unknown: bool, view: dict[str, Any]) -> tuple[str, str]:
     known = people()
     if not known:
         return NOT_ENROLLED, "no one is enrolled on this robot"
+    models()  # missing models refuse here, before `frame` imports cv2
     deadline = time.monotonic() + FRAMES_BUDGET_S
     faced = 0
     matched: dict[str, int] = {}
@@ -866,19 +925,31 @@ def same_person(features: list[Any]) -> bool:
     return bool(((f @ f.T) >= MATCH_COSINE).all())  # `>=`: a NaN is no match
 
 
-def enroll(name: str, role: str, frames: int = 5, say: Any = lambda _msg: None) -> dict[str, Any]:
+def enroll(
+    name: str,
+    role: str,
+    frames: int = 5,
+    say: Any = lambda _msg: None,
+    replace: bool = False,
+) -> dict[str, Any]:
     """Enroll from `frames` frames each with exactly one live face, all the same person.
 
-    Saves their vectors and ONE photo (the last frame's face). Raises Unavailable with
-    why not; `say` hears each frame's verdict (no measurements of the face itself).
+    Saves their vectors and ONE photo (the last frame's face). A name already enrolled
+    (any case) is Refused "exists" unless `replace`. Raises Unavailable with why not,
+    within ENROLL_DEADLINE_S; `say` hears each frame's verdict (no measurements of the face).
     """
     name = clean_name(name)  # before the camera: a bad name wastes no one's time
     if role not in ROLES:
         raise ValueError(f"role must be one of {', '.join(ROLES)}")
+    known = people()  # migrates first, so the old operator is never enrolled over below
+    if not replace and any(p["name"].casefold() == name.casefold() for p in known):
+        raise Refused("exists", f"{name} is already enrolled; ask to replace them")
+    models()  # missing models refuse here, before `frame` imports cv2
+    deadline = time.monotonic() + ENROLL_DEADLINE_S
     features: list[Any] = []
     last: tuple[Any, Any] | None = None
     for attempt in range(1, frames * 4 + 1):
-        if len(features) == frames:
+        if len(features) == frames or time.monotonic() >= deadline:
             break
         try:
             img, stamp = fresh_frame()

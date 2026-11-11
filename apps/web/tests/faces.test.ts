@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   askFace,
+  enrollCard,
   enrolledText,
   faceErrorText,
   runFace,
@@ -92,13 +93,64 @@ describe("faces", () => {
       "enroll",
       { name: "Ana", role: "operator" },
       "c1",
-      back(200, { reason: "multiple_faces" }).impl,
+      back(422, {
+        error: "not_enrolled",
+        code: "not_same_person",
+        reason: "the frames do not all show the same person",
+      }).impl,
     );
     expect(refused.ok).toBe(false);
+    expect(!refused.ok && refused.text).toContain("misma persona");
     expect(faceErrorText(200, { reason: "something_new" })).toContain(
       "something_new",
     );
     expect(faceErrorText(null, null)).toContain("backend");
+  });
+
+  test("every enroll code the bridge sends reads in Spanish; others as sent", () => {
+    const codes = [
+      "no_live_face",
+      "not_same_person",
+      "camera_unavailable",
+      "exists",
+      "busy",
+      "invalid",
+    ];
+    const texts = codes.map((code) =>
+      faceErrorText(422, { code, reason: "english words" }),
+    );
+    for (const t of texts) expect(t).not.toContain("english words");
+    expect(new Set(texts).size).toBe(codes.length);
+    expect(faceErrorText(409, { code: "exists" })).toContain("Ya hay alguien");
+    expect(faceErrorText(422, { code: "new_one", reason: "why" })).toBe(
+      "El robot respondió: why",
+    );
+  });
+
+  test("Agregar with a name that exists asks to replace, and only then sends replace", () => {
+    const ana = {
+      id: "p1",
+      name: "Ana",
+      role: "operator" as const,
+      enrolled_at: null,
+      has_photo: true,
+    };
+    const fresh = enrollCard("Eva", "operator", [ana]);
+    expect(fresh.args).toEqual({
+      name: "Eva",
+      role: "operator",
+      replace: false,
+    });
+    expect(fresh.title).toContain("¿Agregar a Eva");
+    const again = enrollCard(" ana ", "superadmin", [ana]);
+    expect(again.args).toEqual({
+      name: " ana ",
+      role: "superadmin",
+      replace: true,
+    });
+    expect(again.title).toBe("Ya existe Ana: ¿reemplazar?");
+    expect(again.cta).toBe("Reemplazar");
+    expect(again.danger).toBe(true);
   });
 
   test("enrolled dates accept ISO text and epoch seconds", () => {

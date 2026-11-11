@@ -29,7 +29,7 @@ def greeter(tmp_path, monkeypatch):
     SEEN = (face_gate.PASSED, face_gate.add_person("Oliver", "superadmin", e[:1])["id"])
     ANA = (face_gate.PASSED, face_gate.add_person("Ana", "operator", e[1:2])["id"])
     monkeypatch.setattr(face_gate, "models", lambda: None)
-    for name, value in (("_last_at", {}), ("_last_name", None), ("_last_greeted_at", None)):
+    for name, value in (("_last_at", {}), ("_last_greeted_at", None)):
         monkeypatch.setattr(face_greet, name, value)
     for name, value in (
         ("_unknown_count", 0),
@@ -76,7 +76,6 @@ async def test_greets_once_on_recognition_and_not_again_within_the_cooldown(gree
 async def test_the_cooldown_is_per_person(greeter):
     said = await greeter(SEEN, ANA, SEEN, GONE, ANA)
     assert said == ["Hola Oliver, ¿qué querés que haga?", "Hola Ana, ¿qué querés que haga?"]
-    assert face_greet.status()["last_greeted_name"] == "Ana"
 
 
 async def test_a_stranger_is_greeted_once_per_visit_and_past_its_cooldown(greeter, monkeypatch):
@@ -192,12 +191,13 @@ def test_off_by_default():
     assert out.stdout.strip() == "False False"
 
 
-async def test_status_reports_name_and_age_and_settings_and_no_biometrics(greeter):
+async def test_status_reports_age_and_settings_and_no_name_nor_biometrics(greeter):
     await greeter(SEEN)
     s = face_greet.status()
-    assert s["last_greeted_name"] == "Oliver" and 0 <= s["last_greeted_age_s"] < 5
+    assert 0 <= s["last_greeted_age_s"] < 5
     assert s["settings"] == {"gate": False, "greet": True, "greet_unknown": False}
-    assert set(s) == {"on", "settings", "last_greeted_name", "last_greeted_age_s", "unknown_seen"}
+    assert set(s) == {"on", "settings", "last_greeted_age_s", "unknown_seen"}  # /safety/status is open
+    assert "Oliver" not in str(s)
 
 
 async def test_safety_status_carries_the_greeter(greeter):
@@ -209,7 +209,6 @@ async def test_safety_status_carries_the_greeter(greeter):
     assert body["face_greet"] == {
         "on": False,
         "settings": {"gate": False, "greet": True, "greet_unknown": False},
-        "last_greeted_name": None,
         "last_greeted_age_s": None,
         "unknown_seen": {"count": 0, "last_age_s": None},
     }

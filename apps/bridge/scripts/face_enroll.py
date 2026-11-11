@@ -2,6 +2,7 @@
 
     .venv/bin/python scripts/face_enroll.py --name Oliver --role superadmin
     .venv/bin/python scripts/face_enroll.py --name Ana --role operator
+    .venv/bin/python scripts/face_enroll.py --name Ana --role operator --replace
     .venv/bin/python scripts/face_enroll.py --list
     .venv/bin/python scripts/face_enroll.py --delete Ana
     .venv/bin/python scripts/face_enroll.py --delete-all
@@ -10,7 +11,8 @@ Look at the head camera, within 1.2 m. Needs the vision container serving /frame
 /depth_points (it holds the camera) and the models from scripts/install_face_models.sh.
 Every frame must hold exactly one face, it must pass the same liveness check the gate uses,
 and all frames must be the same person. Both roles pass the gate; the greeter says the
-name. Enrolling a name that exists (any case) replaces that person. Writes
+name. A name that exists (any case) is refused unless --replace, which replaces that
+person. Writes
 ~/.c3po/face/people/<id>/ (0700): features.npy, person.json and photo.jpg, one small crop
 of the face for the console (0600). Nothing leaves the robot but that photo, to the signed
 console, and nothing about the face is printed or logged.
@@ -42,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--delete", metavar="NAME", type=_name, help="forget this person")
     parser.add_argument("--delete-all", action="store_true", help="forget everyone")
     parser.add_argument("--yes", action="store_true", help="consent without the prompt")
+    parser.add_argument("--replace", action="store_true", help="re-enroll a name that exists")
     args = parser.parse_args(argv)
 
     if args.list:
@@ -69,8 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         print("not enrolled")
         return 1
     try:
-        face_gate.people()  # migrate first: enrolling the operator's name then replaces them
-        p = face_gate.enroll(args.name, args.role, args.frames, say=print)
+        p = face_gate.enroll(args.name, args.role, args.frames, say=print, replace=args.replace)
     except face_gate.Unavailable as exc:
         print(f"not enrolled: {exc}", file=sys.stderr)
         return 1

@@ -40,6 +40,11 @@ describe("faceSeenUrl: the same host as the picture", () => {
       "http://localhost:8001/face/seen",
     );
   });
+  test("through apps/back (the .env.example default) it is back's relay", () => {
+    expect(faceSeenUrl("http://localhost:3000/camera")).toBe(
+      "http://localhost:3000/face/seen",
+    );
+  });
   test("a base without /camera keeps its path", () => {
     expect(faceSeenUrl("http://h:9000/x")).toBe("http://h:9000/x/face/seen");
   });
@@ -201,6 +206,27 @@ describe("pollFaceSeen", () => {
     };
     return { urls, inits, delays, got, stop, step, pending: () => next };
   }
+
+  test("the cookie goes to apps/back's relay only", async () => {
+    for (const [cam, want] of [
+      ["http://localhost:3000/camera", "include"],
+      ["http://localhost:8001/camera", "omit"],
+    ] as const) {
+      const inits: RequestInit[] = [];
+      const stop = pollFaceSeen(faceSeenUrl(cam), () => {}, {
+        credentials: camCredentials(cam, "http://localhost:3000"),
+        fetch: (async (_url: string, init: RequestInit) => {
+          inits.push(init);
+          return Response.json(seen());
+        }) as unknown as typeof fetch,
+        schedule: () => 1,
+        cancel: () => {},
+      });
+      await Bun.sleep(1);
+      stop();
+      expect(inits[0]?.credentials).toBe(want);
+    }
+  });
 
   test("polls about once a second, with no cookie", async () => {
     const h = harness();

@@ -1,8 +1,10 @@
 // Who the robot's camera sees right now, drawn as boxes over the picture.
 //
-// The bridge serves `GET /face/seen` (open, no cookie) next to its `/camera/*`
-// routes, updated about once a second. Nothing here is stored or logged: the
-// newest answer replaces the last one and is forgotten when it goes stale.
+// `GET /face/seen` sits next to the picture's `/camera/*` routes, updated about
+// once a second: apps/back's relay (session cookie, the default
+// PUBLIC_ROBOT_CAM_URL) or the bridge itself (open on loopback, no cookie):
+// `camCredentials` picks. Nothing here is stored or logged: the newest answer
+// replaces the last one and is forgotten when it goes stale.
 //
 // One drawing routine, `drawFaceBoxes`, serves both the console overlay (a
 // canvas over the <img>) and the headset (composed into the frame before the
@@ -32,7 +34,11 @@ export const FACE_POLL_MS = 1000;
 export const FACE_BACKOFF_MAX_MS = 10_000;
 export const FACE_BOXES_KEY = "c3po.faceBoxes";
 
-/** `http://h:8001/camera` → `http://h:8001/face/seen`: the same host as the picture. */
+/**
+ * `http://h:3000/camera` → `http://h:3000/face/seen` (apps/back's relay), or
+ * `http://h:8001/camera` → `http://h:8001/face/seen` (the bridge): the same
+ * host as the picture.
+ */
 export function faceSeenUrl(camBase: string): string {
   return `${camBase
     .trim()
@@ -160,6 +166,8 @@ export function setFaceBoxesEnabled(on: boolean): void {
 
 export type FacePollDeps = {
   fetch?: typeof fetch;
+  /** `camCredentials(camBase, PUBLIC_API_URL)`: the cookie for apps/back only. */
+  credentials?: RequestCredentials;
   /** Skip polling while true (the tab is hidden). Omit to always poll. */
   hidden?: () => boolean;
   schedule?: (fn: () => void, ms: number) => unknown;
@@ -191,7 +199,7 @@ export function pollFaceSeen(
       try {
         const res = await doFetch(url, {
           cache: "no-store",
-          credentials: "omit",
+          credentials: deps.credentials ?? "omit",
           signal: AbortSignal.timeout(FACE_POLL_MS * 2),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
