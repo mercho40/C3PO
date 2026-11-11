@@ -88,62 +88,36 @@ port_owner_cmd() { ps -o command= -p "$1" 2>/dev/null | cut -c1-90; }
 # through apps/back on 3000, which IS forwarded, which is exactly why movement
 # worked and only the picture was missing.
 #
-# Two places had to agree and one of them moved. Reading the port the console
-# will actually ask for means they cannot disagree again.
+# Two places had to agree and one of them moved. So this uses the console's own
+# expression, character for character: `apps/web/package.json`'s dev:robot runs
+# with PUBLIC_ROBOT_CAM_URL=${PUBLIC_ROBOT_CAM_URL:-http://localhost:8001/camera},
+# and Vite lets that shell value beat apps/web/.env — which is why reading .env
+# here used to say 3000 while the console asked 8001 and the headset was black.
 _repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cam_port=""
-cam_from=""
-# `.env` first, `.env.example` as the fallback: `.env` is gitignored, so a
-# fresh clone has none, and silently forwarding nothing would reproduce the
-# very symptom this reads the file to prevent. Forwarding the documented
-# default instead is safe — if it is the wrong port, the listening check below
-# says so out loud, which is the whole contract of this script.
-for _env in "$_repo/apps/web/.env" "$_repo/apps/web/.env.example"; do
-    [ -f "$_env" ] || continue
-    cam_url=$(sed -n 's/^[[:space:]]*PUBLIC_ROBOT_CAM_URL[[:space:]]*=[[:space:]]*//p' \
-        "$_env" | tail -n 1 | tr -d '"'\''[:space:]')
-    # host:port from the URL, and only if the port is digits. No port means
-    # the scheme default, which nothing here tunnels — leave it empty and say
-    # so rather than forwarding a guess.
-    cam_port=$(printf '%s' "$cam_url" | sed -n 's#^[a-zA-Z]*://[^/:]*:\([0-9][0-9]*\).*#\1#p')
-    if [ -n "$cam_port" ]; then cam_from="${_env##*/}"; break; fi
-done
+cam_url="${PUBLIC_ROBOT_CAM_URL:-http://localhost:8001/camera}"
+# host:port from the URL, and only if the port is digits. No port means the
+# scheme default, which nothing here tunnels — leave it empty and say so.
+cam_port=$(printf '%s' "$cam_url" | sed -n 's#^[a-zA-Z]*://[^/:]*:\([0-9][0-9]*\).*#\1#p')
 
 # port:what-it-is:fatal
 PORTS=(
     "3001:web console (vite):yes"
     "3000:apps/back API:yes"
-    # Optional since 2026-10-15: the stick walk, the preset menu, the camera and
-    # PARAR all go through apps/back (3000). Only arm mirroring needs the teleop
-    # server on the robot, which no step of the hardware test plan starts — and
-    # a fatal 8767 stopped this script before it forwarded anything at all.
+    # Optional since 2026-10-15: the stick walk, the preset menu and PARAR all
+    # go through apps/back (3000). Only arm mirroring needs the teleop server on
+    # the robot, which no step of the hardware test plan starts — and a fatal
+    # 8767 stopped this script before it forwarded anything at all.
     # Still forwarded either way, so starting teleop later just works.
     "8767:teleop stream (tunnel to robot):no"
 )
-# `.env.example` is the fallback, and running on it means the console was
-# started without a real `.env` — worth seeing before putting the headset on.
-if [ "$cam_from" = ".env.example" ]; then
-    warn "camera URL read from apps/web/.env.example — apps/web/.env is missing"
-fi
 if [ "$cam_port" = "3000" ]; then
-    # THE NORMAL CASE: the camera comes through apps/back, behind Better Auth
-    # (`apps/back/src/routes/camera.ts`), on the port already forwarded above.
-    # Nothing extra goes to the headset — in particular not the bridge's 8001,
-    # which also serves `/mcp`, the unauthenticated tool surface that can walk
-    # the robot. Forwarding that into the Quest's browser is what this used to
-    # do, protected only by a test keeping CORS off `/mcp`.
+    # The camera through apps/back, behind Better Auth, on a port already above.
     :
 elif [ -n "$cam_port" ]; then
-    # A DEBUG SETUP pointing the console straight at the bridge (8001) or the
-    # vision container (8081). Still forwarded so it works, but said out loud:
-    # 8001 carries `/mcp` into the headset along with the picture.
-    warn "PUBLIC_ROBOT_CAM_URL bypasses apps/back (port $cam_port)"
-    if [ "$cam_port" = "8001" ]; then
-        warn "  that forward also exposes the bridge's /mcp to the headset browser"
-    fi
-    PORTS+=("$cam_port:camera MJPEG, direct (debug):no")
+    # THE DEFAULT is 8001: the picture straight from the bridge, over the tunnel.
+    PORTS+=("$cam_port:camera MJPEG (tunnel to robot):no")
 else
-    warn "no port in PUBLIC_ROBOT_CAM_URL — the headset will have no picture"
+    warn "no port in PUBLIC_ROBOT_CAM_URL ($cam_url) — the headset will have no picture"
 fi
 
 say "1. adb"
@@ -271,7 +245,7 @@ for entry in "${PORTS[@]}"; do
         if [ "$port" = "8767" ]; then
             # Not a camera: say what is actually lost, and what is not.
             warn "$port  $label — teleop not running on the robot: no arm mirroring"
-            echo "     walking, presets, camera and PARAR go through 3000 and still work."
+            echo "     walking, presets and PARAR go through 3000 and still work."
             echo "     For the arms: on the robot, TELEOP_HOST=127.0.0.1 c3po teleop start"
             tunnel_empty=0
         elif [ "${tunnel_empty:-0}" = "1" ]; then
@@ -283,14 +257,11 @@ for entry in "${PORTS[@]}"; do
     fi
 done
 
-# THE BRIDGE, AS APPS/BACK SEES IT. Not forwarded to the headset — nothing in
-# the headset talks to it any more — but everything the headset does goes
-# through back to it: the camera, walking, gestures, and PARAR. When the camera
-# rode 8001 this was checked as a side effect of checking the camera; now that
-# the camera rides 3000, a dead Mac->robot tunnel would pass every check above
-# and surface as a black view and an e-stop that reaches nothing. Any HTTP
-# answer means the bridge is alive; "000" is no connection, or a tunnel with
-# nothing behind it.
+# THE BRIDGE, AS APPS/BACK SEES IT. Walking, gestures and PARAR go through back
+# to it whatever the camera does, so a dead Mac->robot link must fail here even
+# when the camera rides 3000 and nothing above touched 8001. Any HTTP answer
+# means the bridge is alive; "000" is no connection, or a tunnel with nothing
+# behind it.
 bridge_url="${BRIDGE_URL:-}"
 if [ -z "$bridge_url" ] && [ -f "$_repo/apps/back/.env" ]; then
     bridge_url=$(sed -n 's/^[[:space:]]*BRIDGE_URL[[:space:]]*=[[:space:]]*//p' \
@@ -318,10 +289,7 @@ if [ "$fatal" = "1" ]; then
     echo "     bun run dev                                  # 3000 + 3001"
     echo "     ssh -N -o ControlMaster=no \\"
     echo "         -L 8001:127.0.0.1:8001 \\"
-    echo "         -L 8767:127.0.0.1:8767 c3po              # bridge (for back) + teleop"
-    echo
-    echo "     the camera reaches the headset through apps/back on 3000;"
-    echo "     back reaches the bridge over the 8001 tunnel."
+    echo "         -L 8767:127.0.0.1:8767 c3po              # bridge (camera, back) + teleop"
     exit 1
 fi
 
@@ -335,6 +303,10 @@ for entry in "${PORTS[@]}"; do
         exit 1
     fi
 done
+
+if [ "$cam_port" = "8001" ]; then
+    ok "8001 is forwarded for the camera; /mcp on it stays closed to pages (POST application/json only, and the bridge grants no preflight)"
+fi
 
 say "Ready"
 cat <<'DONE'

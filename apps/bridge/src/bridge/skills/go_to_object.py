@@ -114,6 +114,33 @@ def _relative_from_memory(entry: Any, mem_pose: dict[str, float]) -> tuple[float
     return math.hypot(dx, dy), (bearing + 180.0) % 360.0 - 180.0
 
 
+def pick(
+    candidates: list[tuple[dict[str, Any], float]], choose: str, stop_distance_m: float
+) -> dict[str, Any]:
+    """The candidate `choose` names, plus `candidates` (how many matched), `chosen_by` and
+    `others` (the rest as (aim range, bearing), for Follow's lock). Each candidate is
+    (target, confidence score). One already inside the stop is passed over while another
+    is outside it: the nearest chair at the robot's feet is not the one meant.
+    """
+
+    def rng(t: dict[str, Any]) -> float:
+        return approach(t, stop_distance_m)[0]
+
+    outside = [c for c in candidates if rng(c[0]) > approach(c[0], stop_distance_m)[1]]
+    # Positive bearing is LEFT (vlm.bearing_deg); max() of each key is the choice.
+    keys: dict[str, Any] = {
+        "nearest": lambda c: -rng(c[0]),
+        "farthest": lambda c: rng(c[0]),
+        "left": lambda c: c[0]["bearing_deg"],
+        "right": lambda c: -c[0]["bearing_deg"],
+        "center": lambda c: -abs(c[0]["bearing_deg"]),
+        "confidence": lambda c: c[1],
+    }
+    best = max(outside or candidates, key=keys[choose])[0]
+    others = [(rng(t), t["bearing_deg"]) for t, _ in candidates if t is not best]
+    return {**best, "candidates": len(candidates), "chosen_by": choose, "others": others}
+
+
 def resolve(
     query: str,
     live_objects: list[dict[str, Any]],
@@ -122,9 +149,12 @@ def resolve(
     now: float,
     frame: str | None = None,
     live_age_s: float | None = None,
+    choose: str = "nearest",
+    stop_distance_m: float = 0.0,
 ) -> dict[str, Any]:
-    """Pick the target. Returns {range_m, bearing_deg, label, source} plus `near_m` (near
-    face) or `range_to: "centre"`, or {error, ...}.
+    """Pick the target by `choose` (see pick). Returns {range_m, bearing_deg, label, source,
+    candidates, chosen_by, others} plus `near_m` (near face) or `range_to: "centre"`, or
+    {error, ...}.
 
     `live_age_s` is the report's own age; live targets carry `age_s` since capture
     (None when the detector sent none).
@@ -134,16 +164,19 @@ def resolve(
     seen = sorted({str(o.get("label")) for o in live_objects})
     fresh, stale = live_matches(query, live_objects, live_age_s)
     if fresh:
-        best, age = max(fresh, key=lambda m: float(m[0].get("confidence") or 0.0))
-        live = {
-            "label": best["label"],
-            "range_m": float(best["range_m"]),
-            "bearing_deg": float(best["bearing_deg"]),
-            "source": "live",
-            "age_s": age,
-        }
-        near = aim_range(best, to_near_face=True)
-        return {**live, "near_m": near} if near is not None else {**live, "range_to": "centre"}
+        cands = []
+        for o, age in fresh:
+            live = {
+                "label": o["label"],
+                "range_m": float(o["range_m"]),
+                "bearing_deg": float(o["bearing_deg"]),
+                "source": "live",
+                "age_s": age,
+            }
+            near = aim_range(o, to_near_face=True)
+            live.update({"near_m": near} if near is not None else {"range_to": "centre"})
+            cands.append((live, float(o.get("confidence") or 0.0)))
+        return pick(cands, choose, stop_distance_m)
     if stale:
         return {
             "error": "stale_detection",
@@ -163,16 +196,20 @@ def resolve(
             and (frame is None or getattr(e, "frame", frame) == frame)
         ]
         if recent:
-            entry = max(recent, key=lambda e: e.last_seen)
-            rng, bearing = _relative_from_memory(entry, mem_pose)
-            return {
-                "label": entry.label,
-                "range_m": rng,
-                "bearing_deg": bearing,
-                "source": "memory",
-                "seen_s_ago": round(now - entry.last_seen, 1),
-                "range_to": "centre",
-            }
+            cands = []
+            for entry in recent:
+                rng, bearing = _relative_from_memory(entry, mem_pose)
+                mem = {
+                    "label": entry.label,
+                    "range_m": rng,
+                    "bearing_deg": bearing,
+                    "source": "memory",
+                    "seen_s_ago": round(now - entry.last_seen, 1),
+                    "range_to": "centre",
+                }
+                # "confidence" on memory keeps the old rule: the most recent sighting.
+                cands.append((mem, entry.last_seen))
+            return pick(cands, choose, stop_distance_m)
     return {
         "error": "not_found",
         "detail": (
@@ -199,10 +236,18 @@ class Follow:
     (abort_when_lost=False) were out of view to begin with, so they only re-aim.
     """
 
-    def __init__(self, target_xy: tuple[float, float], now: float, abort_when_lost: bool) -> None:
+    def __init__(
+        self,
+        target_xy: tuple[float, float],
+        now: float,
+        abort_when_lost: bool,
+        others: list[tuple[float, float]] | None = None,
+    ) -> None:
         self.first = self.target = target_xy
         self.last_ok = now
         self.abort_when_lost = abort_when_lost
+        # The candidates not chosen: a sighting nearer one of them is that object, not ours.
+        self.others = others or []
 
     def update(
         self,
@@ -225,6 +270,7 @@ class Follow:
             if math.dist(c, self.target) <= JUMP_M
             and math.dist(c, self.first) <= DRIFT_M
             and egocentric(here, *c)[0] <= MAX_RANGE_M
+            and all(math.dist(c, self.target) < math.dist(c, o) for o in self.others)
         ]
         if ok:
             self.target = min(ok, key=lambda c: math.dist(c, self.target))

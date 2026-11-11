@@ -71,3 +71,12 @@ def fresh_safety_governor():
     safety.reset()
     yield
     safety.reset()
+
+
+@pytest.fixture(autouse=True)
+def face_settings_from_env(monkeypatch):
+    """face_gate caches settings.json: the robot's real one, or one test's, must not
+    decide another test's gate. {} = the environment's defaults; a test of the file sets None."""
+    from bridge import face_gate
+
+    monkeypatch.setattr(face_gate, "_stored", {})

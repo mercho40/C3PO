@@ -30,14 +30,15 @@ The lidar is faulted and the hands are dead (`docs/autonomy/hardware-tickets.md`
 
 Each one works on its own; skip any that misbehave today.
 
-| Show             | How                                                                | Verified                    |
-| ---------------- | ------------------------------------------------------------------ | --------------------------- |
-| A conversation   | /voice, legacy engine: talk to it in Spanish                       | listen/say ✅               |
-| "¿Qué ves?"      | `look`: the school vision model describes the camera frame         | look ✅ (2026-10-27)        |
-| Counting objects | `describe_surroundings`: detector labels with distance and bearing | ✅                          |
-| Gestures         | `wave`, `clap`, `shake_hand`, `hug`, `gesture`                     | ✅                          |
-| Going to a thing | "andá hasta la silla" → `go_to_object`, 1–3 m, in the clear area   | ✅ (3 arrivals, 2026-11-05) |
-| Turning          | `turn`                                                             | ✅                          |
+| Show             | How                                                                                              | Verified                                                |
+| ---------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| A conversation   | /voice, legacy engine: talk to it in Spanish                                                     | listen/say ✅                                           |
+| "¿Qué ves?"      | `look`: the school vision model describes the camera frame                                       | look ✅ (2026-10-27)                                    |
+| Counting objects | `describe_surroundings`: detector labels with distance and bearing                               | ✅                                                      |
+| Gestures         | `wave`, `clap`, `shake_hand`, `hug`, `gesture`                                                   | ✅                                                      |
+| Going to a thing | "andá hasta la silla" → `go_to_object`, 1–3 m, in the clear area                                 | ✅ (3 arrivals, 2026-11-05)                             |
+| Turning          | `turn`                                                                                           | ✅                                                      |
+| Greeting by name | «Caras» → «Saludar a conocidos»; an enrolled person crouches 0.5–0.8 m in front, face chest-high | open (2026-11-11: enrolled, stranger greeting untested) |
 
 **Do not demo:**
 
@@ -47,16 +48,19 @@ Each one works on its own; skip any that misbehave today.
 
 ## 3. When something breaks
 
-| Symptom                                                                       | Do                                                                                                                                             |
-| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Console shows the bridge offline after a walk                                 | It's the cable. `robot_internet.py` should reconnect on its own (tested off the robot only); re-run `robot_session.sh` if the bridge row is ✗. |
-| Robot doesn't walk; velocity accepted, or the walk refused `fsm_not_walkable` | Not in 501, or in 802 after the remote's R2+A. Redo step 5.                                                                                    |
-| A walk refused `arm_held`                                                     | The arms are still held from an arm move. `release_arm_control`, then walk.                                                                    |
-| `look` says unavailable                                                       | The camera or perception is down: `c3po perception up perception`. Use describe_surroundings meanwhile.                                        |
-| Every move refused                                                            | PARAR is latched. Press «Reanudar» as admin.                                                                                                   |
-| The robot slows or stops by itself                                            | The detector sees someone inside 1.5 m. Ask them back to the rope.                                                                             |
-| A `gemm-*` container is back up                                               | `docker stop` it (it holds the D435). Never delete their files.                                                                                |
-| Bridge needs a restart                                                        | `ssh unitree@192.168.123.164 sudo -n /usr/bin/systemctl restart c3po-bridge.service`                                                           |
+| Symptom                                                                       | Do                                                                                                                                                                                                                                        |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Console shows the bridge offline after a walk                                 | It's the cable. `robot_internet.py` should reconnect on its own (tested off the robot only); re-run `robot_session.sh` if the bridge row is ✗.                                                                                            |
+| Robot doesn't walk; velocity accepted, or the walk refused `fsm_not_walkable` | Not in 501, or in 802 after the remote's R2+A. Redo step 5.                                                                                                                                                                               |
+| A walk refused `arm_held`                                                     | The arms are still held from an arm move. `release_arm_control`, then walk.                                                                                                                                                               |
+| `look` says unavailable                                                       | The camera or perception is down: `c3po perception up perception`. Use describe_surroundings meanwhile.                                                                                                                                   |
+| Every move refused                                                            | PARAR is latched. Press «Reanudar» as admin.                                                                                                                                                                                              |
+| The robot slows or stops by itself                                            | The detector sees someone inside 1.5 m. Ask them back to the rope.                                                                                                                                                                        |
+| A `gemm-*` container is back up                                               | `docker stop` it (it holds the D435). Never delete their files.                                                                                                                                                                           |
+| Nobody is recognised, or no face boxes                                        | The camera points about 48° down: crouch so the face is chest-high to the robot, 0.5–0.8 m away, Quest off. Boxes update only while a greet switch is on in «Caras».                                                                      |
+| Every agent turn fails with `502 upstream_unreachable`                        | ia-tic is down. Restart back on the Gemini fallback (`docs/OPERATIONS.md` §4, "When ia-tic is down"); robot-mic `C3PO_STT=back` cannot work meanwhile.                                                                                    |
+| The cable link and the camera drop together                                   | The USB-Ethernet adapter and the D435 went together twice on 2026-11-11. Re-seat the adapter off the hub and keep the cable out of the walk. After the vision image rebuild the detector reopens the camera by itself; if not, `c3po up`. |
+| Bridge needs a restart                                                        | `ssh unitree@192.168.123.164 sudo -n /usr/bin/systemctl restart c3po-bridge.service`                                                                                                                                                      |
 
 ## 4. Teardown
 

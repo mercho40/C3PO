@@ -158,6 +158,26 @@ the vocabulary does not have. The named classes stop showing up where they did; 
 other class, and `person` above all, is still reported as before. Write down each bar you
 kept.
 
+**Camera recovery after a USB drop (pending robot test, 2334c95, f5481bb).** Only on a
+vision image rebuilt from this branch. On 2026-11-11 the D435 dropped twice, together with
+the USB-Ethernet adapter; until now the detector then exited. With `c3po up` running and
+`docker logs -f c3po-perception-vision` open, unplug the D435's USB cable for about 5 s
+and plug it back in. Then unplug it for more than 60 s.
+
+- **Expect, short unplug:** `camera.lost` with `budget_s=60.0` and `attempts=5`, then
+  `camera.reset` (if the camera is still listed) and `camera.reopened`, and the `alive`
+  lines carry on. `/c3po/objects` comes back within a few seconds, with no container
+  restart. Meanwhile the world model reports the detector offline, so a `go_to_object`
+  walk stops. Write down the time from plug-in to the
+  first detection.
+- **Expect, long unplug:** `camera.reopen_failed` lines, then `giving.up` with `camera did
+not come back`, and the container exits. Plug the camera in and run `c3po up` again.
+
+**Stream rate (2d23256).** `C3PO_VISION_STREAM_HZ` is now read from
+`~/.c3po/perception.env` (default 10). With the console on `/live-camera`, the picture runs
+at about 10 fps (measured 2026-11-11; 4 fps before). Lower it there if the Orin is short of
+CPU, then `c3po perception stop` and `c3po up`.
+
 **The table under the object (pending robot test, 4d3b662, 58ac1d0).** Only on a vision
 image rebuilt from this branch. Each of the nearest four non-person objects may now carry
 `support`: `z_m` is the highest point of the surface it stands on, between its near end and

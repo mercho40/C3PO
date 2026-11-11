@@ -57,7 +57,7 @@ load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 # These must follow load_env_file above; ruff's E402 is silenced per import
 # rather than for the file, so a genuinely misplaced import still fails.
-from bridge import face_gate, safety, watchdog  # noqa: E402
+from bridge import face_gate, face_greet, safety, watchdog  # noqa: E402
 from bridge.skill_meta import meta as skill_meta  # noqa: E402
 from bridge.watchdog import get_watchdog  # noqa: E402
 
@@ -77,11 +77,6 @@ DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
 BRIDGE_TRANSPORT = os.environ.get("BRIDGE_TRANSPORT", "stdio")
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8001"))
-BRIDGE_CORS_ORIGINS = tuple(
-    origin.strip()
-    for origin in os.environ.get("BRIDGE_CORS_ORIGINS", "").split(",")
-    if origin.strip()
-)
 
 # How much longer than the byte-derived estimate `say(wait_for_completion=True)`
 # will wait for `play_state` to drop. Playback runs slightly past the estimate
@@ -404,6 +399,16 @@ async def go_to_object(
             description="Stop this far from the object, metres: from the robot's front to the object's near side.",
         ),
     ] = 0.7,
+    choose: Annotated[
+        Literal["nearest", "farthest", "left", "right", "center", "confidence"],
+        Field(
+            description=(
+                "Which one when several match: «la más cercana» nearest, «la más lejana» "
+                "farthest, «la de la izquierda» left, «la de la derecha» right, «la de "
+                "enfrente» center (most straight ahead); confidence = the detector's surest."
+            ),
+        ),
+    ] = "nearest",
 ) -> dict:
     """Walk to an object the camera sees now, or saw in the last 10 minutes.
 
@@ -429,6 +434,12 @@ async def go_to_object(
     walk also carries `clearance_m` (front to near side, the number to tell the
     user) and a `note` saying what was measured; `final_distance_m` is from the
     pelvis, never the gap.
+
+    Several matches: `choose` picks one ("nearest" unless the user said which:
+    «la de la izquierda» -> "left"). One already inside the stop distance is
+    skipped while another is further; when every match is, nothing walks and
+    the phase is 'already_within_stop_distance'. `target.candidates` says how
+    many matched and `target.chosen_by` how one was picked.
     """
     import time as _time
 
@@ -448,9 +459,12 @@ async def go_to_object(
         _time.time(),
         frame=frame,
         live_age_s=report_age,
+        choose=choose,
+        stop_distance_m=stop_distance_m,
     )
     if "error" in target:
         return target
+    others = target.pop("others")
     # aim_rng: near face if measured, else centre; stop: base_link's stop from that point.
     aim_rng, stop = g.approach(target, stop_distance_m)
     if aim_rng > g.MAX_RANGE_M:
@@ -460,6 +474,13 @@ async def go_to_object(
             "target": target,
         }
     rounded = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in target.items()}
+    if aim_rng <= stop:
+        done = {
+            "status": "completed",
+            "phase": "already_within_stop_distance",
+            "result": {"arrived": True, "final_distance_m": aim_rng},
+        }
+        return {**done, "via": "none", **g.report(done, target), "target": rounded, "env": SIM_MODE}
     sampler = get_sampler()
     pose = (sampler.get_state() or {}).get("pose") or {}
     try:
@@ -512,13 +533,21 @@ async def go_to_object(
             gy,
             None,
             nav_pose["frame"],
-            {"kind": "object", "label": target["label"], "source": target["source"]},
+            {
+                "kind": "object",
+                **{k: target[k] for k in ("label", "source", "candidates", "chosen_by")},
+            },
         )
         if started.get("status") != "refused":
             return {**started, "via": "nav2"}
         refusal = started
 
-    follow = g.Follow((tx, ty), _time.monotonic(), abort_when_lost=target["source"] == "live")
+    follow = g.Follow(
+        (tx, ty),
+        _time.monotonic(),
+        abort_when_lost=target["source"] == "live",
+        others=[g.world_target(*at, r, b) for r, b in others],
+    )
 
     def retarget() -> tuple[float, float] | None:
         now_pose = sampler.pose_at(_time.monotonic())
@@ -1907,10 +1936,12 @@ async def say(
         # whatever is currently playing. Milliseconds is the vendor's own
         # convention; it only has to be different from the last one.
         stream_id = f"c3po-{int(time.time() * 1000)}"
+        # Before synthesis, which takes hundreds of ms: a PARAR during it must cancel this too.
+        generation = g1_rpc._play_generation
 
         def _synth_and_play() -> tuple[int, str | None, float]:
             pcm = tts.synthesize(text)
-            code, data = g1_rpc.play_pcm(pcm, stream_id)
+            code, data = g1_rpc.play_pcm(pcm, stream_id, generation=generation)
             return code, data, tts.duration_s(pcm)
 
         try:
@@ -4106,7 +4137,22 @@ async def safety_status(request):  # noqa: ANN001, ANN201 - starlette types
     """The governor's caps, flags, last command and the nearest person. Read-only."""
     from starlette.responses import JSONResponse
 
-    return JSONResponse(safety.status(), headers={"Cache-Control": "no-store"})
+    body = {**safety.status(), "face_greet": face_greet.status()}
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+def _unproven(request):  # noqa: ANN001, ANN202 - starlette types
+    """403 (503 with no secret set) unless the request carries apps/back's
+    SAFETY_CONFIRM_SECRET in `X-C3PO-Confirm-Secret`; None when it does."""
+    from starlette.responses import JSONResponse
+
+    if safety.confirm_secret_ok(request.headers.get("x-c3po-confirm-secret")):
+        return None
+    configured = bool(safety.CONFIRM_SECRET)
+    return JSONResponse(
+        {"error": "forbidden" if configured else "confirmation_not_configured"},
+        status_code=403 if configured else 503,
+    )
 
 
 @mcp.custom_route("/safety/confirm", methods=["POST"])
@@ -4131,12 +4177,8 @@ async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
     """
     from starlette.responses import JSONResponse
 
-    if not safety.confirm_secret_ok(request.headers.get("x-c3po-confirm-secret")):
-        configured = bool(safety.CONFIRM_SECRET)
-        return JSONResponse(
-            {"error": "forbidden" if configured else "confirmation_not_configured"},
-            status_code=403 if configured else 503,
-        )
+    if (refused := _unproven(request)) is not None:
+        return refused
     try:
         body = await request.json()
         tool, args = str(body.get("tool") or ""), body.get("args", {})
@@ -4173,12 +4215,8 @@ async def safety_ack(request):  # noqa: ANN001, ANN201 - starlette types
 
     from bridge import estop
 
-    if not safety.confirm_secret_ok(request.headers.get("x-c3po-confirm-secret")):
-        configured = bool(safety.CONFIRM_SECRET)
-        return JSONResponse(
-            {"error": "forbidden" if configured else "confirmation_not_configured"},
-            status_code=403 if configured else 503,
-        )
+    if (refused := _unproven(request)) is not None:
+        return refused
     try:
         shown = (await request.json()).get("stopped_at")
     except Exception:
@@ -4198,6 +4236,142 @@ async def safety_ack(request):  # noqa: ANN001, ANN201 - starlette types
         {"acknowledged": True, "was_standing": was["stop_standing"], **safety.stop_latch()},
         headers={"Cache-Control": "no-store"},
     )
+
+
+# -- faces: who is enrolled, the live settings, enrollment (bridge/face_gate.py) ----------
+#
+# Seeing a face is like confirming an action, so everything here but /face/seen takes the
+# same proof as /safety/confirm: apps/back's SAFETY_CONFIRM_SECRET in
+# `X-C3PO-Confirm-Secret`. /face/seen stays open because the bridge listens on loopback
+# only (BRIDGE_HOST 127.0.0.1): apps/back relays it to signed-in users.
+
+_enrolling = asyncio.Lock()
+
+
+def _no_store(body: Any, status_code: int = 200):  # noqa: ANN202 - starlette types
+    from starlette.responses import JSONResponse
+
+    return JSONResponse(body, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+
+async def _json_body(request) -> dict:  # noqa: ANN001 - starlette types
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+@mcp.custom_route("/face/people", methods=["GET"])
+async def face_people(request):  # noqa: ANN001, ANN201 - starlette types
+    """Everyone enrolled (no features, no photos), the live settings, strangers seen."""
+    if (refused := _unproven(request)) is not None:
+        return refused
+    people = await asyncio.to_thread(lambda: [face_gate.public(p) for p in face_gate.people()])
+    return _no_store(
+        {
+            "settings": face_gate.settings(),
+            "people": people,
+            "unknown_seen": face_greet.unknown_seen(),
+            "models": face_gate.models_installed(),
+        }
+    )
+
+
+@mcp.custom_route("/face/seen", methods=["GET"])
+async def face_seen(request):  # noqa: ANN001, ANN201 - starlette types
+    """The faces of the greeter's last check, as boxes in /frame.jpg pixels, for the console
+    to draw. Names and roles of enrolled people only; a stranger is a box. Fresh only while
+    greet or greet_unknown is on (age_s grows otherwise).
+
+    Readable cross-origin like /camera/*: the boxes are drawn over that picture."""
+    from starlette.responses import JSONResponse
+
+    from bridge.sdk.camera_relay import camera_headers
+
+    return JSONResponse(face_gate.seen(), headers=camera_headers(_origin_of(request)))
+
+
+@mcp.custom_route("/face/settings", methods=["POST"])
+async def face_settings(request):  # noqa: ANN001, ANN201 - starlette types
+    """Body: any of {"greet", "greet_unknown", "gate"} as booleans. Applies at once, persists."""
+    if (refused := _unproven(request)) is not None:
+        return refused
+    try:
+        new = await asyncio.to_thread(face_gate.update_settings, await _json_body(request))
+    except (ValueError, face_gate.Unavailable) as exc:
+        return _no_store({"error": "invalid_settings", "reason": str(exc)}, 400)
+    log.warning("face.settings_changed", **new)
+    if any(new.values()):
+        # Off the loop, on the gate's own worker: a cold cv2 import must not hold a stop.
+        asyncio.get_running_loop().run_in_executor(face_gate._pool, face_gate.warm)
+    return _no_store(new)
+
+
+@mcp.custom_route("/face/people/{pid}", methods=["DELETE"])
+async def face_delete(request):  # noqa: ANN001, ANN201 - starlette types
+    if (refused := _unproven(request)) is not None:
+        return refused
+    pid = str(request.path_params.get("pid", ""))
+    if not await asyncio.to_thread(face_gate.delete_person, pid):
+        return _no_store({"error": "not_found"}, 404)
+    log.warning("face.person_deleted", person=pid)
+    return _no_store({"deleted": pid})
+
+
+@mcp.custom_route("/face/people/{pid}/photo.jpg", methods=["GET"])
+async def face_photo(request):  # noqa: ANN001, ANN201 - starlette types
+    """The enrolled person's own consented photo; never anything of anyone else."""
+    from starlette.responses import Response
+
+    if (refused := _unproven(request)) is not None:
+        return refused
+    pid = str(request.path_params.get("pid", ""))
+    jpg = None
+    if await asyncio.to_thread(face_gate.person, pid) is not None:
+        path = face_gate.people_dir() / pid / "photo.jpg"
+        jpg = await asyncio.to_thread(face_gate.read_owner_only, path)
+    if jpg is None:
+        return _no_store({"error": "not_found"}, 404)
+    return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/face/enroll", methods=["POST"])
+async def face_enroll(request):  # noqa: ANN001, ANN201 - starlette types
+    """Body {"name", "role", "replace"?}: the person stands at the robot, alone, facing the
+    head camera.
+
+    The same enrollment as scripts/face_enroll.py (FRAMES live frames, one face, one
+    person), in a thread, within face_gate.ENROLL_DEADLINE_S. Their consent is the
+    console's to ask before calling this. Every refusal carries a `code`: 400 invalid,
+    409 busy or exists (that name is enrolled and `replace` is not true), 422
+    no_live_face, not_same_person, camera_unavailable (camera, models or disk).
+    """
+    if (refused := _unproven(request)) is not None:
+        return refused
+    body = await _json_body(request)
+    name, role = body.get("name"), body.get("role")
+    if not isinstance(name, str) or role not in face_gate.ROLES:
+        bad = {"error": "invalid", "code": "invalid", "reason": "name and role are required"}
+        return _no_store(bad, 400)
+    if _enrolling.locked():
+        busy = {"error": "busy", "code": "busy", "reason": "an enrollment is running"}
+        return _no_store(busy, 409)
+    async with _enrolling:
+        try:
+            p = await asyncio.to_thread(
+                face_gate.enroll, name, role, face_gate.FRAMES, replace=body.get("replace") is True
+            )
+        except ValueError as exc:
+            return _no_store({"error": "invalid", "code": "invalid", "reason": str(exc)}, 400)
+        except face_gate.Refused as exc:
+            body = {"error": "not_enrolled", "code": exc.code, "reason": str(exc)}
+            return _no_store(body, 409 if exc.code == "exists" else 422)
+        except Exception as exc:  # noqa: BLE001 - camera, models, disk; nothing was stored
+            body = {"error": "not_enrolled", "code": "camera_unavailable", "reason": str(exc)}
+            return _no_store(body, 422)
+    log.warning("face.person_enrolled", person=p["id"], role=role, via="console")
+    return _no_store(p)
 
 
 @mcp.custom_route("/telemetry/scan", methods=["GET"])
@@ -4412,6 +4586,23 @@ async def voice_audio_input(request):  # noqa: ANN001, ANN201 - starlette types
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@mcp.custom_route("/telemetry/voice/utterance/{audio_id}.wav", methods=["GET"])
+async def voice_utterance_audio(request):  # noqa: ANN001, ANN201 - starlette types
+    """One finished utterance's WAV, announced by a `kind: "audio"` voice event.
+
+    Only with `C3PO_STT=back`: apps/back fetches it and transcribes it with
+    ia-tic. Kept in a small ring for a few seconds, then 404.
+    """
+    from starlette.responses import JSONResponse, Response
+
+    from bridge.skills.listen import get_mic_listener
+
+    wav = get_mic_listener().utterance_wav(request.path_params["audio_id"])
+    if wav is None:
+        return JSONResponse({"error": "utterance_gone"}, status_code=404)
+    return Response(wav, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
 @mcp.custom_route("/telemetry/voice/audio/output", methods=["POST", "DELETE"])
@@ -4792,38 +4983,63 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
+def _http_app():  # noqa: ANN202 - starlette types
+    """The ASGI app exactly as served, so tests can check its headers.
+
+    NO CORS MIDDLEWARE. A site-wide one made every GET readable from the
+    console origin: voice events, utterance WAVs, raw mic PCM, /face/people.
+    The camera routes and /face/seen add the header themselves (camera_headers),
+    and the console only sends them simple GETs, so no preflight is needed.
+    """
+    return mcp.streamable_http_app()
+
+
 async def _run_streamable_http() -> None:
-    """Run FastMCP with narrowly scoped browser origins for direct camera access."""
+    """Run FastMCP's streamable-http transport for apps/back and the camera."""
     import uvicorn
-    from starlette.middleware.cors import CORSMiddleware
-    from starlette.types import ASGIApp
 
     from bridge.skills.stop_everything import watching_foreign_stops
 
-    app: ASGIApp = mcp.streamable_http_app()
-    if BRIDGE_CORS_ORIGINS:
-        app = CORSMiddleware(
-            app,
-            allow_origins=list(BRIDGE_CORS_ORIGINS),
-            allow_methods=["GET"],
-            allow_headers=["*"],
-        )
     config = uvicorn.Config(
-        app,
+        _http_app(),
         host=BRIDGE_HOST,
         port=BRIDGE_PORT,
         log_level=mcp.settings.log_level.lower(),
     )
-    async with watching_foreign_stops():
+    async with watching_foreign_stops(), face_greet.greeting_operator(_greet):
         await uvicorn.Server(config).serve()
+
+
+async def _greet(text: str) -> None:
+    """The greeter speaks through `say` itself, so PARAR's stop_play cuts it like any speech."""
+    await say(text)
 
 
 async def _run_stdio() -> None:
     """FastMCP's stdio transport, with the same foreign-stop watcher as HTTP."""
     from bridge.skills.stop_everything import watching_foreign_stops
 
-    async with watching_foreign_stops():
+    async with watching_foreign_stops(), face_greet.greeting_operator(_greet):
         await mcp.run_stdio_async()
+
+
+def _warm_face() -> None:
+    """Load the face models before serving, whatever the switches say, on a robot that has
+    them: a cold `import cv2` holds the GIL for seconds, which would stall a stop if a
+    console switch, an enrollment or the greeter's first tick did it while serving, and
+    would spend the first gated call's TIMEOUT_S."""
+    face = face_gate.settings()
+    if face["gate"] or (SIM_MODE != "stub" and face_gate.models_installed()):
+        face_gate.warm()
+    if face["gate"]:
+        log.warning("face_gate.on", tools=sorted(face_gate.gated_tools()), max_m=face_gate.MAX_M)
+    elif face_gate.GATED:
+        log.warning(
+            "face_gate.env_overridden",
+            env=sorted(face_gate.GATED),
+            settings=str(face_gate.settings_path()),
+            note="settings.json says gate off and overrides C3PO_FACE_GATE: nothing is gated",
+        )
 
 
 def main() -> None:
@@ -4835,10 +5051,7 @@ def main() -> None:
     """
     if face_gate.GATED:
         face_gate.check_config(t.name for t in mcp._tool_manager.list_tools())
-        # Before serving, not in a thread: a cold `import cv2` holds the GIL for seconds,
-        # which would stall a stop, and would spend the first gated call's TIMEOUT_S.
-        face_gate.warm()
-        log.warning("face_gate.on", tools=sorted(face_gate.GATED), max_m=face_gate.MAX_M)
+    _warm_face()
     # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #

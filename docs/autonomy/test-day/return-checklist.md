@@ -1,6 +1,6 @@
 # Back at the robot: what to test, in order
 
-Written 2026-11-03 while the operators were away; last updated 2026-11-10. This is the one
+Written 2026-11-03 while the operators were away; last updated 2026-11-11. This is the one
 dated sheet for the next robot session. `docs/SESSION-CHECKLIST.md` is the general order,
 and the expo stand runs from `docs/DEMO-RUNBOOK.md`. Everything here is on `feat/autonomy`:
 deploy it first, as in `docs/OPERATIONS.md` §5. One person holds the Unitree remote for every
@@ -74,6 +74,17 @@ Robot on the floor with slack in the gantry, a chair 2–3 m ahead, nobody betwe
 
 No obstacle avoidance: it walks straight at the target. Refuses targets over 4 m.
 
+**Several chairs: `choose` (efeb898).** Status: open. Three or four chairs 1.5–3 m ahead,
+spread left to right, nobody between. Read `target.candidates`, `target.chosen_by` and
+`target.label` in each result.
+
+| Say / type                                  | Expect                                                                                                                                                               |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "Andá hasta la silla."                      | `choose` is `nearest` (the default): it walks to the nearest chair and stays on it, even when another chair is seen during the walk. `candidates` counts the chairs. |
+| "Andá a la silla de la izquierda."          | `choose: "left"`, the leftmost chair. Then «la de la derecha» (`right`), «la más lejana» (`farthest`), «la de enfrente» (`center`).                                  |
+| Stand 0.6 m from one chair, others further. | "Andá hasta la silla" skips the chair already inside the stop and walks to the next one.                                                                             |
+| Every chair inside 0.7 m.                   | Nothing walks: phase `already_within_stop_distance`, `via: "none"`.                                                                                                  |
+
 ## 4. Arms by voice/chat with the console confirm (15 min)
 
 Robot standing in 501, gantry. Arms enabled on the robot (`.env`). Neither hand answers, so
@@ -110,6 +121,13 @@ Status: blocked. The Mid-360S scan module is faulted (BACKLOG 4.1).
 Status: open. Built in d8d5db7, 56aae23 and cad99bb; never run on a Quest. Push-to-talk and
 «confirmo» also check 984bd5d, which changed how `back` reads the chat history.
 
+Since 2026-11-11 `bun run dev:robot` reads the camera straight from the bridge on 8001
+(aa05697), so the headset needs 8001 forwarded too. Plug the Quest in and run
+`bash scripts/quest_reverse.sh` (bec7441): it forwards 3001, back's `PORT`, 8001 and 8767
+and prints the URLs to open. **Expect:** four ✓ lines; `/vr-control` shows the picture,
+with face boxes while a greet switch is on (`safety.md` 35). Then run push-to-talk below
+on this setup.
+
 | Do                                                                                                                                                                                                                                                                           | Expect                                                                                                                                                                                                                                                      |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Hold B or Y and speak («Hablar con el robot»).                                                                                                                                                                                                                               | The WAV goes to `/voice/transcribe` and runs as a voice-mode turn.                                                                                                                                                                                          |
@@ -144,6 +162,27 @@ robot (`ssh -t`: install asks for the sudo password).
 | `sudo ls -l /var/lib/c3po/previous-c3po-bridge.service`, then `./scripts/robot/c3po install` again, then the same `ls` and `cat` | Nothing changed: same time on the backup, same three files                                                                                          |
 | Roll back as in `docs/OPERATIONS.md` §5 ("Rollback"), then `c3po status`                                                         | The bridge answers on the older commit. `deployed` names it (if not, record it as the recipe says), and `previous-deploy` names the commit you left |
 | Go forward again as in the same section                                                                                          | `deployed` names the newer commit again, the bridge answers, and `/safety/status` reads as it did                                                   |
+
+## 9. Robot-mic voice on `tic-transcript` (10 min)
+
+Status: open (b350499, f7c7cd1, 120677a, 3a22fd0). Needs ia-tic up: check first that a
+console chat turn answers (if every model answers `502 upstream_unreachable`, ia-tic is
+down; `docs/OPERATIONS.md` §4, "When ia-tic is down"). On the robot, `C3PO_STT=back` in
+`apps/bridge/.env`, then `c3po restart`. On /voice start the legacy engine. Robot on the
+gantry, standing.
+
+| Do                                                                                                                                                           | Expect                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Say «hola, ¿cómo estás?» at 1 m.                                                                                                                             | The robot answers. back's log shows the utterance transcribed and no `voice.transcribe_failed`. Write down the time from the end of speech to the answer. |
+| Stay silent near the robot for a minute.                                                                                                                     | Nothing is sent and nothing runs: no empty turn after 30 s.                                                                                               |
+| «contame un chiste largo» and, in the same breath, «¡detener!» (nothing that moves: the start of a sentence said with a pause would run).                    | PARAR latches at once, from the robot's own stop phrase. No turn starts from that sentence afterwards: no joke. «Reanudar» after.                         |
+| Talk for about 20 s without a pause.                                                                                                                         | One long utterance is transcribed; nothing is cut off with an error.                                                                                      |
+| Two short sentences quickly, one after the other.                                                                                                            | They run in the order said.                                                                                                                               |
+| While the voice loop runs, open a second event stream on the Mac (`curl -N http://127.0.0.1:8001/telemetry/voice/events`), Ctrl-C it, then say «emergencia». | The stop still fires: closing another subscriber no longer disarms the loop's.                                                                            |
+| Point `AGENT_BASE_URL` at a dead host (restart back), say something.                                                                                         | back logs `voice.transcribe_failed`; nothing runs; the stop phrase still works. Put it back.                                                              |
+
+Put `C3PO_STT=` back (empty) and `c3po restart` when done, unless this is the mode for the
+day: in it the agent's `listen` tool hears nothing.
 
 ## If something goes wrong
 
