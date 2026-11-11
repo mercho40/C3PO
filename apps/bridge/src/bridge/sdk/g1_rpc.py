@@ -196,6 +196,7 @@ def play_pcm(
     pcm: bytes,
     stream_id: str,
     app_name: str = PLAY_APP_NAME,
+    generation: int | None = None,
 ) -> tuple[int, str | None]:
     """Push 16 kHz mono 16-bit PCM to the speaker (voice/1003 START_PLAY).
 
@@ -214,6 +215,9 @@ def play_pcm(
 
     Returns the LAST chunk's (rpc_code, data), and stops at the first failure so
     a rejected format does not spend thirty more calls being rejected.
+
+    `generation`: `_play_generation` as read before the audio was made, so a stop
+    during synthesis also cancels it; default, as of this call.
     """
     if not pcm:
         return 0, None
@@ -221,7 +225,7 @@ def play_pcm(
     client = _get_voice_client()
     param = json.dumps({"app_name": app_name, "stream_id": stream_id})
     code, data = 0, None
-    generation = _play_generation
+    generation = _play_generation if generation is None else generation
     for offset in range(0, len(pcm), PLAY_CHUNK_BYTES):
         if _play_generation != generation:
             # stop_play ran: the chunks still to send would restart the speech.

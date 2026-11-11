@@ -53,6 +53,11 @@
  * heads-up view over the real world, in VR it is the world.
  */
 
+import {
+  drawFaceBoxes,
+  freshFaces,
+  type FaceSeen,
+} from "#lib/robot/face-seen.js";
 import { fovAspect, placeQuad, type EyePose } from "./stereo";
 
 const VERT = `
@@ -267,6 +272,11 @@ export class CameraLayer {
   // and a picture is not uploaded twice within UPLOAD_MIN_INTERVAL_MS.
   #texHolds: "img" | "card" | null = null;
   #uploadedAt = 0;
+  #faces: FaceSeen | null = null;
+  #facesAt = 0;
+  // The frame and its face boxes composed here, then uploaded as ONE texture.
+  #compose: HTMLCanvasElement | null = null;
+  #composeCtx: CanvasRenderingContext2D | null = null;
 
   constructor(gl: WebGLRenderingContext) {
     this.#gl = gl;
@@ -305,7 +315,7 @@ export class CameraLayer {
    * `quest_setup.sh` to forward the port that also serves `/mcp` into the
    * headset. Relaying through apps/back removed both.
    */
-  setStreamUrl(streamUrl: string): void {
+  setStreamUrl(streamUrl: string, withCredentials = true): void {
     if (streamUrl === this.#url) return;
     this.#url = streamUrl;
     // A new source: its first picture goes up on the next draw.
@@ -322,7 +332,9 @@ export class CameraLayer {
       this.#img.remove();
     }
     const img = new Image();
-    img.crossOrigin = "use-credentials";
+    // The bridge on 8001 sends Allow-Origin but not Allow-Credentials, so a
+    // credentialed request to it fails; apps/back's relay needs the cookie.
+    img.crossOrigin = withCredentials ? "use-credentials" : "anonymous";
     img.onload = () => (this.#ready = true);
     img.onerror = () => (this.#ready = false);
     img.src = streamUrl;
@@ -361,6 +373,44 @@ export class CameraLayer {
    */
   setLive(live: boolean): void {
     this.#live = live;
+  }
+
+  /**
+   * Who the camera sees (`receivedAt` in Date.now() ms). Drawn into the
+   * picture until it is FACE_STALE_S old; null clears it.
+   */
+  setFaces(seen: FaceSeen | null, receivedAt: number): void {
+    this.#faces = seen;
+    this.#facesAt = receivedAt;
+  }
+
+  /**
+   * The picture with its face boxes on a 2D canvas, or the bare <img> when
+   * there are none (or no canvas): the upload source either way, so it stays
+   * one texImage2D per picture.
+   */
+  #source(img: HTMLImageElement): HTMLImageElement | HTMLCanvasElement {
+    const seen = this.#faces;
+    const faces = freshFaces(seen, (Date.now() - this.#facesAt) / 1000);
+    if (!seen || !faces.length) return img;
+    if (!this.#compose) {
+      if (typeof document === "undefined" || !document.createElement)
+        return img;
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext?.("2d");
+      if (!ctx) return img;
+      this.#compose = canvas;
+      this.#composeCtx = ctx;
+    }
+    const canvas = this.#compose;
+    const ctx = this.#composeCtx!;
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+    drawFaceBoxes(ctx, faces, seen.width, seen.height, { x: 0, y: 0, w, h });
+    return canvas;
   }
 
   /**
@@ -523,7 +573,7 @@ export class CameraLayer {
             gl.RGB,
             gl.RGB,
             gl.UNSIGNED_BYTE,
-            img!,
+            this.#source(img!),
           );
           this.#uploaded += 1;
         } else {

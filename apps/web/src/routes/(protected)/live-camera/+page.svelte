@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { PUBLIC_ROBOT_CAM_URL, PUBLIC_SIM_CAM_HOST } from "$app/env/public";
+  import {
+    PUBLIC_API_URL,
+    PUBLIC_ROBOT_CAM_URL,
+    PUBLIC_SIM_CAM_HOST,
+  } from "$app/env/public";
   import {
     Camera,
     ExternalLink,
@@ -17,6 +21,7 @@
     type SimCamState,
   } from "#lib/webrtc/sim-camera.js";
   import {
+    camCredentials,
     connectRobotCamera,
     endpoint,
     type RobotCamHandle,
@@ -53,6 +58,7 @@
   // available during SSR, and reading it late rendered the sim layout
   // (":60001", two wrist tiles) on the robot console until hydration.
   const robotBase = PUBLIC_ROBOT_CAM_URL.trim();
+  const robotCreds = camCredentials(robotBase, PUBLIC_API_URL);
   const robotMode = robotBase !== "";
 
   // The sim's teleimager image servers — one aiortc WebRTC server per camera.
@@ -149,27 +155,31 @@
     lastFrames = 0;
     lastFramesAt = 0;
     robot = { ...robot, status: null, fps: null };
-    robotHandle = connectRobotCamera(robotBase, {
-      onState: (state, detail) => {
-        robot = { ...robot, state, detail: detail ?? null };
+    robotHandle = connectRobotCamera(
+      robotBase,
+      {
+        onState: (state, detail) => {
+          robot = { ...robot, state, detail: detail ?? null };
+        },
+        onStatus: (status) => {
+          const now = Date.now();
+          let fps = robot.fps;
+          if (status && lastFramesAt > 0 && now > lastFramesAt) {
+            const delta = status.frames - lastFrames;
+            fps = delta <= 0 ? 0 : (delta * 1000) / (now - lastFramesAt);
+          }
+          if (status) {
+            lastFrames = status.frames;
+            lastFramesAt = now;
+          }
+          robot = { ...robot, status, fps: status ? fps : null };
+        },
+        onStreamUrl: (url) => {
+          robot = { ...robot, url };
+        },
       },
-      onStatus: (status) => {
-        const now = Date.now();
-        let fps = robot.fps;
-        if (status && lastFramesAt > 0 && now > lastFramesAt) {
-          const delta = status.frames - lastFrames;
-          fps = delta <= 0 ? 0 : (delta * 1000) / (now - lastFramesAt);
-        }
-        if (status) {
-          lastFrames = status.frames;
-          lastFramesAt = now;
-        }
-        robot = { ...robot, status, fps: status ? fps : null };
-      },
-      onStreamUrl: (url) => {
-        robot = { ...robot, url };
-      },
-    });
+      robotCreds,
+    );
   }
 
   function stopRobot() {
@@ -264,8 +274,8 @@
         // the reason ("no frame yet") and the hint.
         const res = await fetch(endpoint(robotBase, "frame.jpg"), {
           cache: "no-store",
-          // Served by apps/back behind Better Auth, like /status.
-          credentials: "include",
+          // Cookie for apps/back's relay only, like /status.
+          credentials: robotCreds,
           signal: AbortSignal.timeout(5000),
         });
         if (!res.ok) {

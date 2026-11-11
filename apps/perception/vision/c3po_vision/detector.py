@@ -86,7 +86,7 @@ import re
 import signal
 import sys
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 # Stdlib-only at module scope (Pillow and numpy are lazy inside it), so this
 # import keeps the "importable on a Mac" property the docstring above claims.
@@ -228,6 +228,23 @@ MAX_CONSECUTIVE_FAILURES = int(os.environ.get("C3PO_VISION_MAX_FAILURES", "20"))
 # How long start() waits for a hardware-reset D435 to re-enumerate. Not an env
 # var: it only bounds a one-time recovery, and a longer wait hides a dead camera.
 RESET_WAIT_S = 15.0
+
+# Mid-run USB drop (re-enumeration, renumbered /dev/videoN): how long, and how
+# many failed reopens, before run() gives up and exits for the bring-up/operator.
+RECOVER_S = 60.0
+RECOVER_ATTEMPTS = 5
+
+# What librealsense says when the device went away under a running pipeline:
+# its own reconnect failing, the EIO it hit doing so, and every read after that.
+# A plain "Frame didn't arrive within N" is NOT here: that is a slow frame.
+_CAMERA_LOST = re.compile(
+    r"disconnected|errno=(?:5|19)\b|no such device|cannot be called before start\(\)",
+    re.IGNORECASE,
+)
+
+
+def camera_lost(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and bool(_CAMERA_LOST.search(str(exc)))
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -373,6 +390,37 @@ class RealSenseSource:
                 return
             time.sleep(0.5)
         raise RuntimeError(f"D435 {serial} did not re-enumerate within {RESET_WAIT_S}s of a reset")
+
+    def recover(self, stopping: Callable[[], bool]) -> bool:
+        """Reopen after the D435 dropped mid-run. False once RECOVER_S/RECOVER_ATTEMPTS run out.
+
+        Same config, same process: start() is re-run as-is, so its errno=5 reset
+        still applies. A device still listed right after the drop is reset first,
+        as the manual `perception_up` effectively did; one that left is waited for.
+        """
+        rs = self._rs
+        self.close()
+        deadline = time.monotonic() + RECOVER_S
+        delay = 0.5
+        attempts = 0
+        reset = len(rs.context().query_devices()) > 0
+        while attempts < RECOVER_ATTEMPTS and not stopping() and time.monotonic() < deadline:
+            devs = rs.context().query_devices()
+            if len(devs) > 0:
+                attempts += 1
+                try:
+                    if reset:
+                        reset = False
+                        self._reset_and_wait(rs, devs[0])
+                    self.start()
+                    log("camera.reopened", attempts=attempts)
+                    return True
+                except Exception as exc:  # noqa: BLE001 - any failure is one spent attempt
+                    log("camera.reopen_failed", attempt=attempts, error=repr(exc))
+                    self.close()
+            time.sleep(delay)
+            delay = min(delay * 2, 4.0)
+        return False
 
     def read(self) -> tuple[Any, Any]:
         """(colour BGR HxWx3 uint8, depth HxW uint16). Raises on timeout.
@@ -1288,6 +1336,22 @@ def run() -> int:
             failures += 1
             log("tick.failed", error=repr(exc), consecutive=failures,
                 published="no — silence, not an empty scene")
+            if isinstance(source, RealSenseSource) and camera_lost(exc):
+                # Blocks the loop, so nothing is published while it runs: the
+                # same silence the nav container already reads as detector offline.
+                log("camera.lost", error=repr(exc), budget_s=RECOVER_S, attempts=RECOVER_ATTEMPTS)
+                if source.recover(lambda: stopper.stop):
+                    intrinsics = source.intrinsics or intrinsics
+                    failures = 0
+                    continue
+                if stopper.stop:
+                    break
+                log("giving.up", reason="camera did not come back", budget_s=RECOVER_S,
+                    consequence="container exits; world model reports the detector offline")
+                source.close()
+                if video is not None:
+                    video.close()
+                return 1
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 log("giving.up", consecutive=failures,
                     consequence="container exits; world model reports the detector offline")

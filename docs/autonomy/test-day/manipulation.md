@@ -32,13 +32,13 @@ Stale perception aborts the motion (f1c95d7). Release freezes the arm before the
 
 `apps/bridge/.env` on the robot, then restart the bridge:
 
-| Key                      | Value                                                     |
-| ------------------------ | --------------------------------------------------------- |
-| `TELEOP_ARM_ENABLED`     | `1`                                                       |
-| `TELEOP_HAND_ENABLED`    | `1`                                                       |
-| `TELEOP_HAND_TYPE`       | `simulated` until a hand answers (5.1), then `brainco`    |
-| `TELEOP_HAND_SIDES`      | `right` (add `left` only once the left hand has answered) |
-| `TELEOP_BRAINCO_OPEN_AT` | `0` or `1`, from `scripts/hand_probe.py`. Never guess it. |
+| Key                      | Value                                                         |
+| ------------------------ | ------------------------------------------------------------- |
+| `TELEOP_ARM_ENABLED`     | `1`                                                           |
+| `TELEOP_HAND_ENABLED`    | `1`                                                           |
+| `TELEOP_HAND_TYPE`       | `simulated` until a hand answers (5.1), then `brainco`        |
+| `TELEOP_HAND_SIDES`      | `right` (add `left` only once the left hand has answered)     |
+| `TELEOP_BRAINCO_OPEN_AT` | `0` or `1`, from `scripts/hand_dds_probe.py`. Never guess it. |
 
 Neither BrainCo hand answers on any of the four FT4232 lines, even through the vendor
 `brainco_hand_server` (2026-11-06). With `simulated`, no finger moves and the result says nothing

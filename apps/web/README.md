@@ -134,10 +134,25 @@ The robot picture is drawn by `src/lib/components/robot-camera-view.svelte`,
 shared with `/vr-control` (which keeps owning the connection, because the XR
 layer uses the same stream). The page shows `/camera/status`'s
 `source`/`sources`/`hint`, and `/camera/frame.jpg` backs the Captura button. A
-failed status fetch is classified as network vs CORS (`apps/back`'s `WEB_URL`;
-`BRIDGE_CORS_ORIGINS` only when pointed straight at the bridge to debug) vs
+failed status fetch is classified as network vs CORS (`apps/back`'s `WEB_URL`, or
+`BRIDGE_CORS_ORIGINS` when pointed straight at the bridge) vs
 mixed content (HTTPS console, HTTP camera), because they need different fixes
 and used to share one "network" message.
+
+**`bun run dev:robot` reads the camera straight from the bridge** (since
+2026-11-11): it sets `PUBLIC_ROBOT_CAM_URL=http://localhost:8001/camera` unless the
+shell sets it, and that wins over `.env`. The bridge grants this origin on its
+camera routes and `/face/seen` only, without credentials, so the cookie is sent
+only when the camera is on `PUBLIC_API_URL`'s origin (`camCredentials`). The
+headset then needs 8001 forwarded: `scripts/quest_reverse.sh`.
+
+**Face boxes** (`src/lib/robot/face-seen.ts`, `components/robot/face-boxes.svelte`).
+While a picture shows and the tab is visible, the view polls `/face/seen` next to the
+camera about once a second and draws a box per face: the name in green,
+«Desconocido» in amber, «¿foto?» dimmed when liveness failed. Anything older than
+2 s is cleared. The headset draws the same boxes into the frame before its texture
+upload. A button on the picture hides them per browser. The bridge fills
+`/face/seen` only while a greet switch is on in «Caras» (`/faces`, admins only).
 
 ## The live map
 

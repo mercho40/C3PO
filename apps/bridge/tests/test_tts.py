@@ -214,3 +214,25 @@ def test_stop_play_is_scoped_by_app_name_not_stream_id(fake_voice):
     api_id, param = fake_voice.plain[-1]
     assert api_id == g1_protocol.API_ID_VOICE_STOP_PLAY
     assert json.loads(param) == {"app_name": "c3po"}
+
+
+async def test_a_stop_while_piper_synthesizes_plays_nothing(fake_voice, monkeypatch):
+    """The greeter checks for a PARAR, then Piper takes hundreds of ms: a stop in between
+    must cancel the speech too, not only chunks still to send once it has started."""
+    from bridge import mcp_server
+    from bridge.sdk import g1_rpc
+
+    def synthesize(text: str) -> bytes:
+        g1_rpc.stop_play()  # PARAR lands while Piper works
+        return b"\x00" * (g1_rpc.PLAY_CHUNK_BYTES * 2)
+
+    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(tts, "available", lambda: (True, ""))
+    monkeypatch.setattr(tts, "synthesize", synthesize)
+    result = await mcp_server.say("Hola Ana")
+    assert fake_voice.calls == []
+    assert result["rpc_data"] == "stopped"
+
+    monkeypatch.setattr(tts, "synthesize", lambda text: b"\x00" * 100)
+    await mcp_server.say("Hola Ana")  # the next utterance, after the stop, still plays
+    assert len(fake_voice.calls) == 1

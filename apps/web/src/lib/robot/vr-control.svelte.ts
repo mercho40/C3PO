@@ -17,6 +17,7 @@
 import { untrack } from "svelte";
 import { browser } from "$app/env";
 import {
+  PUBLIC_API_URL,
   PUBLIC_ROBOT_CAM_URL,
   PUBLIC_TELEOP_HOST,
   PUBLIC_TELEOP_PORT,
@@ -63,11 +64,13 @@ import {
   type TeleopStatus,
 } from "#lib/teleop/stream.js";
 import {
+  camCredentials,
   connectRobotCamera,
   type RobotCamHandle,
   type RobotCamState,
   type RobotCamStatus,
 } from "./mjpeg-camera";
+import { faceBoxesEnabled, faceSeenUrl, pollFaceSeen } from "./face-seen";
 import { describeRobotCam } from "./camera-copy";
 import { ScanFeed } from "./scan.svelte";
 import {
@@ -274,6 +277,7 @@ export class VrControl {
   camState = $state<RobotCamState>("closed");
   camDetail = $state("");
   camFrameUrl = $state<string | null>(null);
+  #stopFaces: (() => void) | null = null;
   camLive = $state(false);
   camStatus = $state.raw<RobotCamStatus | null>(null);
 
@@ -1311,6 +1315,8 @@ export class VrControl {
           this.xrCameraLive = false;
           this.xrCameraEverHadFrame = false;
           this.xrCameraBroken = false;
+          this.#stopFaces?.();
+          this.#stopFaces = null;
           this.#vr = null;
           // Ended by `destroy()`, which has already released everything and
           // decided the last stop itself. Going on would send a second one
@@ -1369,8 +1375,18 @@ export class VrControl {
     // The camera connection may already be running — hand over its current
     // URL and liveness so entering VR after the feed is up shows a picture
     // immediately rather than waiting for the next reconnect.
-    if (this.camFrameUrl) session.setCameraStream(this.camFrameUrl);
+    const withCookie = camCredentials(camBase, PUBLIC_API_URL) === "include";
+    if (this.camFrameUrl) session.setCameraStream(this.camFrameUrl, withCookie);
     session.setCameraLive(this.camLive);
+    // Face boxes composed into the headset picture, polled only for the
+    // session's life (it ends in onEnd), and only if this browser wants them.
+    if (camBase && faceBoxesEnabled()) {
+      this.#stopFaces = pollFaceSeen(
+        faceSeenUrl(camBase),
+        (seen, at) => this.#vr?.setCameraFaces(seen, at),
+        { credentials: camCredentials(camBase, PUBLIC_API_URL) },
+      );
+    }
     // And what to say if there is no picture yet: entering VR while the feed
     // is already down should open on the reason, not on a blank field that
     // waits for the next change to explain itself.
@@ -1610,27 +1626,32 @@ export class VrControl {
       this.camDetail = "PUBLIC_ROBOT_CAM_URL no está configurado.";
       return;
     }
-    this.#camHandle = connectRobotCamera(base, {
-      onState: (state, detail) => {
-        this.camState = state;
-        this.camDetail = detail ?? "";
+    const creds = camCredentials(base, PUBLIC_API_URL);
+    this.#camHandle = connectRobotCamera(
+      base,
+      {
+        onState: (state, detail) => {
+          this.camState = state;
+          this.camDetail = detail ?? "";
+        },
+        onStatus: (status) => {
+          this.camStatus = status;
+          this.camLive = status?.live ?? false;
+          // Stale is dimmed in the headset rather than hidden: losing the view
+          // mid-motion is worse than an obviously old one.
+          this.#vr?.setCameraLive(this.camLive);
+        },
+        onStreamUrl: (url) => {
+          this.camFrameUrl = url;
+          // Same URL to the headset. It changes on every reconnect (the source
+          // cache-busts it), and the XR layer must follow — reusing a dead MJPEG
+          // URL is a retry that does nothing, so a stall would otherwise freeze
+          // the headset view on its last frame for the rest of the session.
+          this.#vr?.setCameraStream(url, creds === "include");
+        },
       },
-      onStatus: (status) => {
-        this.camStatus = status;
-        this.camLive = status?.live ?? false;
-        // Stale is dimmed in the headset rather than hidden: losing the view
-        // mid-motion is worse than an obviously old one.
-        this.#vr?.setCameraLive(this.camLive);
-      },
-      onStreamUrl: (url) => {
-        this.camFrameUrl = url;
-        // Same URL to the headset. It changes on every reconnect (the source
-        // cache-busts it), and the XR layer must follow — reusing a dead MJPEG
-        // URL is a retry that does nothing, so a stall would otherwise freeze
-        // the headset view on its last frame for the rest of the session.
-        this.#vr?.setCameraStream(url);
-      },
-    });
+      creds,
+    );
   }
 
   // =========================================================================

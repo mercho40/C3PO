@@ -38,8 +38,10 @@ export type ListenResult = {
 
 export type VoiceInputEvent = {
   seq: number;
-  kind: "speech" | "stop";
+  kind: "speech" | "stop" | "audio";
   text: string;
+  /** `kind: "audio"`: the bridge kept the utterance's WAV under this id. */
+  audio_id?: string;
 };
 
 export type VoiceLoopDeps = {
@@ -52,6 +54,9 @@ export type VoiceLoopDeps = {
   runAgent: (utterance: string, signal?: AbortSignal) => Promise<void>;
   /** Production uses the bridge's SSE stream. Omit to retain the polling fallback. */
   events?: (signal: AbortSignal) => AsyncIterable<VoiceInputEvent>;
+  /** Speech -> text for `kind: "audio"` events (bridge `C3PO_STT=back`).
+   *  Must be bounded: a hang delays every later utterance, never the stop. */
+  transcribeAudio?: (audioId: string) => Promise<string>;
   /** Non-consuming microphone diagnostics used alongside the event stream. */
   inputStatus?: (
     signal: AbortSignal,
@@ -77,6 +82,11 @@ export type VoiceLoopOptions = {
    *  Setting it false only stops THIS loop from acting: the bridge acts on the
    *  phrase itself while a legacy subscriber is connected. */
   actOnStopPhrase?: boolean;
+  /** Robot-mic audio still waiting for its transcription to START this long
+   *  after it was heard is dropped: a command acted on late is a different
+   *  command. The transcription itself is bounded by transcribeAudio's own
+   *  timeout (scaled to the clip), so this bounds only the queue. */
+  staleAudioMs?: number;
 };
 
 export type VoiceLoopState = {
@@ -91,6 +101,7 @@ export type VoiceLoopState = {
 };
 
 const DEFAULT_POLL_MS = 1000;
+const DEFAULT_STALE_AUDIO_MS = 6000;
 
 export class VoiceLoop {
   private readonly deps: Required<
@@ -99,14 +110,18 @@ export class VoiceLoop {
     VoiceLoopDeps;
   private readonly pollMs: number;
   private readonly actOnStopPhrase: boolean;
+  private readonly staleAudioMs: number;
 
   private stopping = false;
+  /** Bumped by stop(): a transcription from before it must not run after a start(). */
+  private generation = 0;
   private task: Promise<void> | null = null;
   private eventAbort: AbortController | null = null;
   // Instance-wide and never reset: a turn aborted by stop() settles only after
   // its walk_to does (see runAgent), and a restarted loop chains behind it.
   private turnTail: Promise<void> = Promise.resolve();
   private turnAbort: AbortController | null = null;
+  private transcribeTail: Promise<void> = Promise.resolve();
   private pending: string[] = [];
   private stopWords = new Set<string>();
   private state: VoiceLoopState = {
@@ -124,6 +139,7 @@ export class VoiceLoop {
     this.deps = deps;
     this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
     this.actOnStopPhrase = options.actOnStopPhrase ?? true;
+    this.staleAudioMs = options.staleAudioMs ?? DEFAULT_STALE_AUDIO_MS;
   }
 
   snapshot(): VoiceLoopState {
@@ -142,6 +158,7 @@ export class VoiceLoop {
    *  On the event path it aborts the turn in flight and does not wait for it. */
   async stop(): Promise<void> {
     this.stopping = true;
+    this.generation += 1;
     this.pending = [];
     this.turnAbort?.abort(new Error("voice conversation ended"));
     this.eventAbort?.abort();
@@ -191,6 +208,7 @@ export class VoiceLoop {
         for await (const event of this.deps.events(signal)) {
           if (this.stopping) return;
           if (event.kind === "stop") await this.handleStop(event);
+          else if (event.kind === "audio") this.hearAudio(event);
           else this.hear(event.text, event.seq);
         }
         if (!this.stopping) throw new Error("voice event stream ended");
@@ -220,6 +238,49 @@ export class VoiceLoop {
       this.state.lastError = (e as Error).message;
       this.log("voice.stop_failed", { error: this.state.lastError });
     }
+  }
+
+  /** Transcribe off the event pump, in spoken order, then hear it as speech. */
+  private hearAudio(event: VoiceInputEvent): void {
+    const transcribe = this.deps.transcribeAudio;
+    const audioId = event.audio_id;
+    if (!transcribe || !audioId) {
+      this.log("voice.audio_unhandled", { seq: event.seq });
+      return;
+    }
+    const stopsBefore = this.state.stopsTriggered;
+    const generation = this.generation;
+    const heardAt = Date.now();
+    this.transcribeTail = this.transcribeTail.then(async () => {
+      if (generation !== this.generation) return;
+      if (Date.now() - heardAt > this.staleAudioMs) {
+        this.log("voice.dropped_stale", {
+          waitedMs: Date.now() - heardAt,
+          seq: event.seq,
+        });
+        return;
+      }
+      let text: string;
+      try {
+        text = await transcribe(audioId);
+      } catch (e) {
+        // Dropped, never run on nothing: the next utterance still works.
+        this.state.lastError = (e as Error).message;
+        this.log("voice.transcribe_failed", {
+          error: this.state.lastError,
+          seq: event.seq,
+        });
+        return;
+      }
+      // Heard by a loop that has since been stopped (and maybe restarted).
+      if (this.stopping || generation !== this.generation) return;
+      // Said before a stop that landed while it was being transcribed.
+      if (this.state.stopsTriggered !== stopsBefore) {
+        this.log("voice.dropped_after_stop", { text, seq: event.seq });
+        return;
+      }
+      this.hear(text, event.seq);
+    });
   }
 
   private hear(text: string, seq: number): void {

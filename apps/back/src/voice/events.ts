@@ -7,8 +7,10 @@ export type VoiceStatus = {
 
 export type VoiceEvent = {
   seq: number;
-  kind: "speech" | "stop";
+  kind: "speech" | "stop" | "audio";
   text: string;
+  /** `kind: "audio"` only (bridge `C3PO_STT=back`): fetch it with bridgeUtteranceAudio. */
+  audio_id?: string;
   age_s?: number;
 };
 
@@ -45,9 +47,12 @@ export async function* parseVoiceEvents(
           const event = JSON.parse(payload) as Partial<VoiceEvent>;
           if (
             typeof event.seq === "number" &&
-            (event.kind === "speech" || event.kind === "stop") &&
-            typeof event.text === "string" &&
-            event.text.trim()
+            (((event.kind === "speech" || event.kind === "stop") &&
+              typeof event.text === "string" &&
+              event.text.trim()) ||
+              (event.kind === "audio" &&
+                typeof event.audio_id === "string" &&
+                /^[0-9a-f]{1,64}$/.test(event.audio_id)))
           ) {
             yield event as VoiceEvent;
           }
@@ -88,4 +93,18 @@ export async function* bridgeVoiceEvents(
     throw new Error(`voice event stream unavailable (${response.status})`);
   }
   yield* parseVoiceEvents(response.body);
+}
+
+/** One finished utterance's WAV, kept briefly by the bridge for this fetch. */
+export async function bridgeUtteranceAudio(
+  audioId: string,
+  signal: AbortSignal,
+): Promise<ArrayBuffer> {
+  const response = await fetch(
+    bridgeSiblingUrl(`/telemetry/voice/utterance/${audioId}.wav`),
+    { cache: "no-store", signal },
+  );
+  if (!response.ok)
+    throw new Error(`utterance audio unavailable (${response.status})`);
+  return await response.arrayBuffer();
 }

@@ -81,7 +81,7 @@ The port map, in one place:
 | `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                                                                                                 |
 | `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback                                                                               |
 | Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`                                                                             |
-| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` on the bridge, relayed to browsers by `apps/back` on 3000                                                                           |
+| Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` and `/face/seen` on the bridge; `dev:robot` reads them on 8001, `apps/back` on 3000 can relay them                                  |
 | VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; `TELEOP_ORIGINS` check, plus a one-use token from `apps/back` when `TELEOP_SECRET` is set |
 | Internet proxy             | Mac, **loopback**       | 8899  | `scripts/robot_internet.py`; public :80/:443 only                                                                                               |
 | Internet proxy, robot end  | Jetson, **loopback**    | 18899 | the `ssh -R` of that proxy; alive only while the ssh session is                                                                                 |
@@ -106,6 +106,12 @@ c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the t
 `BRIDGE_URL=http://127.0.0.1:8001/mcp` — the default in `apps/back/.env.example` and in
 `bun run dev:robot`. Anything still dialling `g1-orin.local:8001` gets a refused connection;
 `apps/back` logs the tunnel line when that happens (`unreachableHint`).
+**Port 3000 taken on the Mac** (another local project): run back and web from their own
+folders with another port, since the root `bun run dev:robot` passes no such variables
+through turbo. `cd apps/back && PORT=3010 BETTER_AUTH_URL=http://localhost:3010 bun run dev:robot`,
+then `cd apps/web && PUBLIC_API_URL=http://localhost:3010 bun run dev:robot`. For the
+headset, `BACK_PORT=3010 bash scripts/quest_reverse.sh` (it reads `PORT` from
+`apps/back/.env` otherwise).
 `scripts/robot_session.sh [host]` does the whole Mac side in one command (tunnel, robot internet, `bun run dev:robot`, a status table, the robot-side `export`/`c3po up` lines); open the console at `http://localhost:3001`.
 The table's `agent` row makes one real model call (`apps/back/scripts/smoke-agent.ts`), so it
 can take up to 60 s and needs `AGENT_API_KEY` in `apps/back/.env`. A ✗ there means a wrong
@@ -428,90 +434,209 @@ same frame as the object.
 planner then falls back to the old rule. The vision image must be rebuilt once for it
 (`c3po perception build vision`).
 
-### The operator face gate
+### Faces: the gate, the greeter and «Caras»
 
-Off unless `C3PO_FACE_GATE` is set (17cf24a). Each gated skill then also needs the
-enrolled operator's face, live, in front of the head camera. It is one more gate on top of
-the login and «Confirmar», never instead of them. It runs after every other check (PARAR,
-battery, the person rule, the confirmation), for every caller: the console, the agent and
-Claude Code. Stops and releases (`stop_everything`, `soft_stop`, `damp`, `release_arm`,
-`release_arm_control`, `open_hands`, `cancel_task`, `cancel_navigation`,
-`disarm_navigation`) are never gated, whatever the list says.
+The bridge can know people by face. It uses that for two things, both off by default:
 
-Setup, once per robot and operator:
+- **The face gate** (17cf24a): a gated skill also needs an enrolled person's live face in
+  front of the head camera. It is one more gate on top of the login and «Confirmar», never
+  instead of them.
+- **The greeter** (516c879): the robot says hello by name when an enrolled person comes
+  into view, and, if you want, to a stranger.
+
+Everyone enrolled is a **superadmin** or an **operator**. Both roles pass the gate; the
+greeter says the name. Admins manage people and switches on the console's «Caras» page
+(`/faces`).
+
+**Where to stand.** The head camera points about 48° down, so a standing adult's face is
+out of view. To enroll or to be recognised, crouch so your face is about chest-high to the
+robot, 0.5–0.8 m away, facing the head. Farther than `C3PO_FACE_GATE_MAX_M` (1.2 m) a face
+does not count. Measured on 2026-11-11, one frame at a time: a real face read as live in 5
+of 8 frames at 0.5 m, 3 of 6 at 1.0 m and 0 of 8 at 1.5 m, where a face is about 60 px. The
+Quest covers the face: take it off. The «Agregar persona» card says «parada a 0,5–1 m»;
+crouch anyway.
+
+Setup, once per robot:
 
 1. Rebuild the vision image from this branch and bring perception up
-   (`c3po perception build vision`, then `c3po up`). The gate reads the vision container's
-   camera and its `/depth_points` (3ec5e99), so the vision container must hold the camera.
-   If videohub holds it, or the image is older than `/depth_points`, every gated call
-   refuses with `operator_face_check_unavailable`.
+   (`c3po perception build vision`, then `c3po up`). The face check reads the vision
+   container's camera and its `/depth_points` (3ec5e99), so the vision container must hold
+   the camera. If videohub holds it, or the image is older than `/depth_points`, every gated
+   call refuses with `operator_face_check_unavailable`, and nobody can enroll.
 2. On the robot, with the proxy exported as for the builds:
    `bash ~/c3po/apps/bridge/scripts/install_face_models.sh`. It fetches YuNet and SFace from
    opencv_zoo, pinned by commit and sha256, into `~/.c3po/face/models`, and ends with
-   `OK — models in …`. Re-running only fetches what is missing or wrong.
-3. Enroll, on the robot, with the operator alone in front of the head camera, within
-   1.5 m: `cd ~/c3po/apps/bridge && .venv/bin/python scripts/face_enroll.py`. The operator
-   reads the consent text and answers `s`. It needs 5 frames with exactly one live face,
-   all of the same person, and ends with `enrolled: …/operator.npy`. Re-running replaces
-   the operator; `--delete` forgets them. An interrupted run leaves
-   `~/.c3po/face/.operator.npy.tmp`, and saving refuses until `--delete` removes it.
-4. In `apps/bridge/.env`: `C3PO_FACE_GATE=confirm`. Restart the bridge (`c3po restart`).
-   `c3po logs` shows `face_gate.on` with the gated tools and `max_m`.
+   `OK — models in …`. Re-running only fetches what is missing or wrong. Restart the bridge
+   once after it (`c3po restart`): the models load before the bridge serves, so a first
+   check never stalls a stop (16bd283).
+3. Enroll each person, alone and crouched in front of the head camera. Either:
+   - In the console, «Caras» → «Agregar persona»: name and role, then «Confirmar». The
+     robot looks for 5–10 s (20 s at most). Ask the person's consent first.
+   - Or on the robot: `cd ~/c3po/apps/bridge && .venv/bin/python scripts/face_enroll.py --name Ana --role operator`.
+     The person reads the consent text (English and Spanish) and answers `s`. It ends with
+     `enrolled: Ana (operator) at ~/.c3po/face/people/<id>`.
 
-`confirm` is a class: every tool that needs «Confirmar» (T2, and high-danger T1). Use it
-rather than a list of names: with only `pick` gated, `move_arm` and `set_hand` could do
-the same work without a face. Tool names can be added after it, comma-separated. A name
-that is no tool does not stop the bridge: it is dropped, the gate widens to `confirm`, and
-`c3po logs` shows the error `face_gate.unknown_names` with that entry (371dd0b).
+   Both need 5 frames with exactly one live face, all the same person. A name that exists
+   (any case) is refused. To re-enroll it: `--replace`, or in the console the card
+   «Ya existe <nombre>: ¿reemplazar?». `face_enroll.py --list` lists everyone,
+   `--delete NAME` forgets one person, `--delete-all` everyone.
 
-Settings, in `apps/bridge/.env`, read when the bridge starts:
+4. Turn on what you want in «Caras» (below). It applies at once, with no restart.
 
-| Key                    | Default        | Meaning                                 |
-| ---------------------- | -------------- | --------------------------------------- |
-| `C3PO_FACE_GATE`       | empty (off)    | `confirm` and/or tool names, comma list |
-| `C3PO_FACE_GATE_MAX_M` | `1.5`          | a face farther than this does not count |
-| `C3PO_FACE_DIR`        | `~/.c3po/face` | models and the enrollment (owner-only)  |
+**An old single-operator enrollment** (`~/.c3po/face/operator.npy`, `operator.json`) moves
+into `people/` as a superadmin the first time the bridge reads it, and `c3po logs` shows
+`face_gate.migrated`. If it cannot move, the log says `face_gate.migration_failed` and the
+old operator still passes, listed with the id `operator`, which «Borrar» can remove.
 
-**What counts as a live face.** YuNet finds it and SFace matches it against the enrolled
-vectors (cosine 0.363). Then the bridge asks the vision container for the depth at YuNet's
-five landmarks (eyes, nose, mouth corners) in the same frame (`/depth_points`) and turns
-them into 3-D points. The nose must stand at least 1.5 cm in front of the plane through the
-eyes and mouth corners (`MIN_NOSE_M`), whatever the tilt of that plane, so a print or a
-screen fails flat or tilted (cc17f68). The face must also be 0.11–0.20 m wide at its
-distance, within `C3PO_FACE_GATE_MAX_M`. It is not anti-spoofing: a mask, or a print bent
-sharply around the nose, still passes. The 1.5 cm is not yet measured on the robot's D435.
-The check gives up after 1.5 s and refuses on any failure, or at once while another check
-is still running. It runs on its own thread, off the event loop, so a PARAR is never held
-up by it.
+**The switches.** The three «Caras» switches are saved on the robot in
+`~/.c3po/face/settings.json`, and they win over `apps/bridge/.env`:
+
+| «Caras» switch                        | Key             | Without settings.json               |
+| ------------------------------------- | --------------- | ----------------------------------- |
+| «Saludar a conocidos»                 | `greet`         | on if `C3PO_FACE_GREET=1`           |
+| «Saludar a desconocidos»              | `greet_unknown` | off                                 |
+| «Pedir cara para acciones peligrosas» | `gate`          | on if `C3PO_FACE_GATE` is not empty |
+
+Gate on with `C3PO_FACE_GATE` empty gates the `confirm` class (below); with it set, its
+list. Gate off gates nothing, whatever `C3PO_FACE_GATE` says, and the bridge's boot log
+says `face_gate.env_overridden`. **So once the console has written the file, editing
+`C3PO_FACE_GATE` and restarting does not turn the gate on or off: use the switch.** A
+settings.json the bridge cannot trust (wrong mode or owner, a symlink, not JSON) reads as
+gate on, with the error `face_gate.settings_untrusted`. Flipping any switch rewrites it.
+
+Settings in `apps/bridge/.env`, read when the bridge starts:
+
+| Key                                  | Default                                 | Meaning                                                        |
+| ------------------------------------ | --------------------------------------- | -------------------------------------------------------------- |
+| `C3PO_FACE_GATE`                     | empty (off)                             | `confirm` and/or tool names, comma list; the switch wins       |
+| `C3PO_FACE_GATE_MAX_M`               | `1.2`                                   | a face farther than this does not count (gate and greeter)     |
+| `C3PO_FACE_DIR`                      | `~/.c3po/face`                          | models, people, settings.json (owner-only)                     |
+| `C3PO_FACE_GREET`                    | empty (off)                             | `1` = «Saludar a conocidos» on until the switch says otherwise |
+| `C3PO_FACE_GREETING`                 | `Hola {name}, ¿qué querés que haga?`    | `{name}` is the enrolled name                                  |
+| `C3PO_FACE_GREET_COOLDOWN_S`         | `300`                                   | seconds before the same person is greeted again                |
+| `C3PO_FACE_GREETING_UNKNOWN`         | `Hola, no te conozco. ¿Cómo te llamás?` | said to a live stranger                                        |
+| `C3PO_FACE_GREET_UNKNOWN_COOLDOWN_S` | `120`                                   | seconds between two stranger greetings                         |
+
+**The face gate.** It runs after every other check (PARAR, battery, the person rule, the
+confirmation), for every caller: the console, the agent and Claude Code. Stops and releases
+(`stop_everything`, `soft_stop`, `damp`, `release_arm`, `release_arm_control`,
+`open_hands`, `cancel_task`, `cancel_navigation`, `disarm_navigation`) are never gated,
+whatever the list says. `confirm` is a class: every tool that needs «Confirmar» (T2, and
+high-danger T1). Use it rather than a list of names: with only `pick` gated, `move_arm`
+and `set_hand` could do the same work without a face. Tool names can be added after it,
+comma-separated. A name that is no tool does not stop the bridge: it is dropped, the gate
+widens to `confirm`, and `c3po logs` shows the error `face_gate.unknown_names` (371dd0b).
+When the gate is on, the boot log shows `face_gate.on` with the gated tools and `max_m`.
+
+**What counts as a live face.** YuNet finds the face and SFace matches it against every
+enrolled person (cosine 0.363; the best match wins). A check takes up to 5 frames within
+1 s. The same person must be the best match in most of the frames with a face. The bridge
+reads the depth at YuNet's five landmarks (eyes, nose, mouth corners) from `/depth_points`
+for each frame (5 px patches) and takes each landmark's median over at least 3 frames
+(c3fba90). The nose must stand at least 1.5 cm in front of the plane through the eyes and
+mouth corners (`MIN_NOSE_M`), whatever the tilt of that plane, so a print or a screen fails
+flat or tilted (cc17f68). The face must also be 0.11–0.20 m wide at its distance, within
+`C3PO_FACE_GATE_MAX_M`. It is not anti-spoofing: a mask, or a print bent sharply around the
+nose, still passes. The check gives up after 1.5 s and refuses on any failure. It runs on
+its own thread, off the event loop, so a PARAR is never held up by it. A gated call waits
+out a greeter check that is running; another gated check refuses it at once.
 
 **The headset cannot pass it.** It covers the face. To run a gated skill, the operator
-stands at the robot without the headset, faces the head camera and retries.
+takes the headset off, crouches in front of the head camera and retries.
 
 **What the operator sees when it refuses.** Nothing moves. In chat the console shows an
 amber «Rechazado» card with one of these hints; a skill invoked from the console shows the
 hint as its result:
 
-| Bridge reason                     | Console says                                                                                                                      | Do                                                                                                              |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `operator_face_not_seen`          | «No veo al operador: parate junto al robot, sin el visor, de frente y cerca de la cámara de la cabeza, y reintentá»               | Stand at the robot without the headset, face the head camera and retry once. Only the enrolled operator counts. |
-| `operator_face_not_live`          | «Reconocí al operador, pero no en persona (¿foto, pantalla o muy lejos?): parate junto al robot, cerca de la cámara de la cabeza» | The face was matched but was too far, had no depth, or looked flat or the wrong size. Stand closer, in person.  |
-| `operator_face_not_enrolled`      | «No hay operador registrado: corré face_enroll.py en el robot»                                                                    | Enroll (step 3). An enrollment file others can read or write is ignored, too.                                   |
-| `operator_face_check_unavailable` | «No se pudo verificar la cara del operador (¿contenedor de visión o modelos?)»                                                    | Check the vision container is up and holds the camera, and the models are installed. Do not retry in a loop.    |
+| Bridge reason                     | Console says                                                                                                                      | Do                                                                                                            |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `operator_face_not_seen`          | «No veo al operador: parate junto al robot, sin el visor, de frente y cerca de la cámara de la cabeza, y reintentá»               | Headset off, crouch in front of the head camera, retry once. Only an enrolled person counts.                  |
+| `operator_face_not_live`          | «Reconocí al operador, pero no en persona (¿foto, pantalla o muy lejos?): parate junto al robot, cerca de la cámara de la cabeza» | The face was matched but was too far, had no depth, or looked flat or the wrong size. Come closer, 0.5–0.8 m. |
+| `operator_face_not_enrolled`      | «No hay operador registrado: corré face_enroll.py en el robot»                                                                    | Enroll someone (step 3). A person whose files others can read or write is ignored, too.                       |
+| `operator_face_check_unavailable` | «No se pudo verificar la cara del operador (¿contenedor de visión o modelos?)»                                                    | Check the vision container is up and holds the camera, and the models are installed. Do not retry in a loop.  |
 
 A refusal carries only the reason code and a fixed hint. The measurements (distance,
 width, nose margin) go only to the bridge log: `c3po logs | grep face_gate` gives them and
-how long each check took (`ms`). The console names the head camera, not a distance
-(a80cc7e). A face refusal does not spend the «Confirmar»: retry within its 30 s and no new
-confirmation is needed. After 30 s, confirm again.
+how long each check took (`ms`). A face refusal does not spend the «Confirmar»: retry
+within its 30 s and no new confirmation is needed. After 30 s, confirm again.
 
-**Privacy.** Only SFace feature vectors are stored, in `~/.c3po/face/operator.npy` on the
-robot (file 0600, directory 0700). No image is kept, nothing leaves the robot, and neither
-faces nor feature vectors are logged. The bridge ignores an enrollment that is a symlink,
-belongs to another user, can be read or written by others, or holds a NaN or zero row.
-`face_enroll.py --delete` removes the operator.
+**The greeter.** While a greet switch is on (and not in `SIM_MODE=stub`), the bridge runs
+the same live check about once a second. An enrolled person is greeted with
+`C3PO_FACE_GREETING` when they come into view, at most once per
+`C3PO_FACE_GREET_COOLDOWN_S` each, and they must leave the view in between. With
+«Saludar a desconocidos» on, a live face that matches nobody hears
+`C3PO_FACE_GREETING_UNKNOWN` once per visit (a visit ends when no face is in view), and
+at most once every `C3PO_FACE_GREET_UNKNOWN_COOLDOWN_S`. Of strangers only a count and a
+time are kept: the counter on «Caras». The greeter speaks through `say`, so PARAR cuts it,
+also during Piper's synthesis. It never speaks while a PARAR stands or the robot is already
+speaking, and it never moves. `/safety/status` has `face_greet` (`on`, the settings, the
+last greeting's age, the stranger count) and names nobody.
 
-**To turn it off**, at the stand or anywhere: `C3PO_FACE_GATE=` (empty), then
-`c3po restart`.
+**Face boxes over the camera** (aa05697). `/live-camera`, the `/vr-control` mirror and the
+Quest's XR view draw a box on each face: the name in green, «Desconocido» in amber, and
+«¿foto?» dimmed when a face failed liveness. A box older than 2 s is cleared. The boxes
+come from the greeter's checks, so **they update only while a greet switch is on**. The
+button on the picture («Ocultar caras» / «Mostrar caras») hides them in that browser. With
+the camera through `apps/back`, back relays `/face/seen` to signed-in users; straight from
+the bridge, the console reads it from 8001.
+
+**Privacy.** Each person is a folder `~/.c3po/face/people/<id>/` on the robot:
+`features.npy` (SFace vectors), `person.json` (id, name, role, enrolled_at) and `photo.jpg`,
+one 160 px crop of the face that consented to enrollment. Files are 0600, folders 0700.
+Nothing about a face nobody enrolled is stored, apart from the stranger count. Nothing
+leaves the robot but an enrolled person's own photo, to the signed-in console: «Ver cara»
+is for admins only, asks «Confirmar», is never cached, and is audited without the photo.
+Neither faces nor feature vectors are logged. The bridge ignores a person whose files are a
+symlink, belong to another user, can be read or written by others, or hold a NaN or zero
+row. «Borrar» or `face_enroll.py --delete NAME` removes that person's folder, photo
+included; `--delete-all` removes everyone.
+
+**To turn it off** at the stand: «Caras» → «Pedir cara para acciones peligrosas» off, then
+«Confirmar». Without the console, on the robot: `rm ~/.c3po/face/settings.json`, set
+`C3PO_FACE_GATE=` (empty) in `apps/bridge/.env`, then `c3po restart`. Removing the file
+also puts the greet switches back to their `.env` defaults.
+
+### Robot-mic voice through apps/back (`C3PO_STT=back`)
+
+By default the robot transcribes its own microphone with Whisper. With `C3PO_STT=back` in
+the robot's `apps/bridge/.env` (then `c3po restart`), the bridge still cuts the audio into
+utterances with Vosk and still acts on the spoken stop phrase itself, but it hands each
+utterance's WAV to `apps/back` (b350499). Back transcribes it with ia-tic's
+`tic-transcript` (`AGENT_TRANSCRIBE_MODEL`, same `AGENT_BASE_URL` and key) and runs it
+like any heard sentence (f7c7cd1). It needs the legacy voice loop: on /voice, start the
+legacy engine. The agent's `listen` tool hears nothing in this mode.
+
+What is sent and when (120677a, 3a22fd0):
+
+- Only an utterance with words is sent. Silence is never published.
+- The segment that holds a stop phrase is never sent: the stop runs on the robot, at once.
+- Audio still waiting 6 s after it was heard is dropped (`voice.dropped_stale` in back's
+  log), and a transcription from before a voice restart is dropped too. Sentences run in
+  the order they were said.
+- A transcription may take 4 s plus 0.25 s per second of audio, 12 s at most. A failure is
+  logged as `voice.transcribe_failed` and runs nothing.
+- A page that closes the voice event stream no longer disarms the stop phrase for the
+  voice loop.
+
+If ia-tic is down, this mode hears nothing: switch the bridge back to `C3PO_STT=` and
+restart, or use the fallback below for the agent.
+
+### When ia-tic is down
+
+Seen on 2026-11-11: every model answered `502 upstream_unreachable` while `GET /models`
+answered 200, so the agent, `look` and `tic-transcript` all failed. The fallback that
+worked was Gemini through its OpenAI-compatible endpoint. Start `apps/back` with these in
+its process environment only, never in a committed file. Run it from `apps/back`: the root
+`bun run dev:robot` goes through turbo, which passes on only `C3PO_ROBOT_HOST`.
+
+```bash
+cd apps/back
+AGENT_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai \
+AGENT_API_KEY=<a Gemini key> AGENT_MODEL=gemini-3.5-flash bun run dev:robot
+```
+
+`gemini-2.5-flash` is not available to new keys. A free key hits 429 quickly, so keep the
+turns short. Restart back without them when ia-tic is back.
 
 ---
 
@@ -931,6 +1056,26 @@ The bridge keeps its `/camera/*` CORS grant for direct debugging. **Unverified
 with the headset on**, like the rest of this section; the first check is that
 `/vr-control` shows a picture with no forward on 8001.
 
+🔧 **Since 2026-11-11 `dev:robot` reads the camera straight from the bridge again**
+(aa05697). `apps/web`'s `dev:robot` sets
+`PUBLIC_ROBOT_CAM_URL=http://localhost:8001/camera` unless the shell already sets it, and
+that wins over `apps/web/.env`. What keeps 8001 safe for a page:
+
+- The bridge grants the console origin (`BRIDGE_CORS_ORIGINS`) on `/camera/status`,
+  `/camera/frame.jpg`, `/camera/stream.mjpg` and `/face/seen` only, route by route, never
+  with credentials. The site-wide CORS middleware is gone, so `/mcp`, the voice events, the
+  utterance WAVs, the raw mic and `/face/people` are not readable by a page (ea7df76). A
+  test sends a preflight and a GET to every route and fails on any other route that grants
+  the origin.
+- The console sends its cookie only when the camera is on back's origin; the bridge gets
+  anonymous requests (`camCredentials`).
+
+For the headset, 8001 must be forwarded too. `bash scripts/quest_reverse.sh` forwards 3001,
+back's `PORT`, 8001 and 8767 in one step and prints the URLs to open (bec7441).
+`quest_setup.sh` does the same with its port checks, and now takes the camera port from
+the same expression `dev:robot` uses (2da711d). To go back to the relay, start web with
+`PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`.
+
 ### Deploying this branch to the robot, then closing it out 🔧
 
 Nothing in the headset can be judged until the robot runs the branch under test.
@@ -1004,16 +1149,13 @@ the bridge unit — `c3po up teleop` starts it per session because it exists to
 serve a person who is currently wearing a headset. The same profile starts
 `apps/perception`'s vision container on port 8081, which owns the D435i.
 
-The camera comes from the **bridge's own relay on 8001**, which `apps/back`
-proxies behind auth — `PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`. The
-browser never talks to 8001, which also serves the unauthenticated `/mcp`. The
-vision container serves the same paths on 8081 and is the process that actually
-owns the D435i; the bridge relays it when the vendor feed is dark. Pointing the
-variable straight at `:8081` or `:8001` (over a tunnel — both bind loopback) is a
-debugging setup only, and `quest_setup.sh` warns when it does: the console now
-sends its session cookie on the status poll and in the headset layer, and neither
-server grants credentials cross-origin, so those requests are refused by the
-browser. `curl` the hop instead.
+The camera comes from the **bridge's own relay on 8001**. With `bun run dev:robot` the
+browser reads it there, over the tunnel and `adb reverse` (`PUBLIC_ROBOT_CAM_URL=http://localhost:8001/camera`,
+"Putting a Quest on the console" above). With `PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`,
+`apps/back` relays it behind auth instead. The vision container serves the same paths on
+8081 and is the process that actually owns the D435i; the bridge relays it when the vendor
+feed is dark. Pointing the variable at `:8081` is a debugging setup only: `curl` that hop
+instead.
 
 | Process                | Start            | Port | What it is                                                      |
 | ---------------------- | ---------------- | ---- | --------------------------------------------------------------- |
@@ -1032,7 +1174,7 @@ stream** directly; the bridge stays behind the 8001 tunnel (§2) and the camera 
 
 ```bash
 BRIDGE_URL=http://127.0.0.1:8001/mcp                # apps/back/.env, over the tunnel
-PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera   # apps/web/.env, via apps/back
+PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera   # apps/web/.env, via apps/back (dev:robot uses :8001)
 PUBLIC_TELEOP_HOST=g1-orin.local                    # apps/web/.env, direct on the LAN
 ```
 
@@ -1242,10 +1384,17 @@ Added on 2026-11-10:
 
 Added on 2026-11-11:
 
-- `C3PO_FACE_GATE`, `C3PO_FACE_GATE_MAX_M` and `C3PO_FACE_DIR` in `apps/bridge/.env`: the
-  operator face gate, off while `C3PO_FACE_GATE` is empty (§4, "The operator face gate").
-  The face enrollment is personal data: it stays on the robot, owner-only, and
-  `face_enroll.py --delete` removes it.
+- `C3PO_FACE_GATE`, `C3PO_FACE_GATE_MAX_M`, `C3PO_FACE_DIR` and the `C3PO_FACE_GREET*`
+  keys in `apps/bridge/.env`: the face gate and the greeter (§4, "Faces: the gate, the
+  greeter and «Caras»). Once the console has saved `~/.c3po/face/settings.json`, its
+  switches win over `C3PO_FACE_GATE` and `C3PO_FACE_GREET`. Each enrollment (vectors and
+  one small photo) is personal data: it stays on the robot, owner-only, and «Borrar» or
+  `face_enroll.py --delete NAME` removes it.
+- `C3PO_STT=back` in `apps/bridge/.env`: the robot mic's utterances go to `apps/back` for
+  `tic-transcript` (§4, "Robot-mic voice through apps/back").
+- `C3PO_VISION_STREAM_HZ` in `~/.c3po/perception.env`: the vision container's MJPEG rate,
+  default 10 (2d23256; it was 5 and read only from the shell). Measured on 2026-11-11:
+  10 fps, against 4 fps before. It takes effect after `c3po perception stop` and `c3po up`.
 - `C3PO_VISION_SUPPORT=0` in `~/.c3po/perception.env` stops the vision container
   reporting the table under each object (§4, "When a pick or place refuses"). On by
   default; needs the vision image rebuild.
@@ -1342,6 +1491,14 @@ Plain facts, not a roadmap. Each stays here until fixed.
   bridge's vendor odometry instead (86dc075), in a frame named `vendor_odom@<bridge start>`:
   after a bridge restart the older entries are still listed, but with no distance or
   bearing from here.
+- **The USB-Ethernet adapter and the RealSense dropped together, twice** (2026-11-11). The
+  cable link and the D435 went at the same moment. Route the cable so a walk cannot pull
+  it, and keep the adapter off the hub. Since
+  2334c95 the detector reopens the D435 by itself (`camera.lost`, `camera.reset`,
+  `camera.reopened` in `docker logs c3po-perception-vision`) and exits only after 60 s or 5
+  failed reopens; that needs the vision image rebuild and has not yet run on the robot.
+- **ia-tic can be down while it looks up:** `502 upstream_unreachable` on every model, with
+  `/models` answering 200 (2026-11-11). §4, "When ia-tic is down", has the fallback.
 - **The planned `back` target host is unreachable.** `perrobot` (10.40.5.4) does not
   answer ping from the dev machine — a different VLAN, the same constraint that blocks
   sim→Mac DDS (§1). Deploying `back` needs that resolved or a different host.
