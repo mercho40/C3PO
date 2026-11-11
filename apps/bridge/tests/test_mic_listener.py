@@ -783,3 +783,64 @@ async def test_the_voice_route_and_listen_look_up_audio_devices_off_the_event_lo
     assert response.status_code == 200
     await mcp_server.listen(wait_s=0)
     assert len(threads) == 2 and loop_thread not in threads
+
+
+# --- C3PO_STT=back: the audio goes to apps/back, the stop stays here ---------
+
+
+def test_back_mode_publishes_the_utterance_audio_and_never_calls_whisper():
+    import io
+    import wave
+
+    lis, _, _, whis = make([b"aaaa", b"bbbb", b"."], stt_mode="back")
+    lis.start()
+    items = drain(lis)
+    assert [i["kind"] for i in items] == ["audio"]
+    assert items[0]["text"] == "", "the segmenter's text must not reach the agent"
+    assert whis.calls == []
+    with wave.open(io.BytesIO(lis.utterance_wav(items[0]["audio_id"]))) as wav:
+        assert (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) == (16000, 1, 2)
+        assert wav.readframes(10) == b"aaaabbbb."
+
+
+def test_the_stop_phrase_still_fires_on_the_robot_in_back_mode():
+    heard: list[str] = []
+    lis, *_ = make([b"aa", b"\xff", b"."], stt_mode="back")
+    lis.start(on_stop=heard.append)
+    items = drain(lis)
+    assert heard == ["emergencia"]
+    assert [i["kind"] for i in items] == ["stop", "audio"]
+
+
+def test_the_utterance_ring_is_bounded_and_ids_expire(monkeypatch):
+    import bridge.skills.listen as mod
+
+    frames = [b"a", b"."] * (mod.UTTERANCE_AUDIO_KEEP + 2)
+    lis, *_ = make(frames, stt_mode="back")
+    lis.start()
+    ids = [i["audio_id"] for i in drain(lis)]
+    assert len(ids) == mod.UTTERANCE_AUDIO_KEEP + 2
+    assert lis.utterance_wav(ids[0]) is None, "the oldest was not evicted"
+    assert lis.utterance_wav(ids[-1]) is not None
+    assert lis.utterance_wav("nonexistent") is None
+    monkeypatch.setattr(mod, "UTTERANCE_AUDIO_TTL_S", 0.0)
+    assert lis.utterance_wav(ids[-1]) is None, "an expired utterance was still served"
+
+
+async def test_the_utterance_route_serves_the_wav_then_404s(monkeypatch):
+    from bridge import mcp_server
+    from bridge.skills import listen as listen_mod
+
+    lis, *_ = make([b"aa", b"."], stt_mode="back")
+    lis.start()
+    [item] = drain(lis)
+    monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
+
+    class Req:
+        path_params = {"audio_id": item["audio_id"]}
+
+    ok = await mcp_server.voice_utterance_audio(Req())
+    assert ok.status_code == 200 and ok.media_type == "audio/wav"
+    assert ok.body.startswith(b"RIFF")
+    Req.path_params = {"audio_id": "gone"}
+    assert (await mcp_server.voice_utterance_audio(Req())).status_code == 404

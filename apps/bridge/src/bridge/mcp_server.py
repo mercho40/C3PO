@@ -4415,6 +4415,23 @@ async def voice_audio_input(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
+@mcp.custom_route("/telemetry/voice/utterance/{audio_id}.wav", methods=["GET"])
+async def voice_utterance_audio(request):  # noqa: ANN001, ANN201 - starlette types
+    """One finished utterance's WAV, announced by a `kind: "audio"` voice event.
+
+    Only with `C3PO_STT=back`: apps/back fetches it and transcribes it with
+    ia-tic. Kept in a small ring for a few seconds, then 404.
+    """
+    from starlette.responses import JSONResponse, Response
+
+    from bridge.skills.listen import get_mic_listener
+
+    wav = get_mic_listener().utterance_wav(request.path_params["audio_id"])
+    if wav is None:
+        return JSONResponse({"error": "utterance_gone"}, status_code=404)
+    return Response(wav, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
 @mcp.custom_route("/telemetry/voice/audio/output", methods=["POST", "DELETE"])
 async def voice_audio_output(request):  # noqa: ANN001, ANN201 - starlette types
     """Play one 16 kHz PCM chunk, or stop C3PO-owned playback on DELETE."""

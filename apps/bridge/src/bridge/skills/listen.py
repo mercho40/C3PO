@@ -35,14 +35,17 @@ recogniser is verifiable today and the mic is a swap when it unblocks.
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import secrets
 import queue
 import socket
 import threading
 import time
 import struct
-from collections import deque
+import wave
+from collections import OrderedDict, deque
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -325,6 +328,15 @@ VISION_TIMEOUT_S = float(os.environ.get("C3PO_VISION_STT_TIMEOUT_S", "30"))
 # Runs on its own timer thread, which stops as soon as it has upgraded — see
 # `MicListener._watch_backend`.
 REMOTE_RECHECK_S = float(os.environ.get("C3PO_STT_RECHECK_S", "30"))
+
+# `C3PO_STT=back` hands each finished utterance's audio to apps/back, which
+# transcribes it with ia-tic (the robot has no internet, the operator's Mac
+# does). Vosk still segments and the stop detector still runs here, unchanged.
+# Anything else keeps the on-robot Whisper path.
+STT_MODE = os.environ.get("C3PO_STT", "local")
+# A few utterances for a few seconds: back fetches each one as its event lands.
+UTTERANCE_AUDIO_KEEP = 4
+UTTERANCE_AUDIO_TTL_S = 15.0
 
 
 class RemoteWhisper:
@@ -780,6 +792,7 @@ class MicListener:
         source: Callable[[], Iterator[bytes]] | None = None,
         build: Callable[[], tuple[Any, Any, Any]] | None = None,
         playback_active: Callable[[], bool] | None = None,
+        stt_mode: str | None = None,
     ) -> None:
         """`source` and `build` exist so this is testable off the robot.
 
@@ -791,6 +804,8 @@ class MicListener:
         that run everywhere, and only the models themselves need the robot.
         """
         self._whisper = whisper
+        self._stt_back = (STT_MODE if stt_mode is None else stt_mode) == "back"
+        self._utterance_audio: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
         #: The live transcriber. Swapped by `_watch_backend` when the GPU server
         #: appears, so the audio loop must read it rather than close over it.
         self._whisperer: Any | None = None
@@ -874,7 +889,9 @@ class MicListener:
             else:
                 detector = StopPhraseDetector(phrases=self._phrases)
                 transcriber = Transcriber()
-                whisperer = build_whisperer() if self._whisper else None
+                whisperer = (
+                    build_whisperer() if self._whisper and not self._stt_back else None
+                )
         except ListenUnavailable as exc:
             # Recorded rather than raised: this is a daemon thread, and an
             # exception here would vanish into stderr while `poll()` kept
@@ -893,6 +910,9 @@ class MicListener:
         #
         # A timer thread owns it instead. The loop reads `self._whisperer` each
         # time rather than closing over a local, so the swap actually reaches it.
+        if self._stt_back:
+            whisperer = None
+            log.info("listen.whisper_backend", backend="apps-back")
         self._whisperer = whisperer
         if whisperer is not None:
             threading.Thread(
@@ -946,10 +966,15 @@ class MicListener:
             self._publish_audio(frame)
 
             current = self._whisperer
-            if current is not None:
+            if current is not None or self._stt_back:
                 utterance.extend(frame)
 
             text = transcriber.feed(frame)
+            if self._stt_back:
+                if text or len(utterance) > MAX_UTTERANCE_BYTES:
+                    self._publish_utterance(bytes(utterance))
+                    utterance.clear()
+                continue
             if text:
                 if current is not None:
                     if len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S:
@@ -979,7 +1004,35 @@ class MicListener:
                 self._whisperer = upgraded
                 return
 
-    def _record(self, text: str, kind: str) -> None:
+    def _publish_utterance(self, pcm: bytes) -> None:
+        """Keep the audio for apps/back to fetch, and announce it as an event."""
+        if not pcm:
+            return
+        audio_id = secrets.token_hex(8)
+        with self._lock:
+            self._utterance_audio[audio_id] = (time.monotonic(), pcm)
+            while len(self._utterance_audio) > UTTERANCE_AUDIO_KEEP:
+                self._utterance_audio.popitem(last=False)
+        self._record("", kind="audio", audio_id=audio_id)
+
+    def utterance_wav(self, audio_id: str) -> bytes | None:
+        """One kept utterance as a 16 kHz mono 16-bit WAV, or None once gone."""
+        with self._lock:
+            cutoff = time.monotonic() - UTTERANCE_AUDIO_TTL_S
+            for key in [k for k, (at, _) in self._utterance_audio.items() if at < cutoff]:
+                del self._utterance_audio[key]
+            kept = self._utterance_audio.get(audio_id)
+        if kept is None:
+            return None
+        out = io.BytesIO()
+        with wave.open(out, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(MIC_SAMPLE_RATE)
+            wav.writeframes(kept[1])
+        return out.getvalue()
+
+    def _record(self, text: str, kind: str, **extra: str) -> None:
         with self._changed:
             self._sequence += 1
             item = {
@@ -987,8 +1040,9 @@ class MicListener:
                 "kind": kind,
                 "at": time.monotonic(),
                 "_seq": self._sequence,
+                **extra,
             }
-            if kind == "speech":
+            if kind in ("speech", "audio"):
                 self._utterances += 1
             self._pending.append(item)
             self._history.append(item)
