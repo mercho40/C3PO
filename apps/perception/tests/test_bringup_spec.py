@@ -126,10 +126,14 @@ def test_the_vision_container_gets_both_device_classes():
 def test_usb_is_bound_as_a_directory_not_a_node():
     """libusb node numbers are renumbered on every enumeration.
 
-    A `--device /dev/bus/usb/003/004` breaks on the first replug.
+    A `--device /dev/bus/usb/003/004` breaks on the first replug. Same for
+    `--device /dev/video6`: after a USB drop the D435 comes back as /dev/video0-5,
+    and only the live /dev bind (plus the 81:* cgroup rule) lets the detector
+    reopen it without the container being recreated.
     """
     volumes = by_name(build("nav2"))[VISION].volumes
     assert "/dev/bus/usb:/dev/bus/usb" in volumes
+    assert "/dev:/dev" in volumes
 
 
 @pytest.mark.parametrize("stage", sorted(STAGES))
