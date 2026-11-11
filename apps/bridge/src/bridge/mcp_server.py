@@ -404,6 +404,16 @@ async def go_to_object(
             description="Stop this far from the object, metres: from the robot's front to the object's near side.",
         ),
     ] = 0.7,
+    choose: Annotated[
+        Literal["nearest", "farthest", "left", "right", "center", "confidence"],
+        Field(
+            description=(
+                "Which one when several match: «la más cercana» nearest, «la más lejana» "
+                "farthest, «la de la izquierda» left, «la de la derecha» right, «la de "
+                "enfrente» center (most straight ahead); confidence = the detector's surest."
+            ),
+        ),
+    ] = "nearest",
 ) -> dict:
     """Walk to an object the camera sees now, or saw in the last 10 minutes.
 
@@ -429,6 +439,12 @@ async def go_to_object(
     walk also carries `clearance_m` (front to near side, the number to tell the
     user) and a `note` saying what was measured; `final_distance_m` is from the
     pelvis, never the gap.
+
+    Several matches: `choose` picks one ("nearest" unless the user said which:
+    «la de la izquierda» -> "left"). One already inside the stop distance is
+    skipped while another is further; when every match is, nothing walks and
+    the phase is 'already_within_stop_distance'. `target.candidates` says how
+    many matched and `target.chosen_by` how one was picked.
     """
     import time as _time
 
@@ -448,9 +464,12 @@ async def go_to_object(
         _time.time(),
         frame=frame,
         live_age_s=report_age,
+        choose=choose,
+        stop_distance_m=stop_distance_m,
     )
     if "error" in target:
         return target
+    others = target.pop("others")
     # aim_rng: near face if measured, else centre; stop: base_link's stop from that point.
     aim_rng, stop = g.approach(target, stop_distance_m)
     if aim_rng > g.MAX_RANGE_M:
@@ -460,6 +479,13 @@ async def go_to_object(
             "target": target,
         }
     rounded = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in target.items()}
+    if aim_rng <= stop:
+        done = {
+            "status": "completed",
+            "phase": "already_within_stop_distance",
+            "result": {"arrived": True, "final_distance_m": aim_rng},
+        }
+        return {**done, "via": "none", **g.report(done, target), "target": rounded, "env": SIM_MODE}
     sampler = get_sampler()
     pose = (sampler.get_state() or {}).get("pose") or {}
     try:
@@ -512,13 +538,21 @@ async def go_to_object(
             gy,
             None,
             nav_pose["frame"],
-            {"kind": "object", "label": target["label"], "source": target["source"]},
+            {
+                "kind": "object",
+                **{k: target[k] for k in ("label", "source", "candidates", "chosen_by")},
+            },
         )
         if started.get("status") != "refused":
             return {**started, "via": "nav2"}
         refusal = started
 
-    follow = g.Follow((tx, ty), _time.monotonic(), abort_when_lost=target["source"] == "live")
+    follow = g.Follow(
+        (tx, ty),
+        _time.monotonic(),
+        abort_when_lost=target["source"] == "live",
+        others=[g.world_target(*at, r, b) for r, b in others],
+    )
 
     def retarget() -> tuple[float, float] | None:
         now_pose = sampler.pose_at(_time.monotonic())
