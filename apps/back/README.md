@@ -106,11 +106,17 @@ src/
                        own, proxied so a browser never reaches port 8001 directly
     map.ts             GET /map/costmap.png — Nav2's costmap, same reason
     camera.ts          GET /camera/{status,frame.jpg,stream.mjpg} — the robot
-                       camera, same reason (PUBLIC_ROBOT_CAM_URL points here)
+                       camera, same reason (when PUBLIC_ROBOT_CAM_URL points here;
+                       dev:robot reads the bridge's 8001 instead)
+    face.ts            /face — the «Caras» page (admins): people, switches, enroll,
+                       delete, photo, each behind a Confirmar card; GET /face/seen,
+                       the camera's face boxes, for any signed-in user
     voice.ts           POST /voice/{start,stop}, GET /voice/status — explicit
                        operator-owned legacy or OpenAI Realtime voice session;
                        POST /voice/transcribe — headset push-to-talk STT
-  voice/loop.ts        legacy transcript → text-agent → Piper fallback
+  voice/loop.ts        legacy transcript → text-agent → Piper fallback; with the
+                       bridge on C3PO_STT=back it fetches each robot-mic WAV and
+                       transcribes it with tic-transcript (AGENT_TRANSCRIBE_MODEL)
   voice/realtime.ts    PCM ↔ OpenAI WebSocket, tool dispatch, durable transcript
                        (design: docs/ARCHITECTURE.md §4.1)
   voice/conversation.ts, events.ts, pcm.ts
