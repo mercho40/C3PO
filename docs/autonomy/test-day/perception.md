@@ -158,6 +158,28 @@ the vocabulary does not have. The named classes stop showing up where they did; 
 other class, and `person` above all, is still reported as before. Write down each bar you
 kept.
 
+**The table under the object (pending robot test, 4d3b662).** Only on a vision image rebuilt
+from this branch. Each of the nearest four non-person objects may now carry `support`: `z_m`
+is the height of the surface it stands on in base_link (the pelvis; negative below it),
+`near_edge_m` the horizontal range of that surface's nearest edge along the object's
+bearing (`null` when the edge is out of view), plus `inliers`, `rms_m` and `stamp_unix`. The
+arm planner uses it (`manipulation.md` §8). Read it with
+`docker exec c3po-perception-nav /entrypoint.sh ros2 topic echo --once /c3po/world_summary`.
+
+1. Speed first. With four or more objects on a table in view, read `mean_tick_ms` on the
+   `alive` lines (§3). **Expect:** still inside the 100 ms budget at 10 Hz, and within a few
+   ms of the same scene with `C3PO_VISION_SUPPORT=0` in `~/.c3po/perception.env`
+   (`c3po perception stop`, `c3po up`, read again, then remove the line). Write down both.
+2. Accuracy. A cup on a table, the robot standing square to the table. Tape the table top's
+   height and the pelvis height (the hip pitch axis) above the floor, and the floor distance
+   from the point under the pelvis to the table edge. Read `support` for the cup straight
+   ahead, then with the cup moved to about +20° and −20° bearing. Do it at 2–3 table heights
+   (for example 0.75, 0.85 and 0.95 m). **Expect:** `z_m` ≈ table height − pelvis height
+   within about 2 cm. `near_edge_m` ≈ the taped edge distance within about 3 cm straight
+   ahead, and about 1.06× it at ±20° (the range along the bearing to a square edge). `null`
+   only when the edge is below the image. Write down every reading with `inliers` and
+   `rms_m`.
+
 ## 5. Capture the test set (~50 classes x 0.5 / 1.5 / 3 m, ~10 frames each)
 
 The capture opens the camera itself, so stop the detector first (`c3po perception stop`).
@@ -242,3 +264,5 @@ code back too, check out the previous commit and `c3po perception build vision`.
 3. The three recall tables.
 4. The measured camera extrinsic.
 5. 3D error at 1.5 m for one opaque object, the glass and the monitor (tape vs `range_m`).
+6. The support readings (§4): `z_m` and `near_edge_m` against the tape, at each height and
+   bearing, and `mean_tick_ms` with and without `C3PO_VISION_SUPPORT=0`.

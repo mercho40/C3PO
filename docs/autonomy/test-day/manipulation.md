@@ -87,7 +87,8 @@ measure from the wrist-yaw axis to the centre of the closed `power` grip. Put th
 > checks every arm link as a capsule against the torso, and the MuJoCo twin now finds no
 > contact in any of the six planned picks, but the real arm has not been tried. Watch the
 > new shoulder-out tuck (the elbow juts out to the side) and keep the desk edge at least
-> 0.24 m in front of the torso. Remove the flag again when the section is done.
+> 0.24 m in front of the torso (with perception reporting the table, §8 covers it). Remove
+> the flag again when the section is done.
 
 Setup: an **opaque** plastic cup or a TV remote on a counter or high table, **0.80–0.95 m above
 the floor**, 25–35 cm in front of the chest, a little to the right. The G1 arm is short (~0.48 m
@@ -119,6 +120,23 @@ That override moves the detector's ranges only; `pick` keeps the URDF mount.
 | 15  | Holding the cup (step 11), a person stands 0.6 m in front. Confirm + `handover` side right. | Runs even with the person in reach (the only arm skill that does). Hand at chest height, ~38 cm out, holds. |
 | 16  | The person takes the cup, then `set_hand shape open`, then `release_arm_control`.           | Opens, arm returns. Nothing opens by itself: no touch sensing.                                              |
 
+## 8. Picking from a reported table (pending robot test, dbf876c)
+
+Only on a vision image rebuilt from this branch, after the support check in `perception.md`
+§4. The planner now keeps every arm link 1 cm clear of the table perception reports
+under the object, and a refused plan says what to change (`docs/OPERATIONS.md` §4, "When a
+pick or place refuses"). With the face gate on (`safety.md` 25), each pick also needs the
+operator's face. Same setup as §5: gantry, `C3PO_ALLOW_PICK=1` for this section only,
+nobody within 1 m, the robot square to the table.
+
+| #   | Do                                                                                                                                                                               | Expect                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 17  | A cup on the table as in §5. Read its `support` (`perception.md` §4). Confirm + `pick` label "cup".                                                                              | `result.table_torso_m` is `[edge, top]` in the torso frame: `top` ≈ `support.z_m` − 0.044, and `edge` ≈ the taped edge distance (never further than the cup). The hand rises beside the body, passes 8 cm over the cup's centre height, comes down 10 cm short of it, moves in, closes and lifts 8 cm. Nothing touches the table. If the hand gets within about 3 cm of the table before the grasp: PARAR. |
+| 18  | While the arm holds after the lift, tape the gap between the bottom of the hand and the table top.                                                                               | Gap ≈ `target_torso_m[2]` + 0.08 − `table_torso_m[1]` − 0.03 (the hand's half-thickness), within about 2 cm. A smaller real gap means the reported top is too high or the arm sags: write both numbers down and stop picking.                                                                                                                                                                              |
+| 19  | A phone lying flat where the cup stood in row 17. Confirm + `pick` label "mobile phone".                                                                                         | Nothing moves. `status failed`, `phase planning`, `result.reason` `table_clearance`, `result.advice.problem` `table_clearance`, and the console shows «La mano tocaría la mesa: el objeto es muy bajo para agarrarlo. Caminar no lo arregla.» (another part may be named: «La muñeca …»).                                                                                                                  |
+| 20  | Move the cup back on the table, out of reach (if the pick plans, it runs as in row 17: move the cup further). Confirm + `pick`. Then walk as advised, look again and pick again. | Refused with `result.advice.step_forward_m` and a note like «Acercate ~0.08 m, después mirá de nuevo.». The advice never brings the table edge closer than 0.16 m to the torso: tape it after the walk. An object out of reach even with the robot at the edge gives `behind_table_edge` («El objeto está … detrás del borde de la mesa …»).                                                               |
+| 21  | Listen to the agent pass on the refusals of rows 19 and 20 (voice, or the headset with `HEADSET_SPEAK_REPLY=1`).                                                                 | The console card and the spoken reply read as plain Spanish: what to do, or why walking will not help. Write down any hint that reads or sounds badly (the `~` and the decimal point in «~0.08 m» are the likely ones).                                                                                                                                                                                    |
+
 ## Rollback
 
 | Problem                         | Do                                                                                                                      |
@@ -130,8 +148,11 @@ That override moves the detector's ranges only; `pick` keeps the URDF mount.
 ## Known limits (not bugs to file tomorrow)
 
 - No touch or force sensing: success is `verify`, a camera judgment.
-- No self-collision model: the workspace box (in front of the chest, ≤ 12 cm past the midline)
-  stands in for it. The other arm is not checked.
+- Collision is checked arm-against-torso and arm-against-the-reported-table only (capsules,
+  `ARM_CAPSULES`). The other arm is not checked. The table's front edge is taken as square to
+  the robot through one point, so an edge seen at an angle is nearer on one side.
+- An object whose centre is less than about 4–6 cm above the table top (a phone or a wallet
+  lying flat) is refused with `table_clearance`.
 - Grasp point = the detection's box centre at its median depth + 2 cm. Thin or tilted objects
   (a wallet lying flat) will often miss; `pinch` from above (`APPROACH_TILTS_DEG` 60°) is the
   attempt, not a promise.
@@ -139,4 +160,5 @@ That override moves the detector's ranges only; `pick` keeps the URDF mount.
 - Waist is assumed upright: camera and arms are both on `torso_link`, so waist yaw/pitch does not
   change the camera→hand transform, but a bent waist changes what is reachable.
 - Left arm: same code, and the left hand has never answered. Leave `TELEOP_HAND_SIDES=right`.
-- Not built: wrist cameras and hand-eye calibration, MuJoCo sim twin, learned skills (Phase 6).
+- Not built: wrist cameras and hand-eye calibration, learned skills (Phase 6). The MuJoCo twin
+  runs in CI (`tests/sim`), with 20 random table scenes per run.
