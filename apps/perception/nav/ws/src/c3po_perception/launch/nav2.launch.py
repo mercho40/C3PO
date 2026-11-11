@@ -2,8 +2,10 @@
 
     everything in perception.launch.py
     controller_server / smoother_server / planner_server / behavior_server
-    bt_navigator / velocity_smoother
+    bt_navigator / velocity_smoother / collision_monitor
     lifecycle_manager_navigation  (autostart: FALSE — see nav2_params.yaml)
+    goal_relay                    /c3po/nav_goal -> NavigateToPose -> /c3po/nav_status
+    opt-in: slam_toolbox (+ map_server) for a saved map — see the flags below
 
 NOTHING HERE DRIVES THE ROBOT. Every velocity leaves on /c3po/cmd_vel (DDS
 rt/c3po/cmd_vel) on domain 42, and apps/bridge — the actuation chokepoint,
@@ -25,9 +27,11 @@ TWO REMAPS ARE LOAD-BEARING:
       robot "refuses to recover" with no error anywhere. (Only `wait` is
       enabled today, which makes this a trap for whoever re-adds the others.)
 
-  velocity_smoother  cmd_vel -> cmd_vel_nav, cmd_vel_smoothed -> /c3po/cmd_vel
-      The smoother is the LAST hop inside the container, so it is the one place
-      the topic becomes /c3po/cmd_vel. Never publish a bare /cmd_vel from this
+  velocity_smoother  cmd_vel -> cmd_vel_nav, cmd_vel_smoothed -> collision_monitor
+  collision_monitor  cmd_vel_smoothed -> /c3po/cmd_vel   (its own params, not a remap)
+      The monitor is the LAST hop inside the container, so it is the one place
+      the topic becomes /c3po/cmd_vel (the smoother is, with
+      collision_monitor:=false). Never publish a bare /cmd_vel from this
       container: that name is gemm's cmd_vel_to_loco convention on domain 0 and
       the isolation here is meant to be structural, not conventional.
 
@@ -45,6 +49,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    OpaqueFunction,
 )
 from launch.conditions import LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -93,7 +98,12 @@ LIFECYCLE_NODES = [
     "behavior_server",
     "bt_navigator",
     "velocity_smoother",
+    "collision_monitor",
 ]
+
+# Inside the container. The host's ~/.c3po/maps is bind-mounted here by
+# bringup/spec.py only when C3PO_NAV_SLAM is set, so default runs mount nothing.
+MAPS_DIR = "/opt/c3po/maps"
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -128,6 +138,17 @@ def generate_launch_description() -> LaunchDescription:
         # controller and the /c3po/cmd_vel path without a sensor window and
         # without taking anything from the other team.
         DeclareLaunchArgument("sources", default_value="real"),
+        # THE PHASE 3 FLAGS. Every default is the stack that ran before them, so
+        # tomorrow's first goal changes one thing at a time. bringup/spec.py
+        # maps C3PO_NAV_* env vars onto these and passes only non-defaults.
+        #   slam          off | mapping | localization   (C3PO_NAV_SLAM)
+        #   map           saved map name under /opt/c3po/maps   (C3PO_NAV_MAP)
+        #   controller    dwb | mppi                     (C3PO_NAV_CONTROLLER)
+        #   collision_monitor  true | false              (C3PO_NAV_COLLISION_MONITOR)
+        DeclareLaunchArgument("slam", default_value="off"),
+        DeclareLaunchArgument("map", default_value="c3po"),
+        DeclareLaunchArgument("controller", default_value="dwb"),
+        DeclareLaunchArgument("collision_monitor", default_value="true"),
     ]
 
     perception = IncludeLaunchDescription(
@@ -232,13 +253,63 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
-    nav2_nodes = [
+    navigation = OpaqueFunction(
+        function=_navigation,
+        kwargs={"share": share, "params": params,
+                "bt_to_pose": bt_to_pose, "bt_through_poses": bt_through_poses},
+    )
+
+    return LaunchDescription(
+        args
+        + [perception, fake, fake_tf, fake_cloud, fake_livox_tf, costmap, navigation]
+    )
+
+
+def _choice(context, name: str, allowed: tuple) -> str:
+    value = LaunchConfiguration(name).perform(context).strip().lower()
+    if value not in allowed:
+        # Fail the launch, loudly. A typo that silently fell back to a default
+        # would run a different stack than the operator asked for.
+        raise RuntimeError(f"{name}:={value!r} — expected one of {allowed}")
+    return value
+
+
+def _navigation(context, share, params, bt_to_pose, bt_through_poses):
+    """The Nav2 nodes, assembled from the four opt-in flags.
+
+    An OpaqueFunction because the flags change WHICH nodes exist and which
+    parameter files they read, not just a value — a declarative condition per
+    combination would be four copies of every node. Every default reproduces
+    the pre-2026-11-02 stack exactly, plus the collision monitor and goal relay.
+    """
+    slam = _choice(context, "slam", ("off", "mapping", "localization"))
+    controller = _choice(context, "controller", ("dwb", "mppi"))
+    collision = _choice(context, "collision_monitor", ("true", "false")) == "true"
+    map_name = LaunchConfiguration("map").perform(context)
+    if not map_name.replace("_", "").replace("-", "").isalnum():
+        raise RuntimeError(f"map:={map_name!r} — letters, digits, '_' and '-' only")
+    map_base = f"{MAPS_DIR}/{map_name}"
+
+    # Later files win, key by key. Lists (plugins, critics) are replaced whole.
+    files = [params]
+    if controller == "mppi":
+        files.append(PathJoinSubstitution([share, "config", "nav2_mppi.yaml"]))
+    if slam == "localization":
+        files.append(PathJoinSubstitution([share, "config", "nav2_map_frame.yaml"]))
+    global_frame = "map" if slam == "localization" else "odom"
+
+    lifecycle_overrides = []
+    if not collision:
+        lifecycle_overrides = [{"node_names": [n for n in LIFECYCLE_NODES
+                                               if n != "collision_monitor"]}]
+
+    nodes = [
         Node(
             package="nav2_controller",
             executable="controller_server",
             name="controller_server",
             output="screen",
-            parameters=[params],
+            parameters=files,
             remappings=TF_REMAPS + [("cmd_vel", "cmd_vel_nav")],
         ),
         Node(
@@ -246,7 +317,7 @@ def generate_launch_description() -> LaunchDescription:
             executable="smoother_server",
             name="smoother_server",
             output="screen",
-            parameters=[params],
+            parameters=files,
             remappings=TF_REMAPS,
         ),
         Node(
@@ -254,7 +325,7 @@ def generate_launch_description() -> LaunchDescription:
             executable="planner_server",
             name="planner_server",
             output="screen",
-            parameters=[params],
+            parameters=files,
             remappings=TF_REMAPS,
         ),
         Node(
@@ -262,7 +333,7 @@ def generate_launch_description() -> LaunchDescription:
             executable="behavior_server",
             name="behavior_server",
             output="screen",
-            parameters=[params],
+            parameters=files,
             remappings=TF_REMAPS + [("cmd_vel", "cmd_vel_nav")],
         ),
         Node(
@@ -270,7 +341,7 @@ def generate_launch_description() -> LaunchDescription:
             executable="bt_navigator",
             name="bt_navigator",
             output="screen",
-            parameters=[params, {
+            parameters=files + [{
                 "default_nav_to_pose_bt_xml": bt_to_pose,
                 "default_nav_through_poses_bt_xml": bt_through_poses,
             }],
@@ -281,24 +352,96 @@ def generate_launch_description() -> LaunchDescription:
             executable="velocity_smoother",
             name="velocity_smoother",
             output="screen",
-            parameters=[params],
-            remappings=TF_REMAPS + [("cmd_vel", "cmd_vel_nav"),
-                                    ("cmd_vel_smoothed", "/c3po/cmd_vel")],
+            parameters=files,
+            # With the monitor, the smoother's output stays inside the
+            # container and the MONITOR is the hop that names /c3po/cmd_vel.
+            remappings=TF_REMAPS + [
+                ("cmd_vel", "cmd_vel_nav"),
+                ("cmd_vel_smoothed", "cmd_vel_smoothed" if collision else "/c3po/cmd_vel"),
+            ],
         ),
         Node(
             package="nav2_lifecycle_manager",
             executable="lifecycle_manager",
             name="lifecycle_manager_navigation",
             output="screen",
-            # node_names, autostart and the 20 s bond timeout all come from
-            # nav2_params.yaml. Listed above as LIFECYCLE_NODES only so this
-            # file documents what the manager owns.
-            parameters=[params],
+            # autostart: false and the 20 s bond timeout come from
+            # nav2_params.yaml; node_names too, unless the monitor is off.
+            parameters=[params] + lifecycle_overrides,
+        ),
+        # The bridge's way in (D4: goals, not velocities). Not a lifecycle node
+        # and not gated by one: while Nav2 is inactive it reports
+        # nav2_ready=false and rejects goals rather than queueing them.
+        Node(
+            package="c3po_perception",
+            executable="goal_relay",
+            name="goal_relay",
+            output="screen",
+            parameters=[{"global_frame": global_frame}],
+            remappings=TF_REMAPS,
         ),
     ]
 
-    return LaunchDescription(
-        args
-        + [perception, fake, fake_tf, fake_cloud, fake_livox_tf, costmap]
-        + nav2_nodes
-    )
+    if collision:
+        nodes.append(Node(
+            package="nav2_collision_monitor",
+            executable="collision_monitor",
+            name="collision_monitor",
+            output="screen",
+            parameters=files,
+            remappings=TF_REMAPS,
+        ))
+
+    slam_yaml = PathJoinSubstitution([share, "config", "slam_toolbox.yaml"])
+    if slam == "mapping":
+        # Drive the space once (teleop / the walk pad, gate closed — Nav2 is
+        # not needed to map), then scripts/robot/nav_map_save.
+        nodes.append(Node(
+            package="slam_toolbox",
+            executable="async_slam_toolbox_node",
+            name="slam_toolbox",
+            output="screen",
+            parameters=[slam_yaml, {"mode": "mapping"}],
+            remappings=TF_REMAPS,
+        ))
+    elif slam == "localization":
+        nodes.append(Node(
+            package="slam_toolbox",
+            executable="localization_slam_toolbox_node",
+            name="slam_toolbox",
+            output="screen",
+            parameters=[slam_yaml, {
+                "mode": "localization",
+                # The serialized pose graph from nav_map_save (.posegraph/.data).
+                "map_file_name": map_base,
+                # Start where the mapping session started. Elsewhere: give a
+                # 2D pose estimate on /initialpose (test-day/nav.md).
+                "map_start_at_dock": True,
+                # Off /map, so map_server's grid is the only /map and the static
+                # layer never sees two publishers fighting over one topic.
+                "map_name": "/slam_toolbox/map",
+            }],
+            remappings=TF_REMAPS,
+        ))
+        nodes += [
+            Node(
+                package="nav2_map_server",
+                executable="map_server",
+                name="map_server",
+                output="screen",
+                parameters=[{"yaml_filename": f"{map_base}.yaml", "frame_id": "map",
+                             "topic_name": "map"}],
+                remappings=TF_REMAPS,
+            ),
+            # Its own manager, and autostart TRUE: serving a picture of the
+            # room actuates nothing. lifecycle_manager_navigation stays false.
+            Node(
+                package="nav2_lifecycle_manager",
+                executable="lifecycle_manager",
+                name="lifecycle_manager_localization",
+                output="screen",
+                parameters=[{"autostart": True, "node_names": ["map_server"],
+                             "bond_timeout": 20.0}],
+            ),
+        ]
+    return nodes

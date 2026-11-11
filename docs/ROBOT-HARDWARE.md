@@ -55,7 +55,7 @@ Two computers, plus a LiDAR that is its own network host. **[live]**
 | -------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
 | Jetson Orin NX (`g1-orin`) | `192.168.123.164` (eth0), DHCP (wlan0) | General-purpose host. SSH. Where our bridge runs.                                  |
 | Control board ("PC1")      | `192.168.123.161`                      | Publishes the robot's DDS topics. **No SSH** — the only open TCP port is **9991**. |
-| Livox Mid-360 LiDAR        | `192.168.123.120`                      | Direct network peer on the internal LAN.                                           |
+| Livox Mid-360S LiDAR       | `192.168.123.120`                      | Direct network peer on the internal LAN. Scan module faulted (§4.6).               |
 | Mac (when cabled)          | `192.168.123.99`                       | Static, set by hand — the internal LAN has **no DHCP server**.                     |
 
 The control board pushes **~24 MB/s to multicast `239.255.0.1`** and has **no wireless
@@ -454,6 +454,29 @@ the raw point clouds and IMU data, and the head is fixed vertically upward witho
 looseness. If the front and rear point cloud frames are obviously stratified when the lidar
 illuminates the same static vertical plane in a static state, or the IMU values are
 significantly abnormal, contact sales for lidar repair."_ **[web]**
+
+**SETTLED 2026-11-03: it is a Mid-360S, and on that day its scan module was faulted.** **[live]**
+
+- **The model.** The Livox SDK reports `dev_type 35` (`kLivoxLidarTypeMid360s`), SN
+  `ARMCNAF0030677`, at `192.168.123.120`. gemm reached the same conclusion on 2026-10-03
+  (`~/gemm_ai/lidar/g1_lidar.cpp`).
+- **Why the republish is always empty.** The control board's `lidar_driver` runs
+  Livox-SDK2 < 1.3.1. That SDK does not know type 35 and drops the sensor, so
+  `rt/utlidar/cloud_livox_mid360` exists but never publishes. Switching the service on
+  (`scripts/robot/lidar_service.py`) changes nothing. Route 1 is dead on this robot.
+- **Why our own driver got nothing (§4.5, 2026-08-21).** SDK2 1.3.1 (already in the nav
+  image) configures only the device types its JSON has a section for. With `MID360` alone
+  it discovered the sensor and never pointed it at us. The fix is to add a `"Mid360s"`
+  section, with `host_net_info` as a list holding `host_ip` (commit a0243e5). After that,
+  the driver sets the data type, pattern, attitude, work mode Normal and IMU, and binds
+  56301/56401.
+- **The sensor then reported `work_state 4` (Error), HMS `0x02100003`, and ~65.6 °C
+  internal temperature.** Per the Livox HMS table, ID `0x0210` at level 3 means _"Scan
+  module is abnormal, the system is trying to recover … try restarting the device."_ The
+  fault persisted across a cold power cycle (battery swap), with nothing touching the dome
+  and no audible motor. No points came by any route. **Treat it as a hardware fault and
+  take it to Unitree/Livox with the code and the SN.** Once it scans, the software path
+  (driver → FAST-LIO → Nav2) needs no further change.
 
 ### 4.7 Message layouts if we run our own driver
 

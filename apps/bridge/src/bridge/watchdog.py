@@ -41,12 +41,20 @@ polls are a genuine liveness signal whose absence means something. That is
 already the plan for the HTTP transport (see `skills/task_runtime`), and this
 module is ready for it.
 
+Re-checked 2026-11-02 (autonomy PLAN 0.2, "arm the watchdog"): still true, so
+still off. Fire-and-forget is not built; Claude Code's stdio session blocks on
+every call; and the console's `get_state` poll runs every 2 s, longer than
+LINK_TIMEOUT_S, so even a watched session would trip between polls. Arm it in
+the same change that makes long skills return a task_id.
+
 Until then `LINK_WATCHDOG=on` is required to arm it, and what actually protects
 a real robot is:
 
   1. the firmware's 1 s `SET_VELOCITY` deadman — it stops a walking robot
      within a second of the bridge going quiet, below our software entirely;
-  2. losing the SSH connection kills this process outright, which triggers (1);
+  2. not the SSH link any more: the bridge runs as the `c3po-bridge` systemd unit,
+     so losing SSH no longer kills it, and a skill already running carries on to
+     its own end (a `walk_velocity` lasts at most 3 s);
   3. the physical e-stop, which outranks all of it.
 """
 

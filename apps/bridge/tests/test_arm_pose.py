@@ -185,6 +185,40 @@ async def test_cancellation_hands_the_arms_back(monkeypatch):
     assert fake.release_requested, "cancel must start the ramp-down"
 
 
+@pytest.mark.asyncio
+async def test_move_arm_refuses_while_the_headset_drives(monkeypatch):
+    # The headset's process holds the arms (or walks) on its own rt/arm_sdk publisher: a second
+    # commander from this process would fight it.
+    from bridge import estop
+
+    monkeypatch.setattr(arm_pose, "SIM_MODE", "real")
+    fake = FakeDriver()
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: fake)
+    estop.renew_teleop_lease()
+
+    result = await arm_pose.run("right", {"elbow": 30.0})
+
+    assert result["status"] == "failed" and result["phase"] == "teleop_active"
+    assert not fake.engaged and fake.commands == []
+
+
+@pytest.mark.asyncio
+async def test_the_headset_taking_over_mid_slew_hands_the_arms_back(monkeypatch):
+    from bridge import estop
+
+    monkeypatch.setattr(arm_pose, "SIM_MODE", "real")
+    fake = FakeDriver(settle=False)
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: fake)
+
+    run_future = asyncio.ensure_future(arm_pose.run("right", {"shoulder_pitch": 60.0}))
+    await asyncio.sleep(0.15)
+    estop.renew_teleop_lease()
+    result = await asyncio.wait_for(run_future, 2.0)
+
+    assert result["status"] == "failed" and result["phase"] == "aborted:teleop_active"
+    assert fake.release_requested
+
+
 def test_move_arm_engage_is_refused_while_a_generic_gesture_runs(monkeypatch):
     """The contention check lives in the real driver's preconditions, and its
     skill list must cover the NEW generic `gesture` skill — a gesture running
@@ -196,6 +230,7 @@ def test_move_arm_engage_is_refused_while_a_generic_gesture_runs(monkeypatch):
             return {
                 "lowstate_age_s": 0.1,
                 "arm_q": tuple([0.0] * 14),
+                "waist_q": (0.0, 0.0, 0.0),
                 "fsm_age_s": 0.5,
                 "fsm_id": 4,
                 "mode_machine": 5,

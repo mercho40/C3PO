@@ -2,8 +2,8 @@ node_modules
 .turbo
 .DS_Store
 
-# Compiled binary
-server
+# Compiled binary (bun build --outfile server); anchored, so a src/server/ is not
+/server
 
 # Environment
 .env

@@ -227,3 +227,17 @@ class TestSizeAndSequence:
     def test_a_bool_is_not_a_sequence_number(self):
         with pytest.raises(FrameError, match="seq"):
             parse_frame(_frame(seq=True))
+
+
+class TestEstopField:
+    """The headset's PARAR rides in an ordinary v1 frame (C6)."""
+
+    def test_a_literal_true_is_a_stop(self):
+        assert parse_frame(_frame(estop=True)).estop is True
+
+    @pytest.mark.parametrize("value", [False, "true", 1, None])
+    def test_anything_else_is_not(self, value):
+        assert parse_frame(_frame(estop=value)).estop is False
+
+    def test_missing_is_not_a_stop(self):
+        assert parse_frame(_frame()).estop is False

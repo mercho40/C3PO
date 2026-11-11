@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from bridge.teleop.hands import (
+    SimulatedHandDriver,
     BrainCoHandDriver,
     Dex3HandDriver,
     NullHandDriver,
@@ -214,3 +215,15 @@ def test_resetting_rebuilds_from_the_current_config(monkeypatch):
     reset_driver()
     monkeypatch.setenv("TELEOP_HAND_ENABLED", "0")
     assert isinstance(get_driver(), NullHandDriver)
+
+
+def test_a_simulated_hand_drives_both_sides_and_publishes_nothing(monkeypatch):
+    monkeypatch.setenv("TELEOP_HAND_ENABLED", "1")
+    monkeypatch.setenv("TELEOP_HAND_TYPE", "simulated")
+    monkeypatch.setenv("TELEOP_HAND_SIDES", "left,right")
+
+    driver = build_driver()
+
+    assert isinstance(driver, SimulatedHandDriver)
+    assert driver.name == "simulated" and set(driver.sides) == {"left", "right"}
+    driver.send_shape("right", (1.0,) * 6)  # no publisher exists to call

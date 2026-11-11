@@ -38,6 +38,7 @@ import asyncio
 import math
 import os
 import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 import structlog
@@ -111,6 +112,98 @@ def _clamped_semantic(joints_rad: dict[str, float]) -> dict[str, float]:
     return {name: clamp(angle, *LIMITS[name]) for name, angle in joints_rad.items()}
 
 
+async def slew(
+    driver: Any,
+    task: Any,
+    left: ArmAngles | None,
+    right: ArmAngles | None,
+    ctx: Any | None = None,
+    abort: Callable[[], str | None] | None = None,
+) -> str | None:
+    """Re-send wiring-frame targets at COMMAND_HZ until the driver has settled on them.
+
+    Returns None once settled at full authority, else the failure phase — "cancelled",
+    "driver_failed", "settle_timeout", or "aborted:<reason>" when `abort()` returns a reason
+    (checked every tick). On every failure except driver_failed the ramp-down has been started.
+    Leaves `task.status` to the caller. Shared by move_arm and skills/manipulation.py.
+    """
+    # Worst-case travel decides the deadline: the slowest joint moves at the
+    # driver's slew rate from wherever it is now.
+    current = driver.current_angles
+    deltas = []
+    for angles, base_index in ((left, 0), (right, 7)):
+        if angles is None:
+            continue
+        for i, target in enumerate(angles.as_tuple()):
+            deltas.append(abs(target - current[base_index + i]))
+    max_delta = max(deltas, default=0.0)
+    deadline = (
+        time.monotonic()
+        + arm_sdk.RAMP_S
+        + max_delta / arm_sdk.MAX_JOINT_RATE_RAD_S
+        + SETTLE_MARGIN_S
+    )
+
+    period = 1.0 / COMMAND_HZ
+    while True:
+        if task.cancel_event.is_set():
+            driver.request_release()
+            return "cancelled"
+
+        reason = abort() if abort is not None else None
+        if reason:
+            driver.request_release()
+            return f"aborted:{reason}"
+
+        driver.command(left, right)
+
+        settled = True
+        now = driver.current_angles
+        for angles, base_index in ((left, 0), (right, 7)):
+            if angles is None:
+                continue
+            for i, target in enumerate(angles.as_tuple()):
+                if abs(target - now[base_index + i]) > SETTLE_TOLERANCE_RAD:
+                    settled = False
+                    break
+            if not settled:
+                break
+
+        if settled and driver.weight >= 1.0:
+            return None
+
+        if not driver.engaged:
+            return "driver_failed"
+
+        if time.monotonic() > deadline:
+            driver.request_release()
+            return "settle_timeout"
+
+        if ctx is not None and max_delta > 0:
+            try:
+                remaining = max(
+                    abs(t - driver.current_angles[b + i])
+                    for angles, b in ((left, 0), (right, 7))
+                    if angles is not None
+                    for i, t in enumerate(angles.as_tuple())
+                )
+                await ctx.report_progress(
+                    progress=1.0 - min(1.0, remaining / max_delta),
+                    total=1.0,
+                    message="slewing",
+                )
+            except Exception:
+                pass  # progress is best-effort
+
+        await asyncio.sleep(period)
+
+
+def _teleop_active() -> str | None:
+    from bridge.estop import teleop_is_driving
+
+    return "teleop_active" if teleop_is_driving() else None
+
+
 async def run(
     side: Side,
     joints_deg: dict[str, float],
@@ -163,6 +256,17 @@ async def run(
         task.ended_at = time.time()
         return task.to_dict()
 
+    if _teleop_active():
+        # Checked here, not in ArmSdkDriver.engage: the headset's own arm control engages too.
+        task.status = "failed"
+        task.phase = "teleop_active"
+        task.error = (
+            "a person in the headset is driving the robot or holding its arms; a second "
+            "rt/arm_sdk commander would fight them. Wait until they let go."
+        )
+        task.ended_at = time.time()
+        return task.to_dict()
+
     driver = arm_sdk.get_driver()
     try:
         # In any non-real mode the driver's own preconditions refuse with the
@@ -185,100 +289,40 @@ async def run(
         for arm, wiring in per_side_wiring.items()
     }
 
-    # Worst-case travel decides the deadline: the slowest joint moves at the
-    # driver's slew rate from wherever it is now.
-    current = driver.current_angles
-    deltas = []
-    for angles, base_index in ((left, 0), (right, 7)):
-        if angles is None:
-            continue
-        for i, target in enumerate(angles.as_tuple()):
-            deltas.append(abs(target - current[base_index + i]))
-    max_delta = max(deltas, default=0.0)
-    deadline = (
-        time.monotonic()
-        + arm_sdk.RAMP_S
-        + max_delta / arm_sdk.MAX_JOINT_RATE_RAD_S
-        + SETTLE_MARGIN_S
-    )
-
-    period = 1.0 / COMMAND_HZ
+    failure_notes = {
+        "cancelled": "Cancelled mid-slew; arm authority is ramping back down.",
+        "settle_timeout": (
+            "The slew never settled inside its deadline; authority "
+            "is being handed back to the built-in controller."
+        ),
+        "aborted:teleop_active": (
+            "The headset took over mid-slew; arm authority is ramping back down."
+        ),
+    }
     try:
-        while True:
-            if task.cancel_event.is_set():
-                driver.request_release()
-                task.status = "cancelled"
-                task.phase = "cancelled"
-                task.result = {
-                    "side": side,
-                    "commanded_deg": clamped_deg,
-                    "wiring_targets_rad": wiring_targets,
-                    "note": "Cancelled mid-slew; arm authority is ramping back down.",
-                }
-                task.ended_at = time.time()
-                return task.to_dict()
-
-            driver.command(left, right)
-
-            settled = True
-            now = driver.current_angles
-            for angles, base_index in ((left, 0), (right, 7)):
-                if angles is None:
-                    continue
-                for i, target in enumerate(angles.as_tuple()):
-                    if abs(target - now[base_index + i]) > SETTLE_TOLERANCE_RAD:
-                        settled = False
-                        break
-                if not settled:
-                    break
-
-            if settled and driver.weight >= 1.0:
-                break
-
-            if not driver.engaged:
-                # The publish loop died underneath us (its failure latch has
-                # the details). Do not report a pose that was never held.
-                task.status = "failed"
-                task.phase = "driver_failed"
-                task.error = driver.status().get("failed") or "arm_sdk_disengaged"
-                task.result = {"side": side, "commanded_deg": clamped_deg}
-                task.ended_at = time.time()
-                return task.to_dict()
-
-            if time.monotonic() > deadline:
-                driver.request_release()
-                task.status = "failed"
-                task.phase = "settle_timeout"
-                task.error = "settle_timeout"
-                task.result = {
-                    "side": side,
-                    "commanded_deg": clamped_deg,
-                    "wiring_targets_rad": wiring_targets,
-                    "note": (
-                        "The slew never settled inside its deadline; authority "
-                        "is being handed back to the built-in controller."
-                    ),
-                }
-                task.ended_at = time.time()
-                return task.to_dict()
-
-            if ctx is not None and max_delta > 0:
-                try:
-                    remaining = max(
-                        abs(t - driver.current_angles[b + i])
-                        for angles, b in ((left, 0), (right, 7))
-                        if angles is not None
-                        for i, t in enumerate(angles.as_tuple())
-                    )
-                    await ctx.report_progress(
-                        progress=1.0 - min(1.0, remaining / max_delta),
-                        total=1.0,
-                        message="slewing",
-                    )
-                except Exception:
-                    pass  # progress is best-effort
-
-            await asyncio.sleep(period)
+        failure = await slew(driver, task, left, right, ctx, abort=_teleop_active)
+        if failure == "driver_failed":
+            # The publish loop died underneath us (its failure latch has
+            # the details). Do not report a pose that was never held.
+            task.status = "failed"
+            task.phase = "driver_failed"
+            task.error = driver.status().get("failed") or "arm_sdk_disengaged"
+            task.result = {"side": side, "commanded_deg": clamped_deg}
+            task.ended_at = time.time()
+            return task.to_dict()
+        if failure is not None:
+            task.status = "cancelled" if failure == "cancelled" else "failed"
+            task.phase = failure
+            if failure != "cancelled":
+                task.error = failure
+            task.result = {
+                "side": side,
+                "commanded_deg": clamped_deg,
+                "wiring_targets_rad": wiring_targets,
+                "note": failure_notes.get(failure, failure),
+            }
+            task.ended_at = time.time()
+            return task.to_dict()
 
         if not hold:
             await driver.release()

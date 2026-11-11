@@ -19,16 +19,23 @@ class _FakeSampler:
     def __init__(self, poses: list[dict]) -> None:
         self._poses = poses
         self._i = 0
+        self.pose_age = 0.0  # what latest_pose() reports: odometry is live unless a test says not
 
     def get_state(self) -> dict:
         i = min(self._i, len(self._poses) - 1)
         self._i += 1
         return {"pose": self._poses[i]}
 
+    def latest_pose(self) -> tuple[float, float, float]:
+        return 0.0, 0.0, self.pose_age
+
 
 class _NoPoseSampler:
     def get_state(self) -> dict:
         return {"pose": None}
+
+    def latest_pose(self) -> None:
+        return None
 
 
 def _pose(yaw: float) -> dict:
@@ -197,3 +204,130 @@ async def test_the_confirm_window_commands_zero_yaw(monkeypatch):
     assert sent, "nothing was commanded at all"
     # The steering commands come first, then the confirm window's zeros.
     assert sent[-1] == 0.0, f"confirm window did not command a stop: {sent[-3:]}"
+
+
+# --- frozen odometry (get_state keeps returning the last pose after it stops) ---
+
+
+@pytest.mark.asyncio
+async def test_frozen_odometry_refuses_before_turning(monkeypatch):
+    sent: list[tuple] = []
+
+    async def recording_send(*a, **kw):
+        sent.append(a)
+
+    monkeypatch.setattr(turn, "send_velocity_async", recording_send)
+    sampler = _FakeSampler([_pose(0.0)])
+    sampler.pose_age = 5.0
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=2.0)
+
+    assert (result["status"], result["phase"]) == ("failed", "pose_stale")
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_odometry_freezing_mid_turn_stops_the_turn(monkeypatch):
+    sampler = _FakeSampler([_pose(0.0)])
+    sent: list[tuple] = []
+    stops: list[float] = []
+
+    async def send(*a, **kw):
+        sent.append(a)
+        if len(sent) == 3:
+            sampler.pose_age = 5.0
+
+    async def counting_stop(height=0.78, duration_s=0.4):
+        stops.append(height)
+
+    monkeypatch.setattr(turn, "send_velocity_async", send)
+    monkeypatch.setattr(turn, "stop_motion", counting_stop)
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=2.0)
+
+    assert (result["status"], result["phase"]) == ("failed", "pose_stale")
+    assert len(sent) == 3  # no setpoint steered on the frozen pose...
+    assert stops  # ...and the stop still went out
+
+
+@pytest.mark.asyncio
+async def test_a_turn_is_refused_while_the_arms_are_held(monkeypatch):
+    from types import SimpleNamespace
+
+    from bridge.teleop import arm_sdk
+
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: SimpleNamespace(engaged=True))
+    sampler = _FakeSampler([_pose(0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=0.05)
+
+    assert (result["status"], result["phase"]) == ("failed", "arm_held")
+    assert sampler._i == 0
+
+
+@pytest.mark.asyncio
+async def test_a_turn_is_refused_while_another_walk_runs(monkeypatch):
+    sampler = _FakeSampler([_pose(0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    walking = get_registry().create("walk_to")
+    try:
+        result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=0.05)
+    finally:
+        walking.status = "completed"  # no skill is looping on it to end it
+
+    assert (result["status"], result["phase"]) == ("failed", "walk_task_active")
+    assert walking.task_id in result["error"]
+    assert sampler._i == 0
+
+
+@pytest.mark.asyncio
+async def test_look_around_may_turn_inside_its_own_sweep(monkeypatch):
+    sampler = _FakeSampler([_pose(0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    sweep = get_registry().create("look_around")
+    try:
+        result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=0.05)
+    finally:
+        sweep.status = "completed"
+    assert result["phase"] == "timeout"  # it ran
+
+
+@pytest.mark.asyncio
+async def test_a_turn_is_refused_in_a_fresh_non_walk_fsm(monkeypatch):
+    """In FSM 802 SetVelocity answers 0 and nothing turns; the turn used to time out as completed."""
+    from types import SimpleNamespace
+
+    fsm = SimpleNamespace(get_arm_state=lambda: {"fsm_id": 802, "fsm_age_s": 0.5})
+    monkeypatch.setattr("bridge.sdk.state.existing_sampler", lambda: fsm)
+    sampler = _FakeSampler([_pose(0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=0.05)
+
+    assert (result["status"], result["phase"]) == ("failed", "fsm_not_walkable")
+    assert sampler._i == 0
+
+
+@pytest.mark.asyncio
+async def test_a_wall_clock_step_does_not_end_the_turn(monkeypatch):
+    """The robot has no RTC, so NTP steps its clock; the turn's deadline must not move with it."""
+    import time
+
+    real_time, step = time.time, [0.0]
+    monkeypatch.setattr(time, "time", lambda: real_time() + step[0])
+
+    async def send(*a, **kw):
+        step[0] = 3600.0  # the first setpoint is sent inside the loop, after the deadline
+
+    monkeypatch.setattr(turn, "send_velocity_async", send)
+    sampler = _FakeSampler(
+        [_pose(0.0), _pose(0.0), _pose(math.radians(45)), _pose(math.radians(89))]
+    )
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await turn.run(delta_yaw_radians=math.radians(90), timeout_s=5.0)
+
+    assert result["phase"] == "reached"

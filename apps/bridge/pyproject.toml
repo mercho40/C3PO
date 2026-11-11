@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "C3PO bridge: Unitree G1 SDK wrapper, MCP server, voice loop."
 requires-python = ">=3.12"
 dependencies = [
-    "mcp[cli]>=1.10",
+    "mcp[cli]>=1.30,<2",
     "pydantic>=2.8",
     "structlog>=24",
     "python-dotenv>=1",
@@ -36,6 +36,12 @@ voice = ["vosk>=0.3.45"]
 #     uv sync --extra voice --extra stt      # both, on the Jetson today
 stt = ["faster-whisper>=1.1.0"]
 
+# The MuJoCo arm twin (tests/sim/, ACTION-PLAN I4). Tests only, never imported by src/: the
+# bridge owns the stop and stays free of compiled sim deps. Needs the fetched model too:
+#
+#     uv sync --extra sim && bash scripts/fetch_menagerie_g1.sh && uv run pytest -m sim
+sim = ["mujoco==3.9.0"]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -62,6 +68,7 @@ check_untyped_defs = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["sim: MuJoCo arm twin; skips without `--extra sim` and the fetched model"]
 
 [tool.uv.sources]
 unitree-sdk2py = { git = "https://github.com/unitreerobotics/unitree_sdk2_python.git" }

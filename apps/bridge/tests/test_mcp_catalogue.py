@@ -41,6 +41,17 @@ EXPECTED_TOOLS = {
     "check_motion_mode",
     "list_active_tasks",
     "describe_surroundings",
+    # vision (Gemini Robotics-ER 2, read-only) and clarification
+    "look",
+    "find_object",
+    "verify",
+    "ask_user",
+    # manipulation (IK over the URDF; arm_state is read-only)
+    "reach",
+    "pick",
+    "place",
+    "handover",
+    "arm_state",
     # postures and mode
     "damp",
     "zero_torque",
@@ -53,6 +64,7 @@ EXPECTED_TOOLS = {
     "lie_up",
     # locomotion
     "walk_to",
+    "go_to_object",
     "turn",
     "walk_velocity",
     # gestures
@@ -74,9 +86,15 @@ EXPECTED_TOOLS = {
     "recall_landmark",
     "list_landmarks",
     "forget_landmark",
+    # object memory (PLAN Phase 4.1-4.2) — look_around physically turns
+    "recall_object",
+    "list_objects",
+    "forget_object",
+    "look_around",
     # control
     "cancel_task",
     "stop_everything",
+    "soft_stop",
     # voice — both halves. `listen` is push-to-talk by necessity, not by design:
     # the mic is gated on a remote button nobody in software can press.
     "say",
@@ -87,6 +105,12 @@ EXPECTED_TOOLS = {
     # happen without somebody looking at that sentence again.
     "arm_navigation",
     "disarm_navigation",
+    # Nav2 goals (D4). Neither opens the gate above; both refuse while it is
+    # shut, and stop_everything cancels what they started.
+    "navigate_to",
+    "navigate_to_landmark",
+    "navigation_status",
+    "cancel_navigation",
 }
 
 
@@ -161,12 +185,17 @@ def test_motion_tools_say_what_they_do_to_a_real_robot(tools):
         "lie_up",
         "zero_torque",
         "walk_to",
+        "go_to_object",
         "turn",
+        # Turns in place in steps, through `turn`.
+        "look_around",
         # The free-form movers: a gesture plays a whole-arm animation, move_arm
         # drives raw joints, set_hand closes real fingers with no dead-man.
         "gesture",
         "move_arm",
         "set_hand",
+        "navigate_to",
+        "navigate_to_landmark",
     }
     for name in movers:
         desc = (tools[name].description or "").lower()
@@ -189,7 +218,13 @@ def test_read_only_tools_take_no_required_arguments(tools):
     check_motion_mode in particular is the first call when the robot accepts
     commands and does nothing, so it has to be trivially callable.
     """
-    for name in ("get_state", "check_motion_mode", "list_active_tasks", "list_landmarks"):
+    for name in (
+        "get_state",
+        "check_motion_mode",
+        "list_active_tasks",
+        "list_landmarks",
+        "list_objects",
+    ):
         schema = tools[name].inputSchema or {}
         assert not schema.get("required"), f"{name} should take no required arguments"
 
@@ -335,15 +370,16 @@ def test_exactly_one_tool_is_classified_safety(tools):
     in this field.
 
     apps/back pins its own half in `SAFETY_SKILLS` (`skills.test.ts`). This is
-    the other half of that contract; the two are meant to name the same single
-    tool.
+    the other half of that contract; the two are meant to name the same tools.
+    `soft_stop` joined on 2026-11-02: it is the first stop tier, never damps,
+    and an operator must not need admin rights to end a walk.
     """
     safety = sorted(
         name
         for name, tool in tools.items()
         if (tool.meta or {}).get("c3po", {}).get("classification") == "safety"
     )
-    assert safety == ["stop_everything"], (
+    assert safety == ["soft_stop", "stop_everything"], (
         f"tools classified 'safety': {safety}. Anything on this list bypasses "
         "the admin gate in apps/back/src/routes/skills.ts. If a tool genuinely "
         "belongs here, add it to SAFETY_SKILLS there in the same change."
@@ -379,6 +415,7 @@ def test_every_tool_carries_complete_safety_metadata(tools):
         assert set(c3po["works"]) == {"sim", "real"}, f"{name}: malformed works"
         assert c3po["danger_level"] in {"low", "medium", "high"}, name
         assert c3po["status"] in {"real", "stub", "planned"}, name
+        assert c3po["tier"] in {"T0", "T1", "T2"}, name
 
 
 def test_untested_motion_is_not_advertised_as_working(tools):
@@ -412,6 +449,8 @@ def test_untested_motion_is_not_advertised_as_working(tools):
         # is unconfirmed until TELEOP_BRAINCO_OPEN_AT is settled by watching.
         "set_hand",
         "open_hands",
+        # Sweeps with `turn` and needs live perception; never run on the robot.
+        "look_around",
     }
     # `turn` GRADUATED 2026-08-26 and is deliberately no longer listed here.
     # Two supervised runs, operator watching, feet down and the gantry slack:
@@ -442,3 +481,12 @@ def test_the_bring_up_path_that_works_is_marked_working(tools):
     for name in ("damp", "prepare", "start_walking_waist", "walk_to", "wave", "say"):
         works = tools[name].meta["c3po"]["works"]
         assert works["real"] is True, f"{name} works on hardware but is marked unavailable"
+
+
+def test_pick_and_place_advertise_the_gantry_fence(tools):
+    # skills/manipulation.py refuses them on the robot until C3PO_ALLOW_PICK=1.
+    for name in ("pick", "place"):
+        modes = tools[name].meta["c3po"]["typical_failure_modes"]
+        assert "pick_disabled_until_gantry_test" in modes, name
+    reach = tools["reach"].meta["c3po"]["typical_failure_modes"]
+    assert "pick_disabled_until_gantry_test" not in reach

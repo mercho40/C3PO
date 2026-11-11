@@ -39,18 +39,25 @@ def _requested_sides(side: Side) -> tuple[hands.Side, ...]:
     return ("left", "right") if side == "both" else (side,)
 
 
-async def run_set(side: Side, closure: float, ctx: Any | None = None) -> dict[str, Any]:
-    """Set hand closure: 0.0 fully open .. 1.0 fully closed. Returns a result dict."""
-    closure = max(0.0, min(1.0, float(closure)))
+async def run_set(
+    side: Side, closure: float, ctx: Any | None = None, shape: str | None = None
+) -> dict[str, Any]:
+    """Set hand closure: 0.0 fully open .. 1.0 fully closed, or a named `hands.SHAPES` grasp
+    (which then overrides `closure`). Returns a result dict."""
+    if shape is not None and shape not in hands.SHAPES:
+        return {"status": "failed", "error": f"unknown_shape_{shape}", "shapes": sorted(hands.SHAPES)}
+    closures = hands.SHAPES[shape] if shape is not None else None
+    closure = max(closures) if closures else max(0.0, min(1.0, float(closure)))
     requested = _requested_sides(side)
 
-    log.info("set_hand.called", side=side, closure=closure, sim_mode=SIM_MODE)
+    log.info("set_hand.called", side=side, closure=closure, shape=shape, sim_mode=SIM_MODE)
 
     if SIM_MODE == "stub":
         return {
             "status": "ok",
             "side": side,
             "closure": closure,
+            "shape": shape,
             "driver": "stub",
             "stub": True,
         }
@@ -81,12 +88,16 @@ async def run_set(side: Side, closure: float, ctx: Any | None = None) -> dict[st
     skipped = tuple(s for s in requested if s not in driver.sides)
     for s in driven:
         # DDS publish — blocking, so off the event loop like every other write.
-        await asyncio.to_thread(driver.send, s, closure)
+        if closures is not None:
+            await asyncio.to_thread(driver.send_shape, s, closures)
+        else:
+            await asyncio.to_thread(driver.send, s, closure)
 
     result: dict[str, Any] = {
         "status": "ok" if driven else "unavailable",
         "side": side,
         "closure": closure,
+        "shape": shape,
         "driver": driver.name,
         "driven_sides": list(driven),
         "stub": False,

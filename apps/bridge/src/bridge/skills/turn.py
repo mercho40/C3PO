@@ -25,7 +25,12 @@ from bridge.skills._locomotion import (
     KP_YAW,
     LOOP_PERIOD_S,
     MAX_YAW_VEL,
+    POSE_STALE,
+    TELEOP_TAKEOVER,
+    arm_hold_conflict,
+    fsm_conflict,
     maybe_report_progress,
+    pose_stale,
     teleop_conflict,
     send_velocity_async,
     stop_motion,
@@ -63,8 +68,19 @@ async def run(
     Returns the full task dict.
     """
     from bridge.sdk.state import get_sampler
+    from bridge.skills.walk_to import active_walk
 
+    # look_around turns through this. A turn started in its pause makes the sweep's
+    # next turn refuse instead, so the two never steer at once.
+    running = active_walk(ignore=("look_around",))  # before create(): the new task is a walk too
     task = get_registry().create("turn")
+    if running is not None:
+        task.status = "failed"
+        task.phase = "walk_task_active"
+        task.error = f"walk task {running} is still running; cancel_task it or wait"
+        task.ended_at = time.time()
+        log.warning("turn.walk_task_active", task_id=task.task_id, running=running)
+        return task.to_dict()
 
     # Checked before the sampler is built, because building one initialises
     # DDS — and a skill that is about to refuse has no business opening a
@@ -79,6 +95,22 @@ async def run(
         task.error = conflict
         task.ended_at = time.time()
         log.warning("turn.teleop_active", task_id=task.task_id)
+        return task.to_dict()
+    conflict = arm_hold_conflict()
+    if conflict is not None:
+        task.status = "failed"
+        task.phase = "arm_held"
+        task.error = conflict
+        task.ended_at = time.time()
+        log.warning("turn.arm_held", task_id=task.task_id)
+        return task.to_dict()
+    conflict = fsm_conflict()
+    if conflict is not None:
+        task.status = "failed"
+        task.phase = "fsm_not_walkable"
+        task.error = conflict
+        task.ended_at = time.time()
+        log.warning("turn.fsm_not_walkable", task_id=task.task_id)
         return task.to_dict()
 
     sampler = get_sampler()
@@ -102,6 +134,13 @@ async def run(
             task.ended_at = time.time()
             log.warning("turn.no_pose", task_id=task.task_id)
             return task.to_dict()
+        if pose_stale(sampler):
+            task.status = "failed"
+            task.phase = "pose_stale"
+            task.error = POSE_STALE
+            task.ended_at = time.time()
+            log.warning("turn.pose_stale", task_id=task.task_id)
+            return task.to_dict()
 
         start_yaw = float(pose["yaw_radians_world"])
         target_yaw = start_yaw + delta_yaw_radians
@@ -122,15 +161,26 @@ async def run(
         )
 
         task.phase = "turning"
-        deadline = time.time() + timeout_s
+        deadline = time.monotonic() + timeout_s  # an NTP step must not move it
         last_reported = 0.0
         reached = False
         cancelled = False
+        taken_over = False
+        stale = False
         in_tolerance = 0
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             if task.cancel_event.is_set():
                 cancelled = True
+                break
+            # The headset took over mid-motion: the person in the room wins.
+            # Still stopped below, not skipped: an arm-mirror takeover sends
+            # no velocity, and the robot would hold our last setpoint.
+            if teleop_conflict() is not None:
+                taken_over = True
+                break
+            if pose_stale(sampler):
+                stale = True
                 break
 
             state = sampler.get_state()
@@ -180,6 +230,16 @@ async def run(
         if cancelled:
             task.status = "cancelled"
             task.phase = "cancelled"
+        elif taken_over:
+            task.status = "failed"
+            task.phase = "teleop_takeover"
+            task.error = TELEOP_TAKEOVER
+            log.warning("turn.teleop_takeover", task_id=task.task_id)
+        elif stale:
+            task.status = "failed"
+            task.phase = "pose_stale"
+            task.error = POSE_STALE
+            log.warning("turn.pose_stale", task_id=task.task_id)
         elif reached:
             task.status = "completed"
             task.phase = "reached"

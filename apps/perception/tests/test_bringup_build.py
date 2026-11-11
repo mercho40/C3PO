@@ -7,6 +7,9 @@ the refusals.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from bringup.build import (
@@ -17,6 +20,7 @@ from bringup.build import (
     missing_packages,
     power_mode_finding,
     precheck,
+    run_build,
     steps_for,
 )
 
@@ -62,6 +66,47 @@ def test_the_word_mount_in_a_comment_is_not_a_problem():
 def test_each_problem_is_reported_separately():
     text = "# syntax=docker/dockerfile:1\nFROM --platform=linux/arm64 x\nRUN --mount=type=cache y\n"
     assert len(dockerfile_problems(text)) == 3
+
+
+# --- the real Dockerfiles ---------------------------------------------------
+
+REAL_DOCKERFILES = [
+    Path(__file__).resolve().parents[1] / d / "Dockerfile" for d in ("nav", "vision")
+]
+# shortcut: a tag is told from a branch by its shape (v1.2.3), not by asking the remote.
+TAG = re.compile(r"^v?\d+(\.\d+)+$")
+GIT_SOURCE = re.compile(r"git\s+(?:-C\s+\S+\s+)?(?:clone|fetch)\b[^&|;]*")
+
+
+def _git_sources(text: str) -> list:
+    """Every `git clone` / `git fetch` outside comments, with ARG defaults filled in."""
+    args = dict(re.findall(r"^ARG[ \t]+(\w+)=(\S+)", text, re.MULTILINE))
+    text = re.sub(r"\$\{(\w+)\}", lambda m: args.get(m.group(1), m.group(0)), text)
+    lines = text.replace("\\\n", " ").splitlines()
+    return [c for line in lines if not line.lstrip().startswith("#") for c in GIT_SOURCE.findall(line)]
+
+
+@pytest.mark.parametrize("path", REAL_DOCKERFILES, ids=lambda p: p.parent.name)
+def test_the_real_dockerfiles_are_classic_builder_only(path):
+    assert dockerfile_problems(path.read_text()) == []
+
+
+@pytest.mark.parametrize("path", REAL_DOCKERFILES, ids=lambda p: p.parent.name)
+def test_every_source_the_real_dockerfiles_fetch_is_pinned(path):
+    """A clone of a moving branch builds whatever upstream is that day.
+
+    FAST-LIO's ROS2 branch is how the twist patch stopped applying, found on the
+    robot mid-build (584a7e6). So a clone names a release tag, and an untagged
+    upstream is fetched by its full commit.
+    """
+    sources = _git_sources(path.read_text())
+    assert sources, "found no git clone or fetch — the parser no longer reads this file"
+    for cmd in sources:
+        if re.match(r"git\s+clone", cmd):
+            ref = re.search(r"(?:-b|--branch)\s+(\S+)", cmd)
+            assert ref and TAG.match(ref.group(1)), cmd
+        else:
+            assert re.search(r"\b[0-9a-f]{40}\b", cmd), cmd
 
 
 # --- refusing early ---------------------------------------------------------
@@ -193,3 +238,37 @@ def test_all_builds_the_engine_but_does_not_bench():
 def test_a_single_target_runs_only_itself():
     assert steps_for("nav") == ["nav"]
     assert images_for("bench") == {}
+
+
+# --- the engine and bench steps follow the model env vars --------------------
+
+
+def _dry(target, env):
+    lines = []
+    env = dict(env, C3PO_FAKE_ARCH="aarch64", HOME="/home/unitree")
+    assert run_build(target, runner=None, env=env, dry_run=True, say=lines.append) == 0
+    return [ln for ln in lines if ln.startswith("docker")]
+
+
+def test_the_engine_step_builds_the_model_the_env_names():
+    env = {"C3PO_ONNX": "/opt/c3po/models/yoloe-26s-seg.onnx",
+           "C3PO_ENGINE": "/opt/c3po/engines/yoloe-26s-seg.fp16.plan"}
+    (cmd,) = _dry("engine", env)
+    assert "-e C3PO_ONNX=/opt/c3po/models/yoloe-26s-seg.onnx" in cmd
+    assert "-e C3PO_ENGINE=/opt/c3po/engines/yoloe-26s-seg.fp16.plan" in cmd
+
+
+def test_bench_loads_the_engine_the_env_names_and_yolo11n_by_default():
+    (default,) = _dry("bench", {})
+    assert "--loadEngine=/opt/c3po/engines/yolo11n.fp16.plan" in default
+    (swapped,) = _dry("bench", {"C3PO_ENGINE": "/opt/c3po/engines/yoloe-26s-seg.fp16.plan"})
+    assert "--loadEngine=/opt/c3po/engines/yoloe-26s-seg.fp16.plan" in swapped
+
+
+def test_a_proxy_reaches_the_build_only_when_one_is_set():
+    from bringup.build import proxy_build_args
+
+    assert proxy_build_args({}) == []
+    args = proxy_build_args({"https_proxy": "http://127.0.0.1:18899", "PATH": "/bin"})
+    assert args[:2] == ["--network", "host"]
+    assert args[2:] == ["--build-arg", "https_proxy=http://127.0.0.1:18899"]

@@ -25,16 +25,23 @@ class _FakeSampler:
     def __init__(self, poses: list[dict]) -> None:
         self._poses = poses
         self._i = 0
+        self.pose_age = 0.0  # what latest_pose() reports: odometry is live unless a test says not
 
     def get_state(self) -> dict:
         i = min(self._i, len(self._poses) - 1)
         self._i += 1
         return {"pose": self._poses[i]}
 
+    def latest_pose(self) -> tuple[float, float, float]:
+        return 0.0, 0.0, self.pose_age
+
 
 class _NoPoseSampler:
     def get_state(self) -> dict:
         return {"pose": None}
+
+    def latest_pose(self) -> None:
+        return None
 
 
 def _pose(x: float, y: float, yaw: float = 0.0) -> dict:
@@ -122,3 +129,209 @@ async def test_walk_to_cancellation_stops_promptly(monkeypatch):
 
     assert result["status"] == "cancelled"
     assert result["phase"] == "cancelled"
+
+
+# --- retarget: the hook go_to_object re-aims through ------------------------
+
+
+@pytest.fixture
+def fast_retarget(monkeypatch):
+    monkeypatch.setattr(walk_to, "LOOP_PERIOD_S", 0.005)
+    monkeypatch.setattr(walk_to, "RETARGET_PERIOD_S", 0.05)
+    stops: list[float] = []
+
+    async def counting_stop(height=0.78, duration_s=0.4):
+        stops.append(height)
+
+    monkeypatch.setattr(walk_to, "stop_motion", counting_stop)
+    return stops
+
+
+@pytest.mark.asyncio
+async def test_retarget_is_called_once_per_period_not_every_loop(monkeypatch, fast_retarget):
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    calls: list[int] = []
+
+    def retarget():
+        calls.append(sampler._i)
+        return (10.0, 0.0)
+
+    result = await walk_to.run(
+        target_x=10.0, target_y=0.0, stop_distance_m=0.1, timeout_s=0.3, retarget=retarget
+    )
+
+    assert result["phase"] == "timeout"
+    assert 3 <= len(calls) <= 7  # ~0.3 s / 0.05 s
+    assert sampler._i > 3 * len(calls)  # the loop ran many more times than it re-aimed
+
+
+@pytest.mark.asyncio
+async def test_a_moved_target_is_followed(monkeypatch, fast_retarget):
+    # Standing at the origin, 5 m short of the first target; the object turns out to be 0.5 m away.
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await walk_to.run(
+        target_x=5.0, target_y=0.0, stop_distance_m=1.0, timeout_s=2.0, retarget=lambda: (0.0, 0.5)
+    )
+
+    assert result["phase"] == "arrived"
+    assert result["result"]["final_distance_m"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_a_lost_target_ends_the_walk_through_stop_motion(monkeypatch, fast_retarget):
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _FakeSampler([_pose(0.0, 0.0)]))
+
+    result = await walk_to.run(
+        target_x=5.0, target_y=0.0, stop_distance_m=1.0, timeout_s=2.0, retarget=lambda: None
+    )
+
+    assert (result["status"], result["phase"]) == ("failed", "target_lost")
+    assert len(fast_retarget) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_raising_retarget_still_stops(monkeypatch, fast_retarget):
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _FakeSampler([_pose(0.0, 0.0)]))
+
+    def broken():
+        raise RuntimeError("perception exploded")
+
+    result = await walk_to.run(
+        target_x=5.0, target_y=0.0, stop_distance_m=1.0, timeout_s=2.0, retarget=broken
+    )
+
+    assert (result["status"], result["phase"]) == ("failed", "exception")
+    assert len(fast_retarget) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_second_walk_is_refused_while_one_runs(monkeypatch):
+    # The no_active_walk_task precondition: two loops writing velocity would fight.
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    walking = get_registry().create("walk_to")
+    try:
+        result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=0.05)
+    finally:
+        walking.status = "completed"  # no skill is looping on it to end it
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "walk_task_active"
+    assert walking.task_id in result["error"]
+    assert sampler._i == 0  # refused before reading a pose, let alone moving
+
+
+# --- frozen odometry (get_state keeps returning the last pose after it stops) ---
+
+
+@pytest.mark.asyncio
+async def test_frozen_odometry_refuses_before_moving(monkeypatch):
+    sent: list[tuple] = []
+
+    async def recording_send(*a, **kw):
+        sent.append(a)
+
+    monkeypatch.setattr(walk_to, "send_velocity_async", recording_send)
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    sampler.pose_age = 5.0
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=2.0)
+
+    assert (result["status"], result["phase"]) == ("failed", "pose_stale")
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_odometry_freezing_mid_walk_stops_the_walk(monkeypatch, fast_retarget):
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    sent: list[tuple] = []
+
+    async def send(*a, **kw):
+        sent.append(a)
+        if len(sent) == 3:
+            sampler.pose_age = 5.0
+
+    monkeypatch.setattr(walk_to, "send_velocity_async", send)
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=2.0)
+
+    assert (result["status"], result["phase"]) == ("failed", "pose_stale")
+    assert len(sent) == 3  # no setpoint steered on the frozen pose...
+    assert len(fast_retarget) == 1  # ...and the stop still went out
+
+
+@pytest.mark.asyncio
+async def test_a_walk_is_refused_while_the_arms_are_held(monkeypatch):
+    """move_arm(hold=True) leaves rt/arm_sdk engaged; walking under its weight is untried."""
+    from types import SimpleNamespace
+
+    from bridge.teleop import arm_sdk
+
+    monkeypatch.setattr(arm_sdk, "get_driver", lambda: SimpleNamespace(engaged=True))
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=0.05)
+
+    assert (result["status"], result["phase"]) == ("failed", "arm_held")
+    assert "release_arm_control" in result["error"]
+    assert sampler._i == 0  # refused before reading a pose, let alone moving
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill", ["navigate_to", "look_around"])
+async def test_a_walk_is_refused_while_nav2_or_a_sweep_drives(monkeypatch, skill):
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+    other = get_registry().create(skill)
+    try:
+        result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=0.05)
+    finally:
+        other.status = "completed"
+    assert (result["status"], result["phase"]) == ("failed", "walk_task_active")
+
+
+# --- FSM 802: SetVelocity answers 0 and the legs ignore it --------------------
+
+
+class _FsmSampler:
+    """What existing_sampler() hands fsm_conflict: only the FSM reading matters."""
+
+    def __init__(self, fsm_id, age_s):
+        self.fsm_id, self.age_s = fsm_id, age_s
+
+    def get_arm_state(self):
+        return {"fsm_id": self.fsm_id, "fsm_age_s": self.age_s}
+
+
+@pytest.mark.asyncio
+async def test_a_walk_is_refused_in_a_fresh_non_walk_fsm(monkeypatch):
+    monkeypatch.setattr("bridge.sdk.state.existing_sampler", lambda: _FsmSampler(802, 0.5))
+    sampler = _FakeSampler([_pose(0.0, 0.0)])
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: sampler)
+
+    result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=0.05)
+
+    assert (result["status"], result["phase"]) == ("failed", "fsm_not_walkable")
+    assert "802" in result["error"] and "start_walking_waist" in result["error"]
+    assert sampler._i == 0  # refused before reading a pose, let alone moving
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fsm_id, age_s",
+    [(501, 0.5), (500, 0.5), (802, 30.0), (None, None)],
+    ids=["walk_waist", "walk", "stale_802", "never_read"],
+)
+async def test_a_walk_runs_in_a_walk_fsm_or_on_an_unknown_reading(monkeypatch, fsm_id, age_s):
+    monkeypatch.setattr("bridge.sdk.state.existing_sampler", lambda: _FsmSampler(fsm_id, age_s))
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _FakeSampler([_pose(0.0, 0.0)]))
+
+    result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=0.05)
+
+    assert result["phase"] == "timeout"  # it walked

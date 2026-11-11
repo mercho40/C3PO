@@ -3,6 +3,10 @@
 #
 #     ssh c3po 'bash ~/c3po/apps/bridge/scripts/install_piper.sh'
 #
+# CI runs it too (.github/workflows/ci.yml, the `voice` job), on an x86_64
+# ubuntu runner, so the spoken-stop tests decode real synthesised speech there.
+# Same release, same voice, same paths; only the binary's architecture differs.
+#
 # Why a binary and not `pip install piper-tts`: the pip package pulls
 # onnxruntime, which on aarch64/JetPack means either a wheel that does not exist
 # for this Python or a CUDA build that drags the bridge venv toward the vision
@@ -17,14 +21,24 @@ DEST="${PIPER_DEST:-$HOME/.local/share/piper}"
 # es_AR/daniela, high. The accent is the point — D6.2 took the 22050->16000
 # resampler deliberately rather than ship a Spain accent to Argentine students.
 VOICE="es_AR-daniela-high"
-VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/es/es_AR/daniela/high"
+# Pinned: a commit of rhasspy/piper-voices (the voice files last changed in
+# 375a0fe, 2025-06-25), and each file's sha256.
+VOICE_REV="e7229f7d33a10e145e109b886d661984201ac3c4"
+VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/$VOICE_REV/es/es_AR/daniela/high"
+VOICE_ONNX_SHA256=7ceb1fc0dab349418c5b54a639ae9ee595212d7c9ea422220d8419163d5cc985
+VOICE_JSON_SHA256=aedbf69647e1d754c62ecf8e0366ca5f16af3e768e3c6b5329af6eb6bde3852b
 RELEASE="https://github.com/rhasspy/piper/releases/download/2023.11.14-2"
-TARBALL="piper_linux_aarch64.tar.gz"
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mFATAL:\033[0m %s\n' "$*" >&2; exit 1; }
 
-[ "$(uname -m)" = "aarch64" ] || die "this fetches an aarch64 build; uname -m says $(uname -m)"
+# The Jetson is aarch64; the CI runner is x86_64. Release 2023.11.14-2 ships a
+# Linux build for both and nothing else this script has been run on.
+case "$(uname -s)-$(uname -m)" in
+    Linux-aarch64) TARBALL="piper_linux_aarch64.tar.gz" ;;
+    Linux-x86_64) TARBALL="piper_linux_x86_64.tar.gz" ;;
+    *) die "no piper build chosen for $(uname -s) $(uname -m) — aarch64 (robot) and x86_64 (CI) Linux only" ;;
+esac
 
 mkdir -p "$DEST"
 
@@ -42,39 +56,42 @@ else
     [ -x "$DEST/piper" ] || die "extracted, but $DEST/piper is missing or not executable"
 fi
 
-# A TRUNCATED MODEL IS THE FAILURE MODE THAT ACTUALLY HAPPENS HERE, so size is
-# checked against the SERVER's Content-Length rather than a magic minimum. The
-# model is ~109 MB over a slow campus link, and an interrupted ssh session takes
-# the curl down with it — this went wrong once already, leaving 72 MB of a
-# 114 MB file. Any "is it bigger than 10 MB" check calls that healthy; piper
-# then dies at synthesis with `Model config doesn't exist` or an opaque
-# onnxruntime parse error, neither of which points at the download.
+# A TRUNCATED MODEL IS THE FAILURE MODE THAT ACTUALLY HAPPENS HERE. The model
+# is ~114 MB over a slow campus link, and an interrupted ssh session takes the
+# curl down with it — this went wrong once already, leaving 72 MB of a 114 MB
+# file. piper then dies at synthesis with `Model config doesn't exist` or an
+# opaque onnxruntime parse error, neither of which points at the download.
 #
-# `curl -C -` resumes, so a re-run after an interruption continues rather than
-# restarting the whole transfer.
-for ext in onnx onnx.json; do
+# So each file is checked against its pinned sha256, not its size: `curl -C -`
+# resumes onto whatever is there, and a resume onto another revision's file
+# ends at the right size with the wrong bytes. A file that fails the hash after
+# a resume is fetched once more from scratch.
+sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
+
+for pin in "onnx $VOICE_ONNX_SHA256" "onnx.json $VOICE_JSON_SHA256"; do
+    ext="${pin% *}" want="${pin#* }"
     target="$DEST/$VOICE.$ext"
     url="$VOICE_URL/$VOICE.$ext"
 
-    remote="$(curl -sIL --max-time 30 "$url" \
-        | awk 'tolower($1)=="content-length:"{n=$2} END{gsub(/\r/,"",n); print n}')"
-    [ -n "$remote" ] || die "could not read Content-Length for $VOICE.$ext — check egress to huggingface.co"
-
-    if [ -s "$target" ] && [ "$(stat -c%s "$target")" = "$remote" ]; then
-        say "voice file complete: $VOICE.$ext ($remote bytes)"
+    if [ -s "$target" ] && [ "$(sha256_of "$target")" = "$want" ]; then
+        say "voice file verified: $VOICE.$ext"
         continue
     fi
 
-    if [ -s "$target" ]; then
-        say "resuming $VOICE.$ext ($(stat -c%s "$target") of $remote bytes)"
-    else
-        say "fetching $VOICE.$ext ($remote bytes)"
-    fi
-    curl -fL -C - --retry 5 --retry-delay 2 --connect-timeout 20 -o "$target" "$url" \
-        || die "voice download failed — re-run this script, it resumes"
+    if [ -s "$target" ]; then say "resuming $VOICE.$ext"; else say "fetching $VOICE.$ext"; fi
+    rc=0
+    curl -fL -C - --retry 5 --retry-delay 2 --connect-timeout 20 -o "$target" "$url" || rc=$?
+    # 22 or 33: the server refused the range, so what is there is not a prefix of this file.
+    case "$rc" in 0 | 22 | 33) ;; *) die "voice download failed — re-run this script, it resumes" ;; esac
 
-    got="$(stat -c%s "$target")"
-    [ "$got" = "$remote" ] || die "$VOICE.$ext is $got bytes, expected $remote — re-run to resume"
+    if [ "$(sha256_of "$target")" != "$want" ]; then
+        say "$VOICE.$ext does not match its sha256 — fetching it again from scratch"
+        rm -f "$target"
+        curl -fL --retry 5 --retry-delay 2 --connect-timeout 20 -o "$target" "$url" \
+            || die "voice download failed — re-run this script, it resumes"
+        [ "$(sha256_of "$target")" = "$want" ] \
+            || die "$VOICE.$ext does not match its pinned sha256 even fetched whole — check $url"
+    fi
 done
 
 say "verifying end to end (synthesising to /dev/null, nothing is played)"

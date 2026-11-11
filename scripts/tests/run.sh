@@ -253,6 +253,12 @@ check_contains "the CLI exposes integrated profiles" "c3po up [operator|core|tel
 check_contains "the CLI exposes complete shutdown" "c3po down | restart | status | logs" "$out"
 check_contains "the CLI exposes explicit perception stages" "c3po perception up <stage>" "$out"
 check_contains "the CLI exposes the deliberate camera takeover" "c3po camera take" "$out"
+check_contains "the CLI exposes the map session" "c3po map start [name] | save [name]" "$out"
+if out="$(bash "$repo/scripts/robot/c3po" map save a b 2>&1)"; then
+    fail=$((fail + 1)); failed_names+=("map save rejects a second name")
+else
+    check_contains "map save rejects a second name" "takes at most a map name" "$out"
+fi
 
 if out="$(bash "$repo/scripts/robot/c3po" up unknown 2>&1)"; then
     fail=$((fail + 1)); failed_names+=("the CLI rejects unknown integrated profiles")
@@ -300,7 +306,7 @@ check_contains "start calls stop_gemm exactly once (the take-over branch)" \
 # ...and a sudo that needs a password with no terminal fails with the fix,
 # not with sudo's own "a terminal is required".
 check_contains "start explains a sudo that cannot prompt" \
-    'if ! sudo -n true 2>/dev/null && ! [ -t 0 ]; then' "$start_source"
+    'if ! sudo -n -l /usr/bin/systemctl start c3po-bridge.service >/dev/null 2>&1 && ! [ -t 0 ]; then' "$start_source"
 common_source="$(cat "$repo/scripts/robot/_common.sh")"
 check_contains "socket ownership uses the explicit deployed LAN bind" \
     '0.0.0.0)   address_hex="00000000"' "$common_source"
@@ -335,6 +341,57 @@ check_contains "migration refuses an activating perception unit" \
     "$install_stack_source"
 check_not_contains "PID 1 never follows unit symlinks into the writable checkout" \
     'sudo ln -sf "$here/$unit"' "$install_stack_source"
+check_contains "install_stack backs the unit up only through the new-commit check" \
+    'backup_unit_if_new_commit "/etc/systemd/system/$unit" "/var/lib/c3po/previous-$unit"' \
+    "$install_stack_source"
+check_contains "install_stack records the deployed commit in ~/.c3po" \
+    'record_deploy "$here/../.." "$HOME/.c3po"' "$install_stack_source"
+
+# The rollback copy and the deploy record, against a temp HOME and a throwaway
+# repo. sudo runs the command as us, and chown root is a no-op, so the real
+# functions run unchanged.
+install_tmp="$(mktemp -d)"
+deploy_dir="$install_tmp/home/.c3po"
+git -C "$install_tmp" init -q repo
+commit_in() { git -C "$install_tmp/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1"; }
+head_of() { git -C "$install_tmp/repo" rev-parse HEAD; }
+first_field() { cut -d' ' -f1 "$1" 2>/dev/null; }
+commit_in one; c1="$(head_of)"
+(HOME="$install_tmp/home"; record_deploy "$install_tmp/repo" "$HOME/.c3po")
+check "the first install records its commit" "$c1" "$(first_field "$deploy_dir/deployed")"
+check "the first install has no previous deploy" "absent" \
+    "$([ -e "$deploy_dir/previous-deploy" ] && echo present || echo absent)"
+commit_in two; c2="$(head_of)"
+(HOME="$install_tmp/home"; record_deploy "$install_tmp/repo" "$HOME/.c3po")
+(HOME="$install_tmp/home"; record_deploy "$install_tmp/repo" "$HOME/.c3po")
+check "a new commit is recorded as deployed" "$c2" "$(first_field "$deploy_dir/deployed")"
+check "re-installing the same commit keeps the one before it" "$c1" \
+    "$(first_field "$deploy_dir/previous-deploy")"
+# The runbooks check out "$(cat ~/.c3po/previous-deploy)": a bare commit, no time.
+check "previous-deploy is the bare commit" "$c1" "$(cat "$deploy_dir/previous-deploy")"
+check_contains "the record carries a UTC time" "Z" "$(cut -d' ' -f2 "$deploy_dir/deployed")"
+
+backup_with() {  # <live content or -> : runs the backup against the repo and record above
+    (
+        sudo() { "$@"; }
+        chown() { :; }
+        rm -f "$install_tmp/live"
+        [ "$1" = - ] || printf '%s\n' "$1" >"$install_tmp/live"
+        backup_unit_if_new_commit "$install_tmp/live" "$install_tmp/backup" \
+            "$install_tmp/repo" "$deploy_dir"
+    )
+    cat "$install_tmp/backup" 2>/dev/null
+}
+printf 'older\n' >"$install_tmp/backup"
+commit_in three
+check "no loaded unit leaves the backup alone" "older" "$(backup_with -)"
+# deployed is c2 and HEAD is c3: the unit B ran under is the rollback copy, even
+# if C ships the same unit, or a rollback to B would run under A's.
+check "new commit, same unit: the backup is the loaded unit" "loaded" "$(backup_with loaded)"
+check "a retry after a half-done install keeps the backup" "loaded" "$(backup_with half-installed)"
+(HOME="$install_tmp/home"; record_deploy "$install_tmp/repo" "$HOME/.c3po")
+check "same commit re-install keeps the backup" "loaded" "$(backup_with newer)"
+rm -rf "$install_tmp"
 
 bridge_unit_source="$(cat "$repo/scripts/robot/c3po-bridge.service")"
 check_contains "systemd directly supervises the bridge" "Type=exec" "$bridge_unit_source"
@@ -354,6 +411,8 @@ check_contains "the bridge permits the local web dev origins" \
     "$bridge_unit_source"
 check_not_contains "the bridge has no pidfile" "PIDFile=" "$bridge_unit_source"
 check_not_contains "the bridge unit does not call run_c3po" "ExecStart=/home/unitree/c3po/scripts/robot/run_c3po" "$bridge_unit_source"
+check_contains "the robot installs exactly the committed lock" \
+    "uv sync --locked" "$(cat "$repo/scripts/robot/bridge_sync")"
 
 stop_stack_source="$(cat "$repo/scripts/robot/stop_c3po")"
 check_contains "stack stop removes teleop before the bridge" \
@@ -377,6 +436,18 @@ check_not_contains "health contains no systemd repair action" \
 sudoers_source="$(cat "$repo/scripts/robot/c3po.sudoers")"
 check_not_contains "sudoers grants no perception lifecycle command" \
     'c3po-perception@' "$sudoers_source"
+# sudo matches exact argv: the grant and its three callers must stay identical.
+for verb in start stop restart; do
+    check_contains "sudoers grants exactly: systemctl $verb c3po-bridge.service" \
+        "unitree ALL=(root) NOPASSWD: /usr/bin/systemctl $verb c3po-bridge.service" "$sudoers_source"
+done
+for forbidden in 'daemon-reload' 'systemctl edit' 'enable' '*'; do
+    check_not_contains "sudoers grants nothing with: $forbidden" "$forbidden" "$sudoers_source"
+done
+check_contains "c3po restart runs the exact granted command line" \
+    'sudo systemctl restart c3po-bridge.service' "$cli_source"
+check_contains "start runs the exact granted command line" \
+    'sudo systemctl start c3po-bridge.service' "$start_source"
 
 commander_source="$(cat "$repo/scripts/robot/_common.sh")"
 check_contains "unitree_slam is treated as a locomotion commander" \
@@ -425,6 +496,218 @@ check_contains "the tunnel defaults to the c3po ssh alias" " c3po" "$tunnel_cmd"
 check_contains "the tunnel takes the host as an argument" \
     " c3po-wire" "$("$repo/scripts/robot_tunnel.sh" --print c3po-wire)"
 
+echo "== robot internet =="
+check "the Mac proxy refuses loopback, private and non-web destinations" "ok" \
+    "$(python3 "$repo/scripts/robot_internet.py" --self-test 2>&1)"
+
+echo "== robot session =="
+# One command for tunnel + robot internet + console. Env cleared so a developer's
+# own C3PO_SSH_HOST / C3PO_ROBOT_HOST cannot change what is asserted.
+session_print="$(C3PO_SSH_HOST='' C3PO_ROBOT_HOST='' "$repo/scripts/robot_session.sh" --print)"
+check_contains "the session starts the tunnel to the c3po alias" "robot_tunnel.sh c3po" "$session_print"
+check_contains "the session lends the robot the Mac's internet" "robot_internet.py c3po" "$session_print"
+check_contains "the session starts the console against the tunnel" \
+    "C3PO_ROBOT_HOST=localhost bun run dev:robot" "$session_print"
+session_wire="$(C3PO_SSH_HOST='' "$repo/scripts/robot_session.sh" --print c3po-wire)"
+check_contains "the session takes the host as an argument (tunnel)" "robot_tunnel.sh c3po-wire" "$session_wire"
+check_contains "the session takes the host as an argument (internet)" "robot_internet.py c3po-wire" "$session_wire"
+
+# Fake `route` / `ipconfig`: ipconfig answers only for the interface route named.
+session_stub="$(mktemp -d)"
+# shellcheck disable=SC2016  # the $vars are for the stub to expand, not us
+printf '#!/bin/sh\necho "  interface: $FAKE_IFACE"\n' >"$session_stub/route"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\n[ "$2" = "$FAKE_IFACE" ] && echo "$FAKE_ADDR"\n' >"$session_stub/ipconfig"
+chmod +x "$session_stub/route" "$session_stub/ipconfig"
+cable_out="$(PATH="$session_stub:$PATH" FAKE_IFACE=en11 FAKE_ADDR=192.168.123.99 C3PO_ETH='' \
+    "$repo/scripts/robot_session.sh" --print)"
+check_contains "the cable on en11 at 192.168.123.99 passes" "✓ cable" "$cable_out"
+check_not_contains "a good cable prints no sudo fix" "sudo ipconfig" "$cable_out"
+wifi_out="$(PATH="$session_stub:$PATH" FAKE_IFACE=en0 FAKE_ADDR=10.10.32.5 C3PO_ETH='' \
+    "$repo/scripts/robot_session.sh" --print)"
+check_contains "the robot reached over Wi-Fi prints the cable fix, with no router" \
+    "sudo ipconfig set en11 MANUAL 192.168.123.99 255.255.255.0" "$wifi_out"
+check_not_contains "the session never says ✓ cable off the cable" "✓ cable" "$wifi_out"
+rm -rf "$session_stub"
+
+# The whole session against stub children: a copy of the script whose repo holds
+# a fake robot_tunnel.sh, and fake python3/bun/curl/lsof/sleep on PATH. Each long
+# child records its pid and idles. It runs in its own process group (perl's
+# setpgrp) because the session's teardown is `kill 0`, which would otherwise take
+# this test runner down with it.
+session_fake="$(mktemp -d)"
+mkdir -p "$session_fake/scripts" "$session_fake/bin"
+cp "$repo/scripts/robot_session.sh" "$session_fake/scripts/"
+# shellcheck disable=SC2016  # the $vars are for the stubs to expand, not us
+child='#!/bin/sh\necho $$ >>"$FAKE_PIDS"\nexec /bin/sleep 300\n'
+# shellcheck disable=SC2059  # the stub body is the format on purpose
+printf "$child" >"$session_fake/scripts/robot_tunnel.sh"
+# shellcheck disable=SC2059
+printf "$child" >"$session_fake/bin/python3"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\ncase "$*" in *smoke-agent*) exit "$FAKE_AGENT_RC" ;; esac\necho $$ >>"$FAKE_PIDS"\nexec /bin/sleep 300\n' \
+    >"$session_fake/bin/bun"
+printf '#!/bin/sh\nexit 0\n' >"$session_fake/bin/curl"
+printf '#!/bin/sh\nexit 1\n' >"$session_fake/bin/lsof"
+printf '#!/bin/sh\nexec /bin/sleep 0.1\n' >"$session_fake/bin/sleep"
+chmod +x "$session_fake/scripts/robot_tunnel.sh" "$session_fake/bin/"*
+
+# run_session <agent rc>: start it, wait for the table, TERM it, then echo the
+# output and how many children survived. Survivors are killed so nothing leaks.
+run_session() {
+    local out="$session_fake/out.$1" pids="$session_fake/pids.$1" pid survivors=0 p _
+    : >"$pids"
+    FAKE_PIDS="$pids" FAKE_AGENT_RC="$1" PATH="$session_fake/bin:$PATH" TMPDIR="$session_fake" \
+        C3PO_SSH_HOST='' perl -e 'setpgrp(0, 0); exec @ARGV' \
+        bash "$session_fake/scripts/robot_session.sh" >"$out" 2>&1 &
+    pid=$!
+    for _ in $(seq 1 100); do grep -q 'Ctrl-C stops all three' "$out" && break; /bin/sleep 0.1; done
+    kill -TERM "$pid" 2>/dev/null
+    for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; /bin/sleep 0.1; done
+    /bin/sleep 0.2
+    while read -r p; do
+        if kill -0 "$p" 2>/dev/null; then survivors=$((survivors + 1)); kill -9 "$p"; fi
+    done <"$pids"
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    printf '%s\nchildren started: %s\nsurvivors: %s\n' "$(cat "$out")" "$(wc -l <"$pids" | tr -d ' ')" "$survivors"
+}
+agent_ok_out="$(run_session 0)"
+check_contains "a model that makes a tool call is a passing agent row" "✓ agent" "$agent_ok_out"
+agent_bad_out="$(run_session 1)"
+check_contains "a model that does not is a failing agent row" "✗ agent" "$agent_bad_out"
+check_contains "the session started its three children" "children started: 3" "$agent_ok_out"
+check_contains "TERM leaves no child of the session running" "survivors: 0" "$agent_ok_out"
+check_contains "TERM leaves no child running after a failed row either" "survivors: 0" "$agent_bad_out"
+rm -rf "$session_fake"
+
+# ---------------------------------------------------------------------------
+# c3po_preflight: no SAFETY_CONFIRM_SECRET on the bridge is a blocker
+# ---------------------------------------------------------------------------
+echo "== c3po_preflight confirm secret =="
+preflight_stub="$(mktemp -d)"
+# A curl that answers /safety/status from $FAKE_STATUS and fails everything else.
+# shellcheck disable=SC2016  # the $vars are for the stub to expand, not us
+printf '#!/bin/sh\nfor a; do case "$a" in */safety/status) echo "$FAKE_STATUS"; exit 0 ;; esac; done\nexit 7\n' \
+    >"$preflight_stub/curl"
+chmod +x "$preflight_stub/curl"
+unset_out="$(PATH="$preflight_stub:$PATH" FAKE_STATUS='{"confirm_configured":false}' \
+    bash "$repo/scripts/robot/c3po_preflight" 2>&1 || true)"
+set_out="$(PATH="$preflight_stub:$PATH" FAKE_STATUS='{"confirm_configured":true}' \
+    bash "$repo/scripts/robot/c3po_preflight" 2>&1 || true)"
+check_contains "an unset confirm secret is a blocker" \
+    "SAFETY_CONFIRM_SECRET IS NOT SET on the bridge" "$unset_out"
+check_contains "a set confirm secret passes" "SAFETY_CONFIRM_SECRET is set —" "$set_out"
+# The rest of the stack is absent in both runs, so the secret is the only difference in the count.
+blockers_in() { printf '%s' "$1" | grep -oE '[0-9]+ blocker' | grep -oE '[0-9]+'; }
+check "an unset confirm secret adds exactly one blocker" \
+    "$(( $(blockers_in "$set_out") + 1 ))" "$(blockers_in "$unset_out")"
+
+# Person rule off, geofence off and a standing stop warn, and block nothing (a
+# decision about what should block is still open).
+loose_out="$(PATH="$preflight_stub:$PATH" FAKE_STATUS='{"person_rule":false,"confirm_configured":true,"geofence":{"radius_m":null},"stop_standing":true}' \
+    bash "$repo/scripts/robot/c3po_preflight" 2>&1 || true)"
+tight_out="$(PATH="$preflight_stub:$PATH" FAKE_STATUS='{"person_rule":true,"confirm_configured":true,"geofence":{"radius_m":3.0},"stop_standing":false}' \
+    bash "$repo/scripts/robot/c3po_preflight" 2>&1 || true)"
+check_contains "a person rule that is off is a warning" "the person rule is OFF" "$loose_out"
+check_contains "a geofence that is off is a warning" "the geofence is OFF" "$loose_out"
+check_contains "a standing stop is a warning" "a PARAR is still standing" "$loose_out"
+for needle in "the person rule is OFF" "the geofence is OFF" "a PARAR is still standing"; do
+    check_not_contains "no '$needle' when it is not so" "$needle" "$tight_out"
+done
+warnings_in() { printf '%s' "$1" | grep -oE '[0-9]+ warning' | grep -oE '[0-9]+'; }
+check "the three add three warnings" \
+    "$(( $(warnings_in "$tight_out") + 3 ))" "$(warnings_in "$loose_out")"
+check "and no blocker" "$(blockers_in "$tight_out")" "$(blockers_in "$loose_out")"
+rm -rf "$preflight_stub"
+
+# ---------------------------------------------------------------------------
+# install_piper.sh: the voice is pinned by commit and by sha256
+# ---------------------------------------------------------------------------
+echo "== piper voice pin =="
+# Against a fake server: curl serves $piper_tmp/server/<basename> and resumes by
+# appending past the local size, as the real one does. sha256sum prints a file's
+# first 64 bytes, so a served file is "good" when it starts with its pinned hash.
+# uname says Linux and stat is GNU's -c%s, so this runs on the Mac too.
+piper_script="$repo/apps/bridge/scripts/install_piper.sh"
+piper_tmp="$(mktemp -d)"
+mkdir -p "$piper_tmp/bin" "$piper_tmp/server" "$piper_tmp/dest"
+# shellcheck disable=SC2016  # the $vars are for the stubs to expand, not us
+{
+    printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; *) echo x86_64 ;; esac\n' >"$piper_tmp/bin/uname"
+    printf '#!/bin/sh\nprintf "%%s  %%s\\n" "$(head -c 64 "$1")" "$1"\n' >"$piper_tmp/bin/sha256sum"
+    printf '#!/bin/sh\nwc -c <"$2" | tr -d " "\n' >"$piper_tmp/bin/stat"
+    printf '#!/bin/sh\ncat >/dev/null\nhead -c 4000 /dev/zero\n' >"$piper_tmp/dest/piper"
+    cat >"$piper_tmp/bin/curl" <<'STUB'
+#!/bin/sh
+resume=0 out="" url=""
+while [ $# -gt 0 ]; do
+    case "$1" in -C) resume=1; shift ;; -o) out="$2"; shift ;; http*) url="$1" ;; esac
+    shift
+done
+echo "$resume $url" >>"$FAKE_CURL_LOG"
+src="$FAKE_SERVER/${url##*/}"
+[ -f "$src" ] || exit 22
+have=0; [ "$resume" = 1 ] && [ -f "$out" ] && have="$(wc -c <"$out" | tr -d ' ')"
+want="$(wc -c <"$src" | tr -d ' ')"
+[ "$have" -eq 0 ] && { cat "$src" >"$out"; exit 0; }
+[ "$have" -eq "$want" ] && exit 0  # curl: "already completely downloaded"
+[ "$have" -gt "$want" ] && exit 33  # the server refuses the range
+tail -c +"$((have + 1))" "$src" >>"$out"
+STUB
+}
+chmod +x "$piper_tmp/bin/"* "$piper_tmp/dest/piper"
+onnx_pin="$(sed -n 's/^VOICE_ONNX_SHA256=//p' "$piper_script")"
+json_pin="$(sed -n 's/^VOICE_JSON_SHA256=//p' "$piper_script")"
+serve() {  # serve <first 64 bytes> <file>
+    { printf '%s\n' "$1"; head -c 60 /dev/zero | tr '\0' x; } >"$piper_tmp/server/$2"
+}
+serve "$onnx_pin" es_AR-daniela-high.onnx
+serve "$json_pin" es_AR-daniela-high.onnx.json
+served="$piper_tmp/server/es_AR-daniela-high.onnx"
+installed="$piper_tmp/dest/es_AR-daniela-high.onnx"
+good_onnx="$(cat "$served")"
+run_piper() {
+    : >"$piper_tmp/curl.log"
+    PATH="$piper_tmp/bin:$PATH" PIPER_DEST="$piper_tmp/dest" FAKE_SERVER="$piper_tmp/server" \
+        FAKE_CURL_LOG="$piper_tmp/curl.log" bash "$piper_script" >"$piper_tmp/out" 2>&1
+    echo "exit $?"
+}
+
+check "each voice file has a sha256 pin" "64 64" "${#onnx_pin} ${#json_pin}"
+check "a fresh install succeeds" "exit 0" "$(run_piper)"
+check "and installs the served voice" "$good_onnx" "$(cat "$installed")"
+check_not_contains "the voice is fetched by commit, not from main" "/resolve/main/" "$(cat "$piper_tmp/curl.log")"
+check "a verified voice is not fetched again" "exit 0|" "$(run_piper)|$(cat "$piper_tmp/curl.log")"
+# Right size, wrong bytes: what a resume onto another revision's file leaves,
+# and what a size check calls complete.
+{ printf z; tail -c +2 "$served"; } >"$installed"
+check "a same-size file with the wrong hash is replaced" "exit 0|$good_onnx" "$(run_piper)|$(cat "$installed")"
+head -c 40 "$served" >"$installed"
+check "a truncated download is resumed, not fetched again" "exit 0|$good_onnx|1" \
+    "$(run_piper)|$(cat "$installed")|$(cut -d' ' -f1 "$piper_tmp/curl.log")"
+rm -f "$installed"
+serve "0000" es_AR-daniela-high.onnx
+check "a server that sends other bytes fails the install" "exit 1" "$(run_piper)"
+check_contains "and says it is the hash" "sha256" "$(cat "$piper_tmp/out")"
+rm -rf "$piper_tmp"
+
+# ---------------------------------------------------------------------------
+# .gitignore: only apps/back's compiled binary is called `server`
+# ---------------------------------------------------------------------------
+echo "== gitignore =="
+# A source directory named server (SvelteKit's $lib/server) used to be ignored
+# everywhere, so a file in it stayed off git without a word.
+ignored() { git -C "$repo" check-ignore -q --no-index "$1" && echo ignored || echo tracked; }
+if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    check "apps/back's compiled server binary is ignored" ignored "$(ignored apps/back/server)"
+    for path in apps/web/src/lib/server/auth.ts apps/back/src/server/index.ts packages/x/server/a.ts; do
+        check "a source file under $path is not ignored" tracked "$(ignored "$path")"
+    done
+else
+    printf '  – skipped: not a git checkout\n'
+fi
+
 echo "== audit watch =="
 watch_query="$("$repo/scripts/audit_watch.sh" --print)"
 check_contains "the audit watch prints each row once, by id" "select id," "$watch_query"
@@ -452,6 +735,14 @@ check_contains "quest setup identifies who owns a local port" \
     "port_owner_cwd" "$quest_setup_src"
 check_contains "quest setup fails on a port held from outside the checkout" \
     "held by something OUTSIDE this checkout" "$quest_setup_src"
+# The camera port the headset gets must be the one dev:robot gives the console.
+dev_robot_cam="$(sed -n 's/.*"dev:robot": "\(PUBLIC_ROBOT_CAM_URL=[^ ]*\).*/\1/p' "$repo/apps/web/package.json")"
+check "dev:robot still defaults the camera to the bridge on 8001" \
+    'PUBLIC_ROBOT_CAM_URL=${PUBLIC_ROBOT_CAM_URL:-http://localhost:8001/camera}' "$dev_robot_cam"
+check_contains "quest setup reads the camera port exactly as dev:robot does" \
+    "cam_url=\"${dev_robot_cam#PUBLIC_ROBOT_CAM_URL=}\"" "$quest_setup_src"
+check_contains "quest setup says 8001 is the camera and /mcp stays closed" \
+    "8001 is forwarded for the camera; /mcp on it stays closed" "$quest_setup_src"
 
 # The classifier, lifted verbatim from the script so the test cannot drift from
 # an implementation it only pretends to check.
@@ -503,6 +794,48 @@ kill "$_them_job" 2>/dev/null || true
 check "an unused port is not mistaken for a stranger" "nothing" "$(_classify 39313)"
 
 wait 2>/dev/null || true
+
+echo "== quest_reverse.sh =="
+# A fake adb: `devices` lists $FAKE_DEVICES, `reverse` records its ports.
+quest_stub="$(mktemp -d)"
+cat >"$quest_stub/adb" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    devices) printf 'List of devices attached\n%s' "${FAKE_DEVICES:-}" ;;
+    reverse) echo "$2" >>"$FAKE_LOG" ;;
+esac
+STUB
+chmod +x "$quest_stub/adb"
+quest_out="$(PATH="$quest_stub:$PATH" FAKE_LOG="$quest_stub/log" BACK_PORT=3010 \
+    FAKE_DEVICES=$'1WMHH\tdevice\n' bash "$repo/scripts/quest_reverse.sh" 2>&1)"
+check "quest_reverse: forwards console, back, bridge and teleop" \
+    "tcp:3001 tcp:3010 tcp:8001 tcp:8767" "$(tr '\n' ' ' <"$quest_stub/log" | sed 's/ $//')"
+check_contains "quest_reverse: prints the headset URL" \
+    "http://localhost:3001/vr-control" "$quest_out"
+rm -f "$quest_stub/log"
+quest_rc=0
+quest_none="$(PATH="$quest_stub:$PATH" FAKE_LOG="$quest_stub/log" FAKE_DEVICES=$'1WMHH\tunauthorized\n' \
+    bash "$repo/scripts/quest_reverse.sh" 2>&1)" || quest_rc=$?
+check "quest_reverse: no authorised device fails" "1" "$quest_rc"
+check_contains "quest_reverse: and says why" "no Quest attached" "$quest_none"
+check "quest_reverse: and forwards nothing" "no" "$([ -e "$quest_stub/log" ] && echo yes || echo no)"
+check_contains "quest_reverse: says 8001 is the camera and /mcp stays closed" \
+    "8001 is forwarded for the camera; /mcp on it stays closed" "$quest_out"
+# apps/back's PORT, in the three spellings a .env may use: a copy of the script
+# in a scratch repo, so the real apps/back/.env decides nothing.
+quest_repo="$(mktemp -d)"
+mkdir -p "$quest_repo/scripts" "$quest_repo/apps/back"
+cp "$repo/scripts/quest_reverse.sh" "$quest_repo/scripts/"
+for spelling in 'PORT=3021' 'PORT="3021"' 'export PORT=3021'; do
+    printf 'BETTER_AUTH_URL=http://localhost:3000\n%s\n' "$spelling" >"$quest_repo/apps/back/.env"
+    rm -f "$quest_stub/log"
+    PATH="$quest_stub:$PATH" FAKE_LOG="$quest_stub/log" FAKE_DEVICES=$'1WMHH\tdevice\n' \
+        bash "$quest_repo/scripts/quest_reverse.sh" >/dev/null 2>&1 || true
+    check "quest_reverse: reads back's port from $spelling" \
+        "tcp:3001 tcp:3021 tcp:8001 tcp:8767" "$(tr '\n' ' ' <"$quest_stub/log" | sed 's/ $//')"
+done
+rm -rf "$quest_repo"
+rm -rf "$quest_stub"
 
 echo "== shellcheck =="
 if command -v shellcheck >/dev/null 2>&1; then

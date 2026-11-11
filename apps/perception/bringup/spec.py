@@ -19,6 +19,29 @@ from typing import Dict, List, Optional, Sequence, Tuple
 NAV_IMAGE = "c3po/perception-nav:humble"
 VISION_IMAGE = "c3po/perception-vision:r35.3.1"
 
+# Operator env vars copied into the vision container when set in the shell that
+# runs perception_up. Without this a model swap or a tape-measured extrinsic
+# meant editing this file; with it, it is `C3PO_ENGINE=... perception_up nav2`.
+# An explicit list, not a prefix match: a stale `C3PO_VISION_FAKE=1` in someone's
+# shell must not quietly turn the robot's detector into a synthetic one.
+VISION_ENV_PASSTHROUGH = (
+    "C3PO_ENGINE", "C3PO_ONNX", "C3PO_LABELS",
+    "C3PO_VISION_CONF", "C3PO_VISION_CLASS_CONF", "C3PO_VISION_IOU", "C3PO_VISION_HZ",
+    "C3PO_VISION_MAX_OBJECTS", "C3PO_VISION_BEHIND_M", "C3PO_VISION_SUPPORT",
+    "C3PO_CAMERA_X_M", "C3PO_CAMERA_Y_M", "C3PO_CAMERA_Z_M",
+    "C3PO_CAMERA_PITCH_DEG", "C3PO_CAMERA_YAW_DEG",
+)
+
+
+#: What `~/.c3po/perception.env` may set. An explicit list, so a persisted
+#: C3PO_TAKE_OVER=1, C3PO_VISION_FAKE=1 or C3PO_NAV_* never becomes a silent default.
+PERSISTENT_ENV_KEYS = VISION_ENV_PASSTHROUGH + ("C3PO_LIDAR_SOURCE", "C3PO_VISION_STREAM_HZ")
+
+
+def vision_env_passthrough(env: Dict[str, str]) -> Dict[str, str]:
+    return {k: env[k] for k in VISION_ENV_PASSTHROUGH if env.get(k)}
+
+
 # The container names are a contract: `_common.sh`, `stop_c3po` and the health
 # check all match on the `c3po-perception` prefix.
 NAV = "c3po-perception-nav"
@@ -225,6 +248,45 @@ def stage_names() -> List[str]:
     return list(STAGES)
 
 
+# --- Phase 3 nav flags --------------------------------------------------------
+
+#: env var -> (launch argument, allowed values, default). The default is what
+#: nav2.launch.py declares, and a default is NEVER passed: an unset environment
+#: produces the exact argv every run before these flags produced, which is what
+#: makes "unset it" a complete rollback.
+NAV_FLAGS = (
+    ("C3PO_NAV_SLAM", "slam", ("off", "mapping", "localization"), "off"),
+    ("C3PO_NAV_CONTROLLER", "controller", ("dwb", "mppi"), "dwb"),
+    ("C3PO_NAV_COLLISION_MONITOR", "collision_monitor", ("1", "0"), "1"),
+)
+
+#: Host side of nav2.launch.py's MAPS_DIR. Read-write: mapping saves into it.
+MAPS_SUBDIR = ".c3po/maps"
+
+
+def nav_options(env: Dict[str, str], home: str) -> Tuple[List[str], List[str]]:
+    """(launch args, volumes) for nav2.launch.py from C3PO_NAV_*. Raises ValueError."""
+    args: List[str] = []
+    for var, arg, allowed, default in NAV_FLAGS:
+        value = env.get(var, default).strip().lower() or default
+        if value not in allowed:
+            raise ValueError(f"{var}={value!r}: expected one of {', '.join(allowed)}")
+        if value != default:
+            if arg == "collision_monitor":
+                value = "true" if value == "1" else "false"
+            args.append(f"{arg}:={value}")
+
+    volumes: List[str] = []
+    if env.get("C3PO_NAV_SLAM", "off").strip().lower() not in ("", "off"):
+        name = env.get("C3PO_NAV_MAP", "c3po").strip() or "c3po"
+        if not name.replace("_", "").replace("-", "").isalnum():
+            raise ValueError(f"C3PO_NAV_MAP={name!r}: letters, digits, '_' and '-' only")
+        if name != "c3po":
+            args.append(f"map:={name}")
+        volumes.append(f"{home}/{MAPS_SUBDIR}:/opt/c3po/maps")
+    return args, volumes
+
+
 # --- building the containers for a stage ------------------------------------
 
 
@@ -252,6 +314,10 @@ def containers_for(
             # Livox, and then run the republish path anyway — a stolen sensor
             # nothing reads, with every log line still saying "republish".
             launch_args.append("lidar_source:=driver")
+        nav_volumes: List[str] = []
+        if stage.launch_file == "nav2.launch.py":
+            nav_args, nav_volumes = nav_options(env, home)
+            launch_args += nav_args
         labels = {"c3po.stage": stage.name}
         if nav_digest:
             labels["c3po.image"] = nav_digest
@@ -266,7 +332,7 @@ def containers_for(
                     "RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp",
                     "CYCLONEDDS_URI": "file:///opt/c3po/config/cyclonedds-domain42.xml",
                 },
-                volumes=(config_mount, logs_mount),
+                volumes=(config_mount, logs_mount, *nav_volumes),
                 labels=labels,
                 command=("ros2", "launch", "c3po_perception", stage.launch_file) + tuple(launch_args),
             )
@@ -314,7 +380,9 @@ def containers_for(
                     "C3PO_VISION_STREAM": env.get("C3PO_VISION_STREAM", "1"),
                     "C3PO_VISION_STREAM_HOST": env.get("C3PO_VISION_STREAM_HOST", "127.0.0.1"),
                     "C3PO_VISION_STREAM_PORT": env.get("C3PO_VISION_STREAM_PORT", "8081"),
-                    "C3PO_VISION_STREAM_HZ": env.get("C3PO_VISION_STREAM_HZ", "5"),
+                    # 10 = the detector's own rate; streaming faster repeats frames.
+                    "C3PO_VISION_STREAM_HZ": env.get("C3PO_VISION_STREAM_HZ", "10"),
+                    **vision_env_passthrough(env),
                 },
                 device_cgroup_rules=("c 81:* rmw", "c 189:* rmw"),
                 # The /dev/bus/usb DIRECTORY, never `--device /dev/bus/usb/003/004`:

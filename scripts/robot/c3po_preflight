@@ -47,6 +47,24 @@ case "$gate" in
     *) block "cannot read the cmd_vel gate" ;;
 esac
 
+# Without the secret «Confirmar» (arm_navigation) answers 503 and a PARAR can never be cleared.
+safety="$(get /safety/status || true)"
+case "$safety" in
+    *'"confirm_configured":true'*) pass "SAFETY_CONFIRM_SECRET is set — «Confirmar» and «Reanudar» can reach the bridge" ;;
+    *'"confirm_configured":false'*) block "SAFETY_CONFIRM_SECRET IS NOT SET on the bridge — «Confirmar» answers 503 (confirmation_not_configured) and «Reanudar» cannot clear a PARAR. Set the same value in apps/bridge/.env and apps/back/.env, then restart both." ;;
+    *) block "cannot read /safety/status — no way to tell whether «Confirmar» works" ;;
+esac
+# Warnings only: whether these should block is an open decision.
+case "$safety" in
+    *'"person_rule":false'*) warns "the person rule is OFF (SAFETY_PERSON_RULE) — nobody nearby slows or stops the base, or refuses the arms" ;;
+esac
+case "$safety" in
+    *'"radius_m":null'*) warns "the geofence is OFF (SAFETY_GEOFENCE_M <= 0) — Nav2 can take the robot any distance from where it was armed" ;;
+esac
+case "$safety" in
+    *'"stop_standing":true'*) warns "a PARAR is still standing on the bridge — clear it with «Reanudar» once you know why it was pressed" ;;
+esac
+
 # --- 2. is anything else commanding the robot? ------------------------------
 # Two commanders on one control API is the conflict DDS domains cannot isolate.
 if warn_if_other_commander >/dev/null 2>&1; then
@@ -100,5 +118,6 @@ fi
 warn "$warnings warning(s), no blockers"
 echo
 info "If you are satisfied, arm for the manoeuvre and not for the plan:"
-info "  arm_navigation(reason=\"<what and who>\", seconds=<just enough>)"
+info "  ask the agent in the console chat for arm_navigation(reason=\"<what and who>\","
+info "  seconds=<just enough>), and a human operator presses «Confirmar» on the refusal."
 info "The gate closes itself when it expires, and on stop_everything."

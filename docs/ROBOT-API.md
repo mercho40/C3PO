@@ -242,9 +242,12 @@ and topics/services can be absent until switched on (§8), so the correct statem
 
 ```python
 c = _G1Client("robot_state", (1003,), timeout_s=5.0)   # register 1003 and nothing else
-c._SetApiVerson("1.0.0.0"); c.Init()
+c._SetApiVerson("1.0.0.2"); c.Init()   # client-side only, never on the wire (§1.1)
 code, data = c.call_raw(1003, "{}")
 ```
+
+The version string never reaches the wire (§1.1), which is why the `"1.0.0.0"` used on
+2026-08-21 still answered; `1.0.0.2` is the b2 client's value (table above).
 
 ⚠️ **The documented envelope is wrong here.** The web docs describe
 `{"succeed":bool,"errorCode":int,"info":str,"data":{}}` **[web]**; this robot returns a
@@ -252,7 +255,7 @@ code, data = c.call_raw(1003, "{}")
 defensively — code expecting `data.succeed` gets an AttributeError on a successful call.
 
 **Status polarity confirmed, and it is the inverted one.** `status` is `0 = running,
-1 = stopped` — the opposite of the `swit` input to `ServiceSwitch`. Verified without
+1 = stopped` — the opposite of the `switch` input to `ServiceSwitch`. Verified without
 trusting the docs: `robot_state` reports `status: 0` _while answering this very call_, so
 0 cannot mean stopped. `protect: 1` marks the services `ServiceSwitch` refuses with 5202 —
 `basic_service`, `robot_state`, `webrtc_bridge`, `webrtc_signal_server`. **[live]**
@@ -593,7 +596,7 @@ which lines up with `ai` → `ai_sport`.
 3. **`robot_state` `ServiceSwitch("ai_sport", 1, status)`** — if `ServiceList` (1003) ever
    shows `ai_sport` switched **off**, this turns it back on. **[web]** Errors `5201`
    (switch execution error), `5202` (service is protected). ⚠️ **Polarity foot-gun:** the
-   _input_ `swit` is `1 = on, 0 = off`, but the _returned_ `status` is documented
+   _input_ `switch` is `1 = on, 0 = off`, but the _returned_ `status` is documented
    `0 = on, 1 = off` — **inverted**. §8 carries the same warning.
 
 **Route 3 is a write and route 1 transfers ownership of the robot.** Neither belongs in an
@@ -1424,10 +1427,16 @@ client is a **superset** of the go2 one: **[web]** + **[src]**
 `status == 5` from 1001 means the service is protected (client maps it to `5202
 SERVICE_PROTECTED`); any other non-0/1 status maps to `5201`. **[src]**
 
-⚠️ **Polarity foot-gun on 1001:** the input `swit` is documented `1 = on, 0 = off`, while
+⚠️ **Polarity foot-gun on 1001:** the input `switch` is documented `1 = on, 0 = off`, while
 the returned `status` is documented `0 = on, 1 = off` — **inverted**. Our Python client
 accepts either and will not catch a mis-read; code on top of it must not assume the two
 fields share a convention. **[web]**
+
+The only 1001 caller in the repo is `scripts/robot/lidar_service.py`. It handles
+`lidar_driver` only and refuses any other name. It ran on 2026-11-03, and the lidar
+republish stayed empty because the control board's SDK does not know the Mid-360S
+(ROBOT-HARDWARE §4.6). Switching off `bashrunner` (BACKLOG 1.7) needs its own guarded
+caller for that one name; do not widen `lidar_service.py`.
 
 Two pure reads, both high value and never called:
 

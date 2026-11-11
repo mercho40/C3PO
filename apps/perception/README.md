@@ -18,7 +18,7 @@ that can turn it into leg motion, through a gate that is closed by default
 ```
 eth0 (robot internal LAN)        domain 42 (lo, unicast)            domain 0 (eth0)
 ─────────────────────────        ───────────────────────            ───────────────
-Mid-360 ──UDP──> [nav container]
+Mid-360S ──UDP──> [nav container]
                    livox_ros_driver2 (CustomMsg, xfer_format=1)
                    FAST-LIO2 ──/Odometry, /cloud_registered_body
                    g1_odom_tf ──/odom (odom→base_footprint, real twist)
@@ -27,7 +27,7 @@ Mid-360 ──UDP──> [nav container]
                    world_model_publisher ──/c3po/world_summary ───┤
                    costmap_publisher ──/c3po/costmap (PNG) ───────┤
 D435i ──USB──> [vision container]                                 │
-                   pyrealsense2 (V4L2) + YOLO11 TRT engine        │
+                   pyrealsense2 + YOLO11n or YOLOE-26 TRT engine  │
                    ──/c3po/objects (String JSON, egocentric) ─────┤
                    ──MJPEG on 127.0.0.1:8081 (operator console)   │
                                                                   │
@@ -60,7 +60,7 @@ those comments are the authority; read them before "simplifying" back to one ima
 | Base     | `ros:humble-ros-base-jammy` (22.04)                                    | `nvcr.io/nvidia/l4t-jetpack:r35.3.1` (20.04)           |
 | ROS      | Humble from apt binaries                                               | **none at all**                                        |
 | GPU      | no (`runc`)                                                            | yes (`--runtime nvidia`)                               |
-| Owns     | Livox Mid-360                                                          | RealSense D435i                                        |
+| Owns     | Livox Mid-360S (scan module faulted, `docs/ROBOT-HARDWARE.md` §4.6)    | RealSense D435i                                        |
 | Contains | livox_ros_driver2, FAST-LIO2, Nav2, pointcloud_to_laserscan, our nodes | pyrealsense2 (V4L2 wheel), TensorRT, CycloneDDS python |
 
 The vision container has no ROS by design: it publishes already-resolved
@@ -91,6 +91,15 @@ Three things about it are load-bearing and are argued in the module header:
 
 `C3PO_VISION_STREAM=0` turns it off. `perception_up` sets the defaults and
 prints the URL.
+
+`/frame.jpg` carries its capture stamp in `X-Frame-Stamp`, and
+`GET /depth_points?pts=x,y;x,y&r=&stamp=` returns, for that frame's aligned
+depth, `depth_m`: the median of a small patch around each point (`null` for a
+hole), plus `fx`, `fy`, `cx`, `cy`, all in `/frame.jpg` pixels (3ec5e99). It
+replaces `/depth_box`. A NaN or infinite number in the query is a 400. The last
+four depth frames are kept; a stamp no longer held is a 503, never another
+moment's depth. The bridge's operator face gate reads it at the face's five
+landmarks for liveness (`docs/OPERATIONS.md` §4).
 
 ## DDS domain isolation
 
@@ -147,6 +156,9 @@ ssh c3po 'bash -lc "c3po perception measure <label> [sec]"'    # compute-budget 
 c3po down                                                       # complete stack shutdown
 ```
 
+The robot has no internet on the cable: with `http_proxy`/`https_proxy` exported
+(`scripts/robot_internet.py`, `docs/OPERATIONS.md` §2), `bringup/build.py`
+(`proxy_build_args`) builds with `--network host` and the proxy as build-args.
 The build implementation carries per-step timings, disk guards and assertions.
 `c3po up <stage>` accepts every perception stage below. The granular
 `c3po perception up <stage>` command remains available when the bridge is
@@ -286,8 +298,10 @@ nav2` (no suffix) is the REAL pipeline and **claims both sensors** — this
   Tune `blind`, `filter_size_*`, `cube_side_length`, the laserscan height band
   and `angle_increment` fill rate, `min/max_obstacle_height`, the detector's
   confidence/depth bands — and measure the two constants currently placeholders:
-  `lidar_height_m`, `base_in_body_xyz`, plus the camera extrinsic the detector
-  holds. `docs/ROBOT-HARDWARE.md` carries the vendor-published Livox extrinsics
+  `lidar_height_m`, `base_in_body_xyz`. Verify, rather than set, the camera
+  extrinsic the detector holds: it defaults to the URDF's `d435_joint` seen from
+  the pelvis (x 0.054, y 0.018, z 0.474, pitch 47.6°, CAD), and a measured
+  value goes in `C3PO_CAMERA_*` (`~/.c3po/perception.env`). `docs/ROBOT-HARDWARE.md` carries the vendor-published Livox extrinsics
   and gemm's `base_link → lidar_link` `z = 1.0` marked _"APROXIMADA"_ — the
   vendor transform's direction is ambiguous as stated, so validate against a
   real cloud rather than trusting either number.
@@ -401,18 +415,49 @@ error. **The rebuild carrying that pin has not run yet.**
   `ai.onnx@16`, static `[1,3,640,640]`, output `[1,84,8400]` (the raw head, not
   the `[1,300,6]` an `nms=True` export produces), and no NMS op in the graph.
   TensorRT 8.5.2.2 parsed it and built the plan on the first attempt.
+- `tools/export_yoloe_onnx.py` — YOLOE-26 (open vocabulary, PLAN Phase 2) with
+  `vision/vocab.txt` (LVIS v1 + our extras, 1,223 prompts) baked in, or the
+  prompt-free `-pf` model (4,585 names). Same checks as the YOLO11 exporter,
+  but the default head is the NMS-free one: `[1,300,38]` + protos
+  `[1,32,160,160]` (`--raw-head` gives `[1,1259,8400]`, 42 MB/frame). Ran on a
+  Mac 2026-11-02; parsed by TensorRT 8.5 and live on the robot on 2026-11-03 at
+  ~40 ms/tick. The detector decodes
+  either head by shape, uses the masks for the depth median, falls back to a
+  support-plane fit for glass/holes (`depth_source`), and tags `track_id`.
+  Switching model is `C3PO_ONNX`/`C3PO_ENGINE`/`C3PO_LABELS` in
+  `~/.c3po/perception.env`, which `perception_up` and `build_perception` read on
+  every run (a shell export still wins; only `bringup/spec.py: PERSISTENT_ENV_KEYS`
+  are taken from the file) — they pass through
+  (`bringup/spec.py: VISION_ENV_PASSTHROUGH`). Steps:
+  `docs/autonomy/test-day/perception.md`. A class that keeps showing up where
+  it is not gets its own bar the same way, with no re-export:
+  `C3PO_VISION_CLASS_CONF="cooker=0.6,thumbtack=off"` (only above
+  `C3PO_VISION_CONF`; `person` is refused because the person rule reads it; the
+  start log prints what took effect). See `detector.py: parse_class_conf`.
+  The nearest four non-person objects also carry `support`, the surface they
+  stand on (`z_m`, its highest point from its near end to the object, in
+  base_link; `near_edge_m` along the bearing, `null` when the edge is out of
+  view or hidden by something over the table; `inliers`, `rms_m`, `stamp_unix`;
+  and `cam_top_xyz` / `cam_near_xyz` in the camera optical frame;
+  `grounding.py: fit_support`), which the arm planner plans around. `C3PO_VISION_SUPPORT=0` turns it off.
 
 ## File map
 
 ```
 nav/            Dockerfile + entrypoint, fastlio-publish-twist.patch,
                 ws/src/c3po_perception: g1_odom_tf.py, world_model_publisher.py,
-                configs (MID360, FAST-LIO, Nav2, pointcloud_to_laserscan),
+                goal_relay.py + nav_goal.py (bridge JSON goals -> NavigateToPose),
+                configs (MID360, FAST-LIO, Nav2 + mppi/map-frame overlays,
+                slam_toolbox, pointcloud_to_laserscan),
                 launch/{fake,odometry,perception,nav2}.launch.py
+                (nav2 opt-ins: C3PO_NAV_* — docs/autonomy/test-day/nav.md)
 vision/         Dockerfile + entrypoint (builds the TRT engine on first start),
-                c3po_vision: detector.py, grounding.py, ros_idl.py, stream.py
+                c3po_vision: detector.py, grounding.py, tracking.py, ros_idl.py,
+                stream.py; vocab.txt (the YOLOE prompt list, export-time only)
 config/         cyclonedds-domain42.xml — shared by both containers and the bridge
-tools/          export_yolo11_onnx.py — runs OFF-robot, never in an image
+tools/          export_yolo11_onnx.py, export_yoloe_onnx.py — OFF-robot, never in
+                an image; capture_frames.py, eval_recall.py — run in the vision
+                image via `docker run --entrypoint python3` (or on a laptop)
 tests/          Stage 0 harness: test_grounding.py, test_report_shape.py,
                 test_stream.py
 ```

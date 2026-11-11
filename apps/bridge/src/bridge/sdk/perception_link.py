@@ -238,6 +238,10 @@ class PerceptionLink:
         self.scans_rejected = 0
         self.reports_received = 0
         self.reports_rejected = 0
+        # Called with every ACCEPTED report, on the reader thread. main() points
+        # it at the object memory (bridge/object_memory.py). Read-only: nothing
+        # hung here can actuate.
+        self.on_report: Callable[[dict[str, Any]], None] | None = None
 
         # --- the gate
         self._enabled = False
@@ -317,6 +321,13 @@ class PerceptionLink:
             gate="closed",
         )
 
+    @property
+    def participant(self) -> Any:
+        """The domain-42 participant, or None before start(). nav_link.py
+        builds its goal writer on it: a second Domain(42) would be a second
+        config to keep matching, and a bare participant discovers nothing."""
+        return self._participant
+
     def stop(self) -> None:
         """Signal both threads to exit. The DDS objects stay alive on purpose.
 
@@ -358,6 +369,12 @@ class PerceptionLink:
             self._report = report
             self._report_at = self._clock()
             self.reports_received += 1
+        if self.on_report is not None:
+            try:
+                self.on_report(report)
+            except Exception:
+                # A listener bug must not cost us the world summary itself.
+                log.exception("perception.report.listener_failed")
         return True
 
     def latest_report(self) -> tuple[dict[str, Any] | None, float | None]:
@@ -755,10 +772,14 @@ def _default_forward(vx: float, vy: float, vyaw: float) -> None:
     the SET_VELOCITY api_id and the 1 s firmware duration all stay in exactly
     one place. `height` is not ours to choose — Nav2 has no opinion about
     stand height and a Twist carries none.
+
+    `nav2=True` puts this under the safety governor's stale-perception policy
+    (nobody is in this loop, so "no detector" must not read as "clear") and its
+    blind rule (no fresh lidar, no costmap to steer on: zero).
     """
     from bridge.skills._locomotion import DEFAULT_HEIGHT, send_velocity
 
-    send_velocity(vx, vy, vyaw, DEFAULT_HEIGHT)
+    send_velocity(vx, vy, vyaw, DEFAULT_HEIGHT, autonomous=True, nav2=True)
 
 
 _link_singleton: PerceptionLink | None = None
@@ -778,3 +799,13 @@ def get_link() -> PerceptionLink:
         if _link_singleton is None:
             _link_singleton = PerceptionLink()
         return _link_singleton
+
+
+def existing_link() -> PerceptionLink | None:
+    """The singleton if this process made one, else None — never creates it.
+
+    For readers like the safety governor that run in every process that can
+    move the robot (the teleop server too), where building a link would mean
+    joining domain 42 as a side effect of reading it.
+    """
+    return _link_singleton

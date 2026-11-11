@@ -1,0 +1,110 @@
+# MPPI (Omni) for the G1 — layered OVER nav2_params.yaml when
+# `C3PO_NAV_CONTROLLER=mppi` (nav2.launch.py `controller:=mppi`). DWB stays the
+# default, and this file changes nothing unless selected.
+#
+# WHY IT IS HERE AT ALL: the research (docs/autonomy/research/03 §5) picks MPPI
+# with the Omni motion model because the G1 strafes and DWB hugs obstacles.
+# WHY IT IS NOT THE DEFAULT: the Humble arm64 deb has an open SIGILL in
+# NoiseGenerator::generateNoisedControls (navigation2#5061) and its hot loop
+# falls back to NEON on aarch64 — see the DWB comment in nav2_params.yaml. The
+# symptom of the SIGILL is controller_server dying on ACTIVATION, which aborts
+# the lifecycle sequence; rollback is unsetting the flag and `c3po up nav2`.
+#
+# Same controller id (`FollowPath`) on purpose: the biped BTs name it, so a
+# swap is a plugin change and never a tree change. DWB's leftover FollowPath.*
+# keys are ignored by MPPI; the keys below that both use (critics) are replaced.
+#
+# Limits are the plan's (vx 0.5, vy 0.3). The bridge clamps harder today
+# (perception_link.py CLAMP_VY = ±0.20), and the bridge wins — that is D2.1.
+
+controller_server:
+  ros__parameters:
+    # model_dt must be the ACHIEVED period, not the hoped-for one. 10 Hz is the
+    # honest guess for NEON on the Orin NX until a benchmark says otherwise.
+    controller_frequency: 10.0
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+      motion_model: "Omni"
+      time_steps: 25
+      model_dt: 0.1               # = 1 / controller_frequency
+      batch_size: 1000            # upstream 2000 is sized for AVX2
+      iteration_count: 1
+      vx_std: 0.2
+      vy_std: 0.2
+      wz_std: 0.4
+      vx_max: 0.5
+      vx_min: 0.0                 # no reversing: the G1 has no rear-facing sensing
+      vy_max: 0.3
+      wz_max: 0.6
+      temperature: 0.3
+      gamma: 0.015
+      prune_distance: 1.7
+      transform_tolerance: 0.2
+      reset_period: 1.0
+      regenerate_noises: false
+      visualize: false
+      # ObstaclesCritic, not CostCritic: every Humble build has it.
+      critics: ["ConstraintCritic", "ObstaclesCritic", "GoalCritic",
+                "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
+                "PathAngleCritic", "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      ObstaclesCritic:
+        enabled: true
+        cost_power: 1
+        repulsion_weight: 1.5
+        critical_weight: 20.0
+        consider_footprint: false
+        collision_cost: 10000.0
+        collision_margin_distance: 0.10
+        near_goal_distance: 0.5
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.4
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 3
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+      # Walking forward is the gait this robot has actually done; strafing is
+      # allowed, not preferred.
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+
+# The smoother must pass vy, or MPPI's lateral output is zeroed one hop later
+# and it reads as "MPPI never strafes". y limits mirror the controller's.
+velocity_smoother:
+  ros__parameters:
+    max_velocity: [0.5, 0.3, 0.6]
+    min_velocity: [0.0, -0.3, -0.6]
+    max_accel: [0.40, 0.30, 0.60]
+    max_decel: [-0.60, -0.40, -1.00]
+    deadband_velocity: [0.05, 0.05, 0.10]

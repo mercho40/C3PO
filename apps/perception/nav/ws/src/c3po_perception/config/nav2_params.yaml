@@ -12,11 +12,22 @@
 #   body -> base_link        static, roll=pi + mount offset
 #   odom -> base_footprint   g1_odom_tf, yaw only, z=0        (the FLAT costmap frame)
 #
-# No map frame and no AMCL: everything runs in `odom`. FAST-LIO's world frame IS
-# an odometry frame — continuous, no loop closure, slow drift — which is exactly
-# what Nav2 means by odom. Over tens of metres its drift is well below the
-# costmap resolution. A map server and a map->odom publisher are a pure addition
-# later; the seam does not change.
+# By default there is no map frame and no AMCL: everything runs in `odom`.
+# FAST-LIO's world frame IS an odometry frame — continuous, no loop closure, slow
+# drift — which is exactly what Nav2 means by odom. Over tens of metres its drift
+# is well below the costmap resolution.
+#
+# The saved map is the pure addition this seam was left for, and it is OPT-IN
+# (`C3PO_NAV_SLAM=localization`, see nav2.launch.py): slam_toolbox publishes
+# map->odom, map_server serves the saved grid, and nav2_map_frame.yaml is layered
+# over this file to move the global costmap and the BT into `map`. FAST-LIO stays
+# the odom->base_footprint source either way. Nothing below changes for it.
+#
+# Velocity path, last hops (D2.1 — nothing here reaches the legs by itself):
+#   controller -> cmd_vel_nav -> velocity_smoother -> cmd_vel_smoothed
+#     -> collision_monitor -> /c3po/cmd_vel -> the bridge's gate
+# `C3PO_NAV_COLLISION_MONITOR=0` drops the monitor and the smoother publishes
+# /c3po/cmd_vel itself, as before 2026-11-02.
 
 controller_server:
   ros__parameters:
@@ -48,7 +59,8 @@ controller_server:
       xy_goal_tolerance: 0.20
       yaw_goal_tolerance: 0.20
 
-    # DWB, NOT MPPI. nav2_mppi_controller's "50+ Hz" is measured on a 4th-gen
+    # DWB, NOT MPPI — by default. `C3PO_NAV_CONTROLLER=mppi` layers
+    # nav2_mppi.yaml over this block for the Omni model; read its header first. nav2_mppi_controller's "50+ Hz" is measured on a 4th-gen
     # Intel i5 and its hot loop relies on AVX2/MFMA; Humble's CMakeLists gates
     # those behind check_cxx_compiler_flag("-mavx2"/"-mfma"), all of which fail
     # on aarch64, so xsimd falls back to 128-bit NEON. Worse, the Humble arm64
@@ -376,6 +388,50 @@ velocity_smoother:
     max_decel: [-0.60, 0.0, -1.00]
     deadband_velocity: [0.05, 0.0, 0.10]
 
+# THE LAST HOP INSIDE THE CONTAINER. It sits after the smoother (upstream's own
+# order) so a stop is a step to zero, not something the smoother ramps through.
+# Advisory like everything in this file: the bridge's gate and clamps enforce.
+#
+# Polygons are in base_footprint, x forward. They only see what /scan sees, and
+# /scan starts at range_min 0.45 m — the self-body crop (pointcloud_to_laserscan
+# .yaml). So the stop box effectively watches 0.45-0.60 m ahead: anything closer
+# than that is invisible to this node by design, and the costmap's inflation is
+# what keeps the planner from getting there. UNMEASURED: sized from the 0.35 m
+# footprint and the 0.35 m/s cap, not from watching the robot brake.
+#
+# Humble spelling: `max_points` (readings allowed inside before acting) and a
+# flat `points` list. Iron+ renamed it `min_points` and made points a string;
+# copying a newer example here fails activation and takes Nav2 with it.
+collision_monitor:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "/c3po/cmd_vel"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: true
+    stop_pub_timeout: 1.0
+    polygons: ["PolygonStop", "PolygonSlow"]
+    PolygonStop:
+      type: "polygon"
+      points: [0.60, 0.30, 0.60, -0.30, 0.0, -0.30, 0.0, 0.30]
+      action_type: "stop"
+      max_points: 2               # a 3 cm chair leg at 0.5 m fills ~3 one-degree bins
+      visualize: false
+    PolygonSlow:
+      type: "polygon"
+      points: [1.00, 0.40, 1.00, -0.40, 0.0, -0.40, 0.0, 0.40]
+      action_type: "slowdown"
+      max_points: 2
+      slowdown_ratio: 0.4
+      visualize: false
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "/scan"
+
 lifecycle_manager_navigation:
   ros__parameters:
     use_sim_time: false
@@ -398,3 +454,6 @@ lifecycle_manager_navigation:
       - behavior_server
       - bt_navigator
       - velocity_smoother
+      # Dropped by nav2.launch.py when C3PO_NAV_COLLISION_MONITOR=0; a manager
+      # waiting on a node that was never launched aborts the whole bringup.
+      - collision_monitor

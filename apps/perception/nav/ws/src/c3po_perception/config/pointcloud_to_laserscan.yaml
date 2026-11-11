@@ -28,6 +28,12 @@ mid360_to_scan:
     # how you erase a real thin obstacle. Needs a measured per-bin fill rate.
     angle_increment: 0.01745
     scan_time: 0.1
+    # THE SELF-BODY CROP (research 03 §5 asks for one before this node). It
+    # already is one: range is hypot(x, y) AFTER the transform into
+    # base_footprint, so this drops a 0.45 m vertical cylinder around the robot
+    # — arms, shoulders, hands — at every height in the band. A separate box
+    # filter would add a node and a second number to keep in step with this one.
+    # Bigger than robot_radius (0.35) on purpose: the arms swing past it.
     range_min: 0.45      # inside this the LiDAR is seeing the robot's own arms
     range_max: 12.0
     use_inf: true

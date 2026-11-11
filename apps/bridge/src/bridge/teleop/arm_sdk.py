@@ -68,6 +68,11 @@ ARM_SDK_TOPIC = "rt/arm_sdk"
 # Motor array layout — docs/ROBOT-API.md §9.3.
 LEFT_ARM_BASE = 15
 RIGHT_ARM_BASE = 22
+# Waist yaw/roll/pitch. Upstream's g1_arm7_sdk_dds_example puts these in the
+# arm_sdk joint list at the same kp/kd under the same weight: the blend covers
+# them, so leaving them unwritten commands kp=0 at w=1, a limp waist (sdk2_python
+# #146, the torso folding forward). Held at the q measured at engage.
+WAIST_SLOTS = (12, 13, 14)
 WEIGHT_SLOT = 29
 MOTOR_SLOTS = 35
 
@@ -161,6 +166,10 @@ class ArmSdkDriver:
         # Current (commanded) and target joint angles, 14 values: left then right.
         self._current: list[float] = [0.0] * 14
         self._target: list[float] = [0.0] * 14
+        # Waist yaw/roll/pitch to hold, set from lowstate by engage(). Empty
+        # until then, so a command built without a measured waist raises in
+        # _build_command (zip strict) instead of shipping a limp waist.
+        self._waist_hold: list[float] = []
         self._mode_machine = 0
         #: Monotonic, not wall clock — see the note above STALE_FRAME_S in
         #: server.py. This one guards the arm-hold timeout, and a backwards
@@ -223,10 +232,10 @@ class ArmSdkDriver:
 
     # -- preconditions --------------------------------------------------
 
-    def _check_preconditions(self) -> tuple[tuple[float, ...], int]:
+    def _check_preconditions(self) -> tuple[tuple[float, ...], tuple[float, ...], int]:
         """Raise `ArmSdkUnavailable` unless it is safe to engage.
 
-        Returns the measured arm pose and `mode_machine` on success, so the
+        Returns the measured arm and waist pose and `mode_machine` on success, so the
         caller cannot engage using values read at a different instant than the
         ones that were checked.
         """
@@ -270,6 +279,15 @@ class ArmSdkDriver:
                 "A 23-DoF or arms-only variant needs its own slot mapping before this runs."
             )
 
+        waist_q: tuple[float, ...] = tuple(state.get("waist_q") or ())
+        if len(waist_q) != len(WAIST_SLOTS):
+            raise ArmSdkUnavailable(
+                f"lowstate reported {len(waist_q)} waist joints, expected 3 (G1JointIndex 12-14). "
+                "The waist must be held while arm_sdk is engaged, or the blend leaves it limp "
+                "and the torso folds forward; without its measured pose there is nothing safe "
+                "to hold it at."
+            )
+
         fsm_age = state["fsm_age_s"]
         if fsm_age is None:
             raise ArmSdkUnavailable(
@@ -304,7 +322,7 @@ class ArmSdkDriver:
                 "the documented cause of error 7400. Let it finish, or stop_everything first."
             )
 
-        return arm_q, int(state["mode_machine"])
+        return arm_q, waist_q, int(state["mode_machine"])
 
     # -- lifecycle ------------------------------------------------------
 
@@ -312,9 +330,17 @@ class ArmSdkDriver:
         """Take the arms, starting from wherever they currently are."""
         if self._engaged:
             return
-        arm_q, mode_machine = self._check_preconditions()
+        from bridge import estop
+
+        if estop.stop_is_standing():
+            raise ArmSdkUnavailable(
+                "PARAR is standing: the arms are not taken until an operator resumes (Reanudar)."
+            )
+        arm_q, waist_q, mode_machine = self._check_preconditions()
 
         self._mode_machine = mode_machine
+        # Same snapshot as arm_q, so the lowstate age check above covers it too.
+        self._waist_hold = list(waist_q)
         # Both current and target start at the *measured* pose. Countermeasure
         # 1 in the module docstring: with no gap, the ramp has nothing to drag
         # the arm across, and the first operator frame moves it from there at
@@ -343,6 +369,9 @@ class ArmSdkDriver:
         """
         if not self._engaged or self._releasing:
             return
+        # Freeze where the arm IS: the loop keeps slewing toward _target while
+        # it ramps down, so an abort mid-motion would otherwise finish the move.
+        self._target = list(self._current)
         self._releasing = True
         log.info("arm_sdk.releasing", weight=round(self._weight, 3))
 
@@ -467,6 +496,14 @@ class ArmSdkDriver:
             motor = cmd.motor_cmd[slot]
             motor.mode = 1  # 1 = Enable. 0 is silently ignored — see the docstring.
             motor.q = float(self._current[i])
+            motor.dq = 0.0
+            motor.tau = 0.0
+            motor.kp = KP
+            motor.kd = KD
+        for slot, q in zip(WAIST_SLOTS, self._waist_hold, strict=True):
+            motor = cmd.motor_cmd[slot]
+            motor.mode = 1
+            motor.q = float(q)
             motor.dq = 0.0
             motor.tau = 0.0
             motor.kp = KP

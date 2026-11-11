@@ -17,6 +17,7 @@ intends to use and callers pass the parameter JSON.
 from __future__ import annotations
 
 import json
+import threading
 from typing import Final
 
 import structlog
@@ -62,27 +63,33 @@ class _G1Client(Client):
 
 
 _sport_client: _G1Client | None = None
+_sport_client_lock = threading.Lock()
 _arm_client: _G1Client | None = None
 
 
 def _get_sport_client() -> _G1Client:
     global _sport_client
-    if _sport_client is None:
-        # One client per service, registering every api_id we use on it —
-        # separate Client instances on the same service would each stand up
-        # their own request/response channels.
-        _sport_client = _G1Client(
-            "sport",
-            (
-                g1_protocol.API_ID_G1_STATE,
-                g1_protocol.API_ID_LOCO_SET_VELOCITY,
-                g1_protocol.API_ID_LOCO_SET_BALANCE_MODE,
-                g1_protocol.API_ID_LOCO_GET_FSM_ID,
-                g1_protocol.API_ID_LOCO_GET_FSM_MODE,
-            ),
-            timeout_s=SPORT_TIMEOUT_S,
-        )
-        _sport_client.Init()
+    # Locked, and published only once Init has run: the stop burst asks from
+    # several threads at once, and a racer got a second client or one whose
+    # api_ids were not registered yet.
+    with _sport_client_lock:
+        if _sport_client is None:
+            # One client per service, registering every api_id we use on it —
+            # separate Client instances on the same service would each stand up
+            # their own request/response channels.
+            client = _G1Client(
+                "sport",
+                (
+                    g1_protocol.API_ID_G1_STATE,
+                    g1_protocol.API_ID_LOCO_SET_VELOCITY,
+                    g1_protocol.API_ID_LOCO_SET_BALANCE_MODE,
+                    g1_protocol.API_ID_LOCO_GET_FSM_ID,
+                    g1_protocol.API_ID_LOCO_GET_FSM_MODE,
+                ),
+                timeout_s=SPORT_TIMEOUT_S,
+            )
+            client.Init()
+            _sport_client = client
     return _sport_client
 
 
@@ -189,6 +196,7 @@ def play_pcm(
     pcm: bytes,
     stream_id: str,
     app_name: str = PLAY_APP_NAME,
+    generation: int | None = None,
 ) -> tuple[int, str | None]:
     """Push 16 kHz mono 16-bit PCM to the speaker (voice/1003 START_PLAY).
 
@@ -207,6 +215,9 @@ def play_pcm(
 
     Returns the LAST chunk's (rpc_code, data), and stops at the first failure so
     a rejected format does not spend thirty more calls being rejected.
+
+    `generation`: `_play_generation` as read before the audio was made, so a stop
+    during synthesis also cancels it; default, as of this call.
     """
     if not pcm:
         return 0, None
@@ -214,7 +225,12 @@ def play_pcm(
     client = _get_voice_client()
     param = json.dumps({"app_name": app_name, "stream_id": stream_id})
     code, data = 0, None
+    generation = _play_generation if generation is None else generation
     for offset in range(0, len(pcm), PLAY_CHUNK_BYTES):
+        if _play_generation != generation:
+            # stop_play ran: the chunks still to send would restart the speech.
+            log.info("voice.play_pcm.stopped", offset=offset, total=len(pcm))
+            return 0, "stopped"
         chunk = pcm[offset : offset + PLAY_CHUNK_BYTES]
         code, data = client._CallRequestWithParamAndBin(
             g1_protocol.API_ID_VOICE_START_PLAY, param, chunk
@@ -231,13 +247,27 @@ def play_pcm(
     return code, data
 
 
+#: Bumped by every stop; a play_pcm loop sending an older generation quits.
+_play_generation = 0
+
+
+def cancel_pcm_playback() -> None:
+    """End every play_pcm loop in flight before its next chunk. Never blocks."""
+    global _play_generation
+    _play_generation += 1
+
+
 def stop_play(app_name: str = PLAY_APP_NAME) -> tuple[int, str | None]:
     """Stop OUR playback (voice/1004). Scoped by app_name, not stream_id.
 
     Three of four sources agree it takes app_name; the on-robot C++ example
     passing a stream_id is simply wrong. The scoping is a feature here — it is
     structurally impossible for this to silence the co-tenant's assistant.
+
+    Also ends any play_pcm still sending chunks: stopping what already reached
+    the speaker is no use if the rest of the utterance follows it.
     """
+    cancel_pcm_playback()
     return _get_voice_client().call_raw(
         g1_protocol.API_ID_VOICE_STOP_PLAY, json.dumps({"app_name": app_name})
     )
