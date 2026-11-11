@@ -88,7 +88,7 @@ def scene(tmp_path, monkeypatch):
 
     def frame():
         s["n"] += 1
-        return "img", s["stamp"]
+        return np.zeros((H, W, 3), np.uint8), s["stamp"]
 
     def feature(img, row):
         seq = s.get("who_by_frame")
@@ -181,7 +181,9 @@ async def test_a_real_face_passes_through_far_range_sensor_noise(scene):
     assert await face_gate.refusal("pick") is None
 
 
-@pytest.mark.parametrize("yaw, pitch", [(0, 0), (10, 0), (15, 0), (30, 0), (0, 15), (0, 30), (20, 20)])
+@pytest.mark.parametrize(
+    "yaw, pitch", [(0, 0), (10, 0), (15, 0), (30, 0), (0, 15), (0, 30), (20, 20)]
+)
 async def test_a_life_size_print_is_flat_however_it_is_tilted(scene, yaw, pitch):
     """A box's p90 - p10 read a 10 degree tilt as 1.3 cm of relief; the landmark plane does not."""
     _face(scene, 10, OPERATOR, nose_m=0.0, yaw=yaw, pitch=pitch)
@@ -361,7 +363,10 @@ async def test_missing_models_fail_closed(scene, monkeypatch):
     assert not (face_gate.FACE_DIR / "models").exists()
     with capture_logs() as logs:
         assert _code(await face_gate.refusal("pick")) == face_gate.UNAVAILABLE
-    assert "install_face_models" in next(e for e in logs if e["event"] == "face_gate.refused")["detail"]
+    assert (
+        "install_face_models"
+        in next(e for e in logs if e["event"] == "face_gate.refused")["detail"]
+    )
 
 
 async def test_a_slow_check_times_out_closed(scene, monkeypatch):
@@ -535,69 +540,90 @@ async def test_a_stop_is_not_delayed_by_a_gated_check(scene, monkeypatch):
 # -- enrollment ---------------------------------------------------------------
 
 
-def test_enrollment_is_owner_only_features_and_delete_removes_it(scene, capsys, monkeypatch):
+def _person_files(name):
+    p = next(p for p in face_gate.people_listing() if p["name"] == name)
+    return face_gate.people_dir() / p["id"]
+
+
+def test_enrollment_is_owner_only_features_and_photo_and_delete_removes_it(
+    scene, capsys, monkeypatch
+):
     os.chmod(face_gate.FACE_DIR, 0o755)
     face_gate.enrollment_path().unlink()
     _face(scene, 10, OPERATOR)
-    monkeypatch.setattr(face_enroll, "INTERVAL_S", 0.0)
+    monkeypatch.setattr(face_gate, "ENROLL_INTERVAL_S", 0.0)
 
-    assert face_enroll.main(["--yes", "--frames", "3"]) == 0
-    path = face_gate.enrollment_path()
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert (
+        face_enroll.main(["--yes", "--frames", "3", "--name", " Ana ", "--role", "operator"]) == 0
+    )
+    folder = _person_files("Ana")
     assert stat.S_IMODE(face_gate.FACE_DIR.stat().st_mode) == 0o700
-    stored = np.load(path, allow_pickle=False)
+    assert stat.S_IMODE(face_gate.people_dir().stat().st_mode) == 0o700
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+    assert sorted(f.name for f in folder.iterdir()) == ["features.npy", "person.json", "photo.jpg"]
+    for f in folder.iterdir():
+        assert stat.S_IMODE(f.stat().st_mode) == 0o600
+    stored = np.load(folder / "features.npy", allow_pickle=False)
     assert stored.shape == (3, 128) and stored.dtype == np.float32
-    assert "SOLO" in capsys.readouterr().out
+    info = json.loads((folder / "person.json").read_text())
+    assert info["name"] == "Ana" and info["role"] == "operator" and info["id"] == folder.name
+    jpg = (folder / "photo.jpg").read_bytes()
+    assert jpg[:2] == b"\xff\xd8"
+    import cv2
 
-    assert face_enroll.main(["--delete"]) == 0
-    assert not path.exists()
+    assert max(cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR).shape[:2]) <= 160
+    out = capsys.readouterr().out
+    assert "UNA foto" in out and "ONE small photo" in out
+
+    assert face_enroll.main(["--delete", "ana"]) == 0
+    assert not folder.exists() and face_gate.people() == []
 
 
-def test_enrollment_name_is_owner_only_and_delete_removes_it(scene, monkeypatch):
+def test_re_enrolling_a_name_replaces_that_person(scene, monkeypatch):
     _face(scene, 10, OPERATOR)
-    monkeypatch.setattr(face_enroll, "INTERVAL_S", 0.0)
-
-    assert face_enroll.main(["--yes", "--frames", "2", "--name", " Oliver "]) == 0
-    path = face_gate.name_path()
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert json.loads(path.read_text()) == {"name": "Oliver"}
-    assert face_gate.enrolled_name() == "Oliver"
-    os.chmod(path, 0o644)
-    assert face_gate.enrolled_name() is None  # others could have written it
-    os.chmod(path, 0o600)
-
-    assert face_enroll.main(["--delete"]) == 0
-    assert not path.exists() and face_gate.enrolled_name() is None
+    monkeypatch.setattr(face_gate, "ENROLL_INTERVAL_S", 0.0)
+    assert face_enroll.main(["--yes", "--frames", "2", "--name", "Ana", "--role", "operator"]) == 0
+    first = _person_files("Ana")
+    assert (
+        face_enroll.main(["--yes", "--frames", "2", "--name", "ANA", "--role", "superadmin"]) == 0
+    )
+    assert [
+        (p["name"], p["role"]) for p in face_gate.people_listing() if p["id"] == first.name
+    ] == [("ANA", "superadmin")]
+    assert len([p for p in face_gate.people_listing() if p["name"].casefold() == "ana"]) == 1
 
 
-def test_re_enrolling_without_a_name_drops_the_old_one(scene, monkeypatch):
-    _face(scene, 10, OPERATOR)
-    monkeypatch.setattr(face_enroll, "INTERVAL_S", 0.0)
-    face_gate.save_name("Someone else")
-    assert face_enroll.main(["--yes", "--frames", "2"]) == 0
-    assert not face_gate.name_path().exists()
+def test_list_and_delete_all(scene, monkeypatch, capsys):
+    face_gate.save_name("Oliver")
+    face_gate.add_person("Ana", "operator", np.stack([STRANGER]))
+    assert face_enroll.main(["--list"]) == 0
+    out = capsys.readouterr().out
+    assert "Oliver\tsuperadmin" in out and "Ana\toperator" in out
+    assert face_enroll.main(["--delete-all"]) == 0
+    assert face_gate.people() == [] and not face_gate.people_dir().exists()
+    assert not face_gate.enrollment_path().exists()
 
 
 def test_enrollment_refuses_two_faces_and_a_flat_face(scene, monkeypatch):
     face_gate.enrollment_path().unlink()
-    monkeypatch.setattr(face_enroll, "INTERVAL_S", 0.0)
+    monkeypatch.setattr(face_gate, "ENROLL_INTERVAL_S", 0.0)
     _face(scene, 10, OPERATOR)
     _face(scene, 300, STRANGER)
-    assert face_enroll.main(["--yes", "--frames", "2"]) == 1
+    assert face_enroll.main(["--yes", "--frames", "2", "--name", "Ana"]) == 1
     scene["faces"].clear()
     _face(scene, 10, OPERATOR, nose_m=0.0)
-    assert face_enroll.main(["--yes", "--frames", "2"]) == 1
-    assert not face_gate.enrollment_path().exists()
+    assert face_enroll.main(["--yes", "--frames", "2", "--name", "Ana"]) == 1
+    assert not face_gate.people_dir().exists()
 
 
 def test_enrollment_refuses_frames_of_two_people(scene, monkeypatch):
     face_gate.enrollment_path().unlink()
-    monkeypatch.setattr(face_enroll, "INTERVAL_S", 0.0)
+    monkeypatch.setattr(face_gate, "ENROLL_INTERVAL_S", 0.0)
     _face(scene, 10, OPERATOR)
     who = iter([OPERATOR, OPERATOR_2, STRANGER])
     monkeypatch.setattr(face_gate, "feature", lambda img, row: next(who))
-    assert face_enroll.main(["--yes", "--frames", "3"]) == 1
-    assert not face_gate.enrollment_path().exists()
+    assert face_enroll.main(["--yes", "--frames", "3", "--name", "Ana"]) == 1
+    assert not face_gate.people_dir().exists()
 
 
 def test_saving_never_writes_through_a_planted_temp_file(scene, tmp_path):
@@ -607,10 +633,207 @@ def test_saving_never_writes_through_a_planted_temp_file(scene, tmp_path):
     with pytest.raises(face_gate.Unavailable, match="--delete"):
         face_gate.save_enrollment(np.stack([OPERATOR]))
     assert target.read_bytes() == b"keep"
-    assert face_enroll.main(["--delete"]) == 0
+    assert face_enroll.main(["--delete-all"]) == 0
     assert not face_gate.temp_path().is_symlink() and not face_gate.enrollment_path().exists()
     face_gate.save_enrollment(np.stack([OPERATOR]))
     assert face_gate.enrolled().shape == (1, 128)
+
+
+# -- people, roles, settings ---------------------------------------------------
+
+ANA = _E[5]
+T2, T0 = {"c3po": {"tier": "T2"}}, {"c3po": {"tier": "T0"}}
+
+
+def _files(root: Path) -> set[str]:
+    return {str(f.relative_to(root)) for f in root.rglob("*")}
+
+
+async def test_the_old_operator_migrates_to_a_superadmin_and_still_passes(scene):
+    face_gate.save_name("Oliver")
+    (oliver,) = face_gate.people()
+    assert (oliver["name"], oliver["role"], oliver["has_photo"]) == ("Oliver", "superadmin", False)
+    assert np.allclose(oliver["features"], np.stack([OPERATOR, OPERATOR_2]))
+    assert not face_gate.enrollment_path().exists() and not face_gate.name_path().exists()
+    folder = face_gate.people_dir() / oliver["id"]
+    assert sorted(f.name for f in folder.iterdir()) == ["features.npy", "person.json"]
+    _face(scene, 10, OPERATOR)
+    assert await face_gate.live_check() == (face_gate.PASSED, oliver["id"])
+
+
+async def test_an_old_operator_that_cannot_migrate_still_passes(scene, monkeypatch):
+    def broken(*_a, **_k):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(face_gate, "add_person", broken)
+    _face(scene, 10, OPERATOR)
+    assert await face_gate.refusal("pick") is None
+    assert face_gate.enrollment_path().exists()  # never lost
+    assert [p["role"] for p in face_gate.people()] == ["superadmin"]
+
+
+async def test_the_best_matching_person_is_who_it_is_and_both_roles_pass(scene):
+    oliver = face_gate.people()[0]["id"]
+    ana = face_gate.add_person("Ana", "operator", np.stack([ANA]))["id"]
+    _face(scene, 10, ANA)
+    assert await face_gate.live_check() == (face_gate.PASSED, ana)
+    assert await face_gate.refusal("pick") is None
+    scene["faces"].clear()
+    _face(scene, 10, OPERATOR)
+    assert await face_gate.live_check() == (face_gate.PASSED, oliver)
+
+
+async def test_a_live_stranger_does_not_pass_and_is_unknown_only_when_asked(scene):
+    before = _files(face_gate.FACE_DIR.parent)
+    _face(scene, 10, _E[9])
+    assert _code(await face_gate.refusal("pick")) == face_gate.NOT_SEEN
+    assert (await face_gate.live_check(background=True))[0] == face_gate.NOT_SEEN
+    assert (await face_gate.live_check(background=True, unknown=True))[0] == face_gate.UNKNOWN
+    scene["faces"].clear()
+    _face(scene, 10, _E[9], nose_m=0.0)  # a print of a stranger: not live, not unknown
+    assert (await face_gate.live_check(background=True, unknown=True))[0] == face_gate.NOT_SEEN
+    scene["faces"].clear()
+    assert (await face_gate.live_check(background=True, unknown=True))[0] == face_gate.NO_FACE
+    after = _files(face_gate.FACE_DIR.parent)
+    assert {f for f in after - before if "people" not in f} == set()  # only the migration wrote
+
+
+async def test_a_person_with_no_such_role_or_others_can_read_is_nobody(scene):
+    face_gate.delete_all()
+    ana = face_gate.add_person("Ana", "operator", np.stack([ANA]))["id"]
+    folder = face_gate.people_dir() / ana
+    info = json.loads((folder / "person.json").read_text())
+    face_gate._save_owner_only(
+        folder / "person.json", json.dumps(info | {"role": "guest"}).encode()
+    )
+    _face(scene, 10, ANA)
+    assert _code(await face_gate.refusal("pick")) == face_gate.NOT_ENROLLED
+    face_gate._save_owner_only(folder / "person.json", json.dumps(info).encode())
+    assert await face_gate.refusal("pick") is None
+    os.chmod(folder / "features.npy", 0o644)
+    assert _code(await face_gate.refusal("pick")) == face_gate.NOT_ENROLLED
+    os.chmod(folder / "features.npy", 0o600)
+    os.chmod(folder, 0o755)
+    assert _code(await face_gate.refusal("pick")) == face_gate.NOT_ENROLLED
+
+
+async def test_a_symlinked_person_folder_is_nobody(scene, tmp_path):
+    face_gate.delete_all()
+    ana = face_gate.add_person("Ana", "operator", np.stack([ANA]))["id"]
+    folder = face_gate.people_dir() / ana
+    folder.rename(tmp_path / "planted")
+    folder.symlink_to(tmp_path / "planted")
+    _face(scene, 10, ANA)
+    assert _code(await face_gate.refusal("pick")) == face_gate.NOT_ENROLLED
+
+
+def test_settings_persist_owner_only_and_apply_live(scene, monkeypatch):
+    monkeypatch.setattr(face_gate, "_stored", None)
+    monkeypatch.setattr(face_gate, "GATED", frozenset())
+    monkeypatch.delenv("C3PO_FACE_GREET", raising=False)
+    assert face_gate.settings() == {"gate": False, "greet": False, "greet_unknown": False}
+    assert not face_gate.gated("set_hand", T2)
+    assert face_gate.update_settings({"gate": True})["gate"] is True
+    assert face_gate.gated("set_hand", T2) and not face_gate.gated("get_state", T0)
+    assert not face_gate.gated("stop_everything", T2)
+    assert stat.S_IMODE(face_gate.settings_path().stat().st_mode) == 0o600
+    monkeypatch.setattr(face_gate, "_stored", None)  # a restart reads the file back
+    assert face_gate.settings()["gate"] is True
+    monkeypatch.setattr(face_gate, "GATED", frozenset({"pick"}))
+    face_gate.update_settings({"gate": False})
+    assert not face_gate.gated("pick")  # off wins over the environment
+    with pytest.raises(ValueError):
+        face_gate.update_settings({"gate": "yes"})
+    with pytest.raises(ValueError):
+        face_gate.update_settings({"wipe": True})
+
+
+# -- the console's routes -------------------------------------------------------
+
+
+class _Req:
+    def __init__(self, body=None, secret=None, **path_params):
+        self._body = body if body is not None else {}
+        self.headers = {"x-c3po-confirm-secret": secret} if secret is not None else {}
+        self.path_params = path_params
+
+    async def json(self):
+        return self._body
+
+
+@pytest.fixture
+def routes(scene, monkeypatch):
+    from bridge import mcp_server, safety
+
+    monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
+    monkeypatch.setattr(face_gate, "ENROLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(face_gate, "_stored", None)
+    monkeypatch.setattr(face_gate, "warm", lambda: None)
+    return mcp_server
+
+
+async def test_face_routes_refuse_without_the_consoles_proof(routes, monkeypatch):
+    from bridge import safety
+
+    oliver = face_gate.people()[0]["id"]
+    calls = [
+        (routes.face_settings, {"body": {"gate": True}}),
+        (routes.face_delete, {"pid": oliver}),
+        (routes.face_photo, {"pid": oliver}),
+        (routes.face_enroll, {"body": {"name": "Eve", "role": "superadmin"}}),
+    ]
+    for route, kw in calls:
+        for secret in (None, "nope"):
+            assert (await route(_Req(secret=secret, **kw))).status_code == 403
+    monkeypatch.setattr(safety, "CONFIRM_SECRET", "")
+    for route, kw in calls:
+        assert (await route(_Req(secret="", **kw))).status_code == 503
+    assert face_gate.settings()["gate"] is True and face_gate.person(oliver) is not None
+    assert [p["name"] for p in face_gate.people()] == ["Oliver"]
+
+
+async def test_face_routes_work_with_the_proof(routes):
+    oliver = face_gate.people()[0]["id"]
+    body = json.loads((await routes.face_people(_Req())).body)
+    assert body["people"] == [face_gate.public(face_gate.person(oliver))]
+    assert body["unknown_seen"]["count"] >= 0 and body["models"] in (True, False)
+    assert "features" not in json.dumps(body)
+
+    resp = await routes.face_settings(_Req({"greet": True, "greet_unknown": True}, "s3cret"))
+    assert json.loads(resp.body) == {"gate": True, "greet": True, "greet_unknown": True}
+    assert (await routes.face_settings(_Req({"greet": 1}, "s3cret"))).status_code == 400
+
+    assert (
+        await routes.face_photo(_Req(secret="s3cret", pid=oliver))
+    ).status_code == 404  # migrated, no photo
+    assert (await routes.face_delete(_Req(secret="s3cret", pid="../../etc"))).status_code == 404
+    assert (await routes.face_delete(_Req(secret="s3cret", pid=oliver))).status_code == 200
+    assert face_gate.people() == [] and not (face_gate.people_dir() / oliver).exists()
+
+
+async def test_enroll_route_enrolls_with_a_photo_or_stores_nothing(routes, scene):
+    resp = await routes.face_enroll(_Req({"name": "Ana", "role": "operator"}, "s3cret"))
+    assert resp.status_code == 422  # nobody in view
+    assert [p["name"] for p in face_gate.people()] == ["Oliver"]
+    assert (
+        await routes.face_enroll(_Req({"name": "Ana", "role": "root"}, "s3cret"))
+    ).status_code == 400
+
+    _face(scene, 10, ANA)
+    resp = await routes.face_enroll(_Req({"name": "Ana", "role": "operator"}, "s3cret"))
+    ana = json.loads(resp.body)
+    assert resp.status_code == 200 and ana["role"] == "operator" and ana["has_photo"] is True
+    photo = await routes.face_photo(_Req(secret="s3cret", pid=ana["id"]))
+    assert photo.status_code == 200 and photo.media_type == "image/jpeg"
+    assert photo.body == (face_gate.people_dir() / ana["id"] / "photo.jpg").read_bytes()
+    assert (await routes.face_photo(_Req(secret="s3cret", pid="0" * 12))).status_code == 404
+
+
+async def test_safety_status_carries_the_face_settings(routes):
+    face_gate.update_settings({"greet_unknown": True})
+    body = json.loads((await routes.safety_status(None)).body)
+    assert body["face_greet"]["settings"]["greet_unknown"] is True
+    assert "last_greeted_name" in body["face_greet"]
 
 
 # -- the real models, when installed ------------------------------------------
