@@ -7,18 +7,19 @@ autonomy workstreams). Deploy it once; the per-area checklists below each say "d
 Order matters: **nothing new moves before the safety checks pass**, and nothing moves on
 its own before it has moved on the gantry.
 
-| #   | Area                                            | Checklist                                                                    | Moves the robot?      | Status 2026-11-03                                             |
-| --- | ----------------------------------------------- | ---------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------- |
-| 0   | Prep (tonight / before leaving)                 | this file §0                                                                 | no                    | —                                                             |
-| 1   | Deploy + rebuild images                         | this file §1                                                                 | no                    | done; nav build cut off by the battery (4.5), re-run          |
-| 2   | Safety governor                                 | [`safety.md`](safety.md)                                                     | gantry                | partial: latch, «Reanudar» and «Confirmar» ✅; steps 3-4 open |
-| 3   | Vision tools (look / find_object / verify)      | [`vlm.md`](vlm.md) §1–5                                                      | no                    | ✅ Gemini `look`                                              |
-| 4   | YOLOE engine, speed, sanity                     | [`perception.md`](perception.md) §2–4                                        | no                    | partial: engine and 40 ms ✅; pitch and test set open         |
-| 5   | Object memory + `look_around`                   | [`memory-eval.md`](memory-eval.md) §1–6                                      | turns in place        | open                                                          |
-| 6   | Nav2 goals, map, landmark                       | [`nav.md`](nav.md) §2–7                                                      | gantry → 0.5 m → room | blocked: Mid-360S faulted (4.1)                               |
-| 6b  | Arms: URDF check, reach, shapes, pick, handover | [`manipulation.md`](manipulation.md)                                         | arms (gantry → stand) | partial: URDF sign and reach ✅; hands blocked (5.1)          |
-| 7   | **Put together:** "buscá la billetera"          | this file §7                                                                 | yes                   | not run                                                       |
-| 8   | Measure: eval T0 subset, YOLOE test-set capture | [`memory-eval.md`](memory-eval.md) §7, [`perception.md`](perception.md) §5–7 | little                | open                                                          |
+| #   | Area                                                         | Checklist                                                                    | Moves the robot?      | Status 2026-11-03                                             |
+| --- | ------------------------------------------------------------ | ---------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------- |
+| 0   | Prep (tonight / before leaving)                              | this file §0                                                                 | no                    | —                                                             |
+| 1   | Deploy + rebuild images                                      | this file §1                                                                 | no                    | done; nav build cut off by the battery (4.5), re-run          |
+| 2   | Safety governor                                              | [`safety.md`](safety.md)                                                     | gantry                | partial: latch, «Reanudar» and «Confirmar» ✅; steps 3-4 open |
+| 3   | Vision tools (look / find_object / verify)                   | [`vlm.md`](vlm.md) §1–5                                                      | no                    | ✅ Gemini `look`                                              |
+| 4   | YOLOE engine, speed, sanity                                  | [`perception.md`](perception.md) §2–4                                        | no                    | partial: engine and 40 ms ✅; pitch and test set open         |
+| 5   | Object memory + `look_around`                                | [`memory-eval.md`](memory-eval.md) §1–6                                      | turns in place        | open                                                          |
+| 6   | Nav2 goals, map, landmark                                    | [`nav.md`](nav.md) §2–7                                                      | gantry → 0.5 m → room | blocked: Mid-360S faulted (4.1)                               |
+| 6b  | Arms: URDF check, reach, shapes, pick, handover              | [`manipulation.md`](manipulation.md)                                         | arms (gantry → stand) | partial: URDF sign and reach ✅; hands blocked (5.1)          |
+| 6c  | Hands: serial probe, real driver, measure, first gantry pick | [`hand-and-gantry.md`](hand-and-gantry.md)                                   | hands, arms (gantry)  | new 2026-11-11: run before 6b §5                              |
+| 7   | **Put together:** "buscá la billetera"                       | this file §7                                                                 | yes                   | not run                                                       |
+| 8   | Measure: eval T0 subset, YOLOE test-set capture              | [`memory-eval.md`](memory-eval.md) §7, [`perception.md`](perception.md) §5–7 | little                | open                                                          |
 
 Someone holds the e-stop for every step from 2 on. Rollback flags are at the bottom.
 
@@ -84,18 +85,20 @@ Record: success, wall time, number of LLM steps, any intervention. Try 3 phrasin
 
 ## Rollback flags (restart the affected process after changing)
 
-| Feature                                 | Flag → safe value                                                     | Where                                     |
-| --------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------- |
-| Person slow/stop rule                   | `SAFETY_PERSON_RULE=off`                                              | bridge `.env`                             |
-| Stale-perception policy                 | `SAFETY_STALE_POLICY=ignore`                                          | bridge `.env`                             |
-| T2 confirmation gate                    | `SAFETY_T2_CONFIRM=off` (only with e-stop in hand)                    | bridge `.env`                             |
-| Collision Monitor (if Nav2 won't start) | `C3PO_NAV_COLLISION_MONITOR=0`                                        | prefix on `c3po up nav2…`                 |
-| Saved map / localization                | unset `C3PO_NAV_SLAM`                                                 | prefix on `c3po up nav2…`                 |
-| Arm skills                              | `TELEOP_ARM_ENABLED=0` (hands: `TELEOP_HAND_ENABLED=0`)               | bridge `.env`                             |
-| MPPI                                    | `C3PO_NAV_CONTROLLER=dwb` (default)                                   | prefix on `c3po up nav2…`                 |
-| Operator face gate                      | `C3PO_FACE_GATE=` (empty)                                             | bridge `.env`                             |
-| Table under each object (`support`)     | `C3PO_VISION_SUPPORT=0`                                               | `~/.c3po/perception.env`, then `c3po up`  |
-| YOLOE → YOLO11n                         | `C3PO_ENGINE` / `C3PO_LABELS` back to the yolo11n plan + `labels.txt` | vision container env (`perception.md` §8) |
+| Feature                                 | Flag → safe value                                                                                                       | Where                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Person slow/stop rule                   | `SAFETY_PERSON_RULE=off`                                                                                                | bridge `.env`                             |
+| Stale-perception policy                 | `SAFETY_STALE_POLICY=ignore`                                                                                            | bridge `.env`                             |
+| T2 confirmation gate                    | `SAFETY_T2_CONFIRM=off` (only with e-stop in hand)                                                                      | bridge `.env`                             |
+| Collision Monitor (if Nav2 won't start) | `C3PO_NAV_COLLISION_MONITOR=0`                                                                                          | prefix on `c3po up nav2…`                 |
+| Saved map / localization                | unset `C3PO_NAV_SLAM`                                                                                                   | prefix on `c3po up nav2…`                 |
+| Arm skills                              | `TELEOP_ARM_ENABLED=0` (hands: `TELEOP_HAND_ENABLED=0`)                                                                 | bridge `.env`                             |
+| MPPI                                    | `C3PO_NAV_CONTROLLER=dwb` (default)                                                                                     | prefix on `c3po up nav2…`                 |
+| Face gate                               | «Caras» → «Pedir cara para acciones peligrosas» off; else `rm ~/.c3po/face/settings.json` and `C3PO_FACE_GATE=` (empty) | console, or robot + bridge `.env`         |
+| Face greeter                            | «Caras» → both «Saludar» switches off; else `C3PO_FACE_GREET=` (empty) and no settings.json                             | console, or bridge `.env`                 |
+| Robot-mic STT through back              | `C3PO_STT=` (empty: Whisper on the robot)                                                                               | bridge `.env`                             |
+| Table under each object (`support`)     | `C3PO_VISION_SUPPORT=0`                                                                                                 | `~/.c3po/perception.env`, then `c3po up`  |
+| YOLOE → YOLO11n                         | `C3PO_ENGINE` / `C3PO_LABELS` back to the yolo11n plan + `labels.txt`                                                   | vision container env (`perception.md` §8) |
 
 ## Known limits — not bugs to file tomorrow
 

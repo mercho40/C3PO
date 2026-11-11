@@ -411,8 +411,8 @@ async def test_already_within_the_stop_distance_sends_no_goal(tool):
     tool.gate.enable(reason="operator", ttl_s=60)
     tool.objects = [chair(0.5)]
     out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
-    assert tool.sent == []
-    assert out["via"] == "walk_to" and "nav2_refused" not in out
+    assert tool.sent == [] and tool.walks == []
+    assert out["via"] == "none" and out["phase"] == "already_within_stop_distance"
 
 
 async def test_nav2_is_not_used_while_the_headset_drives(tool, monkeypatch):
@@ -532,4 +532,108 @@ async def test_already_at_the_face_sends_no_nav2_goal(tool):
     tool.gate.enable(reason="operator", ttl_s=60)
     tool.objects = [chair_near(1.2, 0.8)]  # 0.8 m <= 0.7 + BODY_FRONT_M
     out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
-    assert tool.sent == [] and out["via"] == "walk_to"
+    assert tool.sent == [] and tool.walks == [] and out["via"] == "none"
+
+
+# --- choose: which one when several match ----------------------------------------
+# Today's scene on the robot: four chairs, near faces 0.78 / 1.90 / 2.6 / 3.39 m.
+# Bearings are POSITIVE LEFT (vlm.bearing_deg), so all four are to the right.
+
+FOUR_CHAIRS = [
+    {"label": "chair", "range_m": 1.0, "near_m": 0.78, "bearing_deg": -4.0, "confidence": 0.6},
+    {"label": "chair", "range_m": 2.1, "near_m": 1.90, "bearing_deg": -8.0, "confidence": 0.5},
+    {"label": "chair", "range_m": 2.8, "near_m": 2.60, "bearing_deg": -25.0, "confidence": 0.9},
+    {"label": "chair", "range_m": 3.6, "near_m": 3.39, "bearing_deg": -22.0, "confidence": 0.7},
+]
+
+
+@pytest.mark.parametrize(
+    ("choose", "near_m"),
+    [
+        # 0.78 m is already inside the 1.0 m stop: the next one is meant.
+        ("nearest", 1.90),
+        ("farthest", 3.39),
+        ("left", 1.90),  # -8 deg is the leftmost of those outside the stop
+        ("right", 2.60),  # -25 deg
+        ("center", 1.90),  # smallest |bearing| outside the stop
+        ("confidence", 2.60),  # the old rule
+    ],
+)
+def test_choose_picks_the_meant_chair_of_four(choose, near_m):
+    t = g.resolve("silla", FOUR_CHAIRS, [], None, 100.0, choose=choose, stop_distance_m=1.0)
+    assert t["near_m"] == near_m
+    assert (t["candidates"], t["chosen_by"]) == (4, choose)
+    assert len(t["others"]) == 3
+
+
+def test_left_is_the_positive_bearing():
+    objs = [{**chair(2.0), "bearing_deg": 20.0}, {**chair(2.5), "bearing_deg": -20.0}]
+    assert g.resolve("chair", objs, [], None, 100.0, choose="left")["bearing_deg"] == 20.0
+    assert g.resolve("chair", objs, [], None, 100.0, choose="right")["bearing_deg"] == -20.0
+
+
+def test_memory_targets_honour_choose():
+    # Robot at the origin facing +x: near-left, far-right, and the most recent ahead.
+    mem = [
+        entry("chair", 1.5, 1.0, seen=90.0),
+        entry("chair", 3.0, -1.0, seen=95.0),
+        entry("chair", 2.5, 0.1, seen=99.0),
+    ]
+    pose = {"x_m": 0.0, "y_m": 0.0, "yaw_deg": 0.0}
+
+    def pick(choose):
+        return g.resolve("chair", [], mem, pose, now=100.0, choose=choose, stop_distance_m=0.7)
+
+    assert pick("nearest")["range_m"] == pytest.approx(math.hypot(1.5, 1.0))
+    assert pick("right")["range_m"] == pytest.approx(math.hypot(3.0, 1.0))
+    assert pick("confidence")["seen_s_ago"] == 1.0  # the old rule: the most recent
+    assert (pick("nearest")["candidates"], pick("nearest")["source"]) == (3, "memory")
+
+
+async def test_a_single_chair_inside_the_stop_does_not_walk(tool):
+    tool.objects = [FOUR_CHAIRS[0]]
+    out = await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=1.0)
+    assert tool.walks == []
+    assert (out["status"], out["phase"]) == ("completed", "already_within_stop_distance")
+    assert out["clearance_m"] == pytest.approx(0.78 - g.BODY_FRONT_M)
+    assert out["target"]["candidates"] == 1
+
+
+async def test_the_tool_walks_to_the_chosen_chair_and_says_so(tool):
+    tool.objects = [{**c, "age_s": 0.0} for c in FOUR_CHAIRS]
+    tool.report_age = 0.0
+    out = await tool.server.go_to_object(
+        ctx=None, query="silla", stop_distance_m=1.0, choose="farthest"
+    )
+    walk = tool.walks[0]
+    assert (walk["target_x"], walk["target_y"]) == pytest.approx(
+        g.world_target(1.0, 1.0, 0.0, 3.39, -22.0)
+    )
+    assert (out["target"]["candidates"], out["target"]["chosen_by"]) == (4, "farthest")
+    assert "others" not in out["target"]
+
+
+def test_follow_stays_on_the_chosen_chair_when_it_drops_out_of_a_frame():
+    here = (0.0, 0.0, 0.0)
+    chosen = g.world_target(*here, 1.90, -8.0)
+    neighbour = g.world_target(*here, 2.60, -25.0)  # 0.97 m away: inside JUMP_M
+    assert math.dist(chosen, neighbour) < g.JUMP_M
+    f = g.Follow(chosen, now=0.0, abort_when_lost=True, others=[neighbour])
+    assert f.update([neighbour], here, now=1.0) == chosen
+    moved = (chosen[0] + 0.2, chosen[1])
+    assert f.update([neighbour, moved], here, now=1.1) == moved
+
+
+async def test_the_walk_is_locked_on_the_chosen_chair(tool, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0)
+    tool.pose_at = lambda when: (1.0, 1.0, 0.0)
+    tool.objects = [{**c, "age_s": 0.0} for c in FOUR_CHAIRS]
+    tool.report_age = 0.0
+    await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=1.0)
+    chosen = g.world_target(1.0, 1.0, 0.0, 1.90, -8.0)
+    assert (tool.walks[0]["target_x"], tool.walks[0]["target_y"]) == pytest.approx(chosen)
+    retarget = tool.walks[0]["retarget"]
+    tool.objects = [{**FOUR_CHAIRS[2], "age_s": 0.0}]  # only the -25 deg neighbour this frame
+    assert retarget() == pytest.approx(chosen)

@@ -224,47 +224,76 @@ class TestTheCorsHeaderAndItsBoundary:
         assert "X-Scribbled-On" not in second
         assert "X-Scribbled-On" not in camera_relay.CAMERA_BASE_HEADERS
 
-    #: Modules allowed to mention the header, and why.
-    #:
-    #: The rule is about SENDING it. `preflight.py` only ever LOOKS for it — it
-    #: curls `/camera/status` with an `Origin` and reports whether the console
-    #: would be allowed to read the reply, which is a diagnosis, not a grant.
-    #: That check exists precisely because this header was missing on the robot
-    #: and the headset went black; excluding the thing that detects the problem
-    #: from the rule about causing it is the distinction worth drawing.
-    MAY_MENTION = {
-        "camera_relay.py",  # the one definition
-        "preflight.py",  # detects its absence, never sets it
-    }
+    #: The only routes a browser on the console origin may read.
+    MAY_GRANT = {"/camera/status", "/camera/frame.jpg", "/camera/stream.mjpg", "/face/seen"}
+    #: Never end on their own, so they are checked by preflight only (below).
+    STREAMING = {"/camera/stream.mjpg", "/telemetry/voice/events", "/telemetry/voice/audio/input"}
 
     def test_cors_is_not_sent_anywhere_outside_the_camera_relay(self):
-        """The line that keeps `/mcp` off-limits to a browser.
+        """The line that keeps `/mcp`, the mic and the voice events off-limits
+        to a browser, checked on RESPONSES of the app exactly as served.
 
-        Read as source rather than by exercising routes: the claim is that no
-        OTHER response construction in this package can grow this header, and
-        counting where it can come from at all is the cheapest way to say so.
+        A site-wide `CORSMiddleware` (it was there, switched on by the unit's
+        BRIDGE_CORS_ORIGINS) answers every preflight and stamps every reply,
+        so a preflight to each route catches it; a GET to each catches a route
+        that grows the header itself.
         """
-        import pathlib
+        import logging
+        import re
 
-        package = pathlib.Path(camera_relay.__file__).parent.parent
-        offenders = []
-        for path in sorted(package.rglob("*.py")):
-            if path.name in self.MAY_MENTION:
-                continue
-            for number, line in enumerate(path.read_text().splitlines(), 1):
-                if "Access-Control-Allow-Origin" not in line:
+        from starlette.testclient import TestClient
+
+        from bridge import mcp_server
+
+        client = TestClient(mcp_server._http_app(), raise_server_exceptions=False)
+        origin = {"Origin": "http://localhost:3001"}
+        granted: list[str] = []
+        leaks: list[str] = []
+        logging.disable(logging.INFO)
+        try:
+            # Listed from the bare app: a wrapping middleware has no `.routes`.
+            for route in mcp_server.mcp.streamable_http_app().routes:
+                path = re.sub(r"\{[^}]+\}", "x", route.path)
+                pre = client.options(
+                    path,
+                    headers={**origin, "Access-Control-Request-Method": "POST",
+                             "Access-Control-Request-Headers": "content-type"},
+                )
+                if "access-control-allow-origin" in pre.headers:
+                    leaks.append(f"OPTIONS {path}")
+                if "GET" not in (getattr(route, "methods", None) or ()):
                     continue
-                if line.lstrip().startswith("#"):
-                    continue  # prose explaining the rule is not the rule
-                offenders.append(f"{path.name}:{number}")
-        assert not offenders, (
-            "Access-Control-Allow-Origin appears in "
-            f"{offenders}, which is not in MAY_MENTION. This bridge serves "
-            "/mcp — an unauthenticated tool surface that can walk the robot — "
-            "on the same port, so CORS must stay scoped to the read-only "
-            "camera routes. If the new use only DETECTS the header rather "
-            "than sending it, add it to MAY_MENTION with the reason."
+                if path in self.STREAMING or path == "/mcp":
+                    continue
+                got = client.get(path, headers=origin)
+                if "access-control-allow-origin" in got.headers:
+                    (granted if path in self.MAY_GRANT else leaks).append(f"GET {path}")
+        finally:
+            logging.disable(logging.NOTSET)
+        assert not leaks, (
+            f"CORS granted on {leaks}. This bridge serves /mcp (an unauthenticated "
+            "tool surface that can walk the robot), the mic and the voice events "
+            "on the same port, so only the camera routes and /face/seen may grant it."
         )
+        # And the guard is not vacuous: the camera does get it.
+        assert {"GET /camera/status", "GET /face/seen"} <= set(granted), granted
+
+    async def test_the_voice_streams_are_not_readable_cross_origin(self, monkeypatch):
+        from bridge import mcp_server
+        from bridge.skills import listen as listen_mod
+
+        class Req:
+            headers = {"origin": "http://localhost:3001"}
+
+            async def is_disconnected(self):
+                return True
+
+        monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: listen_mod.MicListener(
+            source=lambda: iter(()), build=lambda: (None, None, None)))
+        for route in (mcp_server.voice_events, mcp_server.voice_audio_input):
+            response = await route(Req())
+            await response.body_iterator.aclose()
+            assert "access-control-allow-origin" not in response.headers, route.__name__
 
 
 class _EndlessUpstream:
