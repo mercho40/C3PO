@@ -373,15 +373,24 @@ def gated(name: str, meta: dict[str, Any] | None = None) -> bool:
     return name in GATED or (CONFIRM in GATED and safety.needs_confirmation(meta))
 
 
-def check_config(tools: Iterable[str]) -> None:
-    """Refuse to start when C3PO_FACE_GATE names no tool of this bridge: fail closed."""
+def check_config(tools: Iterable[str]) -> list[str]:
+    """A C3PO_FACE_GATE entry that names no tool of this bridge widens the gate to `confirm`.
+
+    Fail closed without exiting: a bridge that refuses to boot has no stop_everything
+    either, and under Restart=always it loops. So a misspelling gates every
+    confirmation-tier tool on top of the names that do exist, and says so loudly.
+    """
+    global GATED
     unknown = sorted(GATED - set(tools) - {CONFIRM})
     if unknown:
-        raise SystemExit(
-            f"C3PO_FACE_GATE: {', '.join(unknown)} is no tool of this bridge and not the "
-            f"'{CONFIRM}' class; the bridge will not start with a skill the operator thinks "
-            "is guarded left unguarded. Fix the name, or empty C3PO_FACE_GATE."
+        GATED = frozenset((GATED - set(unknown)) | {CONFIRM})
+        log.error(
+            "face_gate.unknown_names",
+            unknown=unknown,
+            gated=sorted(GATED),
+            fix="no such tool: every confirmation-tier tool is now gated; fix the name",
         )
+    return unknown
 
 
 async def refusal(name: str, meta: dict[str, Any] | None = None) -> str | None:

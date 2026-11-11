@@ -341,21 +341,34 @@ def test_the_confirm_class_gates_every_tool_that_needs_a_confirmation(monkeypatc
     assert face_gate.gated("get_state", tools["get_state"])
 
 
-def test_a_name_that_is_no_tool_refuses_to_start(monkeypatch):
-    """A misspelling used to gate nothing while the operator thought it guarded."""
+def test_a_name_that_is_no_tool_gates_the_whole_confirm_class(monkeypatch):
+    """A misspelling used to gate nothing while the operator thought it guarded.
+
+    It must fail closed without stopping the bridge: no bridge, no stop_everything.
+    """
     from bridge import mcp_server
 
+    tools = _catalogue()
     monkeypatch.setattr(face_gate, "GATED", face_gate._parse("confirm, get_state"))
-    face_gate.check_config(_catalogue())  # every name known: no exit
-    monkeypatch.setattr(face_gate, "GATED", face_gate._parse("pick, pikc"))
+    assert face_gate.check_config(tools) == []
+    monkeypatch.setattr(face_gate, "GATED", face_gate._parse("get_state, pikc"))
+    assert face_gate.check_config(tools) == ["pikc"]
+    assert face_gate.GATED == {"get_state", face_gate.CONFIRM}
+    assert face_gate.gated("pick", tools["pick"])
+    assert not face_gate.gated("stop_everything", tools["stop_everything"])
+
+    monkeypatch.setattr(face_gate, "GATED", face_gate._parse("pikc"))
+    monkeypatch.setattr(face_gate, "warm", lambda: None)
+    started = []
 
     async def served() -> None:
-        pytest.fail("the bridge started serving")
+        started.append(True)
 
     monkeypatch.setattr(mcp_server, "_run_stdio", served)
     monkeypatch.setattr(mcp_server, "_run_streamable_http", served)
-    with pytest.raises(SystemExit, match="pikc"):
-        mcp_server.main()
+    mcp_server.main()
+    assert started, "the bridge must still serve: it is the only stop_everything"
+    assert face_gate.CONFIRM in face_gate.GATED
 
 
 # -- on the MCP dispatch path -------------------------------------------------
