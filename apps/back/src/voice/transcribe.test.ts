@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_AUDIO_BYTES, TranscribeError, transcribe } from "./transcribe";
+import {
+  MAX_AUDIO_BYTES,
+  TranscribeError,
+  transcribe,
+  transcribeTimeoutMs,
+} from "./transcribe";
 
 process.env.AGENT_API_KEY = "k";
 
@@ -36,5 +41,16 @@ describe("transcribe", () => {
     ).rejects.toMatchObject({
       status: 502,
     });
+  });
+});
+
+describe("transcribeTimeoutMs", () => {
+  test("grows with the clip: 4 s + 0.25 s per second, capped at 12 s", () => {
+    const wav = (seconds: number) => 44 + seconds * 32_000;
+    expect(transcribeTimeoutMs(wav(1))).toBe(4_250);
+    expect(transcribeTimeoutMs(wav(10))).toBe(6_500);
+    expect(transcribeTimeoutMs(wav(30))).toBe(11_500);
+    expect(transcribeTimeoutMs(wav(60))).toBe(12_000);
+    expect(transcribeTimeoutMs(0)).toBe(4_000);
   });
 });
