@@ -175,6 +175,25 @@ describe("classifyHttpError", () => {
     expect(o.detail).toContain("SAFETY_CONFIRM_SECRET");
   });
 
+  test("a face-gate refusal names its code and says what to do", () => {
+    const detail =
+      "refused (operator_face_not_seen): pick needs the enrolled operator's live face";
+    const o = classifyHttpError(502, { error: "tool_error", detail });
+    expect(o.code).toBe("operator_face_not_seen");
+    expect(o.text).toContain("cerca de la cámara de la cabeza");
+    // The bridge's max distance is configurable: the console must not name one.
+    expect(o.text).not.toContain("1,5 m");
+    expect(o.detail).toBe(detail);
+  });
+
+  test("an unknown coded refusal stays a plain tool_error", () => {
+    const o = classifyHttpError(502, {
+      error: "tool_error",
+      detail: "refused (something_else): no",
+    });
+    expect(o.code).toBe("tool_error");
+  });
+
   test("tool_error carries the bridge's detail", () => {
     const o = classifyHttpError(502, { error: "tool_error", detail: "boom" });
     expect(o.detail).toBe("boom");

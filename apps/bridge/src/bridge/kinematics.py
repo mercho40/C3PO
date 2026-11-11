@@ -386,3 +386,23 @@ def camera_to_torso(p_optical: Sequence[float]) -> Vec3:
     link = (z, -x, -y)  # REP-103 optical -> body: forward = z, left = -x, up = -y
     xyz, rot = _camera_mount()
     return _add(xyz, _mv(rot, link))
+
+
+@cache
+def _torso_in_pelvis() -> tuple[Vec3, Mat3]:
+    pos: Vec3 = (0.0, 0.0, 0.0)
+    rot = _I3
+    for joint in _path(ROOT_LINK, "pelvis"):  # the three waist joints, at zero
+        pos, rot = _add(pos, _mv(rot, joint.xyz)), _mm(rot, joint.rot)
+    return pos, rot
+
+
+def base_to_torso(p_base: Sequence[float]) -> Vec3:
+    """Vision base_link point (the URDF `pelvis`: what range_m, bearing_deg and heights in the
+    detection report are measured from) -> torso_link, through the URDF with the waist at zero:
+    the same CAD chain and assumption as the vision container's default camera extrinsic.
+    """
+    pos, rot = _torso_in_pelvis()
+    d = _sub(p_base, pos)
+    a, b, c = (sum(rot[i][k] * d[i] for i in range(3)) for k in range(3))  # rot^T d
+    return (a, b, c)
