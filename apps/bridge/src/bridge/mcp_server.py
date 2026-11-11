@@ -57,7 +57,7 @@ load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 # These must follow load_env_file above; ruff's E402 is silenced per import
 # rather than for the file, so a genuinely misplaced import still fails.
-from bridge import safety, watchdog  # noqa: E402
+from bridge import face_gate, safety, watchdog  # noqa: E402
 from bridge.skill_meta import meta as skill_meta  # noqa: E402
 from bridge.watchdog import get_watchdog  # noqa: E402
 
@@ -145,10 +145,18 @@ class GovernedMCP(FastMCP):
                 args_key = _canonical_args(tool, arguments)
             except ValidationError as exc:
                 invalid = f"invalid arguments for {name}: {exc}"
-        refusal = safety.tool_refusal(name, meta, args_key)
+        face = face_gate.gated(name, meta)
+        refusal = safety.tool_refusal(name, meta, args_key, spend=not face)
         if invalid is not None and not estop.stop_is_standing():
             # PARAR first; else not "get a confirmation", which /safety/confirm would refuse too.
             refusal = invalid
+        if refusal is None and face:
+            # On top of every check above (a face never stands in for a confirmation), and
+            # before the grant is spent, so a face refusal leaves it for one retry.
+            refusal = await face_gate.refusal(name, meta)
+            if refusal is None:
+                # Again, spending the grant: a PARAR may have come during the check.
+                refusal = safety.tool_refusal(name, meta, args_key)
         if refusal is not None:
             raise ToolError(refusal)
         return await super().call_tool(name, arguments)
@@ -3863,9 +3871,9 @@ async def pick(
     """Pick up an object the head camera sees right now — a physical arm and hand move.
 
     Needs a FRESH detection of it with depth (turn toward it / look first). Plans the
-    whole motion before moving: open hand, raise it beside the body (shoulder back,
+    whole motion before moving: curl the hand, raise it beside the body (shoulder back,
     elbow up) to 8 cm above the object, forward over the surface, straight down to
-    pre-grasp 10 cm short, grasp, close, lift 8 cm, then HOLD. Refuses without moving
+    pre-grasp 10 cm short, open the hand, grasp, close, lift 8 cm, then HOLD. Refuses without moving
     if any pose is out of reach — the G1 arm is short: ~30 cm in front of the
     shoulder, at counter height — and then says how far to walk (walk_velocity) to
     make it reachable. There is no touch sensing: call verify('¿tenés X en la mano?')
@@ -4825,6 +4833,12 @@ def main() -> None:
     ``BRIDGE_TRANSPORT=http`` to serve FastMCP's streamable-http transport at
     ``http://{BRIDGE_HOST}:{BRIDGE_PORT}/mcp`` — how ``apps/back`` connects.
     """
+    if face_gate.GATED:
+        face_gate.check_config(t.name for t in mcp._tool_manager.list_tools())
+        # Before serving, not in a thread: a cold `import cv2` holds the GIL for seconds,
+        # which would stall a stop, and would spend the first gated call's TIMEOUT_S.
+        face_gate.warm()
+        log.warning("face_gate.on", tools=sorted(face_gate.GATED), max_m=face_gate.MAX_M)
     # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #
