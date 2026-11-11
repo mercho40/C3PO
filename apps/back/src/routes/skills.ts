@@ -54,6 +54,7 @@ import {
   BridgeToolError,
 } from "../bridge/client";
 import { bridgeSiblingUrl } from "../bridge/url";
+import { bridgeProof } from "../bridge/proof";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 import { logToolCall } from "#back/db/chats.js";
 import { abortAllTurns } from "#back/agent/turns.js";
@@ -91,8 +92,8 @@ async function grantOnBridge(
   /** Set when the operator's Confirmar of a refused call asked: button or voice. */
   via?: "button" | "voice",
 ): Promise<{ status: number; body: Record<string, unknown> }> {
-  const secret = process.env.SAFETY_CONFIRM_SECRET;
-  if (!secret) {
+  const proof = bridgeProof();
+  if (!proof) {
     return { status: 503, body: { error: "confirmation_not_configured" } };
   }
   const startedAt = Date.now();
@@ -100,10 +101,7 @@ async function grantOnBridge(
   try {
     upstream = await fetch(bridgeSiblingUrl("/safety/confirm"), {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-c3po-confirm-secret": secret,
-      },
+      headers: { "content-type": "application/json", ...proof },
       body: JSON.stringify({ tool: name, args }),
       signal: AbortSignal.timeout(5000),
     });
