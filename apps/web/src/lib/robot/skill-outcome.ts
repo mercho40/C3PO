@@ -63,9 +63,9 @@ export const RPC_HINTS: Record<string, string> = {
  */
 export const REFUSAL_HINTS: Record<string, string> = {
   operator_face_not_seen:
-    "No veo al operador: ponete de frente a la cámara, a menos de 1,5 m",
+    "No veo al operador: parate junto al robot, sin el visor, de frente y cerca de la cámara de la cabeza, y reintentá",
   operator_face_not_live:
-    "Reconocí al operador, pero no en persona (¿foto, pantalla o muy lejos?)",
+    "Reconocí al operador, pero no en persona (¿foto, pantalla o muy lejos?): parate junto al robot, cerca de la cámara de la cabeza",
   operator_face_not_enrolled:
     "No hay operador registrado: corré face_enroll.py en el robot",
   operator_face_check_unavailable:

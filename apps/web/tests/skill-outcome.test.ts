@@ -180,7 +180,9 @@ describe("classifyHttpError", () => {
       "refused (operator_face_not_seen): pick needs the enrolled operator's live face";
     const o = classifyHttpError(502, { error: "tool_error", detail });
     expect(o.code).toBe("operator_face_not_seen");
-    expect(o.text).toContain("ponete de frente");
+    expect(o.text).toContain("cerca de la cámara de la cabeza");
+    // The bridge's max distance is configurable: the console must not name one.
+    expect(o.text).not.toContain("1,5 m");
     expect(o.detail).toBe(detail);
   });
 
