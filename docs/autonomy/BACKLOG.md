@@ -51,7 +51,7 @@ engine, and Gemini `look`.
 - [ ] Spoken "para" during a walk (after 1.1).
 - [ ] VR «Hablar con el robot» on the Quest 🥽: the mic inside immersive-vr, B/Y and grip indices, panel readability, transcription quality.
 - [ ] Walking with the headset's arms engaged while the waist is held. Never tried.
-- [ ] `pick` / `place` end to end (needs the hand, §5). I1 is done (dba2a35); they still refuse on the robot unless `C3PO_ALLOW_PICK=1` (e120012) until the gantry touch check.
+- [ ] `pick` / `place` end to end (needs the hand, §5). I1 is done (dba2a35); they still refuse on the robot unless `C3PO_ALLOW_PICK=1` (e120012) until the gantry touch check. Since dbf876c they also plan around the table perception reports: test that too (`test-day/manipulation.md` §8).
 - [ ] Person rule against a tape-measured person (after the pitch fix).
 - [ ] `safety.md` step 3 (kill the bridge mid-walk) and step 4 (`soft_stop`; it now also cancels the Nav2 goal, 358de2f).
 - [ ] Re-run the nav image build (cut off by the battery).
@@ -83,14 +83,14 @@ engine, and Gemini `look`.
 
 ## 5. Arms and hands 🟡
 
-| #   | Item                                                                                                                                                                                                                                                                                                            | Size |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| 5.1 | **Right BrainCo hand doesn't answer on any ttyUSB.** Check power and the wrist connector; try the official `unitreerobotics/brainco_hand_service`.                                                                                                                                                              | S 🤖 |
-| 5.2 | Measure `TELEOP_BRAINCO_OPEN_AT` (read the state with the hand visibly open), then `set_hand`, then `pick`.                                                                                                                                                                                                     | S 🤖 |
-| 5.3 | `pin` + `pink` + `coal`: 6-D IK with roll control and self/table collision checks (audit §4).                                                                                                                                                                                                                   | M    |
-| 5.4 | ✅ partly (I4): twin green in CI (`tests/sim`, Menagerie G1 rev 98a70c5, mujoco 3.9.0 `sim` extra); the driver-in-the-loop test runs every pick through the real arm driver (51dd094) — MuJoCo Menagerie G1 twin as the arm test harness. It would have caught the release and sweep bugs before the robot did. | M    |
-| 5.5 | Wrist joint signs are unverified. Confirm them with a firmware gesture plus `arm_state`, like today's shoulder check.                                                                                                                                                                                           | S 🤖 |
-| 5.6 | Gestures from text (Kimodo-G1, offline, replayed arm-only through the arm_sdk caps).                                                                                                                                                                                                                            | L 🔵 |
+| #   | Item                                                                                                                                                                                                                                                                                                                                                                                         | Size |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| 5.1 | **Right BrainCo hand doesn't answer on any ttyUSB.** Check power and the wrist connector; try the official `unitreerobotics/brainco_hand_service`.                                                                                                                                                                                                                                           | S 🤖 |
+| 5.2 | Measure `TELEOP_BRAINCO_OPEN_AT` (read the state with the hand visibly open), then `set_hand`, then `pick`.                                                                                                                                                                                                                                                                                  | S 🤖 |
+| 5.3 | ✅ partly: self (arm vs torso, I1 dba2a35) and table collision checks in the pure-Python planner, against the table perception reports (dbf876c) · pending robot test; 6-D IK with palm roll is open — `pin` + `pink` + `coal`: 6-D IK with roll control and self/table collision checks (audit §4).                                                                                         | M    |
+| 5.4 | ✅ partly (I4): twin green in CI (`tests/sim`, Menagerie G1 rev 98a70c5, mujoco 3.9.0 `sim` extra); the driver-in-the-loop test runs every pick through the real arm driver (51dd094); 20 random table scenes per CI run, 200 with `C3PO_SIM_SCENES=200` (b2ee6c1) — MuJoCo Menagerie G1 twin as the arm test harness. It would have caught the release and sweep bugs before the robot did. | M    |
+| 5.5 | Wrist joint signs are unverified. Confirm them with a firmware gesture plus `arm_state`, like today's shoulder check.                                                                                                                                                                                                                                                                        | S 🤖 |
+| 5.6 | Gestures from text (Kimodo-G1, offline, replayed arm-only through the arm_sdk caps).                                                                                                                                                                                                                                                                                                         | L 🔵 |
 
 ## 6. Voice and VR 🟡
 
@@ -188,3 +188,9 @@ engine, and Gemini `look`.
 - ✅ Gemini data terms: the blur's distance limit is measured (`face_blur_eval.py`, 6f3a730): a 14 cm face is never found past about 3.2 m on the videohub feed. Recall on labelled expo frames is a pending robot test.
 - ✅ FAST-LIO: the nav image fetches commit a4743b0 instead of the moving `ROS2` branch (06a78e3).
 - ✅ Safety architecture: the cmd_vel rule is split. Nav2 needs the lidar; `go_to_object` needs a live detector (1bd2637, 01074e6). The heartbeat watchdog is still open.
+
+### Acted on 2026-11-11
+
+- ✅ The support plane (research `02-perception.md`): each non-person detection reports the surface under it, `support` with `z_m` and `near_edge_m`, and `C3PO_VISION_SUPPORT=0` turns it off (4d3b662). `pick` and `place` plan around it, and a refusal says how far to walk or why walking will not help (dbf876c). This replaces the planner's constant desk-edge proxy when a table is reported (5.3, partly). Pending robot test; needs the vision image rebuild.
+- ✅ Operator face gate, on top of the login (1.4) and «Confirmar»: `C3PO_FACE_GATE` names skills that also need the enrolled operator's live face (17cf24a, 14f8d84, 29c06f0). Off by default. Only feature vectors are stored, on the robot. Liveness comes from depth: it is not anti-spoofing. Pending robot test.
+- Still open: an angled table edge (the planner assumes a square one) and flat objects (less than about 4–6 cm above the table top are refused).
