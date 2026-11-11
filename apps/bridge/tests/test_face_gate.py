@@ -84,15 +84,28 @@ def scene(tmp_path, monkeypatch):
     monkeypatch.setattr(face_gate, "FACE_DIR", tmp_path / "face")
     monkeypatch.setattr(face_gate, "GATED", frozenset({"pick", "get_state"}))
     face_gate.save_enrollment(np.stack([OPERATOR, OPERATOR_2]))
-    s: dict = {"stamp": time.time(), "faces": [], "who": {}, "depth": {}, "frames": {}}
-    monkeypatch.setattr(face_gate, "frame", lambda: ("img", s["stamp"]))
+    s: dict = {"stamp": time.time(), "faces": [], "who": {}, "depth": {}, "frames": {}, "n": 0}
+
+    def frame():
+        s["n"] += 1
+        return "img", s["stamp"]
+
+    def feature(img, row):
+        seq = s.get("who_by_frame")
+        return seq[s["n"] - 1] if seq else s["who"][float(row[0])]
+
+    monkeypatch.setattr(face_gate, "frame", frame)
     monkeypatch.setattr(face_gate, "faces", lambda img: s["faces"])
-    monkeypatch.setattr(face_gate, "feature", lambda img, row: s["who"][float(row[0])])
+    monkeypatch.setattr(face_gate, "feature", feature)
 
     def depth_points(stamp, points):
         depth = s["frames"][tuple(np.round(points, 1).ravel())]
         d = {"stamp": stamp, "fx": FX, "fy": FY, "cx": CX, "cy": CY}
-        return {**d, "depth_m": _patch_medians(depth, points, face_gate.PATCH_R), **s["depth"]}
+        zs = _patch_medians(depth, points, face_gate.PATCH_R)
+        if s.get("jitter"):  # per frame, per landmark: metres added, or None for no reading
+            off = s["jitter"][(s["n"] - 1) % len(s["jitter"])]
+            zs = [None if z is None or o is None else z + o for z, o in zip(zs, off)]
+        return {**d, "depth_m": zs, **s["depth"]}
 
     monkeypatch.setattr(face_gate, "depth_points", depth_points)
     return s
@@ -156,7 +169,7 @@ async def test_two_faces_pass_only_when_one_is_the_live_operator(scene):
     assert await face_gate.refusal("pick") is None
 
 
-@pytest.mark.parametrize("at_m", [0.5, 1.0, 1.5])
+@pytest.mark.parametrize("at_m", [0.5, 1.0, 1.2])
 @pytest.mark.parametrize("yaw, pitch", [(0, 0), (20, 0), (0, 15), (-15, -10)])
 async def test_a_real_face_passes_near_or_far_and_turned(scene, at_m, yaw, pitch):
     _face(scene, 10, OPERATOR, at_m=at_m, yaw=yaw, pitch=pitch)
@@ -164,7 +177,7 @@ async def test_a_real_face_passes_near_or_far_and_turned(scene, at_m, yaw, pitch
 
 
 async def test_a_real_face_passes_through_far_range_sensor_noise(scene):
-    _face(scene, 10, OPERATOR, at_m=1.5, noise_mm=8.4)
+    _face(scene, 10, OPERATOR, at_m=1.2, noise_mm=8.4)
     assert await face_gate.refusal("pick") is None
 
 
@@ -177,7 +190,7 @@ async def test_a_life_size_print_is_flat_however_it_is_tilted(scene, yaw, pitch)
 
 async def test_a_print_is_flat_through_far_range_sensor_noise(scene):
     """8.4 mm of per-pixel noise at 1.5 m read as 2.1 cm of box relief."""
-    _face(scene, 10, OPERATOR, nose_m=0.0, at_m=1.5, noise_mm=8.4)
+    _face(scene, 10, OPERATOR, nose_m=0.0, at_m=1.2, noise_mm=8.4)
     assert _code(await face_gate.refusal("pick")) == face_gate.NOT_LIVE
 
 
@@ -186,8 +199,10 @@ async def test_a_photo_on_a_phone_is_too_small(scene):
     assert _code(await face_gate.refusal("pick")) == face_gate.NOT_LIVE
 
 
-async def test_past_max_range_is_not_live(scene):
-    _face(scene, 10, OPERATOR, at_m=1.8)
+@pytest.mark.parametrize("at_m", [1.3, 1.8])
+async def test_past_max_range_is_not_live(scene, at_m):
+    """The default is 1.2 m: at 1.5 m the robot saw the face in 3 of 8 frames, none live."""
+    _face(scene, 10, OPERATOR, at_m=at_m)
     assert _code(await face_gate.refusal("pick")) == face_gate.NOT_LIVE
 
 
@@ -195,6 +210,74 @@ async def test_past_max_range_is_not_live(scene):
 async def test_a_landmark_without_depth_is_not_live(scene, landmark):
     _face(scene, 10, OPERATOR, hole=landmark)
     assert _code(await face_gate.refusal("pick")) == face_gate.NOT_LIVE
+
+
+#: Per frame, per landmark (eyes, nose, mouth corners), metres of depth error. The nose reads
+#: 1.5 cm deep in frame 1 (a real face looks flat) and 2 cm shallow in frame 2 (a print
+#: looks real); the median of each landmark is the truth.
+JITTER = [
+    [0.003, 0, 0.015, 0, 0],
+    [0, 0, -0.02, 0, -0.004],
+    [0, 0.002, 0, 0, 0],
+    [0, 0, 0.005, -0.003, 0],
+    [0, 0, 0, 0, 0],
+]
+
+
+async def test_a_real_face_that_one_noisy_frame_reads_flat_passes_on_the_median(scene):
+    _face(scene, 10, OPERATOR)
+    scene["jitter"] = JITTER
+    scene["n"] = 1
+    assert "flat" in face_gate.liveness(scene["faces"][0], scene["stamp"])  # frame 1 alone
+    scene["n"] = 0
+    assert await face_gate.refusal("pick") is None
+    assert scene["n"] == face_gate.MIN_READINGS  # decided: no more frames taken
+
+
+async def test_a_print_that_one_noisy_frame_reads_real_stays_flat_on_the_median(scene):
+    _face(scene, 10, OPERATOR, nose_m=0.0)
+    scene["jitter"] = JITTER
+    scene["n"] = 2
+    assert face_gate.liveness(scene["faces"][0], scene["stamp"]) is None  # frame 2 alone
+    scene["n"] = 0
+    assert _code(await face_gate.refusal("pick")) == face_gate.NOT_LIVE
+    assert scene["n"] == face_gate.FRAMES
+
+
+async def test_a_landmark_missing_in_one_frame_still_passes(scene):
+    _face(scene, 10, OPERATOR)
+    scene["jitter"] = [[None, 0, 0, 0, 0]] + [[0] * 5] * 4
+    assert await face_gate.refusal("pick") is None
+
+
+async def test_a_landmark_needs_three_readings(scene):
+    _face(scene, 10, OPERATOR)
+    scene["jitter"] = [[0, 0, None, 0, 0]] * 3 + [[0] * 5] * 2
+    assert _code(await face_gate.refusal("pick")) == face_gate.NOT_LIVE
+
+
+@pytest.mark.parametrize("frames, code", [("OSSOS", face_gate.NOT_SEEN), ("OSOSO", None)])
+async def test_identity_needs_a_majority_of_the_frames_with_a_face(scene, frames, code):
+    _face(scene, 10, OPERATOR)
+    scene["who_by_frame"] = [OPERATOR if f == "O" else STRANGER for f in frames]
+    assert _code(await face_gate.refusal("pick")) == code
+
+
+async def test_the_frames_stay_within_their_time_budget(scene, monkeypatch):
+    _face(scene, 10, OPERATOR, nose_m=0.0)  # never decided early: every frame is taken
+    monkeypatch.setattr(face_gate, "FRAMES_BUDGET_S", 0.25)
+    slow = face_gate.frame
+    monkeypatch.setattr(face_gate, "frame", lambda: (time.sleep(0.1), slow())[1])
+    started = time.monotonic()
+    assert _code(await face_gate.refusal("pick")) == face_gate.NOT_LIVE
+    assert scene["n"] == 3 and time.monotonic() - started < face_gate.TIMEOUT_S
+
+
+def test_landmark_depth_is_asked_over_a_five_pixel_patch(monkeypatch):
+    asked = []
+    monkeypatch.setattr(face_gate, "_get", lambda path: (asked.append(path), (b"{}", {}))[1])
+    face_gate.depth_points(1.0, [(1.0, 2.0)] * 5)
+    assert "r=5" in asked[0]
 
 
 async def test_a_vision_container_without_intrinsics_fails_closed(scene):

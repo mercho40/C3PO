@@ -1766,7 +1766,7 @@ Code is done; each needs the robot to confirm. Rebuild the vision image first (`
 - [ ] Install the face models and enroll the operator; the gate comes on after a bridge restart (safety.md 25).
 - [ ] The operator matches at 0.5, 1 and 1.5 m; someone else does not (safety.md 26).
 - [ ] The operator's nose margin on the real D435 at 0.5, 1.0 and 1.5 m: the 1.5 cm `MIN_NOSE_M` has not met real depth (safety.md 26).
-- [ ] A phone, a tablet and a printed photo, flat and tilted, are refused as not live, and the real face still passes at 1.5 m (safety.md 27).
+- [ ] A phone, a tablet and a printed photo, flat and tilted, are refused as not live, and the real face still passes at 1.2 m (safety.md 27).
 - [ ] Enrollment permissions on the robot: folder 0700, file 0600, no image (safety.md 25).
 - [ ] The check's time on the Orin against the 1.5 s budget, and the first gated call after a bridge start (safety.md 28).
 - [ ] A PARAR during a gated check is not delayed (safety.md 29).

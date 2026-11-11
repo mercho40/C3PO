@@ -1,6 +1,6 @@
 """Enroll the operator's face for the face gate (bridge/face_gate.py). Run ON the robot, as the operator.
 
-    .venv/bin/python scripts/face_enroll.py            # look at the head camera, within 1.5 m
+    .venv/bin/python scripts/face_enroll.py            # look at the head camera, within 1.2 m
     .venv/bin/python scripts/face_enroll.py --name Oliver   # ...and the greeter says "Hola Oliver"
     .venv/bin/python scripts/face_enroll.py --delete   # forget the operator
 

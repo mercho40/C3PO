@@ -21,7 +21,8 @@ check holds neither the event loop a stop is dispatched on nor the default execu
 
 LIVENESS FROM DEPTH. The vision container's depth is aligned to the colour frame the face
 is found in, and `GET /depth_points` answers for that frame's stamp only. At YuNet's five
-landmarks it gives a patch median each, deprojected to 3-D: the nose must stand at least
+landmarks it gives a patch median each, deprojected to 3-D. One frame is too noisy, so a
+check judges each landmark's median over up to FRAMES frames: the nose must stand at least
 MIN_NOSE_M in front of the plane through the eyes and mouth corners, whatever that
 plane's tilt, and the face must be FACE_WIDTH_M wide at that depth (a face on a phone is
 a few cm), within MAX_M. That stops a phone, a screen and a print held flat or tilted;
@@ -93,7 +94,7 @@ def _parse(raw: str) -> frozenset[str]:
 
 
 GATED = _parse(os.environ.get("C3PO_FACE_GATE", ""))
-MAX_M = _env_float("C3PO_FACE_GATE_MAX_M", 1.5)
+MAX_M = _env_float("C3PO_FACE_GATE_MAX_M", 1.2)
 FACE_DIR = Path(os.environ.get("C3PO_FACE_DIR") or Path.home() / ".c3po" / "face")
 YUNET = "face_detection_yunet_2023mar.onnx"
 SFACE = "face_recognition_sface_2021dec.onnx"
@@ -109,10 +110,17 @@ FACE_WIDTH_M = (0.11, 0.20)
 #: A real one is ~2-3 cm; a print, tilted or not, is 0 plus noise.
 MIN_NOSE_M = 0.015
 #: Patch radius, /frame.jpg pixels, of each landmark's depth median.
-PATCH_R = 3
+PATCH_R = 5
 #: Same window as the vision container's own `live` flag (stream.STALE_AFTER_S).
 FRAME_STALE_S = 1.0
 TIMEOUT_S = 1.5
+#: One D435 frame's landmark depth is too noisy to judge on (2026-11-11, on the robot: 3 of
+#: 6 frames of a real face at 1 m read it flat), so a check judges the median over frames.
+FRAMES = 5
+#: No new frame is started after this much of TIMEOUT_S: the rest is left to finish in.
+FRAMES_BUDGET_S = TIMEOUT_S * 2 / 3
+#: Valid depth readings each landmark needs across those frames.
+MIN_READINGS = 3
 HTTP_TIMEOUT_S = 1.0
 #: Largest faces looked at per check, so a crowd cannot stretch it past TIMEOUT_S.
 MAX_FACES = 3
@@ -346,8 +354,9 @@ def similarity(feat: Any, enrolled_features: Any) -> float:
     return float(np.mean(b @ a))
 
 
-def liveness(row: Any, stamp: float) -> str | None:
-    """None when this face is live; otherwise why not, with measurements: for the log only."""
+def landmarks_3d(row: Any, stamp: float) -> tuple[list[Any], float]:
+    """This face's five landmarks in metres from the camera (None: no depth reading), and its
+    pixel width over fx. Raises Unavailable when /depth_points cannot be trusted."""
     import numpy as np
 
     marks = [(float(row[4 + 2 * i]), float(row[5 + 2 * i])) for i in range(5)]
@@ -361,14 +370,29 @@ def liveness(row: Any, stamp: float) -> str | None:
     zs = d.get("depth_m")
     if not isinstance(zs, list) or len(zs) != 5:
         raise Unavailable("/depth_points did not answer for the five landmarks")
-    if not all(isinstance(z, (int, float)) and z > 0 for z in zs):
+    # Right eye, left eye, nose, right and left mouth corner.
+    points = [
+        np.array([(u - cx) * z / fx, (v - cy) * z / fy, z])
+        if isinstance(z, (int, float)) and z > 0
+        else None
+        for (u, v), z in zip(marks, zs)
+    ]
+    return points, float(row[2]) / fx
+
+
+def judge(samples: list[tuple[list[Any], float]], min_readings: int = 1) -> str | None:
+    """None when the per-landmark median of these frames is a live face; else why not, with
+    measurements: for the log only. A flat print stays flat under a median."""
+    import numpy as np
+
+    readings = [[pts[i] for pts, _ in samples if pts[i] is not None] for i in range(5)]
+    if min(len(r) for r in readings) < max(min_readings, 1):
         return "a landmark (eyes, nose, mouth corners) has no depth reading"
-    # Right eye, left eye, nose, right and left mouth corner, in metres from the camera.
-    p = np.array([((u - cx) * z / fx, (v - cy) * z / fy, z) for (u, v), z in zip(marks, zs)])
+    p = np.array([np.median(r, axis=0) for r in readings])
     dist = float(np.median(p[:, 2]))
     if dist > MAX_M:
         return f"it is {dist:.2f} m away, past {MAX_M} m"
-    width = float(row[2]) * dist / fx
+    width = float(np.median([w for _, w in samples])) * dist
     if not FACE_WIDTH_M[0] <= width <= FACE_WIDTH_M[1]:
         return f"it is {width * 100:.0f} cm wide, not a real face's size (a photo or a screen?)"
     rim = p[[0, 1, 3, 4]]
@@ -382,23 +406,52 @@ def liveness(row: Any, stamp: float) -> str | None:
     return None
 
 
+def liveness(row: Any, stamp: float) -> str | None:
+    """One frame's verdict, for enrollment (which retries frames); the gate judges several."""
+    return judge([landmarks_3d(row, stamp)])
+
+
 def _check() -> tuple[str, str] | None:
-    """None when the enrolled operator's live face is in view; else (reason code, detail)."""
+    """None when the enrolled operator's live face is in view; else (reason code, detail).
+
+    Up to FRAMES fresh frames within FRAMES_BUDGET_S, stopping once decided. Identity: the
+    operator matched in a majority of the frames with a face. Liveness: `judge` on the
+    operator's face over those frames, each landmark from at least MIN_READINGS of them.
+    """
     enrolled_features = enrolled()
     if enrolled_features is None:
         return NOT_ENROLLED, "no operator is enrolled on this robot"
-    img, stamp = fresh_frame()
-    not_live = None
-    for row in faces(img):
-        if not similarity(feature(img, row), enrolled_features) >= MATCH_COSINE:
-            continue  # `not >=`: a NaN similarity is no match
-        why = liveness(row, stamp)
-        if why is None:
+    deadline = time.monotonic() + FRAMES_BUDGET_S
+    faced = matched = 0
+    samples: list[tuple[list[Any], float]] = []
+    for taken in range(1, FRAMES + 1):
+        # shortcut: two fetches can return the same frame, counted twice; fine at 5 frames in 1 s.
+        img, stamp = fresh_frame()
+        rows = faces(img)
+        hits: list[tuple[float, Any]] = []
+        for row in rows:
+            sim = similarity(feature(img, row), enrolled_features)
+            if sim >= MATCH_COSINE:  # a NaN similarity is no match
+                hits.append((sim, row))
+        faced += bool(rows)
+        if hits:
+            matched += 1
+            samples.append(landmarks_3d(max(hits, key=lambda h: h[0])[1], stamp))
+        left = FRAMES - taken
+        if 2 * matched > faced and judge(samples, MIN_READINGS) is None:
             return None
-        not_live = why
-    if not_live is not None:
-        return NOT_LIVE, f"the operator's face was recognised but {not_live}"
-    return NOT_SEEN, "the enrolled operator's face is not in front of the head camera"
+        if (
+            2 * (matched + left) <= faced + left  # a majority is out of reach
+            or len(samples) + left < MIN_READINGS
+            or time.monotonic() >= deadline
+        ):
+            break
+    if not 2 * matched > faced:
+        return NOT_SEEN, "the enrolled operator's face is not in front of the head camera"
+    why = judge(samples, MIN_READINGS)
+    return NOT_LIVE, (
+        f"the operator's face was recognised but {why} ({len(samples)} of {taken} frames)"
+    )
 
 
 def _run_check() -> tuple[str, str] | None:

@@ -450,7 +450,7 @@ Setup, once per robot and operator:
    opencv_zoo, pinned by commit and sha256, into `~/.c3po/face/models`, and ends with
    `OK — models in …`. Re-running only fetches what is missing or wrong.
 3. Enroll, on the robot, with the operator alone in front of the head camera, within
-   1.5 m: `cd ~/c3po/apps/bridge && .venv/bin/python scripts/face_enroll.py`. The operator
+   1.2 m: `cd ~/c3po/apps/bridge && .venv/bin/python scripts/face_enroll.py`. The operator
    reads the consent text and answers `s`. It needs 5 frames with exactly one live face,
    all of the same person, and ends with `enrolled: …/operator.npy`. Re-running replaces
    the operator; `--delete` forgets them. An interrupted run leaves
@@ -469,7 +469,7 @@ Settings, in `apps/bridge/.env`, read when the bridge starts:
 | Key                    | Default        | Meaning                                 |
 | ---------------------- | -------------- | --------------------------------------- |
 | `C3PO_FACE_GATE`       | empty (off)    | `confirm` and/or tool names, comma list |
-| `C3PO_FACE_GATE_MAX_M` | `1.5`          | a face farther than this does not count |
+| `C3PO_FACE_GATE_MAX_M` | `1.2`          | a face farther than this does not count |
 | `C3PO_FACE_DIR`        | `~/.c3po/face` | models and the enrollment (owner-only)  |
 
 **What counts as a live face.** YuNet finds it and SFace matches it against the enrolled
