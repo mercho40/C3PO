@@ -371,16 +371,17 @@ WALKS = {"step_forward_m", "step_back_m", "step_left_m", "step_right_m", "proble
 @pytest.fixture(scope="module")
 def table_twin():
     """The twin with a box table (moved per scene) and, on each wrist_yaw_link, the planner's
-    hand capsule out to the TCP: the model's hand has no collision geometry of its own."""
+    open hand (TABLE_CAPSULES): out past the TCP to the fingertips, palm-wide. The model's hand
+    has no collision geometry of its own."""
     spec = mujoco.MjSpec.from_file(str(MODEL))
     # A mocap body, not a world geom: MuJoCo's broadphase never re-bounds a moved world geom.
     table = spec.worldbody.add_body(name="table", mocap=True, pos=[0, 0, -10])
     table.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[1.0, 1.5, 0.5])
-    (_part, *_, radius) = m.ARM_CAPSULES[-1]
+    (_part, _a, _b, t0, t1, radius) = m.TABLE_CAPSULES[-1]
     for side in SIDES:
         spec.body(f"{side}_wrist_yaw_link").add_geom(
             type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-            fromto=[0, 0, 0, kinematics.GRASP_TCP_M, 0, 0],
+            fromto=[t0 * kinematics.GRASP_TCP_M, 0, 0, t1 * kinematics.GRASP_TCP_M, 0, 0],
             size=[radius, 0, 0],
         )
     model = spec.compile()
@@ -446,7 +447,9 @@ def test_random_tables_every_plan_clears_torso_and_table(table_twin, monkeypatch
                 hits[key] = max(hits.get(key, 0.0), depth)
     print(f"\n{SCENES} table scenes: {plans} planned, refused {dict(refused)}")
     assert not hits, {k: f"{v * 1000:.1f} mm" for k, v in sorted(hits.items())}
-    assert plans >= SCENES // 10, "a sweep that plans nothing checks no trajectory"
+    # The open hand (TABLE_CAPSULES) needs ~5 cm under the TCP: most of these low objects and
+    # near edges refuse (1/20, 2/200 plan), so the floor is "some", not a tenth.
+    assert plans >= max(1, SCENES // 100), "a sweep that plans nothing checks no trajectory"
 
 
 def test_the_twin_table_catches_a_plan_that_ignores_it(table_twin):

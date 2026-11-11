@@ -517,6 +517,21 @@ def test_a_reported_support_becomes_the_table_in_torso_link(monkeypatch):
         assert m.support_table({"support": {**support(), **bad}}, p) is None
 
 
+def test_the_supports_camera_points_put_the_table_in_the_objects_frame(monkeypatch):
+    # The vision side's C3PO_CAMERA_* override moved z_m / near_edge_m (its base_link); the
+    # cam_* points are measurements and go through camera_to_torso like the cup's cam_xyz.
+    top, near = (0.32, -0.20, -0.02), (0.22, -0.18, 0.01)  # torso_link: the near end higher
+    see(monkeypatch, cup(age_s=0.2, support=support(
+        z_m=0.30, near_edge_m=0.60, cam_top_xyz=to_optical(top), cam_near_xyz=to_optical(near))))
+    p, obj = m.detected_target("cup", None)
+    assert p == pytest.approx(REACHABLE)
+    assert m.support_table(obj, p) == pytest.approx((0.22, 0.01))
+    # Malformed points: the base_link fields, as from a perception without them.
+    for bad in ({"cam_near_xyz": None}, {"cam_top_xyz": [0.1, 0.2]}, {"cam_top_xyz": "up"}):
+        s = {**support(), "cam_top_xyz": to_optical(top), "cam_near_xyz": to_optical(near), **bad}
+        assert m.support_table({"support": s}, p) == m.support_table({"support": support()}, p)
+
+
 def test_a_support_from_another_frame_is_dropped(monkeypatch):
     # Same capture = the support's stamp is the summary's stamp minus the object's age_s.
     see(monkeypatch, cup(age_s=0.2, support=support(stamp=STAMP - 0.7)))
@@ -548,7 +563,7 @@ def test_a_lower_reported_surface_never_lowers_the_hand():
 
 
 def test_every_arm_capsule_keeps_clear_of_the_table_box():
-    table = (0.20, -0.03)
+    table = (0.20, -0.07)  # the object's centre 12 cm over it: room for the open hand
     for kind, _phase, q in m.plan_pick("right", REACHABLE, "power", HANGING, table):
         if kind == "arm":
             m._check_torso("right", "replay", [q], table)  # raises if any capsule is inside
@@ -564,10 +579,47 @@ def test_an_object_beyond_the_table_edge_says_walking_stops_at_the_edge():
 
 
 def test_a_robot_hugging_the_table_is_told_to_step_back():
-    # The edge 8 cm from the torso: closer than the nearest tuck point, so back off to it.
-    text, advice, hint = m.reach_advice("right", REACHABLE, (0.08, -0.05))
-    assert advice == {"step_back_m": 0.08}
-    assert "0.08 m back" in text and hint.startswith("Alejate ~0.08 m")
+    # The edge 20 cm from the torso: closer than walking's standoff, so back off to it.
+    text, advice, hint = m.reach_advice("right", REACHABLE, (0.20, -0.07))
+    assert advice == {"step_back_m": 0.05}
+    assert "0.05 m back" in text and hint.startswith("Alejate ~0.05 m")
+
+
+def test_walking_to_a_table_stops_with_its_edge_a_standoff_ahead():
+    # The hips reach x ~0.10 at desk height: walking leaves the edge 0.25 m out, not 0.16.
+    _text, advice, _hint = m.reach_advice("right", (0.60, -0.15, 0.05), (0.45, -0.07))
+    assert advice == {"step_forward_m": round(0.45 - m.WALK_EDGE_STANDOFF_M, 2)}
+    assert m.WALK_EDGE_STANDOFF_M == 0.25
+    # 0.26 m behind an edge 0.36 m out: walking up to the standoff leaves it out of reach.
+    _text, advice, _hint = m.reach_advice("right", (0.62, -0.15, 0.05), (0.36, -0.07))
+    assert advice == {"problem": "behind_table_edge", "behind_edge_m": 0.26}
+
+
+def test_open_fingertips_never_go_below_the_table_top():
+    # Review sweep scene 253: tilts 0 and 30 met the table, the planner fell through to 60
+    # nose-down with the TCP 4.6 cm over the top and open fingertips 2.3 cm under it.
+    target, (edge, top) = (0.374, -0.257, 0.087), (0.197, 0.024)
+    try:
+        steps = m.plan_pick("right", target, "power", HANGING, (edge, top))
+    except m.PlanError as exc:
+        assert exc.reason == "table_clearance" and exc.part == "hand"
+        return
+    for kind, phase, q in steps:
+        if kind == "arm":
+            hp = kinematics.forward("right", q)
+            tip = [p + m.FINGER_M * d for p, d in zip(hp.position, hp.pointing, strict=True)]
+            assert tip[0] < edge or tip[2] > top, (phase, tip)
+
+
+def test_a_place_withdraws_the_palm_behind_a_near_table_edge_or_refuses():
+    # Releasing lowers the arm from where the withdraw ends: never with the palm over the top.
+    target = (0.30, -0.25, 0.05)
+    steps = m.plan_place("right", target, HANGING, (0.20, -0.05))
+    x = kinematics.forward("right", last_q(steps, "withdraw")).position[0]
+    assert x <= 0.20 - m.HAND_OPEN_RADIUS_M - m.TABLE_CLEARANCE_M + kinematics.POS_TOL_M
+    with pytest.raises(m.PlanError, match="behind the table edge") as err:
+        m.plan_place("right", target, HANGING, (0.12, -0.05))
+    assert err.value.reason == "table_clearance" and err.value.part == "hand"
 
 
 @pytest.mark.asyncio
