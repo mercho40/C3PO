@@ -17,6 +17,16 @@ import { Elysia } from "elysia";
 import { auth } from "#back/lib/auth.js";
 
 export const betterAuth = new Elysia({ name: "better-auth" })
+  // Better Auth keys its rate limit on X-Forwarded-For, which any client can
+  // write: a new value per attempt was a new bucket. Nothing proxies back
+  // (BACK_HOST is loopback; a LAN box takes browsers directly), so the socket
+  // is the client. shortcut: a TLS proxy in front would put every client in
+  // one bucket; then append instead and list it in advanced.ipAddress.trustedProxies.
+  .onRequest(({ request, server }) => {
+    const ip = server?.requestIP(request)?.address;
+    if (ip) request.headers.set("x-forwarded-for", ip);
+    else request.headers.delete("x-forwarded-for");
+  })
   .mount(auth.handler)
   .macro({
     auth: {

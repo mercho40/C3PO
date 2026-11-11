@@ -58,16 +58,13 @@ const body = (signature: string): string => {
 };
 
 describe("observe-only commands nothing", () => {
-  test("the local velocity loop refuses to run", () => {
-    expect(body("#loopShouldRun(): boolean {")).toContain(
-      "if (this.viewOnly) return false;",
-    );
-  });
-
+  // The local velocity loop refusing to run is pinned by behaviour in
+  // vr-control-runtime.test.ts.
   test("the teleop socket cannot be opened during the session", () => {
-    expect(body("connectStream(): void {")).toContain(
-      "if (this.viewOnly) return;",
-    );
+    const connect = body("async connectStream(): Promise<void> {");
+    expect(connect).toContain("if (this.viewOnly) return;");
+    // Re-checked after the token await: observe-only may start meanwhile.
+    expect(connect).toContain("|| this.viewOnly ||");
   });
 
   test("every frame the bridge pulls says observe-only", () => {
@@ -77,9 +74,7 @@ describe("observe-only commands nothing", () => {
   });
 
   test("the trigger fires nothing, and neither does the stick", () => {
-    const menu = body(
-      "#applyMenuButtons(b: { trigger: boolean; primary: boolean }): void {",
-    );
+    const menu = body("#applyMenuButtons(b: XrButtons): void {");
     expect(menu.indexOf("if (this.viewOnly) return;")).toBeLessThan(
       menu.indexOf("this.runSkill("),
     );
@@ -89,6 +84,27 @@ describe("observe-only commands nothing", () => {
     expect(body("startWalking(dir: WalkDir): void {")).toContain(
       "if (this.viewOnly) return;",
     );
+  });
+
+  test("the in-headset PARAR has no observer guard, needs a 300 ms hold, and runs first", () => {
+    const chord = body("#applyStopChord(grips: number, now: number): void {");
+    expect(chord).toContain("estop.press()");
+    expect(chord).toContain("STOP_CHORD_MS");
+    expect(chord).not.toContain("viewOnly");
+    // First in onSample: nothing that can throw (walk axis, menu) runs before it.
+    const sample = controller.slice(controller.indexOf("onSample: (s) => {"));
+    expect(sample.indexOf("this.#applyStopChord(")).toBeLessThan(
+      sample.indexOf("this.#applyWalkAxis("),
+    );
+    expect(sample.indexOf("this.#applyStopChord(")).toBeLessThan(
+      sample.indexOf("this.#yawErrorRadians"),
+    );
+    // Talk and voice items stay behind the observer guard.
+    const menu = body("#applyMenuButtons(b: XrButtons): void {");
+    const guard = menu.indexOf("if (this.viewOnly) return;");
+    expect(menu).not.toContain("estop.press()");
+    expect(menu.indexOf("this.#voice?.onTalk(")).toBeGreaterThan(guard);
+    expect(menu.indexOf("this.#voice?.onItem(")).toBeGreaterThan(guard);
   });
 
   test("no tile runs for an observer — lockedOut is what every tile reads", () => {
@@ -114,7 +130,7 @@ describe("a held stick cannot re-arm its own latch", () => {
     expect(release).toContain("this.#stickNeedsNeutral = true;");
     // Buttons are assumed HELD after a reset, so a trigger still down is not
     // a new press.
-    expect(release).toContain("{ trigger: true, primary: true }");
+    expect(/trigger: true,\s*primary: true/.test(release)).toBe(true);
     expect(body("#refreshReadouts(): void {")).toContain(
       "this.#stickNeedsNeutral = true;",
     );
@@ -131,3 +147,7 @@ describe("a held stick cannot re-arm its own latch", () => {
     expect(body("#tick(): void {")).toContain("this.#stickWalk === null &&");
   });
 });
+
+// The headset PARAR down the teleop socket (C6), the per-connect token (X15),
+// the chord's 300 ms, observe-only sending nothing but PARAR, and PARAR
+// dropping the arms are pinned by behaviour in vr-control-runtime.test.ts.

@@ -7,6 +7,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   advance,
   stopHeldGait,
@@ -285,5 +287,46 @@ describe("hotkey", () => {
     expect(isTypingTarget({ tagName: "INPUT", type: "range" })).toBe(false);
     expect(isTypingTarget({ tagName: "INPUT", type: "checkbox" })).toBe(false);
     expect(isTypingTarget(null)).toBe(false);
+  });
+});
+
+// Asserted on source, like vr-headset-menu.test.ts: the button and the action
+// need Svelte and SvelteKit, which this harness lacks. The classification they
+// reuse is pinned above.
+const src = (path: string) =>
+  readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
+
+describe("PARAR before hydration", () => {
+  const button = src("../src/lib/components/stop-button.svelte");
+
+  test("the button is a submit in a no-JS form that posts to /stop", () => {
+    expect(button).toContain('<form method="POST" action="/stop"');
+    expect(button).toContain('type="submit"');
+    expect(button).not.toContain('type="button"');
+  });
+
+  test("a hydrated click never submits it, busy or not", () => {
+    // A navigation on /vr-control would end the XR session.
+    const press = button.slice(button.indexOf("function press("));
+    const prevent = press.indexOf("e.preventDefault();");
+    expect(prevent).toBeGreaterThan(-1);
+    expect(prevent).toBeLessThan(press.indexOf("if (estop.busy) return;"));
+  });
+
+  test("the action sends stop_everything and judges it like the store", () => {
+    const action = src("../src/routes/(protected)/stop/+page.server.ts");
+    expect(action).toContain('.skills({ name: "stop_everything" })');
+    expect(action).toContain('request.headers.get("cookie")');
+    expect(action).toContain("classifyStopResponse(res)");
+    // A timed-out order may have landed: "no answer", never "never left".
+    expect(action).toContain(
+      'if (signal.aborted && result.phase !== "accepted")',
+    );
+  });
+
+  test("the result page does not promise a confirmation it cannot get", () => {
+    const page = src("../src/routes/(protected)/stop/+page.svelte");
+    expect(page).toContain("estopMessage(form.phase, form.code)");
+    expect(page).toContain('form?.phase === "accepted"');
   });
 });

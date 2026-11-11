@@ -1,7 +1,7 @@
 /**
- * What the /login and /signup loads read from their URL and from back: where to
- * go after signing in, which OAuth providers exist, and what an OAuth failure
- * Better Auth bounced back here means. Shared by both page loads.
+ * What the /login load reads from its URL and from back: where to go after
+ * signing in, which OAuth providers exist, and what an OAuth failure Better
+ * Auth bounced back here means.
  *
  * The protected layout and the pollers redirect here with
  * `?redirectTo=<path>&reason=expired`, so a Quest operator whose session lapsed

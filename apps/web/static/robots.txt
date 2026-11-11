@@ -3,7 +3,6 @@
 # anyway, so a crawler would only ever find the sign-in form).
 User-agent: *
 Disallow: /login
-Disallow: /signup
 Disallow: /dashboard
 Disallow: /live-map
 Disallow: /live-camera

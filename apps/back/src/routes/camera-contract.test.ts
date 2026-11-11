@@ -25,6 +25,7 @@ const APPS = join(import.meta.dir, "..", "..", "..");
 const read = (...parts: string[]) => readFileSync(join(APPS, ...parts), "utf8");
 
 const CAMERA_TS = read("back", "src", "routes", "camera.ts");
+const LOOK_TS = read("back", "src", "agent", "look.ts");
 const MCP_SERVER_PY = read("bridge", "src", "bridge", "mcp_server.py");
 const MJPEG_TS = read("web", "src", "lib", "robot", "mjpeg-camera.ts");
 const LIVE_CAMERA = read(
@@ -77,6 +78,22 @@ describe("camera route contract", () => {
 
   test("the bridge serves every path back proxies", () => {
     for (const p of proxied) expect(served).toContain(p);
+  });
+
+  test("look uploads only the face-blurred frame, and the bridge serves it", () => {
+    const fetched = all(LOOK_TS, /bridgeSiblingUrl\(\s*"([^"]+)"/g);
+    expect(fetched).toContain("/camera/cloud_frame.jpg");
+    expect(fetched).not.toContain("/camera/frame.jpg");
+    for (const p of fetched) expect(served).toContain(p);
+  });
+
+  test("the vision smoke test uploads the face-blurred frame too", () => {
+    const fetched = all(
+      read("back", "scripts", "smoke-vision.ts"),
+      /pathname = "([^"]+)"/g,
+    );
+    expect(fetched).toEqual(["/camera/cloud_frame.jpg"]);
+    for (const p of fetched) expect(served).toContain(p);
   });
 
   test("back proxies exactly what it exposes", () => {

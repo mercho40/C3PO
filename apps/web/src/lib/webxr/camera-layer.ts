@@ -21,9 +21,13 @@
  * reimplementing multipart framing and JPEG decode to arrive at the same
  * pixels, slower.
  *
- * The cost is that an <img> gives no "new frame" event — so `draw()` uploads on
- * every XR frame regardless. At 72-120 Hz against a 5 Hz stream that is mostly
- * redundant work, and cheap enough not to matter.
+ * The cost is that an <img> gives no "new frame" event, so `draw()` cannot
+ * upload only on a new picture. It used to upload on every draw, which is per
+ * eye per XR frame: 180 full-frame texImage2D calls a second at 90 Hz against
+ * a ~15 fps feed, all on the frame callback that also samples head pose. Now
+ * the picture is uploaded at most every `UPLOAD_MIN_INTERVAL_MS`, so the
+ * second eye of a frame only binds and draws, and the placeholder card only
+ * when it is repainted or replaces the picture.
  *
  * THIS CLASS DOES NOT OWN LIVENESS, DELIBERATELY
  * ----------------------------------------------
@@ -49,6 +53,11 @@
  * heads-up view over the real world, in VR it is the world.
  */
 
+import {
+  drawFaceBoxes,
+  freshFaces,
+  type FaceSeen,
+} from "#lib/robot/face-seen.js";
 import { fovAspect, placeQuad, type EyePose } from "./stereo";
 
 const VERT = `
@@ -120,6 +129,14 @@ export type CameraReason = { text: string; hint: string } | null;
 /** The placeholder's canvas. 4:3, like the picture it stands in for. */
 const CARD_W = 640;
 const CARD_H = 480;
+
+/**
+ * The shortest gap between two uploads of the picture: 25 ms, at most 40/s,
+ * well above the ~15 fps the feed delivers, and longer than the gap between
+ * the two eyes of one frame. A feed above 40 fps is capped at 40 in the
+ * headset.
+ */
+export const UPLOAD_MIN_INTERVAL_MS = 25;
 
 /**
  * Turn the page's camera state into something worth reading in a headset.
@@ -251,6 +268,15 @@ export class CameraLayer {
   #cardCtx: CanvasRenderingContext2D | null = null;
   #cardDirty = true;
   #cardShown = false;
+  // What the texture currently holds, so an unchanged card is not re-uploaded
+  // and a picture is not uploaded twice within UPLOAD_MIN_INTERVAL_MS.
+  #texHolds: "img" | "card" | null = null;
+  #uploadedAt = 0;
+  #faces: FaceSeen | null = null;
+  #facesAt = 0;
+  // The frame and its face boxes composed here, then uploaded as ONE texture.
+  #compose: HTMLCanvasElement | null = null;
+  #composeCtx: CanvasRenderingContext2D | null = null;
 
   constructor(gl: WebGLRenderingContext) {
     this.#gl = gl;
@@ -289,9 +315,11 @@ export class CameraLayer {
    * `quest_setup.sh` to forward the port that also serves `/mcp` into the
    * headset. Relaying through apps/back removed both.
    */
-  setStreamUrl(streamUrl: string): void {
+  setStreamUrl(streamUrl: string, withCredentials = true): void {
     if (streamUrl === this.#url) return;
     this.#url = streamUrl;
+    // A new source: its first picture goes up on the next draw.
+    this.#texHolds = null;
     if (this.#img) {
       // Detach BEFORE cutting src. The old element's handlers close over
       // `this`, so an error event dispatched after the swap would set
@@ -304,7 +332,9 @@ export class CameraLayer {
       this.#img.remove();
     }
     const img = new Image();
-    img.crossOrigin = "use-credentials";
+    // The bridge on 8001 sends Allow-Origin but not Allow-Credentials, so a
+    // credentialed request to it fails; apps/back's relay needs the cookie.
+    img.crossOrigin = withCredentials ? "use-credentials" : "anonymous";
     img.onload = () => (this.#ready = true);
     img.onerror = () => (this.#ready = false);
     img.src = streamUrl;
@@ -315,8 +345,8 @@ export class CameraLayer {
     // animated image, and Blink pauses that for elements with no rendering
     // observer. A detached image is exactly that: `onload` fires for the first
     // decoded part, so `#ready` and `hasFrame` go true and everything looks
-    // healthy — and then the bitmap may simply stop updating. The texture is
-    // re-uploaded every XR frame from a picture that never changes, which
+    // healthy — and then the bitmap may simply stop updating. The texture keeps
+    // being re-uploaded from a picture that never changes, which
     // reads in the headset as a live camera showing one frozen moment.
     //
     // 1x1 and transparent rather than `display: none`, because a display:none
@@ -343,6 +373,44 @@ export class CameraLayer {
    */
   setLive(live: boolean): void {
     this.#live = live;
+  }
+
+  /**
+   * Who the camera sees (`receivedAt` in Date.now() ms). Drawn into the
+   * picture until it is FACE_STALE_S old; null clears it.
+   */
+  setFaces(seen: FaceSeen | null, receivedAt: number): void {
+    this.#faces = seen;
+    this.#facesAt = receivedAt;
+  }
+
+  /**
+   * The picture with its face boxes on a 2D canvas, or the bare <img> when
+   * there are none (or no canvas): the upload source either way, so it stays
+   * one texImage2D per picture.
+   */
+  #source(img: HTMLImageElement): HTMLImageElement | HTMLCanvasElement {
+    const seen = this.#faces;
+    const faces = freshFaces(seen, (Date.now() - this.#facesAt) / 1000);
+    if (!seen || !faces.length) return img;
+    if (!this.#compose) {
+      if (typeof document === "undefined" || !document.createElement)
+        return img;
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext?.("2d");
+      if (!ctx) return img;
+      this.#compose = canvas;
+      this.#composeCtx = ctx;
+    }
+    const canvas = this.#compose;
+    const ctx = this.#composeCtx!;
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+    drawFaceBoxes(ctx, faces, seen.width, seen.height, { x: 0, y: 0, w, h });
+    return canvas;
   }
 
   /**
@@ -391,6 +459,8 @@ export class CameraLayer {
     if (this.#cardDirty && this.#cardCtx) {
       paintNoSignal(this.#cardCtx, this.#reason);
       this.#cardDirty = false;
+      // The texture holds the old text now, if it holds the card at all.
+      this.#texHolds = null;
     }
     return this.#card;
   }
@@ -459,8 +529,15 @@ export class CameraLayer {
    * picture, and silently discarding the edges of their field of view is a
    * worse failure than black bars. Callers with no eye get the old full-field
    * behaviour, which keeps the non-XR paths working.
+   *
+   * `now` is a clock in ms (the default is `performance.now()`); it only
+   * throttles uploads, see `UPLOAD_MIN_INTERVAL_MS`.
    */
-  draw(opaque: boolean, eye?: EyePose | null): void {
+  draw(
+    opaque: boolean,
+    eye?: EyePose | null,
+    now: number = performance.now(),
+  ): void {
     const gl = this.#gl;
     const img = this.#img;
     const havePicture = !!img && this.#ready && img.naturalWidth > 0;
@@ -480,29 +557,49 @@ export class CameraLayer {
     if (!this.#program) return;
 
     gl.bindTexture(gl.TEXTURE_2D, this.#texture);
-    try {
-      if (havePicture) {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img!);
-        this.#uploaded += 1;
-      } else {
-        // RGBA, not RGB: the card is drawn with alpha so it reads as a panel
-        // over passthrough rather than a black rectangle punched in the room.
-        // It is NOT counted as an upload — `framesUploaded` is how the page
-        // tells a live feed from a frozen one, and placeholder repaints would
-        // make a dead camera look like it was delivering frames.
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          gl.RGBA,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          card!,
-        );
+    const holds = havePicture ? "img" : "card";
+    // Something else in the texture always goes up at once. The same picture
+    // again only after the interval; the same card never (a repaint clears
+    // #texHolds in #ensureCard).
+    const upload =
+      this.#texHolds !== holds ||
+      (havePicture && now - this.#uploadedAt >= UPLOAD_MIN_INTERVAL_MS);
+    if (upload) {
+      try {
+        if (havePicture) {
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGB,
+            gl.RGB,
+            gl.UNSIGNED_BYTE,
+            this.#source(img!),
+          );
+          this.#uploaded += 1;
+        } else {
+          // RGBA, not RGB: the card is drawn with alpha so it reads as a panel
+          // over passthrough rather than a black rectangle punched in the room.
+          // It is NOT counted as an upload — `framesUploaded` is how the page
+          // tells a live feed from a frozen one, and placeholder repaints would
+          // make a dead camera look like it was delivering frames.
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            card!,
+          );
+        }
+        this.#texHolds = holds;
+        this.#uploadedAt = now;
+      } catch {
+        // A tainted or half-decoded image throws here. Skip the frame rather
+        // than tear down the session, and retry on the next draw: what the
+        // texture holds after a failed upload is unknown.
+        this.#texHolds = null;
+        return;
       }
-    } catch {
-      // A tainted or half-decoded image throws here. Skip the frame rather
-      // than tear down the session — the next one is 200ms away.
-      return;
     }
 
     gl.useProgram(this.#program);
@@ -589,6 +686,7 @@ export class CameraLayer {
     this.#texture = null;
     this.#buffer = null;
     this.#program = null;
+    this.#texHolds = null;
     this.#ready = false;
     // Dropped with the context: the canvas is only ever a texture source, and
     // a repaint on the next session is one draw call.

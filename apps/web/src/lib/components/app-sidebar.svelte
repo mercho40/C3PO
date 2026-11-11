@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { ComponentProps } from "svelte";
   import { afterNavigate } from "$app/navigation";
+  import { page } from "$app/state";
   import { resolve } from "$app/paths";
   import * as Sidebar from "#lib/components/ui/sidebar/index.js";
   import { useSidebar } from "#lib/components/ui/sidebar/index.js";
-  import { NAV } from "#lib/nav.js";
+  import { navFor } from "#lib/nav.js";
   import NavMain from "./nav-main.svelte";
   import NavUser from "./nav-user.svelte";
 
@@ -63,7 +64,7 @@
   </Sidebar.Header>
 
   <Sidebar.Content>
-    {#each NAV as group (group.label)}
+    {#each navFor(page.data.isAdmin === true) as group (group.label)}
       <NavMain {group} />
     {/each}
   </Sidebar.Content>

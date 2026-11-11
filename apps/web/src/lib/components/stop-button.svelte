@@ -36,7 +36,10 @@
   const moving = $derived(posture.locomotion || posture.load === "moving");
   const view = $derived(estopView(estop.phase));
 
-  function press() {
+  function press(e: MouseEvent) {
+    // First, before the busy check: once hydrated, no click may submit the
+    // no-JS form below. A navigation on /vr-control ends the XR session.
+    e.preventDefault();
     // aria-disabled rather than `disabled`: a disabled button drops keyboard
     // focus mid-press, and the operator who just hit it should still be on it.
     if (estop.busy) return;
@@ -44,34 +47,39 @@
   }
 </script>
 
-<button
-  type="button"
-  onclick={press}
-  aria-disabled={estop.busy}
-  aria-keyshortcuts="Shift+Space"
-  title="Parar todo movimiento del robot ({STOP_HOTKEY_LABEL})"
-  data-moving={moving}
-  data-tone={view.tone}
-  class="stop"
->
-  <span class="icon" aria-hidden="true">
-    {#if view.spinning}
-      <Loader2 class="size-4 motion-safe:animate-spin" />
-    {:else if view.tone === "stopped"}
-      <Check class="size-4" />
-    {:else if view.tone === "failed" || view.tone === "unconfirmed"}
-      <TriangleAlert class="size-4" />
-    {:else}
-      <Square class="size-4" />
-    {/if}
-  </span>
-  <!-- The visible word IS the accessible name (plus a suffix saying what the
-       button does), so "Reintentar" said aloud to voice control matches what is
-       on screen. It used to carry a fixed aria-label that hid every state. -->
-  <span class="label hidden sm:inline">{view.label}</span>
-  <span class="label sm:hidden">{view.short}</span>
-  <span class="sr-only"> — detener todo movimiento del robot</span>
-</button>
+<!-- A press that lands before hydration (or with JS off) still stops the robot:
+     it posts to /stop, which sends the stop server side and shows the result.
+     `display: contents` keeps the form out of the topbar's layout. -->
+<form method="POST" action="/stop" style="display: contents">
+  <button
+    type="submit"
+    onclick={press}
+    aria-disabled={estop.busy}
+    aria-keyshortcuts="Shift+Space"
+    title="Parar todo movimiento del robot ({STOP_HOTKEY_LABEL})"
+    data-moving={moving}
+    data-tone={view.tone}
+    class="stop"
+  >
+    <span class="icon" aria-hidden="true">
+      {#if view.spinning}
+        <Loader2 class="size-4 motion-safe:animate-spin" />
+      {:else if view.tone === "stopped"}
+        <Check class="size-4" />
+      {:else if view.tone === "failed" || view.tone === "unconfirmed"}
+        <TriangleAlert class="size-4" />
+      {:else}
+        <Square class="size-4" />
+      {/if}
+    </span>
+    <!-- The visible word IS the accessible name (plus a suffix saying what the
+         button does), so "Reintentar" said aloud to voice control matches what is
+         on screen. It used to carry a fixed aria-label that hid every state. -->
+    <span class="label hidden sm:inline">{view.label}</span>
+    <span class="label sm:hidden">{view.short}</span>
+    <span class="sr-only"> — detener todo movimiento del robot</span>
+  </button>
+</form>
 
 <style>
   .stop {

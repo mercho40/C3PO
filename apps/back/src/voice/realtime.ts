@@ -5,11 +5,12 @@ import { BridgeToolError, callTool } from "#back/bridge/client.js";
 import { bridgeSiblingUrl } from "#back/bridge/url.js";
 import { appendMessage, logToolCall } from "#back/db/chats.js";
 import {
+  NEEDS_CONFIRMATION,
   buildSystemPrompt,
-  lookAtRobot,
+  BACK_TOOLS,
   offeredInMode,
 } from "#back/agent/runtime.js";
-import { LOOK_TOOL } from "#back/agent/look.js";
+import { notePending } from "#back/agent/confirmations.js";
 import { listSkills } from "#back/skills/index.js";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
@@ -41,8 +42,33 @@ type RealtimeEvent = {
   name?: string;
   arguments?: string;
   call_id?: string;
-  error?: { message?: string };
+  error?: RealtimeError;
 };
+
+type RealtimeError = { type?: string; code?: string; message?: string };
+
+/**
+ * Error codes that reject one client event and leave the session usable.
+ * `response.create` goes out after every tool result and every operator
+ * decision while semantic VAD creates responses of its own, so a collision
+ * with an active response is routine; a cancel can arrive after its response
+ * ended; a rate limit fails a response, not the socket. Anything not listed
+ * stays fatal: a session we think is alive but is not would leave the operator
+ * talking to nothing. And a misjudged entry still ends the session when the
+ * server closes the socket (the `close` handler).
+ */
+const RECOVERABLE_ERROR_CODES: ReadonlySet<string> = new Set([
+  "conversation_already_has_active_response",
+  "response_cancel_not_active",
+  "input_audio_buffer_commit_empty",
+  "rate_limit_exceeded",
+]);
+
+export function isRecoverableRealtimeError(
+  error: RealtimeError | undefined,
+): boolean {
+  return error?.code !== undefined && RECOVERABLE_ERROR_CODES.has(error.code);
+}
 
 type RealtimeSkill = Awaited<ReturnType<typeof listSkills>>[number];
 
@@ -55,16 +81,16 @@ export function realtimeTools(skills: RealtimeSkill[]) {
       description: skill.description,
       parameters: skill.parameters as Record<string, unknown>,
     }));
-  // `look` runs here in back, not on the bridge — see agent/look.ts. The frame
-  // goes to the agent's vision model, never into the Realtime session.
+  // look and verify run here in back, not on the bridge — see agent/look.ts.
+  // The frame goes to the agent's vision model, never into the Realtime session.
   return [
     ...bridgeTools,
-    {
+    ...BACK_TOOLS.map(({ def }) => ({
       type: "function" as const,
-      name: LOOK_TOOL.name,
-      description: LOOK_TOOL.description,
-      parameters: LOOK_TOOL.parameters as Record<string, unknown>,
-    },
+      name: def.name,
+      description: def.description,
+      parameters: def.parameters as Record<string, unknown>,
+    })),
   ];
 }
 
@@ -162,6 +188,9 @@ class RobotAudioSink {
         );
       }
     });
+    // Marks this link handled so a failed POST cannot crash the process (and
+    // console PARAR with it); finish() still rejects for whoever awaits it.
+    this.tail.catch(() => {});
   }
 }
 
@@ -268,6 +297,37 @@ export class RealtimeVoiceSession {
     this.state.phase = "idle";
   }
 
+  /**
+   * An admin route already confirmed (or cancelled) a call this session asked
+   * for: the model is told what happened. It decides nothing here.
+   */
+  informOutcome(chatId: string, message: string): void {
+    if (!this.state.running || this.state.chatId !== chatId) return;
+    this.send({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{ type: "input_text", text: message }],
+      },
+    });
+    this.send({ type: "response.create" });
+    // In the transcript too, so the voice chat shows what the operator decided.
+    // Through eventTail, so it lands in order with the turn it answers.
+    this.eventTail = this.eventTail.then(() =>
+      appendMessage({
+        id: messageId(),
+        chatId,
+        role: "system",
+        parts: [{ type: "text", text: message }],
+      })
+        .then(() => undefined)
+        .catch((error) =>
+          console.error("[voice/realtime] outcome persistence failed", error),
+        ),
+    );
+  }
+
   private send(event: unknown): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify(event));
@@ -341,6 +401,10 @@ export class RealtimeVoiceSession {
       return;
     }
     if (event.type === "error") {
+      if (isRecoverableRealtimeError(event.error)) {
+        console.warn("[voice/realtime] recoverable error", event.error);
+        return;
+      }
       this.fail(new Error(event.error?.message ?? "OpenAI Realtime error"));
       return;
     }
@@ -412,11 +476,12 @@ export class RealtimeVoiceSession {
       result = { error };
     } else {
       try {
-        if (name === LOOK_TOOL.name) {
-          result = await lookAtRobot(args);
+        const back = BACK_TOOLS.find((t) => t.def.name === name);
+        if (back) {
+          result = await back.run(args);
           if ((result as { status?: string }).status === "error") {
             status = "error";
-            error = (result as { error?: string }).error ?? "look failed";
+            error = (result as { error?: string }).error ?? `${name} failed`;
           }
         } else {
           result = await callTool(name, args);
@@ -432,6 +497,20 @@ export class RealtimeVoiceSession {
               ? cause.message
               : String(cause);
         result = { error };
+        // Noted for the transcript's Confirmar; the realtime model cannot confirm.
+        if (
+          cause instanceof BridgeToolError &&
+          cause.detail.includes(NEEDS_CONFIRMATION) &&
+          this.state.ownerId
+        )
+          notePending({
+            id: callId,
+            tool: name,
+            args,
+            ownerId: this.state.ownerId,
+            chatId,
+            loop: false,
+          });
       }
     }
     this.state.toolCalls += 1;

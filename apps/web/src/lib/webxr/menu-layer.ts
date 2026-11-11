@@ -36,6 +36,7 @@
  */
 
 import { placeQuad, type EyePose } from "./stereo";
+import { VOICE_CLOSE, VOICE_OPEN } from "#lib/robot/voice-panel.js";
 
 export type MenuItem = {
   /** Skill name, as the bridge knows it. */
@@ -44,6 +45,20 @@ export type MenuItem = {
   label: string;
   /** From the catalogue's `works.real`. False renders inert. */
   verified: boolean;
+};
+
+/** One line of the "Hablar con el robot" panel (see robot/voice-panel.ts). */
+export type VoiceLine = {
+  text: string;
+  kind: "you" | "robot" | "tool" | "info" | "warn";
+};
+
+const VOICE_COLOUR: Record<VoiceLine["kind"], string> = {
+  you: "rgba(255,255,255,0.97)",
+  robot: "rgba(150, 220, 255, 0.99)",
+  tool: "rgba(200, 200, 210, 0.92)",
+  info: "rgba(255,255,255,0.60)",
+  warn: "rgba(255, 190, 140, 0.99)",
 };
 
 /** Status line under the list — the result of the last thing fired. */
@@ -67,6 +82,8 @@ export type MenuAlert = { text: string; hint: string } | null;
 export function alertFor(
   deadmanTripped: boolean,
   stoppedByEstop: boolean,
+  battery: "warn" | "alert" | null = null,
+  yawPaused = false,
 ): MenuAlert {
   // e-stop first: it outranks, and its release gesture is the opposite of the
   // hold latch's — you clear a stop by letting go and WAITING, not by pushing
@@ -80,6 +97,15 @@ export function alertFor(
   if (deadmanTripped) {
     return { text: "LÍMITE DE 8 s", hint: "soltá y volvé a empujar" };
   }
+  // The 2D battery banner is outside the dom-overlay, so the headset says it here.
+  if (battery === "alert") {
+    return { text: "BATERÍA CRÍTICA", hint: "sentá o colgá el robot ya" };
+  }
+  if (battery === "warn") {
+    return { text: "BATERÍA BAJA", hint: "cargá el robot antes de seguir" };
+  }
+  // After a voice turn or the Meta menu, head yaw waits for the head at centre.
+  if (yawPaused) return { text: "CENTRÁ LA CABEZA", hint: "giro en pausa" };
   return null;
 }
 
@@ -218,6 +244,8 @@ export function paintMenu(
   busy: string | null,
   readiness: Readiness | null = null,
   alert: MenuAlert = null,
+  voice: readonly VoiceLine[] | null = null,
+  controllers = true,
 ): void {
   ctx.clearRect(0, 0, W, H);
 
@@ -235,7 +263,7 @@ export function paintMenu(
   // --- header: title left, readiness right -------------------------------
   ctx.font = "600 26px system-ui, -apple-system, sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.92)";
-  ctx.fillText("Gestos", 26, 36);
+  ctx.fillText(voice ? "Hablar con el robot" : "Gestos", 26, 36);
 
   if (readiness) {
     ctx.font = "600 17px system-ui, -apple-system, sans-serif";
@@ -268,6 +296,19 @@ export function paintMenu(
     ctx.fillStyle = "rgba(255, 190, 190, 0.92)";
     ctx.fillText(alert.hint, 28, top + 38);
     top += 64;
+  }
+
+  // --- the conversation, in voice mode ------------------------------------
+  // Above the list, so the confirm/resume items sit right under what asked for
+  // them. Capped so the (at most three) voice items still clear the footer.
+  if (voice) {
+    ctx.font = "500 18px system-ui, -apple-system, sans-serif";
+    for (const line of voice.slice(-(alert ? 4 : 5))) {
+      ctx.fillStyle = VOICE_COLOUR[line.kind];
+      ctx.fillText(line.text, 26, top + 13);
+      top += 26;
+    }
+    top += 8;
   }
 
   // --- the list ------------------------------------------------------------
@@ -323,8 +364,16 @@ export function paintMenu(
 
   ctx.font = "500 16px system-ui, -apple-system, sans-serif";
   ctx.fillStyle = "rgba(255,255,255,0.55)";
+  // The PARAR chord is on both screens: a stop has to be findable without
+  // having opened anything first.
+  // Under hand tracking there are no grips (nor B/Y): never advertise a chord
+  // that cannot fire.
   ctx.fillText(
-    "A  siguiente     gatillo  ejecutar     joystick  caminar",
+    !controllers
+      ? NO_CONTROLLER_STOP_HINT
+      : voice
+        ? "B/Y mantener: hablar · A/gatillo: menú · 2 grips: PARAR"
+        : "A siguiente · gatillo ejecutar · joystick caminar · 2 grips PARAR",
     26,
     footY + 4,
   );
@@ -366,6 +415,38 @@ export function firstSelectable(items: readonly MenuItem[]): number {
   return i === -1 ? 0 : i;
 }
 
+export const NO_CONTROLLER_STOP_HINT =
+  "PARAR: botón PARAR de la consola (sin controles)";
+
+/** Items the trigger can land on after a list swap without consequence. */
+const HARMLESS = new Set([VOICE_OPEN, VOICE_CLOSE]);
+
+/**
+ * Where the highlight goes when the list is swapped, and whether the trigger
+ * may fire it. By NAME, never by index: the same slot in the new list can be
+ * "Confirmar <tool>", "Reanudar" or a gesture preset, and a trigger pulled for
+ * what was there a moment ago must not grant T2 or play a gesture. If the item
+ * is gone the highlight falls back to a harmless one and stays DISARMED until
+ * the operator cycles (A/X). A first list arms as it always has.
+ */
+export function reselect(
+  prev: MenuItem | null,
+  prevArmed: boolean,
+  items: readonly MenuItem[],
+): { selected: number; armed: boolean } {
+  const same = prev
+    ? items.findIndex((it) => it.verified && it.name === prev.name)
+    : -1;
+  if (same !== -1) return { selected: same, armed: prevArmed };
+  const harmless = items.findIndex(
+    (it) => it.verified && HARMLESS.has(it.name),
+  );
+  return {
+    selected: harmless !== -1 ? harmless : firstSelectable(items),
+    armed: prev === null,
+  };
+}
+
 export class MenuLayer {
   #gl: WebGLRenderingContext;
   #program: WebGLProgram | null = null;
@@ -382,10 +463,13 @@ export class MenuLayer {
 
   #items: readonly MenuItem[] = [];
   #selected = 0;
+  #armed = true;
   #status: MenuStatus = null;
   #busy: string | null = null;
   #readiness: Readiness | null = null;
   #alert: MenuAlert = null;
+  #voice: readonly VoiceLine[] | null = null;
+  #controllers = true;
 
   constructor(gl: WebGLRenderingContext) {
     this.#gl = gl;
@@ -395,8 +479,9 @@ export class MenuLayer {
     return this.#visible;
   }
 
+  /** What the trigger would fire: null while disarmed after a list swap. */
   get selectedItem(): MenuItem | null {
-    return this.#items[this.#selected] ?? null;
+    return this.#armed ? (this.#items[this.#selected] ?? null) : null;
   }
 
   setVisible(v: boolean): void {
@@ -407,10 +492,13 @@ export class MenuLayer {
   }
 
   setItems(items: readonly MenuItem[]): void {
+    const prev = this.#items[this.#selected] ?? null;
+    ({ selected: this.#selected, armed: this.#armed } = reselect(
+      prev,
+      this.#armed,
+      items,
+    ));
     this.#items = items;
-    if (!items[this.#selected]?.verified) {
-      this.#selected = firstSelectable(items);
-    }
     this.#dirty = true;
   }
 
@@ -442,9 +530,33 @@ export class MenuLayer {
     this.#dirty = true;
   }
 
+  /** The conversation panel; null is the gestures menu. */
+  setVoice(lines: readonly VoiceLine[] | null): void {
+    const prev = this.#voice;
+    const same =
+      prev === lines ||
+      (prev !== null &&
+        lines !== null &&
+        prev.length === lines.length &&
+        prev.every(
+          (l, i) => l.text === lines[i].text && l.kind === lines[i].kind,
+        ));
+    if (same) return;
+    this.#voice = lines;
+    this.#dirty = true;
+  }
+
+  /** Whether any controller is in hand (hand tracking has none: no chord). */
+  setControllers(present: boolean): void {
+    if (present === this.#controllers) return;
+    this.#controllers = present;
+    this.#dirty = true;
+  }
+
   /** Advance the highlight past any unverified entries. */
   advance(): void {
     this.#selected = nextSelectable(this.#items, this.#selected);
+    this.#armed = true;
     this.#dirty = true;
   }
 
@@ -522,6 +634,8 @@ export class MenuLayer {
         this.#busy,
         this.#readiness,
         this.#alert,
+        this.#voice,
+        this.#controllers,
       );
       this.#dirty = false;
       gl.bindTexture(gl.TEXTURE_2D, this.#texture);

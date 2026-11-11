@@ -1,6 +1,6 @@
 # C3PO Web (`apps/web`)
 
-SvelteKit 3 operator console (Svelte 5 runes, Tailwind CSS 4): login/signup and
+SvelteKit 3 operator console (Svelte 5 runes, Tailwind CSS 4): login and
 a `(protected)` group with the dashboard, live map, cameras, agent chat with
 history, voice control, VR control, a health board and settings. The page list
 lives once, in `src/lib/nav.ts` — sidebar entries, topbar titles and browser-tab
@@ -50,8 +50,8 @@ are two different transports, not two addresses for one (below).
   `redirectToLogin()` — an expired session is never shown as a robot that is
   "offline". `redirectTo` is sanitised server-side (`login/auth-params.ts`,
   tested against open-redirect forms).
-- Login/signup are server-rendered and redirect already-authenticated visitors
-  in their `+page.server.ts`. Logout navigates with `refreshAll`, which is
+- Login is server-rendered and redirects already-authenticated visitors in
+  its `+page.server.ts`. Logout navigates with `refreshAll`, which is
   what keeps the root layout's `data.user` from bouncing `/login` →
   `/dashboard` → `/login`.
 - Social buttons render only for providers `back` reports as configured on
@@ -92,7 +92,13 @@ which owns one instance each of `RobotLive` (`/state`), `VoiceLoopControl`
   hold-to-confirm tile) never sees it, and `/vr-control` latches its own walk
   loop on any press. The topbar stop sits above every bits-ui overlay (sheet,
   dialog, alert dialog) — the stop is idempotent, so bypassing a modal is
-  safe, and a modal that swallows the first tap on PARAR is not.
+  safe, and a modal that swallows the first tap on PARAR is not. In
+  immersive-vr, PARAR is both grips held 300 ms (not available under hand
+  tracking; cad99bb). A stop latches on the bridge: the «PARAR ACTIVO ·
+  Reanudar» chip (`shell/stop-latch-chip.svelte`, admin) sends the stamp it
+  showed, so a newer stop is not cleared by accident (`docs/OPERATIONS.md` §4).
+- **A T2 tool card shows «Confirmar <tool>».** One click grants and runs that
+  refused call once, with the arguments shown, within 30 s.
 - **Privacy and autonomy are visible everywhere**: an "Escuchando" chip while a
   voice session runs, and "NAV ARMADO · N s" while Nav2 is armed to drive. An
   armed gate that can no longer be read keeps its chip and says "sin datos" —
@@ -128,10 +134,25 @@ The robot picture is drawn by `src/lib/components/robot-camera-view.svelte`,
 shared with `/vr-control` (which keeps owning the connection, because the XR
 layer uses the same stream). The page shows `/camera/status`'s
 `source`/`sources`/`hint`, and `/camera/frame.jpg` backs the Captura button. A
-failed status fetch is classified as network vs CORS (`apps/back`'s `WEB_URL`;
-`BRIDGE_CORS_ORIGINS` only when pointed straight at the bridge to debug) vs
+failed status fetch is classified as network vs CORS (`apps/back`'s `WEB_URL`, or
+`BRIDGE_CORS_ORIGINS` when pointed straight at the bridge) vs
 mixed content (HTTPS console, HTTP camera), because they need different fixes
 and used to share one "network" message.
+
+**`bun run dev:robot` reads the camera straight from the bridge** (since
+2026-11-11): it sets `PUBLIC_ROBOT_CAM_URL=http://localhost:8001/camera` unless the
+shell sets it, and that wins over `.env`. The bridge grants this origin on its
+camera routes and `/face/seen` only, without credentials, so the cookie is sent
+only when the camera is on `PUBLIC_API_URL`'s origin (`camCredentials`). The
+headset then needs 8001 forwarded: `scripts/quest_reverse.sh`.
+
+**Face boxes** (`src/lib/robot/face-seen.ts`, `components/robot/face-boxes.svelte`).
+While a picture shows and the tab is visible, the view polls `/face/seen` next to the
+camera about once a second and draws a box per face: the name in green,
+«Desconocido» in amber, «¿foto?» dimmed when liveness failed. Anything older than
+2 s is cleared. The headset draws the same boxes into the frame before its texture
+upload. A button on the picture hides them per browser. The bridge fills
+`/face/seen` only while a greet switch is on in «Caras» (`/faces`, admins only).
 
 ## The live map
 
@@ -195,7 +216,9 @@ on synthetic odom and scan — **no sensors, nothing taken from the other team.*
   realtime session (`ownedByYou`; only the owner can end it or open its
   transcript), what the robot heard, past voice transcripts, and an admin-only
   "Decir". Under the realtime engine the spoken stop phrase does nothing, and
-  the page says so rather than showing a "Paradas 0" counter.
+  the page says so rather than showing a "Paradas 0" counter. The headset has
+  its own «Hablar con el robot»: hold B/Y, the WAV goes to `/voice/transcribe`,
+  and the text runs as a voice-mode turn. Not yet tried on a Quest.
 - **`/health`** is one row per subsystem — server, bridge and catalogue, robot
   link, battery, faults, autonomous navigation, perception, voice, camera,
   map — sorted worst first. The summary never says "todo en orden" while any

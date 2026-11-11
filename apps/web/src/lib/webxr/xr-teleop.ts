@@ -25,6 +25,7 @@
  * Never live-tested against an actual headset.
  */
 
+import type { FaceSeen } from "#lib/robot/face-seen.js";
 import { CameraLayer, type CameraReason } from "./camera-layer";
 import {
   MenuLayer,
@@ -32,6 +33,7 @@ import {
   type MenuAlert,
   type MenuStatus,
   type Readiness,
+  type VoiceLine,
 } from "./menu-layer";
 import { ScanLayer, type ScanRing } from "./scan-layer";
 import { eyeOffset, type EyePose } from "./stereo";
@@ -78,14 +80,25 @@ export type XrSample = {
    * from a released one for any consumer that wanted the difference.
    *
    * `trigger` is buttons[0] and `primary` is buttons[4] (A/X) in the
-   * xr-standard mapping. Both false when there is no controller.
+   * xr-standard mapping; `secondary` is buttons[5] (B/Y), push-to-talk.
+   * `grips` counts the controllers whose grip (buttons[1]) is squeezed: two
+   * at once is the in-headset PARAR. All false/0 when there is no controller.
    */
-  buttons: { trigger: boolean; primary: boolean };
+  buttons: XrButtons;
+};
+
+export type XrButtons = {
+  trigger: boolean;
+  primary: boolean;
+  secondary: boolean;
+  grips: number;
 };
 
 /** Index in the `xr-standard` gamepad mapping. */
 const BUTTON_TRIGGER = 0;
+const BUTTON_GRIP = 1;
 const BUTTON_PRIMARY = 4; // A on the right controller, X on the left
+const BUTTON_SECONDARY = 5; // B on the right controller, Y on the left
 
 /**
  * The gamepad of a Touch controller, or null for anything else.
@@ -169,6 +182,8 @@ export type XrTeleopCallbacks = {
   onSample?: (sample: XrSample) => void;
   /** Called once the session has fully ended, for any reason. */
   onEnd?: () => void;
+  /** The session's visibility changed (Meta menu, system overlay: "visible-blurred"). */
+  onVisibility?: (state: XRVisibilityState) => void;
 };
 
 export type XrTeleopSupport = {
@@ -560,6 +575,8 @@ export class XrTeleopSession {
   #menu: MenuLayer | null = null;
   #scan: ScanLayer | null = null;
   #pendingStreamUrl = "";
+  #pendingStreamCreds = true;
+  #pendingFaces: [FaceSeen | null, number] = [null, 0];
   #pendingLive = true;
   #pendingReason: CameraReason = null;
   #cameraBroken = false;
@@ -599,9 +616,16 @@ export class XrTeleopSession {
    * the source hands out a new cache-busted URL each time, and reusing the old
    * one is a retry that does nothing.
    */
-  setCameraStream(url: string): void {
+  setCameraStream(url: string, withCredentials = true): void {
     this.#pendingStreamUrl = url;
-    this.#camera?.setStreamUrl(url);
+    this.#pendingStreamCreds = withCredentials;
+    this.#camera?.setStreamUrl(url, withCredentials);
+  }
+
+  /** Who the camera sees, drawn into the picture; see `#lib/robot/face-seen`. */
+  setCameraFaces(seen: FaceSeen | null, receivedAt: number): void {
+    this.#pendingFaces = [seen, receivedAt];
+    this.#camera?.setFaces(seen, receivedAt);
   }
 
   /** Tell the view whether the feed is still live. Stale is dimmed, not hidden. */
@@ -656,6 +680,11 @@ export class XrTeleopSession {
   /** A latch currently stopping motion, and the gesture that clears it. */
   setMenuAlert(alert: MenuAlert): void {
     this.#menu?.setAlert(alert);
+  }
+
+  /** "Hablar con el robot": the conversation lines, or null for gestures. */
+  setMenuVoice(lines: readonly VoiceLine[] | null): void {
+    this.#menu?.setVoice(lines);
   }
 
   /**
@@ -836,7 +865,11 @@ export class XrTeleopSession {
         // apply whatever the page last told us so a reconnect that happened
         // during startup is not lost.
         if (this.#pendingStreamUrl)
-          this.#camera.setStreamUrl(this.#pendingStreamUrl);
+          this.#camera.setStreamUrl(
+            this.#pendingStreamUrl,
+            this.#pendingStreamCreds,
+          );
+        this.#camera.setFaces(...this.#pendingFaces);
         this.#camera.setLive(this.#pendingLive);
         // Applied before the first frame, so a session entered while the feed
         // is already down opens on the reason rather than on a blank field
@@ -889,6 +922,9 @@ export class XrTeleopSession {
         this.#cameraBroken = false;
         this.#callbacks.onEnd?.();
       });
+      session.addEventListener("visibilitychange", () =>
+        this.#callbacks.onVisibility?.(session.visibilityState),
+      );
 
       const onFrame: XRFrameRequestCallback = (_time, frame) => {
         const active = this.#session;
@@ -957,6 +993,10 @@ export class XrTeleopSession {
             );
           }
         }
+
+        // Under a system overlay the inputs freeze (grips read 0, hands untracked):
+        // nothing sampled then may steer the robot, so draw but do not sample.
+        if (active.visibilityState !== "visible") return;
 
         const yaw = quaternionYaw(pose.transform.orientation);
         if (this.#needsRecenter) {
@@ -1091,16 +1131,24 @@ export class XrTeleopSession {
   }
 
   /** Buttons from any controller. Either hand works — see `#sampleWalkAxis`. */
-  #sampleButtons(session: XRSession): { trigger: boolean; primary: boolean } {
+  #sampleButtons(session: XRSession): XrButtons {
     let trigger = false;
     let primary = false;
+    let secondary = false;
+    let grips = 0;
+    let controllers = 0;
     for (const source of session.inputSources) {
       const gp = controllerGamepad(source);
       if (!gp) continue;
+      controllers += 1;
       if (buttonPressed(gp, BUTTON_TRIGGER)) trigger = true;
       if (buttonPressed(gp, BUTTON_PRIMARY)) primary = true;
+      if (buttonPressed(gp, BUTTON_SECONDARY)) secondary = true;
+      if (buttonPressed(gp, BUTTON_GRIP)) grips += 1;
     }
-    return { trigger, primary };
+    // Hand tracking: no gamepad, so no grip chord; the panel says so.
+    this.#menu?.setControllers(controllers > 0);
+    return { trigger, primary, secondary, grips };
   }
 
   #makeOverlayTransparent(root: HTMLElement): void {

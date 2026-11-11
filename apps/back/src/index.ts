@@ -11,8 +11,12 @@ import { agentRoutes } from "#back/routes/agent.js";
 import { chatsRoutes } from "#back/routes/chats.js";
 import { voiceRoutes } from "#back/routes/voice.js";
 import { auditRoutes } from "#back/routes/audit.js";
+import { safetyRoutes } from "#back/routes/safety.js";
+import { faceRoutes } from "#back/routes/face.js";
+import { teleopRoutes } from "#back/routes/teleop.js";
 import { enabledSocialProviders } from "#back/lib/auth.js";
 import { reconcileAdmins } from "#back/lib/admin-bootstrap.js";
+import { startStopWatch } from "#back/agent/stop-watch.js";
 // Imported for its VALUES below, and for its import-time validation.
 //
 // That validation already ran before this line — `admin-bootstrap` imports
@@ -30,6 +34,9 @@ import { env } from "#back/lib/env.js";
 await reconcileAdmins().catch((error: unknown) => {
   console.warn("[admin] could not reconcile admin roles:", error);
 });
+
+// A PARAR sent straight to the bridge (headset, stop phrase) ends agent turns too.
+startStopWatch();
 
 const app = new Elysia()
   // An unexpected throw must not reach the browser verbatim: Elysia's default
@@ -71,7 +78,7 @@ const app = new Elysia()
     timestamp: Date.now(),
     auth: { providers: enabledSocialProviders },
   }))
-  // These two carry their OWN `.guard({ auth: true })` because they read a
+  // These carry their OWN `.guard({ auth: true })` because they read a
   // typed `user` (the admin checks), so they sit beside the outer guard rather
   // than inside it. Nested, the auth macro's resolver runs twice per request —
   // measured: two `getSession()` calls on every PARAR and every ~1.1/s VR
@@ -79,6 +86,9 @@ const app = new Elysia()
   // (see skills.ts / audit.ts and their tests).
   .use(skillsRoutes)
   .use(auditRoutes)
+  .use(safetyRoutes)
+  .use(faceRoutes)
+  .use(teleopRoutes)
   // Everything below can read or move the robot (or use the shared TIC AI key
   // via /agent) — require a session. /health stays open for monitoring.
   .guard({ auth: true }, (app) =>
@@ -92,7 +102,7 @@ const app = new Elysia()
       .use(chatsRoutes)
       .use(voiceRoutes),
   )
-  .listen(env.PORT);
+  .listen({ port: env.PORT, hostname: env.BACK_HOST });
 
 console.log(
   `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`,

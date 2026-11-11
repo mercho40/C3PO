@@ -27,8 +27,16 @@
  * - **Empty by default.** An unset `ADMIN_EMAILS` grants nothing to nobody,
  *   which is the only safe reading of "no allowlist configured".
  * - **Existing accounts only.** It does not create users. An address in the
- *   list that has never signed up is a no-op until it does, and then the next
- *   boot promotes it.
+ *   list with no account is a no-op until one is made (scripts/create-user.ts;
+ *   public sign-up is closed), and then the next boot promotes it.
+ * - **Verified addresses only.** Matching on the email alone meant whoever
+ *   registered an ADMIN_EMAILS address first got the robot, with nothing
+ *   proving they own it. Sign-up is closed now, so no new account can squat an
+ *   address, but rows made while it was open still can. Accounts from
+ *   create-user.ts are marked verified (a person at the terminal vouched for
+ *   them) and OAuth ones carry the provider's verdict. An unverified match is
+ *   named in the log and left alone: delete it and recreate it with
+ *   create-user.ts.
  * - **Never fatal.** A database that is not up yet must not stop the server
  *   from starting; the next restart reconciles.
  */
@@ -44,6 +52,33 @@ export function adminEmails(): string[] {
     .filter(Boolean);
 }
 
+type AccountRow = {
+  id: string;
+  email: string;
+  role: string | null;
+  emailVerified: boolean;
+};
+
+/**
+ * What reconcileAdmins does with the rows that matched the allowlist. Pure, so
+ * the rules are testable without a database.
+ */
+export function planAdminGrants(
+  emails: readonly string[],
+  rows: readonly AccountRow[],
+): { promote: AccountRow[]; unverified: string[]; missing: string[] } {
+  const promote = rows.filter(
+    (row) => row.role !== "admin" && row.emailVerified,
+  );
+  const unverified = rows
+    .filter((row) => row.role !== "admin" && !row.emailVerified)
+    .map((row) => row.email);
+  const missing = emails.filter(
+    (email) => !rows.some((row) => row.email.toLowerCase() === email),
+  );
+  return { promote, unverified, missing };
+}
+
 export async function reconcileAdmins(): Promise<string[]> {
   const emails = adminEmails();
   if (emails.length === 0) return [];
@@ -55,23 +90,30 @@ export async function reconcileAdmins(): Promise<string[]> {
   // address that plainly does have one. Silent, and exactly the kind of thing
   // nobody thinks to check at 2am.
   const rows = await db
-    .select({ id: user.id, email: user.email, role: user.role })
+    .select({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      emailVerified: user.emailVerified,
+    })
     .from(user)
     .where(inArray(sql`lower(${user.email})`, emails));
 
+  const { promote, unverified, missing } = planAdminGrants(emails, rows);
   const promoted: string[] = [];
-  for (const row of rows) {
-    if (row.role === "admin") continue;
+  for (const row of promote) {
     await db.update(user).set({ role: "admin" }).where(eq(user.id, row.id));
     promoted.push(row.email);
   }
 
-  const missing = emails.filter(
-    (email) => !rows.some((row) => row.email.toLowerCase() === email),
-  );
-
   if (promoted.length > 0) {
     console.log(`[admin] promoted to admin: ${promoted.join(", ")}`);
+  }
+  if (unverified.length > 0) {
+    console.warn(
+      `[admin] ADMIN_EMAILS matches ${unverified.length} account(s) with an unverified email, not promoted: ` +
+        `${unverified.join(", ")} — delete and recreate with apps/back/scripts/create-user.ts --admin.`,
+    );
   }
   if (missing.length > 0) {
     // Worth saying out loud: a typo in the allowlist is otherwise completely
@@ -79,7 +121,7 @@ export async function reconcileAdmins(): Promise<string[]> {
     // an admin" — with nothing anywhere to suggest why.
     console.warn(
       `[admin] ADMIN_EMAILS names ${missing.length} address(es) with no account yet: ` +
-        `${missing.join(", ")} — they will be promoted once they sign up and the server restarts.`,
+        `${missing.join(", ")} — create them with apps/back/scripts/create-user.ts; the next restart promotes them.`,
     );
   }
   return promoted;

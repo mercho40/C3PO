@@ -13,7 +13,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { CameraLayer, FILL } from "../src/lib/webxr/camera-layer";
+import {
+  CameraLayer,
+  FILL,
+  UPLOAD_MIN_INTERVAL_MS,
+} from "../src/lib/webxr/camera-layer";
 
 // --- a WebGL context that records what was asked of it ---------------------
 
@@ -36,6 +40,7 @@ function stubGl() {
     CLAMP_TO_EDGE: "CLAMP_TO_EDGE",
     LINEAR: "LINEAR",
     RGB: "RGB",
+    RGBA: "RGBA",
     UNSIGNED_BYTE: "UBYTE",
     ARRAY_BUFFER: "ARRAY_BUFFER",
     STATIC_DRAW: "STATIC_DRAW",
@@ -147,6 +152,12 @@ class FakeCanvas {
     fillText: (t: string) => {
       this.texts.push(t);
     },
+    globalAlpha: 1,
+    drawn: 0,
+    drawImage: () => {
+      this.ctx.drawn += 1;
+    },
+    measureText: () => ({ width: 10 }),
   };
   getContext(kind: string) {
     return kind === "2d" ? this.ctx : null;
@@ -211,6 +222,19 @@ describe("attach", () => {
       // a 401, and the same black view.
       expect(made[0].crossOrigin).toBe("use-credentials");
       expect(made[0].src).toBe("http://localhost:3000/camera/stream.mjpg");
+    });
+  });
+
+  test("the bridge directly gets an anonymous CORS request", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      // The bridge answers Allow-Origin without Allow-Credentials, so a
+      // credentialed request to it is refused and the headset goes black.
+      new CameraLayer(gl).setStreamUrl(
+        "http://localhost:8001/camera/stream.mjpg",
+        false,
+      );
+      expect(made[0].crossOrigin).toBe("anonymous");
     });
   });
 
@@ -281,8 +305,8 @@ describe("draw", () => {
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
 
-      layer.draw(true);
-      layer.draw(false);
+      layer.draw(true, null, 0);
+      layer.draw(false, null, 0);
       const alphas = calls
         .filter((c) => c.fn === "uniform1f")
         .map((c) => c.args[1]);
@@ -314,8 +338,8 @@ describe("draw", () => {
       const layer = new CameraLayer(gl);
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
-      layer.draw(true);
-      layer.draw(true);
+      layer.draw(true, null, 0);
+      layer.draw(true, null, 30);
       expect(layer.framesUploaded).toBe(2);
     });
   });
@@ -389,9 +413,9 @@ describe("reconnection — the failure the source recovers from", () => {
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
 
-      layer.draw(true);
+      layer.draw(true, null, 0);
       layer.setLive(false);
-      layer.draw(true);
+      layer.draw(true, null, 0);
 
       const alphas = calls
         .filter((c) => c.fn === "uniform1f")
@@ -576,7 +600,7 @@ describe("aspect fit — the picture that was live, correct and deformed", () =>
       made[0].arrive(640, 480);
 
       for (const k of [40, 0.025, 1, 1080 / 1920]) {
-        layer.draw(true, eyeOfShape(k));
+        layer.draw(true, eyeOfShape(k), 0);
         const [sx, sy] = lastScale(calls)!;
         expect(sx).toBeLessThanOrEqual(FILL);
         expect(sy).toBeLessThanOrEqual(FILL);
@@ -682,18 +706,18 @@ describe("no signal — the black field that could not be diagnosed", () => {
       const { gl } = stubGl();
       const layer = new CameraLayer(gl);
       layer.setReason({ text: "conectando", hint: "esperá" });
-      layer.draw(true);
+      layer.draw(true, null, 0);
       const afterFirst = canvases[0].texts.length;
 
       // Same reason, more frames: at 72-120 Hz a repaint and upload per frame
       // would cost more than everything else this layer does.
       layer.setReason({ text: "conectando", hint: "esperá" });
-      layer.draw(true);
-      layer.draw(true);
+      layer.draw(true, null, 30);
+      layer.draw(true, null, 60);
       expect(canvases[0].texts.length).toBe(afterFirst);
 
       layer.setReason({ text: "sin señal", hint: "revisá el túnel" });
-      layer.draw(true);
+      layer.draw(true, null, 90);
       expect(canvases[0].texts).toContain("sin señal");
     });
   });
@@ -703,16 +727,16 @@ describe("no signal — the black field that could not be diagnosed", () => {
       const { gl } = stubGl();
       const layer = new CameraLayer(gl);
       layer.setStreamUrl("http://x/stream.mjpg");
-      layer.draw(true);
+      layer.draw(true, null, 0);
       expect(layer.showingNoSignal).toBe(true);
 
       made[0].arrive(640, 480);
-      layer.draw(true);
+      layer.draw(true, null, 30);
       expect(layer.showingNoSignal).toBe(false);
       expect(layer.framesUploaded).toBe(1);
       // And the card is not repainted once there is a picture to show.
       const settled = canvases[0].texts.length;
-      layer.draw(true);
+      layer.draw(true, null, 60);
       expect(canvases[0].texts.length).toBe(settled);
     });
   });
@@ -723,13 +747,13 @@ describe("no signal — the black field that could not be diagnosed", () => {
       const layer = new CameraLayer(gl);
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive(640, 480);
-      layer.draw(true);
+      layer.draw(true, null, 0);
       expect(layer.showingNoSignal).toBe(false);
 
       // The vision server closes the stream after ~1 s with no frame; the
       // <img> reports the error and stops being a picture.
       made[0].onerror?.();
-      layer.draw(true);
+      layer.draw(true, null, 30);
       expect(layer.showingNoSignal).toBe(true);
     });
   });
@@ -759,5 +783,208 @@ describe("no signal — the black field that could not be diagnosed", () => {
     expect(() => layer.draw(true)).not.toThrow();
     expect(layer.showingNoSignal).toBe(false);
     expect(calls.some((c) => c.fn === "drawArrays")).toBe(false);
+  });
+});
+
+/**
+ * The upload throttle (backlog 6.4). An <img> gives no "new frame" event, and
+ * uploading on every draw meant one full-frame texImage2D per eye per XR frame:
+ * 180 a second at 90 Hz, for a feed that delivers ~15. These pin that the
+ * throttle drops the redundant uploads and never a needed one.
+ */
+describe("uploads — once per new picture, not per eye per frame", () => {
+  function uploads(calls: Call[], format?: string) {
+    return calls.filter(
+      (c) => c.fn === "texImage2D" && (!format || c.args[2] === format),
+    ).length;
+  }
+
+  test("the two eyes of one frame upload the picture once", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 100);
+      layer.draw(true, null, 100);
+      expect(uploads(calls)).toBe(1);
+      // The second eye still draws: only the upload is skipped.
+      expect(calls.filter((c) => c.fn === "drawArrays").length).toBe(2);
+    });
+  });
+
+  test("the picture goes up again only after the interval", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      layer.draw(true, null, 10);
+      expect(uploads(calls)).toBe(1);
+      layer.draw(true, null, 30);
+      expect(uploads(calls)).toBe(2);
+      expect(layer.framesUploaded).toBe(2);
+    });
+  });
+
+  test("90 Hz for one second uploads at most 40 times, and keeps up with 15 fps", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      for (let i = 0; i < 90; i++) {
+        const now = (i * 1000) / 90;
+        layer.draw(true, null, now); // left eye
+        layer.draw(true, null, now); // right eye
+      }
+      // It was 180: every draw uploaded.
+      expect(uploads(calls)).toBeLessThanOrEqual(1000 / UPLOAD_MIN_INTERVAL_MS);
+      expect(uploads(calls)).toBeGreaterThanOrEqual(15);
+    });
+  });
+
+  test("an unchanged card uploads once, a new reason uploads again", () => {
+    withFakeImage(() => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setReason({ text: "conectando", hint: "esperá" });
+      layer.draw(true, null, 0);
+      layer.draw(true, null, 30);
+      layer.draw(true, null, 60);
+      expect(uploads(calls, "RGBA")).toBe(1);
+
+      // A missed upload here would leave the old reason on the operator's card.
+      layer.setReason({ text: "sin señal", hint: "revisá el túnel" });
+      layer.draw(true, null, 61);
+      expect(uploads(calls, "RGBA")).toBe(2);
+    });
+  });
+
+  test("card to picture uploads at once, whatever the interval", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      layer.draw(true, null, 0);
+      made[0].arrive();
+      layer.draw(true, null, 1);
+      expect(uploads(calls, "RGB")).toBe(1);
+      expect(layer.framesUploaded).toBe(1);
+    });
+  });
+
+  test("picture to card uploads at once, whatever the interval", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      made[0].onerror?.();
+      layer.draw(true, null, 1);
+      expect(uploads(calls, "RGBA")).toBe(1);
+    });
+  });
+
+  test("a new stream URL uploads its first picture at once", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg?c=1");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      layer.setStreamUrl("http://x/stream.mjpg?c=2");
+      made[1].arrive();
+      layer.draw(true, null, 1);
+      expect(uploads(calls, "RGB")).toBe(2);
+    });
+  });
+
+  test("a throwing upload is retried on the next draw", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      const real = (gl as unknown as Record<string, unknown>).texImage2D;
+      (gl as unknown as Record<string, unknown>).texImage2D = () => {
+        throw new Error("half-decoded");
+      };
+      layer.draw(true, null, 30); // throws inside, skips the frame
+      (gl as unknown as Record<string, unknown>).texImage2D = real;
+      layer.draw(true, null, 31); // within the interval, but the last one failed
+      expect(uploads(calls, "RGB")).toBe(2);
+      expect(layer.framesUploaded).toBe(2);
+    });
+  });
+
+  test("dispose forgets the texture, so the next session uploads at once", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      layer.dispose();
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[1].arrive();
+      layer.draw(true, null, 1);
+      expect(uploads(calls, "RGB")).toBe(2);
+    });
+  });
+});
+
+describe("face boxes in the headset", () => {
+  const seen = (age_s: number) => ({
+    stamp: 1,
+    width: 960,
+    height: 720,
+    age_s,
+    faces: [
+      {
+        box: [10, 10, 50, 50] as [number, number, number, number],
+        name: "Ana",
+        role: null,
+        known: true,
+        live: true,
+      },
+    ],
+  });
+  const uploads = (calls: { fn: string; args: unknown[] }[]) =>
+    calls.filter((c) => c.fn === "texImage2D").map((c) => c.args[5]);
+
+  test("fresh faces are composed into the frame: one upload, from the canvas", () => {
+    withFakeImage((made, canvases) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.setFaces(seen(0.2), Date.now());
+      layer.draw(true, null, 1000);
+      const src = uploads(calls);
+      expect(src.length).toBe(1);
+      const canvas = src[0] as FakeCanvas;
+      expect(canvases).toContain(canvas);
+      expect(canvas.width).toBe(960);
+      expect(canvas.ctx.drawn).toBe(1);
+      expect(canvas.texts).toContain("Ana");
+    });
+  });
+
+  test("stale or no faces upload the bare picture", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.setFaces(seen(2.5), Date.now());
+      layer.draw(true, null, 1000);
+      layer.setFaces(null, Date.now());
+      layer.draw(true, null, 1000 + UPLOAD_MIN_INTERVAL_MS);
+      expect(uploads(calls)).toEqual([made[0], made[0]]);
+    });
   });
 });

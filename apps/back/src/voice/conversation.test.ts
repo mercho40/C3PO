@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { VoiceConversation } from "./conversation";
+import {
+  VoiceConversation,
+  headsetSpeaksReplies,
+  shouldSpeak,
+  speakReply,
+} from "./conversation";
 
 function textOf(message: {
   parts?: Array<{ type: string; text?: string }>;
@@ -163,5 +168,159 @@ describe("VoiceConversation", () => {
     expect(speaks).toBe(0);
     expect(conversation.history()).toEqual([]);
     expect(conversation.state()).toEqual({ phase: "idle", lastTurn: null });
+  });
+
+  test("an aborted turn speaks nothing more and is not remembered", async () => {
+    const spoken: string[] = [];
+    const abort = new AbortController();
+    let received: AbortSignal | undefined;
+    let n = 0;
+    // streamText ends its text stream normally on abort, so the stream here
+    // keeps going after the abort, as a not-yet-noticed one would.
+    async function* aborted() {
+      yield "Primera frase. ";
+      abort.abort();
+      yield "Segunda frase. ";
+      yield "Tercera";
+    }
+    const conversation = new VoiceConversation({
+      complete: async (_messages, signal) => {
+        received = signal;
+        return ++n === 1 ? "Hola." : aborted();
+      },
+      speak: async (text) => {
+        spoken.push(text);
+      },
+      newId: () => crypto.randomUUID(),
+    });
+
+    await conversation.turn("hola");
+    const before = conversation.history();
+
+    await expect(
+      conversation.turn("contame algo", abort.signal),
+    ).rejects.toThrow();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(received).toBe(abort.signal);
+    expect(spoken).toEqual(["Hola.", "Primera frase."]);
+    expect(conversation.history()).toEqual(before);
+    expect(conversation.state().phase).toBe("idle");
+  });
+});
+
+describe("speakReply (B8: the robot says the headset's reply)", () => {
+  test("says the text parts, joined, and skips tool parts", async () => {
+    const spoken: string[] = [];
+    const n = await speakReply(
+      [
+        { type: "step-start" },
+        { type: "text", text: " Voy a la puerta. " },
+        { type: "tool-walk_to", input: { x: 1 } } as never,
+        { type: "text", text: "Llegué." },
+        { type: "reasoning", text: "no decir esto" },
+      ],
+      async (text) => void spoken.push(text),
+    );
+    expect(spoken).toEqual(["Voy a la puerta.\n\nLlegué."]);
+    expect(n).toBe(1);
+  });
+
+  test("a reply over the say tool's 500 characters goes out in order, one chunk at a time", async () => {
+    const words = Array.from({ length: 300 }, (_, i) => `p${i}`).join(" ");
+    const events: string[] = [];
+    let inFlight = 0;
+    const chunks: string[] = [];
+    await speakReply([{ type: "text", text: words }], async (text) => {
+      inFlight += 1;
+      expect(inFlight).toBe(1);
+      events.push(`start ${chunks.length}`);
+      await new Promise((r) => setTimeout(r, 1));
+      chunks.push(text);
+      events.push(`end ${chunks.length - 1}`);
+      inFlight -= 1;
+    });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(500);
+    expect(chunks.join(" ")).toBe(words);
+    expect(events.slice(0, 4)).toEqual([
+      "start 0",
+      "end 0",
+      "start 1",
+      "end 1",
+    ]);
+  });
+
+  test("no text, no call", async () => {
+    let calls = 0;
+    const speak = async () => void (calls += 1);
+    await speakReply([], speak);
+    await speakReply([{ type: "text", text: "   " }], speak);
+    await speakReply([{ type: "tool-look" } as never], speak);
+    expect(calls).toBe(0);
+  });
+
+  test("a failing chunk rejects and the rest are not sent", async () => {
+    const words = Array.from({ length: 300 }, (_, i) => `p${i}`).join(" ");
+    let calls = 0;
+    await expect(
+      speakReply([{ type: "text", text: words }], async () => {
+        calls += 1;
+        throw new Error("spanish_tts_unavailable");
+      }),
+    ).rejects.toThrow("spanish_tts_unavailable");
+    expect(calls).toBe(1);
+  });
+
+  test("PARAR after the first chunk: the second is never sent", async () => {
+    const words = Array.from({ length: 300 }, (_, i) => `p${i}`).join(" ");
+    const stop = new AbortController();
+    const spoken: string[] = [];
+    const n = await speakReply(
+      [{ type: "text", text: words }],
+      async (text) => {
+        spoken.push(text);
+        stop.abort(new Error("PARAR"));
+      },
+      stop.signal,
+    );
+    expect(spoken).toHaveLength(1);
+    expect(n).toBe(1);
+  });
+
+  test("an already-aborted turn says nothing", async () => {
+    let calls = 0;
+    await speakReply(
+      [{ type: "text", text: "hola" }],
+      async () => void (calls += 1),
+      AbortSignal.abort(),
+    );
+    expect(calls).toBe(0);
+  });
+});
+
+describe("shouldSpeak", () => {
+  test("only a completed voice turn with the flag on", () => {
+    const completed = { status: "completed" };
+    expect(
+      shouldSpeak({ enabled: true, mode: "voice", outcome: completed }),
+    ).toBe(true);
+    expect(
+      shouldSpeak({ enabled: false, mode: "voice", outcome: completed }),
+    ).toBe(false);
+    expect(
+      shouldSpeak({ enabled: true, mode: "operator", outcome: completed }),
+    ).toBe(false);
+    // A headset disconnect is `unknown`, a mid-turn failure `failed`.
+    for (const status of ["aborted", "failed", "unknown"])
+      expect(
+        shouldSpeak({ enabled: true, mode: "voice", outcome: { status } }),
+      ).toBe(false);
+  });
+
+  test("the flag is off unless HEADSET_SPEAK_REPLY=1", () => {
+    expect(headsetSpeaksReplies({})).toBe(false);
+    expect(headsetSpeaksReplies({ HEADSET_SPEAK_REPLY: "0" })).toBe(false);
+    expect(headsetSpeaksReplies({ HEADSET_SPEAK_REPLY: "true" })).toBe(false);
+    expect(headsetSpeaksReplies({ HEADSET_SPEAK_REPLY: "1" })).toBe(true);
   });
 });
