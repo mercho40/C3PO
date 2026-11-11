@@ -511,3 +511,12 @@ def test_build_perception_builds_the_persisted_model(tmp_path, monkeypatch, caps
     monkeypatch.setattr(cli, "Runner", FakeRunner)
     assert build.main(["engine", "--dry-run"]) == 0
     assert "-e C3PO_ONNX=/m/y.onnx" in capsys.readouterr().out
+
+
+def test_a_persisted_stream_rate_reaches_the_vision_container(tmp_path, capsys):
+    _env_file(tmp_path, "C3PO_VISION_STREAM_HZ=7\n")
+    env = operator_env({"HOME": str(tmp_path), "C3PO_DIR": "/c"})
+    assert bring_up("perception", FakeRunner(), env=env, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "-e C3PO_VISION_STREAM_HZ=7" in _create_line(out, VISION)
+    assert "C3PO_VISION_STREAM_HZ ignored" not in out
