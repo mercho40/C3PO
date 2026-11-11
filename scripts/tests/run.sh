@@ -735,6 +735,14 @@ check_contains "quest setup identifies who owns a local port" \
     "port_owner_cwd" "$quest_setup_src"
 check_contains "quest setup fails on a port held from outside the checkout" \
     "held by something OUTSIDE this checkout" "$quest_setup_src"
+# The camera port the headset gets must be the one dev:robot gives the console.
+dev_robot_cam="$(sed -n 's/.*"dev:robot": "\(PUBLIC_ROBOT_CAM_URL=[^ ]*\).*/\1/p' "$repo/apps/web/package.json")"
+check "dev:robot still defaults the camera to the bridge on 8001" \
+    'PUBLIC_ROBOT_CAM_URL=${PUBLIC_ROBOT_CAM_URL:-http://localhost:8001/camera}' "$dev_robot_cam"
+check_contains "quest setup reads the camera port exactly as dev:robot does" \
+    "cam_url=\"${dev_robot_cam#PUBLIC_ROBOT_CAM_URL=}\"" "$quest_setup_src"
+check_contains "quest setup says 8001 is the camera and /mcp stays closed" \
+    "8001 is forwarded for the camera; /mcp on it stays closed" "$quest_setup_src"
 
 # The classifier, lifted verbatim from the script so the test cannot drift from
 # an implementation it only pretends to check.
@@ -811,6 +819,22 @@ quest_none="$(PATH="$quest_stub:$PATH" FAKE_LOG="$quest_stub/log" FAKE_DEVICES=$
 check "quest_reverse: no authorised device fails" "1" "$quest_rc"
 check_contains "quest_reverse: and says why" "no Quest attached" "$quest_none"
 check "quest_reverse: and forwards nothing" "no" "$([ -e "$quest_stub/log" ] && echo yes || echo no)"
+check_contains "quest_reverse: says 8001 is the camera and /mcp stays closed" \
+    "8001 is forwarded for the camera; /mcp on it stays closed" "$quest_out"
+# apps/back's PORT, in the three spellings a .env may use: a copy of the script
+# in a scratch repo, so the real apps/back/.env decides nothing.
+quest_repo="$(mktemp -d)"
+mkdir -p "$quest_repo/scripts" "$quest_repo/apps/back"
+cp "$repo/scripts/quest_reverse.sh" "$quest_repo/scripts/"
+for spelling in 'PORT=3021' 'PORT="3021"' 'export PORT=3021'; do
+    printf 'BETTER_AUTH_URL=http://localhost:3000\n%s\n' "$spelling" >"$quest_repo/apps/back/.env"
+    rm -f "$quest_stub/log"
+    PATH="$quest_stub:$PATH" FAKE_LOG="$quest_stub/log" FAKE_DEVICES=$'1WMHH\tdevice\n' \
+        bash "$quest_repo/scripts/quest_reverse.sh" >/dev/null 2>&1 || true
+    check "quest_reverse: reads back's port from $spelling" \
+        "tcp:3001 tcp:3021 tcp:8001 tcp:8767" "$(tr '\n' ' ' <"$quest_stub/log" | sed 's/ $//')"
+done
+rm -rf "$quest_repo"
 rm -rf "$quest_stub"
 
 echo "== shellcheck =="
