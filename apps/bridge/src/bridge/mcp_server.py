@@ -4110,6 +4110,20 @@ async def safety_status(request):  # noqa: ANN001, ANN201 - starlette types
     return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
 
+def _unproven(request):  # noqa: ANN001, ANN202 - starlette types
+    """403 (503 with no secret set) unless the request carries apps/back's
+    SAFETY_CONFIRM_SECRET in `X-C3PO-Confirm-Secret`; None when it does."""
+    from starlette.responses import JSONResponse
+
+    if safety.confirm_secret_ok(request.headers.get("x-c3po-confirm-secret")):
+        return None
+    configured = bool(safety.CONFIRM_SECRET)
+    return JSONResponse(
+        {"error": "forbidden" if configured else "confirmation_not_configured"},
+        status_code=403 if configured else 503,
+    )
+
+
 @mcp.custom_route("/safety/confirm", methods=["POST"])
 async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
     """The operator's confirmation for ONE call of a gated tool with ONE argument set. Not an MCP tool.
@@ -4132,12 +4146,8 @@ async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
     """
     from starlette.responses import JSONResponse
 
-    if not safety.confirm_secret_ok(request.headers.get("x-c3po-confirm-secret")):
-        configured = bool(safety.CONFIRM_SECRET)
-        return JSONResponse(
-            {"error": "forbidden" if configured else "confirmation_not_configured"},
-            status_code=403 if configured else 503,
-        )
+    if (refused := _unproven(request)) is not None:
+        return refused
     try:
         body = await request.json()
         tool, args = str(body.get("tool") or ""), body.get("args", {})
@@ -4174,12 +4184,8 @@ async def safety_ack(request):  # noqa: ANN001, ANN201 - starlette types
 
     from bridge import estop
 
-    if not safety.confirm_secret_ok(request.headers.get("x-c3po-confirm-secret")):
-        configured = bool(safety.CONFIRM_SECRET)
-        return JSONResponse(
-            {"error": "forbidden" if configured else "confirmation_not_configured"},
-            status_code=403 if configured else 503,
-        )
+    if (refused := _unproven(request)) is not None:
+        return refused
     try:
         shown = (await request.json()).get("stopped_at")
     except Exception:
@@ -4199,6 +4205,113 @@ async def safety_ack(request):  # noqa: ANN001, ANN201 - starlette types
         {"acknowledged": True, "was_standing": was["stop_standing"], **safety.stop_latch()},
         headers={"Cache-Control": "no-store"},
     )
+
+
+# -- faces: who is enrolled, the live settings, enrollment (bridge/face_gate.py) ----------
+#
+# Seeing a face is like confirming an action, so everything here but the bare listing
+# (names and roles, no features, no photos) takes the same proof as /safety/confirm:
+# apps/back's SAFETY_CONFIRM_SECRET in `X-C3PO-Confirm-Secret`.
+
+_enrolling = asyncio.Lock()
+
+
+def _no_store(body: Any, status_code: int = 200):  # noqa: ANN202 - starlette types
+    from starlette.responses import JSONResponse
+
+    return JSONResponse(body, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+
+async def _json_body(request) -> dict:  # noqa: ANN001 - starlette types
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+@mcp.custom_route("/face/people", methods=["GET"])
+async def face_people(request):  # noqa: ANN001, ANN201 - starlette types
+    """Everyone enrolled (no features, no photos), the live settings, strangers seen."""
+    people = await asyncio.to_thread(lambda: [face_gate.public(p) for p in face_gate.people()])
+    return _no_store(
+        {
+            "settings": face_gate.settings(),
+            "people": people,
+            "unknown_seen": face_greet.unknown_seen(),
+            "models": face_gate.models_installed(),
+        }
+    )
+
+
+@mcp.custom_route("/face/settings", methods=["POST"])
+async def face_settings(request):  # noqa: ANN001, ANN201 - starlette types
+    """Body: any of {"greet", "greet_unknown", "gate"} as booleans. Applies at once, persists."""
+    if (refused := _unproven(request)) is not None:
+        return refused
+    try:
+        new = await asyncio.to_thread(face_gate.update_settings, await _json_body(request))
+    except (ValueError, face_gate.Unavailable) as exc:
+        return _no_store({"error": "invalid_settings", "reason": str(exc)}, 400)
+    log.warning("face.settings_changed", **new)
+    if any(new.values()):
+        # Off the loop, on the gate's own worker: a cold cv2 import must not hold a stop.
+        asyncio.get_running_loop().run_in_executor(face_gate._pool, face_gate.warm)
+    return _no_store(new)
+
+
+@mcp.custom_route("/face/people/{pid}", methods=["DELETE"])
+async def face_delete(request):  # noqa: ANN001, ANN201 - starlette types
+    if (refused := _unproven(request)) is not None:
+        return refused
+    pid = str(request.path_params.get("pid", ""))
+    if not await asyncio.to_thread(face_gate.delete_person, pid):
+        return _no_store({"error": "not_found"}, 404)
+    log.warning("face.person_deleted", person=pid)
+    return _no_store({"deleted": pid})
+
+
+@mcp.custom_route("/face/people/{pid}/photo.jpg", methods=["GET"])
+async def face_photo(request):  # noqa: ANN001, ANN201 - starlette types
+    """The enrolled person's own consented photo; never anything of anyone else."""
+    from starlette.responses import Response
+
+    if (refused := _unproven(request)) is not None:
+        return refused
+    pid = str(request.path_params.get("pid", ""))
+    jpg = None
+    if await asyncio.to_thread(face_gate.person, pid) is not None:
+        path = face_gate.people_dir() / pid / "photo.jpg"
+        jpg = await asyncio.to_thread(face_gate.read_owner_only, path)
+    if jpg is None:
+        return _no_store({"error": "not_found"}, 404)
+    return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/face/enroll", methods=["POST"])
+async def face_enroll(request):  # noqa: ANN001, ANN201 - starlette types
+    """Body {"name", "role"}: the person stands at the robot, alone, facing the head camera.
+
+    The same enrollment as scripts/face_enroll.py (FRAMES live frames, one face, one
+    person), in a thread. Their consent is the console's to ask before calling this.
+    """
+    if (refused := _unproven(request)) is not None:
+        return refused
+    body = await _json_body(request)
+    name, role = body.get("name"), body.get("role")
+    if not isinstance(name, str) or role not in face_gate.ROLES:
+        return _no_store({"error": "invalid", "reason": "name and role are required"}, 400)
+    if _enrolling.locked():
+        return _no_store({"error": "busy", "reason": "an enrollment is running"}, 409)
+    async with _enrolling:
+        try:
+            p = await asyncio.to_thread(face_gate.enroll, name, role, face_gate.FRAMES)
+        except ValueError as exc:
+            return _no_store({"error": "invalid", "reason": str(exc)}, 400)
+        except Exception as exc:  # noqa: BLE001 - the console shows why; nothing was stored
+            return _no_store({"error": "not_enrolled", "reason": str(exc)}, 422)
+    log.warning("face.person_enrolled", person=p["id"], role=role, via="console")
+    return _no_store(p)
 
 
 @mcp.custom_route("/telemetry/scan", methods=["GET"])
@@ -4858,12 +4971,14 @@ def main() -> None:
     """
     if face_gate.GATED:
         face_gate.check_config(t.name for t in mcp._tool_manager.list_tools())
+    face = face_gate.settings()
+    if face["gate"] or (SIM_MODE != "stub" and (face["greet"] or face["greet_unknown"])):
         # Before serving, not in a thread: a cold `import cv2` holds the GIL for seconds,
         # which would stall a stop, and would spend the first gated call's TIMEOUT_S.
+        # Turned on later from /face/settings, they load on the gate's worker instead.
         face_gate.warm()
-        log.warning("face_gate.on", tools=sorted(face_gate.GATED), max_m=face_gate.MAX_M)
-    elif face_greet.ON and SIM_MODE != "stub":
-        face_gate.warm()  # the same reason: not on the loop's first greeter tick
+    if face["gate"]:
+        log.warning("face_gate.on", tools=sorted(face_gate.gated_tools()), max_m=face_gate.MAX_M)
     # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #

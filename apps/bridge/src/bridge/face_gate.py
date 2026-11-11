@@ -32,9 +32,22 @@ not instead of one.
 THE HEADSET. A Quest operator cannot pass it while wearing the headset: the headset hides
 the face. The operator stands at the robot, faces the head camera, then retries.
 
-PRIVACY. Only SFace feature vectors are stored, at FACE_DIR/operator.npy (0600, directory
-0700), written by scripts/face_enroll.py on the robot. No image is kept, nothing leaves the
-robot, and neither faces nor features are logged.
+PEOPLE. Everyone enrolled passes, whatever their role (ROLES): the live face is matched
+against each person (mean cosine over their vectors) and the best one at MATCH_COSINE or
+above is who it is. FACE_DIR/people/<id>/ holds features.npy, person.json
+({"id", "name", "role", "enrolled_at"}) and, for the console, photo.jpg: one small crop of
+the face that consented to enrollment. The single-operator layout (operator.npy and
+operator.json) is migrated into it on first load as a superadmin; while it cannot be, it
+still passes as that person.
+
+PRIVACY. Written by scripts/face_enroll.py or /face/enroll on the robot, owner-only (files
+0600, folders 0700, no symlinks, atomic). Nothing is stored about a face nobody enrolled,
+nothing leaves the robot but the enrolled person's own photo (to the signed console), and
+neither faces nor features are logged.
+
+SETTINGS. FACE_DIR/settings.json ({"gate", "greet", "greet_unknown"}, written by
+/face/settings) overrides the environment, live: gate on with C3PO_FACE_GATE empty gates
+the `confirm` class; gate off gates nothing.
 """
 
 from __future__ import annotations
@@ -42,6 +55,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import secrets
+import shutil
 import stat
 import threading
 import time
@@ -80,6 +96,15 @@ NOT_ENROLLED = "operator_face_not_enrolled"
 UNAVAILABLE = "operator_face_check_unavailable"
 #: Only a background check sees this; a gated call never does.
 BUSY = "busy"
+#: A check's pass: its detail is the person's id.
+PASSED = "passed"
+#: No face in view at all (refused as NOT_SEEN); the greeter's end of a visit.
+NO_FACE = "no_face"
+#: A live face that matches nobody: only a check that asked for it (the greeter).
+UNKNOWN = "unknown_face"
+
+ROLES = ("superadmin", "operator")
+_ID = re.compile(r"[0-9a-f]{12}\Z")
 
 
 #: The class token: every tool that needs the operator's confirmation.
@@ -125,6 +150,12 @@ HTTP_TIMEOUT_S = 1.0
 #: Largest faces looked at per check, so a crowd cannot stretch it past TIMEOUT_S.
 MAX_FACES = 3
 
+#: Enrollment: pause between accepted frames, so the vectors are not all one instant.
+ENROLL_INTERVAL_S = 0.4
+#: The console's photo: the face box padded by this much of its size, at most PHOTO_PX.
+PHOTO_PAD = 0.25
+PHOTO_PX = 160
+
 _AT_ROBOT = (
     "The operator must stand at the robot (not in the headset, which hides the face) and "
     "face its head camera within {max_m} m; when they say they are there, retry once with "
@@ -135,7 +166,7 @@ _HINTS = {
     NOT_SEEN: "The enrolled operator's face is not in front of the head camera. " + _AT_ROBOT,
     NOT_LIVE: "A face matched the operator but did not pass the liveness check (a photo, "
     "a screen, or too far?). " + _AT_ROBOT,
-    NOT_ENROLLED: "No operator is enrolled on this robot: they enroll on the robot with "
+    NOT_ENROLLED: "No one is enrolled on this robot: they enroll on the robot with "
     "apps/bridge/scripts/face_enroll.py; tell them.",
     UNAVAILABLE: "The face check could not run (the bridge log says why). Tell the operator; "
     "do not retry in a loop.",
@@ -148,6 +179,8 @@ _models: tuple[Any, Any] | None = None
 _busy = threading.Lock()
 #: The running check is the greeter's, which a gated call waits out. Loop-only state.
 _background = False
+#: settings.json as last read or written; None = read it on next use.
+_stored: dict[str, Any] | None = None
 #: Not asyncio's default executor: a check wedged on the vision container must not
 #: take the workers asyncio.to_thread hands damp and the rest.
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face_gate")
@@ -169,16 +202,38 @@ def name_path() -> Path:
     return FACE_DIR / "operator.json"
 
 
+def people_dir() -> Path:
+    return FACE_DIR / "people"
+
+
+def settings_path() -> Path:
+    return FACE_DIR / "settings.json"
+
+
+def _folders(path: Path) -> list[Path]:
+    """FACE_DIR and every folder below it down to `path`'s."""
+    folders = [FACE_DIR]
+    for part in path.parent.relative_to(FACE_DIR).parts:
+        folders.append(folders[-1] / part)
+    return folders
+
+
 def _save_owner_only(path: Path, data: bytes) -> Path:
     """Write `data` to `path`, owner-only, atomically."""
     FACE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(FACE_DIR, 0o700)
+    for folder in _folders(path):
+        folder.mkdir(mode=0o700, exist_ok=True)
+        if not stat.S_ISDIR(os.lstat(folder).st_mode):  # a symlink: not ours to write into
+            raise Unavailable(f"{folder} is not a plain folder")
+        os.chmod(folder, 0o700)
     tmp = path.with_name(f".{path.name}.tmp")
     try:
         # EXCL + NOFOLLOW: never write through a file or link someone left there.
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
-        raise Unavailable(f"{tmp} is left from an interrupted run: run with --delete") from None
+        raise Unavailable(
+            f"{tmp} is left from an interrupted run: run face_enroll.py with --delete"
+        ) from None
     with os.fdopen(fd, "wb") as f:
         f.write(data)
         f.flush()
@@ -187,19 +242,23 @@ def _save_owner_only(path: Path, data: bytes) -> Path:
     return path
 
 
-def save_enrollment(features: Any) -> Path:
-    """Write the operator's feature vectors, owner-only, atomically. Never images."""
+def _npy(features: Any) -> bytes:
     import io
 
     import numpy as np
 
     buf = io.BytesIO()
     np.save(buf, np.asarray(features, dtype=np.float32))
-    return _save_owner_only(enrollment_path(), buf.getvalue())
+    return buf.getvalue()
+
+
+def save_enrollment(features: Any) -> Path:
+    """The single-operator layout, which `people` migrates: for tests and old robots only."""
+    return _save_owner_only(enrollment_path(), _npy(features))
 
 
 def save_name(name: str) -> Path:
-    """The operator's display name, for the greeter. Nothing biometric."""
+    """The single-operator layout's name file (see save_enrollment)."""
     return _save_owner_only(name_path(), json.dumps({"name": name}).encode())
 
 
@@ -208,18 +267,18 @@ def _owner_only(st: os.stat_result, kind: str) -> bool:
     if st.st_uid == os.geteuid() and not st.st_mode & 0o077:
         return True
     log.warning(
-        "face_gate.enrollment_ignored", reason=f"{kind}_not_owner_only", mode=oct(st.st_mode & 0o777)
+        "face_gate.enrollment_ignored",
+        reason=f"{kind}_not_owner_only",
+        mode=oct(st.st_mode & 0o777),
     )
     return False
 
 
-def enrolled() -> Any:
-    """The enrolled features (N x 128), or None when there is no trustworthy enrollment."""
-    import numpy as np
-
+def read_owner_only(path: Path) -> bytes | None:
+    """A plain file of ours alone, in plain folders of ours alone from FACE_DIR down; else None."""
     try:
-        folder = os.lstat(FACE_DIR)
-        fd = os.open(enrollment_path(), os.O_RDONLY | os.O_NOFOLLOW)
+        folders = [os.lstat(d) for d in _folders(path)]
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return None
     except OSError as exc:  # ELOOP: a symlink, which the operator did not write
@@ -227,12 +286,24 @@ def enrolled() -> Any:
         return None
     with os.fdopen(fd, "rb") as f:
         st = os.fstat(f.fileno())
-        if not (stat.S_ISDIR(folder.st_mode) and stat.S_ISREG(st.st_mode)):
+        if not (all(stat.S_ISDIR(d.st_mode) for d in folders) and stat.S_ISREG(st.st_mode)):
             log.warning("face_gate.enrollment_ignored", reason="not_a_plain_file")
             return None
-        if not (_owner_only(folder, "directory") and _owner_only(st, "file")):
+        if not (all(_owner_only(d, "directory") for d in folders) and _owner_only(st, "file")):
             return None
-        features = np.load(f, allow_pickle=False)
+        return f.read()
+
+
+def _features(path: Path) -> Any:
+    """The feature vectors (N x 128) at `path`, or None when not trustworthy."""
+    import io
+
+    import numpy as np
+
+    raw = read_owner_only(path)
+    if raw is None:
+        return None
+    features = np.load(io.BytesIO(raw), allow_pickle=False)
     if features.ndim != 2 or not features.shape[0] or features.shape[1] != 128:
         raise Unavailable("the enrollment file is malformed; re-enroll")
     if not (np.isfinite(features).all() and np.linalg.norm(features, axis=1).all()):
@@ -242,24 +313,183 @@ def enrolled() -> Any:
     return features
 
 
-def enrolled_name() -> str | None:
-    """The enrolled operator's display name, or None (none set, or the file is not trustworthy)."""
+def _json(path: Path) -> dict[str, Any] | None:
+    raw = read_owner_only(path)
     try:
-        folder = os.lstat(FACE_DIR)
-        fd = os.open(name_path(), os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError:  # missing, or a symlink
+        data = json.loads(raw) if raw is not None else None
+    except ValueError:
         return None
-    with os.fdopen(fd, "rb") as f:
-        st = os.fstat(f.fileno())
-        if not (stat.S_ISDIR(folder.st_mode) and stat.S_ISREG(st.st_mode)):
-            return None
-        if not (_owner_only(folder, "directory") and _owner_only(st, "file")):
-            return None
-        try:
-            name = json.loads(f.read(4096)).get("name")
-        except (ValueError, AttributeError):
-            return None
+    return data if isinstance(data, dict) else None
+
+
+def enrolled() -> Any:
+    """The single-operator layout's features, or None (see `people`)."""
+    return _features(enrollment_path())
+
+
+def enrolled_name() -> str | None:
+    """The single-operator layout's name, or None."""
+    name = (_json(name_path()) or {}).get("name")
     return (name.strip() or None) if isinstance(name, str) else None
+
+
+def clean_name(raw: str) -> str:
+    """A display name: 1 to 40 printable characters, spaces collapsed. Else ValueError."""
+    name = " ".join(str(raw).split())
+    if not 0 < len(name) <= 40 or not name.isprintable():
+        raise ValueError("a name of 1 to 40 printable characters")
+    return name
+
+
+def person(pid: str) -> dict[str, Any] | None:
+    """One enrolled person, features included, or None (no such id, or not trustworthy)."""
+    if not _ID.match(pid):
+        return None
+    folder = people_dir() / pid
+    info = _json(folder / "person.json")
+    if info is None or info.get("id") != pid or info.get("role") not in ROLES:
+        return None
+    if not isinstance(info.get("name"), str):
+        return None
+    try:
+        features = _features(folder / "features.npy")
+    except Unavailable:
+        log.warning("face_gate.enrollment_ignored", reason="malformed_features")
+        return None
+    if features is None:
+        return None
+    return {
+        "id": pid,
+        "name": info["name"],
+        "role": info["role"],
+        "enrolled_at": info.get("enrolled_at"),
+        "has_photo": read_owner_only(folder / "photo.jpg") is not None,
+        "features": features,
+    }
+
+
+def public(p: dict[str, Any]) -> dict[str, Any]:
+    """A person without their features, for the console."""
+    return {k: p[k] for k in ("id", "name", "role", "enrolled_at", "has_photo")}
+
+
+def _migrate() -> None:
+    """operator.npy (+ operator.json) into people/ as a superadmin; the old files go only
+    once the new ones read back. Any failure is logged and leaves them in place."""
+    if not os.path.lexists(enrollment_path()):
+        return
+    with _lock:
+        try:
+            features = enrolled()
+            if features is None:
+                return
+            p = add_person(enrolled_name() or "Oliver", "superadmin", features)
+            if person(p["id"]) is None:
+                raise Unavailable("the migrated person does not read back")
+            for old in (name_path(), enrollment_path()):
+                old.unlink(missing_ok=True)
+            log.warning("face_gate.migrated", person=p["id"])
+        except Exception as exc:  # noqa: BLE001 - the old enrollment still passes, below
+            log.error("face_gate.migration_failed", error=str(exc))
+
+
+def people() -> list[dict[str, Any]]:
+    """Everyone enrolled (see `person`), migrating the single-operator layout first."""
+    _migrate()
+    try:
+        ids = sorted(os.listdir(people_dir()))
+    except OSError:
+        ids = []
+    found = [p for p in map(person, ids) if p is not None]
+    try:
+        legacy = enrolled() if os.path.lexists(enrollment_path()) else None
+    except Unavailable:
+        legacy = None
+    if legacy is not None:  # migration failed: never lose the operator
+        name = enrolled_name() or "Oliver"
+        found.append(
+            {"id": "operator", "name": name, "role": "superadmin", "enrolled_at": None}
+            | {"has_photo": False, "features": legacy}
+        )
+    return found
+
+
+def add_person(name: str, role: str, features: Any, photo: bytes | None = None) -> dict[str, Any]:
+    """Enroll `name` (replacing whoever has that name, any case) as `role`. Returns them."""
+    if role not in ROLES:
+        raise ValueError(f"role must be one of {', '.join(ROLES)}")
+    name = clean_name(name)
+    with _lock:
+        same = [p["id"] for p in people_listing() if p["name"].casefold() == name.casefold()]
+        pid = same[0] if same else secrets.token_hex(6)
+        folder = people_dir() / pid
+        _save_owner_only(folder / "features.npy", _npy(features))
+        if photo is not None:
+            _save_owner_only(folder / "photo.jpg", photo)
+        else:
+            (folder / "photo.jpg").unlink(missing_ok=True)
+        info = {"id": pid, "name": name, "role": role, "enrolled_at": round(time.time(), 3)}
+        _save_owner_only(folder / "person.json", json.dumps(info).encode())  # last: now a person
+    return info | {"has_photo": photo is not None}
+
+
+def people_listing() -> list[dict[str, Any]]:
+    """Everyone in people/ (not the legacy fallback), without features; no migration."""
+    try:
+        ids = sorted(os.listdir(people_dir()))
+    except OSError:
+        return []
+    return [public(p) for p in map(person, ids) if p is not None]
+
+
+def delete_person(pid: str) -> bool:
+    """Remove a person's folder, features, photo and all. False when there is no such id."""
+    if not _ID.match(pid) or not os.path.lexists(people_dir() / pid):
+        return False
+    with _lock:
+        shutil.rmtree(people_dir() / pid)  # refuses a symlinked folder; never follows one inside
+    return True
+
+
+def delete_all() -> None:
+    """Everyone, and the single-operator layout and its leftovers."""
+    with _lock:
+        if os.path.lexists(people_dir()):
+            shutil.rmtree(people_dir())
+        for old in (enrollment_path(), temp_path(), name_path()):
+            old.unlink(missing_ok=True)
+        name_path().with_name(".operator.json.tmp").unlink(missing_ok=True)
+
+
+def settings() -> dict[str, bool]:
+    """{"gate", "greet", "greet_unknown"}: settings.json over the environment's defaults."""
+    global _stored
+    if _stored is None:
+        _stored = _json(settings_path()) or {}
+    defaults = {
+        "gate": bool(GATED),
+        "greet": os.environ.get("C3PO_FACE_GREET", "") == "1",
+        "greet_unknown": False,
+    }
+    return {
+        k: v if not isinstance(_stored.get(k), bool) else _stored[k] for k, v in defaults.items()
+    }
+
+
+def update_settings(changes: dict[str, bool]) -> dict[str, bool]:
+    """Merge and persist (0600); applies at once. Unknown keys or non-bool values: ValueError."""
+    global _stored
+    current = settings()
+    if not set(changes) <= set(current) or not all(isinstance(v, bool) for v in changes.values()):
+        raise ValueError(f"settings take booleans for {', '.join(sorted(current))}")
+    new = current | changes
+    _save_owner_only(settings_path(), json.dumps(new).encode())
+    _stored = new
+    return dict(new)
+
+
+def models_installed() -> bool:
+    return all((FACE_DIR / "models" / n).is_file() for n in (YUNET, SFACE))
 
 
 def models() -> tuple[Any, Any]:
@@ -411,57 +641,69 @@ def liveness(row: Any, stamp: float) -> str | None:
     return judge([landmarks_3d(row, stamp)])
 
 
-def _check() -> tuple[str, str] | None:
-    """None when the enrolled operator's live face is in view; else (reason code, detail).
+def _check(unknown: bool = False) -> tuple[str, str]:
+    """(PASSED, person id) when an enrolled person's live face is in view; else (reason, detail).
 
     Up to FRAMES fresh frames within FRAMES_BUDGET_S, stopping once decided. Identity: the
-    operator matched in a majority of the frames with a face. Liveness: `judge` on the
-    operator's face over those frames, each landmark from at least MIN_READINGS of them.
+    same person was the best match in a majority of the frames with a face. Liveness:
+    `judge` on that person's face over those frames, each landmark from at least
+    MIN_READINGS of them. `unknown`: the largest face when it matches nobody is judged the
+    same way, as person "", and a live one is (UNKNOWN, ...); nothing about it is kept.
     """
-    enrolled_features = enrolled()
-    if enrolled_features is None:
-        return NOT_ENROLLED, "no operator is enrolled on this robot"
+    known = people()
+    if not known:
+        return NOT_ENROLLED, "no one is enrolled on this robot"
     deadline = time.monotonic() + FRAMES_BUDGET_S
-    faced = matched = 0
-    samples: list[tuple[list[Any], float]] = []
+    faced = 0
+    matched: dict[str, int] = {}
+    samples: dict[str, list[tuple[list[Any], float]]] = {}
     for taken in range(1, FRAMES + 1):
         # shortcut: two fetches can return the same frame, counted twice; fine at 5 frames in 1 s.
         img, stamp = fresh_frame()
         rows = faces(img)
-        hits: list[tuple[float, Any]] = []
+        best: tuple[float, Any, str] | None = None
         for row in rows:
-            sim = similarity(feature(img, row), enrolled_features)
-            if sim >= MATCH_COSINE:  # a NaN similarity is no match
-                hits.append((sim, row))
+            feat = feature(img, row)
+            for p in known:
+                sim = similarity(feat, p["features"])
+                if sim >= MATCH_COSINE and (best is None or sim > best[0]):  # NaN: no match
+                    best = (sim, row, p["id"])
         faced += bool(rows)
-        if hits:
-            matched += 1
-            samples.append(landmarks_3d(max(hits, key=lambda h: h[0])[1], stamp))
+        if best is None and rows and unknown:
+            best = (0.0, rows[0], "")
+        if best is not None:
+            matched[best[2]] = matched.get(best[2], 0) + 1
+            samples.setdefault(best[2], []).append(landmarks_3d(best[1], stamp))
         left = FRAMES - taken
-        if 2 * matched > faced and judge(samples, MIN_READINGS) is None:
-            return None
+        for pid, n in matched.items():
+            if 2 * n > faced and judge(samples[pid], MIN_READINGS) is None:
+                return (PASSED, pid) if pid else (UNKNOWN, "a live face that matches nobody")
+        top = max(matched.values(), default=0)
         if (
-            2 * (matched + left) <= faced + left  # a majority is out of reach
-            or len(samples) + left < MIN_READINGS
+            2 * (top + left) <= faced + left  # a majority is out of reach
+            or max(map(len, samples.values()), default=0) + left < MIN_READINGS
             or time.monotonic() >= deadline
         ):
             break
-    if not 2 * matched > faced:
-        return NOT_SEEN, "the enrolled operator's face is not in front of the head camera"
-    why = judge(samples, MIN_READINGS)
+    if not faced:
+        return NO_FACE, "no face is in front of the head camera"
+    who = max(matched, key=lambda k: matched[k], default=None)
+    if who is None or who == "" or not 2 * matched[who] > faced:
+        return NOT_SEEN, "no enrolled person's face is in front of the head camera"
+    why = judge(samples[who], MIN_READINGS)
     return NOT_LIVE, (
-        f"the operator's face was recognised but {why} ({len(samples)} of {taken} frames)"
+        f"an enrolled face was recognised but {why} ({len(samples[who])} of {taken} frames)"
     )
 
 
-def _run_check() -> tuple[str, str] | None:
+def _run_check(unknown: bool) -> tuple[str, str]:
     try:
-        return _check()
+        return _check(unknown)
     finally:
         _busy.release()
 
 
-async def live_check(*, background: bool = False) -> tuple[str, str] | None:
+async def live_check(*, background: bool = False, unknown: bool = False) -> tuple[str, str]:
     """`_check` on the gate's own worker, bounded by TIMEOUT_S; any failure is an outcome, never a pass.
 
     A background check (the greeter) never waits: (BUSY, ...) when a check is running. A
@@ -478,7 +720,7 @@ async def live_check(*, background: bool = False) -> tuple[str, str] | None:
         await asyncio.sleep(0.02)
     _background = background
     try:
-        job = asyncio.get_running_loop().run_in_executor(_pool, _run_check)
+        job = asyncio.get_running_loop().run_in_executor(_pool, _run_check, unknown)
     except BaseException:
         _busy.release()
         raise
@@ -490,11 +732,19 @@ async def live_check(*, background: bool = False) -> tuple[str, str] | None:
         return UNAVAILABLE, f"the check failed ({exc})"
 
 
+def gated_tools() -> frozenset[str]:
+    """What is gated now: C3PO_FACE_GATE, or `confirm` when the settings turned it on bare."""
+    if not settings()["gate"]:
+        return frozenset()
+    return GATED or frozenset({CONFIRM})
+
+
 def gated(name: str, meta: dict[str, Any] | None = None) -> bool:
-    """Whether a call of this tool (with this `_meta`) needs the operator's face."""
-    if name in NEVER_GATED:
+    """Whether a call of this tool (with this `_meta`) needs an enrolled person's face."""
+    tools = gated_tools()
+    if name in NEVER_GATED or not tools:
         return False
-    return name in GATED or (CONFIRM in GATED and safety.needs_confirmation(meta))
+    return name in tools or (CONFIRM in tools and safety.needs_confirmation(meta))
 
 
 def check_config(tools: Iterable[str]) -> list[str]:
@@ -522,12 +772,76 @@ async def refusal(name: str, meta: dict[str, Any] | None = None) -> str | None:
     if not gated(name, meta):
         return None
     started = time.monotonic()
-    outcome = await live_check()
+    code, detail = await live_check()
     ms = round((time.monotonic() - started) * 1000)
-    if outcome is None:
-        log.warning("face_gate.passed", tool=name, ms=ms)
+    if code == PASSED:
+        log.warning("face_gate.passed", tool=name, person=detail, ms=ms)
         return None
-    code, detail = outcome
+    code = NOT_SEEN if code in (NO_FACE, UNKNOWN) else code
     log.warning("face_gate.refused", tool=name, reason=code, detail=detail, ms=ms)
     hint = _HINTS[code].format(max_m=MAX_M, ttl=int(safety.CONFIRM_TTL_S))
     return f"refused ({code}): {name} needs the enrolled operator's live face. {hint}"
+
+
+def photo(img: Any, row: Any) -> bytes:
+    """The console's picture of a consenting person: their face box, padded, JPEG, small."""
+    import cv2
+
+    x, y, w, h = (float(v) for v in row[:4])
+    pad = PHOTO_PAD * max(w, h)
+    x0, y0 = max(0, int(x - pad)), max(0, int(y - pad))
+    crop = img[y0 : int(y + h + pad), x0 : int(x + w + pad)]
+    scale = PHOTO_PX / max(crop.shape[:2])
+    if scale < 1:
+        crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    ok, jpg = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    if not ok:
+        raise Unavailable("the photo did not encode")
+    return bytes(jpg)
+
+
+def same_person(features: list[Any]) -> bool:
+    """Every pair of frames matches at the gate's own threshold: no second face slipped in."""
+    import numpy as np
+
+    f = np.asarray(features, dtype=np.float64)
+    f = f / np.linalg.norm(f, axis=1, keepdims=True)
+    return bool(((f @ f.T) >= MATCH_COSINE).all())  # `>=`: a NaN is no match
+
+
+def enroll(name: str, role: str, frames: int = 5, say: Any = lambda _msg: None) -> dict[str, Any]:
+    """Enroll from `frames` frames each with exactly one live face, all the same person.
+
+    Saves their vectors and ONE photo (the last frame's face). Raises Unavailable with
+    why not; `say` hears each frame's verdict (no measurements of the face itself).
+    """
+    name = clean_name(name)  # before the camera: a bad name wastes no one's time
+    if role not in ROLES:
+        raise ValueError(f"role must be one of {', '.join(ROLES)}")
+    features: list[Any] = []
+    last: tuple[Any, Any] | None = None
+    for attempt in range(1, frames * 4 + 1):
+        if len(features) == frames:
+            break
+        try:
+            img, stamp = fresh_frame()
+            rows = faces(img)
+            why = (
+                liveness(rows[0], stamp)
+                if len(rows) == 1
+                else f"{len(rows)} faces, need exactly one"
+            )
+        except OSError as exc:  # URLError is an OSError
+            raise Unavailable(str(exc)) from None
+        if why is not None:
+            say(f"frame {attempt}: skipped, {why}")
+            continue
+        features.append(feature(img, rows[0]))
+        last = img, rows[0]
+        say(f"frame {attempt}: ok ({len(features)}/{frames})")
+        time.sleep(ENROLL_INTERVAL_S)
+    if len(features) < frames or last is None:
+        raise Unavailable(f"only {len(features)} of {frames} frames had one live face")
+    if not same_person(features):
+        raise Unavailable("the frames do not all show the same person")
+    return add_person(name, role, features, photo(*last))
