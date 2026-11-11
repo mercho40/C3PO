@@ -103,10 +103,54 @@ describe("/face", () => {
     expect(seen).toHaveLength(0);
   });
 
-  test("an admin reads the list", async () => {
+  test("an admin reads the list, relayed with the bridge proof", async () => {
     const res = await call("GET", "/people");
     expect(res.status).toBe(200);
     expect(seen[0]?.url).toEndWith("/face/people");
+    const headers = seen[0]?.init?.headers as Record<string, string>;
+    expect(headers["x-c3po-confirm-secret"]).toBe("s3cret");
+    delete process.env.SAFETY_CONFIRM_SECRET;
+    expect((await call("GET", "/people")).status).toBe(503);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("/seen: any signed-in user gets the bridge's boxes, never cached", async () => {
+    sessionUser = { id: "op1", role: null };
+    const res = await call("GET", "/seen");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.json()).toEqual({ ok: true, settings: { greet: true } });
+    expect(seen[0]?.url).toEndWith("/face/seen");
+    sessionUser = null;
+    expect((await call("GET", "/seen")).status).toBe(401);
+    globalThis.fetch = (async () => {
+      throw new Error("down");
+    }) as unknown as typeof fetch;
+    sessionUser = { id: "op1", role: null };
+    expect((await call("GET", "/seen")).status).toBe(502);
+  });
+
+  test("a replacement is its own card: replace is bound and relayed", async () => {
+    const plain = await ask("enroll", { name: "Ana", role: "operator" });
+    const replacing = { name: "Ana", role: "operator", replace: true };
+    expect(
+      (await call("POST", `/enroll?confirmation=${plain}`, replacing)).status,
+    ).toBe(409);
+    const id = await ask("enroll", replacing);
+    expect(
+      (
+        await call("POST", `/enroll?confirmation=${id}`, {
+          name: "Ana",
+          role: "operator",
+        })
+      ).status,
+    ).toBe(409);
+    const again = await ask("enroll", replacing);
+    expect(
+      (await call("POST", `/enroll?confirmation=${again}`, replacing)).status,
+    ).toBe(200);
+    expect(JSON.parse(String(seen[0]?.init?.body))).toEqual(replacing);
+    expect(seen).toHaveLength(1);
   });
 
   test("every mutation and photo view refuses without a confirmation", async () => {

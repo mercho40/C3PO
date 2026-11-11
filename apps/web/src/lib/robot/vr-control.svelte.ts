@@ -1381,8 +1381,10 @@ export class VrControl {
     // Face boxes composed into the headset picture, polled only for the
     // session's life (it ends in onEnd), and only if this browser wants them.
     if (camBase && faceBoxesEnabled()) {
-      this.#stopFaces = pollFaceSeen(faceSeenUrl(camBase), (seen, at) =>
-        this.#vr?.setCameraFaces(seen, at),
+      this.#stopFaces = pollFaceSeen(
+        faceSeenUrl(camBase),
+        (seen, at) => this.#vr?.setCameraFaces(seen, at),
+        { credentials: camCredentials(camBase, PUBLIC_API_URL) },
       );
     }
     // And what to say if there is no picture yet: entering VR while the feed

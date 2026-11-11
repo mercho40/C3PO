@@ -1,6 +1,7 @@
 <!--
-  Face boxes over the robot's camera picture: who it sees, from the bridge's
-  `/face/seen`, on the same host as the picture (derived from the stream URL).
+  Face boxes over the robot's camera picture: who it sees, from `/face/seen` on
+  the same host as the picture (derived from the stream URL): apps/back's relay
+  with the session cookie, or the bridge without one.
 
   Polls only while there is a picture (`url` non-null) and the tab is visible;
   boxes older than FACE_STALE_S are cleared, so a stale label never lingers.
@@ -8,7 +9,9 @@
 -->
 <script lang="ts">
   import { ScanFace } from "@lucide/svelte";
+  import { PUBLIC_API_URL } from "$app/env/public";
   import { cameraBaseFromUrl } from "#lib/robot/camera-copy.js";
+  import { camCredentials } from "#lib/robot/mjpeg-camera.js";
   import {
     containRect,
     drawFaceBoxes,
@@ -40,21 +43,21 @@
   let h = $state(0);
   let canvas: HTMLCanvasElement | undefined = $state();
 
-  const pollUrl = $derived.by(() => {
-    const base = cameraBaseFromUrl(url);
-    return on && base ? faceSeenUrl(base) : null;
-  });
+  const base = $derived(on ? cameraBaseFromUrl(url) : null);
 
   $effect(() => {
-    if (!pollUrl) return;
+    if (!base) return;
     const stop = pollFaceSeen(
-      pollUrl,
+      faceSeenUrl(base),
       (s, at) => {
         seen = s;
         receivedAt = at;
         now = at;
       },
-      { hidden: () => document.visibilityState === "hidden" },
+      {
+        hidden: () => document.visibilityState === "hidden",
+        credentials: camCredentials(base, PUBLIC_API_URL),
+      },
     );
     // Re-check staleness between answers, so a stalled poller still clears.
     const tick = setInterval(() => (now = Date.now()), 500);

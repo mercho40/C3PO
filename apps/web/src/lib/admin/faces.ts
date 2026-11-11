@@ -55,28 +55,78 @@ const STATUS_TEXT: Record<number, string> = {
 };
 
 /**
- * What the bridge says when it cannot enroll, in Spanish. shortcut: codes
- * guessed before the bridge side landed; an unknown one is shown as sent.
+ * Why the bridge did not enroll, by its `code` (bridge /face/enroll), in
+ * Spanish. Anything else is shown as the bridge's own `reason`.
  */
 const REASON_TEXT: Record<string, string> = {
-  no_face: "No se vio ninguna cara frente a la cámara.",
-  multiple_faces: "Se ve más de una cara: que quede una sola persona.",
-  not_live: "La cara no pasó la prueba de vida (¿una foto, una pantalla?).",
-  too_far: "Está demasiado lejos: acercate a 0,5–1 m.",
-  models_unavailable: "Los modelos de reconocimiento no están cargados.",
-  timeout: "Se acabó el tiempo sin una cara clara.",
+  no_live_face:
+    "No se vio una sola cara viva en cada imagen (¿otra persona en cuadro, una foto, demasiado lejos?). Probá de nuevo a 0,5–1 m.",
+  not_same_person:
+    "Las imágenes no eran todas de la misma persona: que quede una sola frente a la cámara.",
+  camera_unavailable:
+    "El robot no pudo usar la cámara o los modelos de reconocimiento (el log del bridge dice por qué).",
+  exists:
+    "Ya hay alguien registrado con ese nombre. Volvé a agregarla para reemplazarla.",
+  busy: "Ya hay un registro en curso: esperá a que termine.",
+  invalid: "Datos inválidos: revisá el nombre y el rol.",
 };
 
 /** A refused or failed answer from back, in Spanish. */
 export function faceErrorText(status: number | null, body: unknown): string {
-  const b = (body ?? {}) as { reason?: unknown; error?: unknown };
+  const b = (body ?? {}) as {
+    code?: unknown;
+    reason?: unknown;
+    error?: unknown;
+  };
+  if (typeof b.code === "string" && REASON_TEXT[b.code])
+    return REASON_TEXT[b.code];
   if (typeof b.reason === "string" && b.reason)
-    return REASON_TEXT[b.reason] ?? `El robot respondió: ${b.reason}`;
+    return `El robot respondió: ${b.reason}`;
   if (status === null) return "No se pudo contactar al backend.";
   return (
     STATUS_TEXT[status] ??
     `Error ${status}${typeof b.error === "string" ? ` (${b.error})` : ""}.`
   );
+}
+
+const sameName = (a: string, b: string) =>
+  a.trim().replace(/\s+/g, " ").toLocaleLowerCase() ===
+  b.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+
+/**
+ * The «Agregar persona» card. A name already enrolled (any case) asks
+ * «Ya existe <nombre>: ¿reemplazar?», and only that card carries
+ * `replace: true`: back binds it, so it cannot be spent on anything else.
+ */
+export function enrollCard(
+  name: string,
+  role: FaceRole,
+  people: FacePerson[],
+): {
+  args: { name: string; role: FaceRole; replace: boolean };
+  title: string;
+  text: string;
+  cta: string;
+  danger: boolean;
+} {
+  const look =
+    "Al confirmar, el robot mira por la cámara de la cabeza durante 5–10 s: la persona tiene que estar parada a 0,5–1 m, sin el casco.";
+  const existing = people.find((p) => sameName(p.name, name));
+  if (existing)
+    return {
+      args: { name, role, replace: true },
+      title: `Ya existe ${existing.name}: ¿reemplazar?`,
+      text: `Se borra su registro y su foto, y se guarda el de quien esté frente a la cámara, como ${faceRoleLabel(role).toLowerCase()}. ${look}`,
+      cta: "Reemplazar",
+      danger: true,
+    };
+  return {
+    args: { name, role, replace: false },
+    title: `¿Agregar a ${name} como ${faceRoleLabel(role).toLowerCase()}?`,
+    text: look,
+    cta: "Agregar",
+    danger: false,
+  };
 }
 
 const day = new Intl.DateTimeFormat("es-AR", { dateStyle: "medium" });

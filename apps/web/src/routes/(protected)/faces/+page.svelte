@@ -23,6 +23,7 @@
     SWITCHES,
     askFace,
     cancelFace,
+    enrollCard,
     enrolledText,
     faceRoleLabel,
     loadFaces,
@@ -108,8 +109,11 @@
     const r = await runFace(PUBLIC_API_URL, c.action, c.args, c.id);
     busy = null;
     if (!r.ok) {
-      if (c.action === "enroll") enrollResult = { ok: false, text: r.text };
-      else toast.error(r.text);
+      if (c.action === "enroll") {
+        enrollResult = { ok: false, text: r.text };
+        // Someone enrolled that name meanwhile: the next Agregar asks to replace.
+        void refresh();
+      } else toast.error(r.text);
       return;
     }
     if (c.action === "photo" && r.photo) {
@@ -121,7 +125,10 @@
       return;
     }
     if (c.action === "enroll") {
-      enrollResult = { ok: true, text: `Se agregó a ${c.args.name}.` };
+      enrollResult = {
+        ok: true,
+        text: `Se ${c.args.replace ? "reemplazó" : "agregó"} a ${c.args.name}.`,
+      };
       enrollName = "";
     } else if (c.action === "delete") {
       if (photo?.personId === c.args.id) closePhoto();
@@ -175,16 +182,8 @@
     event.preventDefault();
     const name = enrollName.trim();
     if (!name) return;
-    void ask(
-      "enroll",
-      { name, role: enrollRole },
-      {
-        title: `¿Agregar a ${name} como ${faceRoleLabel(enrollRole).toLowerCase()}?`,
-        text: "Al confirmar, el robot mira por la cámara de la cabeza durante 5–10 s: la persona tiene que estar parada a 0,5–1 m, sin el casco.",
-        cta: "Agregar",
-        danger: false,
-      },
-    );
+    const { args, ...copy } = enrollCard(name, enrollRole, view?.people ?? []);
+    void ask("enroll", args, copy);
   }
 
   onMount(() => {

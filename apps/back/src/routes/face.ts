@@ -1,6 +1,8 @@
 /**
- * /face — the «Caras» page: who the robot knows by face. Admins only.
+ * /face — the «Caras» page: who the robot knows by face. Admins only, but
+ * /face/seen, which any signed-in user's camera overlay polls.
  *
+ * GET    /face/seen                   the boxes over the picture (signed in).
  * GET    /face/people                 the bridge's list, switches and counter.
  * POST   /face/confirmations          {action, args}: the operator opened a
  *                                     Confirmar card for exactly this action
@@ -8,7 +10,10 @@
  * DELETE /face/confirmations/:id      «Cancelar» on that card.
  * POST   /face/settings?confirmation= {greet?, greet_unknown?, gate?}
  * DELETE /face/people/:id?confirmation=
- * POST   /face/enroll?confirmation=   {name, role}; the bridge takes 5–10 s.
+ * POST   /face/enroll?confirmation=   {name, role, replace}; the bridge takes
+ *                                     5–10 s, 20 s at most. A name that
+ *                                     exists is refused (409 `exists`) unless
+ *                                     the card says replace: true.
  * GET    /face/people/:id/photo.jpg?confirmation=   never cached.
  *
  * Seeing a face is confirmed like an action: every mutation and every photo
@@ -56,8 +61,10 @@ export function faceArgs(
     return typeof r.id === "string" && r.id ? { id: r.id } : null;
   if (action === "enroll") {
     const name = typeof r.name === "string" ? r.name.trim() : "";
+    // `replace` is bound by the card: a «¿reemplazar?» confirmation cannot be
+    // spent on a plain add, nor a plain add's card on a replacement.
     return name && name.length <= 80 && ROLES.has(r.role as string)
-      ? { name, role: r.role }
+      ? { name, role: r.role, replace: r.replace === true }
       : null;
   }
   return null;
@@ -148,6 +155,29 @@ async function confirmedRelay(
 export const faceRoutes = new Elysia({ prefix: "/face" })
   .use(betterAuth)
   .guard({ auth: true }, (app) =>
+    // Any signed-in user: the boxes go over a picture they already see. The
+    // bridge serves it without proof only because it listens on loopback.
+    app.get(
+      "/seen",
+      async () => {
+        try {
+          const upstream = await fetch(bridgeSiblingUrl("/face/seen"), {
+            signal: AbortSignal.timeout(1500),
+          });
+          return Response.json(await upstream.json(), {
+            status: upstream.status,
+            headers: { "Cache-Control": "no-store" },
+          });
+        } catch {
+          return json(502, { error: "bridge_unavailable" });
+        }
+      },
+      {
+        detail: { summary: "Faces in the camera picture.", tags: ["face"] },
+      },
+    ),
+  )
+  .guard({ auth: true }, (app) =>
     app
       .onBeforeHandle(({ user, status }) => {
         if (user.role !== "admin")
@@ -156,8 +186,13 @@ export const faceRoutes = new Elysia({ prefix: "/face" })
       .get(
         "/people",
         async ({ status }) => {
+          // Names and roles of everyone enrolled: the bridge wants the proof.
+          const proof = bridgeProof();
+          if (!proof)
+            return status(503, { error: "confirmation_not_configured" });
           try {
             const upstream = await fetch(bridgeSiblingUrl("/face/people"), {
+              headers: proof,
               signal: AbortSignal.timeout(3000),
             });
             const body = await upstream.json();
@@ -223,7 +258,8 @@ export const faceRoutes = new Elysia({ prefix: "/face" })
           5000,
         ),
       )
-      // The person stands in front of the head camera while the bridge samples.
+      // The person stands in front of the head camera while the bridge samples;
+      // the bridge gives up after 20 s (ENROLL_DEADLINE_S), well inside this.
       .post("/enroll", ({ user, body, query }) =>
         confirmedRelay(
           user.id,
