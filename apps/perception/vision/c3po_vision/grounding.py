@@ -110,6 +110,7 @@ __all__ = [
     "Grounded",
     "Intrinsics",
     "Support",
+    "base_to_camera",
     "camera_to_base",
     "clamp_box",
     "deproject_pixel_to_camera",
@@ -496,6 +497,19 @@ def camera_to_base(
     return xb + extr.x_m, yb + extr.y_m, zb + extr.z_m
 
 
+def base_to_camera(
+    point_base: tuple[float, float, float],
+    extr: CameraExtrinsic = DEFAULT_CAMERA_EXTRINSIC,
+) -> tuple[float, float, float]:
+    """base_link -> camera optical frame: `camera_to_base` undone, step by step."""
+    x, y, z = point_base[0] - extr.x_m, point_base[1] - extr.y_m, point_base[2] - extr.z_m
+    a = math.radians(extr.yaw_deg)
+    xp, yp = x * math.cos(a) + y * math.sin(a), -x * math.sin(a) + y * math.cos(a)
+    p = math.radians(extr.pitch_deg)
+    xr, zr = xp * math.cos(p) - z * math.sin(p), xp * math.sin(p) + z * math.cos(p)
+    return -yp, -zr, xr
+
+
 def range_bearing_from_base(
     x_m: float, y_m: float, z_m: float
 ) -> tuple[float, float, float, float]:
@@ -748,11 +762,17 @@ SUPPORT_MAX_RMS_M = 0.0075   # a flat top at D435 noise is ~1-5 mm; rougher is n
 class Support:
     """The near-horizontal plane under one detection, in base_link (the Grounded frame)."""
 
-    z_m: float                  # the plane's height at the object's (x_m, y_m)
+    z_m: float                  # the plane's HIGHEST along the bearing, from its near end to
+    #                             the object's (x_m, y_m): a tilted top is higher at one end
     near_edge_m: float | None   # HORIZONTAL range, along bearing_deg, of its edge nearest the
     #                             robot (range_m's convention); None if the edge is not in view
     inliers: int
     rms_m: float
+    # The same plane in the camera OPTICAL frame (ground_box's p_opt / cam_xyz convention), so a
+    # consumer with its own camera mount puts it in the frame it puts the object in:
+    cam_top_xyz: tuple[float, float, float]   # under the object
+    cam_near_xyz: tuple[float, float, float]  # at the near end along the
+    #                             bearing: the edge if near_edge_m is set, else the nearest seen
 
 
 def fit_support(
@@ -775,8 +795,9 @@ def fit_support(
     wider each side, skipping the box itself; keeps points within the height window under
     the object's bottom pixel; RANSACs a plane within SUPPORT_MAX_TILT_DEG of level and
     least-squares refits it. The near edge is the lowest plane pixel on the bearing line
-    (refined to the exact row), and only if something that is NOT the plane is seen
-    below it — a surface that runs off the image bottom has no edge in view.
+    (refined to the exact row), and only if the first thing below it is a DROP under the
+    plane (its front face, the floor) — a surface that runs off the image bottom, or whose
+    near part is hidden by something over it (a hand, an arm), has no edge in view.
     """
     width = intr.width or (len(depth[0]) if len(depth) else 0)
     height = intr.height or len(depth)
@@ -850,14 +871,15 @@ def fit_support(
         a, b = (sxz * syy - syz * sxy) / det, (syz * sxx - sxz * sxy) / det
         c = mz - a * mx - b * my
     rms = math.sqrt(sum((p[2] - a * p[0] - b * p[1] - c) ** 2 for p in inl) / n)
-    z_m = a * g.x_m + b * g.y_m + c
-    if (rms > SUPPORT_MAX_RMS_M or not lo <= z_m <= hi
+    z_obj = a * g.x_m + b * g.y_m + c
+    if (rms > SUPPORT_MAX_RMS_M or not lo <= z_obj <= hi
             or math.degrees(math.atan(math.hypot(a, b))) > SUPPORT_MAX_TILT_DEG):
         return None
 
     # The edge: the lowest plane point in the sampled column whose edge lies on the bearing
     # line (image columns fan out from it), if that column sees something else below it.
     edge = None
+    near = g.range_m
     lowest: dict[int, tuple[int, tuple[float, float, float]]] = {}
     for u, v, p in seen:
         if on(p) and v > lowest.get(u, (-1, p))[0]:
@@ -865,7 +887,11 @@ def fit_support(
     if lowest:
         u_e = min(lowest, key=lambda u: abs(lowest[u][1][1] * cb - lowest[u][1][0] * sb))
         v_e, p_e = lowest[u_e]
-        if any(u == u_e and v > v_e and not on(p) for u, v, p in seen):
+        below = [(v, p) for u, v, p in seen if u == u_e and v > v_e and not on(p)]
+        nxt = min(below, key=lambda vp: vp[0])[1] if below else None
+        # A drop under the plane, not an occluder over it: a hand over the near part would
+        # put the "edge" where the hand starts, 12-20 cm too far out.
+        if nxt is not None and nxt[2] < a * nxt[0] + b * nxt[1] + c:
             for v in range(v_e + 1, min(height, v_e + sy)):  # the rows the stride skipped
                 p = point(u_e, v)
                 if p is not None:
@@ -873,7 +899,15 @@ def fit_support(
                         break
                     p_e = p
             edge = p_e[0] * cb + p_e[1] * sb
-    return Support(z_m=z_m, near_edge_m=edge, inliers=n, rms_m=rms)
+        near = min(near, p_e[0] * cb + p_e[1] * sb)
+    # Linear along the bearing, so its highest from the near end to the object is at one end.
+    top_obj = (g.x_m, g.y_m, z_obj)
+    xn, yn = near * cb, near * sb
+    top_near = (xn, yn, a * xn + b * yn + c)
+    return Support(
+        z_m=max(z_obj, top_near[2]), near_edge_m=edge, inliers=n, rms_m=rms,
+        cam_top_xyz=base_to_camera(top_obj, extr), cam_near_xyz=base_to_camera(top_near, extr),
+    )
 
 
 def to_observation(
