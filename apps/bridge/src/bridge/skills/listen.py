@@ -242,10 +242,13 @@ class Transcriber:
         Only finals are returned. Partials matter for the stop phrase, where
         latency is the whole point, and are noise here — an agent should act on
         what someone finished saying, not on the first syllable of it.
+
+        An empty final (room noise Vosk decoded as nothing) is "", not None: it
+        is still a boundary, and back mode must clear its audio buffer on it or
+        the silence ships with the next utterance.
         """
         if self._rec.AcceptWaveform(pcm):
-            text = json.loads(self._rec.Result()).get("text", "").strip()
-            return text or None
+            return str(json.loads(self._rec.Result()).get("text", "")).strip()
         return None
 
     def flush(self) -> str | None:
@@ -826,7 +829,9 @@ class MicListener:
         # ALSA device or competing for the multicast source. Queues are bounded:
         # fresh voice audio is useful; seconds-old audio after a slow network is not.
         self._audio_subscribers: set[queue.Queue[bytes]] = set()
-        self._on_stop: Callable[[str], None] | None = None
+        #: Every voice session's armed stop, oldest first. A tuple swapped whole,
+        #: so the mic thread's read is one atomic attribute load.
+        self._armed: tuple[Callable[[str], None], ...] = ()
 
         self._frames = 0
         self._utterances = 0
@@ -847,20 +852,29 @@ class MicListener:
 
     # -- lifecycle -----------------------------------------------------------
 
-    def set_on_stop(self, on_stop: Callable[[str], None] | None) -> None:
-        """Arm/disarm session-scoped stop action without restarting the listener."""
-        self._on_stop = on_stop
+    @property
+    def _on_stop(self) -> Callable[[str], None] | None:
+        """The stop action to run: the newest armed session's, or None."""
+        armed = self._armed
+        return armed[-1] if armed else None
+
+    def set_on_stop(self, on_stop: Callable[[str], None]) -> None:
+        """Arm a session's stop action without restarting the listener."""
+        self._armed = (*self._armed, on_stop)
 
     def clear_on_stop(self, on_stop: Callable[[str], None] | None) -> None:
-        """Disarm, but only if `on_stop` is still the armed callback.
+        """Disarm `on_stop` only; every other armed session stays armed.
 
-        A subscriber that disconnects after a newer one armed (a reconnect inside
-        the 0.5 s disconnect poll) must not disarm the newer one.
+        Counted per subscriber, not one slot: any page that opens and closes the
+        event stream used to disarm the voice loop's still-open connection, and
+        the spoken stop then never reached stop_everything.
         """
-        # shortcut: one slot, so A arms, B arms, B clears leaves A connected but
-        # disarmed (apps/back still acts); keep a set if sessions ever overlap.
-        if self._on_stop is on_stop:
-            self._on_stop = None
+        armed = list(self._armed)
+        for i, cb in enumerate(armed):
+            if cb is on_stop:
+                del armed[i]
+                self._armed = tuple(armed)
+                return
 
     def start(self, on_stop: Callable[[str], None] | None = None) -> None:
         # Only an explicit callback arms: a bare start() (boot, the `listen`
@@ -929,6 +943,7 @@ class MicListener:
                 self._frames += 1
                 self._last_audio_at = time.monotonic()
 
+            stopped = False
             if hit := detector.feed(frame):
                 detector.reset()
                 log.warning("mic_listener.stop_phrase", phrase=hit)
@@ -939,6 +954,14 @@ class MicListener:
                         on_stop(hit)
                     except Exception:
                         log.exception("mic_listener.on_stop_failed")
+                # The segment holding the phrase ("caminá a la puerta, para para")
+                # would close AFTER the stop and start a turn while PARAR stands,
+                # so its audio and its decode are thrown away, this frame included.
+                utterance.clear()
+                reset = getattr(transcriber, "reset", None)
+                if reset is not None:
+                    reset()
+                stopped = True
 
             # The multicast mic hears the robot's own speaker. Feeding that back
             # to the voice loop creates a recursive conversation: answer -> hear
@@ -964,6 +987,8 @@ class MicListener:
                 suppressing_playback = False
 
             self._publish_audio(frame)
+            if stopped:
+                continue
 
             current = self._whisperer
             if current is not None or self._stt_back:
@@ -971,9 +996,16 @@ class MicListener:
 
             text = transcriber.feed(frame)
             if self._stt_back:
-                if text or len(utterance) > MAX_UTTERANCE_BYTES:
+                # Only a segment Vosk heard words in goes to apps/back: its
+                # transcriber has no VAD and can invent text on silence. An empty
+                # final is a boundary all the same, and a talker with no pause is
+                # trimmed to the newest 30 s rather than published mid-sentence.
+                if text:
                     self._publish_utterance(bytes(utterance))
+                if text is not None:
                     utterance.clear()
+                elif len(utterance) > MAX_UTTERANCE_BYTES:
+                    del utterance[:-MAX_UTTERANCE_BYTES]
                 continue
             if text:
                 if current is not None:
