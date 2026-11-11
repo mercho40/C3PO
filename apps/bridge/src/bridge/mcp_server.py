@@ -1907,10 +1907,12 @@ async def say(
         # whatever is currently playing. Milliseconds is the vendor's own
         # convention; it only has to be different from the last one.
         stream_id = f"c3po-{int(time.time() * 1000)}"
+        # Before synthesis, which takes hundreds of ms: a PARAR during it must cancel this too.
+        generation = g1_rpc._play_generation
 
         def _synth_and_play() -> tuple[int, str | None, float]:
             pcm = tts.synthesize(text)
-            code, data = g1_rpc.play_pcm(pcm, stream_id)
+            code, data = g1_rpc.play_pcm(pcm, stream_id, generation=generation)
             return code, data, tts.duration_s(pcm)
 
         try:
@@ -4209,9 +4211,10 @@ async def safety_ack(request):  # noqa: ANN001, ANN201 - starlette types
 
 # -- faces: who is enrolled, the live settings, enrollment (bridge/face_gate.py) ----------
 #
-# Seeing a face is like confirming an action, so everything here but the bare listing
-# (names and roles, no features, no photos) takes the same proof as /safety/confirm:
-# apps/back's SAFETY_CONFIRM_SECRET in `X-C3PO-Confirm-Secret`.
+# Seeing a face is like confirming an action, so everything here but /face/seen takes the
+# same proof as /safety/confirm: apps/back's SAFETY_CONFIRM_SECRET in
+# `X-C3PO-Confirm-Secret`. /face/seen stays open because the bridge listens on loopback
+# only (BRIDGE_HOST 127.0.0.1): apps/back relays it to signed-in users.
 
 _enrolling = asyncio.Lock()
 
@@ -4233,6 +4236,8 @@ async def _json_body(request) -> dict:  # noqa: ANN001 - starlette types
 @mcp.custom_route("/face/people", methods=["GET"])
 async def face_people(request):  # noqa: ANN001, ANN201 - starlette types
     """Everyone enrolled (no features, no photos), the live settings, strangers seen."""
+    if (refused := _unproven(request)) is not None:
+        return refused
     people = await asyncio.to_thread(lambda: [face_gate.public(p) for p in face_gate.people()])
     return _no_store(
         {
@@ -4298,27 +4303,35 @@ async def face_photo(request):  # noqa: ANN001, ANN201 - starlette types
 
 @mcp.custom_route("/face/enroll", methods=["POST"])
 async def face_enroll(request):  # noqa: ANN001, ANN201 - starlette types
-    """Body {"name", "role"}: the person stands at the robot, alone, facing the head camera.
+    """Body {"name", "role", "replace"?}: the person stands at the robot, alone, facing the
+    head camera.
 
     The same enrollment as scripts/face_enroll.py (FRAMES live frames, one face, one
-    person), in a thread. Their consent is the console's to ask before calling this.
-    422 `code`: no_live_face, not_same_person, camera_unavailable (camera, models or disk).
+    person), in a thread, within face_gate.ENROLL_DEADLINE_S. Their consent is the
+    console's to ask before calling this. Every refusal carries a `code`: 400 invalid,
+    409 busy or exists (that name is enrolled and `replace` is not true), 422
+    no_live_face, not_same_person, camera_unavailable (camera, models or disk).
     """
     if (refused := _unproven(request)) is not None:
         return refused
     body = await _json_body(request)
     name, role = body.get("name"), body.get("role")
     if not isinstance(name, str) or role not in face_gate.ROLES:
-        return _no_store({"error": "invalid", "reason": "name and role are required"}, 400)
+        bad = {"error": "invalid", "code": "invalid", "reason": "name and role are required"}
+        return _no_store(bad, 400)
     if _enrolling.locked():
-        return _no_store({"error": "busy", "reason": "an enrollment is running"}, 409)
+        busy = {"error": "busy", "code": "busy", "reason": "an enrollment is running"}
+        return _no_store(busy, 409)
     async with _enrolling:
         try:
-            p = await asyncio.to_thread(face_gate.enroll, name, role, face_gate.FRAMES)
+            p = await asyncio.to_thread(
+                face_gate.enroll, name, role, face_gate.FRAMES, replace=body.get("replace") is True
+            )
         except ValueError as exc:
-            return _no_store({"error": "invalid", "reason": str(exc)}, 400)
+            return _no_store({"error": "invalid", "code": "invalid", "reason": str(exc)}, 400)
         except face_gate.Refused as exc:
-            return _no_store({"error": "not_enrolled", "code": exc.code, "reason": str(exc)}, 422)
+            body = {"error": "not_enrolled", "code": exc.code, "reason": str(exc)}
+            return _no_store(body, 409 if exc.code == "exists" else 422)
         except Exception as exc:  # noqa: BLE001 - camera, models, disk; nothing was stored
             body = {"error": "not_enrolled", "code": "camera_unavailable", "reason": str(exc)}
             return _no_store(body, 422)
@@ -4974,6 +4987,25 @@ async def _run_stdio() -> None:
         await mcp.run_stdio_async()
 
 
+def _warm_face() -> None:
+    """Load the face models before serving, whatever the switches say, on a robot that has
+    them: a cold `import cv2` holds the GIL for seconds, which would stall a stop if a
+    console switch, an enrollment or the greeter's first tick did it while serving, and
+    would spend the first gated call's TIMEOUT_S."""
+    face = face_gate.settings()
+    if face["gate"] or (SIM_MODE != "stub" and face_gate.models_installed()):
+        face_gate.warm()
+    if face["gate"]:
+        log.warning("face_gate.on", tools=sorted(face_gate.gated_tools()), max_m=face_gate.MAX_M)
+    elif face_gate.GATED:
+        log.warning(
+            "face_gate.env_overridden",
+            env=sorted(face_gate.GATED),
+            settings=str(face_gate.settings_path()),
+            note="settings.json says gate off and overrides C3PO_FACE_GATE: nothing is gated",
+        )
+
+
 def main() -> None:
     """Run the MCP server.
 
@@ -4983,14 +5015,7 @@ def main() -> None:
     """
     if face_gate.GATED:
         face_gate.check_config(t.name for t in mcp._tool_manager.list_tools())
-    face = face_gate.settings()
-    if face["gate"] or (SIM_MODE != "stub" and (face["greet"] or face["greet_unknown"])):
-        # Before serving, not in a thread: a cold `import cv2` holds the GIL for seconds,
-        # which would stall a stop, and would spend the first gated call's TIMEOUT_S.
-        # Turned on later from /face/settings, they load on the gate's worker instead.
-        face_gate.warm()
-    if face["gate"]:
-        log.warning("face_gate.on", tools=sorted(face_gate.gated_tools()), max_m=face_gate.MAX_M)
+    _warm_face()
     # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #

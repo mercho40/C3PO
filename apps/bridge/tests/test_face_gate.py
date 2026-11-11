@@ -39,6 +39,9 @@ LANDMARKS_M = np.array(
     [[-0.032, -0.035, 0], [0.032, -0.035, 0], [0, 0, 0], [-0.025, 0.035, 0], [0.025, 0.035, 0]]
 )
 REAL_FACES = face_gate.faces
+REAL_MODELS = face_gate.models
+REAL_FRAME = face_gate.frame
+REAL_WARM = face_gate.warm
 
 
 def _render(at_m, yaw=0.0, pitch=0.0, nose_m=0.025, noise_mm=0.0, hole=None):
@@ -83,6 +86,8 @@ def scene(tmp_path, monkeypatch):
     """A gated `pick`, an enrolled operator, and a camera the test fills in."""
     monkeypatch.setattr(face_gate, "FACE_DIR", tmp_path / "face")
     monkeypatch.setattr(face_gate, "GATED", frozenset({"pick", "get_state"}))
+    monkeypatch.setattr(face_gate, "_migration_stuck", False)
+    monkeypatch.setattr(face_gate, "models", lambda: None)
     face_gate.save_enrollment(np.stack([OPERATOR, OPERATOR_2]))
     s: dict = {"stamp": time.time(), "faces": [], "who": {}, "depth": {}, "frames": {}, "n": 0}
 
@@ -359,6 +364,7 @@ async def test_missing_models_fail_closed(scene, monkeypatch):
     from structlog.testing import capture_logs
 
     monkeypatch.setattr(face_gate, "faces", REAL_FACES)
+    monkeypatch.setattr(face_gate, "models", REAL_MODELS)
     monkeypatch.setattr(face_gate, "_models", None)
     assert not (face_gate.FACE_DIR / "models").exists()
     with capture_logs() as logs:
@@ -584,14 +590,17 @@ def test_enrollment_is_owner_only_features_and_photo_and_delete_removes_it(
     assert not folder.exists() and face_gate.people() == []
 
 
-def test_re_enrolling_a_name_replaces_that_person(scene, monkeypatch):
+def test_re_enrolling_a_name_needs_replace_and_then_replaces_that_person(scene, monkeypatch):
     _face(scene, 10, OPERATOR)
     monkeypatch.setattr(face_gate, "ENROLL_INTERVAL_S", 0.0)
     assert face_enroll.main(["--yes", "--frames", "2", "--name", "Ana", "--role", "operator"]) == 0
     first = _person_files("Ana")
-    assert (
-        face_enroll.main(["--yes", "--frames", "2", "--name", "ANA", "--role", "superadmin"]) == 0
-    )
+    again = ["--yes", "--frames", "2", "--name", "ANA", "--role", "superadmin"]
+    assert face_enroll.main(again) == 1  # silently replacing someone is refused
+    assert [(p["name"], p["role"]) for p in face_gate.people_listing() if p["id"] == first.name] == [
+        ("Ana", "operator")
+    ]
+    assert face_enroll.main([*again, "--replace"]) == 0
     assert [
         (p["name"], p["role"]) for p in face_gate.people_listing() if p["id"] == first.name
     ] == [("ANA", "superadmin")]
@@ -782,6 +791,7 @@ async def test_face_routes_refuse_without_the_consoles_proof(routes, monkeypatch
 
     oliver = face_gate.people()[0]["id"]
     calls = [
+        (routes.face_people, {}),
         (routes.face_settings, {"body": {"gate": True}}),
         (routes.face_delete, {"pid": oliver}),
         (routes.face_photo, {"pid": oliver}),
@@ -799,7 +809,7 @@ async def test_face_routes_refuse_without_the_consoles_proof(routes, monkeypatch
 
 async def test_face_routes_work_with_the_proof(routes):
     oliver = face_gate.people()[0]["id"]
-    body = json.loads((await routes.face_people(_Req())).body)
+    body = json.loads((await routes.face_people(_Req(secret="s3cret"))).body)
     assert body["people"] == [face_gate.public(face_gate.person(oliver))]
     assert body["unknown_seen"]["count"] >= 0 and body["models"] in (True, False)
     assert "features" not in json.dumps(body)
@@ -885,7 +895,213 @@ async def test_safety_status_carries_the_face_settings(routes):
     face_gate.update_settings({"greet_unknown": True})
     body = json.loads((await routes.safety_status(None)).body)
     assert body["face_greet"]["settings"]["greet_unknown"] is True
-    assert "last_greeted_name" in body["face_greet"]
+    assert "last_greeted_name" not in body["face_greet"]  # open route: no names
+
+
+async def test_deleting_someone_clears_what_face_seen_says(routes, scene):
+    ana = face_gate.add_person("Ana", "operator", np.stack([ANA]))["id"]
+    _face(scene, 10, ANA)
+    for forget in (lambda: face_gate.delete_person(ana), face_gate.delete_all):
+        await face_gate.live_check(background=True)
+        assert json.loads((await routes.face_seen(_Req())).body)["faces"]
+        forget()
+        assert json.loads((await routes.face_seen(_Req())).body)["faces"] == []
+        ana = face_gate.add_person("Ana", "operator", np.stack([ANA]))["id"]
+
+
+# -- review fixes, 2026-11-11 -----------------------------------------------------------
+
+
+async def test_no_switch_enrollment_or_greeter_tick_is_the_first_to_import_cv2(
+    routes, scene, monkeypatch
+):
+    """A cold `import cv2` holds the GIL for seconds: main() preloads it on any robot with
+    the models, and without them nothing imports it, so a PARAR never waits on one."""
+    from structlog.testing import capture_logs
+
+    monkeypatch.setattr(face_gate, "models", REAL_MODELS)
+    monkeypatch.setattr(face_gate, "_models", None)
+    monkeypatch.setattr(face_gate, "warm", REAL_WARM)
+    monkeypatch.setattr(face_gate, "frame", REAL_FRAME)
+    monkeypatch.setitem(sys.modules, "cv2", None)  # any `import cv2` now raises
+    _face(scene, 10, OPERATOR)
+    with capture_logs() as logs:
+        assert (await routes.face_settings(_Req({"gate": True}, "s3cret"))).status_code == 200
+        await asyncio.get_running_loop().run_in_executor(face_gate._pool, lambda: None)
+    (warmed,) = [e for e in logs if e["event"] == "face_gate.models_unavailable"]
+    assert "install_face_models" in warmed["error"]
+    resp = await routes.face_enroll(_Req({"name": "Ana", "role": "operator"}, "s3cret"))
+    assert "install_face_models" in json.loads(resp.body)["reason"]
+    code, detail = await face_gate.live_check(background=True)  # the greeter's tick
+    assert code == face_gate.UNAVAILABLE and "install_face_models" in detail
+
+    warmed_at_boot = []
+    monkeypatch.setattr(face_gate, "warm", lambda: warmed_at_boot.append(True))
+    monkeypatch.setattr(face_gate, "models_installed", lambda: True)
+    face_gate.update_settings({"gate": False, "greet": False, "greet_unknown": False})
+    monkeypatch.setattr(routes, "SIM_MODE", "stub")
+    routes._warm_face()
+    assert warmed_at_boot == []
+    monkeypatch.setattr(routes, "SIM_MODE", "real")
+    routes._warm_face()  # every switch off: still loaded before serving
+    assert warmed_at_boot == [True]
+
+
+def test_an_untrustworthy_settings_file_keeps_the_gate_on(scene, monkeypatch):
+    from structlog.testing import capture_logs
+
+    monkeypatch.setattr(face_gate, "_stored", None)
+    monkeypatch.setattr(face_gate, "GATED", frozenset())
+    face_gate.update_settings({"gate": True})
+    os.chmod(face_gate.FACE_DIR, 0o755)  # e.g. a `chmod -R a+rX ~/.c3po`, or a restore
+    monkeypatch.setattr(face_gate, "_stored", None)  # a restart
+    with capture_logs() as logs:
+        assert face_gate.settings()["gate"] is True
+    assert face_gate.gated("set_hand", T2)
+    assert [e["gate"] for e in logs if e["event"] == "face_gate.settings_untrusted"] == ["on"]
+    face_gate.update_settings({"gate": False})  # the console rewrites it, owner-only again
+    monkeypatch.setattr(face_gate, "_stored", None)
+    assert face_gate.settings()["gate"] is False
+    assert stat.S_IMODE(face_gate.FACE_DIR.stat().st_mode) == 0o700
+
+
+def test_boot_says_when_settings_json_overrides_the_environments_gate(scene, monkeypatch):
+    from structlog.testing import capture_logs
+
+    from bridge import mcp_server
+
+    monkeypatch.setattr(face_gate, "_stored", None)
+    monkeypatch.setattr(face_gate, "warm", lambda: None)
+    face_gate.update_settings({"gate": False})
+    with capture_logs() as logs:
+        mcp_server._warm_face()
+    (said,) = [e for e in logs if e["event"] == "face_gate.env_overridden"]
+    assert said["env"] == ["get_state", "pick"] and "overrides" in said["note"]
+    face_gate.update_settings({"gate": True})
+    with capture_logs() as logs:
+        mcp_server._warm_face()
+    assert not [e for e in logs if e["event"] == "face_gate.env_overridden"]
+
+
+async def test_enrolling_a_name_that_exists_is_refused_unless_replace(routes, scene):
+    ana = face_gate.add_person("Ana", "operator", np.stack([ANA]))
+    _face(scene, 10, OPERATOR)
+    resp = await routes.face_enroll(_Req({"name": "ana", "role": "superadmin"}, "s3cret"))
+    assert resp.status_code == 409 and json.loads(resp.body)["code"] == "exists"
+    assert face_gate.public(face_gate.person(ana["id"])) == ana | {"has_photo": False}
+    for replace in ("yes", 1):  # only a literal true replaces
+        body = {"name": "ana", "role": "superadmin", "replace": replace}
+        assert (await routes.face_enroll(_Req(body, "s3cret"))).status_code == 409
+    body = {"name": "ana", "role": "superadmin", "replace": True}
+    resp = await routes.face_enroll(_Req(body, "s3cret"))
+    assert resp.status_code == 200 and json.loads(resp.body)["id"] == ana["id"]
+    assert face_gate.person(ana["id"])["role"] == "superadmin"
+
+
+async def test_every_enroll_refusal_carries_a_code(routes, scene, monkeypatch):
+    resp = await routes.face_enroll(_Req({"name": "Ana"}, "s3cret"))
+    assert (resp.status_code, json.loads(resp.body)["code"]) == (400, "invalid")
+    resp = await routes.face_enroll(_Req({"name": " ", "role": "operator"}, "s3cret"))
+    assert (resp.status_code, json.loads(resp.body)["code"]) == (400, "invalid")
+    async with routes._enrolling:
+        resp = await routes.face_enroll(_Req({"name": "Ana", "role": "operator"}, "s3cret"))
+    assert (resp.status_code, json.loads(resp.body)["code"]) == (409, "busy")
+
+
+async def test_enrollment_migrates_first_and_migration_never_replaces_a_newer_person(
+    routes, scene, monkeypatch
+):
+    face_gate.save_name("Oliver")  # the old layout, not migrated yet
+    resp = await routes.face_enroll(_Req({"name": "Oliver", "role": "operator"}, "s3cret"))
+    assert json.loads(resp.body)["code"] == "exists"  # migrated, then found
+    (oliver,) = face_gate.people_listing()
+    assert oliver["role"] == "superadmin" and not face_gate.enrollment_path().exists()
+
+    # The old layout back next to a newer Oliver (a restore, a robot enrolled both ways).
+    face_gate.save_enrollment(np.stack([STRANGER]))
+    face_gate.save_name("oliver")
+    newer = face_gate.person(oliver["id"])["features"].copy()
+    tries = []
+    real_add = face_gate.add_person
+    monkeypatch.setattr(face_gate, "add_person", lambda *a, **k: tries.append(a) or real_add(*a, **k))
+    for _ in range(3):
+        found = face_gate.people()
+    assert np.array_equal(face_gate.person(oliver["id"])["features"], newer)
+    assert tries == [] and face_gate.enrollment_path().exists()
+    assert sorted(p["id"] for p in found) == sorted([oliver["id"], face_gate.LEGACY_ID])
+
+    # The leftover is deletable by its id, like anyone else.
+    assert (await routes.face_delete(_Req(secret="s3cret", pid="operator"))).status_code == 200
+    assert not face_gate.enrollment_path().exists() and not face_gate.name_path().exists()
+    assert [p["id"] for p in face_gate.people()] == [oliver["id"]]
+    assert (await routes.face_delete(_Req(secret="s3cret", pid="operator"))).status_code == 404
+
+
+def test_a_migration_that_fails_is_tried_once_not_every_second(scene, monkeypatch):
+    tries = []
+
+    def broken(*a, **_k):
+        tries.append(a)
+        raise OSError("read-only")
+
+    monkeypatch.setattr(face_gate, "add_person", broken)
+    for _ in range(5):
+        assert [p["id"] for p in face_gate.people()] == [face_gate.LEGACY_ID]
+    assert len(tries) == 1
+
+
+def test_a_temp_file_left_by_a_power_cut_does_not_break_the_switches(scene, monkeypatch):
+    monkeypatch.setattr(face_gate, "_stored", None)
+    face_gate.update_settings({"gate": True})
+    tmp = face_gate.FACE_DIR / ".settings.json.tmp"
+    tmp.write_bytes(b'{"gate": fa')  # the write a power cut stopped
+    assert face_gate.update_settings({"gate": False})["gate"] is False
+    assert not tmp.exists()
+    tmp.write_bytes(b"")
+    face_gate.delete_all()
+    assert not tmp.exists()
+
+
+def test_a_failed_enrollment_leaves_no_biometrics_behind(scene, monkeypatch):
+    real_save = face_gate._save_owner_only
+
+    def disk_full(path, data):
+        if path.name == "person.json":
+            raise OSError("no space left on device")
+        return real_save(path, data)
+
+    monkeypatch.setattr(face_gate, "_save_owner_only", disk_full)
+    before = set(os.listdir(face_gate.people_dir())) if face_gate.people_dir().exists() else set()
+    with pytest.raises(OSError):
+        face_gate.add_person("Ana", "operator", np.stack([ANA]), b"\xff\xd8jpeg")
+    assert set(os.listdir(face_gate.people_dir())) == before
+
+
+async def test_an_enrollment_ends_within_its_deadline_and_stores_nothing(
+    routes, scene, monkeypatch
+):
+    _face(scene, 10, ANA)
+    monkeypatch.setattr(face_gate, "ENROLL_DEADLINE_S", 0.0)  # a camera this slow
+    resp = await routes.face_enroll(_Req({"name": "Ana", "role": "operator"}, "s3cret"))
+    assert (resp.status_code, json.loads(resp.body)["code"]) == (422, "no_live_face")
+    assert [p["name"] for p in face_gate.people()] == ["Oliver"]
+    assert face_gate.ENROLL_DEADLINE_S < 30  # apps/back's relay timeout
+
+
+def test_two_settings_changes_at_once_keep_both(scene, monkeypatch):
+    monkeypatch.setattr(face_gate, "_stored", None)
+    real_save = face_gate._save_owner_only
+
+    def slow_save(path, data):
+        time.sleep(0.1)  # both have read before either writes, without the lock
+        return real_save(path, data)
+
+    monkeypatch.setattr(face_gate, "_save_owner_only", slow_save)
+    with ThreadPoolExecutor(2) as pool:
+        list(pool.map(face_gate.update_settings, [{"greet": True}, {"greet_unknown": True}]))
+    monkeypatch.setattr(face_gate, "_stored", None)
+    s = face_gate.settings()
+    assert s["greet"] is True and s["greet_unknown"] is True
 
 
 # -- the real models, when installed ------------------------------------------

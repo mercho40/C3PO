@@ -40,7 +40,6 @@ TICK_S = 1.0
 _running = False
 #: Person id -> when they were last greeted (monotonic).
 _last_at: dict[str, float] = {}
-_last_name: str | None = None
 _last_greeted_at: float | None = None
 #: Strangers: visits seen (live, matching nobody), and the last greeting's time. Nothing else.
 _unknown_count = 0
@@ -74,7 +73,7 @@ def _past(at: float | None, cooldown_s: float) -> bool:
 
 async def run(speak: Callable[[str], Awaitable[Any]], tick_s: float = TICK_S) -> None:
     """The greeter loop, for as long as it is not cancelled. Idles while both settings are off."""
-    global _running, _last_name, _last_greeted_at, _unknown_count, _unknown_seen_at
+    global _running, _last_greeted_at, _unknown_count, _unknown_seen_at
     global _unknown_greeted_at
     _running, prev, visit, visit_greeted = True, None, False, False
     log.info("face_greet.on", cooldown_s=COOLDOWN_S, unknown_cooldown_s=UNKNOWN_COOLDOWN_S)
@@ -115,7 +114,6 @@ async def run(speak: Callable[[str], Awaitable[Any]], tick_s: float = TICK_S) ->
                 name = p["name"] if p else face_gate.enrolled_name()
                 await speak(greeting(name))
                 _last_at[who] = _last_greeted_at = time.monotonic()
-                _last_name = name
                 log.info("face_greet.greeted", person=who)
             except Exception:
                 log.exception("face_greet.tick_failed")
@@ -145,11 +143,10 @@ def unknown_seen() -> dict[str, Any]:
 
 
 def status() -> dict[str, Any]:
-    """For /safety/status. No biometrics: a name, ages and the settings."""
+    """For /safety/status, which is open: no names, no biometrics; ages and the settings."""
     return {
         "on": _running,
         "settings": face_gate.settings(),
-        "last_greeted_name": _last_name,
         "last_greeted_age_s": _age(_last_greeted_at),
         "unknown_seen": unknown_seen(),
     }
