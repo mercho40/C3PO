@@ -54,4 +54,4 @@ if [ -x "$PY" ]; then
 fi
 
 say "OK — models in $DEST"
-say "next: enroll the operator with scripts/face_enroll.py, then set C3PO_FACE_GATE"
+say "next: enroll people from the console (Caras) or scripts/face_enroll.py --name NAME, then turn the switches on in Caras (they override C3PO_FACE_GATE)"

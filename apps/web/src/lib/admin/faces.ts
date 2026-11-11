@@ -60,7 +60,7 @@ const STATUS_TEXT: Record<number, string> = {
  */
 const REASON_TEXT: Record<string, string> = {
   no_live_face:
-    "No se vio una sola cara viva en cada imagen (¿otra persona en cuadro, una foto, demasiado lejos?). Probá de nuevo a 0,5–1 m.",
+    "No se vio una sola cara viva en cada imagen (¿otra persona en cuadro, una foto, demasiado lejos?). Probá de nuevo agachándote: la cara a la altura del pecho del robot, a 0,5–0,8 m.",
   not_same_person:
     "Las imágenes no eran todas de la misma persona: que quede una sola frente a la cámara.",
   camera_unavailable:
@@ -110,7 +110,7 @@ export function enrollCard(
   danger: boolean;
 } {
   const look =
-    "Al confirmar, el robot mira por la cámara de la cabeza durante 5–10 s: la persona tiene que estar parada a 0,5–1 m, sin el casco.";
+    "Al confirmar, el robot mira por la cámara de la cabeza durante 5–10 s: la persona se agacha con la cara a la altura del pecho del robot, a 0,5–0,8 m, sin el casco (la cámara mira hacia abajo).";
   const existing = people.find((p) => sameName(p.name, name));
   if (existing)
     return {

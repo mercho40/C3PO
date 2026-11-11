@@ -271,7 +271,8 @@
       >
         <h2 id="faces-enroll-heading" class="eyebrow">Agregar persona</h2>
         <p class="text-sm leading-relaxed text-ink-mute">
-          Pararse a 0,5–1 m frente a la cámara de la cabeza, sin el casco.
+          Agacharse frente al robot con la cara a la altura de su pecho, a
+          0,5–0,8 m, sin el casco: la cámara de la cabeza mira hacia abajo.
         </p>
         <form class="flex flex-wrap items-end gap-2" onsubmit={askEnroll}>
           <div class="flex min-w-0 flex-1 basis-40 flex-col gap-1.5">
