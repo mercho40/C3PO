@@ -507,11 +507,12 @@ def clear_confirmations(reason: str) -> None:
         log.warning("safety.confirmations_cleared", count=n, reason=reason)
 
 
-def _consume_confirmation(tool: str, args_key: str | None) -> bool:
+def _consume_confirmation(tool: str, args_key: str | None, *, spend: bool = True) -> bool:
     if args_key is None:
         return False
     with _lock:
-        expires = _grants.pop(_grant_key(tool, args_key), None)
+        key = _grant_key(tool, args_key)
+        expires = _grants.pop(key, None) if spend else _grants.get(key)
     return expires is not None and time.monotonic() < expires
 
 
@@ -527,19 +528,23 @@ def confirm_secret_ok(presented: str | None) -> bool:
 STOP_STANDING_ALLOWED = frozenset({"damp"})
 
 
-def tool_refusal(name: str, meta: dict[str, Any] | None, args_key: str | None = None) -> str | None:
+def tool_refusal(
+    name: str, meta: dict[str, Any] | None, args_key: str | None = None, *, spend: bool = True
+) -> str | None:
     """Why this MCP call must not run, or None. Runs before every tool call.
 
     `args_key` is the call's canonical arguments; None never matches a grant.
+    `spend=False` lets a matching grant through without spending it, for a check that
+    still follows (the face gate); that caller then calls again with `spend=True`.
     """
-    refusal = _refusal(name, meta, args_key)
+    refusal = _refusal(name, meta, args_key, spend)
     if refusal is not None and needs_confirmation(meta):
         # A pre-grant for a call refused anyway (PARAR, battery, person) must not sit armed.
         _consume_confirmation(name, args_key)
     return refusal
 
 
-def _refusal(name: str, meta: dict[str, Any] | None, args_key: str | None) -> str | None:
+def _refusal(name: str, meta: dict[str, Any] | None, args_key: str | None, spend: bool) -> str | None:
     from bridge import estop
 
     tier = ((meta or {}).get("c3po") or {}).get("tier")
@@ -585,7 +590,7 @@ def _refusal(name: str, meta: dict[str, Any] | None, args_key: str | None) -> st
     if not T2_CONFIRM:
         log.warning("safety.t2_unconfirmed_allowed", tool=name, reason="SAFETY_T2_CONFIRM=off")
         return None
-    if _consume_confirmation(name, args_key):
+    if _consume_confirmation(name, args_key, spend=spend):
         return None
     log.warning("safety.t2_refused", tool=name, reason="no_confirmation")
     kind = "a T2 tool" if tier == "T2" else "a high-danger tool"

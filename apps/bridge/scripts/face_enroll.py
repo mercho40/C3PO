@@ -3,9 +3,10 @@
     .venv/bin/python scripts/face_enroll.py            # look at the head camera, within 1.5 m
     .venv/bin/python scripts/face_enroll.py --delete   # forget the operator
 
-Needs the vision container serving /frame.jpg and /depth_box (it holds the camera) and the
-models from scripts/install_face_models.sh. Every frame must hold exactly one face, and it
-must pass the same liveness check the gate uses. Only the SFace feature vectors are
+Needs the vision container serving /frame.jpg and /depth_points (it holds the camera) and
+the models from scripts/install_face_models.sh. Every frame must hold exactly one face, it
+must pass the same liveness check the gate uses, and all frames must be the same person.
+Only the SFace feature vectors are
 written, to ~/.c3po/face/operator.npy (0600); no image is kept, nothing leaves the robot,
 and nothing about the face is printed or logged. Re-running replaces the operator.
 """
@@ -37,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     path = face_gate.enrollment_path()
 
     if args.delete:
+        # The temp file too: an interrupted enrollment leaves one, and saving refuses it.
+        face_gate.temp_path().unlink(missing_ok=True)
         try:
             path.unlink()
         except FileNotFoundError:
@@ -77,8 +80,24 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"enrolled: {face_gate.save_enrollment(features)}")
+    if not same_person(features):
+        print("not enrolled: the frames do not all show the same person", file=sys.stderr)
+        return 1
+    try:
+        print(f"enrolled: {face_gate.save_enrollment(features)}")
+    except face_gate.Unavailable as exc:
+        print(f"not enrolled: {exc}", file=sys.stderr)
+        return 1
     return 0
+
+
+def same_person(features: list[object]) -> bool:
+    """Every pair of frames matches at the gate's own threshold: no second face slipped in."""
+    import numpy as np
+
+    f = np.asarray(features, dtype=np.float64)
+    f = f / np.linalg.norm(f, axis=1, keepdims=True)
+    return bool(((f @ f.T) >= face_gate.MATCH_COSINE).all())  # `>=`: a NaN is no match
 
 
 if __name__ == "__main__":

@@ -1265,7 +1265,7 @@ def run() -> int:
             if video is not None:
                 video.offer(
                     stream_mod.test_pattern(COLOR_W, COLOR_H, ticks) if fake else color,
-                    depth=depth, fx=intrinsics.fx, depth_scale=source.depth_scale,
+                    depth=depth, intrinsics=intrinsics, depth_scale=source.depth_scale,
                 )
             objects, omitted, unranged = ground_all(
                 detections, depth, intrinsics, extrinsic, labels, source.depth_scale,

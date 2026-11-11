@@ -3,7 +3,7 @@
     GET /stream.mjpg   multipart/x-mixed-replace   what an <img> renders
     GET /frame.jpg     one JPEG                    for a poll or a screenshot
     GET /status        JSON                        how old the last frame is
-    GET /depth_box     JSON                        depth inside a box of a /frame.jpg
+    GET /depth_points  JSON                        depth at points of a /frame.jpg
 
 This exists because `detector.py` already owns the RealSense and `/dev/videoN`
 is single-owner: whoever wants to show the operator a picture has to be the
@@ -60,13 +60,14 @@ numpy are therefore imported inside the encoder, never at module scope.
 from __future__ import annotations
 
 import json
+import math
 import socket
 import sys
 import threading
 import time
 import urllib.parse
 from collections import deque, namedtuple
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # The multipart boundary. Arbitrary, but it must not appear in JPEG payloads —
 # it does not, since every part carries an explicit Content-Length and the
@@ -124,13 +125,13 @@ _WAKE_S = 0.25
 # browser — can be exercised on a machine with no camera and no numpy.
 RawFrame = namedtuple("RawFrame", ["width", "height", "rgb"])
 
-#: Depth frames kept, newest last, so /depth_box can answer for the frame a client
+#: Depth frames kept, newest last, so /depth_points can answer for the frame a client
 #: fetched from /frame.jpg after a newer one arrived (5 Hz: ~0.8 s of history).
 DEPTH_KEEP = 4
 
-#: At most this many depth pixels are read per side of a box: a 200 px face box is
-#: read every 4th pixel, ~2.5k values, which pure Python sorts in about a millisecond.
-DEPTH_BOX_SAMPLES = 50
+#: /depth_points bounds: a face's five landmarks, patches up to 21x21 depth pixels.
+MAX_POINTS = 8
+MAX_RADIUS = 10
 
 
 def _log(event: str, **fields: Any) -> None:
@@ -145,28 +146,29 @@ def _log(event: str, **fields: Any) -> None:
     sys.stderr.flush()
 
 
-def depth_box_stats(depth: Any, box: Tuple[int, int, int, int], depth_scale: float) -> Dict[str, Any]:
-    """Median depth, relief (p90 - p10) and valid share inside `box` of a depth frame.
+def depth_at_points(
+    depth: Any, points: List[Tuple[int, int]], radius: int, depth_scale: float
+) -> List[Optional[float]]:
+    """Median depth (m) of the (2r+1)^2 patch around each (u, v) pixel of a depth frame.
 
-    `depth` is rows of raw units (numpy HxW or a list of lists), 0 = no reading;
-    `box` is (x0, y0, x1, y1) in its pixels. Pure Python so the laptop suite runs it.
-    Raises ValueError on a box with no pixels inside the frame.
+    `depth` is rows of raw units (numpy HxW or a list of lists), 0 = no reading. A
+    point off the frame, or whose patch is less than half valid, is None: a hole is
+    never a distance. Pure Python so the laptop suite runs it.
     """
     height, width = len(depth), len(depth[0])
-    x0, x1 = max(0, box[0]), min(width, box[2])
-    y0, y1 = max(0, box[1]), min(height, box[3])
-    if x1 <= x0 or y1 <= y0:
-        raise ValueError("box is empty or outside the frame")
-    step = max(1, max(x1 - x0, y1 - y0) // DEPTH_BOX_SAMPLES)
-    raw = [int(v) for row in depth[y0:y1:step] for v in row[x0:x1:step]]
-    valid = sorted(v for v in raw if v > 0)
-    out = {"valid_frac": round(len(valid) / len(raw), 3), "median_m": None, "relief_m": None}
-    if valid:
-        def q(p: float) -> float:
-            return valid[min(len(valid) - 1, int(p * len(valid)))] * depth_scale
-
-        out["median_m"] = round(q(0.5), 4)
-        out["relief_m"] = round(q(0.9) - q(0.1), 4)
+    out = []  # type: List[Optional[float]]
+    for u, v in points:
+        if not (0 <= u < width and 0 <= v < height):
+            out.append(None)
+            continue
+        valid = sorted(
+            int(d)
+            for row in depth[max(0, v - radius) : v + radius + 1]
+            for d in row[max(0, u - radius) : u + radius + 1]
+            if d > 0
+        )
+        enough = 2 * len(valid) >= (2 * radius + 1) ** 2
+        out.append(round(valid[len(valid) // 2] * depth_scale, 4) if enough else None)
     return out
 
 
@@ -230,7 +232,7 @@ class _Latest:
         self._jpeg = b""
         self._dims = (0, 0)
         self._encoded_dims = (0, 0)
-        # (stamp, depth, fx, depth_scale), sharing the stamp of the colour frame offered with it.
+        # (stamp, depth, intrinsics, depth_scale), sharing the stamp of the colour frame offered with it.
         self._depths = deque(maxlen=DEPTH_KEEP)  # type: Any
         self.offered = 0
         self.clients = 0
@@ -241,9 +243,10 @@ class _Latest:
         frame: Any,
         stamp: float,
         depth: Any = None,
-        fx: Optional[float] = None,
+        intrinsics: Any = None,
         depth_scale: float = 0.001,
     ) -> None:
+        """`intrinsics` has the colour stream's fx, fy, cx, cy (grounding.Intrinsics)."""
         if isinstance(frame, RawFrame):
             copied, dims = frame, (frame.width, frame.height)
         else:
@@ -256,9 +259,9 @@ class _Latest:
             # Recorded here, not at encode time: `/status` has to be able to say
             # what the camera is producing before anyone has asked for a JPEG.
             self._dims = dims
-            if depth is not None and fx:
+            if depth is not None and intrinsics is not None:
                 # A copy for the same reason as the colour frame.
-                self._depths.append((stamp, depth.copy(), float(fx), depth_scale))
+                self._depths.append((stamp, depth.copy(), intrinsics, depth_scale))
             self.offered += 1
             self._cv.notify_all()
 
@@ -271,7 +274,7 @@ class _Latest:
         with self._cv:
             return self._seq, self._frame, self._stamp
 
-    def depth_at(self, stamp: Optional[float]) -> Optional[Tuple[float, Any, float, float]]:
+    def depth_at(self, stamp: Optional[float]) -> Optional[Tuple[float, Any, Any, float]]:
         """The depth offered with the colour frame of this stamp (None: the newest), or None."""
         with self._cv:
             for entry in reversed(self._depths):
@@ -386,8 +389,8 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                 return self._status()
             if path == "/frame.jpg":
                 return self._frame()
-            if path == "/depth_box":
-                return self._depth_box()
+            if path == "/depth_points":
+                return self._depth_points()
             if path == "/transcribe/status":
                 return self._transcribe_status()
             if path in ("/stream.mjpg", "/"):
@@ -470,30 +473,43 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                 self.end_headers()
             self.wfile.write(body)
 
-        def _depth_box(self) -> None:
-            """GET /depth_box?x0=&y0=&x1=&y1=[&stamp=] — the bridge's face-liveness check.
+        def _depth_points(self) -> None:
+            """GET /depth_points?pts=x,y;x,y[&r=3][&stamp=] — the bridge's face-liveness check.
 
-            The box is in /frame.jpg's pixels (so C3PO_VISION_STREAM_SCALE is undone
-            here) and `fx` is returned in them too. `stamp` is /frame.jpg's
+            Points and the patch radius `r` are in /frame.jpg's pixels (so
+            C3PO_VISION_STREAM_SCALE is undone here), and fx, fy, cx, cy come back in
+            them too, so the client can deproject. `stamp` is /frame.jpg's
             X-Frame-Stamp: the answer is for THAT frame's depth or a 503, never
-            another moment's.
+            another moment's. `depth_m` has one median per point, None for a hole.
             """
             query = urllib.parse.parse_qs(self.path.partition("?")[2])
             try:
-                x0, y0, x1, y1 = (float(query[k][0]) for k in ("x0", "y0", "x1", "y1"))
+                pts = [tuple(float(c) for c in p.split(",")) for p in query["pts"][0].split(";")]
+                radius = float(query.get("r", ["3"])[0])
                 stamp = float(query["stamp"][0]) if "stamp" in query else None
+                numbers = [c for p in pts for c in p] + [radius] + ([] if stamp is None else [stamp])
+                if not 0 < len(pts) <= MAX_POINTS or any(len(p) != 2 for p in pts):
+                    raise ValueError("pts")
+                # round() on nan or inf raises past this handler: refuse them here.
+                if not all(math.isfinite(n) for n in numbers) or not 0 <= radius <= MAX_RADIUS:
+                    raise ValueError("not finite or out of range")
+                pixels = [(round(x / scale), round(y / scale)) for x, y in pts]
+                patch = round(radius / scale)
             except (KeyError, ValueError):
-                return self._json(400, {"error": "need numeric x0, y0, x1, y1 (and optional stamp)"})
+                return self._json(400, {"error": "need pts=x,y;x,y (finite), optional r and stamp"})
             entry = latest.depth_at(stamp)
             if entry is None:
                 return self._json(503, {"error": "no depth for that frame"})
-            at, depth, fx, depth_scale = entry
-            box = (round(x0 / scale), round(y0 / scale), round(x1 / scale), round(y1 / scale))
-            try:
-                stats = depth_box_stats(depth, box, depth_scale)
-            except ValueError as exc:
-                return self._json(400, {"error": str(exc)})
-            self._json(200, {"v": 1, "stamp": at, "fx": fx * scale, **stats})
+            at, depth, intr, depth_scale = entry
+            self._json(200, {
+                "v": 1,
+                "stamp": at,
+                "fx": intr.fx * scale,
+                "fy": intr.fy * scale,
+                "cx": intr.cx * scale,
+                "cy": intr.cy * scale,
+                "depth_m": depth_at_points(depth, pixels, patch, depth_scale),
+            })
 
         def _frame(self) -> None:
             seq, frame, stamp = latest.snapshot()
@@ -503,7 +519,7 @@ def _handler_class(latest: _Latest, quality: int, scale: float) -> Any:
                 self.send_error(503, "no frame yet")
                 return
             data = latest.jpeg(seq, frame, quality, scale)
-            # The key /depth_box takes, so a client can ask for this frame's depth.
+            # The key /depth_points takes, so a client can ask for this frame's depth.
             self._headers(
                 "image/jpeg", {"Content-Length": str(len(data)), "X-Frame-Stamp": repr(stamp)}
             )
@@ -651,7 +667,7 @@ class FrameStream:
         frame: Any,
         stamp: Optional[float] = None,
         depth: Any = None,
-        fx: Optional[float] = None,
+        intrinsics: Any = None,
         depth_scale: float = 0.001,
     ) -> None:
         """Hand over a colour frame from a tick that SUCCEEDED, and its aligned depth. Never raises."""
@@ -662,7 +678,7 @@ class FrameStream:
             return
         self._next_at = now + self._min_interval
         try:
-            self._latest.offer(frame, now, depth, fx, depth_scale)
+            self._latest.offer(frame, now, depth, intrinsics, depth_scale)
         except Exception as exc:  # noqa: BLE001 — a video bug must not stop the detector
             _log("offer.failed", error=repr(exc))
 

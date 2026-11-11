@@ -2,19 +2,34 @@
 
 AN EXTRA GATE, NEVER A REPLACEMENT. `mcp_server.GovernedMCP.call_tool` runs it only after
 `safety.tool_refusal` let the call through (PARAR, battery, person rule, the operator's
-one-shot confirmation), and that method is what both transports dispatch through, so
-apps/back's /invoke, its agent and Claude Code all meet it. Off unless `C3PO_FACE_GATE`
-names skills; the stop and release skills are never gated, whatever it says.
+one-shot confirmation, checked but not yet spent), then runs that again to spend the
+grant, so a face refusal leaves the confirmation for one retry within its TTL. That method
+is what both transports dispatch through, so apps/back's /invoke, its agent and Claude
+Code all meet it. Direct Python calls between tools skip it, which is why the `confirm`
+class is the setting to use: no tool calls a confirmation-tier tool in Python.
+
+`C3PO_FACE_GATE` is a comma list of tool names and the class token `confirm` (every tool
+`safety.needs_confirmation` holds for: T2, and high-danger T1). Empty = off. The stop and
+release skills are never gated, whatever it says. A name that is no tool of this bridge
+makes main() refuse to start (`check_config`): a misspelling must not leave a skill
+unguarded while the operator thinks it is guarded.
 
 FAILS CLOSED. No enrollment, no models, no vision container, a stale frame, depth from
-another moment, any exception, or no answer within TIMEOUT_S: refused. The work runs in a
-thread, so a gated check never holds the event loop a stop is dispatched on.
+another moment, any exception, another check still running, or no answer within
+TIMEOUT_S: refused. The work runs on this module's own one-thread executor, so a wedged
+check holds neither the event loop a stop is dispatched on nor the default executor.
 
 LIVENESS FROM DEPTH. The vision container's depth is aligned to the colour frame the face
-is found in, and `GET /depth_box` answers for that frame's stamp only. A live face is
-FACE_WIDTH_M wide at its measured depth (a face on a phone is a few cm) and has relief
-(paper is flat), within MAX_M. That stops a phone and a flat print; a mask or a curved
-life-size print is beyond it. It sits on top of a login, not instead of one.
+is found in, and `GET /depth_points` answers for that frame's stamp only. At YuNet's five
+landmarks it gives a patch median each, deprojected to 3-D: the nose must stand at least
+MIN_NOSE_M in front of the plane through the eyes and mouth corners, whatever that
+plane's tilt, and the face must be FACE_WIDTH_M wide at that depth (a face on a phone is
+a few cm), within MAX_M. That stops a phone, a screen and a print held flat or tilted;
+a mask, or a print bent sharply around the nose, is beyond it. It sits on top of a login,
+not instead of one.
+
+THE HEADSET. A Quest operator cannot pass it while wearing the headset: the headset hides
+the face. The operator stands at the robot, faces the head camera, then retries.
 
 PRIVACY. Only SFace feature vectors are stored, at FACE_DIR/operator.npy (0600, directory
 0700), written by scripts/face_enroll.py on the robot. No image is kept, nothing leaves the
@@ -26,15 +41,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import stat
 import threading
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from bridge import safety
 from bridge.safety import _env_float
 
 log = structlog.get_logger(__name__)
@@ -60,6 +79,10 @@ NOT_ENROLLED = "operator_face_not_enrolled"
 UNAVAILABLE = "operator_face_check_unavailable"
 
 
+#: The class token: every tool that needs the operator's confirmation.
+CONFIRM = "confirm"
+
+
 def _parse(raw: str) -> frozenset[str]:
     names = {n.strip() for n in raw.split(",") if n.strip()}
     if names & NEVER_GATED:
@@ -80,9 +103,11 @@ MATCH_COSINE = 0.363
 DETECT_SCORE = 0.9
 #: Physical face width, from the box's pixels and its depth. A phone shows a few cm.
 FACE_WIDTH_M = (0.11, 0.20)
-#: p90 - p10 of depth over the inner face. Paper is flat; a nose is not.
-MIN_RELIEF_M = 0.01
-MIN_VALID_FRAC = 0.5
+#: How far the nose tip stands in front of the eyes-and-mouth-corners plane, at least.
+#: A real one is ~2-3 cm; a print, tilted or not, is 0 plus noise.
+MIN_NOSE_M = 0.015
+#: Patch radius, /frame.jpg pixels, of each landmark's depth median.
+PATCH_R = 3
 #: Same window as the vision container's own `live` flag (stream.STALE_AFTER_S).
 FRAME_STALE_S = 1.0
 TIMEOUT_S = 1.5
@@ -90,15 +115,30 @@ HTTP_TIMEOUT_S = 1.0
 #: Largest faces looked at per check, so a crowd cannot stretch it past TIMEOUT_S.
 MAX_FACES = 3
 
+_AT_ROBOT = (
+    "The operator must stand at the robot (not in the headset, which hides the face) and "
+    "face its head camera within {max_m} m; when they say they are there, retry once with "
+    "the same arguments (a confirmation lasts {ttl} s, after that they confirm again)."
+)
+#: The whole refusal is fixed text: measurements stay in the bridge log, never in a reply.
 _HINTS = {
-    NOT_SEEN: "Ask the operator to face the head camera, within {max_m} m, and retry once.",
-    NOT_LIVE: "Ask the operator to face the camera in person (no photo, no screen), within {max_m} m.",
-    NOT_ENROLLED: "The operator enrolls on the robot with apps/bridge/scripts/face_enroll.py; tell them.",
-    UNAVAILABLE: "Tell the operator the face check could not run; do not retry in a loop.",
+    NOT_SEEN: "The enrolled operator's face is not in front of the head camera. " + _AT_ROBOT,
+    NOT_LIVE: "A face matched the operator but did not pass the liveness check (a photo, "
+    "a screen, or too far?). " + _AT_ROBOT,
+    NOT_ENROLLED: "No operator is enrolled on this robot: they enroll on the robot with "
+    "apps/bridge/scripts/face_enroll.py; tell them.",
+    UNAVAILABLE: "The face check could not run (the bridge log says why). Tell the operator; "
+    "do not retry in a loop.",
 }
 
 _lock = threading.RLock()
 _models: tuple[Any, Any] | None = None
+#: Held from submit to the end of a check, so a wedged check refuses the next at once
+#: instead of queueing it. A plain Lock: the worker releases what the loop acquired.
+_busy = threading.Lock()
+#: Not asyncio's default executor: a check wedged on the vision container must not
+#: take the workers asyncio.to_thread hands damp and the rest.
+_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face_gate")
 
 
 class Unavailable(Exception):
@@ -109,37 +149,66 @@ def enrollment_path() -> Path:
     return FACE_DIR / "operator.npy"
 
 
+def temp_path() -> Path:
+    return FACE_DIR / ".operator.npy.tmp"
+
+
 def save_enrollment(features: Any) -> Path:
     """Write the operator's feature vectors, owner-only, atomically. Never images."""
     import numpy as np
 
     FACE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(FACE_DIR, 0o700)
-    path, tmp = enrollment_path(), FACE_DIR / ".operator.npy.tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    path, tmp = enrollment_path(), temp_path()
+    try:
+        # EXCL + NOFOLLOW: never write through a file or link someone left there.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        raise Unavailable(f"{tmp} is left from an interrupted run: run with --delete") from None
     with os.fdopen(fd, "wb") as f:
         np.save(f, np.asarray(features, dtype=np.float32))
-    os.chmod(tmp, 0o600)
+        f.flush()
+        os.fsync(f.fileno())
     os.replace(tmp, path)
     return path
+
+
+def _owner_only(st: os.stat_result, kind: str) -> bool:
+    """Ours and nobody else's: else someone else's face could be in the enrollment."""
+    if st.st_uid == os.geteuid() and not st.st_mode & 0o077:
+        return True
+    log.warning(
+        "face_gate.enrollment_ignored", reason=f"{kind}_not_owner_only", mode=oct(st.st_mode & 0o777)
+    )
+    return False
 
 
 def enrolled() -> Any:
     """The enrolled features (N x 128), or None when there is no trustworthy enrollment."""
     import numpy as np
 
-    path = enrollment_path()
     try:
-        mode = path.stat().st_mode
+        folder = os.lstat(FACE_DIR)
+        fd = os.open(enrollment_path(), os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return None
-    if mode & 0o077:
-        # Writable or readable by others: someone else's face could be in it.
-        log.warning("face_gate.enrollment_ignored", reason="not_owner_only", mode=oct(mode & 0o777))
+    except OSError as exc:  # ELOOP: a symlink, which the operator did not write
+        log.warning("face_gate.enrollment_ignored", reason="not_a_plain_file", error=str(exc))
         return None
-    features = np.load(path, allow_pickle=False)
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not (stat.S_ISDIR(folder.st_mode) and stat.S_ISREG(st.st_mode)):
+            log.warning("face_gate.enrollment_ignored", reason="not_a_plain_file")
+            return None
+        if not (_owner_only(folder, "directory") and _owner_only(st, "file")):
+            return None
+        features = np.load(f, allow_pickle=False)
     if features.ndim != 2 or not features.shape[0] or features.shape[1] != 128:
         raise Unavailable("the enrollment file is malformed; re-enroll")
+    if not (np.isfinite(features).all() and np.linalg.norm(features, axis=1).all()):
+        # A NaN or zero row makes every similarity NaN, and NaN < threshold is False.
+        log.warning("face_gate.enrollment_ignored", reason="nan_or_zero_vector")
+        return None
     return features
 
 
@@ -202,10 +271,11 @@ def fresh_frame() -> tuple[Any, float]:
     return img, stamp
 
 
-def depth_box(stamp: float, box: tuple[float, float, float, float]) -> dict:
-    """The vision container's depth stats inside `box` of the frame with this stamp."""
-    query = dict(zip(("x0", "y0", "x1", "y1"), (f"{v:.1f}" for v in box)), stamp=repr(stamp))
-    body, _ = _get("depth_box?" + urllib.parse.urlencode(query))
+def depth_points(stamp: float, points: list[tuple[float, float]]) -> dict:
+    """The vision container's patch-median depth at `points` of the frame with this stamp."""
+    pts = ";".join(f"{x:.1f},{y:.1f}" for x, y in points)
+    query = {"pts": pts, "r": PATCH_R, "stamp": repr(stamp)}
+    body, _ = _get("depth_points?" + urllib.parse.urlencode(query))
     return dict(json.loads(body))
 
 
@@ -235,65 +305,119 @@ def similarity(feat: Any, enrolled_features: Any) -> float:
 
 
 def liveness(row: Any, stamp: float) -> str | None:
-    """None when this face is live; otherwise why not, in words for the refusal."""
-    x, y, w, h = (float(v) for v in row[:4])
-    # The inner 60%: eyes, nose, cheeks. The full box takes in background beside the head,
-    # whose depth step would read as relief on a flat print.
-    d = depth_box(stamp, (x + 0.2 * w, y + 0.2 * h, x + 0.8 * w, y + 0.8 * h))
+    """None when this face is live; otherwise why not, with measurements: for the log only."""
+    import numpy as np
+
+    marks = [(float(row[4 + 2 * i]), float(row[5 + 2 * i])) for i in range(5)]
+    d = depth_points(stamp, marks)
     if d.get("stamp") != stamp:
         raise Unavailable("the depth is not from the frame the face was found in")
-    median, relief, fx = d.get("median_m"), d.get("relief_m"), d.get("fx")
-    if not median or not fx or relief is None or (d.get("valid_frac") or 0.0) < MIN_VALID_FRAC:
-        return "it has no depth reading"
-    if median > MAX_M:
-        return f"it is {median:.2f} m away, past {MAX_M} m"
-    width = w * median / fx
+    try:
+        fx, fy, cx, cy = (float(d[k]) for k in ("fx", "fy", "cx", "cy"))
+    except (KeyError, TypeError, ValueError):
+        raise Unavailable("/depth_points sent no intrinsics (too old a vision container)") from None
+    zs = d.get("depth_m")
+    if not isinstance(zs, list) or len(zs) != 5:
+        raise Unavailable("/depth_points did not answer for the five landmarks")
+    if not all(isinstance(z, (int, float)) and z > 0 for z in zs):
+        return "a landmark (eyes, nose, mouth corners) has no depth reading"
+    # Right eye, left eye, nose, right and left mouth corner, in metres from the camera.
+    p = np.array([((u - cx) * z / fx, (v - cy) * z / fy, z) for (u, v), z in zip(marks, zs)])
+    dist = float(np.median(p[:, 2]))
+    if dist > MAX_M:
+        return f"it is {dist:.2f} m away, past {MAX_M} m"
+    width = float(row[2]) * dist / fx
     if not FACE_WIDTH_M[0] <= width <= FACE_WIDTH_M[1]:
         return f"it is {width * 100:.0f} cm wide, not a real face's size (a photo or a screen?)"
-    if relief < MIN_RELIEF_M:
-        return f"it is flat ({relief * 100:.1f} cm of relief; a printed photo?)"
+    rim = p[[0, 1, 3, 4]]
+    centre = rim.mean(axis=0)
+    normal = np.linalg.svd(rim - centre)[2][-1]  # least-squares plane: any tilt
+    if normal @ centre > 0:
+        normal = -normal  # towards the camera, which is the origin
+    nose = float((p[2] - centre) @ normal)
+    if not nose >= MIN_NOSE_M:
+        return f"the nose is {nose * 100:.1f} cm proud of the eyes and mouth (flat: a print?)"
     return None
 
 
 def _check() -> tuple[str, str] | None:
     """None when the enrolled operator's live face is in view; else (reason code, detail)."""
-    with _lock:
-        enrolled_features = enrolled()
-        if enrolled_features is None:
-            return NOT_ENROLLED, "no operator is enrolled on this robot"
-        img, stamp = fresh_frame()
-        not_live = None
-        for row in faces(img):
-            if similarity(feature(img, row), enrolled_features) < MATCH_COSINE:
-                continue
-            why = liveness(row, stamp)
-            if why is None:
-                return None
-            not_live = why
-        if not_live is not None:
-            return NOT_LIVE, f"the operator's face was recognised but {not_live}"
-        return NOT_SEEN, "the enrolled operator's face is not in front of the head camera"
+    enrolled_features = enrolled()
+    if enrolled_features is None:
+        return NOT_ENROLLED, "no operator is enrolled on this robot"
+    img, stamp = fresh_frame()
+    not_live = None
+    for row in faces(img):
+        if not similarity(feature(img, row), enrolled_features) >= MATCH_COSINE:
+            continue  # `not >=`: a NaN similarity is no match
+        why = liveness(row, stamp)
+        if why is None:
+            return None
+        not_live = why
+    if not_live is not None:
+        return NOT_LIVE, f"the operator's face was recognised but {not_live}"
+    return NOT_SEEN, "the enrolled operator's face is not in front of the head camera"
 
 
-async def refusal(name: str) -> str | None:
+def _run_check() -> tuple[str, str] | None:
+    try:
+        return _check()
+    finally:
+        _busy.release()
+
+
+def gated(name: str, meta: dict[str, Any] | None = None) -> bool:
+    """Whether a call of this tool (with this `_meta`) needs the operator's face."""
+    if name in NEVER_GATED:
+        return False
+    return name in GATED or (CONFIRM in GATED and safety.needs_confirmation(meta))
+
+
+def check_config(tools: Iterable[str]) -> list[str]:
+    """A C3PO_FACE_GATE entry that names no tool of this bridge widens the gate to `confirm`.
+
+    Fail closed without exiting: a bridge that refuses to boot has no stop_everything
+    either, and under Restart=always it loops. So a misspelling gates every
+    confirmation-tier tool on top of the names that do exist, and says so loudly.
+    """
+    global GATED
+    unknown = sorted(GATED - set(tools) - {CONFIRM})
+    if unknown:
+        GATED = frozenset((GATED - set(unknown)) | {CONFIRM})
+        log.error(
+            "face_gate.unknown_names",
+            unknown=unknown,
+            gated=sorted(GATED),
+            fix="no such tool: every confirmation-tier tool is now gated; fix the name",
+        )
+    return unknown
+
+
+async def refusal(name: str, meta: dict[str, Any] | None = None) -> str | None:
     """Why this call must not run for want of the operator's face, or None. Instant when not gated."""
-    if name not in GATED or name in NEVER_GATED:
+    if not gated(name, meta):
         return None
     started = time.monotonic()
     outcome: tuple[str, str] | None
-    try:
-        outcome = await asyncio.wait_for(asyncio.to_thread(_check), TIMEOUT_S)
-    except TimeoutError:
-        outcome = UNAVAILABLE, f"the check took longer than {TIMEOUT_S} s"
-    except Exception as exc:  # noqa: BLE001 - every failure to check is a refusal, never a pass
-        outcome = UNAVAILABLE, f"the check failed ({exc})"
+    if not _busy.acquire(blocking=False):
+        outcome = UNAVAILABLE, "another face check is still running"
+    else:
+        try:
+            job = asyncio.get_running_loop().run_in_executor(_pool, _run_check)
+        except BaseException:
+            _busy.release()
+            raise
+        try:
+            outcome = await asyncio.wait_for(job, TIMEOUT_S)
+        except TimeoutError:
+            outcome = UNAVAILABLE, f"the check took longer than {TIMEOUT_S} s"
+        except Exception as exc:  # noqa: BLE001 - every failure to check is a refusal, never a pass
+            outcome = UNAVAILABLE, f"the check failed ({exc})"
     ms = round((time.monotonic() - started) * 1000)
     if outcome is None:
         log.warning("face_gate.passed", tool=name, ms=ms)
         return None
     code, detail = outcome
     log.warning("face_gate.refused", tool=name, reason=code, detail=detail, ms=ms)
-    return (
-        f"refused ({code}): {name} needs the enrolled operator's live face in front of the "
-        f"robot, and {detail}. {_HINTS[code].format(max_m=MAX_M)}"
-    )
+    hint = _HINTS[code].format(max_m=MAX_M, ttl=int(safety.CONFIRM_TTL_S))
+    return f"refused ({code}): {name} needs the enrolled operator's live face. {hint}"

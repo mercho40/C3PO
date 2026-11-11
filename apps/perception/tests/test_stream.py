@@ -15,6 +15,7 @@ staleness maths can all be exercised with a tuple of bytes.
 from __future__ import annotations
 
 import time
+from collections import namedtuple
 
 import pytest
 from c3po_vision import stream
@@ -301,56 +302,43 @@ def test_the_refused_client_never_took_a_slot_to_begin_with():
     assert latest.clients == stream.MAX_STREAM_CLIENTS
 
 
-# -- /depth_box: the bridge's face-liveness read --------------------------------
+# -- /depth_points: the bridge's face-liveness read -----------------------------
+
+INTR = namedtuple("Intr", "fx fy cx cy")(600.0, 610.0, 20.0, 18.0)
 
 
 def _depth(width: int, height: int, mm: int) -> list:
     return [[mm] * width for _ in range(height)]
 
 
-def test_depth_box_stats_reads_a_flat_patch_as_flat():
-    """A printed photo: one distance everywhere, so no relief to pass the gate on."""
-    stats = stream.depth_box_stats(_depth(40, 40, 800), (0, 0, 40, 40), 0.001)
-    assert stats == {"valid_frac": 1.0, "median_m": 0.8, "relief_m": 0.0}
-
-
-def test_depth_box_stats_reads_relief_and_skips_holes():
-    """A nose 3 cm proud of the cheeks is relief; zero pixels are holes, not depth."""
+def test_depth_at_points_takes_each_patch_median_and_skips_holes():
+    """A nose 3 cm proud of a cheek: each point is its own patch's median, zeros are holes."""
     depth = _depth(40, 40, 800)
-    for v in range(10, 30):
-        for u in range(10, 30):
+    for v in range(8, 13):
+        for u in range(8, 13):
             depth[v][u] = 770
-    for u in range(40):
-        depth[0][u] = 0
-    stats = stream.depth_box_stats(depth, (0, 0, 40, 40), 0.001)
-    assert stats["relief_m"] == 0.03
-    assert stats["median_m"] == 0.8
-    assert stats["valid_frac"] == 0.975
-
-
-def test_depth_box_stats_refuses_a_box_outside_the_frame():
-    with pytest.raises(ValueError):
-        stream.depth_box_stats(_depth(4, 4, 800), (10, 10, 20, 20), 0.001)
+    depth[30][30] = 0  # one hole in a 3x3 patch still leaves it valid
+    for v in range(4):
+        for u in range(4):
+            depth[v][u] = 0  # a patch mostly holes is no reading
+    got = stream.depth_at_points(depth, [(10, 10), (30, 30), (1, 1), (50, 5)], 1, 0.001)
+    assert got == [0.77, 0.8, None, None]
 
 
 def test_depth_at_answers_for_the_frame_asked_for_or_not_at_all():
     """Colour and depth must be one moment: a gone stamp is None, never the newest."""
     latest = stream._Latest()
     for i in range(stream.DEPTH_KEEP + 1):
-        latest.offer(stream.test_pattern(4, 2, i), 100.0 + i, _depth(4, 2, 800 + i), 600.0)
+        latest.offer(stream.test_pattern(4, 2, i), 100.0 + i, _depth(4, 2, 800 + i), INTR)
     assert latest.depth_at(101.0)[1][0][0] == 801
     assert latest.depth_at(100.0) is None  # pushed out of the ring
     assert latest.depth_at(None)[0] == 100.0 + stream.DEPTH_KEEP
     assert latest.depth_at(99.0) is None
 
 
-def test_depth_box_endpoint_uses_the_frame_pixels_and_its_stamp():
-    """Over HTTP on loopback: the box is in /frame.jpg pixels (scale undone), fx comes back
-    in them too, and the frame's stamp picks the depth."""
-    import json
+@pytest.fixture
+def depth_server():
     import threading
-    import urllib.error
-    import urllib.request
     from http.server import ThreadingHTTPServer
 
     latest = stream._Latest()
@@ -358,22 +346,42 @@ def test_depth_box_endpoint_uses_the_frame_pixels_and_its_stamp():
     for v in range(20, 40):
         for u in range(20, 40):
             depth[v][u] = 1000
-    latest.offer(stream.test_pattern(40, 40, 0), 5.25, depth, 600.0)
+    latest.offer(stream.test_pattern(40, 40, 0), 5.25, depth, INTR)
     server = ThreadingHTTPServer(("127.0.0.1", 0), stream._handler_class(latest, 75, 0.5))
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_address[1]}/depth_box?"
+    yield f"http://127.0.0.1:{server.server_address[1]}/depth_points?"
+    server.shutdown()
+    server.server_close()
+
+
+def _get(url: str) -> tuple:
+    import json
+    import urllib.error
+    import urllib.request
+
     try:
-        # (10..20) at scale 0.5 is depth pixels 20..40: all 1 m.
-        with urllib.request.urlopen(base + "x0=10&y0=10&x1=20&y1=20&stamp=5.25", timeout=2) as r:
-            body = json.loads(r.read())
-        assert body["stamp"] == 5.25 and body["fx"] == 300.0
-        assert body["median_m"] == 1.0 and body["valid_frac"] == 1.0
-        with pytest.raises(urllib.error.HTTPError) as gone:
-            urllib.request.urlopen(base + "x0=10&y0=10&x1=20&y1=20&stamp=4.0", timeout=2)
-        assert gone.value.code == 503
-        with pytest.raises(urllib.error.HTTPError) as bad:
-            urllib.request.urlopen(base + "x0=a", timeout=2)
-        assert bad.value.code == 400
-    finally:
-        server.shutdown()
-        server.server_close()
+        with urllib.request.urlopen(url, timeout=2) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+
+
+def test_depth_points_endpoint_uses_the_frame_pixels_and_its_stamp(depth_server):
+    """Over HTTP on loopback: points and r are in /frame.jpg pixels (scale undone), the
+    intrinsics come back in them too, and the frame's stamp picks the depth."""
+    # (15, 15) at scale 0.5 is depth pixel (30, 30): 1 m; (2, 2) is (4, 4): a hole.
+    code, body = _get(depth_server + "pts=15,15;2,2&r=1&stamp=5.25")
+    assert code == 200 and body["stamp"] == 5.25
+    assert (body["fx"], body["fy"], body["cx"], body["cy"]) == (300.0, 305.0, 10.0, 9.0)
+    assert body["depth_m"] == [1.0, None]
+    assert _get(depth_server + "pts=15,15&stamp=4.0")[0] == 503
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["pts=a,1", "pts=1", "pts=nan,1", "pts=inf,1", "pts=1,1&r=nan", "pts=1,1&stamp=nan",
+     "pts=1,1&r=-1", "pts=" + ";".join(["1,1"] * 9), "r=1"],
+)
+def test_depth_points_refuses_what_it_cannot_measure_with_a_400(depth_server, query):
+    """Non-finite numbers used to escape the handler; now every bad query is a 400."""
+    assert _get(depth_server + query)[0] == 400
