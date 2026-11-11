@@ -27,6 +27,20 @@ describe("parseVoiceEvents", () => {
     ]);
   });
 
+  test("passes utterance-audio events and rejects unsafe ids", async () => {
+    const events = await Array.fromAsync(
+      parseVoiceEvents(
+        stream(
+          'data: {"seq":4,"kind":"audio","text":"","audio_id":"ab12"}\n\n',
+          'data: {"seq":5,"kind":"audio","text":"","audio_id":"../x"}\n\n',
+        ),
+      ),
+    );
+    expect(events).toEqual([
+      { seq: 4, kind: "audio", text: "", audio_id: "ab12" },
+    ]);
+  });
+
   test("ignores malformed frames without killing the stream", async () => {
     const events = await Array.fromAsync(
       parseVoiceEvents(

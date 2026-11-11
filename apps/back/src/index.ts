@@ -12,6 +12,7 @@ import { chatsRoutes } from "#back/routes/chats.js";
 import { voiceRoutes } from "#back/routes/voice.js";
 import { auditRoutes } from "#back/routes/audit.js";
 import { safetyRoutes } from "#back/routes/safety.js";
+import { faceRoutes } from "#back/routes/face.js";
 import { teleopRoutes } from "#back/routes/teleop.js";
 import { enabledSocialProviders } from "#back/lib/auth.js";
 import { reconcileAdmins } from "#back/lib/admin-bootstrap.js";
@@ -77,7 +78,7 @@ const app = new Elysia()
     timestamp: Date.now(),
     auth: { providers: enabledSocialProviders },
   }))
-  // These two carry their OWN `.guard({ auth: true })` because they read a
+  // These carry their OWN `.guard({ auth: true })` because they read a
   // typed `user` (the admin checks), so they sit beside the outer guard rather
   // than inside it. Nested, the auth macro's resolver runs twice per request —
   // measured: two `getSession()` calls on every PARAR and every ~1.1/s VR
@@ -86,6 +87,7 @@ const app = new Elysia()
   .use(skillsRoutes)
   .use(auditRoutes)
   .use(safetyRoutes)
+  .use(faceRoutes)
   .use(teleopRoutes)
   // Everything below can read or move the robot (or use the shared TIC AI key
   // via /agent) — require a session. /health stays open for monitoring.

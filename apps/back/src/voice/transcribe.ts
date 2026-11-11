@@ -12,6 +12,13 @@ const MODEL = process.env.AGENT_TRANSCRIBE_MODEL ?? "tic-transcript";
 /** ~60 s of 16 kHz mono 16-bit WAV; a push-to-talk utterance is far shorter. */
 export const MAX_AUDIO_BYTES = 2_000_000;
 
+/** Budget for transcribing one 16 kHz mono 16-bit WAV: 4 s plus 0.25 s per
+ *  second of audio, capped at 12 s. A flat 5 s lost every long utterance. */
+export function transcribeTimeoutMs(wavBytes: number): number {
+  const seconds = Math.max(0, wavBytes - 44) / 32_000;
+  return Math.min(12_000, Math.round(4_000 + 250 * seconds));
+}
+
 export class TranscribeError extends Error {
   constructor(
     readonly status: number,
@@ -25,6 +32,7 @@ export async function transcribe(
   audio: ArrayBuffer,
   contentType: string,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs = 30_000,
 ): Promise<string> {
   const key = process.env.AGENT_API_KEY;
   if (!key) throw new TranscribeError(503, "AGENT_API_KEY is not set");
@@ -46,7 +54,7 @@ export async function transcribe(
       method: "POST",
       headers: { Authorization: `Bearer ${key}` },
       body: form,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new TranscribeError(502, "transcription_unavailable");

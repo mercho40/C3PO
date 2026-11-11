@@ -12,6 +12,7 @@
  */
 import { Elysia } from "elysia";
 import { bridgeSiblingUrl } from "../bridge/url";
+import { bridgeProof } from "../bridge/proof";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 import { logToolCall } from "#back/db/chats.js";
 import { clearPending } from "#back/agent/confirmations.js";
@@ -50,8 +51,8 @@ export const safetyRoutes = new Elysia({ prefix: "/safety" })
           // A card asked before the stop is not confirmable after it, including
           // one noted while the stop stood or after a PARAR back never saw.
           clearPending();
-          const secret = process.env.SAFETY_CONFIRM_SECRET;
-          if (!secret) {
+          const proof = bridgeProof();
+          if (!proof) {
             return status(503, { error: "confirmation_not_configured" });
           }
           const startedAt = Date.now();
@@ -59,10 +60,7 @@ export const safetyRoutes = new Elysia({ prefix: "/safety" })
           try {
             upstream = await fetch(bridgeSiblingUrl("/safety/ack"), {
               method: "POST",
-              headers: {
-                "content-type": "application/json",
-                "x-c3po-confirm-secret": secret,
-              },
+              headers: { "content-type": "application/json", ...proof },
               // The stamp the operator saw; the bridge refuses (409) a newer stop.
               body: JSON.stringify({
                 stopped_at:

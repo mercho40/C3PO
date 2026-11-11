@@ -240,6 +240,8 @@ function eventHarness(
     stopFails?: boolean;
     agentFails?: boolean;
     runAgent?: VoiceLoopDeps["runAgent"];
+    transcribeAudio?: VoiceLoopDeps["transcribeAudio"];
+    staleAudioMs?: number;
   } = {},
 ) {
   const queue: VoiceInputEvent[] = [];
@@ -256,47 +258,55 @@ function eventHarness(
   let maxActive = 0;
   let connects = 0;
 
-  const loop = new VoiceLoop({
-    callTool: async (name) => {
-      calls.push(name);
-      if (name === "stop_everything" && opts.stopFails)
-        throw new Error("bridge went away");
-      return { status: "ok" };
-    },
-    runAgent:
-      opts.runAgent ??
-      (async (text, signal) => {
-        active += 1;
-        maxActive = Math.max(maxActive, active);
-        try {
-          await new Promise<void>((release) => {
-            runs.push({ text, signal, release });
+  const loop = new VoiceLoop(
+    {
+      callTool: async (name) => {
+        calls.push(name);
+        if (name === "stop_everything" && opts.stopFails)
+          throw new Error("bridge went away");
+        return { status: "ok" };
+      },
+      runAgent:
+        opts.runAgent ??
+        (async (text, signal) => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          try {
+            await new Promise<void>((release) => {
+              runs.push({ text, signal, release });
+            });
+            if (opts.agentFails) throw new Error("model error");
+          } finally {
+            active -= 1;
+          }
+        }),
+      events: async function* (signal) {
+        connects += 1;
+        while (!signal.aborted) {
+          const next = queue.shift();
+          if (next) {
+            yield next;
+            continue;
+          }
+          await new Promise<void>((r) => {
+            wake = r;
+            signal.addEventListener("abort", () => r(), { once: true });
           });
-          if (opts.agentFails) throw new Error("model error");
-        } finally {
-          active -= 1;
         }
-      }),
-    events: async function* (signal) {
-      connects += 1;
-      while (!signal.aborted) {
-        const next = queue.shift();
-        if (next) {
-          yield next;
-          continue;
-        }
-        await new Promise<void>((r) => {
-          wake = r;
-          signal.addEventListener("abort", () => r(), { once: true });
-        });
-      }
+      },
+      transcribeAudio: opts.transcribeAudio,
+      log: (event) => logs.push(event),
+      sleep: async () => {},
     },
-    log: (event) => logs.push(event),
-    sleep: async () => {},
-  });
+    { staleAudioMs: opts.staleAudioMs },
+  );
 
   const push = (kind: VoiceInputEvent["kind"], text: string) => {
-    queue.push({ seq: ++seq, kind, text });
+    queue.push(
+      kind === "audio"
+        ? { seq: ++seq, kind, text: "", audio_id: text }
+        : { seq: ++seq, kind, text },
+    );
     wake?.();
   };
   return {
@@ -503,6 +513,135 @@ describe("VoiceLoop event path", () => {
     await until(() => h.runs.length === 1);
     h.runs[0]!.release();
     expect(h.connects()).toBe(1);
+    await h.loop.stop();
+  });
+
+  test("robot-mic audio is transcribed and runs the agent with the text", async () => {
+    const asked: string[] = [];
+    const h = eventHarness({
+      transcribeAudio: async (id) => {
+        asked.push(id);
+        return "caminá hasta la puerta";
+      },
+    });
+    h.loop.start();
+    h.push("audio", "ab12");
+    await until(() => h.runs.length === 1);
+    expect(asked).toEqual(["ab12"]);
+    expect(h.texts()).toEqual(["caminá hasta la puerta"]);
+    expect(h.logs).toContain("voice.utterance");
+    h.runs[0]!.release();
+    await h.loop.stop();
+  });
+
+  test("a failed transcription is recorded and runs no agent", async () => {
+    const h = eventHarness({
+      transcribeAudio: async () => {
+        throw new Error("transcription_unavailable");
+      },
+    });
+    h.loop.start();
+    h.push("audio", "ab12");
+    await until(() => h.logs.includes("voice.transcribe_failed"));
+    expect(h.loop.snapshot().lastError).toBe("transcription_unavailable");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.runs).toEqual([]);
+    await h.loop.stop();
+  });
+
+  test("a stop while transcribing drops the utterance and is not delayed", async () => {
+    let finish: (text: string) => void = () => {};
+    const h = eventHarness({
+      transcribeAudio: () => new Promise((r) => (finish = r)),
+    });
+    h.loop.start();
+    h.push("audio", "ab12");
+    h.push("stop", "emergencia");
+    await until(() => h.calls.includes("stop_everything"));
+    finish("caminá");
+    await until(() => h.logs.includes("voice.dropped_after_stop"));
+    expect(h.runs).toEqual([]);
+    await h.loop.stop();
+  });
+
+  test("a transcription from before stop() does not run after start()", async () => {
+    let finish: (text: string) => void = () => {};
+    const h = eventHarness({
+      transcribeAudio: () => new Promise((r) => (finish = r)),
+    });
+    h.loop.start();
+    h.push("audio", "ab12");
+    await new Promise((r) => setTimeout(r, 10));
+    await h.loop.stop();
+    h.loop.start();
+    finish("caminá hasta la puerta");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.runs).toEqual([]);
+    expect(h.logs).not.toContain("voice.utterance");
+    await h.loop.stop();
+  });
+
+  test("audio left waiting behind a slow transcription is dropped as stale", async () => {
+    let finishFirst: (text: string) => void = () => {};
+    const asked: string[] = [];
+    const h = eventHarness({
+      staleAudioMs: 20,
+      transcribeAudio: (id) => {
+        asked.push(id);
+        return id === "slow"
+          ? new Promise((r) => (finishFirst = r))
+          : Promise.resolve("andá a la cocina");
+      },
+    });
+    h.loop.start();
+    h.push("audio", "slow");
+    h.push("audio", "late");
+    await new Promise((r) => setTimeout(r, 50));
+    finishFirst("hola");
+    await until(() => h.logs.includes("voice.dropped_stale"));
+    await until(() => h.runs.length === 1);
+    expect(asked).toEqual(["slow"]);
+    expect(h.texts()).toEqual(["hola"]);
+    h.runs[0]!.release();
+    await h.loop.stop();
+  });
+
+  test("slow first, fast second keeps spoken order", async () => {
+    // Fails without the transcribeTail chain: "segundo" would finish first.
+    let finishFirst: (text: string) => void = () => {};
+    const h = eventHarness({
+      transcribeAudio: (id) =>
+        id === "a"
+          ? new Promise((r) => (finishFirst = r))
+          : Promise.resolve("segundo"),
+    });
+    h.loop.start();
+    h.push("audio", "a");
+    h.push("audio", "b");
+    await new Promise((r) => setTimeout(r, 10));
+    finishFirst("primero");
+    await until(() => h.runs.length >= 1);
+    h.runs[0]!.release();
+    await until(() => h.texts().join(" ").split(" ").length >= 2);
+    for (const run of h.runs) run.release();
+    expect(h.texts().join(" ")).toBe("primero segundo");
+    await h.loop.stop();
+  });
+
+  test("speech events never touch the transcriber", async () => {
+    let asked = 0;
+    const h = eventHarness({
+      transcribeAudio: async () => {
+        asked += 1;
+        return "x";
+      },
+    });
+    h.loop.start();
+    h.push("speech", "hola");
+    await until(() => h.runs.length === 1);
+    expect(h.texts()).toEqual(["hola"]);
+    expect(asked).toBe(0);
+    h.runs[0]!.release();
     await h.loop.stop();
   });
 });
