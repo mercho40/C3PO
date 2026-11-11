@@ -181,6 +181,8 @@ _busy = threading.Lock()
 _background = False
 #: settings.json as last read or written; None = read it on next use.
 _stored: dict[str, Any] | None = None
+#: The last frame a background check looked at, for /face/seen: boxes, who, live. No features.
+_seen: dict[str, Any] = {"stamp": None, "width": None, "height": None, "faces": []}
 #: Not asyncio's default executor: a check wedged on the vision container must not
 #: take the workers asyncio.to_thread hands damp and the rest.
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face_gate")
@@ -188,6 +190,14 @@ _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face_gate")
 
 class Unavailable(Exception):
     """The check could not be made at all."""
+
+
+class Refused(Unavailable):
+    """Enrollment saw the camera but not one live person: `code` is no_live_face or not_same_person."""
+
+    def __init__(self, code: str, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code
 
 
 def enrollment_path() -> Path:
@@ -641,7 +651,46 @@ def liveness(row: Any, stamp: float) -> str | None:
     return judge([landmarks_3d(row, stamp)])
 
 
-def _check(unknown: bool = False) -> tuple[str, str]:
+def _check(unknown: bool = False, record: bool = False) -> tuple[str, str]:
+    """`_look`, and with `record` its last frame's faces kept for /face/seen."""
+    view: dict[str, Any] = {}
+    outcome = _look(unknown, view)
+    if record:
+        _record(view)
+    return outcome
+
+
+def _record(view: dict[str, Any]) -> None:
+    global _seen
+    if "stamp" not in view:  # no frame was taken (nobody enrolled)
+        return
+    names = {p["id"]: p for p in view["known"]}
+    out = []
+    for row, pid in view["faces"]:
+        key = pid if pid is not None else ("" if row is view["unknown_row"] else None)
+        live = None
+        if key is not None and view["samples"].get(key):
+            live = judge(view["samples"][key], MIN_READINGS) is None
+        p = names.get(pid or "")
+        out.append(
+            {
+                "box": [round(float(v), 1) for v in row[:4]],
+                "name": p["name"] if p else None,
+                "role": p["role"] if p else None,
+                "known": p is not None,
+                "live": live,
+            }
+        )
+    _seen = {k: view[k] for k in ("stamp", "width", "height")} | {"faces": out}
+
+
+def seen() -> dict[str, Any]:
+    """For /face/seen: the last background check's frame, and how old it is."""
+    s = _seen
+    return s | {"age_s": None if s["stamp"] is None else round(time.time() - s["stamp"], 2)}
+
+
+def _look(unknown: bool, view: dict[str, Any]) -> tuple[str, str]:
     """(PASSED, person id) when an enrolled person's live face is in view; else (reason, detail).
 
     Up to FRAMES fresh frames within FRAMES_BUDGET_S, stopping once decided. Identity: the
@@ -657,20 +706,28 @@ def _check(unknown: bool = False) -> tuple[str, str]:
     faced = 0
     matched: dict[str, int] = {}
     samples: dict[str, list[tuple[list[Any], float]]] = {}
+    view.update(known=known, samples=samples)
     for taken in range(1, FRAMES + 1):
         # shortcut: two fetches can return the same frame, counted twice; fine at 5 frames in 1 s.
         img, stamp = fresh_frame()
         rows = faces(img)
         best: tuple[float, Any, str] | None = None
+        each: list[tuple[Any, str | None]] = []
         for row in rows:
             feat = feature(img, row)
+            mine: tuple[float, str] | None = None
             for p in known:
                 sim = similarity(feat, p["features"])
-                if sim >= MATCH_COSINE and (best is None or sim > best[0]):  # NaN: no match
-                    best = (sim, row, p["id"])
+                if sim >= MATCH_COSINE and (mine is None or sim > mine[0]):  # NaN: no match
+                    mine = (sim, p["id"])
+            each.append((row, None if mine is None else mine[1]))
+            if mine is not None and (best is None or mine[0] > best[0]):
+                best = (mine[0], row, mine[1])
         faced += bool(rows)
         if best is None and rows and unknown:
             best = (0.0, rows[0], "")
+        view.update(stamp=stamp, width=int(img.shape[1]), height=int(img.shape[0]), faces=each)
+        view["unknown_row"] = best[1] if best is not None and best[2] == "" else None
         if best is not None:
             matched[best[2]] = matched.get(best[2], 0) + 1
             samples.setdefault(best[2], []).append(landmarks_3d(best[1], stamp))
@@ -696,9 +753,9 @@ def _check(unknown: bool = False) -> tuple[str, str]:
     )
 
 
-def _run_check(unknown: bool) -> tuple[str, str]:
+def _run_check(unknown: bool, record: bool) -> tuple[str, str]:
     try:
-        return _check(unknown)
+        return _check(unknown, record)
     finally:
         _busy.release()
 
@@ -720,7 +777,7 @@ async def live_check(*, background: bool = False, unknown: bool = False) -> tupl
         await asyncio.sleep(0.02)
     _background = background
     try:
-        job = asyncio.get_running_loop().run_in_executor(_pool, _run_check, unknown)
+        job = asyncio.get_running_loop().run_in_executor(_pool, _run_check, unknown, background)
     except BaseException:
         _busy.release()
         raise
@@ -841,7 +898,7 @@ def enroll(name: str, role: str, frames: int = 5, say: Any = lambda _msg: None) 
         say(f"frame {attempt}: ok ({len(features)}/{frames})")
         time.sleep(ENROLL_INTERVAL_S)
     if len(features) < frames or last is None:
-        raise Unavailable(f"only {len(features)} of {frames} frames had one live face")
+        raise Refused("no_live_face", f"only {len(features)} of {frames} frames had one live face")
     if not same_person(features):
-        raise Unavailable("the frames do not all show the same person")
+        raise Refused("not_same_person", "the frames do not all show the same person")
     return add_person(name, role, features, photo(*last))

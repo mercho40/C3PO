@@ -515,7 +515,12 @@ async def test_a_grant_cleared_during_the_face_check_refuses(scene, monkeypatch)
     _confirm("set_hand", args)
     _face(scene, 10, OPERATOR)
     monkeypatch.setattr(
-        face_gate, "frame", lambda: (safety.clear_confirmations("test"), ("img", scene["stamp"]))[1]
+        face_gate,
+        "frame",
+        lambda: (
+            safety.clear_confirmations("test"),
+            (np.zeros((H, W, 3), np.uint8), scene["stamp"]),
+        )[1],
     )
     with pytest.raises(ToolError, match="needs an operator's confirmation"):
         await mcp_server.mcp.call_tool("set_hand", args)
@@ -813,13 +818,26 @@ async def test_face_routes_work_with_the_proof(routes):
 
 async def test_enroll_route_enrolls_with_a_photo_or_stores_nothing(routes, scene):
     resp = await routes.face_enroll(_Req({"name": "Ana", "role": "operator"}, "s3cret"))
-    assert resp.status_code == 422  # nobody in view
+    assert resp.status_code == 422 and json.loads(resp.body)["code"] == "no_live_face"
     assert [p["name"] for p in face_gate.people()] == ["Oliver"]
     assert (
         await routes.face_enroll(_Req({"name": "Ana", "role": "root"}, "s3cret"))
     ).status_code == 400
 
     _face(scene, 10, ANA)
+    who = iter([ANA, _E[9]] * 5)
+    real_feature = face_gate.feature
+    face_gate.feature = lambda img, row: next(who)
+    try:
+        resp = await routes.face_enroll(_Req({"name": "Ana", "role": "operator"}, "s3cret"))
+    finally:
+        face_gate.feature = real_feature
+    assert json.loads(resp.body)["code"] == "not_same_person"
+    scene["stamp"] -= 10
+    resp = await routes.face_enroll(_Req({"name": "Ana", "role": "operator"}, "s3cret"))
+    assert json.loads(resp.body)["code"] == "camera_unavailable"  # a stale frame
+    scene["stamp"] += 10
+    assert [p["name"] for p in face_gate.people()] == ["Oliver"]
     resp = await routes.face_enroll(_Req({"name": "Ana", "role": "operator"}, "s3cret"))
     ana = json.loads(resp.body)
     assert resp.status_code == 200 and ana["role"] == "operator" and ana["has_photo"] is True
@@ -827,6 +845,40 @@ async def test_enroll_route_enrolls_with_a_photo_or_stores_nothing(routes, scene
     assert photo.status_code == 200 and photo.media_type == "image/jpeg"
     assert photo.body == (face_gate.people_dir() / ana["id"] / "photo.jpg").read_bytes()
     assert (await routes.face_photo(_Req(secret="s3cret", pid="0" * 12))).status_code == 404
+
+
+async def test_face_seen_has_boxes_names_for_people_and_nothing_for_strangers(
+    routes, scene, monkeypatch
+):
+    monkeypatch.setattr(
+        face_gate, "_seen", {"stamp": None, "width": None, "height": None, "faces": []}
+    )
+    assert json.loads((await routes.face_seen(_Req())).body)["age_s"] is None
+    ana = face_gate.add_person("Ana", "operator", np.stack([ANA]))
+    _face(scene, 10, ANA)
+    _face(scene, 300, _E[9])  # a stranger beside her
+    await face_gate.live_check(background=True, unknown=True)
+    body = json.loads((await routes.face_seen(_Req())).body)
+    assert set(body) == {"stamp", "width", "height", "age_s", "faces"}
+    assert (body["stamp"], body["width"], body["height"]) == (scene["stamp"], W, H)
+    assert 0 <= body["age_s"] < 5
+    her, other = body["faces"]
+    assert her == {
+        "box": [10.0, 100.0, 90.0, 108.0],
+        "name": "Ana",
+        "role": "operator",
+        "known": True,
+        "live": True,
+    }
+    assert other["name"] is None and other["role"] is None and other["known"] is False
+    assert set(other) == {"box", "name", "role", "known", "live"}
+    assert ana["id"] not in json.dumps(body) and "features" not in json.dumps(body)
+
+    scene["faces"].clear()
+    await face_gate.refusal("pick")  # a gated call's check is not the greeter's: no update
+    assert json.loads((await routes.face_seen(_Req())).body)["faces"] == body["faces"]
+    await face_gate.live_check(background=True)
+    assert json.loads((await routes.face_seen(_Req())).body)["faces"] == []
 
 
 async def test_safety_status_carries_the_face_settings(routes):

@@ -146,7 +146,7 @@ async def test_a_gated_call_waits_out_a_greeter_check_instead_of_refusing(monkey
     monkeypatch.setattr(face_gate, "GATED", frozenset({"pick"}))
     release = threading.Event()
 
-    def slow_pass(unknown):
+    def slow_pass(unknown, record):
         release.wait(1.0)
         return face_gate.PASSED, "someone"
 

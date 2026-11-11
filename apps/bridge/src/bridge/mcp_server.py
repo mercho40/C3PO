@@ -4244,6 +4244,14 @@ async def face_people(request):  # noqa: ANN001, ANN201 - starlette types
     )
 
 
+@mcp.custom_route("/face/seen", methods=["GET"])
+async def face_seen(request):  # noqa: ANN001, ANN201 - starlette types
+    """The faces of the greeter's last check, as boxes in /frame.jpg pixels, for the console
+    to draw. Names and roles of enrolled people only; a stranger is a box. Fresh only while
+    greet or greet_unknown is on (age_s grows otherwise)."""
+    return _no_store(face_gate.seen())
+
+
 @mcp.custom_route("/face/settings", methods=["POST"])
 async def face_settings(request):  # noqa: ANN001, ANN201 - starlette types
     """Body: any of {"greet", "greet_unknown", "gate"} as booleans. Applies at once, persists."""
@@ -4294,6 +4302,7 @@ async def face_enroll(request):  # noqa: ANN001, ANN201 - starlette types
 
     The same enrollment as scripts/face_enroll.py (FRAMES live frames, one face, one
     person), in a thread. Their consent is the console's to ask before calling this.
+    422 `code`: no_live_face, not_same_person, camera_unavailable (camera, models or disk).
     """
     if (refused := _unproven(request)) is not None:
         return refused
@@ -4308,8 +4317,11 @@ async def face_enroll(request):  # noqa: ANN001, ANN201 - starlette types
             p = await asyncio.to_thread(face_gate.enroll, name, role, face_gate.FRAMES)
         except ValueError as exc:
             return _no_store({"error": "invalid", "reason": str(exc)}, 400)
-        except Exception as exc:  # noqa: BLE001 - the console shows why; nothing was stored
-            return _no_store({"error": "not_enrolled", "reason": str(exc)}, 422)
+        except face_gate.Refused as exc:
+            return _no_store({"error": "not_enrolled", "code": exc.code, "reason": str(exc)}, 422)
+        except Exception as exc:  # noqa: BLE001 - camera, models, disk; nothing was stored
+            body = {"error": "not_enrolled", "code": "camera_unavailable", "reason": str(exc)}
+            return _no_store(body, 422)
     log.warning("face.person_enrolled", person=p["id"], role=role, via="console")
     return _no_store(p)
 
