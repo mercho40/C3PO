@@ -43,7 +43,7 @@ def greeter(tmp_path, monkeypatch):
     monkeypatch.setattr(estop, "stop_is_standing", lambda: False)
     spoken: list[str] = []
 
-    async def drive(*steps):
+    async def drive(*steps, on_speak=lambda: None, busy=lambda: False):
         """Run the greeter over these check outcomes; a callable step runs before the next one."""
         queue = list(steps)
 
@@ -57,10 +57,11 @@ def greeter(tmp_path, monkeypatch):
 
         async def speak(text):
             spoken.append(text)
+            return on_speak()
 
         monkeypatch.setattr(face_gate, "live_check", live_check)
         with pytest.raises(asyncio.CancelledError):
-            await face_greet.run(speak, tick_s=0)
+            await face_greet.run(speak, tick_s=0, busy=busy)
         return spoken
 
     return drive
@@ -168,7 +169,7 @@ async def test_no_enrollment_no_greeting_no_crash(greeter):
 async def test_it_runs_whenever_not_in_stub(monkeypatch):
     started = []
 
-    async def run(speak):
+    async def run(speak, busy):
         started.append(speak)
 
     monkeypatch.setattr(face_greet, "run", run)
@@ -227,6 +228,30 @@ async def test_only_an_enrolled_greeting_is_numbered_for_the_listen_window(greet
     g = face_greet.last_greet()
     assert (g["seq"], g["name"], g["listen_after_greet"]) == (2, "Ana", False)
     assert 0 <= g["age_s"] < 5
+
+
+async def test_a_greeting_a_stop_cut_opens_no_listen_window(greeter, monkeypatch):
+    stops = [0.0]
+    monkeypatch.setattr(estop, "last_stop_at", lambda: stops[0])
+
+    def parar():
+        stops[0] += 1.0  # PARAR while «Hola Oliver…» plays
+
+    assert await greeter(SEEN, on_speak=parar) == ["Hola Oliver, ¿qué querés que haga?"]
+    assert face_greet.last_greet()["seq"] == 0
+    _past_cooldown()
+    # say itself reporting the cut counts the same
+    await greeter(GONE, SEEN, on_speak=lambda: {"status": "stopped"})
+    assert face_greet.last_greet()["seq"] == 0
+    _past_cooldown()
+    await greeter(GONE, SEEN, on_speak=lambda: {"status": "ok"})
+    assert face_greet.last_greet()["seq"] == 1
+
+
+async def test_no_greeting_while_a_reply_is_still_being_spoken(greeter):
+    # Between two sentences of a reply nothing plays, but the speech queue is busy.
+    assert await greeter(SEEN, busy=lambda: True) == []
+    assert await greeter(GONE, SEEN) == ["Hola Oliver, ¿qué querés que haga?"]
 
 
 async def test_face_seen_carries_the_last_greeting(greeter):

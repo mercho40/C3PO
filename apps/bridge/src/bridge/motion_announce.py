@@ -1,10 +1,12 @@
 """Say what the robot is about to do before it moves: «Atención, todos los humanos
 córranse: voy a agarrar la botella».
 
-Called from `mcp_server.GovernedMCP.call_tool`, after every gate passed (a refused call says
-nothing) and before the tool runs, so it covers every motion tool without touching each one.
-It waits for the end of playback so a person has time to step away; a PARAR during the
-speech cuts it (say's stop_play) and the motion does not start.
+Called from `mcp_server.GovernedMCP.call_tool`, after every gate passed and the arguments
+validated (a refused call says nothing), and before the tool runs. The tools in SELF plan
+or check a lot before they move: for them call_tool only `defer`s, and the skill calls
+`before_motion()` right before its first motion command, so a plan that fails says nothing.
+It waits for the end of playback so a person has time to step away; a PARAR (say's
+stop_play) or a soft_stop during the speech means the motion does not start.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import math
 import os
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar, Token
 from typing import Any
 
 import structlog
@@ -39,6 +42,11 @@ SKIP = frozenset(
         "arm_navigation",
     }
 )
+
+# Tools that announce themselves via before_motion(), after planning: every path of theirs
+# that moves calls it first (manipulation.execute, pick's step, walk_to.run, go_to_object's
+# Nav2 start).
+SELF = frozenset({"pick", "place", "reach", "handover", "walk_to", "go_to_object"})
 
 LABELS = {
     "bottle": "la botella",
@@ -80,6 +88,39 @@ SIMPLE = {
 }
 
 _last: tuple[str, float] = ("", 0.0)
+#: When soft_stop last ran (monotonic): it latches nothing, so announce looks for it itself.
+_soft_stop_at = 0.0
+#: The SELF call in progress whose warning is still due: (tool, validated args, speak).
+_pending: ContextVar[tuple[str, dict[str, Any], Callable[[str], Awaitable[Any]]] | None] = (
+    ContextVar("motion_announce_pending", default=None)
+)
+
+
+def note_soft_stop() -> None:
+    global _soft_stop_at
+    _soft_stop_at = time.monotonic()
+
+
+def defer(
+    name: str, args: dict[str, Any], speak: Callable[[str], Awaitable[Any]]
+) -> Token[Any]:
+    """call_tool, for a SELF tool: its warning is due at its first motion command."""
+    return _pending.set((name, args, speak))
+
+
+def reset(token: Token[Any]) -> None:
+    _pending.reset(token)
+
+
+async def before_motion() -> bool:
+    """Skills call this right before their first motion command. Speaks the deferred warning
+    once per call (later calls, and calls not from call_tool, return True at once). False:
+    a stop came during the warning, so don't move."""
+    pending = _pending.get()
+    if pending is None:
+        return True
+    _pending.set(None)
+    return await announce(*pending)
 
 
 def enabled() -> bool:
@@ -149,22 +190,26 @@ async def announce(
     speak: Callable[[str], Awaitable[Any]],
     now: Callable[[], float] = time.monotonic,
 ) -> bool:
-    """Speak the warning and wait for it to end. False when a stop came meanwhile: don't move."""
+    """Speak the warning and wait for it to end. False when a stop (PARAR, soft_stop, or
+    anything that cut the warning) came meanwhile: don't move."""
     global _last
     text = phrase(name, args)
     t = now()
     if _last[0] == text and t - _last[1] < REPEAT_S:
         return True
-    _last = (text, t)
-    stopped_before = estop.last_stop_at()
+    stopped_before, soft_before = estop.last_stop_at(), _soft_stop_at
+    status: Any = "error"
     try:
         result = await speak(text)
-        if isinstance(result, dict) and result.get("status") not in (None, "ok"):
-            log.warning("motion.announce_failed", tool=name, result=result.get("status"))
+        status = result.get("status") if isinstance(result, dict) else None
+        if status not in (None, "ok", "stopped"):
+            log.warning("motion.announce_failed", tool=name, result=status)
     except Exception as exc:  # noqa: BLE001 - a broken speaker must not hide the motion's own result
         log.warning("motion.announce_failed", tool=name, error=str(exc))
-    if estop.last_stop_at() > stopped_before:
+    if estop.last_stop_at() > stopped_before or _soft_stop_at != soft_before or status == "stopped":
         log.warning("motion.announce_stopped", tool=name)
         return False
+    if status in (None, "ok"):
+        _last = (text, t)  # only a warning heard in full spares the next identical one
     log.info("motion.announced", tool=name, text=text)
     return True

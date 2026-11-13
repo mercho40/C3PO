@@ -18,6 +18,7 @@ from typing import Any
 
 import structlog
 
+from bridge import motion_announce
 from bridge.skills._locomotion import (
     DEFAULT_HEIGHT,
     KP_LIN,
@@ -181,6 +182,13 @@ async def run(
                 },
             }
             await stop_motion(height)
+            return task.to_dict()
+
+        # Every check passed: «voy a caminar» now. A stop during it, and nothing walks.
+        if not await motion_announce.before_motion() or task.cancel_event.is_set():
+            task.status, task.phase, task.ended_at = "cancelled", "stopped", time.time()
+            task.error = "stopped during the spoken warning; nothing moved"
+            log.info("walk_to.stopped_during_warning", task_id=task.task_id)
             return task.to_dict()
 
         task.phase = "walking"

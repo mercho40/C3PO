@@ -335,3 +335,29 @@ async def test_a_walk_runs_in_a_walk_fsm_or_on_an_unknown_reading(monkeypatch, f
     result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=0.05)
 
     assert result["phase"] == "timeout"  # it walked
+
+
+@pytest.mark.asyncio
+async def test_the_warning_plays_after_the_checks_and_a_stop_in_it_walks_nothing(monkeypatch):
+    from bridge import estop, motion_announce
+
+    sent, said = [], []
+
+    async def send(*a, **kw):
+        sent.append(a)
+
+    async def speak(text):
+        said.append(text)
+        monkeypatch.setattr(estop, "last_stop_at", lambda: 9e9)  # PARAR during «voy a caminar»
+        return {"status": "ok"}
+
+    monkeypatch.setattr(walk_to, "send_velocity_async", send)
+    monkeypatch.setattr(motion_announce, "_last", ("", 0.0))
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _NoPoseSampler())
+    motion_announce.defer("walk_to", {}, speak)
+    assert (await walk_to.run(target_x=5.0, target_y=0.0))["phase"] == "no_pose"
+    assert said == []  # refused by its own checks: nothing announced
+
+    monkeypatch.setattr("bridge.sdk.state.get_sampler", lambda: _FakeSampler([_pose(0.0, 0.0)]))
+    result = await walk_to.run(target_x=5.0, target_y=0.0, timeout_s=0.05)
+    assert (result["status"], len(said), sent) == ("cancelled", 1, [])

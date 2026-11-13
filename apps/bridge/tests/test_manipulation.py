@@ -1095,3 +1095,63 @@ async def test_a_stop_while_planning_never_steps(monkeypatch, real):
     see(monkeypatch, bottle(CLOSE_BOTTLE))
     out = await m.pick("bottle")
     assert out["status"] == "cancelled" and steps == []
+
+
+# --- the spoken warning: after the plan, before the first motion ----------------
+
+
+def _warning(monkeypatch, arm, steps=None, on_speak=None):
+    """Defer pick's warning as GovernedMCP.call_tool does; records what had moved when it played."""
+    from bridge import motion_announce
+
+    monkeypatch.setattr(motion_announce, "_last", ("", 0.0))
+    said = []
+
+    async def speak(text):
+        said.append((arm.engaged, len(steps) if steps is not None else 0))
+        if on_speak:
+            on_speak()
+        return {"status": "ok"}
+
+    motion_announce.defer("pick", {"label": "bottle"}, speak)
+    return said
+
+
+async def test_a_pick_its_planner_refuses_is_never_announced(monkeypatch, real):
+    arm, _hand = real
+    monkeypatch.setattr(m, "MAX_REPOSITIONS", 0)
+    said = _warning(monkeypatch, arm)
+    see(monkeypatch, cup(p=(0.35, -0.01, -0.03)))  # out of reach: refused in planning
+    out = await m.pick("cup", side="right")
+    assert out["phase"] == "planning" and said == []
+
+
+async def test_a_planned_pick_is_announced_once_before_the_arm_engages(monkeypatch, real):
+    arm, _hand = real
+    said = _warning(monkeypatch, arm)
+    see(monkeypatch, cup())
+    out = await m.pick("cup", shape="pinch")
+    assert out["status"] == "completed", out
+    assert said == [(False, 0)]
+
+
+async def test_a_stop_during_the_pick_warning_moves_nothing(monkeypatch, real):
+    from bridge import estop
+
+    arm, _hand = real
+    _warning(
+        monkeypatch, arm, on_speak=lambda: monkeypatch.setattr(estop, "last_stop_at", lambda: 9e9)
+    )
+    see(monkeypatch, cup())
+    out = await m.pick("cup", shape="pinch")
+    assert out["status"] == "cancelled" and not arm.engaged and arm.commands == []
+
+
+async def test_the_warning_goes_before_the_step_and_not_again_for_the_arm(monkeypatch, real):
+    arm, _hand = real
+    steps = stepper(monkeypatch)
+    said = _warning(monkeypatch, arm, steps)
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert out["status"] == "completed", out
+    assert said == [(False, 0)]  # before the step, once

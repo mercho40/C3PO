@@ -72,7 +72,7 @@ from typing import Any, TypeVar
 
 import structlog
 
-from bridge import estop
+from bridge import estop, motion_announce
 from bridge.estop import signal_stop
 from bridge.skills._locomotion import DEFAULT_HEIGHT, stop_motion_sync
 from bridge.skills.task_runtime import get_registry
@@ -160,6 +160,8 @@ async def soft_stop(height: float = DEFAULT_HEIGHT) -> dict[str, Any]:
     cancellation; then zeros.
     Arms and hands are left alone — `stop_everything` is the stop for those.
     """
+    # First: a motion still in its spoken warning has no task to cancel yet.
+    motion_announce.note_soft_stop()
     try:
         from bridge.sdk.perception_link import get_link
 

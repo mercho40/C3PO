@@ -41,7 +41,7 @@ from typing import Any, Literal, TypeVar
 
 import structlog
 
-from bridge import estop, kinematics, safety
+from bridge import estop, kinematics, motion_announce, safety
 from bridge.skills import arm_pose
 from bridge.skills.task_runtime import Task, get_registry
 from bridge.teleop import arm_sdk, hands
@@ -999,6 +999,9 @@ async def execute(
     why = _abort_reason(allow_person)
     if why:
         return done("failed", f"refused:{why}", why)
+    # Planned and checked: only now «voy a agarrar …». A stop during it, nothing moves.
+    if not await motion_announce.before_motion() or task.cancel_event.is_set():
+        return done("cancelled", "stopped", note="Stopped during the spoken warning; nothing moved.")
 
     driver = arm_sdk.get_driver()
     try:
@@ -1294,6 +1297,11 @@ async def pick(
             or travel + dist > MAX_REPOSITION_TRAVEL_M
         ):
             return _refused(task, str(planned), **_refusal(planned), **moved)
+        # The step is the pick's first motion: the warning goes before it.
+        if not await motion_announce.before_motion() or task.cancel_event.is_set():
+            task.status, task.phase, task.ended_at = "cancelled", "stopped", time.time()
+            task.result = {"moved": False, **moved}
+            return task.to_dict()
         try:
             report, _ = _fresh_report()
             before = float(report["stamp_unix"])

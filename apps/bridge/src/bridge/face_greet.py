@@ -8,8 +8,10 @@ instead of being refused by it. A person is greeted on the step to recognising t
 THEIR cooldown. A live face that matches nobody gets GREETING_UNKNOWN once per visit (a
 tick with no face at all ends the visit), past UNKNOWN_COOLDOWN_S; of it only a count and a
 time are kept. It speaks through `say` (so PARAR's stop_play cuts it), never while a PARAR
-stands or our speech is playing. It never moves anything, and shares no lock with
-stop_everything. Logs carry no features, images or measurements.
+stands or our speech is playing, queued or only just ended (`busy`: a reply between two
+sentences). A greeting a stop cut is not counted for the listen window. It never moves
+anything, and shares no lock with stop_everything. Logs carry no features, images or
+measurements.
 """
 
 from __future__ import annotations
@@ -67,15 +69,25 @@ def _speaking() -> bool:
         return False
 
 
-def _quiet() -> bool:
-    return estop.stop_is_standing() or _speaking()
+def _quiet(busy: Callable[[], bool]) -> bool:
+    return estop.stop_is_standing() or _speaking() or busy()
+
+
+def _heard(result: Any, stopped_before: float) -> bool:
+    """The greeting played to its end: no stop meanwhile, and say did not report a cut."""
+    status = result.get("status") if isinstance(result, dict) else None
+    return estop.last_stop_at() == stopped_before and status in (None, "ok")
 
 
 def _past(at: float | None, cooldown_s: float) -> bool:
     return at is None or time.monotonic() - at >= cooldown_s
 
 
-async def run(speak: Callable[[str], Awaitable[Any]], tick_s: float = TICK_S) -> None:
+async def run(
+    speak: Callable[[str], Awaitable[Any]],
+    tick_s: float = TICK_S,
+    busy: Callable[[], bool] = lambda: False,
+) -> None:
     """The greeter loop, for as long as it is not cancelled. Idles while both settings are off."""
     global _running, _last_greeted_at, _unknown_count, _unknown_seen_at
     global _unknown_greeted_at, _greet_seq, _last_greet
@@ -104,7 +116,7 @@ async def run(speak: Callable[[str], Awaitable[Any]], tick_s: float = TICK_S) ->
                         _unknown_seen_at = time.monotonic()
                     if visit_greeted or not _past(_unknown_greeted_at, UNKNOWN_COOLDOWN_S):
                         continue
-                    if _quiet():
+                    if _quiet(busy):
                         continue
                     await speak(GREETING_UNKNOWN)
                     visit_greeted, _unknown_greeted_at = True, time.monotonic()
@@ -112,12 +124,17 @@ async def run(speak: Callable[[str], Awaitable[Any]], tick_s: float = TICK_S) ->
                     continue
                 if not who or who == was or not s["greet"]:
                     continue
-                if not _past(_last_at.get(who), COOLDOWN_S) or _quiet():
+                if not _past(_last_at.get(who), COOLDOWN_S) or _quiet(busy):
                     continue
                 p = face_gate.person(who)
                 name = p["name"] if p else face_gate.enrolled_name()
-                await speak(greeting(name))
+                stopped_before = estop.last_stop_at()
+                said = await speak(greeting(name))
                 _last_at[who] = _last_greeted_at = time.monotonic()
+                if not _heard(said, stopped_before):
+                    # Cut by a stop: apps/back must not open the robot mic after it.
+                    log.info("face_greet.greeting_cut", person=who)
+                    continue
                 _greet_seq += 1
                 _last_greet = {
                     "seq": _greet_seq,
@@ -133,12 +150,14 @@ async def run(speak: Callable[[str], Awaitable[Any]], tick_s: float = TICK_S) ->
 
 
 @asynccontextmanager
-async def greeting_operator(speak: Callable[[str], Awaitable[Any]]) -> AsyncIterator[None]:
+async def greeting_operator(
+    speak: Callable[[str], Awaitable[Any]], busy: Callable[[], bool] = lambda: False
+) -> AsyncIterator[None]:
     """`run` for as long as the server serves, like the foreign-stop watcher. Off in stub."""
     if os.environ.get("SIM_MODE", "stub") == "stub":
         yield
         return
-    task = asyncio.create_task(run(speak))
+    task = asyncio.create_task(run(speak, busy=busy))
     try:
         yield
     finally:

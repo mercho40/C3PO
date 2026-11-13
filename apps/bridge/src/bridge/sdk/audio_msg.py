@@ -175,6 +175,11 @@ class AudioMsgLink:
         with self._lock:
             return self._playing
 
+    def mark_play_pending(self) -> None:
+        """Forget the last end, right before sending new audio: `_play_end` is only cleared
+        when play_state=1 arrives (~100 ms later), so a wait would return on the old end."""
+        self._play_end.clear()
+
     def wait_for_playback_end(self, timeout_s: float) -> bool:
         """Block until playback stops. True if it ended, False on timeout.
 

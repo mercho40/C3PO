@@ -114,3 +114,87 @@ async def test_a_broken_speaker_does_not_block_the_motion(events, monkeypatch):
     monkeypatch.setattr(mcp_server, "_announce_speak", broken)
     await _server(events).call_tool("wave", {})
     assert events == ["moved"]
+
+
+def _planner(seen: list[str]) -> mcp_server.GovernedMCP:
+    """A SELF tool (named pick) that plans, then announces itself at its first motion."""
+    server = mcp_server.GovernedMCP(name="t")
+
+    @server.tool(name="pick", meta=T1)
+    async def pick(label: str) -> dict:
+        seen.append("planned")
+        if label == "lejos":
+            return {"status": "failed", "phase": "planning"}  # refused by its own planner
+        if not await motion_announce.before_motion():
+            return {"status": "cancelled"}
+        seen.append("moved")
+        return {"status": "ok"}
+
+    @server.tool(name="turn", meta=T1)
+    async def turn(delta_yaw_radians: float) -> dict:
+        seen.append("moved")
+        return {"status": "ok"}
+
+    return server
+
+
+async def test_a_planning_tool_is_announced_after_its_plan_and_before_it_moves(events):
+    await _planner(events).call_tool("pick", {"label": "bottle"})
+    assert events == [
+        "planned",
+        "speak:Atención, todos los humanos córranse: voy a agarrar la botella.",
+        "moved",
+    ]
+
+
+async def test_a_plan_the_tool_refuses_is_never_announced(events):
+    await _planner(events).call_tool("pick", {"label": "lejos"})
+    assert events == ["planned"]
+
+
+async def test_invalid_arguments_are_refused_without_a_warning(events):
+    with pytest.raises(ToolError):
+        await _planner(events).call_tool("turn", {"delta_yaw_radians": "noventa"})
+    with pytest.raises(ToolError):
+        await _planner(events).call_tool("pick", {})
+    assert events == []
+
+
+async def test_a_warning_cut_by_a_stop_does_not_spare_the_retry(monkeypatch):
+    said, stops = [], [0.0]
+
+    async def speak(text: str) -> dict:
+        said.append(text)
+        if len(said) == 1:
+            stops[0] = 5.0  # PARAR during the first warning
+        return {"status": "ok"}
+
+    monkeypatch.setattr(motion_announce.estop, "last_stop_at", lambda: stops[0])
+    assert await motion_announce.announce("walk_to", {}, speak) is False
+    assert await motion_announce.announce("walk_to", {}, speak) is True  # Reanudar, retry
+    assert len(said) == 2  # said again, not skipped as "just said"
+
+
+async def test_a_warning_say_reports_cut_means_no_motion_and_no_dedupe():
+    said = []
+
+    async def speak(text: str) -> dict:
+        said.append(text)
+        return {"status": "stopped" if len(said) == 1 else "ok"}
+
+    assert await motion_announce.announce("walk_to", {}, speak) is False
+    assert await motion_announce.announce("walk_to", {}, speak) is True
+    assert len(said) == 2
+
+
+async def test_a_soft_stop_during_the_warning_means_no_motion(events, monkeypatch):
+    from bridge.skills import stop_everything
+
+    async def speak_then_frena(text: str) -> dict:
+        await stop_everything.soft_stop()  # «no, frená» while the warning plays
+        return {"status": "ok"}
+
+    monkeypatch.setattr(mcp_server, "_announce_speak", speak_then_frena)
+    with pytest.raises(ToolError, match="nothing moved"):
+        await _server(events).call_tool("wave", {})
+    assert "moved" not in events

@@ -117,6 +117,9 @@ def _canonical_args(tool: Tool, arguments: dict[str, Any] | None) -> str:
     return json.dumps(parsed.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
 
+STOPPED_DURING_WARNING = "stopped: a stop came during the spoken warning; nothing moved"
+
+
 class GovernedMCP(FastMCP):
     """FastMCP whose every tool call passes the risk-tier gate first.
 
@@ -154,11 +157,25 @@ class GovernedMCP(FastMCP):
                 refusal = safety.tool_refusal(name, meta, args_key)
         if refusal is not None:
             raise ToolError(refusal)
-        if motion_announce.applies(name, meta) and not await motion_announce.announce(
-            name, arguments, _announce_speak
-        ):
-            raise ToolError("stopped: PARAR came during the spoken warning; nothing moved")
-        return await super().call_tool(name, arguments)
+        token = None
+        if motion_announce.applies(name, meta):
+            md = tool.fn_metadata
+            try:
+                args = md.arg_model.model_validate(md.pre_parse_json(arguments or {})).model_dump()
+            except ValidationError:
+                args = None  # unannounced: super().call_tool raises FastMCP's own error
+            if args is not None and name in motion_announce.SELF:
+                # After its planning, at its first motion command: a failed plan says nothing.
+                token = motion_announce.defer(name, args, _announce_speak)
+            elif args is not None and not await motion_announce.announce(
+                name, args, _announce_speak
+            ):
+                raise ToolError(STOPPED_DURING_WARNING)
+        try:
+            return await super().call_tool(name, arguments)
+        finally:
+            if token is not None:
+                motion_announce.reset(token)
 
 
 mcp = GovernedMCP(
@@ -532,6 +549,9 @@ async def go_to_object(
         gx, gy = g.world_target(
             nav_pose["x"], nav_pose["y"], nav_pose["yaw"], rng_now - stop, brg_now
         )
+        # The camera walk below announces in walk_to.run; Nav2's goal goes out here.
+        if not await motion_announce.before_motion():
+            return {"error": "stopped", "detail": STOPPED_DURING_WARNING, "target": rounded}
         started = await _start_navigation(
             gx,
             gy,
@@ -1833,6 +1853,54 @@ async def open_hands() -> dict:
 # Tool: say
 # ---------------------------------------------------------------------------
 
+# Every Spanish say goes through one FIFO queue, held from synthesis to the end of
+# playback: the agent, apps/back's confirm line, the motion warning and the greeter all
+# speak in arrival order, and only a stop (stop_play bumps _play_generation) cuts in.
+_speech: dict[str, Any] = {"loop": None, "lock": None, "ended_at": -1e9, "tails": set()}
+# The greeter's "a conversation is going on": this long after our last utterance ended.
+SPEECH_HOLD_S = 3.0
+
+
+def _speech_lock() -> asyncio.Lock:
+    # Per loop: the server runs one; tests run one each, and a Lock binds to its loop.
+    loop = asyncio.get_running_loop()
+    if _speech["loop"] is not loop:
+        _speech.update(loop=loop, lock=asyncio.Lock())
+    return _speech["lock"]
+
+
+def _speech_release(lock: asyncio.Lock) -> None:
+    _speech["ended_at"] = time.monotonic()
+    lock.release()
+
+
+def _speech_busy() -> bool:
+    """Speech playing, queued, or just ended (the gap between a reply's sentences)."""
+    lock = _speech["lock"]
+    return bool(lock and lock.locked()) or time.monotonic() - _speech["ended_at"] < SPEECH_HOLD_S
+
+
+def _playback_end(link: Any, timeout_s: float, generation: int) -> bool:
+    """True when play_state dropped; False on timeout, or soon after a stop (a stop before
+    the firmware reported playing is never followed by an end)."""
+    from bridge.sdk import g1_rpc
+
+    deadline = time.monotonic() + timeout_s
+    while (left := deadline - time.monotonic()) > 0:
+        if link.wait_for_playback_end(min(left, 0.1)):
+            return True
+        if g1_rpc._play_generation != generation:
+            return False
+    return False
+
+
+async def _speech_tail(lock: asyncio.Lock, link: Any, timeout_s: float, generation: int) -> None:
+    """A wait_for_completion=False say: the queue stays held until its audio ends."""
+    try:
+        await asyncio.to_thread(_playback_end, link, timeout_s, generation)
+    finally:
+        _speech_release(lock)
+
 
 @mcp.tool(
     meta=skill_meta(
@@ -1905,11 +1973,11 @@ async def say(
     works with the network down — which is exactly when "estoy atascado" is
     worth saying. Logs only on stub and sim, which have no speaker.
 
-    INTERRUPTION IS FREE AND IMPLICIT for Spanish. `PlayStream`'s `stream_id` is
-    the interrupt model — a new id interrupts whatever is playing — and each
-    call here mints a new one. So a second `say` barges in over the first rather
-    than queueing behind it, with no stop call needed. Firmware TTS has no such
-    model and no documented behaviour for overlapping calls.
+    SPANISH SPEECH QUEUES. Every Spanish `say` (yours, the motion warning, the
+    greeter, the console's lines) waits for the one before it to finish playing,
+    in arrival order, so nothing talks over anything. Only stop_everything cuts
+    speech, and it drops what is still queued (status 'stopped'). Firmware TTS
+    has no such queue and no documented behaviour for overlapping calls.
 
     The robot's speaker is SHARED with the co-tenant `gemm` stack and there is
     no arbitration. We publish under our own `app_name` ("c3po"), so their
@@ -1978,65 +2046,88 @@ async def say(
                 "stub": False,
             }
 
-        # One stream_id per utterance, minted fresh so this call interrupts
-        # whatever is currently playing. Milliseconds is the vendor's own
-        # convention; it only has to be different from the last one.
-        stream_id = f"c3po-{int(time.time() * 1000)}"
-        # Before synthesis, which takes hundreds of ms: a PARAR during it must cancel this too.
+        # Before queueing and before synthesis (hundreds of ms): a PARAR while this waits
+        # its turn, or while Piper works, must cancel it too.
         generation = g1_rpc._play_generation
-
-        def _synth_and_play() -> tuple[int, str | None, float]:
-            pcm = tts.synthesize(text)
-            code, data = g1_rpc.play_pcm(pcm, stream_id, generation=generation)
-            return code, data, tts.duration_s(pcm)
-
+        lock = _speech_lock()
+        await lock.acquire()
+        held = True
         try:
-            # Both halves off the event loop. Synthesis is CPU-bound and
-            # PlayStream is a blocking RPC per chunk; on the loop, a long
-            # sentence would stall every other tool call — stop_everything
-            # included, which is the one that must never wait behind speech.
-            code, data, seconds = await asyncio.to_thread(_synth_and_play)
-        except tts.TtsUnavailable as exc:
-            return {
-                "status": "failed",
-                "spoken": None,
-                "language": language,
-                "error": "spanish_tts_failed",
-                "detail": str(exc),
-                "env": SIM_MODE,
-                "stub": False,
-            }
-
-        # PlayStream acks on RECEIPT, not on completion — the vendor's own
-        # example fires it and sleeps a fixed 3 s. `speech_seconds` below is
-        # computed from the bytes sent, which used to be the only answer
-        # available.
-        #
-        # It is no longer. `rt/audio_msg` carries `play_state`, measured on this
-        # robot to track our own PlayStream to within ~100 ms, and it is the
-        # real completion signal. The module that reads it existed the whole
-        # time and was subscribed by nobody (see main()).
-        #
-        # The timeout is the byte estimate plus a margin, and not a constant: a
-        # long sentence must be allowed to finish, and a firmware that never
-        # drops play_state must not wedge this call forever. `False` back from
-        # the wait means "it did not end in time", which is reported rather than
-        # raised — the speech was still sent.
-        playback_confirmed: bool | None = None
-        if wait_for_completion and code == 0:
+            if g1_rpc._play_generation != generation:
+                return {
+                    "status": "stopped",
+                    "spoken": None,
+                    "language": language,
+                    "note": "A stop came while this waited its turn: not spoken.",
+                    "env": SIM_MODE,
+                    "stub": False,
+                }
+            # One stream_id per utterance (a new id would barge in; the queue makes that
+            # moot). Milliseconds is the vendor's own convention.
+            stream_id = f"c3po-{int(time.time() * 1000)}"
             try:
                 from bridge.sdk.audio_msg import get_audio_msg_link
 
                 link = get_audio_msg_link()
-                playback_confirmed = await asyncio.to_thread(
-                    link.wait_for_playback_end, seconds + PLAYBACK_WAIT_MARGIN_S
-                )
             except Exception:
-                log.exception("say.wait_for_completion_failed")
-                playback_confirmed = None
+                log.exception("say.audio_link_failed")
+                link = None
+
+            def _synth_and_play() -> tuple[int, str | None, float]:
+                pcm = tts.synthesize(text)
+                if link is not None:
+                    # The last utterance's end is still set: a wait must not return on it.
+                    link.mark_play_pending()
+                code, data = g1_rpc.play_pcm(pcm, stream_id, generation=generation)
+                return code, data, tts.duration_s(pcm)
+
+            try:
+                # Both halves off the event loop. Synthesis is CPU-bound and
+                # PlayStream is a blocking RPC per chunk; on the loop, a long
+                # sentence would stall every other tool call — stop_everything
+                # included, which is the one that must never wait behind speech.
+                code, data, seconds = await asyncio.to_thread(_synth_and_play)
+            except tts.TtsUnavailable as exc:
+                return {
+                    "status": "failed",
+                    "spoken": None,
+                    "language": language,
+                    "error": "spanish_tts_failed",
+                    "detail": str(exc),
+                    "env": SIM_MODE,
+                    "stub": False,
+                }
+
+            # PlayStream acks on RECEIPT, not on completion. `rt/audio_msg`'s
+            # `play_state`, measured on this robot to track our own PlayStream to
+            # within ~100 ms, is the real completion signal (see main()).
+            #
+            # The timeout is the byte estimate plus a margin, and not a constant: a
+            # long sentence must be allowed to finish, and a firmware that never
+            # drops play_state must not wedge the queue forever. `False` back from
+            # the wait means "it did not end in time", which is reported rather than
+            # raised — the speech was still sent. Without wait_for_completion the
+            # queue still waits, in the background, so the next say cannot cut this.
+            playback_confirmed: bool | None = None
+            if code == 0 and link is not None:
+                timeout_s = seconds + PLAYBACK_WAIT_MARGIN_S
+                if wait_for_completion:
+                    playback_confirmed = await asyncio.to_thread(
+                        _playback_end, link, timeout_s, generation
+                    )
+                else:
+                    tail = asyncio.create_task(_speech_tail(lock, link, timeout_s, generation))
+                    _speech["tails"].add(tail)
+                    tail.add_done_callback(_speech["tails"].discard)
+                    held = False
+            cut = g1_rpc._play_generation != generation
+        finally:
+            if held:
+                _speech_release(lock)
 
         return {
-            "status": "ok" if code == 0 else "failed",
+            # stopped: a stop cut it or it never started, so it was not heard in full.
+            "status": "failed" if code != 0 else "stopped" if cut else "ok",
             "spoken": text if code == 0 else None,
             "language": language,
             "rpc_code": code,
@@ -5105,7 +5196,7 @@ async def _run_streamable_http() -> None:
         port=BRIDGE_PORT,
         log_level=mcp.settings.log_level.lower(),
     )
-    async with watching_foreign_stops(), face_greet.greeting_operator(_greet):
+    async with watching_foreign_stops(), face_greet.greeting_operator(_greet, _speech_busy):
         await uvicorn.Server(config).serve()
 
 
@@ -5114,17 +5205,17 @@ async def _announce_speak(text: str) -> Any:
     return await say(text, wait_for_completion=True)
 
 
-async def _greet(text: str) -> None:
+async def _greet(text: str) -> Any:
     """The greeter speaks through `say` itself, so PARAR's stop_play cuts it like any speech.
     Waits for the end of playback: apps/back's listen window opens on the greeting's record."""
-    await say(text, wait_for_completion=True)
+    return await say(text, wait_for_completion=True)
 
 
 async def _run_stdio() -> None:
     """FastMCP's stdio transport, with the same foreign-stop watcher as HTTP."""
     from bridge.skills.stop_everything import watching_foreign_stops
 
-    async with watching_foreign_stops(), face_greet.greeting_operator(_greet):
+    async with watching_foreign_stops(), face_greet.greeting_operator(_greet, _speech_busy):
         await mcp.run_stdio_async()
 
 
