@@ -101,7 +101,7 @@ describe("labels and colours", () => {
   test("unknown is amber «Desconocido»", () => {
     const l = faceLook(face({ known: false, name: null, role: null }));
     expect(l.text).toBe("Desconocido");
-    expect(l.color).toBe("rgb(251, 191, 36)");
+    expect(l.color).toBe("rgb(248, 113, 113)");
   });
   test("live false says ¿foto? and dims", () => {
     const l = faceLook(face({ live: false }));
@@ -163,7 +163,7 @@ describe("drawFaceBoxes", () => {
       [100, 50, 40, 60],
     ]);
     expect(boxes[0].color).toBe("rgb(74, 222, 128)");
-    expect(boxes[1].color).toBe("rgb(251, 191, 36)");
+    expect(boxes[1].color).toBe("rgb(248, 113, 113)");
     expect(
       calls.filter((c) => c.fn === "fillText").map((c) => c.args[0]),
     ).toEqual(["Ana", "Desconocido"]);

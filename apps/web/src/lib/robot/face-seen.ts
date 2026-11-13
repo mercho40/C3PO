@@ -60,7 +60,7 @@ export function freshFaces(seen: FaceSeen | null, elapsedS = 0): SeenFace[] {
 export type FaceLook = { text: string; color: string; dim: boolean };
 
 const KNOWN = "rgb(74, 222, 128)";
-const UNKNOWN = "rgb(251, 191, 36)";
+const UNKNOWN = "rgb(248, 113, 113)"; // red: a stranger in front of the robot is the case to notice
 
 export function faceLook(face: SeenFace): FaceLook {
   const base = face.known && face.name ? face.name : "Desconocido";

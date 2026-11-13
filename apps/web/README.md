@@ -149,7 +149,7 @@ headset then needs 8001 forwarded: `scripts/quest_reverse.sh`.
 **Face boxes** (`src/lib/robot/face-seen.ts`, `components/robot/face-boxes.svelte`).
 While a picture shows and the tab is visible, the view polls `/face/seen` next to the
 camera about once a second and draws a box per face: the name in green,
-«Desconocido» in amber, «¿foto?» dimmed when liveness failed. Anything older than
+«Desconocido» in red, «¿foto?» dimmed when liveness failed. Anything older than
 2 s is cleared. The headset draws the same boxes into the frame before its texture
 upload. A button on the picture hides them per browser. The bridge fills
 `/face/seen` only while a greet switch is on in «Caras» (`/faces`, admins only).

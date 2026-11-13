@@ -581,7 +581,7 @@ speaking, and it never moves. `/safety/status` has `face_greet` (`on`, the setti
 last greeting's age, the stranger count) and names nobody.
 
 **Face boxes over the camera** (aa05697). `/live-camera`, the `/vr-control` mirror and the
-Quest's XR view draw a box on each face: the name in green, «Desconocido» in amber, and
+Quest's XR view draw a box on each face: the name in green, «Desconocido» in red, and
 «¿foto?» dimmed when a face failed liveness. A box older than 2 s is cleared. The boxes
 come from the greeter's checks, so **they update only while a greet switch is on**. The
 button on the picture («Ocultar caras» / «Mostrar caras») hides them in that browser. With
