@@ -39,7 +39,7 @@ from typing import Annotated, Any, Literal
 import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.tools import Tool
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, WithJsonSchema
 
 from bridge.env_file import load_env_file
 
@@ -1705,6 +1705,24 @@ async def release_arm_control() -> dict:
     return {**await run_release(), "env": SIM_MODE}
 
 
+
+_FINGER_NAMES = ("thumb", "thumb_rotation", "index", "middle", "ring", "pinky")
+# Published inline as explicit numeric properties (no $ref, no propertyNames): given a
+# free-form dict, the ia-tic model sent {"index": "0"}, a string, and apps/back refused it.
+_FINGERS_SCHEMA = {
+    "anyOf": [
+        {
+            "type": "object",
+            "properties": {
+                f: {"type": "number", "minimum": 0.0, "maximum": 1.0} for f in _FINGER_NAMES
+            },
+            "additionalProperties": False,
+        },
+        {"type": "null"},
+    ]
+}
+
+
 @mcp.tool(
     meta=skill_meta(
         classification="gesture",
@@ -1746,6 +1764,7 @@ async def set_hand(
             Annotated[float, Field(ge=0.0, le=1.0)],
         ]
         | None,
+        WithJsonSchema(_FINGERS_SCHEMA),
         Field(
             description=(
                 "Single fingers, 0.0 open .. 1.0 closed, on top of `shape` (or `closure`). "

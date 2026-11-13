@@ -57,11 +57,51 @@ export interface ValidationResult {
  * as a validation issue, because a 500 on the dry-run path would hide exactly
  * the mismatch the dry-run exists to reveal.
  */
+const NUMERIC = /^-?\d+(\.\d+)?$/;
+
+function wantsNumber(schema: Record<string, unknown>): boolean {
+  const branches = [schema, ...((schema.anyOf as unknown[]) ?? [])] as Record<
+    string,
+    unknown
+  >[];
+  return branches.some((b) => b?.type === "number" || b?.type === "integer");
+}
+
+/**
+ * A model sometimes sends a number as a string (`{"index": "0"}` from ia-tic,
+ * 2026-11-13). Only plain decimal strings at number-typed paths become numbers.
+ * Not Ajv's coerceTypes: that also turns null into 0, unsafe for a distance.
+ */
+function coerceNumericStrings(schema: unknown, value: unknown): unknown {
+  if (!schema || typeof schema !== "object") return value;
+  const s = schema as Record<string, unknown>;
+  if (typeof value === "string" && NUMERIC.test(value) && wantsNumber(s))
+    return Number(value);
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const objects = [s, ...((s.anyOf as unknown[]) ?? [])] as Record<
+      string,
+      unknown
+    >[];
+    const props = objects.find((b) => b?.properties)?.properties as
+      | Record<string, unknown>
+      | undefined;
+    if (!props) return value;
+    const out: Record<string, unknown> = { ...(value as object) };
+    for (const [k, v] of Object.entries(out))
+      if (props[k]) out[k] = coerceNumericStrings(props[k], v);
+    return out;
+  }
+  return value;
+}
+
 export function validateArgs(
   schema: unknown,
   args: Record<string, unknown>,
 ): ValidationResult {
-  const value = { ...args };
+  const value = coerceNumericStrings(schema, { ...args }) as Record<
+    string,
+    unknown
+  >;
   let validate: ValidateFunction;
   try {
     validate = validatorFor(schema);

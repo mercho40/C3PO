@@ -270,6 +270,17 @@ export function classifySkillResult(body: unknown): SkillOutcome {
  * `body` is back's error body — `{error: "bridge_unavailable"}`,
  * `{error: "tool_error", detail}`, `{error: "admin_required"}`, …
  */
+/** Ajv issues as "path message; …", or nothing: never the word "null" on screen. */
+function issuesText(issues: unknown): string | undefined {
+  if (!Array.isArray(issues) || issues.length === 0) return undefined;
+  return issues
+    .map((i) => {
+      const o = obj(i);
+      return [str(o?.path), str(o?.message)].filter(Boolean).join(" ");
+    })
+    .join("; ");
+}
+
 export function classifyHttpError(
   status: number | null,
   body: unknown,
@@ -294,7 +305,7 @@ export function classifyHttpError(
   }
   if (status === 422 || code === "invalid_params") {
     return make("error", "Parámetros inválidos", {
-      detail: detail ?? JSON.stringify(b?.issues ?? null),
+      detail: detail ?? issuesText(b?.issues),
       code: "invalid_params",
     });
   }

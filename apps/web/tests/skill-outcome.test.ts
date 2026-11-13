@@ -162,6 +162,17 @@ describe("classifyHttpError", () => {
     expect(classifyHttpError(null, null).code).toBe("network");
   });
 
+  test("invalid_params shows the issues, never the word null", () => {
+    const o = classifyHttpError(422, {
+      error: "invalid_params",
+      issues: [{ path: "/fingers/index", message: "must be number" }],
+    });
+    expect(o.code).toBe("invalid_params");
+    expect(o.detail).toBe("/fingers/index must be number");
+    const bare = classifyHttpError(422, { error: "invalid_params" });
+    expect(bare.detail ?? "").not.toContain("null");
+  });
+
   test("403 is admin_required, as a warning", () => {
     const o = classifyHttpError(403, { error: "admin_required" });
     expect(o.kind).toBe("warn");

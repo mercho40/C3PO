@@ -198,7 +198,15 @@ async function invokeSkill(
     if (!validated.ok) {
       return {
         status: 422,
-        body: { error: "invalid_params", name, issues: validated.issues },
+        body: {
+          error: "invalid_params",
+          name,
+          // What the operator reads; the confirm path forwards only `detail`.
+          detail: validated.issues
+            .map((i) => `${i.path} ${i.message}`)
+            .join("; "),
+          issues: validated.issues,
+        },
       };
     }
     args = validated.value;
