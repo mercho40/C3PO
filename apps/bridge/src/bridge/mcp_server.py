@@ -1912,7 +1912,7 @@ async def run_sequence(
             "reason": "invalid_step",
             "detail": f"1 to {SEQUENCE_MAX} steps",
         }
-    planned: list[tuple[str, dict[str, Any], Any]] = []
+    planned: list[tuple[str, dict[str, Any], dict[str, Any], Any]] = []
     for i, step in enumerate(steps):
         name = str(step.get("tool") or "") if isinstance(step, dict) else ""
         args = (step.get("args") or {}) if isinstance(step, dict) else None
@@ -1920,7 +1920,7 @@ async def run_sequence(
         if tool is None or not isinstance(args, dict):
             return {"status": "failed", "reason": "invalid_step", "step": i, "tool": name}
         try:
-            _canonical_args(tool, args)
+            checked = json.loads(_canonical_args(tool, args))
         except ValidationError as exc:
             detail = str(exc)[:300]
             return {
@@ -1930,16 +1930,18 @@ async def run_sequence(
                 "tool": name,
                 "detail": detail,
             }
-        planned.append((name, args, tool))
+        planned.append((name, args, checked, tool))
     done: list[dict[str, Any]] = []
-    for i, (name, args, tool) in enumerate(planned):
+    for i, (name, args, checked, tool) in enumerate(planned):
         end = {"step": i, "tool": name, "done": done, "env": SIM_MODE}
         if refusal := safety.tool_refusal(name, tool.meta, confirmed=True):
             return {"status": "refused", "reason": "step_refused", "detail": refusal, **end}
+        # Spoken here, as call_tool would: no chainable tool is in motion_announce.SELF, so
+        # nothing is deferred and the step's own before_motion() says nothing again.
         if motion_announce.applies(name, tool.meta) and not await motion_announce.announce(
-            name, args, _announce_speak
+            name, checked, _announce_speak
         ):
-            return {"status": "refused", "reason": "step_refused", "detail": "PARAR", **end}
+            return {"status": "refused", "reason": "step_refused", "detail": STOPPED_DURING_WARNING, **end}
         try:
             result = await mcp._tool_manager.call_tool(name, args, context=ctx)
         except Exception as exc:  # noqa: BLE001 - the chain reports which step, never half-silent

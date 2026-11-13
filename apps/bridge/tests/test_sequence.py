@@ -110,3 +110,10 @@ def test_every_chainable_tool_exists_and_none_walks():
         assert tool.meta["c3po"]["classification"] in ("gesture", "speech"), name
     tier = mcp_server.mcp._tool_manager.get_tool("run_sequence").meta["c3po"]["tier"]
     assert tier == "T2"  # always confirmed, and offered by voice like the arm and hand
+
+
+def test_no_chainable_tool_defers_its_warning():
+    """run_sequence speaks each step's warning itself; a SELF tool would speak it twice."""
+    from bridge import motion_announce
+
+    assert not set(mcp_server.SEQUENCE_TOOLS) & motion_announce.SELF
