@@ -57,7 +57,7 @@ load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 # These must follow load_env_file above; ruff's E402 is silenced per import
 # rather than for the file, so a genuinely misplaced import still fails.
-from bridge import face_gate, face_greet, safety, watchdog  # noqa: E402
+from bridge import face_gate, face_greet, motion_announce, safety, watchdog  # noqa: E402
 from bridge.skill_meta import meta as skill_meta  # noqa: E402
 from bridge.watchdog import get_watchdog  # noqa: E402
 
@@ -154,6 +154,10 @@ class GovernedMCP(FastMCP):
                 refusal = safety.tool_refusal(name, meta, args_key)
         if refusal is not None:
             raise ToolError(refusal)
+        if motion_announce.applies(name, meta) and not await motion_announce.announce(
+            name, arguments, _announce_speak
+        ):
+            raise ToolError("stopped: PARAR came during the spoken warning; nothing moved")
         return await super().call_tool(name, arguments)
 
 
@@ -5068,6 +5072,11 @@ async def _run_streamable_http() -> None:
     )
     async with watching_foreign_stops(), face_greet.greeting_operator(_greet):
         await uvicorn.Server(config).serve()
+
+
+async def _announce_speak(text: str) -> Any:
+    """The motion warning speaks through `say` and waits, like the greeter: PARAR cuts it."""
+    return await say(text, wait_for_completion=True)
 
 
 async def _greet(text: str) -> None:
