@@ -46,6 +46,18 @@ ROOT_LINK = "torso_link"
 #: wrist-yaw axis with a ruler and set GRASP_TCP_M here.
 GRASP_TCP_M = 0.10
 
+#: The hand's thumb side, in `<side>_wrist_yaw_link` (both arms: at the URDF zero pose that frame
+#: is torso_link's, fingers +x, +z up). `solve(up=...)` points this axis there, which fixes the
+#: roll about the fingers; with it up and the fingers level the palm faces sideways, inward, as
+#: in a handshake. Evidence: the 2026-11-13 grasp (right q_deg [-86.7,-49.4,94.1,-32.7,41.6,
+#: 72.5,10.8], fingers 60° down, this axis horizontal, +y as far down as the fingers allow) was
+#: seen palm down, so the right palm normal is +y and the thumb +z (by mirror symmetry the left
+#: palm is -y, thumb +z).
+#: shortcut: inferred from one sighting, not from the Revo2 mesh (the URDF has the rubber hand).
+#: Robot check: plan a level pick in stub, play it, look at the hand; if the palm faces out
+#: (thumb down) set (0.0, 0.0, -1.0).
+THUMB_AXIS: Vec3 = (0.0, 0.0, 1.0)
+
 #: Keep IK solutions this far inside the URDF's hard limits.
 LIMIT_MARGIN_RAD = 0.05
 
@@ -277,6 +289,11 @@ class IKResult:
         }
 
 
+def _angle(w: Sequence[float], a: Sequence[float], b: Sequence[float]) -> float:
+    """The angle between unit vectors a and b, given w = a x b."""
+    return math.atan2(_norm(w), sum(u * v for u, v in zip(a, b, strict=True)))
+
+
 def _clip(q: Sequence[float], lim: Sequence[tuple[float, float]]) -> list[float]:
     return [min(max(v, lo), hi) for v, (lo, hi) in zip(q, lim, strict=True)]
 
@@ -289,6 +306,7 @@ def _solve_from(
     lim: Sequence[tuple[float, float]],
     tcp_m: float,
     max_iter: int,
+    up: Vec3 | None = None,
 ) -> IKResult:
     q = _clip(seed, lim)
     damping2 = 0.03**2
@@ -306,12 +324,18 @@ def _solve_from(
         ]
         err = list(e_pos)
         if pointing is not None:
-            # Rotation that takes the hand's pointing axis onto the requested one. Roll about
-            # that axis is left free, so the task is rank 5 and DLS spends the spare joints.
+            # Rotation that takes the hand's pointing axis onto the requested one. Without `up`
+            # roll about that axis is free, so the task is rank 5 and DLS spends the spare joints.
             w = _cross(hp.pointing, pointing)
-            dir_err = math.atan2(
-                _norm(w), sum(a * b for a, b in zip(hp.pointing, pointing, strict=True))
-            )
+            dir_err = _angle(w, hp.pointing, pointing)
+            if up is not None:
+                hz = hp.joint_axes[6]  # wrist yaw axis = the hand frame's +z
+                hx, hy = hp.pointing, _cross(hz, hp.pointing)
+                thumb = tuple(hx[k] * THUMB_AXIS[0] + hy[k] * THUMB_AXIS[1] + hz[k] * THUMB_AXIS[2]
+                              for k in range(3))  # fmt: skip
+                w_up = _cross(thumb, up)
+                w = _add(w, w_up)
+                dir_err = max(dir_err, _angle(w_up, thumb, up))
             rows += [[DIR_WEIGHT_M * a[k] for a in hp.joint_axes] for k in range(3)]
             err += [DIR_WEIGHT_M * v for v in w]
         else:
@@ -343,23 +367,26 @@ def solve(
     tcp_m: float = GRASP_TCP_M,
     joint_limits: Sequence[tuple[float, float]] | None = None,
     max_iter: int = 150,
+    up: Sequence[float] | None = None,
 ) -> IKResult:
     """Joint angles that put the tool centre at `target` (torso_link, m).
 
     `pointing`, if given, is the direction the fingers should point (unit vector, torso_link);
-    roll about it is free. `seed` is where to start — pass the measured arm pose so the answer
+    roll about it is free unless `up` (with `pointing`, perpendicular to it) says where the hand's
+    THUMB_AXIS points. `seed` is where to start — pass the measured arm pose so the answer
     is the nearby one, not a mirror-image elbow. Never raises for an unreachable target:
     returns the closest pose found with `reached=False`, and the caller must not send that.
     """
     lim = list(joint_limits) if joint_limits is not None else limits(side)
     goal = (float(target[0]), float(target[1]), float(target[2]))
     want = unit(pointing) if pointing is not None else None
+    thumb = unit(up) if up is not None and want is not None else None
     seeds = [list(seed)] if seed is not None else []
     # Elbow bent, forearm forward: the URDF zero pose. Then a reach-forward pose.
     seeds += [[0.0] * 7, [-0.8, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0]]
     best: IKResult | None = None
     for s in seeds:
-        r = _solve_from(side, goal, want, s, lim, tcp_m, max_iter)
+        r = _solve_from(side, goal, want, s, lim, tcp_m, max_iter, thumb)
         if r.reached:
             return r
         if best is None or r.position_error_m < best.position_error_m:

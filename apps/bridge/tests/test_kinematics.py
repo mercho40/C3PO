@@ -38,6 +38,24 @@ def test_ik_inverts_fk_inside_the_limits():
             assert lo - 1e-9 <= v <= hi + 1e-9
 
 
+def test_up_fixes_the_roll_about_the_fingers():
+    # Any pose's own roll is reachable: ask for it with `up` and get it back, from elsewhere.
+    rng = random.Random(3)
+    for _ in range(10):
+        q = [rng.uniform(lo, hi) * 0.5 for lo, hi in k.limits("right")]
+        hp = k.forward("right", q)
+        y = k._cross(hp.joint_axes[6], hp.pointing)
+        want = [sum(a[i] * w for a, w in zip((hp.pointing, y, hp.joint_axes[6]), k.THUMB_AXIS))
+                for i in range(3)]  # fmt: skip
+        sol = k.solve("right", hp.position, hp.pointing, up=want)
+        assert sol.reached, sol
+        got = k.forward("right", sol.q)
+        got_y = k._cross(got.joint_axes[6], got.pointing)
+        thumb = [sum(a[i] * w for a, w in zip((got.pointing, got_y, got.joint_axes[6]), k.THUMB_AXIS))
+                 for i in range(3)]  # fmt: skip
+        assert math.acos(min(1.0, sum(a * b for a, b in zip(thumb, want)))) < k.DIR_TOL_RAD
+
+
 def test_out_of_reach_is_reported_not_faked():
     sol = k.solve("right", (0.9, -0.2, 0.0))
     assert not sol.reached

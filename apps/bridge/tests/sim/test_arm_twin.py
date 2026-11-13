@@ -54,15 +54,21 @@ HANGING = {
     "right": [0.0, -0.15, 0.0, 1.5, 0.0, 0.0, 0.0],
     "left": [0.0, 0.15, 0.0, 1.5, 0.0, 0.0, 0.0],
 }
-#: test_manipulation's pick targets (torso_link, right arm): counter height to below the desk.
+#: test_manipulation's pick targets (torso_link, right arm): below the desk to chest height.
 PICK_TARGETS = [
     (0.30, -0.15, 0.05),
     (0.35, -0.16, -0.03),
     (0.36, -0.25, 0.0),
-    (0.28, -0.05, 0.10),
-    (0.26, -0.30, -0.05),
-    (0.30, -0.15, -0.10),
+    (0.38, -0.15, 0.124),
+    (0.42, -0.20, 0.124),
+    (0.34, -0.10, 0.20),
 ]
+#: The desk the low ones stand on: without a reported table only a level grasp plans.
+PICK_TABLES = {
+    (0.30, -0.15, 0.05): (0.20, -0.07),
+    (0.35, -0.16, -0.03): (0.25, -0.13),
+    (0.36, -0.25, 0.0): (0.25, -0.12),
+}
 
 
 @pytest.fixture(scope="module")
@@ -97,7 +103,8 @@ def _tcp(twin, side, q):
 
 @cache
 def _pick(target):
-    return m.plan_pick("right", target, "power", HANGING["right"])  # pure-Python IK: ~1 s each
+    table = PICK_TABLES.get(target)
+    return m.plan_pick("right", target, "power", HANGING["right"], table)  # IK: ~1 s each
 
 
 def _arm_qs(steps):
@@ -495,7 +502,8 @@ async def test_random_tables_every_plan_clears_torso_and_table(table_twin, monke
 def test_the_twin_table_catches_a_plan_that_ignores_it(table_twin):
     # The planner's view before supports: the cup's own z is the surface. With the real top 1 cm
     # under the cup's centre the hand goes into the twin's table; the table-aware plan refuses.
-    target, table = PICK_TARGETS[0], (0.20, PICK_TARGETS[0][2] - 0.01)
+    target = PICK_TARGETS[3]  # level, no table reported
+    table = (0.20, target[2] - 0.01)
     _place_table(table_twin, table)
     _hand(table_twin, "right", True)
     into = {
