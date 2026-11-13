@@ -534,7 +534,9 @@ def delete_all() -> None:
 
 
 def settings() -> dict[str, bool]:
-    """{"gate", "greet", "greet_unknown"}: settings.json over the environment's defaults."""
+    """{"gate", "greet", "greet_unknown", "listen_after_greet"}: settings.json over the
+    environment's defaults. `listen_after_greet` is read by apps/back, which opens a
+    robot-mic listening window after an enrolled person's greeting."""
     global _stored
     if _stored is None:
         stored = _json(settings_path())
@@ -552,6 +554,7 @@ def settings() -> dict[str, bool]:
         "gate": bool(GATED),
         "greet": os.environ.get("C3PO_FACE_GREET", "") == "1",
         "greet_unknown": False,
+        "listen_after_greet": False,
     }
     return {
         k: v if not isinstance(_stored.get(k), bool) else _stored[k] for k, v in defaults.items()

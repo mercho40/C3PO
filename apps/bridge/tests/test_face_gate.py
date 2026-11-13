@@ -747,7 +747,12 @@ def test_settings_persist_owner_only_and_apply_live(scene, monkeypatch):
     monkeypatch.setattr(face_gate, "_stored", None)
     monkeypatch.setattr(face_gate, "GATED", frozenset())
     monkeypatch.delenv("C3PO_FACE_GREET", raising=False)
-    assert face_gate.settings() == {"gate": False, "greet": False, "greet_unknown": False}
+    assert face_gate.settings() == {
+        "gate": False,
+        "greet": False,
+        "greet_unknown": False,
+        "listen_after_greet": False,
+    }
     assert not face_gate.gated("set_hand", T2)
     assert face_gate.update_settings({"gate": True})["gate"] is True
     assert face_gate.gated("set_hand", T2) and not face_gate.gated("get_state", T0)
@@ -819,7 +824,12 @@ async def test_face_routes_work_with_the_proof(routes):
     assert "features" not in json.dumps(body)
 
     resp = await routes.face_settings(_Req({"greet": True, "greet_unknown": True}, "s3cret"))
-    assert json.loads(resp.body) == {"gate": True, "greet": True, "greet_unknown": True}
+    assert json.loads(resp.body) == {
+        "gate": True,
+        "greet": True,
+        "greet_unknown": True,
+        "listen_after_greet": False,
+    }
     assert (await routes.face_settings(_Req({"greet": 1}, "s3cret"))).status_code == 400
 
     assert (
@@ -873,7 +883,7 @@ async def test_face_seen_has_boxes_names_for_people_and_nothing_for_strangers(
     _face(scene, 300, _E[9])  # a stranger beside her
     await face_gate.live_check(background=True, unknown=True)
     body = json.loads((await routes.face_seen(_Req())).body)
-    assert set(body) == {"stamp", "width", "height", "age_s", "faces"}
+    assert set(body) == {"stamp", "width", "height", "age_s", "faces", "greet"}
     assert (body["stamp"], body["width"], body["height"]) == (scene["stamp"], W, H)
     assert 0 <= body["age_s"] < 5
     her, other = body["faces"]

@@ -16,6 +16,8 @@ export type FaceSettings = {
   greet: boolean;
   greet_unknown: boolean;
   gate: boolean;
+  /** Robot mic on after greeting an enrolled person; read by apps/back. */
+  listen_after_greet: boolean;
 };
 export type FacePerson = {
   id: string;
@@ -36,6 +38,7 @@ export type Failed = { ok: false; text: string };
 export const SWITCHES: { key: keyof FaceSettings; label: string }[] = [
   { key: "greet", label: "Saludar a conocidos" },
   { key: "greet_unknown", label: "Saludar a desconocidos" },
+  { key: "listen_after_greet", label: "Escuchar después de saludar" },
   { key: "gate", label: "Pedir cara para acciones peligrosas" },
 ];
 

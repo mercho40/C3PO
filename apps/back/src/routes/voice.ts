@@ -49,7 +49,10 @@ import {
   bridgeVoiceEvents,
   bridgeVoiceStatus,
 } from "#back/voice/events.js";
+import { ListenWindow } from "#back/voice/listen-window.js";
 import { VoiceLoop } from "#back/voice/loop.js";
+import { readStoppedAt } from "#back/agent/stop-watch.js";
+import { bridgeSiblingUrl } from "#back/bridge/url.js";
 import { RealtimeVoiceSession } from "#back/voice/realtime.js";
 import {
   MAX_AUDIO_BYTES,
@@ -254,6 +257,74 @@ function getLoop(): VoiceLoop {
   return loop;
 }
 
+/** Start the legacy loop for `owner`, as /voice/start does on stopped -> running. */
+function startLegacy(owner: string): void {
+  const l = getLoop();
+  if (!l.snapshot().running) {
+    conversation.reset();
+    legacyStartedBy = owner;
+  }
+  lastEngine = "legacy";
+  l.start();
+}
+
+async function stopLegacy(): Promise<void> {
+  await getLoop().stop();
+  legacyStartedBy = null;
+}
+
+/** The bridge's last enrolled greeting (/face/seen `greet`), or null. */
+async function readGreet() {
+  try {
+    const res = await fetch(bridgeSiblingUrl("/face/seen"), {
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!res.ok) return null;
+    const g = ((await res.json()) as { greet?: Record<string, unknown> }).greet;
+    if (!g || typeof g.seq !== "number") return null;
+    return {
+      seq: g.seq,
+      name: typeof g.name === "string" ? g.name : null,
+      listen: g.listen_after_greet === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const LISTEN_AFTER_GREET_MS =
+  (Number(process.env.C3PO_LISTEN_AFTER_GREET_S) || 20) * 1000;
+
+/** «Escuchar después de saludar» (voice/listen-window.ts). */
+export const listenWindow = new ListenWindow(
+  {
+    readGreet,
+    readStoppedAt,
+    loopRunning: () => runningEngine() !== null,
+    startLoop: startLegacy,
+    stopLoop: stopLegacy,
+    activity: () => {
+      const s = getLoop().snapshot();
+      return s.utterancesHeard + s.agentRuns;
+    },
+    stops: () => getLoop().snapshot().stopsTriggered,
+    busy: () => conversation.state().phase !== "idle",
+    log: (event, detail) => console.log(`[voice] ${event}`, detail ?? ""),
+  },
+  LISTEN_AFTER_GREET_MS,
+);
+
+/** Once a second, for the process's life (index.ts). Ticks never overlap. */
+export function startListenAfterGreet(): void {
+  const run = async () => {
+    await listenWindow.tick().catch((e) => {
+      console.error("[voice] listen_window.tick_failed", e);
+    });
+    setTimeout(run, 1000).unref?.();
+  };
+  void run();
+}
+
 export const voiceRoutes = new Elysia({ prefix: "/voice" })
   .use(betterAuth)
   .post(
@@ -313,14 +384,9 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
         return voiceStatus(user.id);
       }
 
-      const l = getLoop();
       // A stopped -> running transition begins a fresh conversation. Repeated
       // start requests are idempotent and must not erase an active dialogue.
-      if (!l.snapshot().running) {
-        conversation.reset();
-        legacyStartedBy = user.id;
-      }
-      l.start();
+      startLegacy(user.id);
       return voiceStatus(user.id);
     },
     {
@@ -349,8 +415,7 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
           return status(409, voiceStatus(user.id));
         await realtime.stop();
       } else {
-        await getLoop().stop();
-        legacyStartedBy = null;
+        await stopLegacy();
       }
       return voiceStatus(user.id);
     },

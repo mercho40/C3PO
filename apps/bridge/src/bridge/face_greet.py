@@ -45,6 +45,10 @@ _last_greeted_at: float | None = None
 _unknown_count = 0
 _unknown_seen_at: float | None = None
 _unknown_greeted_at: float | None = None
+#: The last ENROLLED greeting, numbered, for apps/back's listen-after-greet window (via
+#: /face/seen). Never a stranger's.
+_greet_seq = 0
+_last_greet: dict[str, Any] | None = None
 
 
 def greeting(name: str | None) -> str:
@@ -74,7 +78,7 @@ def _past(at: float | None, cooldown_s: float) -> bool:
 async def run(speak: Callable[[str], Awaitable[Any]], tick_s: float = TICK_S) -> None:
     """The greeter loop, for as long as it is not cancelled. Idles while both settings are off."""
     global _running, _last_greeted_at, _unknown_count, _unknown_seen_at
-    global _unknown_greeted_at
+    global _unknown_greeted_at, _greet_seq, _last_greet
     _running, prev, visit, visit_greeted = True, None, False, False
     log.info("face_greet.on", cooldown_s=COOLDOWN_S, unknown_cooldown_s=UNKNOWN_COOLDOWN_S)
     try:
@@ -114,6 +118,13 @@ async def run(speak: Callable[[str], Awaitable[Any]], tick_s: float = TICK_S) ->
                 name = p["name"] if p else face_gate.enrolled_name()
                 await speak(greeting(name))
                 _last_at[who] = _last_greeted_at = time.monotonic()
+                _greet_seq += 1
+                _last_greet = {
+                    "seq": _greet_seq,
+                    "person": who,
+                    "name": name,
+                    "at": _last_greeted_at,
+                }
                 log.info("face_greet.greeted", person=who)
             except Exception:
                 log.exception("face_greet.tick_failed")
@@ -140,6 +151,19 @@ def _age(at: float | None) -> float | None:
 
 def unknown_seen() -> dict[str, Any]:
     return {"count": _unknown_count, "last_age_s": _age(_unknown_seen_at)}
+
+
+def last_greet() -> dict[str, Any]:
+    """{"seq", "name", "age_s", "listen_after_greet"}: the last enrolled greeting
+    (seq 0 before any) and whether apps/back should listen after one. `seq` only grows (per
+    bridge process), so a reader acts once per greeting. No person id: /face/seen is open."""
+    g = _last_greet or {}
+    return {
+        "seq": g.get("seq", 0),
+        "name": g.get("name"),
+        "age_s": _age(g.get("at")),
+        "listen_after_greet": face_gate.settings()["listen_after_greet"],
+    }
 
 
 def status() -> dict[str, Any]:

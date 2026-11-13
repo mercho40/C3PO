@@ -11,6 +11,7 @@ import {
   enrolledText,
   faceErrorText,
   runFace,
+  SWITCHES,
 } from "../src/lib/admin/faces";
 import { navFor } from "../src/lib/nav";
 
@@ -175,6 +176,13 @@ describe("faces", () => {
       enrolledText(Date.parse("2026-11-10T12:00:00Z") / 1000),
     );
     expect(enrolledText(null)).toBe("—");
+  });
+
+  test("«Escuchar después de saludar» is a switch like the others, sent as listen_after_greet", async () => {
+    expect(SWITCHES.map((s) => s.key)).toContain("listen_after_greet");
+    expect(SWITCHES.find((s) => s.key === "listen_after_greet")?.label).toBe(
+      "Escuchar después de saludar",
+    );
   });
 
   test("Caras is in the nav for admins only", () => {

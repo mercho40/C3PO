@@ -35,6 +35,8 @@ def greeter(tmp_path, monkeypatch):
         ("_unknown_count", 0),
         ("_unknown_seen_at", None),
         ("_unknown_greeted_at", None),
+        ("_greet_seq", 0),
+        ("_last_greet", None),
     ):
         monkeypatch.setattr(face_greet, name, value)
     monkeypatch.setattr(face_greet, "_speaking", lambda: False)
@@ -195,7 +197,7 @@ async def test_status_reports_age_and_settings_and_no_name_nor_biometrics(greete
     await greeter(SEEN)
     s = face_greet.status()
     assert 0 <= s["last_greeted_age_s"] < 5
-    assert s["settings"] == {"gate": False, "greet": True, "greet_unknown": False}
+    assert s["settings"] == {"gate": False, "greet": True, "greet_unknown": False, "listen_after_greet": False}
     assert set(s) == {"on", "settings", "last_greeted_age_s", "unknown_seen"}  # /safety/status is open
     assert "Oliver" not in str(s)
 
@@ -208,7 +210,30 @@ async def test_safety_status_carries_the_greeter(greeter):
     body = json.loads((await mcp_server.safety_status(None)).body)
     assert body["face_greet"] == {
         "on": False,
-        "settings": {"gate": False, "greet": True, "greet_unknown": False},
+        "settings": {"gate": False, "greet": True, "greet_unknown": False, "listen_after_greet": False},
         "last_greeted_age_s": None,
         "unknown_seen": {"count": 0, "last_age_s": None},
     }
+
+
+async def test_only_an_enrolled_greeting_is_numbered_for_the_listen_window(greeter, monkeypatch):
+    # apps/back opens its robot-mic window once per new seq: a stranger must never bump it.
+    monkeypatch.setattr(face_gate, "_stored", {"greet": True, "greet_unknown": True})
+    monkeypatch.setattr(face_greet, "UNKNOWN_COOLDOWN_S", 0.0)
+    assert face_greet.last_greet()["seq"] == 0
+    await greeter(STRANGER, NOBODY, STRANGER)
+    assert face_greet.last_greet()["seq"] == 0
+    await greeter(SEEN, GONE, NOBODY, ANA)
+    g = face_greet.last_greet()
+    assert (g["seq"], g["name"], g["listen_after_greet"]) == (2, "Ana", False)
+    assert 0 <= g["age_s"] < 5
+
+
+async def test_face_seen_carries_the_last_greeting(greeter):
+    import json
+
+    from bridge import mcp_server
+
+    await greeter(SEEN)
+    body = json.loads((await mcp_server.face_seen(None)).body)
+    assert body["greet"]["seq"] == 1 and body["greet"]["name"] == "Oliver"

@@ -195,6 +195,30 @@ describe("/face", () => {
     expect(again.status).toBe(428);
   });
 
+  test("«Escuchar después de saludar» on makes its admin the window's owner; off clears it", async () => {
+    const { listenWindow } = await import("./voice");
+    listenWindow.setOwner(null);
+    let id = await ask("settings", { listen_after_greet: true });
+    const on = await call("POST", `/settings?confirmation=${id}`, {
+      listen_after_greet: true,
+    });
+    expect(on.status).toBe(200);
+    expect(JSON.parse(String(seen[0]?.init?.body))).toEqual({
+      listen_after_greet: true,
+    });
+    expect(listenWindow.ownerId()).toBe("admin1");
+    // Another switch leaves the owner alone; a refused call changes nothing.
+    id = await ask("settings", { greet: false });
+    await call("POST", `/settings?confirmation=${id}`, { greet: false });
+    await call("POST", `/settings`, { listen_after_greet: false }); // no card: 428
+    expect(listenWindow.ownerId()).toBe("admin1");
+    id = await ask("settings", { listen_after_greet: false });
+    await call("POST", `/settings?confirmation=${id}`, {
+      listen_after_greet: false,
+    });
+    expect(listenWindow.ownerId()).toBeNull();
+  });
+
   test("confirmed settings, delete and enroll relay exactly the confirmed args", async () => {
     let id = await ask("settings", { gate: true });
     expect(

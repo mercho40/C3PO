@@ -4331,7 +4331,8 @@ async def face_seen(request):  # noqa: ANN001, ANN201 - starlette types
 
     from bridge.sdk.camera_relay import camera_headers
 
-    return JSONResponse(face_gate.seen(), headers=camera_headers(_origin_of(request)))
+    body = {**face_gate.seen(), "greet": face_greet.last_greet()}
+    return JSONResponse(body, headers=camera_headers(_origin_of(request)))
 
 
 @mcp.custom_route("/face/settings", methods=["POST"])
@@ -5070,8 +5071,9 @@ async def _run_streamable_http() -> None:
 
 
 async def _greet(text: str) -> None:
-    """The greeter speaks through `say` itself, so PARAR's stop_play cuts it like any speech."""
-    await say(text)
+    """The greeter speaks through `say` itself, so PARAR's stop_play cuts it like any speech.
+    Waits for the end of playback: apps/back's listen window opens on the greeting's record."""
+    await say(text, wait_for_completion=True)
 
 
 async def _run_stdio() -> None:

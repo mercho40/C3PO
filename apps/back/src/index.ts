@@ -9,7 +9,7 @@ import { telemetryRoutes } from "#back/routes/telemetry.js";
 import { cameraRoutes } from "#back/routes/camera.js";
 import { agentRoutes } from "#back/routes/agent.js";
 import { chatsRoutes } from "#back/routes/chats.js";
-import { voiceRoutes } from "#back/routes/voice.js";
+import { startListenAfterGreet, voiceRoutes } from "#back/routes/voice.js";
 import { auditRoutes } from "#back/routes/audit.js";
 import { safetyRoutes } from "#back/routes/safety.js";
 import { faceRoutes } from "#back/routes/face.js";
@@ -106,6 +106,8 @@ const app = new Elysia()
       .use(voiceRoutes),
   )
   .listen({ port: env.PORT, hostname: env.BACK_HOST });
+
+startListenAfterGreet();
 
 console.log(
   `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`,

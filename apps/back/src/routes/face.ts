@@ -8,7 +8,10 @@
  *                                     Confirmar card for exactly this action
  *                                     and person; answers its id.
  * DELETE /face/confirmations/:id      «Cancelar» on that card.
- * POST   /face/settings?confirmation= {greet?, greet_unknown?, gate?}
+ * POST   /face/settings?confirmation= {greet?, greet_unknown?, gate?,
+ *                                     listen_after_greet?}: whoever turns
+ *                                     the last one on owns the windows it
+ *                                     opens (routes/voice.ts).
  * DELETE /face/people/:id?confirmation=
  * POST   /face/enroll?confirmation=   {name, role, replace}; the bridge takes
  *                                     5–10 s, 20 s at most. A name that
@@ -36,6 +39,7 @@ import {
   notePending,
   takePending,
 } from "#back/agent/confirmations.js";
+import { listenWindow } from "#back/routes/voice.js";
 
 export const FACE_ACTIONS = [
   "settings",
@@ -45,7 +49,12 @@ export const FACE_ACTIONS = [
   "role",
 ] as const;
 export type FaceAction = (typeof FACE_ACTIONS)[number];
-const SETTINGS = ["greet", "greet_unknown", "gate"] as const;
+const SETTINGS = [
+  "greet",
+  "greet_unknown",
+  "gate",
+  "listen_after_greet",
+] as const;
 const ROLES = new Set(["superadmin", "operator"]);
 // The chatId slot of a card: no chat has this id, so no chat or /voice lists it.
 const FACE_CARDS = "face";
@@ -249,8 +258,8 @@ export const faceRoutes = new Elysia({ prefix: "/face" })
           if (dropPending(params.id, user.id, toolOf(a))) break;
         return { cancelled: true };
       })
-      .post("/settings", ({ user, body, query }) =>
-        confirmedRelay(
+      .post("/settings", async ({ user, body, query }) => {
+        const res = await confirmedRelay(
           user.id,
           "settings",
           body,
@@ -258,8 +267,12 @@ export const faceRoutes = new Elysia({ prefix: "/face" })
           "/face/settings",
           "POST",
           5000,
-        ),
-      )
+        );
+        const listen = faceArgs("settings", body)?.listen_after_greet;
+        if (res.ok && typeof listen === "boolean")
+          listenWindow.setOwner(listen ? user.id : null);
+        return res;
+      })
       .delete("/people/:id", ({ user, params, query }) =>
         confirmedRelay(
           user.id,
