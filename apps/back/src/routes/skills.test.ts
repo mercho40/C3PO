@@ -680,7 +680,11 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
       status: "failed",
       phase: "planning",
       error: "torso_clearance: the shoulder would pass through the torso",
-      result: { moved: false, reason: "torso_clearance", note: "Acercate ~0.14 m" },
+      result: {
+        moved: false,
+        reason: "torso_clearance",
+        note: "Acercate ~0.14 m",
+      },
     };
     bridge.callTool.mockImplementationOnce(async () => refused as never);
     const res = await post("pick", "confirm", { callId: "v2", args: pick });
@@ -693,6 +697,35 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
     expect(body.message).toStartWith("El operador confirmó pick, pero falló");
     expect(fed[0]).toStartWith("El operador confirmó pick, pero falló");
     expect(fed[1]).toBe("Confirmado, pero pick falló: Acercate ~0.14 m");
+  });
+
+  // A PARAR during the bridge's spoken warning ends the pick "cancelled".
+  test("a confirmed pick stopped before it moved is not said as done", async () => {
+    const fed: string[] = [];
+    confirmations.onLoopOutcome((message, spoken) => fed.push(message, spoken));
+    confirmations.notePending({
+      id: "v3",
+      tool: "pick",
+      args: pick,
+      ownerId: "u1",
+      chatId: null,
+      loop: true,
+    });
+    const stopped = {
+      status: "cancelled",
+      phase: "stopped",
+      result: {
+        moved: false,
+        note: "Stopped during the spoken warning; nothing moved.",
+      },
+    };
+    bridge.callTool.mockImplementationOnce(async () => stopped as never);
+    const res = await post("pick", "confirm", { callId: "v3", args: pick });
+    globalThis.fetch = realFetch;
+    confirmations.onLoopOutcome(null);
+    expect(res.status).toBe(200);
+    expect(fed[0]).toStartWith("El operador confirmó pick, pero falló");
+    expect(fed[1]).toBe("Confirmado, pero pick se canceló.");
   });
 
   // The bridge mints a fresh grant on Confirmar, so only back can void the card.

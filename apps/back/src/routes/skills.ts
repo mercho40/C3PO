@@ -371,7 +371,13 @@ export async function confirmPending(
   const ok = r.status === 200;
   // A refused or failed task is still a 200 (the bridge never raises): the
   // card reads that body, but the model and the room must hear it failed.
-  const bodyFailure = ok ? resultFailure(r.body) : null;
+  // A stop during the bridge's spoken warning (or PARAR mid-task) ends it
+  // "cancelled": a warning to the console, but nothing the room may hear as done.
+  const cancelled =
+    ok && (r.body as { status?: unknown } | undefined)?.status === "cancelled";
+  const bodyFailure = ok
+    ? (resultFailure(r.body) ?? (cancelled ? "cancelled" : null))
+    : null;
   const ran = ok && !bodyFailure;
   const failure = r.body as
     | { error?: string; detail?: string; result?: { note?: unknown } }
@@ -394,7 +400,9 @@ export async function confirmPending(
       message,
       ran
         ? `Confirmado: ejecuté ${name}.`
-        : `Confirmado, pero ${name} falló${typeof note === "string" && note ? `: ${note}` : "."}`,
+        : cancelled
+          ? `Confirmado, pero ${name} se canceló.`
+          : `Confirmado, pero ${name} falló${typeof note === "string" && note ? `: ${note}` : "."}`,
     );
   if (p.chatId && r.dispatched) feedChat(p.chatId, message);
   return ok
