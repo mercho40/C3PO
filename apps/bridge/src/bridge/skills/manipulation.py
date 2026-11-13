@@ -101,6 +101,27 @@ SHOULDER_BACK_RAD = 0.7
 #: the model how to walk when a target is out of reach.
 COMFORT_X_M = 0.30
 COMFORT_Y_OUT_M = 0.05
+#: Upright things a hand wraps from the side (the label's last word: 'water bottle', 'wine
+#: glass'). From above the fingers miss them: 2026-11-13 a bottle 0.26 m out planned only at
+#: 60° and the real hand came down on it like picking off the floor.
+UPRIGHT_LABELS = frozenset(
+    {"bottle", "cup", "mug", "can", "glass", "jar", "vase", "thermos", "tumbler", "flask"}
+)
+#: The steepest approach an upright object gets: 0° and 30° wrap it, 60° comes down on top.
+LEVEL_TILT_DEG = 30.0
+#: Where a 0° approach plans, torso_link: x 0.34–0.42 m, |y| 0.10–0.20 m to the arm's side
+#: (offline grid, 2026-11-13, the measured right arm). pick steps the robot to its middle.
+LEVEL_X_M = 0.38
+LEVEL_Y_OUT_M = 0.15
+#: pick's own repositioning, inside the confirmed pick: at most this many steps and metres.
+MAX_REPOSITIONS = 2
+MAX_REPOSITION_TRAVEL_M = 0.30
+MIN_STEP_M = 0.03
+REPOSITION_SPEED_MPS = 0.15
+#: After a step, the same object: its track_id, else the same label this near where it
+#: should now be. Waits this long for a detection captured after the step.
+REFIND_RADIUS_M = 0.10
+REFIND_WAIT_S = 3.0
 #: The torso no arm link may come near, torso_link (x, y, z) ranges: the bounds of MuJoCo
 #: Menagerie unitree_g1's torso_link collision meshes (torso_link_rev_1_0.STL + logo_link),
 #: rounded out 1 mm. Not head_link: it starts at z=0.28, above and behind the hand's workspace.
@@ -515,15 +536,20 @@ def plan_pick(
     shape: str,
     seed: list[float] | None,
     table: Table | None = None,
+    max_tilt_deg: float = 90.0,
 ) -> list[Step]:
     """Curl, clear, over, pre-grasp, open, grasp, close, lift — every pose solved, or PlanError.
+
+    Only approaches tipped down at most `max_tilt_deg` are tried (LEVEL_TILT_DEG for upright
+    objects).
 
     The hand passes SURFACE_MARGIN_M over the reported table top, or over the object's own
     z without one or when that is higher (it is above the real desk top, so it errs high).
     """
     clear_z = max(target[2], table[1] if table else target[2]) + SURFACE_MARGIN_M
     errors: list[tuple[str, PlanError]] = []
-    for out, tilt in itertools.product(SHOULDER_OUT_RAD, APPROACH_TILTS_DEG):
+    tilts = [t for t in APPROACH_TILTS_DEG if t <= max_tilt_deg]
+    for out, tilt in itertools.product(SHOULDER_OUT_RAD, tilts):
         d = _approach(side, target, tilt)
         grasp = _offset(target, d, GRASP_DEPTH_OFFSET_M)
         pre = _offset(grasp, d, -PREGRASP_BACK_M)
@@ -775,20 +801,7 @@ def detected_target(
     confident detection wins within a tier. A miss lists what IS graspable, with track_ids.
     The detection keeps its `support` only if that comes from the same capture.
     """
-    from bridge.sdk.perception_link import existing_link
-
-    link = existing_link()
-    report, age = link.latest_report() if link is not None else (None, None)
-    if not report or age is None or age > FRESH_DETECTION_S:
-        raise PlanError("no fresh detection report (perception offline or stale) — look first")
-    fresh = [
-        obj
-        for obj in report.get("objects") or []
-        if isinstance(obj, dict)
-        and isinstance(obj.get("cam_xyz"), list)
-        # The report can be fresh while the frame it repeats is not (age_s: since capture).
-        and age + float(obj.get("age_s") or 0) <= FRESH_DETECTION_S
-    ]
+    report, fresh = _fresh_report()
     found: list[dict[str, Any]] = []
     if track_id is not None:
         found = [o for o in fresh if o.get("track_id") == track_id]
@@ -810,15 +823,41 @@ def detected_target(
             + " — retry with that exact label or track_id, or turn toward it / find_object"
         )
     best = max(found, key=lambda o: float(o.get("confidence") or 0))
-    p = kinematics.camera_to_torso(best["cam_xyz"])
+    return kinematics.camera_to_torso(best["cam_xyz"]), _own_support(report, best)
+
+
+def _fresh_report() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The latest report and its objects with a 3-D point, all fresh. PlanError if stale."""
+    from bridge.sdk.perception_link import existing_link
+
+    link = existing_link()
+    report, age = link.latest_report() if link is not None else (None, None)
+    if not report or age is None or age > FRESH_DETECTION_S:
+        raise PlanError("no fresh detection report (perception offline or stale) — look first")
+    fresh = [
+        obj
+        for obj in report.get("objects") or []
+        if isinstance(obj, dict)
+        and isinstance(obj.get("cam_xyz"), list)
+        # The report can be fresh while the frame it repeats is not (age_s: since capture).
+        and age + float(obj.get("age_s") or 0) <= FRESH_DETECTION_S
+    ]
+    return report, fresh
+
+
+def _captured_at(report: dict[str, Any], obj: dict[str, Any]) -> float:
+    return float(report["stamp_unix"]) - float(obj.get("age_s") or 0)
+
+
+def _own_support(report: dict[str, Any], obj: dict[str, Any]) -> dict[str, Any]:
+    """`obj`, keeping its `support` only if that comes from the same capture."""
     try:
-        capture = float(report["stamp_unix"]) - float(best.get("age_s") or 0)
-        same = abs(float(best["support"]["stamp_unix"]) - capture) <= SUPPORT_SAME_CAPTURE_S
+        same = abs(float(obj["support"]["stamp_unix"]) - _captured_at(report, obj)) <= (
+            SUPPORT_SAME_CAPTURE_S
+        )
     except (KeyError, TypeError, ValueError):
         same = False
-    if not same:
-        best = {k: v for k, v in best.items() if k != "support"}
-    return p, best
+    return obj if same else {k: v for k, v in obj.items() if k != "support"}
 
 
 def support_table(obj: dict[str, Any], target: tuple[float, float, float]) -> Table | None:
@@ -1101,21 +1140,98 @@ def _refusal(exc: PlanError) -> dict[str, Any]:
 
 
 def _plan_pick(
-    arm: Side, side: str, target: tuple[float, float, float], shape: str, table: Table | None = None
+    arm: Side,
+    side: str,
+    target: tuple[float, float, float],
+    shape: str,
+    table: Table | None = None,
+    max_tilt_deg: float = 90.0,
 ) -> tuple[Side, list[Step]]:
     """(arm, steps) on `arm`, else on the other arm when `side` is auto and its hand is
     configured. PlanError says how to walk if neither plans."""
     try:
-        return arm, plan_pick(arm, target, shape, _measured_q(arm), table)
+        return arm, plan_pick(arm, target, shape, _measured_q(arm), table, max_tilt_deg)
     except PlanError as exc:
         other: Side = "left" if arm == "right" else "right"
         configured = hands.get_driver().sides
         if side == "auto" and (not configured or other in configured):
             try:
-                return other, plan_pick(other, target, shape, _measured_q(other), table)
+                return other, plan_pick(
+                    other, target, shape, _measured_q(other), table, max_tilt_deg
+                )
             except PlanError:
                 pass
         raise _advised(exc, arm, target, table, False) from None
+
+
+def upright(label: Any) -> bool:
+    from bridge.object_memory import _fold
+
+    words = _fold(str(label or "")).split()
+    return bool(words) and words[-1] in UPRIGHT_LABELS
+
+
+def reposition_step(
+    side: Side, target: tuple[float, float, float], table: Table | None
+) -> tuple[float, float]:
+    """Body-frame (forward, left) metres that bring `target` to the middle of the level-approach
+    zone (LEVEL_X_M ahead, LEVEL_Y_OUT_M to the arm's side). Forward is capped so the reported
+    table edge stays WALK_EDGE_STANDOFF_M from the torso; with no table reported the edge could
+    be right under the object, so then the robot never steps forward, only back and sideways."""
+    fwd = target[0] - LEVEL_X_M
+    fwd = min(fwd, table[0] - WALK_EDGE_STANDOFF_M if table else 0.0)
+    left = target[1] - (LEVEL_Y_OUT_M if side == "left" else -LEVEL_Y_OUT_M)
+    return fwd, left
+
+
+def approach_tilt_deg(side: Side, steps: list[Step]) -> float | None:
+    """How far the fingers point below horizontal at the grasp: 0 from the side, 60 from above."""
+    grasp = [q for kind, phase, q in steps if kind == "arm" and phase == "grasp"]
+    if not grasp:
+        return None
+    z = kinematics.forward(side, grasp[-1]).pointing[2]
+    return round(math.degrees(math.asin(max(-1.0, min(1.0, -z)))), 1)
+
+
+async def _step_base(fwd: float, left: float) -> dict[str, Any]:
+    """One body-frame step through walk_velocity: its governor, interlocks and stop apply."""
+    from bridge.skills import walk_velocity
+
+    duration = math.hypot(fwd, left) / REPOSITION_SPEED_MPS
+    return await walk_velocity.run(fwd / duration, left / duration, 0.0, duration, autonomous=True)
+
+
+async def _refind(
+    task: Task, obj: dict[str, Any], predicted: tuple[float, float, float], after: float
+) -> tuple[tuple[float, float, float], dict[str, Any]]:
+    """The same object in a detection captured at or after `after` (report stamp time): its
+    track_id, else the same label nearest `predicted` within REFIND_RADIUS_M."""
+    deadline = time.monotonic() + REFIND_WAIT_S
+    while not task.cancel_event.is_set():
+        try:
+            report, fresh = _fresh_report()
+            new = [o for o in fresh if _captured_at(report, o) >= after]
+        except PlanError:
+            report, new = {}, []
+        tid = obj.get("track_id")
+        same = [o for o in new if tid is not None and o.get("track_id") == tid]
+        if not same:
+            near = [
+                (math.dist(kinematics.camera_to_torso(o["cam_xyz"]), predicted), i)
+                for i, o in enumerate(new)
+                if label_tier(str(o.get("label", "")), str(obj.get("label", ""))) == 0
+            ]
+            near = [n for n in near if n[0] <= REFIND_RADIUS_M]
+            same = [new[min(near)[1]]] if near else []
+        if same:
+            return kinematics.camera_to_torso(same[0]["cam_xyz"]), _own_support(report, same[0])
+        if time.monotonic() > deadline:
+            break
+        await asyncio.sleep(0.1)
+    raise PlanError(
+        f"lost {obj.get('label')!r} after stepping: no detection of it near where it should be "
+        "— look again and retry pick"
+    )
 
 
 def _plan_place_advised(
@@ -1151,10 +1267,73 @@ async def pick(
             task,
             "no measured arm pose (arm state offline): cannot plan a path clear of the surface",
         )
-    try:
-        arm, steps = await _off_loop(task, _plan_pick, arm, side, target, shape, table)
-    except PlanError as exc:
-        return _refused(task, str(exc), **_refusal(exc))
+    started = time.time()
+    max_tilt = LEVEL_TILT_DEG if upright(obj.get("label")) else 90.0
+    moves: list[dict[str, Any]] = []
+    while True:
+        try:
+            arm, steps = await _off_loop(
+                task, _plan_pick, arm, side, target, shape, table, max_tilt
+            )
+            break
+        except PlanError as exc:
+            planned = exc
+        # No plan from here (for an upright object, no level one): step, find it again, replan.
+        moved: dict[str, Any] = {"moves": moves, "base_moved": True} if moves else {}
+        if task.cancel_event.is_set():  # a stop while that plan was computed: no step
+            task.status, task.phase, task.ended_at = "cancelled", "cancelled", time.time()
+            task.result = {"moved": False, **moved}
+            return task.to_dict()
+        fwd, left = reposition_step(arm, target, table)
+        dist = math.hypot(fwd, left)
+        travel = sum(math.hypot(mv["forward_m"], mv["left_m"]) for mv in moves)
+        if (
+            SIM_MODE != "real"
+            or len(moves) >= MAX_REPOSITIONS
+            or dist < MIN_STEP_M
+            or travel + dist > MAX_REPOSITION_TRAVEL_M
+        ):
+            return _refused(task, str(planned), **_refusal(planned), **moved)
+        try:
+            report, _ = _fresh_report()
+            before = float(report["stamp_unix"])
+        except (PlanError, KeyError, TypeError, ValueError) as exc:
+            return _refused(task, str(exc), **moved)
+        why = "no level approach from here" if max_tilt < 90.0 else "out of reach from here"
+        log.info("pick.reposition", task_id=task.task_id, forward_m=fwd, left_m=left, why=why)
+        task.phase = "repositioning"
+        walk = await _step_base(fwd, left)
+        moves.append(
+            {
+                "forward_m": round(fwd, 3),
+                "left_m": round(left, 3),
+                "why": why,
+                "walk": walk.get("phase"),
+            }  # fmt: skip
+        )
+        if task.cancel_event.is_set() or estop.last_stop_at() > started:
+            task.status, task.phase, task.ended_at = "cancelled", "cancelled", time.time()
+            task.result = {"moved": False, "moves": moves, "base_moved": True}
+            return task.to_dict()
+        if walk.get("status") != "completed":
+            refused_before_moving = walk.get("phase") in (
+                "arm_held",
+                "fsm_not_walkable",
+                "teleop_active",
+            )
+            return _refused(
+                task,
+                f"could not step to reach it: walk {walk.get('phase')}: {walk.get('error')}",
+                reason=f"reposition_{walk.get('phase')}",
+                moves=moves,
+                base_moved=not refused_before_moving,
+            )
+        try:
+            predicted = (target[0] - fwd, target[1] - left, target[2])
+            target, obj = await _refind(task, obj, predicted, before + dist / REPOSITION_SPEED_MPS)
+        except PlanError as exc:
+            return _refused(task, str(exc), moves=moves, base_moved=True)
+        table = support_table(obj, target)
     summary = {
         "object": {
             k: obj.get(k) for k in ("label", "track_id", "confidence", "range_m", "depth_source")
@@ -1162,6 +1341,8 @@ async def pick(
         "target_torso_m": [round(v, 3) for v in target],
         "table_torso_m": table and [round(v, 3) for v in table],
         "shape": shape,
+        "approach_tilt_deg": approach_tilt_deg(arm, steps),
+        **({"moves": moves} if moves else {}),
         "next": f"verify('¿tenés {obj.get('label')} en la mano?') — no contact sensing here",
     }
     return await execute(task, arm, steps, summary=summary, ctx=ctx)

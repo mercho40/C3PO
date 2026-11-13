@@ -472,6 +472,7 @@ async def test_pick_refuses_when_that_hand_is_not_configured(monkeypatch, real):
 async def test_an_out_of_reach_pick_says_how_to_walk(monkeypatch, real):
     # Robot: the centred thermos (y -0.01) failed every tilt; at y -0.16 it planned fine.
     arm, _hand = real
+    monkeypatch.setattr(m, "MAX_REPOSITIONS", 0)  # the advice; pick's own stepping: below
     see(monkeypatch, cup(p=(0.35, -0.01, -0.03)))
     out = await m.pick("cup", side="right")
     assert out["phase"] == "planning" and not arm.engaged
@@ -687,7 +688,8 @@ def test_a_place_withdraws_the_palm_behind_a_near_table_edge_or_refuses():
 async def test_auto_side_tries_the_other_arm_before_giving_up(monkeypatch, real):
     _arm, hand = real
     hand.sides = ("left", "right")
-    see(monkeypatch, cup(p=(0.30, 0.0, 0.05)))  # right's side (y <= 0), the left arm reaches
+    # right's side (y <= 0), the left arm reaches. Not upright: a cup there plans only at 60°.
+    see(monkeypatch, cup(p=(0.30, 0.0, 0.05), label="remote"))
     plan = m.plan_pick
 
     def right_fails(side, *a):
@@ -696,7 +698,7 @@ async def test_auto_side_tries_the_other_arm_before_giving_up(monkeypatch, real)
         return plan(side, *a)
 
     monkeypatch.setattr(m, "plan_pick", right_fails)
-    out = await m.pick("cup")
+    out = await m.pick("remote")
     assert out["status"] == "completed", out
     assert out["result"]["side"] == "left"
 
@@ -869,3 +871,227 @@ async def test_a_pick_cancelled_while_planning_does_not_stay_running(monkeypatch
         await running
     release.set()
     assert task.status == "cancelled" and task.ended_at is not None
+
+
+# --- pick steps the robot itself (2026-11-13) ------------------------------------------------
+
+#: The bottle of 2026-11-13: only a 60° plan, and the real hand came down on it from above.
+CLOSE_BOTTLE = (0.258, -0.096, 0.124)
+
+
+class LaterLink(FakeLink):
+    """A report captured `after` seconds later than STAMP: the frames after the robot stepped."""
+
+    def __init__(self, objects, after=5.0):
+        super().__init__(objects)
+        self.after = after
+
+    def latest_report(self):
+        report, age = super().latest_report()
+        return {**report, "stamp_unix": STAMP + self.after}, age
+
+
+def bottle(p, **kw):
+    return cup(p=p, label="bottle", track_id=7, **kw)
+
+
+def stepper(monkeypatch, moved_to=None, status="completed", phase="done", on_step=None):
+    """Fake _step_base: records each (forward, left); the scene then shows the bottle where a
+    perfect step leaves it (or `moved_to(target, fwd, left)`), in a later capture."""
+    steps = []
+
+    async def step(fwd, left):
+        steps.append((fwd, left))
+        if on_step:
+            on_step()
+        where = moved_to or (lambda t, f, lft: bottle((t[0] - f, t[1] - lft, t[2])))
+        objects = where(steps_target[0], fwd, left)
+        objects = objects if isinstance(objects, list) else [objects]
+        if objects and "cam_xyz" in objects[0] and moved_to is None:
+            steps_target[0] = kinematics.camera_to_torso(objects[0]["cam_xyz"])
+        monkeypatch.setattr(perception_link, "_link_singleton", LaterLink(objects, after=5.0 * len(steps)))
+        return {"status": status, "phase": phase, "error": None}
+
+    steps_target = [CLOSE_BOTTLE]
+    monkeypatch.setattr(m, "_step_base", step)
+    return steps
+
+
+def test_upright_labels_and_the_level_zone_step():
+    assert m.upright("bottle") and m.upright("Water Bottle") and m.upright("wine glass")
+    assert not m.upright("remote") and not m.upright(None)
+    # Back to the zone's middle and toward the arm's side; never forward without a table.
+    assert m.reposition_step("right", CLOSE_BOTTLE, None) == pytest.approx((-0.122, 0.054))
+    assert m.reposition_step("right", (0.50, -0.15, 0.1), None) == pytest.approx((0.0, 0.0))
+    # A reported edge 0.30 m out: forward only until it is WALK_EDGE_STANDOFF_M away.
+    assert m.reposition_step("right", (0.50, -0.15, 0.1), (0.30, 0.0))[0] == pytest.approx(0.05)
+    assert m.reposition_step("left", (0.38, 0.15, 0.1), None) == pytest.approx((0.0, 0.0))
+
+
+def test_an_upright_object_never_gets_the_steep_grasp_when_a_level_one_plans():
+    p = (0.34, -0.18, 0.0)  # tried first, 60° plans here; a 30° one exists further down the list
+    assert m.approach_tilt_deg("right", m.plan_pick("right", p, "power", HANGING)) > 45
+    level = m.plan_pick("right", p, "power", HANGING, None, m.LEVEL_TILT_DEG)
+    assert m.approach_tilt_deg("right", level) <= 31
+
+
+@pytest.mark.asyncio
+async def test_a_level_plan_from_here_means_no_step(monkeypatch, real):
+    steps = stepper(monkeypatch)
+    see(monkeypatch, bottle((0.34, -0.18, 0.0)))
+    out = await m.pick("bottle")
+    assert out["status"] == "completed", out
+    assert steps == [] and "moves" not in out["result"]
+    assert out["result"]["approach_tilt_deg"] <= 31
+
+
+@pytest.mark.asyncio
+async def test_a_bottle_too_close_for_a_level_grasp_makes_the_robot_step_back_and_aside(
+    monkeypatch, real
+):
+    arm, _hand = real
+    steps = stepper(monkeypatch)
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert out["status"] == "completed", out
+    assert steps == [pytest.approx((-0.122, 0.054))]  # back to x 0.38, right arm's side y -0.15
+    (move,) = out["result"]["moves"]
+    assert move["why"] == "no level approach from here"
+    assert out["result"]["approach_tilt_deg"] <= 31  # from the side, not from above
+    assert out["result"]["target_torso_m"] == pytest.approx([0.38, -0.15, 0.124], abs=2e-3)
+    assert arm.engaged  # stepped first, the arm only after
+
+
+@pytest.mark.asyncio
+async def test_after_the_step_the_same_label_near_where_it_should_be_counts(monkeypatch, real):
+    # The tracker gave it a new id after the step: same label, 4 cm from the prediction.
+    stepper(monkeypatch, moved_to=lambda t, f, lft: [
+        cup(p=(0.30, -0.15, 0.124), label="bottle", track_id=99),  # 8 cm off: the farther one
+        cup(p=(t[0] - f + 0.04, t[1] - lft, t[2]), label="bottle", track_id=42),
+    ])  # fmt: skip
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert out["result"]["object"]["track_id"] == 42, out
+    # Nothing of that label within REFIND_RADIUS_M: lost, refused, nothing on the arm.
+    monkeypatch.setattr(m, "REFIND_WAIT_S", 0.0)
+    stepper(monkeypatch, moved_to=lambda t, f, lft: cup(p=(0.30, -0.30, 0.124), label="bottle"))
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert out["phase"] == "planning" and "lost 'bottle' after stepping" in out["error"]
+    assert out["result"]["base_moved"] is True and out["result"]["moved"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_detection_from_before_the_step_is_not_the_object(monkeypatch, real):
+    monkeypatch.setattr(m, "REFIND_WAIT_S", 0.0)
+    steps = stepper(monkeypatch)
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+
+    async def step_without_new_frames(fwd, left):
+        steps.append((fwd, left))
+        return {"status": "completed", "phase": "done", "error": None}
+
+    monkeypatch.setattr(m, "_step_base", step_without_new_frames)
+    out = await m.pick("bottle")
+    assert "lost" in out["error"] and len(steps) == 1
+
+
+@pytest.mark.asyncio
+async def test_stepping_stops_at_two_moves(monkeypatch, real):
+    arm, _hand = real
+    # The legs did not go anywhere: the bottle stays put (a later frame) and stays too close.
+    steps = stepper(monkeypatch, moved_to=lambda t, f, lft: bottle(CLOSE_BOTTLE))
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert len(steps) == m.MAX_REPOSITIONS == 2
+    assert out["phase"] == "planning" and not arm.engaged
+    assert len(out["result"]["moves"]) == 2 and out["result"]["base_moved"] is True
+    travel = sum(math.hypot(*s) for s in steps)
+    assert travel <= m.MAX_REPOSITION_TRAVEL_M
+
+
+@pytest.mark.asyncio
+async def test_a_step_beyond_the_travel_budget_is_not_taken(monkeypatch, real):
+    steps = stepper(monkeypatch)
+    monkeypatch.setattr(m, "MAX_REPOSITION_TRAVEL_M", 0.10)  # the step needs 0.134 m
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert steps == [] and out["phase"] == "planning" and "moves" not in out["result"]
+
+
+@pytest.mark.asyncio
+async def test_no_forward_step_without_a_reported_table(monkeypatch, real):
+    # Too far for any plan, and nothing says where the desk edge is: no step at all.
+    steps = stepper(monkeypatch)
+    see(monkeypatch, bottle((0.60, -0.15, 0.05)))
+    out = await m.pick("bottle")
+    assert steps == [] and out["phase"] == "planning"
+
+
+@pytest.mark.asyncio
+async def test_parar_during_the_step_ends_the_pick(monkeypatch, real):
+    arm, _hand = real
+
+    def stop():
+        for t in get_registry().list_active():
+            get_registry().cancel(t.task_id)
+
+    stepper(monkeypatch, on_step=stop)
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert out["status"] == "cancelled", out
+    assert out["result"]["base_moved"] is True
+    assert not arm.engaged and arm.commands == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_step_says_why_and_nothing_moves(monkeypatch, real):
+    arm, _hand = real
+    steps = stepper(monkeypatch, status="failed", phase="fsm_not_walkable")
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert len(steps) == 1 and out["result"]["reason"] == "reposition_fsm_not_walkable"
+    assert out["result"]["base_moved"] is False and not arm.engaged
+
+
+@pytest.mark.asyncio
+async def test_stub_mode_never_steps(monkeypatch):
+    monkeypatch.setattr(m, "SIM_MODE", "stub")
+    steps = stepper(monkeypatch)
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert steps == [] and out["phase"] == "planning"
+
+
+@pytest.mark.asyncio
+async def test_the_step_goes_through_walk_velocity_as_an_autonomous_walk(monkeypatch):
+    from bridge.skills import walk_velocity
+
+    calls = []
+
+    async def run(vx, vy, vyaw, duration_s, autonomous=False):
+        calls.append((vx, vy, vyaw, duration_s, autonomous))
+        return {"status": "completed"}
+
+    monkeypatch.setattr(walk_velocity, "run", run)
+    await m._step_base(-0.12, 0.09)
+    ((vx, vy, vyaw, dur, autonomous),) = calls
+    assert autonomous is True and vyaw == 0.0
+    assert (vx * dur, vy * dur) == pytest.approx((-0.12, 0.09))
+    assert math.hypot(vx, vy) == pytest.approx(m.REPOSITION_SPEED_MPS)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_while_planning_never_steps(monkeypatch, real):
+    steps = stepper(monkeypatch)
+    plan = m.plan_pick
+
+    def stop_then_plan(*a):
+        for t in get_registry().list_active():
+            get_registry().cancel(t.task_id)
+        return plan(*a)
+
+    monkeypatch.setattr(m, "plan_pick", stop_then_plan)
+    see(monkeypatch, bottle(CLOSE_BOTTLE))
+    out = await m.pick("bottle")
+    assert out["status"] == "cancelled" and steps == []

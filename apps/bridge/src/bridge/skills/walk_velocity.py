@@ -76,6 +76,7 @@ async def run(
     vyaw: float,
     duration_s: float = 1.0,
     ctx: Any | None = None,
+    autonomous: bool = False,
 ) -> dict[str, Any]:
     """Command a body-frame velocity for `duration_s`, clamped to safety limits.
 
@@ -83,6 +84,9 @@ async def run(
     can interrupt mid-wait, in which case a zero-velocity SetVelocity is sent
     immediately. A walk that runs its course ends on a zero setpoint too, so
     the robot stops at `duration_s` rather than coasting on the last one.
+
+    `autonomous` marks a step the robot chose itself (pick's reposition): the governor then
+    also needs fresh perception, as for every other self-chosen walk.
     """
     task = get_registry().create("walk_velocity")
 
@@ -163,7 +167,7 @@ async def run(
             await asyncio.sleep(REISSUE_PERIOD_S)
 
         setpoint = (clamped_vx, clamped_vy, clamped_vyaw, DEFAULT_HEIGHT)
-        code = await send_velocity_async(*setpoint)
+        code = await send_velocity_async(*setpoint, autonomous=autonomous)
         data = None
         if code != 0:
             task.status = "failed"
@@ -194,7 +198,7 @@ async def run(
             task.progress = max(0.0, min(0.999, 1.0 - remaining / max(clamped_duration, 1e-6)))
             await asyncio.sleep(min(REISSUE_PERIOD_S, remaining))
             if deadline - time.monotonic() > 0 and not task.cancel_event.is_set():
-                await send_velocity_async(*setpoint)
+                await send_velocity_async(*setpoint, autonomous=autonomous)
 
         # Zero now rather than letting the last setpoint run out its 1 s.
         await send_velocity_async(0.0, 0.0, 0.0, DEFAULT_HEIGHT)
