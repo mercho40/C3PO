@@ -57,6 +57,7 @@ from typing import Any
 
 import structlog
 
+from bridge import kinematics
 from bridge.teleop.retarget import NEUTRAL, ArmAngles, clamp
 
 log = structlog.get_logger(__name__)
@@ -76,9 +77,23 @@ WAIST_SLOTS = (12, 13, 14)
 WEIGHT_SLOT = 29
 MOTOR_SLOTS = 35
 
-# Vendor example gains for the arm_sdk path.
+# Vendor example gains for the arm_sdk path; the waist holds at these.
 KP = 60.0
 KD = 1.5
+
+# Per arm joint, shoulder pitch .. wrist yaw: Unitree xr_teleoperate's own rt/arm_sdk gains
+# (robot_arm.py motion_mode, kp_low/kd_low and kp_wrist/kd_wrist; on this robot under
+# ~/c3po_vr_teleop). The doubled shoulder/elbow damping is against the wobble seen 2026-11-13.
+ARM_KP = (80.0, 80.0, 80.0, 80.0, 40.0, 40.0, 40.0)
+ARM_KD = (3.0, 3.0, 3.0, 3.0, 1.5, 1.5, 1.5)
+
+# Gravity feedforward in each arm motor's tau (kinematics.gravity_torques at the commanded pose),
+# as xr_teleoperate sends pinocchio's rnea there. Without it the PD carries the arm and the hand
+# on position error alone: ~6 N·m at the shoulder with the arm out is 4-6 degrees of sag at these
+# gains. On unless ARM_GRAVITY_FF=0; read at engage.
+GRAVITY_FF_ENV = "ARM_GRAVITY_FF"
+# Never more than half each joint's URDF effort limit: a wrong mass model pushes, it cannot slam.
+TAU_FF_MAX_NM = tuple(0.5 * j.effort for j in kinematics.arm_chain("left"))
 
 CONTROL_HZ = 50
 CONTROL_PERIOD_S = 1.0 / CONTROL_HZ
@@ -171,6 +186,7 @@ class ArmSdkDriver:
         # _build_command (zip strict) instead of shipping a limp waist.
         self._waist_hold: list[float] = []
         self._mode_machine = 0
+        self._gravity_ff = True
         #: Monotonic, not wall clock — see the note above STALE_FRAME_S in
         #: server.py. This one guards the arm-hold timeout, and a backwards
         #: clock step here holds a stale arm pose indefinitely instead of
@@ -208,6 +224,37 @@ class ArmSdkDriver:
         for callers that only want to change some joints."""
         return tuple(self._target)
 
+    def measured_angles(self) -> tuple[float, ...] | None:
+        """Where the arms ARE: rt/lowstate's 14 angles, left then right, motor convention. None
+        when there is no reading or it is older than MAX_LOWSTATE_AGE_S."""
+        try:
+            from bridge.sdk.state import get_sampler
+
+            state = get_sampler().get_arm_state()
+        except Exception:  # noqa: BLE001 — no state is "not measured", not a crash
+            return None
+        age, q = state.get("lowstate_age_s"), tuple(state.get("arm_q") or ())
+        if age is None or age > MAX_LOWSTATE_AGE_S or len(q) != 14:
+            return None
+        return q
+
+    def tracking_error_deg(self) -> list[float] | None:
+        """Measured minus commanded, degrees, 14 joints; None when not engaged or not measured."""
+        q = self.measured_angles() if self._engaged else None
+        if q is None:
+            return None
+        return [round(math.degrees(m - c), 1) for m, c in zip(q, self._current, strict=True)]
+
+    def gravity_tau(self) -> list[float]:
+        """The 14 feedforward torques for the commanded pose, clamped; zeros when switched off."""
+        if not self._gravity_ff:
+            return [0.0] * 14
+        tau = [
+            *kinematics.gravity_torques("left", self._current[0:7]),
+            *kinematics.gravity_torques("right", self._current[7:14]),
+        ]
+        return [clamp(t, -m, m) for t, m in zip(tau, TAU_FF_MAX_NM * 2, strict=True)]
+
     def clear_failure(self) -> None:
         """Allow engaging again after a publish-loop failure.
 
@@ -226,6 +273,8 @@ class ArmSdkDriver:
             "releasing": self._releasing,
             "weight": round(self._weight, 3),
             "published": self._published,
+            "gravity_ff": self._gravity_ff,
+            "tracking_error_deg": self.tracking_error_deg(),
             "enabled_by_env": _env_flag("TELEOP_ARM_ENABLED"),
             "sim_mode": SIM_MODE,
         }
@@ -339,6 +388,12 @@ class ArmSdkDriver:
         arm_q, waist_q, mode_machine = self._check_preconditions()
 
         self._mode_machine = mode_machine
+        self._gravity_ff = os.environ.get(GRAVITY_FF_ENV, "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
         # Same snapshot as arm_q, so the lowstate age check above covers it too.
         self._waist_hold = list(waist_q)
         # Both current and target start at the *measured* pose. Countermeasure
@@ -491,15 +546,16 @@ class ArmSdkDriver:
 
         cmd = unitree_hg_msg_dds__LowCmd_()
         cmd.mode_machine = self._mode_machine
+        tau = self.gravity_tau()
         for i in range(14):
             slot = (LEFT_ARM_BASE + i) if i < 7 else (RIGHT_ARM_BASE + i - 7)
             motor = cmd.motor_cmd[slot]
             motor.mode = 1  # 1 = Enable. 0 is silently ignored — see the docstring.
             motor.q = float(self._current[i])
             motor.dq = 0.0
-            motor.tau = 0.0
-            motor.kp = KP
-            motor.kd = KD
+            motor.tau = float(tau[i])
+            motor.kp = ARM_KP[i % 7]
+            motor.kd = ARM_KD[i % 7]
         for slot, q in zip(WAIST_SLOTS, self._waist_hold, strict=True):
             motor = cmd.motor_cmd[slot]
             motor.mode = 1

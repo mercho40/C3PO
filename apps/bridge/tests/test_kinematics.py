@@ -69,3 +69,32 @@ def test_camera_is_tilted_down_as_in_the_cad():
     assert tilt == pytest.approx(47.6, abs=0.5)
     # Optical +x is image-right, which is the robot's right (-y).
     assert k.camera_to_torso((0.1, 0.0, 0.0))[1] < lens[1]
+
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize(
+    "q", [[0.3, -0.2, 0.4, 1.0, 0.2, -0.3, 0.5], [-1.2, 0.5, -0.3, 0.4, 0.0, 0.6, -0.2]]
+)
+def test_gravity_torques_are_the_slope_of_the_arms_potential_energy(side, q):
+    # A held arm needs tau_i = dV/dq_i, V = g * sum(m * z_com), the hand included.
+    def energy(qq):
+        return sum(m * k.GRAVITY_M_S2 * com[2] for m, com, _ in k.masses_and_coms(side, qq))
+
+    h = 1e-6
+    slope = [
+        (energy([*q[:i], q[i] + h, *q[i + 1 :]]) - energy([*q[:i], q[i] - h, *q[i + 1 :]])) / (2 * h)
+        for i in range(7)
+    ]
+    assert k.gravity_torques(side, q) == pytest.approx(slope, abs=1e-6)
+
+
+def test_the_arm_held_out_in_front_needs_the_shoulder_to_lift_it(monkeypatch):
+    # Shoulder pitch -90°, elbow 90° (its zero is bent): the arm straight out in front, the
+    # hand ~0.45 m out. Lifting is negative pitch; the 0.5 kg hand alone is ~2 N·m of it.
+    out_front = [-math.pi / 2, 0, 0, math.pi / 2, 0, 0, 0]
+    assert k.forward("right", out_front).position[0] > 0.4
+    with_hand = k.gravity_torques("right", out_front)[0]
+    assert -10.0 < with_hand < -5.0
+    monkeypatch.setattr(k, "HAND_MASS_KG", 0.0)
+    assert k.gravity_torques("right", out_front)[0] - with_hand == pytest.approx(2.1, abs=0.3)

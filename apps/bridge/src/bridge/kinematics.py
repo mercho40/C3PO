@@ -174,6 +174,7 @@ class Joint:
     axis: Vec3
     lower: float
     upper: float
+    effort: float = 0.0  # N·m, the URDF limit
 
 
 def _floats(text: str | None, default: str) -> Vec3:
@@ -201,6 +202,7 @@ def _joints_by_child(path: Path = URDF_PATH) -> dict[str, tuple[str, Joint]]:
                 else (0.0, 0.0, 0.0),
                 lower=float(limit.get("lower", 0)) if revolute and limit is not None else 0.0,
                 upper=float(limit.get("upper", 0)) if revolute and limit is not None else 0.0,
+                effort=float(limit.get("effort", 0)) if revolute and limit is not None else 0.0,
             ),
         )
     return out
@@ -267,6 +269,68 @@ def forward(side: Side, q: Sequence[float], tcp_m: float = GRASP_TCP_M) -> HandP
         joint_origins=tuple(origins),
         joint_axes=tuple(axes),
     )
+
+
+# --- gravity ----------------------------------------------------------------------------------
+
+GRAVITY_M_S2 = 9.81
+
+#: The BrainCo Revo2 on each wrist, in place of the URDF's 0.17 kg rubber hand (which this chain
+#: never includes: it hangs off wrist_yaw_link on a fixed joint). wrist_yaw_link frame, metres.
+#: shortcut: an estimate, not weighed: BrainCo quotes the Revo2 near 0.4 kg, plus the flange and
+#: cable; centre of mass about mid-palm. Weigh one hand and measure, then set these.
+HAND_MASS_KG = 0.5
+HAND_COM_M: Vec3 = (0.09, 0.0, 0.0)
+
+
+@cache
+def _inertial(link: str, path: Path = URDF_PATH) -> tuple[float, Vec3]:
+    """(mass kg, centre of mass in the link frame) from the URDF's <inertial>."""
+    for el in ET.parse(path).getroot().iter("link"):
+        if el.get("name") == link:
+            inertial = el.find("inertial")
+            assert inertial is not None, f"{link} has no <inertial>"
+            mass, origin = inertial.find("mass"), inertial.find("origin")
+            assert mass is not None
+            return float(mass.get("value", 0)), _floats(
+                origin.get("xyz") if origin is not None else None, "0 0 0"
+            )
+    raise KeyError(link)
+
+
+def masses_and_coms(side: Side, q: Sequence[float]) -> list[tuple[float, Vec3, int]]:
+    """(mass, centre of mass in torso_link, index of the joint it hangs from) for the 7 arm links
+    and the hand, at arm angles `q`."""
+    pos: Vec3 = (0.0, 0.0, 0.0)
+    rot = _I3
+    out: list[tuple[float, Vec3, int]] = []
+    for i, (joint, angle, suffix) in enumerate(zip(arm_chain(side), q, _SUFFIXES, strict=True)):
+        pos = _add(pos, _mv(rot, joint.xyz))
+        rot = _mm(rot, _mm(joint.rot, _axis_angle(joint.axis, float(angle))))
+        mass, com = _inertial(f"{side}_{suffix}_link")
+        out.append((mass, _add(pos, _mv(rot, com)), i))
+    out.append((HAND_MASS_KG, _add(pos, _mv(rot, HAND_COM_M)), 6))
+    return out
+
+
+def gravity_torques(side: Side, q: Sequence[float]) -> tuple[float, ...]:
+    """The 7 joint torques (N·m, motor sign) that hold the arm still against gravity at `q`:
+    the `rt/arm_sdk` tau feedforward, so the PD only has to correct, not carry the arm.
+
+    Gravity is torso_link -z. shortcut: true only with the torso upright; a waist pitched by p
+    misstates it by cos(p), fine while the robot stands. Feed the IMU's gravity vector if it leans.
+    """
+    if len(q) != 7:
+        raise ValueError("gravity_torques() takes 7 arm joint angles")
+    hp = forward(side, q)
+    tau = [0.0] * 7
+    for mass, com, hung_from in masses_and_coms(side, q):
+        for i in range(hung_from + 1):
+            a, o = hp.joint_axes[i], hp.joint_origins[i]
+            r = _sub(com, o)
+            # Motor torque = -(gravity's torque about axis i) = -a·(r × (0, 0, -m g)).
+            tau[i] += mass * GRAVITY_M_S2 * (a[0] * r[1] - a[1] * r[0])
+    return tuple(tau)
 
 
 # --- inverse kinematics ------------------------------------------------------------------------
