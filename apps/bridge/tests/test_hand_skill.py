@@ -177,3 +177,12 @@ def test_tool_schema_rejects_unknown_finger_and_range():
     for bad in ({"indice": 1}, {"ring": 1.5}):
         with pytest.raises(pydantic.ValidationError):
             mcp_server._canonical_args(tool, {"side": "right", "fingers": bad})
+
+
+def test_v_sign_raises_index_and_middle_and_closes_the_rest():
+    # «saludo peronista»: SHAPES order is thumb, thumb_aux, index, middle, ring, pinky.
+    from bridge.teleop import hands
+
+    thumb, _aux, index, middle, ring, pinky = hands.SHAPES["v_sign"]
+    assert index == middle == 0.0
+    assert min(thumb, ring, pinky) >= 0.6

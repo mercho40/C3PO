@@ -1755,8 +1755,14 @@ async def set_hand(
         ),
     ] = 0.0,
     shape: Annotated[
-        Literal["open", "power", "pinch", "hook", "point"] | None,
-        Field(description="A named grasp instead of `closure`: power = wrap, pinch = thumb+index, hook = handles."),
+        Literal["open", "power", "pinch", "hook", "point", "v_sign"] | None,
+        Field(
+            description=(
+                "A named grasp instead of `closure`: power = wrap, pinch = thumb+index, hook = handles, "
+                "point = index up, v_sign = index and middle up, the rest closed "
+                "(«saludo peronista», «la V», «la V de la victoria»)."
+            )
+        ),
     ] = None,
     fingers: Annotated[
         dict[
