@@ -441,6 +441,13 @@ The bridge can know people by face. It uses that for two things, both off by def
 - **The face gate** (17cf24a): a gated skill also needs an enrolled person's live face in
   front of the head camera. It is one more gate on top of the login and «Confirmar», never
   instead of them.
+- **The face instead of «Confirmar»**: while the console (chat card, /voice, headset)
+  shows a refused **high-danger T1** call (`start_walking_waist`, `arm_navigation`,
+  `zero_torque`), an enrolled person's live face at the head camera runs it, exactly as
+  the click would: once, those arguments, only while the card is shown. The agent says
+  «Confirmá la acción o mostrale la cara de un operador a la cámara para confirmar».
+  **T2 (arms, hands) keep the click**: the face would be inside their 0.8 m reach.
+  Off: `C3PO_FACE_CONFIRM=0` in the bridge `.env`.
 - **The greeter** (516c879): the robot says hello by name when an enrolled person comes
   into view, and, if you want, to a stranger.
 

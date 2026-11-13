@@ -8,11 +8,13 @@
 
   BUTTONS ONLY, NO SPOKEN «confirmo» HERE: this conversation hears through the
   robot's own microphone, so anyone near it (or its own voice) could say it.
-  Spoken confirmation exists only on the headset's push-to-talk.
+  Spoken confirmation exists only on the headset's push-to-talk. A high-danger T1
+  row also runs when an enrolled live face is at the robot (`watchFace`): seen, not heard.
 -->
 <script lang="ts">
   import { PUBLIC_API_URL } from "$app/env/public";
-  import { decideCall, type Decision } from "#lib/chat/confirm.js";
+  import { untrack } from "svelte";
+  import { decideCall, watchFace, type Decision } from "#lib/chat/confirm.js";
   import { getVoiceLoop } from "#lib/robot/context.js";
   import { OUTCOME_TONE, type SkillOutcome } from "#lib/robot/skill-outcome.js";
   import { pendingConfirmations } from "./voice-view";
@@ -41,6 +43,21 @@
       busy = null;
     }
   }
+
+  // Or an enrolled face at the robot, per shown row; restarted only when the rows change.
+  let faces = $state<Record<string, "waiting" | "unavailable">>({});
+  const rowKey = $derived(rows.map((r) => r.id).join("\n"));
+  $effect(() => {
+    void rowKey;
+    if (busy) return;
+    const stops = untrack(() => rows).map((row) =>
+      watchFace(PUBLIC_API_URL, row.tool, row.id, row.args, {
+        state: (s) => (faces[row.id] = s),
+        done: (r) => (last = { tool: row.tool, outcome: r.outcome }),
+      }),
+    );
+    return () => stops.forEach((stop) => stop());
+  });
 </script>
 
 {#if rows.length || last}
@@ -59,6 +76,12 @@
         <code class="max-w-full min-w-0 readout text-xs break-all text-ink-dim"
           >{row.argsText}</code
         >
+        {#if faces[row.id] === "waiting"}
+          <p class="text-xs text-ink-mute">
+            Confirmá la acción o mostrale la cara de un operador a la cámara del
+            robot (agachado, a 0,5–0,8 m).
+          </p>
+        {/if}
         <div class="flex flex-wrap gap-2">
           <button
             type="button"

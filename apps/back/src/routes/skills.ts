@@ -64,9 +64,13 @@ import {
   feedChat,
   feedLoop,
   outcomeMessage,
+  peekPending,
   restorePending,
   takePending,
 } from "#back/agent/confirmations.js";
+
+/** How the operator confirmed a refused call: a click, a spoken «confirmo», or their face. */
+type Via = "button" | "voice" | "face";
 
 //: Skills that must dispatch even when the catalogue cannot be read.
 //:
@@ -89,8 +93,8 @@ async function grantOnBridge(
   name: string,
   args: Record<string, unknown>,
   userId: string,
-  /** Set when the operator's Confirmar of a refused call asked: button or voice. */
-  via?: "button" | "voice",
+  /** Set when the operator's Confirmar of a refused call asked: button, voice or face. */
+  via?: Via,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const proof = bridgeProof();
   if (!proof) {
@@ -102,7 +106,12 @@ async function grantOnBridge(
     upstream = await fetch(bridgeSiblingUrl("/safety/confirm"), {
       method: "POST",
       headers: { "content-type": "application/json", ...proof },
-      body: JSON.stringify({ tool: name, args }),
+      // `via` only labels the bridge's log line; the secret is the proof.
+      body: JSON.stringify({
+        tool: name,
+        args,
+        ...(via === "face" ? { via } : {}),
+      }),
       signal: AbortSignal.timeout(5000),
     });
   } catch {
@@ -135,7 +144,7 @@ async function invokeSkill(
   name: string,
   body: unknown,
   user: { id: string; role?: string | null },
-  opts: { confirmed?: "button" | "voice" } = {},
+  opts: { confirmed?: Via } = {},
 ): Promise<{ status: number; body: unknown; dispatched?: boolean }> {
   const knownSafety = SAFETY_SKILLS.has(name);
   // The stop never waits on the catalogue. `getSkill` asks the bridge
@@ -339,7 +348,7 @@ export async function confirmPending(
   callId: string,
   args: unknown,
   user: { id: string; role?: string | null },
-  via: "button" | "voice",
+  via: Via,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const p = takePending(callId, user.id, name, args);
   if (p === "not_pending") return { status: 409, body: NOT_PENDING };
@@ -387,6 +396,53 @@ export async function confirmPending(
           ...(r.dispatched ? { message } : {}),
         },
       };
+}
+
+/**
+ * The face instead of Confirmar: while the console shows a refused high-danger
+ * T1 call, it asks here every few seconds. The bridge looks for an enrolled
+ * person's live face (/face/confirm_check, which grants nothing); on a pass
+ * this is `confirmPending` with via "face", so the call is taken once, granted
+ * and run exactly as a click would. `passed: false` means keep waiting. The
+ * bridge refuses T2 (arms, hands): the face would be inside their 0.8 m reach.
+ */
+export async function confirmPendingByFace(
+  name: string,
+  callId: string,
+  args: unknown,
+  user: { id: string; role?: string | null },
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const p = peekPending(callId, user.id, name, args);
+  if (p === "not_pending") return { status: 409, body: NOT_PENDING };
+  if (p === "args_mismatch")
+    return { status: 409, body: { error: "args_mismatch" } };
+  const proof = bridgeProof();
+  if (!proof)
+    return { status: 503, body: { error: "confirmation_not_configured" } };
+  let upstream: Response;
+  try {
+    upstream = await fetch(bridgeSiblingUrl("/face/confirm_check"), {
+      method: "POST",
+      headers: { "content-type": "application/json", ...proof },
+      body: JSON.stringify({ tool: name }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    return { status: 502, body: { error: "bridge_unavailable", name } };
+  }
+  const check = (await upstream.json().catch(() => ({}))) as {
+    passed?: boolean;
+    person?: { name?: string | null };
+    [k: string]: unknown;
+  };
+  if (!upstream.ok) return { status: upstream.status, body: check };
+  if (check.passed !== true)
+    return { status: 200, body: { passed: false, reason: check.reason } };
+  const r = await confirmPending(name, callId, args, user, "face");
+  return {
+    status: r.status,
+    body: { ...r.body, passed: true, person: check.person?.name ?? null },
+  };
 }
 
 /** The operator's Cancelar: the refused call is dropped, and nothing runs. */
@@ -505,6 +561,36 @@ export const skillsRoutes = new Elysia({ prefix: "/skills" })
           detail: {
             summary:
               "Confirm AND run one refused call of a T2 or high-danger T1 skill, with its exact arguments. Admin-only.",
+            tags: ["skills"],
+          },
+        },
+      )
+      .post(
+        "/:name/confirm-face",
+        async ({ params: { name }, body, status, user, server, request }) => {
+          // Same rules as /confirm, the click replaced by an enrolled live face
+          // in front of the robot (confirmPendingByFace).
+          if (user.role !== "admin") {
+            return status(403, { error: "admin_required" });
+          }
+          server?.timeout(request, 0);
+          const r = await confirmPendingByFace(
+            name,
+            body.callId,
+            body.args ?? {},
+            user,
+          );
+          return r.status === 200 ? r.body : status(r.status, r.body);
+        },
+        {
+          params: t.Object({ name: t.String() }),
+          body: t.Object({
+            callId: t.String({ maxLength: 128 }),
+            args: t.Optional(t.Record(t.String(), t.Any())),
+          }),
+          detail: {
+            summary:
+              "Confirm AND run one refused high-danger T1 call when an enrolled person's live face is at the robot. Admin-only.",
             tags: ["skills"],
           },
         },

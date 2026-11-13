@@ -143,6 +143,9 @@ T2_CONFIRM = _env_on("SAFETY_T2_CONFIRM")
 # can be issued, so T2 is refused outright: fail closed, never open.
 CONFIRM_SECRET = os.environ.get("SAFETY_CONFIRM_SECRET", "")
 CONFIRM_TTL_S = 30.0
+# An enrolled live face stands in for «Confirmar» on a high-danger T1 call, never a T2
+# (mcp_server /face/confirm_check). 0 = the click only.
+FACE_CONFIRM = os.environ.get("C3PO_FACE_CONFIRM", "1") != "0"
 # T2 skills that exist to be near a person (skills/manipulation.py).
 HANDOVER_TOOLS: frozenset[str] = frozenset({"handover"})
 
@@ -594,11 +597,20 @@ def _refusal(name: str, meta: dict[str, Any] | None, args_key: str | None, spend
         return None
     log.warning("safety.t2_refused", tool=name, reason="no_confirmation")
     kind = "a T2 tool" if tier == "T2" else "a high-danger tool"
+    face = tier != "T2" and FACE_CONFIRM
     return (
         f"refused: {name} is {kind} and needs an operator's confirmation first. "
         "You cannot give it: a human operator presses «Confirmar» for these exact "
-        "arguments in the console chat, then you retry once with exactly the same "
-        f"arguments within {int(CONFIRM_TTL_S)} s. Tell the operator what you want to do and wait."
+        "arguments in the console chat"
+        + (", or an enrolled operator shows their face to the robot's head camera" if face else "")
+        + ", then you retry once with exactly the same "
+        f"arguments within {int(CONFIRM_TTL_S)} s. Tell the operator what you want to do and say: "
+        + (
+            "«Confirmá la acción o mostrale la cara de un operador a la cámara para confirmar»."
+            if face
+            else "«Confirmá la acción»."
+        )
+        + " Then wait."
     )
 
 

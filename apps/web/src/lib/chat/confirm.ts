@@ -88,3 +88,81 @@ export async function decideCall(
 
 /** The pending call's arguments, as the operator must see them before deciding. */
 export const argsText = (args: unknown) => JSON.stringify(args ?? {});
+
+/** How often a shown card asks whether an enrolled face is at the robot (one check ≤ 1.5 s). */
+export const FACE_POLL_MS = 2000;
+
+/**
+ * The face instead of «Confirmar», for as long as the card is on screen: asks
+ * back (`/skills/:tool/confirm-face`) every FACE_POLL_MS. `state("waiting")`
+ * once a check could run, so the card shows the hint; `state("unavailable")`
+ * and it stops when the face cannot confirm this call (a T2, face confirm off,
+ * no longer pending). `done` once a face ran it, with the same result a click
+ * gives. Network trouble just tries again. Returns the stop.
+ */
+export function watchFace(
+  base: string,
+  tool: string,
+  callId: string,
+  args: unknown,
+  on: {
+    state: (s: "waiting" | "unavailable") => void;
+    done: (r: DecisionResult) => void;
+  },
+  fetchImpl: typeof fetch = fetch,
+  everyMs = FACE_POLL_MS,
+): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const next = () => {
+    if (!stopped) timer = setTimeout(tick, everyMs);
+  };
+  async function tick(): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetchImpl(
+        `${base}/skills/${encodeURIComponent(tool)}/confirm-face`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callId, args: args ?? {} }),
+        },
+      );
+    } catch {
+      return next();
+    }
+    if (stopped) return;
+    const body = (await res.json().catch(() => null)) as {
+      passed?: boolean;
+      result?: unknown;
+      message?: unknown;
+    } | null;
+    if (res.ok && body?.passed === false) {
+      on.state("waiting");
+      return next();
+    }
+    const message = typeof body?.message === "string" ? body.message : null;
+    if (body?.passed === true) {
+      stopped = true;
+      on.done(
+        res.ok
+          ? { outcome: classifySkillResult(body.result), message, final: true }
+          : {
+              outcome: classifyHttpError(res.status, body),
+              message,
+              final: message !== null || res.status === 409,
+            },
+      );
+      return;
+    }
+    if (res.status >= 500) return next();
+    stopped = true;
+    on.state("unavailable");
+  }
+  void tick();
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
+}

@@ -16,7 +16,7 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { untrack } from "svelte";
 import { PUBLIC_API_URL } from "$app/env/public";
 import { ADMIN_REQUIRED_HINT } from "#lib/chat/chat-error.js";
-import { decideCall } from "#lib/chat/confirm.js";
+import { decideCall, watchFace } from "#lib/chat/confirm.js";
 import { newId } from "#lib/chat/ids.js";
 import type { MenuItem, VoiceLine } from "#lib/webxr/menu-layer.js";
 import { estop } from "./estop.svelte";
@@ -96,6 +96,19 @@ export class VrVoice {
     this.#unwatchStop = $effect.root(() => {
       $effect(() => {
         if (estop.phase === "sending") untrack(() => this.#abandon(null));
+      });
+      // The shown call also runs on an enrolled face at the robot (not the one in
+      // this headset: it hides the face). The agent reads the result, as after Confirmar.
+      $effect(() => {
+        const p = this.#shown;
+        if (!p) return;
+        return watchFace(PUBLIC_API_URL, p.tool, p.id, p.input, {
+          state: () => {},
+          done: (r) => {
+            if (r.message) void this.#chat.sendMessage({ text: r.message });
+            else this.error = `${p.tool}: ${r.outcome.text}`;
+          },
+        });
       });
     });
   }

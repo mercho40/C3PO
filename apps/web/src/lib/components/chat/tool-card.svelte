@@ -15,7 +15,7 @@
   import * as Tool from "#lib/components/ai-elements/tool/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { PUBLIC_API_URL } from "$app/env/public";
-  import { argsText, decideCall } from "#lib/chat/confirm.js";
+  import { argsText, decideCall, watchFace } from "#lib/chat/confirm.js";
   import {
     classifyToolPart,
     needsConfirmation,
@@ -64,6 +64,26 @@
     }
   }
 
+  // Or an enrolled face at the robot, asked only while the card can be pressed.
+  let face = $state<"waiting" | "unavailable" | null>(null);
+  $effect(() => {
+    if (!confirmable || running || final || live) return;
+    return watchFace(
+      PUBLIC_API_URL,
+      confirmable,
+      part.toolCallId ?? "",
+      part.input,
+      {
+        state: (s) => (face = s),
+        done: (r) => {
+          outcome = r.outcome;
+          final = r.final;
+          if (r.message) onconfirmed?.(r.message);
+        },
+      },
+    );
+  });
+
   const display = $derived(classifyToolPart(part, { live }));
   const name = $derived(toolName(part));
   // Show the bridge's own words in the body only when they are not already
@@ -108,6 +128,12 @@
         class="max-w-full min-w-0 truncate readout text-xs text-ink-mute"
         title={confirmArgs}>{confirmArgs}</code
       >
+      {#if face === "waiting" && !final}
+        <p class="w-full text-xs text-ink-mute">
+          o mostrale la cara de un operador a la cámara del robot (agachado, a
+          0,5–0,8 m)
+        </p>
+      {/if}
       {#if outcome}
         <p class={["w-full text-xs", OUTCOME_TONE[outcome.kind]]} role="status">
           {outcome.text}{#if outcome.code}

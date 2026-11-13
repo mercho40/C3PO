@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import json
 from pathlib import Path
 
 import pytest
@@ -488,6 +489,53 @@ async def test_the_console_grant_runs_the_call_it_was_made_for(mcp, link, monkey
     await mcp.call_tool("set_hand", {"closure": 0.7})
     with pytest.raises(ToolError):
         await mcp.call_tool("set_hand", {"closure": 0.5})
+
+
+@pytest.mark.asyncio
+async def test_a_face_check_stands_in_for_confirmar_but_grants_nothing(monkeypatch):
+    from bridge import face_gate, mcp_server
+
+    monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
+    seen = {"code": face_gate.NO_FACE}
+
+    async def live_check(*, background=False, unknown=False):
+        assert background  # a gated call must wait this out, not be refused by it
+        return seen["code"], "cd6517b6b535"
+
+    monkeypatch.setattr(face_gate, "live_check", live_check)
+    monkeypatch.setattr(
+        face_gate, "person", lambda pid: {"id": pid, "name": "Oliver", "role": "superadmin"}
+    )
+    check = mcp_server.face_confirm_check
+    assert (await check(FakeRequest({"tool": "arm_navigation"}, secret="nope"))).status_code == 403
+    arm = await check(FakeRequest({"tool": "set_hand"}, secret="s3cret"))
+    assert arm.status_code == 400 and b"face_not_for_t2" in arm.body  # T2 keeps the click
+    t0 = await check(FakeRequest({"tool": "get_state"}, secret="s3cret"))
+    assert t0.status_code == 400 and b"not_confirmable" in t0.body
+    nobody = json.loads(
+        (await check(FakeRequest({"tool": "arm_navigation"}, secret="s3cret"))).body
+    )
+    assert nobody == {"passed": False, "reason": face_gate.NOT_SEEN}
+    seen["code"] = face_gate.PASSED
+    face = json.loads((await check(FakeRequest({"tool": "arm_navigation"}, secret="s3cret"))).body)
+    assert face["passed"] and face["person"]["name"] == "Oliver"
+    assert safety.status()["pending_confirmations"] == []  # only /safety/confirm grants
+    monkeypatch.setattr(safety, "FACE_CONFIRM", False)
+    off = await check(FakeRequest({"tool": "arm_navigation"}, secret="s3cret"))
+    assert off.status_code == 403 and b"face_confirm_off" in off.body
+
+
+def test_the_refusal_offers_the_face_only_where_it_can_confirm(monkeypatch):
+    from bridge import mcp_server
+
+    def refusal(name):
+        return safety.tool_refusal(name, mcp_server.mcp._tool_manager.get_tool(name).meta, "{}")
+
+    face = "mostrale la cara de un operador a la cámara"
+    assert face in refusal("arm_navigation")
+    assert face not in refusal("set_hand") and "«Confirmá la acción»" in refusal("set_hand")
+    monkeypatch.setattr(safety, "FACE_CONFIRM", False)
+    assert face not in refusal("arm_navigation")
 
 
 # -- the PARAR latch -----------------------------------------------------------

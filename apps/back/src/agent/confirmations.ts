@@ -96,12 +96,25 @@ export function takePending(
   args: unknown,
   now = Date.now(),
 ): PendingConfirmation | "not_pending" | "args_mismatch" {
+  const p = peekPending(id, ownerId, tool, args, now);
+  if (typeof p === "string") return p;
+  pending.delete(keyOf(ownerId, id));
+  takenIn.set(p, stopEpoch);
+  return p;
+}
+
+/** `takePending`'s checks without taking it: the face check runs before the call is taken. */
+export function peekPending(
+  id: string,
+  ownerId: string,
+  tool: string,
+  args: unknown,
+  now = Date.now(),
+): PendingConfirmation | "not_pending" | "args_mismatch" {
   const p = pending.get(keyOf(ownerId, id));
   if (!p || !fresh(p, now)) return "not_pending";
   if (p.tool !== tool || canonicalArgs(p.args) !== canonicalArgs(args))
     return "args_mismatch";
-  pending.delete(keyOf(ownerId, id));
-  takenIn.set(p, stopEpoch);
   return p;
 }
 

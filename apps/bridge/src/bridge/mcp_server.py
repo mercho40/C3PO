@@ -4228,8 +4228,10 @@ async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
     try:
         body = await request.json()
         tool, args = str(body.get("tool") or ""), body.get("args", {})
+        # A label for the log only: back sends "face" after /face/confirm_check passed.
+        via = "face" if body.get("via") == "face" else "console"
     except Exception:
-        tool, args = "", {}
+        tool, args, via = "", {}, "console"
     listed = mcp._tool_manager.get_tool(tool)
     if listed is None or not safety.needs_confirmation(listed.meta):
         # Only gated tools take a grant; anything else is a typo or a probe.
@@ -4240,7 +4242,7 @@ async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
         args_key = None
     if args_key is None:
         return JSONResponse({"error": "invalid_arguments", "tool": tool}, status_code=400)
-    safety.grant_confirmation(tool, args_key, via="console")
+    safety.grant_confirmation(tool, args_key, via=via)
     return JSONResponse(
         {"granted": True, "tool": tool, "expires_in_s": safety.CONFIRM_TTL_S},
         headers={"Cache-Control": "no-store"},
@@ -4322,6 +4324,39 @@ async def face_people(request):  # noqa: ANN001, ANN201 - starlette types
             "models": face_gate.models_installed(),
         }
     )
+
+
+@mcp.custom_route("/face/confirm_check", methods=["POST"])
+async def face_confirm_check(request):  # noqa: ANN001, ANN201 - starlette types
+    """Whether an enrolled person's live face is in view now, to stand in for «Confirmar».
+
+    Body `{"tool": name}`. Grants nothing: apps/back asks this only for a refused call its
+    console still shows, and on a pass grants through /safety/confirm (via "face") and runs
+    that one call, exactly as a click does. Never for T2 (arms, hands): the face has to be
+    within 1.2 m and a T2 call refuses anyone inside 0.8 m, so those keep the click.
+    """
+    if (refused := _unproven(request)) is not None:
+        return refused
+    if not safety.FACE_CONFIRM:
+        return _no_store({"error": "face_confirm_off"}, 403)
+    try:
+        tool = str((await request.json()).get("tool") or "")
+    except Exception:
+        tool = ""
+    listed = mcp._tool_manager.get_tool(tool)
+    if listed is None or not safety.needs_confirmation(listed.meta):
+        return _no_store({"error": "not_confirmable", "tool": tool}, 400)
+    if ((listed.meta or {}).get("c3po") or {}).get("tier") == "T2":
+        return _no_store({"error": "face_not_for_t2", "tool": tool}, 400)
+    # background: a gated call waits this out instead of being refused by it.
+    code, detail = await face_gate.live_check(background=True)
+    if code != face_gate.PASSED:
+        reason = face_gate.NOT_SEEN if code in (face_gate.NO_FACE, face_gate.UNKNOWN) else code
+        return _no_store({"passed": False, "reason": reason})
+    who = await asyncio.to_thread(face_gate.person, detail)
+    log.warning("face_gate.confirm_seen", tool=tool, person=detail)
+    person = {k: (who or {}).get(k) for k in ("name", "role")} | {"id": detail}
+    return _no_store({"passed": True, "person": person})
 
 
 @mcp.custom_route("/face/seen", methods=["GET"])

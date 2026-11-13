@@ -693,6 +693,111 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
   });
 });
 
+describe("POST /skills/:name/confirm-face: an enrolled face instead of the click", () => {
+  const realFetch = globalThis.fetch;
+  let forwarded: { url: string; body: unknown }[] = [];
+  let face: () => Response;
+  const args = { seconds: 5 };
+
+  const post = (body: unknown) =>
+    skillsRoutes.handle(
+      new Request("http://localhost/skills/start_walking_waist/confirm-face", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+
+  beforeEach(() => {
+    forwarded = [];
+    inserted = [];
+    bridge.callTool.mockClear();
+    confirmations.clearPending();
+    sessionUser = { id: "u1", role: "admin" };
+    process.env.SAFETY_CONFIRM_SECRET = "s3cret";
+    catalogueSkills = [
+      ...FIXTURE_SKILLS,
+      {
+        ...fixtureSkill("start_walking_waist", "posture"),
+        tier: "T1",
+        dangerLevel: "high",
+      },
+    ] as typeof FIXTURE_SKILLS;
+    face = () =>
+      Response.json({ passed: false, reason: "operator_face_not_seen" });
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      forwarded.push({ url: String(url), body: JSON.parse(String(init.body)) });
+      return String(url).endsWith("/face/confirm_check")
+        ? face()
+        : Response.json({ granted: true });
+    }) as typeof fetch;
+    confirmations.notePending({
+      id: "call_1",
+      tool: "start_walking_waist",
+      args,
+      ownerId: "u1",
+      chatId: "chat_1",
+      loop: false,
+    });
+  });
+
+  test("no face yet: keep waiting, nothing granted or run, the card stays", async () => {
+    const res = await post({ callId: "call_1", args });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      passed: false,
+      reason: "operator_face_not_seen",
+    });
+    expect(forwarded.map((f) => f.url)).toEqual([
+      expect.stringContaining("/face/confirm_check"),
+    ]);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+    expect(confirmations.listPending("u1", "chat_1")).toHaveLength(1);
+  });
+
+  test("a face: granted via face and run once, like the click", async () => {
+    face = () =>
+      Response.json({ passed: true, person: { id: "p", name: "Oliver" } });
+    const res = await post({ callId: "call_1", args });
+    const again = await post({ callId: "call_1", args });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      passed: boolean;
+      person: string;
+      message: string;
+    };
+    expect(body.passed).toBe(true);
+    expect(body.person).toBe("Oliver");
+    expect(body.message).toStartWith("El operador confirmó y se ejecutó");
+    expect(forwarded[1]).toEqual({
+      url: expect.stringContaining("/safety/confirm"),
+      body: { tool: "start_walking_waist", args, via: "face" },
+    });
+    expect(bridge.callTool).toHaveBeenCalledTimes(1);
+    expect(again.status).toBe(409);
+  });
+
+  test("the bridge's refusal (a T2, or face confirm off) passes through and runs nothing", async () => {
+    face = () => Response.json({ error: "face_not_for_t2" }, { status: 400 });
+    const res = await post({ callId: "call_1", args });
+    globalThis.fetch = realFetch;
+    expect(res.status).toBe(400);
+    expect(bridge.callTool).not.toHaveBeenCalled();
+  });
+
+  test("other arguments than the card's, or a non-admin: nothing is asked", async () => {
+    const other = await post({ callId: "call_1", args: { seconds: 9 } });
+    sessionUser = { id: "u1", role: "user" };
+    const user = await post({ callId: "call_1", args });
+    globalThis.fetch = realFetch;
+    expect(other.status).toBe(409);
+    expect(user.status).toBe(403);
+    expect(forwarded).toEqual([]);
+  });
+});
+
 /**
  * 1.3: the bridge gates a high-danger T1 for every MCP caller, so an admin's
  * /invoke (the console and headset bring-up) grants that exact call first.
