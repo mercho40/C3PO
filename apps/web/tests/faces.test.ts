@@ -78,6 +78,23 @@ describe("faces", () => {
     });
   });
 
+  test("a role change PATCHes the person with the card and only the role", async () => {
+    const b = back(200, { id: "p1", role: "superadmin" });
+    const r = await runFace(
+      "http://back",
+      "role",
+      { id: "p1", role: "superadmin" },
+      "c4",
+      b.impl,
+    );
+    expect(r.ok).toBe(true);
+    expect(b.sent[0]?.init.method).toBe("PATCH");
+    expect(b.sent[0]?.url).toBe("http://back/face/people/p1?confirmation=c4");
+    expect(JSON.parse(String(b.sent[0]?.init.body))).toEqual({
+      role: "superadmin",
+    });
+  });
+
   test("a voided card and an enroll the bridge refused read in Spanish", async () => {
     const voided = await runFace(
       "http://back",

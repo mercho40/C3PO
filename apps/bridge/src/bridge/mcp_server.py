@@ -4361,6 +4361,23 @@ async def face_delete(request):  # noqa: ANN001, ANN201 - starlette types
     return _no_store({"deleted": pid})
 
 
+@mcp.custom_route("/face/people/{pid}", methods=["PATCH"])
+async def face_set_role(request):  # noqa: ANN001, ANN201 - starlette types
+    """Body {"role": "superadmin" | "operator"}: change who someone is, nothing else."""
+    if (refused := _unproven(request)) is not None:
+        return refused
+    pid = str(request.path_params.get("pid", ""))
+    role = (await _json_body(request)).get("role")
+    if role not in face_gate.ROLES:
+        bad = {"error": "invalid", "code": "invalid", "reason": f"role must be one of {', '.join(face_gate.ROLES)}"}
+        return _no_store(bad, 422)
+    p = await asyncio.to_thread(face_gate.set_role, pid, role)
+    if p is None:
+        return _no_store({"error": "not_found"}, 404)
+    log.warning("face.person_role_changed", person=pid, role=role, via="console")
+    return _no_store(p)
+
+
 @mcp.custom_route("/face/people/{pid}/photo.jpg", methods=["GET"])
 async def face_photo(request):  # noqa: ANN001, ANN201 - starlette types
     """The enrolled person's own consented photo; never anything of anyone else."""

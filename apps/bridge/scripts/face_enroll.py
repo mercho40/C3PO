@@ -45,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--delete-all", action="store_true", help="forget everyone")
     parser.add_argument("--yes", action="store_true", help="consent without the prompt")
     parser.add_argument("--replace", action="store_true", help="re-enroll a name that exists")
+    parser.add_argument(
+        "--set-role", metavar="NAME", type=_name, help="change NAME's role to --role, nothing else"
+    )
     args = parser.parse_args(argv)
 
     if args.list:
@@ -63,6 +66,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"nobody enrolled as {args.delete}")
             return 0
         print(f"deleted {args.delete}")
+        return 0
+    if args.set_role:
+        face_gate.people()  # migrates the old layout first
+        wanted = args.set_role.casefold()
+        ids = [p["id"] for p in face_gate.people_listing() if p["name"].casefold() == wanted]
+        if not ids or face_gate.set_role(ids[0], args.role) is None:
+            print(f"nobody enrolled as {args.set_role}")
+            return 0
+        print(f"{args.set_role} is now {args.role}")
         return 0
     if not args.name:
         parser.error("--name is required to enroll")

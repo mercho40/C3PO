@@ -613,6 +613,8 @@ def test_list_and_delete_all(scene, monkeypatch, capsys):
     assert face_enroll.main(["--list"]) == 0
     out = capsys.readouterr().out
     assert "Oliver\tsuperadmin" in out and "Ana\toperator" in out
+    assert face_enroll.main(["--set-role", "ana", "--role", "superadmin"]) == 0
+    assert {p["name"]: p["role"] for p in face_gate.people_listing()}["Ana"] == "superadmin"
     assert face_enroll.main(["--delete-all"]) == 0
     assert face_gate.people() == [] and not face_gate.people_dir().exists()
     assert not face_gate.enrollment_path().exists()
@@ -796,6 +798,7 @@ async def test_face_routes_refuse_without_the_consoles_proof(routes, monkeypatch
         (routes.face_delete, {"pid": oliver}),
         (routes.face_photo, {"pid": oliver}),
         (routes.face_enroll, {"body": {"name": "Eve", "role": "superadmin"}}),
+        (routes.face_set_role, {"pid": oliver, "body": {"role": "operator"}}),
     ]
     for route, kw in calls:
         for secret in (None, "nope"):
@@ -805,6 +808,7 @@ async def test_face_routes_refuse_without_the_consoles_proof(routes, monkeypatch
         assert (await route(_Req(secret="", **kw))).status_code == 503
     assert face_gate.settings()["gate"] is True and face_gate.person(oliver) is not None
     assert [p["name"] for p in face_gate.people()] == ["Oliver"]
+    assert face_gate.person(oliver)["role"] == "superadmin"
 
 
 async def test_face_routes_work_with_the_proof(routes):
@@ -1123,3 +1127,20 @@ def test_the_real_models_load_and_run(monkeypatch):
     assert feat.shape == (128,)
     assert face_gate.similarity(feat, feat[None, :]) == pytest.approx(1.0, abs=1e-5)
     assert face_gate.similarity(face_gate.feature(other, row), feat[None, :]) < 1.0
+
+
+async def test_set_role_changes_only_the_role(routes):
+    ana = face_gate.add_person("Ana", "operator", np.stack([ANA]), b"\xff\xd8jpeg")
+    before = face_gate.person(ana["id"])
+    resp = await routes.face_set_role(_Req({"role": "superadmin"}, "s3cret", pid=ana["id"]))
+    assert resp.status_code == 200 and json.loads(resp.body)["role"] == "superadmin"
+    after = face_gate.person(ana["id"])
+    assert after["role"] == "superadmin" and after["name"] == "Ana" and after["has_photo"]
+    assert (after["features"] == before["features"]).all()
+    assert after["enrolled_at"] == before["enrolled_at"]
+    # Bad role, unknown or hostile id: nothing changes.
+    assert (await routes.face_set_role(_Req({"role": "root"}, "s3cret", pid=ana["id"]))).status_code == 422
+    for pid in ("0" * 12, "../../etc", face_gate.LEGACY_ID):
+        resp = await routes.face_set_role(_Req({"role": "operator"}, "s3cret", pid=pid))
+        assert resp.status_code == 404
+    assert face_gate.person(ana["id"])["role"] == "superadmin"

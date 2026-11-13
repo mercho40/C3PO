@@ -133,6 +133,10 @@
     } else if (c.action === "delete") {
       if (photo?.personId === c.args.id) closePhoto();
       toast.success("Persona borrada");
+    } else if (c.action === "role") {
+      toast.success(
+        `Ahora es ${faceRoleLabel(String(c.args.role)).toLowerCase()}`,
+      );
     } else toast.success("Listo");
     await refresh();
   }
@@ -160,6 +164,20 @@
         title: `¿Ver la cara de ${p.name}?`,
         text: "Se muestra solo en esta pantalla, no se guarda, y queda registrado que la viste.",
         cta: "Ver cara",
+        danger: false,
+      },
+    );
+  }
+
+  function askRole(p: FacePerson) {
+    const role = p.role === "superadmin" ? "operator" : "superadmin";
+    void ask(
+      "role",
+      { id: p.id, role },
+      {
+        title: `¿Hacer ${faceRoleLabel(role).toLowerCase()} a ${p.name}?`,
+        text: "Cambia solo su rol: su cara y su foto quedan como están.",
+        cta: `Hacer ${faceRoleLabel(role).toLowerCase()}`,
         danger: false,
       },
     );
@@ -378,6 +396,16 @@
                       {busy === "photo" ? "Abriendo…" : "Ver cara"}
                     </button>
                   {/if}
+                  <button
+                    type="button"
+                    disabled={asking || busy !== null}
+                    onclick={() => askRole(p)}
+                    class="inline-flex h-9 items-center rounded-lg border border-hairline-strong px-2.5 text-xs text-ink-dim transition-colors hover:border-accent-edge hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none disabled:opacity-40"
+                  >
+                    {busy === "role"
+                      ? "Cambiando…"
+                      : `Hacer ${faceRoleLabel(p.role === "superadmin" ? "operator" : "superadmin").toLowerCase()}`}
+                  </button>
                   <button
                     type="button"
                     disabled={asking || busy !== null}

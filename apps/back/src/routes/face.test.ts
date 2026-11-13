@@ -160,6 +160,7 @@ describe("/face", () => {
       ["POST", "/enroll", { name: "Ana", role: "operator" }],
       ["GET", "/people/p1/photo.jpg", undefined],
       ["GET", "/people/p1/photo.jpg?confirmation=made-up", undefined],
+      ["PATCH", "/people/p1", { role: "operator" }],
     ] as const) {
       const res = await call(method, path, body);
       expect(res.status).toBe(428);
@@ -235,6 +236,47 @@ describe("/face", () => {
       "face_delete",
       "face_enroll",
     ]);
+  });
+
+  test("a role change relays exactly the confirmed person and role", async () => {
+    let id = await ask("role", { id: "p1", role: "operator" });
+    // The card is for operator: superadmin, or another person, is refused.
+    expect(
+      (
+        await call("PATCH", `/people/p1?confirmation=${id}`, {
+          role: "superadmin",
+        })
+      ).status,
+    ).toBe(409);
+    id = await ask("role", { id: "p1", role: "operator" });
+    expect(
+      (
+        await call("PATCH", `/people/p2?confirmation=${id}`, {
+          role: "operator",
+        })
+      ).status,
+    ).toBe(409);
+    expect(seen).toHaveLength(0);
+    id = await ask("role", { id: "p1", role: "operator" });
+    expect(
+      (
+        await call("PATCH", `/people/p1?confirmation=${id}`, {
+          role: "operator",
+        })
+      ).status,
+    ).toBe(200);
+    expect(seen[0]?.init?.method).toBe("PATCH");
+    expect(seen[0]?.url).toEndWith("/face/people/p1");
+    expect(JSON.parse(String(seen[0]?.init?.body))).toMatchObject({
+      role: "operator",
+    });
+    expect(logged[0]).toMatchObject({ skillName: "face_role" });
+    // No such role: no card at all.
+    const bad = await call("POST", "/confirmations", {
+      action: "role",
+      args: { id: "p1", role: "root" },
+    });
+    expect(bad.status).toBe(422);
   });
 
   test("another admin cannot use my card", async () => {

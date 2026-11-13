@@ -14,6 +14,8 @@
  *                                     5–10 s, 20 s at most. A name that
  *                                     exists is refused (409 `exists`) unless
  *                                     the card says replace: true.
+ * PATCH  /face/people/:id?confirmation= {role}: superadmin or operator;
+ *                                     features and photo stay.
  * GET    /face/people/:id/photo.jpg?confirmation=   never cached.
  *
  * Seeing a face is confirmed like an action: every mutation and every photo
@@ -35,7 +37,13 @@ import {
   takePending,
 } from "#back/agent/confirmations.js";
 
-export const FACE_ACTIONS = ["settings", "delete", "enroll", "photo"] as const;
+export const FACE_ACTIONS = [
+  "settings",
+  "delete",
+  "enroll",
+  "photo",
+  "role",
+] as const;
 export type FaceAction = (typeof FACE_ACTIONS)[number];
 const SETTINGS = ["greet", "greet_unknown", "gate"] as const;
 const ROLES = new Set(["superadmin", "operator"]);
@@ -59,6 +67,10 @@ export function faceArgs(
   }
   if (action === "delete" || action === "photo")
     return typeof r.id === "string" && r.id ? { id: r.id } : null;
+  if (action === "role")
+    return typeof r.id === "string" && r.id && ROLES.has(r.role as string)
+      ? { id: r.id, role: r.role }
+      : null;
   if (action === "enroll") {
     const name = typeof r.name === "string" ? r.name.trim() : "";
     // `replace` is bound by the card: a «¿reemplazar?» confirmation cannot be
@@ -82,7 +94,7 @@ async function confirmedRelay(
   raw: unknown,
   confirmation: string | undefined,
   path: string,
-  method: "POST" | "DELETE" | "GET",
+  method: "POST" | "DELETE" | "GET" | "PATCH",
   timeoutMs: number,
 ): Promise<Response> {
   const args = faceArgs(action, raw);
@@ -98,7 +110,8 @@ async function confirmedRelay(
   if (taken === "args_mismatch")
     return json(409, { error: "confirmation_mismatch" });
 
-  const sendsBody = action === "settings" || action === "enroll";
+  const sendsBody =
+    action === "settings" || action === "enroll" || action === "role";
   const startedAt = Date.now();
   let upstream: Response | null = null;
   try {
@@ -269,6 +282,17 @@ export const faceRoutes = new Elysia({ prefix: "/face" })
           "/face/enroll",
           "POST",
           30_000,
+        ),
+      )
+      .patch("/people/:id", ({ user, params, body, query }) =>
+        confirmedRelay(
+          user.id,
+          "role",
+          { id: params.id, role: (body as { role?: unknown } | null)?.role },
+          query.confirmation,
+          `/face/people/${encodeURIComponent(params.id)}`,
+          "PATCH",
+          5000,
         ),
       )
       .get("/people/:id/photo.jpg", ({ user, params, query }) =>

@@ -2,7 +2,7 @@
  * The «Caras» page's calls to apps/back (routes/face.ts) and their Spanish.
  *
  * Seeing a face is confirmed like an action: «Ver cara», «Borrar», «Agregar
- * persona» and each switch first open a card on back (`askFace`), the operator
+ * persona», «Hacer operador/superadmin» and each switch first open a card on back (`askFace`), the operator
  * presses Confirmar, and only then is the call made with that card
  * (`runFace`). PARAR voids open cards on back, so a Confirmar after a stop is
  * refused and the operator asks again.
@@ -10,7 +10,7 @@
  * Plain module, no runes, so `bun test` can load it.
  */
 
-export type FaceAction = "settings" | "delete" | "enroll" | "photo";
+export type FaceAction = "settings" | "delete" | "enroll" | "photo" | "role";
 export type FaceRole = "superadmin" | "operator";
 export type FaceSettings = {
   greet: boolean;
@@ -218,9 +218,14 @@ export async function runFace(
           ? await send(f, `${base}/face/people/${person}?${c}`, {
               method: "DELETE",
             })
-          : await send(f, `${base}/face/people/${person}/photo.jpg?${c}`, {
-              cache: "no-store",
-            });
+          : action === "role"
+            ? await send(f, `${base}/face/people/${person}?${c}`, {
+                ...postJson({ role: args.role }),
+                method: "PATCH",
+              })
+            : await send(f, `${base}/face/people/${person}/photo.jpg?${c}`, {
+                cache: "no-store",
+              });
   if (res?.ok && action === "photo")
     return { ok: true, body: null, photo: await res.blob() };
   const body = await res?.json().catch(() => null);

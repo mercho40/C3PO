@@ -506,6 +506,23 @@ def delete_person(pid: str) -> bool:
     return True
 
 
+def set_role(pid: str, role: str) -> dict[str, Any] | None:
+    """Change an enrolled person's role; their features and photo stay. None when there is
+    no such id (the legacy fallback included: it has no person.json until it migrates).
+    Demoting the last superadmin is allowed: roles grant nothing different at the gate
+    today, and deleting that person is allowed too."""
+    if role not in ROLES:
+        raise ValueError(f"role must be one of {', '.join(ROLES)}")
+    with _lock:
+        if person(pid) is None:
+            return None
+        path = people_dir() / pid / "person.json"
+        info = _json(path) | {"role": role}
+        _save_owner_only(path, json.dumps(info).encode())
+        _forget_seen()  # /face/seen must not keep showing the old role
+        return public(person(pid))
+
+
 def delete_all() -> None:
     """Everyone, and the single-operator layout and its leftovers."""
     with _lock:
