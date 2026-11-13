@@ -92,6 +92,18 @@ BRAINCO_SPEED = 1.0
 # cap always means "never quite fully closed" regardless of wire direction.
 BRAINCO_CLOSURE_CAPS = (0.98, 0.70, 0.98, 0.98, 0.98, 0.98)
 
+# `rt/brainco/{side}/state` (`unitree_go MotorStates_`, 6 entries, q in the same [0,1] as the
+# command) arrives at ~100 Hz while `brainco_hand_server` runs; older than this is no reading.
+BRAINCO_STATE_MAX_AGE_S = 0.5
+
+
+def commanded_closures(closures: tuple[float, ...]) -> tuple[float, ...]:
+    """What a BrainCo is actually told for `closures` (SHAPES order): clamped, then capped."""
+    return tuple(
+        min(_clamp01(c), cap) for c, cap in zip(closures, BRAINCO_CLOSURE_CAPS, strict=True)
+    )
+
+
 # Named grasp shapes, per-channel closure in the same order (0 open .. 1 closed), BEFORE the caps.
 # For grasping (skills/manipulation.py) and `set_hand(shape=...)`. Drivers without per-finger
 # control (Dex3 here) get the shape's mean as one scalar.
@@ -166,6 +178,11 @@ class HandDriver:
         """Per-finger closure (SHAPES order). Single-scalar hands close to the shape's mean."""
         self.send(side, sum(closures) / len(closures))
 
+    def measured(self, side: Side) -> tuple[float, ...] | None:
+        """Measured per-finger closure (SHAPES order, 0 open .. 1 closed), or None: this hand
+        reports no state, or none recently."""
+        return None
+
     def relax(self) -> None:
         """Open every driven hand. Called on release and on the dead-man."""
         for side in self.sides:
@@ -221,7 +238,19 @@ class BrainCoHandDriver(HandDriver):
         self.sides = sides
         self._publishers: dict[Side, Any] = {}
         self._subscribers: dict[Side, Any] = {}
-        self._last_state: dict[Side, float] = {}
+        #: side -> (monotonic arrival, the 6 wire q). Written by the DDS thread.
+        self._state: dict[Side, tuple[float, tuple[float, ...]]] = {}
+
+    def _subscribe_state(self, side: Side) -> None:
+        """One rt/brainco/{side}/state reader per side, shared by measured() and server_heard()."""
+        if side in self._subscribers:
+            return
+        from unitree_sdk2py.core.channel import ChannelSubscriber
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorStates_
+
+        sub = ChannelSubscriber(f"rt/brainco/{side}/state", MotorStates_)
+        sub.Init(lambda msg, s=side: self._on_state(s, msg), 10)
+        self._subscribers[side] = sub
 
     def server_heard(self, side: Side, within_s: float = 1.0) -> bool:
         """Whether brainco_hand_server published rt/brainco/{side}/state in the last `within_s`.
@@ -230,18 +259,9 @@ class BrainCoHandDriver(HandDriver):
         after a reboot set_hand said ok to a hand nothing drives (2026-11-12). Blocking (up
         to `within_s` on the first call, while the subscriber joins); run it off the loop.
         """
-        if side not in self._subscribers:
-            from unitree_sdk2py.core.channel import ChannelSubscriber
-            from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorStates_
-
-            def heard(_msg: Any, side: Side = side) -> None:
-                self._last_state[side] = time.monotonic()
-
-            sub = ChannelSubscriber(f"rt/brainco/{side}/state", MotorStates_)
-            sub.Init(heard, 1)
-            self._subscribers[side] = sub
+        self._subscribe_state(side)
         deadline = time.monotonic() + within_s
-        while time.monotonic() - self._last_state.get(side, -math.inf) > within_s:
+        while time.monotonic() - self._state.get(side, (-math.inf,))[0] > within_s:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.05)
@@ -256,8 +276,22 @@ class BrainCoHandDriver(HandDriver):
             pub = ChannelPublisher(topic, MotorCmds_)
             pub.Init()
             self._publishers[side] = pub
+            # The state reader rides along: whoever commands a hand next asks where it got to.
+            self._subscribe_state(side)
             log.info("teleop.hands.publisher.ready", hand="brainco", topic=topic)
         return self._publishers[side]
+
+    def _on_state(self, side: Side, msg: Any) -> None:
+        self._state[side] = (time.monotonic(), tuple(float(m.q) for m in msg.states))
+
+    def measured(self, side: Side) -> tuple[float, ...] | None:
+        got = self._state.get(side)
+        if got is None or time.monotonic() - got[0] > BRAINCO_STATE_MAX_AGE_S:
+            return None
+        if len(got[1]) != BRAINCO_MOTORS:
+            return None
+        # The wire is open_at at open, so closure is the distance from it, on either polarity.
+        return tuple(abs(q - self.open_at) for q in got[1])
 
     def send(self, side: Side, grip: float) -> None:
         self.send_shape(side, (_clamp01(grip),) * BRAINCO_MOTORS)
@@ -274,10 +308,10 @@ class BrainCoHandDriver(HandDriver):
         # toward the other end. Written this way rather than as an `if` so the
         # polarity stays one number, not two code paths.
         cmds = []
-        for closure, cap in zip(closures, BRAINCO_CLOSURE_CAPS, strict=True):
-            # Cap the CLOSURE, then map to the wire — so "thumb never quite
-            # fully closed" holds on either polarity.
-            position = self.open_at + (1.0 - 2.0 * self.open_at) * min(_clamp01(closure), cap)
+        # Cap the CLOSURE, then map to the wire — so "thumb never quite
+        # fully closed" holds on either polarity.
+        for closure in commanded_closures(closures):
+            position = self.open_at + (1.0 - 2.0 * self.open_at) * closure
             cmd = unitree_go_msg_dds__MotorCmd_()
             cmd.q = float(position)
             cmd.dq = float(BRAINCO_SPEED)

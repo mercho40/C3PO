@@ -17,6 +17,9 @@ Added here, because these skills move the arm without a human choosing each join
   or nothing moves at all;
 * a per-tick abort: a person inside arm's reach (except `handover`), the base walking, or the
   headset driving (the teleop lease; that refuses the start too);
+* closed loop: each arm segment ends when rt/lowstate measures the arm there, each hand step
+  when the hand's own state does (the grasp close: when the fingers stop on the object), or
+  the skill fails saying how far off it was (`tracking` in the result);
 * grasp targets come only from a detection younger than FRESH_DETECTION_S, never from object
   memory: memory is where the wallet *was*, and a grasp needs where it *is*.
 
@@ -124,6 +127,18 @@ REPOSITION_SPEED_MPS = 0.15
 #: should now be. Waits this long for a detection captured after the step.
 REFIND_RADIUS_M = 0.10
 REFIND_WAIT_S = 3.0
+#: Closed loop: a step is done when the MEASURED arm or hand got there, not when it was sent.
+#: 2026-11-13 the hand closed where the bottle was not: the arm was still on its way, sagging.
+#: The arm's 1 cm IK tolerance is ~1° of shoulder at full reach; 3° is ~2.5 cm at the hand.
+ARM_TRACK_TOL_DEG = 3.0
+ARM_TRACK_TIMEOUT_S = 2.0
+#: Hand closure, the commanded [0,1] per finger (rt/brainco/{side}/state q, polarity undone).
+HAND_TRACK_TOL = 0.08
+HAND_TRACK_TIMEOUT_S = 2.0
+#: The grasp close ("close" phase) is done when the fingers stop on the object: moved, then
+#: still this long. Every other hand step must reach its shape.
+HAND_STALL_S = 0.3
+TRACK_POLL_S = 0.02
 #: The torso no arm link may come near, torso_link (x, y, z) ranges: the bounds of MuJoCo
 #: Menagerie unitree_g1's torso_link collision meshes (torso_link_rev_1_0.STL + logo_link),
 #: rounded out 1 mm. Not head_link: it starts at z=0.28, above and behind the hand's workspace.
@@ -1015,6 +1030,139 @@ def _plan_dict(steps: list[Step]) -> list[dict[str, Any]]:
     return out
 
 
+async def _pause(task: Task, seconds: float) -> str | None:
+    """Sleep, unless a stop comes first: then "cancelled", at once."""
+    try:
+        await asyncio.wait_for(task.cancel_event.wait(), seconds)
+    except TimeoutError:
+        return None
+    return "cancelled"
+
+
+async def _settle(
+    task: Task,
+    driver: Any,
+    reached: Callable[[], bool],
+    timeout_s: float,
+    abort: Callable[[], str | None],
+) -> tuple[str | None, float]:
+    """Poll `reached()` until true: (None, seconds), else ("cancelled" | "aborted:<why>" |
+    "driver_failed" | "timeout", seconds). A stop or an abort ends the wait at once; a step
+    that got there in the same tick still counts as there (the caller checks abort after)."""
+    t0 = time.monotonic()
+    while True:
+        waited = time.monotonic() - t0
+        if reached():
+            return None, waited
+        if task.cancel_event.is_set():
+            return "cancelled", waited
+        why = abort()
+        if why:
+            return f"aborted:{why}", waited
+        if not driver.engaged:
+            return "driver_failed", waited
+        if waited > timeout_s:
+            return "timeout", waited
+        if await _pause(task, TRACK_POLL_S):
+            return "cancelled", time.monotonic() - t0
+
+
+async def _arm_reached(
+    task: Task,
+    driver: Any,
+    side: Side,
+    phase: str,
+    target: Sequence[float],
+    abort: Callable[[], str | None],
+) -> tuple[str | None, dict[str, Any]]:
+    """Wait for the MEASURED arm (rt/lowstate) to be within ARM_TRACK_TOL_DEG of `target`."""
+    base = 0 if side == "left" else 7
+    err: list[float] | None = None
+
+    def reached() -> bool:
+        nonlocal err
+        q = driver.measured_angles()
+        err = (
+            None if q is None else [math.degrees(m - t) for m, t in zip(q[base : base + 7], target)]
+        )
+        return err is not None and max(map(abs, err)) <= ARM_TRACK_TOL_DEG
+
+    failure, waited = await _settle(task, driver, reached, ARM_TRACK_TIMEOUT_S, abort)
+    track: dict[str, Any] = {"phase": phase, "arm_error_deg": None, "wait_s": round(waited, 2)}
+    if err is not None:
+        worst = max(range(7), key=lambda j: abs(err[j]))
+        track["arm_error_deg"] = round(abs(err[worst]), 1)
+    if failure == "timeout":
+        failure = "arm_off_target"
+        track["error"] = (
+            f"the {side} arm did not reach the {phase} pose in {ARM_TRACK_TIMEOUT_S:g} s: no "
+            "fresh rt/lowstate to measure it"
+            if err is None
+            else f"the {side} arm stopped {abs(err[worst]):.1f}° from the {phase} pose "
+            f"({kinematics.arm_chain(side)[worst].name}; tolerance {ARM_TRACK_TOL_DEG:.0f}°)"
+        ) + ", so nothing was grasped there."
+    return failure, track
+
+
+async def _hand_reached(
+    task: Task,
+    driver: Any,
+    hand_driver: hands.HandDriver,
+    side: Side,
+    phase: str,
+    shape: str,
+    before: tuple[float, ...] | None,
+    abort: Callable[[], str | None],
+) -> tuple[str | None, dict[str, Any]]:
+    """Wait for the hand's own state to reach the commanded shape within HAND_TRACK_TOL, or,
+    on the grasp close, to stop on the object after closing from `before` (the reading as it
+    was sent). No state is a failure, never a grasp."""
+    want = hands.commanded_closures(hands.SHAPES[shape])
+    grasp = phase == "close"
+    q: tuple[float, ...] | None = None
+    first = before
+    still_since = time.monotonic()
+    contact = False
+
+    def reached() -> bool:
+        nonlocal q, first, still_since, contact
+        prev, q = q, hand_driver.measured(side)
+        if q is None:
+            return False
+        first = first or q
+        if max(abs(m - w) for m, w in zip(q, want, strict=True)) <= HAND_TRACK_TOL:
+            return True
+        if not grasp:
+            return False
+        if prev is None or max(abs(a - b) for a, b in zip(q, prev, strict=True)) > 0.01:
+            still_since = time.monotonic()
+        moved = max(b - a for a, b in zip(first, q, strict=True)) >= HAND_TRACK_TOL
+        contact = moved and time.monotonic() - still_since >= HAND_STALL_S
+        return contact
+
+    failure, waited = await _settle(task, driver, reached, HAND_TRACK_TIMEOUT_S, abort)
+    track: dict[str, Any] = {
+        "phase": phase,
+        "hand_shape": shape,
+        "hand_q": None if q is None else [round(v, 2) for v in q],
+        "hand_error": None if q is None else round(max(abs(m - w) for m, w in zip(q, want)), 2),
+        "wait_s": round(waited, 2),
+    }
+    if grasp and failure is None:
+        # Fingers all the way round means nothing stopped them: probably an empty hand.
+        track["contact"] = contact
+    if failure == "timeout":
+        failure = "hand_off_target"
+        track["error"] = (
+            f"the {side} hand reports no state (rt/brainco/{side}/state): cannot confirm it "
+            f"{'opened' if shape == 'open' else 'closed'}"
+            if q is None
+            else f"the {side} hand did not reach «{shape}» in {HAND_TRACK_TIMEOUT_S:g} s "
+            f"(off by {track['hand_error']:.2f} of full closure)"
+        ) + ", so no grasp is claimed."
+    return failure, track
+
+
 async def execute(
     task: Task,
     side: Side,
@@ -1081,30 +1229,51 @@ async def execute(
     except arm_sdk.ArmSdkUnavailable as exc:
         return done("failed", "unavailable", str(exc))
 
-    hand_closed = False
+    def abort() -> str | None:
+        return _abort_reason(allow_person)
+
+    hand_closed = False  # only once the hand's own state says so
+    told_closed = False  # the last hand command closed it, confirmed or not
+    tracking: list[dict[str, Any]] = []
+    task.result = {**(task.result or {}), "tracking": tracking}
+    started = time.monotonic()
     try:
         for i, (kind, phase, value) in enumerate(steps):
             task.phase = phase
             task.progress = i / len(steps)
-            if kind in ("hand", "wait"):
-                why = _abort_reason(allow_person)
-                if why is None:
-                    if kind == "hand":
-                        await asyncio.to_thread(hand_driver.send_shape, side, hands.SHAPES[value])
-                        hand_closed = value != "open"
-                    else:
-                        await asyncio.sleep(float(value))
-                    why = _abort_reason(allow_person)
-                if why is None:
-                    continue
-                driver.request_release()
-                failure: str | None = f"aborted:{why}"
-            else:
+            failure: str | None = None
+            track: dict[str, Any] | None = None
+            if kind == "arm":
                 angles = ArmAngles(*value)
                 left, right = (angles, None) if side == "left" else (None, angles)
-                failure = await arm_pose.slew(
-                    driver, task, left, right, ctx, abort=lambda: _abort_reason(allow_person)
-                )
+                failure = await arm_pose.slew(driver, task, left, right, ctx, abort=abort)
+                last_of_segment = i + 1 == len(steps) or steps[i + 1][:2] != ("arm", phase)
+                if failure is None and last_of_segment:
+                    failure, track = await _arm_reached(task, driver, side, phase, value, abort)
+            else:
+                why = abort()
+                if why is None:
+                    if kind == "hand":
+                        before = hand_driver.measured(side)
+                        await asyncio.to_thread(hand_driver.send_shape, side, hands.SHAPES[value])
+                        told_closed = value != "open"
+                        if hand_driver.name != "simulated":  # simulated: says so in the result
+                            failure, track = await _hand_reached(
+                                task, driver, hand_driver, side, phase, value, before, abort
+                            )
+                        if failure is None:
+                            hand_closed = told_closed
+                    else:
+                        failure = await _pause(task, float(value))
+                    why = abort() if failure is None else None
+                if why:
+                    failure = f"aborted:{why}"
+            if track is not None:
+                tracking.append({**track, "at_s": round(time.monotonic() - started, 2)})
+            if failure not in (None, "driver_failed"):
+                driver.request_release()  # idempotent: slew already started it on its failures
+            if failure is None:
+                continue
             if failure == "driver_failed":
                 return done(
                     "failed",
@@ -1113,16 +1282,21 @@ async def execute(
                     failed_at=phase,
                     hand_closed=hand_closed,
                 )
-            if failure is not None:
-                return done(
-                    "cancelled" if failure == "cancelled" else "failed",
-                    failure,
-                    None if failure == "cancelled" else failure,
-                    failed_at=phase,
-                    hand_closed=hand_closed,
-                    note="Arm authority is ramping back to the built-in controller."
-                    + (" The hand is still closed: open_hands releases it." if hand_closed else ""),
-                )
+            return done(
+                "cancelled" if failure == "cancelled" else "failed",
+                failure,
+                None if failure == "cancelled" else (track or {}).get("error", failure),
+                failed_at=phase,
+                hand_closed=hand_closed,
+                note="Arm authority is ramping back to the built-in controller."
+                + (
+                    " The hand is still closed: open_hands releases it."
+                    if hand_closed
+                    else " The hand was told to close and may be closed: open_hands releases it."
+                    if told_closed
+                    else ""
+                ),
+            )
         if not hold:
             await driver.release()
         return done(

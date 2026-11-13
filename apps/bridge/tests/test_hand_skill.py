@@ -8,6 +8,8 @@ TELEOP_HAND_SIDES skipped loudly, and the no-dead-man warning on every grip.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from bridge.skills import hand
@@ -156,7 +158,7 @@ def test_brainco_hears_its_server_only_while_state_arrives(monkeypatch):
     driver = hands.BrainCoHandDriver(open_at=0.0, sides=("right",))
 
     assert driver.server_heard("right", within_s=0.1) is False
-    handlers["rt/brainco/right/state"](object())
+    handlers["rt/brainco/right/state"](SimpleNamespace(states=[]))
     assert driver.server_heard("right", within_s=0.1) is True
 
 

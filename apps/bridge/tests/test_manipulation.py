@@ -59,6 +59,7 @@ class FakeArm:
         self.commands: list[tuple[ArmAngles | None, ArmAngles | None]] = []
         self.release_requested = False
         self.on_command = None
+        self.measured = None
 
     async def engage(self):
         self.engaged = True
@@ -70,6 +71,10 @@ class FakeArm:
     @property
     def current_angles(self):
         return tuple(self._t)
+
+    def measured_angles(self):
+        """rt/lowstate: where the arm IS. The fake tracks perfectly unless a test says not."""
+        return tuple(self._t) if self.measured is None else self.measured()
 
     def command(self, left, right):
         self.commands.append((left, right))
@@ -96,9 +101,15 @@ class FakeHand:
 
     def __init__(self):
         self.shapes = []
+        self.state = None  # a test's own rt/brainco state; None: the fingers do as told
 
     def send_shape(self, side, closures):
         self.shapes.append((side, closures))
+
+    def measured(self, side):
+        if self.state is not None:
+            return self.state()
+        return hands.commanded_closures(self.shapes[-1][1]) if self.shapes else None
 
 
 @pytest.fixture
@@ -701,7 +712,11 @@ async def test_the_hand_opens_at_pre_grasp_not_before(monkeypatch, real):
     arm, hand = real
     see(monkeypatch, cup())
     at = []  # (shape, arm commands so far, the arm's pose) as each shape is sent
-    hand.send_shape = lambda side, c: at.append((c, len(arm.commands), arm._t[7:14]))
+    real_send = hand.send_shape  # still recorded: the fake hand reports what it was sent
+    hand.send_shape = lambda side, c: (
+        at.append((c, len(arm.commands), arm._t[7:14])),
+        real_send(side, c),
+    )
     out = await m.pick("cup")
     assert out["status"] == "completed", out
     (curl, n_curl, _), (opened, n_open, q_open), _close = at
@@ -730,6 +745,147 @@ async def test_a_stop_before_pre_grasp_never_opens_the_hand(monkeypatch, real):
     sent = [s for _, s in hand.shapes]
     assert hands.SHAPES["open"] not in sent and sent == [hands.SHAPES[m.TRANSIT_SHAPE]]
     assert out["result"]["hand_closed"] is True and "open_hands" in out["result"]["note"]
+
+
+# --- closed loop: measured arm and hand, not what was sent ----------------------------------
+
+
+@pytest.fixture
+def quick(monkeypatch):
+    monkeypatch.setattr(m, "ARM_TRACK_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(m, "HAND_TRACK_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(m, "HAND_STALL_S", 0.05)
+
+
+def _pick_task():
+    return next(t for t in get_registry().list_active() if t.skill_name == "pick")
+
+
+@pytest.mark.asyncio
+async def test_a_completed_pick_reports_every_segments_measured_error(monkeypatch, real):
+    see(monkeypatch, cup())
+    out = await m.pick("cup")
+    assert out["status"] == "completed", out
+    track = out["result"]["tracking"]
+    arm_phases = [t["phase"] for t in track if "arm_error_deg" in t]
+    assert arm_phases == ["clear", "over", "pre_grasp", "grasp", "lift"]
+    assert [t["phase"] for t in track if "hand_shape" in t] == ["curl", "open", "close"]
+    assert all(t["arm_error_deg"] == 0.0 for t in track if "arm_error_deg" in t)
+    assert all("wait_s" in t and "at_s" in t for t in track)
+
+
+@pytest.mark.asyncio
+async def test_the_hand_never_closes_until_the_arm_measures_at_the_grasp(monkeypatch, real, quick):
+    # 2026-11-13: the hand closed where the bottle was not. The arm sags 5° at the grasp.
+    arm, hand = real
+    see(monkeypatch, cup())
+
+    def sagging():
+        q = list(arm._t)
+        if _pick_task().phase == "grasp":
+            q[7 + 3] += math.radians(5.0)  # right elbow
+        return tuple(q)
+
+    arm.measured = sagging
+    out = await m.pick("cup")
+    assert out["status"] == "failed" and out["phase"] == "arm_off_target", out
+    assert out["result"]["failed_at"] == "grasp"
+    assert "5.0°" in out["error"] and "right_elbow_joint" in out["error"]
+    assert [s for _, s in hand.shapes][-1] == hands.SHAPES["open"]  # never closed
+    assert out["result"]["tracking"][-1]["arm_error_deg"] == 5.0
+    assert arm.release_requested
+
+
+@pytest.mark.asyncio
+async def test_no_lowstate_is_a_failure_not_a_reach(monkeypatch, real, quick):
+    arm, hand = real
+    see(monkeypatch, cup())
+    arm.measured = lambda: None
+    out = await m.pick("cup")
+    assert out["phase"] == "arm_off_target" and "no fresh rt/lowstate" in out["error"], out
+    assert hands.SHAPES["open"] not in [s for _, s in hand.shapes]
+
+
+@pytest.mark.asyncio
+async def test_a_hand_with_no_state_fails_and_never_claims_closed(monkeypatch, real, quick):
+    arm, hand = real
+    see(monkeypatch, cup())
+    hand.state = lambda: None
+    out = await m.pick("cup")
+    assert out["status"] == "failed" and out["phase"] == "hand_off_target", out
+    assert out["result"]["failed_at"] == "curl" and "reports no state" in out["error"]
+    assert out["result"]["hand_closed"] is False and "may be closed" in out["result"]["note"]
+    assert arm.commands == []  # the curl comes before the arm moves
+
+
+@pytest.mark.asyncio
+async def test_a_hand_that_never_gets_there_fails_with_how_far(monkeypatch, real, quick):
+    _arm, hand = real
+    see(monkeypatch, cup())
+    hand.state = lambda: (0.0,) * 6  # stuck open
+    out = await m.pick("cup")
+    assert out["phase"] == "hand_off_target" and "did not reach «power»" in out["error"], out
+    assert out["result"]["hand_closed"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_at", [0.5, None])  # fingers stopped by the object, or not
+async def test_the_grasp_close_is_done_when_the_fingers_stop_on_the_object(
+    monkeypatch, real, quick, stop_at
+):
+    _arm, hand = real
+    see(monkeypatch, cup())
+
+    def blocked():
+        if not hand.shapes:
+            return None
+        want = hands.commanded_closures(hand.shapes[-1][1])
+        if stop_at is None or _pick_task().phase != "close":
+            return want
+        return tuple(min(w, stop_at) for w in want)
+
+    hand.state = blocked
+    out = await m.pick("cup")
+    assert out["status"] == "completed", out
+    (close,) = [t for t in out["result"]["tracking"] if t["phase"] == "close"]
+    assert close["contact"] is (stop_at is not None)
+    assert out["result"]["hand_closed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("where", "phase"), [("arm", "clear"), ("hand", "curl"), ("pause", "curling")]
+)
+async def test_parar_ends_every_wait_at_once(monkeypatch, real, where, phase):
+    # Stopped while it waits for the measured arm / hand, or in a settle pause: out at once.
+    arm, hand = real
+    see(monkeypatch, cup())
+    for name in ("ARM_TRACK_TIMEOUT_S", "HAND_TRACK_TIMEOUT_S"):
+        monkeypatch.setattr(m, name, 30.0)
+    waiting = asyncio.Event()
+    if where == "arm":
+        arm.measured = lambda: (waiting.set(), (9.0,) * 14)[1]
+    elif where == "hand":
+        hand.state = lambda: (waiting.set(), (0.0,) * 6)[1]
+    else:
+        monkeypatch.setattr(m, "CLOSE_SETTLE_S", 30.0)
+
+    async def stop_while_waiting():
+        while not (waiting.is_set() or (where == "pause" and _is_phase(phase))):
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.2)  # well inside the wait
+        get_registry().cancel(_pick_task().task_id)
+        return asyncio.get_running_loop().time()
+
+    stopper = asyncio.create_task(stop_while_waiting())
+    out = await m.pick("cup")
+    assert stopper.done(), out  # it returned only after the stop
+    assert out["status"] == "cancelled" and out["result"]["failed_at"] == phase, out
+    assert asyncio.get_running_loop().time() - stopper.result() < 0.3
+
+
+def _is_phase(phase):
+    return any(t.skill_name == "pick" and t.phase == phase for t in get_registry().list_active())
 
 
 def test_an_object_beyond_the_table_edge_says_walking_stops_at_the_edge():

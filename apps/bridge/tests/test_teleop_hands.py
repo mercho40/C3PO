@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from bridge.teleop import hands
 from bridge.teleop.hands import (
     SimulatedHandDriver,
     BrainCoHandDriver,
@@ -227,3 +228,43 @@ def test_a_simulated_hand_drives_both_sides_and_publishes_nothing(monkeypatch):
     assert isinstance(driver, SimulatedHandDriver)
     assert driver.name == "simulated" and set(driver.sides) == {"left", "right"}
     driver.send_shape("right", (1.0,) * 6)  # no publisher exists to call
+
+
+# -- BrainCo state: where the fingers ARE ------------------------------------------------------
+
+
+class _States:
+    def __init__(self, qs):
+        self.states = [type("S", (), {"q": q})() for q in qs]
+
+
+@pytest.mark.parametrize("open_at", [0.0, 1.0])
+def test_brainco_state_reads_back_as_closure_on_either_polarity(open_at):
+    driver = BrainCoHandDriver(open_at=open_at)
+    assert driver.measured("right") is None  # nothing heard yet
+    closure = (0.0, 0.25, 0.5, 0.75, 1.0, 0.1)
+    driver._on_state("right", _States([abs(open_at - c) for c in closure]))
+    assert driver.measured("right") == pytest.approx(closure)
+    assert driver.measured("left") is None
+
+
+def test_brainco_state_that_is_old_or_malformed_is_no_reading(monkeypatch):
+    driver = BrainCoHandDriver(open_at=0.0)
+    driver._on_state("right", _States([0.5] * 5))
+    assert driver.measured("right") is None  # 5 channels: not this hand
+    driver._on_state("right", _States([0.5] * 6))
+    assert driver.measured("right") == pytest.approx((0.5,) * 6)
+    later = hands.time.monotonic() + hands.BRAINCO_STATE_MAX_AGE_S + 0.1
+    monkeypatch.setattr(hands.time, "monotonic", lambda: later)
+    assert driver.measured("right") is None
+
+
+def test_commanded_closures_are_what_the_wire_gets(monkeypatch):
+    pytest.importorskip("unitree_sdk2py.idl.default")
+    driver = BrainCoHandDriver(open_at=0.0)
+    sent = []
+    wire = type("P", (), {"Write": lambda self, msg: sent.append(msg)})()
+    monkeypatch.setattr(driver, "_publisher", lambda side: wire)
+    driver.send_shape("right", (1.0,) * 6)
+    assert [c.q for c in sent[0].cmds] == pytest.approx(hands.commanded_closures((1.0,) * 6))
+    assert hands.commanded_closures((1.0,) * 6)[1] == hands.BRAINCO_CLOSURE_CAPS[1] < 1.0

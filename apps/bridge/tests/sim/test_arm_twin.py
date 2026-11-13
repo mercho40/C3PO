@@ -320,6 +320,9 @@ class _SteppedDriver(arm_sdk.ArmSdkDriver):
     async def engage(self):
         self._engaged = True
 
+    def measured_angles(self):
+        return tuple(self._current)  # the twin's arm tracks the wire exactly
+
     def command(self, left, right):
         super().command(left, right)
         while self._weight < 1.0 or any(
@@ -338,7 +341,12 @@ async def test_the_driver_carries_the_pick_plan_into_the_model_untouched(twin, t
         name, sides = "fake", ("right",)
 
         def send_shape(self, side, closures):
-            pass
+            self.last = closures
+
+        last = None
+
+        def measured(self, side):
+            return self.last and m.hands.commanded_closures(self.last)
 
     steps = [(k, ph, 0.0 if k == "wait" else v) for k, ph, v in _pick(target)]
     driver = _SteppedDriver([*HANGING["left"], *HANGING["right"]])
@@ -421,6 +429,9 @@ class _Hand:
 
     def send_shape(self, side, closures):
         self.sent.append((len(getattr(self.driver._publisher, side)), closures))
+
+    def measured(self, side):
+        return self.sent and m.hands.commanded_closures(self.sent[-1][1]) or None
 
 
 def _scene(rng):
