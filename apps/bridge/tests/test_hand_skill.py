@@ -185,4 +185,4 @@ def test_v_sign_raises_index_and_middle_and_closes_the_rest():
 
     thumb, _aux, index, middle, ring, pinky = hands.SHAPES["v_sign"]
     assert index == middle == 0.0
-    assert min(thumb, ring, pinky) >= 0.6
+    assert min(thumb, ring, pinky) >= 0.9  # the thumb tucked too, not showing

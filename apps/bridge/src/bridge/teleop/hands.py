@@ -104,8 +104,9 @@ SHAPES: dict[str, tuple[float, ...]] = {
     # Bag handles: fingers curled, thumb out of the way.
     "hook": (0.0, 0.0, 0.70, 0.70, 0.70, 0.70),
     "point": (0.60, 0.70, 0.0, 0.95, 0.95, 0.95),
-    # «Saludo peronista» / V sign: index and middle up, ring and pinky closed, thumb over them.
-    "v_sign": (0.60, 0.70, 0.0, 0.0, 0.95, 0.95),
+    # «Saludo peronista» / V sign: index and middle up, the rest closed; the thumb fully tucked,
+    # not showing (2026-11-13: at 0.60 it stayed visible).
+    "v_sign": (0.95, 0.70, 0.0, 0.0, 0.95, 0.95),
 }
 
 # --- Dex3-1 ------------------------------------------------------------------
