@@ -171,6 +171,19 @@ def test_only_the_nearest_few_pay_for_a_fit():
     assert ["support" in o for o in found] == [True] * detector.SUPPORT_PER_FRAME + [False]
 
 
+def test_furniture_nearer_than_the_object_does_not_spend_its_fit():
+    # Robot 2026-11-13: nearer detections used the budget, the bottle's pick got no table.
+    depth = desk(0.0, 0.35)
+    near = [(0.50 + 0.02 * i, 0.24 - 0.10 * i) for i in range(detector.SUPPORT_PER_FRAME)]
+    dets = [(1, 0.9, put_cup(depth, x, 0.0, y)) for x, y in near]
+    dets.append((0, 0.9, put_cup(depth, 0.62, 0.0, 0.0)))
+    labels = ["cup", "dining table"]
+    found, _omitted, _unranged = detector.ground_all(dets, depth, INTR, EXTR, labels, 0.001)
+    cup = next(o for o in found if o["label"] == "cup")
+    assert "support" in cup
+    assert all("support" not in o for o in found if o["label"] == "dining table")
+
+
 def test_the_kill_switch_turns_it_off_and_reaches_the_container(monkeypatch):
     depth = desk(0.0, 0.35)
     box = put_cup(depth, 0.55, 0.0)

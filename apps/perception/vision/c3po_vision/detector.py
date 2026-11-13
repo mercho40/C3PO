@@ -210,6 +210,10 @@ BEHIND_M = float(os.environ.get("C3PO_VISION_BEHIND_M", "0.30"))
 SUPPORT_ENV = "C3PO_VISION_SUPPORT"
 # Only the nearest few: pure Python inside the 10 Hz tick, ~1 ms a fit on a Mac, a few on the Jetson.
 SUPPORT_PER_FRAME = 4
+# Furniture is the support, not on one (the label's last word: 'dining table'): its fit spent
+# the budget an object on it needed (robot 2026-11-13: a 'chair' 0.32 m away came first).
+NO_SUPPORT_LABELS = frozenset({"table", "desk", "chair", "armchair", "highchair", "bench",
+                               "sofa", "couch", "bed", "counter", "shelf", "cabinet"})
 
 ENGINE_PATH = os.environ.get("C3PO_ENGINE", "/opt/c3po/engines/yolo11n.fp16.plan")
 
@@ -1178,7 +1182,8 @@ def ground_all(
     for _rng, obj, g, box in grounded[:cap]:
         if budget <= 0:
             break
-        if obj["label"] == "person":
+        last = str(obj["label"]).lower().split()[-1:]
+        if obj["label"] == "person" or (last and last[0] in NO_SUPPORT_LABELS):
             continue
         budget -= 1
         s = fit_support(box, depth, g, intrinsics, extr=extrinsic, depth_scale=depth_scale,
