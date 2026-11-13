@@ -540,22 +540,31 @@ STOP_STANDING_ALLOWED = frozenset({"damp"})
 
 
 def tool_refusal(
-    name: str, meta: dict[str, Any] | None, args_key: str | None = None, *, spend: bool = True
+    name: str,
+    meta: dict[str, Any] | None,
+    args_key: str | None = None,
+    *,
+    spend: bool = True,
+    confirmed: bool = False,
 ) -> str | None:
     """Why this MCP call must not run, or None. Runs before every tool call.
 
     `args_key` is the call's canonical arguments; None never matches a grant.
     `spend=False` lets a matching grant through without spending it, for a check that
     still follows (the face gate); that caller then calls again with `spend=True`.
+    `confirmed=True` skips only the grant: a step of a run_sequence the operator already
+    confirmed as a whole. PARAR, battery and the person rule still apply to it.
     """
-    refusal = _refusal(name, meta, args_key, spend)
+    refusal = _refusal(name, meta, args_key, spend, confirmed)
     if refusal is not None and needs_confirmation(meta):
         # A pre-grant for a call refused anyway (PARAR, battery, person) must not sit armed.
         _consume_confirmation(name, args_key)
     return refusal
 
 
-def _refusal(name: str, meta: dict[str, Any] | None, args_key: str | None, spend: bool) -> str | None:
+def _refusal(
+    name: str, meta: dict[str, Any] | None, args_key: str | None, spend: bool, confirmed: bool
+) -> str | None:
     from bridge import estop
 
     tier = ((meta or {}).get("c3po") or {}).get("tier")
@@ -596,7 +605,7 @@ def _refusal(name: str, meta: dict[str, Any] | None, args_key: str | None, spend
                 f"({PERSON_REACH_M} m). {name} is a T2 tool and does not run with "
                 "someone that close. Ask them to step back."
             )
-    if not needs_confirmation(meta):
+    if not needs_confirmation(meta) or confirmed:
         return None
     if not T2_CONFIRM:
         log.warning("safety.t2_unconfirmed_allowed", tool=name, reason="SAFETY_T2_CONFIRM=off")

@@ -267,6 +267,7 @@ async def test_free_form_arm_and_hand_are_t2_and_stops_are_t0(mcp):
         "pick",
         "place",
         "handover",
+        "run_sequence",
     }
     for name in ("stop_everything", "soft_stop", "get_state", "say", "describe_surroundings"):
         assert tiers[name] == "T0", name
@@ -341,7 +342,7 @@ async def test_the_confirmable_set_is_t2_plus_high_danger_t1(mcp):
     """1.3: pinned from the live catalogue, so a new high-danger T1 shows up in review."""
     gated = {t.name for t in await mcp.list_tools() if safety.needs_confirmation(t.meta)}
     assert gated == {
-        "move_arm", "set_hand", "reach", "pick", "place", "handover",
+        "move_arm", "set_hand", "reach", "pick", "place", "handover", "run_sequence",
         "arm_navigation", "start_walking_waist", "zero_torque",
     }  # fmt: skip
 
@@ -760,7 +761,7 @@ def test_low_battery_refuses_exactly_the_long_and_arm_tools(listed, monkeypatch)
     _battery(monkeypatch, 15)
     refused = {n for n in listed if "battery is 15%" in (_refusal(n, listed) or "")}
     assert refused == {
-        "move_arm", "set_hand", "reach", "pick", "place", "handover",
+        "move_arm", "set_hand", "reach", "pick", "place", "handover", "run_sequence",
         "walk_to", "go_to_object", "navigate_to", "navigate_to_landmark",
         "look_around", "dance", "arm_navigation",
     }  # fmt: skip

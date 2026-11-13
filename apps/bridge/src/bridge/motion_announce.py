@@ -37,6 +37,7 @@ SKIP = frozenset(
         "open_hands",
         "release_arm",
         "release_arm_control",
+        "run_sequence",  # each step announces itself
         "cancel_navigation",
         "disarm_navigation",
         "arm_navigation",

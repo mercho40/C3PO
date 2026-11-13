@@ -81,6 +81,7 @@ EXPECTED_TOOLS = {
     "release_arm_control",
     "set_hand",
     "open_hands",
+    "run_sequence",  # arm + hand + gestures + speech, confirmed once
     # world model
     "remember_landmark",
     "recall_landmark",

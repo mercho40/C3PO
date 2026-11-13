@@ -1828,6 +1828,128 @@ async def set_hand(
     return {**await run_set(side, closure, shape=shape, fingers=fingers), "env": SIM_MODE}
 
 
+#: What run_sequence may chain: the arm, the hand, the gestures and speech. Not walking,
+#: navigation or posture (long, or able to drop the robot), and not run_sequence itself.
+SEQUENCE_TOOLS = (
+    "move_arm",
+    "set_hand",
+    "open_hands",
+    "release_arm_control",
+    "wave",
+    "point_at",
+    "shake_hand",
+    "hug",
+    "clap",
+    "release_arm",
+    "dance",
+    "gesture",
+    "say",
+)
+SEQUENCE_MAX = 8
+_SEQUENCE_SCHEMA = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": SEQUENCE_MAX,
+    "items": {
+        "type": "object",
+        "properties": {
+            "tool": {"type": "string", "enum": list(SEQUENCE_TOOLS)},
+            "args": {"type": "object", "description": "That tool's own arguments."},
+        },
+        "required": ["tool"],
+    },
+}
+
+
+def _step_failed(result: Any) -> bool:
+    return isinstance(result, dict) and (
+        result.get("status") in ("failed", "refused", "error", "cancelled")
+        or bool(result.get("error"))
+    )
+
+
+@mcp.tool(
+    meta=skill_meta(
+        classification="gesture",
+        danger_level="high",
+        status="real",
+        cancellable=False,
+        expected_duration_s=15.0,
+        works_sim=True,
+        works_real=False,  # each step's own status applies; the chain is new
+        typical_failure_modes=["invalid_step", "step_refused", "step_failed"],
+    )
+)
+async def run_sequence(
+    ctx: Context,
+    steps: Annotated[
+        list[dict[str, Any]],
+        WithJsonSchema(_SEQUENCE_SCHEMA),
+        Field(
+            description=(
+                "Up to 8 steps run in order as ONE action with ONE operator confirmation, "
+                "each {tool, args} with that tool's own arguments. Use it whenever the "
+                "operator asks for two or more arm/hand/gesture/speech things together, "
+                "e.g. raise the right arm and make the saludo peronista: "
+                '[{"tool": "move_arm", "args": {"side": "right", "shoulder_pitch_deg": 80}}, '
+                '{"tool": "set_hand", "args": {"side": "right", "shape": "saludo_peronista"}}]. '
+                "move_arm holds the pose, so a later hand step happens with the arm up."
+            )
+        ),
+    ],
+) -> dict:
+    """Several arm, hand, gesture and speech steps as one action, confirmed once.
+
+    The operator's one «Confirmar» (or face) covers this exact list. Every step is
+    checked before any moves (a known tool from SEQUENCE_TOOLS, arguments its own schema
+    accepts), and each still meets PARAR, the battery and the person rule as it starts
+    (`safety.tool_refusal(..., confirmed=True)` skips only the per-step grant), with its
+    own spoken warning. The chain stops at the first step refused or failed and says which.
+    """
+    if not 1 <= len(steps) <= SEQUENCE_MAX:
+        return {
+            "status": "failed",
+            "reason": "invalid_step",
+            "detail": f"1 to {SEQUENCE_MAX} steps",
+        }
+    planned: list[tuple[str, dict[str, Any], Any]] = []
+    for i, step in enumerate(steps):
+        name = str(step.get("tool") or "") if isinstance(step, dict) else ""
+        args = (step.get("args") or {}) if isinstance(step, dict) else None
+        tool = mcp._tool_manager.get_tool(name) if name in SEQUENCE_TOOLS else None
+        if tool is None or not isinstance(args, dict):
+            return {"status": "failed", "reason": "invalid_step", "step": i, "tool": name}
+        try:
+            _canonical_args(tool, args)
+        except ValidationError as exc:
+            detail = str(exc)[:300]
+            return {
+                "status": "failed",
+                "reason": "invalid_step",
+                "step": i,
+                "tool": name,
+                "detail": detail,
+            }
+        planned.append((name, args, tool))
+    done: list[dict[str, Any]] = []
+    for i, (name, args, tool) in enumerate(planned):
+        end = {"step": i, "tool": name, "done": done, "env": SIM_MODE}
+        if refusal := safety.tool_refusal(name, tool.meta, confirmed=True):
+            return {"status": "refused", "reason": "step_refused", "detail": refusal, **end}
+        if motion_announce.applies(name, tool.meta) and not await motion_announce.announce(
+            name, args, _announce_speak
+        ):
+            return {"status": "refused", "reason": "step_refused", "detail": "PARAR", **end}
+        try:
+            result = await mcp._tool_manager.call_tool(name, args, context=ctx)
+        except Exception as exc:  # noqa: BLE001 - the chain reports which step, never half-silent
+            return {"status": "failed", "reason": "step_failed", "detail": str(exc)[:300], **end}
+        done.append({"tool": name, "result": result})
+        if _step_failed(result):
+            return {"status": "failed", "reason": "step_failed", **end}
+    return {"status": "completed", "done": done, "env": SIM_MODE}
+
+
 @mcp.tool(
     meta=skill_meta(
         classification="gesture",
