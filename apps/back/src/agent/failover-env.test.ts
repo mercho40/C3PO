@@ -15,7 +15,8 @@ const FALLBACK = [
 
 function probe(env: Record<string, string>) {
   const base = { ...process.env };
-  for (const k of FALLBACK) delete base[k];
+  // "" not delete: bun loads apps/back/.env into the child, but never over a key already set.
+  for (const k of FALLBACK) base[k] = "";
   const out = Bun.spawnSync(["bun", "-e", PROBE], {
     cwd: `${import.meta.dir}/../..`, // apps/back, for its .env
     env: { ...base, ...env },
