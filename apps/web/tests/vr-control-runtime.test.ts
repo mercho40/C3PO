@@ -92,6 +92,7 @@ class FakeSocket {
 type Frame = {
   enabled: boolean;
   head: { yaw: number };
+  walk?: number;
   arms?: boolean;
   estop?: boolean;
 };
@@ -312,6 +313,33 @@ function clock() {
     restore: () => void (Date.now = real),
   };
 }
+
+describe("a stick walk ends when the head pose goes stale (headset off)", () => {
+  test("walk goes to 0 once samples stop, and a still-deflected stick restarts nothing", async () => {
+    const h = await harness();
+    const t = clock();
+    try {
+      await h.drive();
+      h.hold({}); // neutral first, so the next sample is a push
+      h.hold({}, 1);
+      expect(h.ctl.walking).toBe("forward");
+      expect((await h.frame()).walk).toBe(1);
+      t.advance(801); // past VR_STALE_MS with no sample: the headset came off
+      await Bun.sleep(250); // one 200 ms readout tick
+      expect(h.ctl.walking).toBeNull();
+      expect((await h.frame()).walk).toBe(0);
+      h.hold({}, 1); // back on, thumb still forward: not a fresh push
+      expect(h.ctl.walking).toBeNull();
+      expect((await h.frame()).walk).toBe(0);
+      h.hold({}); // seen at neutral, then pushed again
+      h.hold({}, 1);
+      expect(h.ctl.walking).toBe("forward");
+    } finally {
+      t.restore();
+      h.restore();
+    }
+  });
+});
 
 describe("the in-headset PARAR chord (both grips)", () => {
   test("299 ms is not PARAR, 301 ms is, once per hold; one grip never is", async () => {
