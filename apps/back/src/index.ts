@@ -17,6 +17,7 @@ import { teleopRoutes } from "#back/routes/teleop.js";
 import { enabledSocialProviders } from "#back/lib/auth.js";
 import { reconcileAdmins } from "#back/lib/admin-bootstrap.js";
 import { startStopWatch } from "#back/agent/stop-watch.js";
+import { agentProvider } from "#back/agent/runtime.js";
 // Imported for its VALUES below, and for its import-time validation.
 //
 // That validation already ran before this line — `admin-bootstrap` imports
@@ -77,6 +78,8 @@ const app = new Elysia()
     status: "ok" as const,
     timestamp: Date.now(),
     auth: { providers: enabledSocialProviders },
+    // "fallback" while ia-tic is failed over (agent/failover.ts).
+    agent: { provider: agentProvider() },
   }))
   // These carry their OWN `.guard({ auth: true })` because they read a
   // typed `user` (the admin checks), so they sit beside the outer guard rather

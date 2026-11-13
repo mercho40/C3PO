@@ -81,6 +81,7 @@ import {
   type LookResult,
   type VerifyResult,
 } from "./look";
+import { createFailover } from "./failover";
 
 const BASE_URL = process.env.AGENT_BASE_URL ?? "https://ia.ort.edu.ar/api/v1";
 /** `tic-chat` is the gateway's tool-calling chat model. Its site advertises
@@ -123,6 +124,45 @@ const provider = createOpenAICompatible({
 });
 
 /**
+ * Optional second OpenAI-compatible provider (e.g. Gemini's
+ * `.../v1beta/openai`) for when ia-tic is down. All three unset: no failover,
+ * exactly as before. See `failover.ts` for what fails over and what doesn't.
+ */
+const FALLBACK_BASE_URL = process.env.AGENT_FALLBACK_BASE_URL;
+const FALLBACK_MODEL = process.env.AGENT_FALLBACK_MODEL;
+const FALLBACK_KEY = process.env.AGENT_FALLBACK_API_KEY;
+const parsedSticky = Number(process.env.AGENT_FALLBACK_STICKY_S);
+const failover = createFailover({
+  stickyMs:
+    (Number.isFinite(parsedSticky) && parsedSticky >= 0 ? parsedSticky : 300) *
+    1000,
+});
+const fallbackProvider =
+  FALLBACK_BASE_URL && FALLBACK_MODEL && FALLBACK_KEY
+    ? createOpenAICompatible({
+        name: "agent-fallback",
+        baseURL: FALLBACK_BASE_URL,
+        apiKey: FALLBACK_KEY,
+      })
+    : null;
+if (!fallbackProvider && (FALLBACK_BASE_URL || FALLBACK_MODEL || FALLBACK_KEY))
+  console.warn(
+    "[agent] AGENT_FALLBACK_BASE_URL, AGENT_FALLBACK_MODEL and AGENT_FALLBACK_API_KEY must all be set; failover is off",
+  );
+
+/** The agent's model `id` on the primary, failing over when one is set. */
+export function chatModel(id: string) {
+  const primary = provider.chatModel(id);
+  return fallbackProvider && FALLBACK_MODEL
+    ? failover.wrap(primary, fallbackProvider.chatModel(FALLBACK_MODEL))
+    : primary;
+}
+
+/** For /health: where the agent's next model call goes first. */
+export const agentProvider = () =>
+  fallbackProvider ? failover.active() : "primary";
+
+/**
  * The model `look` sends camera frames to. Defaults to the agent's own model:
  * `tic-chat` read a robot frame correctly on 2026-10-27
  * (`scripts/smoke-vision.ts`), so no second provider is needed. Same gateway
@@ -143,7 +183,7 @@ const robotVision: LookDeps = {
   model: VISION_MODEL,
   describe: async (question, jpeg) => {
     const { text } = await generateText({
-      model: provider.chatModel(VISION_MODEL),
+      model: chatModel(VISION_MODEL),
       system: VISION_SYSTEM,
       messages: [
         {
@@ -677,7 +717,7 @@ export async function runAgentChat(
     let streamError: unknown;
 
     const result = streamText({
-      model: opts.model ?? provider.chatModel(MODEL),
+      model: opts.model ?? chatModel(MODEL),
       system,
       messages: await boundHistory(messages),
       tools,

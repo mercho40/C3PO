@@ -638,6 +638,27 @@ AGENT_API_KEY=<a Gemini key> AGENT_MODEL=gemini-3.5-flash bun run dev:robot
 `gemini-2.5-flash` is not available to new keys. A free key hits 429 quickly, so keep the
 turns short. Restart back without them when ia-tic is back.
 
+**Automatic failover.** Instead of restarting back, set the fallback once, in back's
+process env or its uncommitted `.env`:
+
+```bash
+AGENT_FALLBACK_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+AGENT_FALLBACK_MODEL=gemini-3.5-flash
+AGENT_FALLBACK_API_KEY=<a Gemini key>
+# AGENT_FALLBACK_STICKY_S=300   how long to stay on the fallback after a failure
+```
+
+Then the agent and `look` go to Gemini on their own when an ia-tic call fails before
+answering: a network error, no response headers within 20 s, any 5xx (the 502 above) or
+a 429. A 4xx other than 429 does not fail over. After a failover, calls stay on Gemini
+for `AGENT_FALLBACK_STICKY_S`, then ia-tic is tried again. Back logs
+`[agent] agent.provider_failover` and `agent.provider_restored`, and `GET /health` shows
+`agent.provider` (`primary` or `fallback`). Only the failed model call is retried, so no
+tool the turn already ran runs again. A reply that started streaming and then broke is not
+retried. A PARAR never fails over. With any of the three unset, nothing changes.
+`tic-transcript` has no fallback: the headset's push-to-talk and the robot mic in
+`C3PO_STT=back` still need ia-tic. The manual way above still works.
+
 ---
 
 ## 5. Per-component deploy
