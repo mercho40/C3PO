@@ -5,7 +5,21 @@ import type { UIMessage } from "ai";
 export type VoiceCompletion =
   | string
   | AsyncIterable<string>
-  | { textStream: AsyncIterable<string>; toolsSettled: () => Promise<unknown> };
+  | {
+      textStream: AsyncIterable<string>;
+      toolsSettled: () => Promise<unknown>;
+      /** The AI SDK's steps: what each tool returned, kept for the next turn. */
+      steps?: PromiseLike<
+        ReadonlyArray<{
+          toolResults: ReadonlyArray<{
+            toolName: string;
+            toolCallId: string;
+            input: unknown;
+            output: unknown;
+          }>;
+        }>
+      >;
+    };
 
 export type VoiceConversationDeps = {
   complete: (
@@ -168,6 +182,34 @@ async function* deltasOf(completion: VoiceCompletion): AsyncGenerator<string> {
   yield* "textStream" in completion ? completion.textStream : completion;
 }
 
+/**
+ * What the turn's tools returned, for the next turn's model: history keeps
+ * only text, so without it «Voy a agarrar la botella» read as done when pick
+ * was refused. Kept as tool parts, so they replay as tool results (never as
+ * the operator's words: a `look` result is camera text). Empty when no tool
+ * ran or the steps are unreadable.
+ */
+async function toolParts(
+  completion: VoiceCompletion,
+): Promise<UIMessage["parts"]> {
+  if (typeof completion !== "object" || !("steps" in completion)) return [];
+  const steps = await Promise.resolve(completion.steps).catch(() => null);
+  const parts: UIMessage["parts"] = (steps ?? []).flatMap((s) =>
+    s.toolResults.map((r) => ({
+      type: "dynamic-tool" as const,
+      toolName: r.toolName,
+      toolCallId: r.toolCallId,
+      state: "output-available" as const,
+      input: r.input,
+      output: r.output,
+    })),
+  );
+  // step-start splits the replay: tool call, its result, then the words.
+  return parts.length
+    ? [{ type: "step-start" }, ...parts, { type: "step-start" }]
+    : [];
+}
+
 /** One bounded, in-memory spoken conversation.
  *
  * Complete sentences are spoken as soon as the model makes them available.
@@ -271,9 +313,17 @@ export class VoiceConversation {
       const assistantMessage: UIMessage = {
         id: this.deps.newId(),
         role: "assistant",
-        parts: [{ type: "text", text: reply }],
+        parts: [
+          ...(await toolParts(completion)),
+          { type: "text", text: reply },
+        ],
       };
-      this.messages = [...context, assistantMessage].slice(-this.maxMessages);
+      // By identity, not index: a remember() (a Confirmar outcome) that landed
+      // while this turn streamed is kept, even once history is full.
+      const added = this.messages.filter((m) => !context.includes(m));
+      this.messages = [...context, assistantMessage, ...added].slice(
+        -this.maxMessages,
+      );
 
       if (speechTail) {
         this.phase = "speaking";

@@ -91,6 +91,25 @@ const newId = createIdGenerator();
  */
 let legacyStartedBy: string | null = null;
 
+/**
+ * Every legacy-loop `say`, one at a time: each takes a new stream on the
+ * bridge and barges in on the one playing, so the Confirmar line cut into a
+ * turn's sentence (2026-11-13 13:56:59). A failed say does not block the next.
+ */
+let speech: Promise<unknown> = Promise.resolve();
+function speakInOrder(text: string): Promise<unknown> {
+  speech = speech
+    .catch(() => {})
+    .then(() =>
+      auditedCall(
+        "say",
+        { text, language: "spanish", wait_for_completion: true },
+        { userId: legacyStartedBy, source: "voice" },
+      ),
+    );
+  return speech;
+}
+
 const conversation = new VoiceConversation({
   // The whole result, not just its text: the turn also waits on toolsSettled.
   complete: (messages, signal) =>
@@ -100,25 +119,17 @@ const conversation = new VoiceConversation({
       abortSignal: signal,
     }),
   speak: async (text) => {
-    await auditedCall(
-      "say",
-      { text, language: "spanish", wait_for_completion: true },
-      { userId: legacyStartedBy, source: "voice" },
-    );
+    await speakInOrder(text);
   },
   newId,
 });
 
 // A Confirmar/Cancelar of a call this loop asked for: its next turn reads the
-// outcome, and the robot says it in one line (no model, so it cannot overlap a
-// turn the loop is running).
+// outcome, and the robot says it in one line, queued behind any sentence the
+// loop is saying.
 onLoopOutcome((message, spoken) => {
   conversation.remember(message);
-  void auditedCall(
-    "say",
-    { text: spoken, language: "spanish", wait_for_completion: false },
-    { userId: legacyStartedBy, source: "voice" },
-  ).catch(() => {});
+  void speakInOrder(spoken).catch(() => {});
 });
 
 /** A refused call waiting for this operator, as the /voice page shows it. */
@@ -386,6 +397,12 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
 
       // A stopped -> running transition begins a fresh conversation. Repeated
       // start requests are idempotent and must not erase an active dialogue.
+      // An admin's own start takes over a listen-after-greet window's loop:
+      // the window must not stop it later, and its turns are this admin's.
+      if (listenWindow.isOpen()) {
+        listenWindow.release();
+        legacyStartedBy = user.id;
+      }
       startLegacy(user.id);
       return voiceStatus(user.id);
     },

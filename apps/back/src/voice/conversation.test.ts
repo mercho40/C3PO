@@ -137,6 +137,72 @@ describe("VoiceConversation", () => {
     ]);
   });
 
+  test("a Confirmar outcome remembered while a turn streams survives it, even with history full", async () => {
+    const gate = deferred();
+    const started = deferred();
+    let turns = 0;
+    const conversation = new VoiceConversation(
+      {
+        complete: async function* () {
+          if (++turns === 2) {
+            started.resolve();
+            await gate.promise;
+          }
+          yield "Listo.";
+        },
+        speak: async () => {},
+        newId: () => crypto.randomUUID(),
+      },
+      2,
+    );
+    await conversation.turn("hola"); // history now full (2)
+    const turn = conversation.turn("sí");
+    await started.promise;
+    conversation.remember("El operador confirmó pick, pero falló: torso_clearance");
+    gate.resolve();
+    await turn;
+    expect(conversation.history().map(textOf)).toContain(
+      "El operador confirmó pick, pero falló: torso_clearance",
+    );
+  });
+
+  test("a turn's tool results are kept for the next turn as tool parts, not as words", async () => {
+    const conversation = new VoiceConversation({
+      complete: async () => ({
+        textStream: (async function* () {
+          yield "Espero tu «Confirmar».";
+        })(),
+        toolsSettled: async () => {},
+        steps: Promise.resolve([
+          {
+            toolResults: [
+              {
+                toolName: "pick",
+                toolCallId: "c1",
+                input: { label: "botella" },
+                output: { error: "refused: pick needs an operator's confirmation" },
+              },
+            ],
+          },
+        ]),
+      }),
+      speak: async () => {},
+      newId: () => crypto.randomUUID(),
+    });
+    await conversation.turn("agarrá la botella");
+    const reply = conversation.history()[1]!;
+    expect(reply.role).toBe("assistant");
+    expect(reply.parts).toContainEqual({
+      type: "dynamic-tool",
+      toolName: "pick",
+      toolCallId: "c1",
+      state: "output-available",
+      input: { label: "botella" },
+      output: { error: "refused: pick needs an operator's confirmation" },
+    });
+    expect(textOf(reply)).toBe("Espero tu «Confirmar».");
+  });
+
   test("reset starts a fresh conversation", async () => {
     const sizes: number[] = [];
     const conversation = new VoiceConversation({

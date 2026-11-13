@@ -70,6 +70,16 @@ export class ListenWindow {
     this.deps.log?.(event, detail);
   }
 
+  /** An admin started /voice on this loop: it is theirs now, never stopped from here. */
+  release(): void {
+    if (!this.open) return;
+    this.open = false;
+    this.log("voice.listen_window.close", {
+      name: this.name,
+      reason: "taken_over",
+    });
+  }
+
   async close(reason: string): Promise<void> {
     if (!this.open) return;
     this.open = false;

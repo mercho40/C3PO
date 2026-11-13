@@ -367,6 +367,16 @@ describe("POST /skills/:name/invoke writes the audit trail", () => {
     expect(sent + (row.durationMs as number)).toBeLessThanOrEqual(Date.now());
   });
 
+  // created_at has no time zone: the DB default is local time, a Date is UTC.
+  test("a row given no startedAt is still stamped from JS, never by the DB default", async () => {
+    const { logToolCall } = await import("#back/db/chats.js");
+    const before = Date.now();
+    await logToolCall({ skillName: "wave", status: "ok", userId: null });
+    const at = inserted[0]!.createdAt as Date;
+    expect(at).toBeInstanceOf(Date);
+    expect(at.getTime()).toBeGreaterThanOrEqual(before);
+  });
+
   test("a non-admin's PARAR is logged too, under their name", async () => {
     sessionUser = { id: "u7", role: null };
     await invoke("stop_everything", {});
@@ -652,6 +662,37 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
     expect(res.status).toBe(200);
     expect(fed[0]).toStartWith("El operador confirmó y se ejecutó pick");
     expect(fed[1]).toBe("Confirmado: ejecuté pick.");
+  });
+
+  // 2026-11-13: five refused picks were each announced «Confirmado: ejecuté pick.».
+  test("a pick the planner refuses (a 200 with status failed) is said and told as failed", async () => {
+    const fed: string[] = [];
+    confirmations.onLoopOutcome((message, spoken) => fed.push(message, spoken));
+    confirmations.notePending({
+      id: "v2",
+      tool: "pick",
+      args: pick,
+      ownerId: "u1",
+      chatId: null,
+      loop: true,
+    });
+    const refused = {
+      status: "failed",
+      phase: "planning",
+      error: "torso_clearance: the shoulder would pass through the torso",
+      result: { moved: false, reason: "torso_clearance", note: "Acercate ~0.14 m" },
+    };
+    bridge.callTool.mockImplementationOnce(async () => refused as never);
+    const res = await post("pick", "confirm", { callId: "v2", args: pick });
+    globalThis.fetch = realFetch;
+    confirmations.onLoopOutcome(null);
+    // The console card still paints from the 200 body.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: unknown; message: string };
+    expect(body.result).toEqual(refused);
+    expect(body.message).toStartWith("El operador confirmó pick, pero falló");
+    expect(fed[0]).toStartWith("El operador confirmó pick, pero falló");
+    expect(fed[1]).toBe("Confirmado, pero pick falló: Acercate ~0.14 m");
   });
 
   // The bridge mints a fresh grant on Confirmar, so only back can void the card.

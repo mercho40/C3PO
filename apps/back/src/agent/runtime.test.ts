@@ -94,6 +94,8 @@ const {
   runAgentChat,
   turnSummary,
   worldSummary,
+  confirmRefusal,
+  toldNoEffect,
 } = await import("./runtime");
 
 describe("buildSystemPrompt", () => {
@@ -120,6 +122,34 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("call the matching tool in this same");
     expect(prompt).toContain("Do not invent");
     expect(prompt).toContain("garbled or incoherent");
+  });
+
+  // 2026-11-13: walk_to 0.20 m away with stop_distance 0.3 did nothing, then
+  // pick «ahora que estoy mejor posicionado»; refused picks were «Voy a agarrar…».
+  test("claims an effect only from a result, and a refusal as waiting for Confirmar", async () => {
+    const prompt = await buildSystemPrompt("voice");
+    expect(prompt).toContain("Read each tool result before you speak of it");
+    expect(prompt).toContain("'already_within_stop_distance'");
+    expect(prompt).toContain("until that result");
+    expect(prompt).toContain("pero falló");
+    expect(prompt).not.toContain("Say what you are about to do");
+    expect(prompt).toContain("speak of it only once its result is back");
+    expect(confirmRefusal("pick")).toContain("waiting for their «Confirmar»");
+    expect(confirmRefusal("pick")).not.toContain("what it will do");
+  });
+
+  test("a walk_to that never started is told to the model as no motion", () => {
+    const noop = {
+      status: "completed",
+      phase: "already_within_stop_distance",
+      result: { arrived: true, displacement_m: 0 },
+    };
+    expect(toldNoEffect(noop)).toMatchObject({ ...noop, moved: false });
+    expect(String((toldNoEffect(noop) as { note: string }).note)).toContain(
+      "did not move",
+    );
+    const walked = { status: "completed", phase: "arrived" };
+    expect(toldNoEffect(walked)).toBe(walked);
   });
 
   test("the voice host exclusively owns listening and speaking", () => {
@@ -579,6 +609,27 @@ describe("runAgentChat toolsSettled", () => {
     // Aborting cancels the call on the bridge, and walk_to stops on cancel.
     const signal = await sentWith("walk_to");
     expect(signal?.aborted).toBe(true);
+  });
+
+  test("an agent's audit row is stamped when the call was sent, like the direct path's", async () => {
+    const call = spyOn(bridgeClient, "callTool").mockImplementation(
+      async () => ({ status: "ok" }),
+    );
+    const log = spyOn(chats, "logToolCall").mockImplementation(async () => {});
+    try {
+      const before = Date.now();
+      const model = new MockLanguageModelV4({
+        doStream: async () => ({ stream: convertArrayToReadableStream(walk) }),
+      });
+      const result = await runAgentChat(hello, { model });
+      await drain(result.textStream);
+      await result.toolsSettled();
+      const row = log.mock.calls[0]![0] as { startedAt?: number };
+      expect(row.startedAt).toBeGreaterThanOrEqual(before);
+    } finally {
+      call.mockRestore();
+      log.mockRestore();
+    }
   });
 
   test("a stop the model sent is never cancelled by the turn ending", async () => {

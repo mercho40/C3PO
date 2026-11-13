@@ -46,7 +46,7 @@ mock.module("#back/db/drizzle.js", () => ({
 
 const { agentRoutes, trustedHistory } = await import("./agent");
 const { boundHistory } = await import("#back/agent/runtime.js");
-const { voiceRoutes } = await import("./voice");
+const { voiceRoutes, listenWindow } = await import("./voice");
 const realFetch = globalThis.fetch;
 let fetched: string[] = [];
 
@@ -115,6 +115,30 @@ describe("admin role on /agent and /voice", () => {
     });
     expect(res.status).toBe(413);
     expect(fetched).toEqual([]);
+  });
+
+  // A greeting's window started the loop for u9; u1 then presses Iniciar.
+  test("an admin's /voice/start takes the loop over from a listen-after-greet window", async () => {
+    let seq = 1;
+    globalThis.fetch = (async (url: string) =>
+      Response.json(
+        String(url).includes("/face/seen")
+          ? { greet: { seq, name: "Oliver", listen_after_greet: true } }
+          : {},
+      )) as unknown as typeof fetch;
+    listenWindow.setOwner("u9");
+    try {
+      await listenWindow.tick(); // baseline
+      seq = 2;
+      await listenWindow.tick();
+      expect(listenWindow.isOpen()).toBe(true);
+      sessionUser = { id: "u1", role: "admin" };
+      expect((await post(voiceRoutes, "/voice/start")).status).toBe(200);
+      expect(listenWindow.isOpen()).toBe(false);
+    } finally {
+      listenWindow.setOwner(null);
+      await post(voiceRoutes, "/voice/stop");
+    }
   });
 });
 

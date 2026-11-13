@@ -222,3 +222,31 @@ describe("spoken confirmation on /voice/transcribe", () => {
     );
   });
 });
+
+// 2026-11-13 13:56:59: «Confirmado: ejecuté pick.» cut into a turn's 8.8 s say.
+describe("the legacy loop's spoken lines", () => {
+  test("go out one at a time, each waiting for the one before to finish", async () => {
+    const said: string[] = [];
+    let finish!: () => void;
+    const call = spyOn(bridgeClient, "callTool").mockImplementation(
+      async (name, args) => {
+        if (name !== "say") return {};
+        said.push(String(args?.text));
+        expect(args?.wait_for_completion).toBe(true);
+        if (said.length === 1) await new Promise<void>((r) => (finish = r));
+        return { status: "ok" };
+      },
+    );
+    try {
+      confirmations.feedLoop("m1", "uno");
+      confirmations.feedLoop("m2", "dos");
+      await Bun.sleep(5);
+      expect(said).toEqual(["uno"]);
+      finish();
+      await Bun.sleep(5);
+      expect(said).toEqual(["uno", "dos"]);
+    } finally {
+      call.mockRestore();
+    }
+  });
+});

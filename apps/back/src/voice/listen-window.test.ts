@@ -162,4 +162,17 @@ describe("listen after greet", () => {
     expect(w.isOpen()).toBe(false);
     expect(s.stopped).toBe(0);
   });
+
+  test("an admin's own /voice/start releases it: the quiet window never stops their loop", async () => {
+    const { s, w, greet } = harness();
+    await w.tick();
+    greet();
+    await w.tick();
+    w.release();
+    s.t += WINDOW * 2;
+    await w.tick();
+    expect(w.isOpen()).toBe(false);
+    expect(s.stopped).toBe(0);
+    expect(s.events).toContain("voice.listen_window.close:taken_over");
+  });
 });

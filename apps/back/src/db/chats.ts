@@ -249,9 +249,10 @@ export async function logToolCall(opts: {
       status: bodyFailure ? "error" : opts.status,
       error: opts.error ?? bodyFailure,
       durationMs: opts.durationMs ?? null,
-      ...(opts.startedAt !== undefined
-        ? { createdAt: new Date(opts.startedAt) }
-        : {}),
+      // Always from JS: the column has no time zone, a Date is written as UTC
+      // and the default now() as the DB's local time, so mixing them skewed
+      // agent rows 3 h from the confirms they caused.
+      createdAt: new Date(opts.startedAt ?? Date.now()),
     });
   } catch (err) {
     // A failed audit write must not abort a robot command that already ran.

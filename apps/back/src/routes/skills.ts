@@ -56,7 +56,7 @@ import {
 import { bridgeSiblingUrl } from "../bridge/url";
 import { bridgeProof } from "../bridge/proof";
 import { betterAuth } from "#back/lib/auth-plugin.js";
-import { logToolCall } from "#back/db/chats.js";
+import { logToolCall, resultFailure } from "#back/db/chats.js";
 import { abortAllTurns } from "#back/agent/turns.js";
 import {
   cancelMessage,
@@ -369,20 +369,32 @@ export async function confirmPending(
   // Nothing left for the bridge (the grant failed): the card stays usable.
   if (!r.dispatched) restorePending(p);
   const ok = r.status === 200;
-  const failure = r.body as { error?: string; detail?: string } | undefined;
+  // A refused or failed task is still a 200 (the bridge never raises): the
+  // card reads that body, but the model and the room must hear it failed.
+  const bodyFailure = ok ? resultFailure(r.body) : null;
+  const ran = ok && !bodyFailure;
+  const failure = r.body as
+    | { error?: string; detail?: string; result?: { note?: unknown } }
+    | undefined;
   const message = outcomeMessage(
     name,
-    ok
-      ? { ok, result: r.body }
+    ran
+      ? { ok: true, result: r.body }
       : {
-          ok,
-          error: [failure?.error, failure?.detail].filter(Boolean).join(": "),
+          ok: false,
+          error: bodyFailure
+            ? `${bodyFailure}: ${JSON.stringify(r.body)}`
+            : [failure?.error, failure?.detail].filter(Boolean).join(": "),
         },
   );
+  // pick's planner leaves a short Spanish hint («Acercate ~0.14 m…») here.
+  const note = failure?.result?.note;
   if (p.loop && r.dispatched)
     feedLoop(
       message,
-      ok ? `Confirmado: ejecuté ${name}.` : `Confirmado, pero ${name} falló.`,
+      ran
+        ? `Confirmado: ejecuté ${name}.`
+        : `Confirmado, pero ${name} falló${typeof note === "string" && note ? `: ${note}` : "."}`,
     );
   if (p.chatId && r.dispatched) feedChat(p.chatId, message);
   return ok
