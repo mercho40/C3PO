@@ -558,7 +558,7 @@ async function buildTools(
           });
           // The bridge's text says "retry once"; here the console runs it.
           return gated
-            ? { error: confirmRefusal(skill.name, skill.tier !== "T2") }
+            ? { error: confirmRefusal(skill.name) }
             : { error: detail };
         }
       },
@@ -611,9 +611,9 @@ export function toldNoEffect(result: unknown): unknown {
 export const NEEDS_CONFIRMATION = "needs an operator's confirmation";
 
 /** What the model is told instead of the bridge's "retry once" instruction. */
-/** `face`: a high-danger T1 call, which an enrolled live face can confirm too (never a T2). */
-export const confirmRefusal = (tool: string, face = false) =>
-  `refused: ${tool} ${NEEDS_CONFIRMATION} first. You cannot give it. The operator's «Confirmar»${face ? " (or an enrolled operator's face shown to the robot's head camera)" : ""} runs this exact call and you will then get its result as a message: do not call ${tool} again, tell the operator in one sentence that you are waiting for their ${face ? "«Confirmar» on the screen or an operator's face at the camera" : "«Confirmar» on the screen"} and what will happen then (do not say you are doing it), say ${face ? "«Confirmá la acción o mostrale la cara de un operador a la cámara para confirmar»" : "«Confirmá la acción»"}, and wait.`;
+// shortcut: always offers the face, even with C3PO_FACE_CONFIRM=0 on the bridge (then the card shows no face line).
+export const confirmRefusal = (tool: string) =>
+  `refused: ${tool} ${NEEDS_CONFIRMATION} first. You cannot give it. The operator's «Confirmar», or an enrolled operator's face shown to the robot's head camera, runs this exact call and you will then get its result as a message: do not call ${tool} again, tell the operator in one sentence that you are waiting for their «Confirmar» on the screen or an operator's face at the camera and what will happen then (do not say you are doing it), say «Confirmá la acción o mostrale la cara de un operador a la cámara para confirmar», and wait.`;
 
 /**
  * The model's view of a chat: the last 40 UI messages, with tool calls and

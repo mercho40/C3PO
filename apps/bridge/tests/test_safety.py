@@ -508,8 +508,6 @@ async def test_a_face_check_stands_in_for_confirmar_but_grants_nothing(monkeypat
     )
     check = mcp_server.face_confirm_check
     assert (await check(FakeRequest({"tool": "arm_navigation"}, secret="nope"))).status_code == 403
-    arm = await check(FakeRequest({"tool": "set_hand"}, secret="s3cret"))
-    assert arm.status_code == 400 and b"face_not_for_t2" in arm.body  # T2 keeps the click
     t0 = await check(FakeRequest({"tool": "get_state"}, secret="s3cret"))
     assert t0.status_code == 400 and b"not_confirmable" in t0.body
     nobody = json.loads(
@@ -519,13 +517,16 @@ async def test_a_face_check_stands_in_for_confirmar_but_grants_nothing(monkeypat
     seen["code"] = face_gate.PASSED
     face = json.loads((await check(FakeRequest({"tool": "arm_navigation"}, secret="s3cret"))).body)
     assert face["passed"] and face["person"]["name"] == "Oliver"
+    assert face["reach_m"] is None  # a T1 runs at once
+    hand = json.loads((await check(FakeRequest({"tool": "set_hand"}, secret="s3cret"))).body)
+    assert hand["passed"] and hand["reach_m"] == safety.PERSON_REACH_M  # a T2 waits for room
     assert safety.status()["pending_confirmations"] == []  # only /safety/confirm grants
     monkeypatch.setattr(safety, "FACE_CONFIRM", False)
     off = await check(FakeRequest({"tool": "arm_navigation"}, secret="s3cret"))
     assert off.status_code == 403 and b"face_confirm_off" in off.body
 
 
-def test_the_refusal_offers_the_face_only_where_it_can_confirm(monkeypatch):
+def test_the_refusal_offers_the_face_unless_it_is_off(monkeypatch):
     from bridge import mcp_server
 
     def refusal(name):
@@ -533,7 +534,7 @@ def test_the_refusal_offers_the_face_only_where_it_can_confirm(monkeypatch):
 
     face = "mostrale la cara de un operador a la cámara"
     assert face in refusal("arm_navigation")
-    assert face not in refusal("set_hand") and "«Confirmá la acción»" in refusal("set_hand")
+    assert face in refusal("set_hand")
     monkeypatch.setattr(safety, "FACE_CONFIRM", False)
     assert face not in refusal("arm_navigation")
 

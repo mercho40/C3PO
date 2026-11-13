@@ -418,13 +418,37 @@ export async function confirmPending(
       };
 }
 
+/** A face-confirmed arm/hand call waits this long for everyone to step out of reach. */
+export const FACE_STEP_BACK = { timeoutMs: 20_000, everyMs: 500 };
+
+/** True once the bridge sees nobody closer than `reach` (none seen counts), false at the deadline. */
+async function outOfReach(reach: number): Promise<boolean> {
+  const deadline = Date.now() + FACE_STEP_BACK.timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(bridgeSiblingUrl("/safety/status"), {
+        signal: AbortSignal.timeout(2000),
+      });
+      const s = (await r.json()) as { nearest_person_m?: number | null };
+      if (r.ok && (s.nearest_person_m == null || s.nearest_person_m >= reach))
+        return true;
+    } catch {
+      // A missed poll is not "out of reach": try again until the deadline.
+    }
+    await Bun.sleep(FACE_STEP_BACK.everyMs);
+  }
+  return false;
+}
+
 /**
- * The face instead of Confirmar: while the console shows a refused high-danger
- * T1 call, it asks here every few seconds. The bridge looks for an enrolled
- * person's live face (/face/confirm_check, which grants nothing); on a pass
- * this is `confirmPending` with via "face", so the call is taken once, granted
- * and run exactly as a click would. `passed: false` means keep waiting. The
- * bridge refuses T2 (arms, hands): the face would be inside their 0.8 m reach.
+ * The face instead of Confirmar: while the console shows a refused call, it
+ * asks here every few seconds. The bridge looks for an enrolled person's live
+ * face (/face/confirm_check, which grants nothing); on a pass this is
+ * `confirmPending` with via "face", so the call is taken once, granted and run
+ * exactly as a click would. `passed: false` means keep waiting. An arm/hand
+ * call (`reach_m`) first waits for that person to step back out of reach, the
+ * robot saying so: the face had to be inside it. A PARAR meanwhile clears the
+ * card, so nothing runs after it.
  */
 export async function confirmPendingByFace(
   name: string,
@@ -453,11 +477,20 @@ export async function confirmPendingByFace(
   const check = (await upstream.json().catch(() => ({}))) as {
     passed?: boolean;
     person?: { name?: string | null };
+    reach_m?: number | null;
     [k: string]: unknown;
   };
   if (!upstream.ok) return { status: upstream.status, body: check };
   if (check.passed !== true)
     return { status: 200, body: { passed: false, reason: check.reason } };
+  if (typeof check.reach_m === "number") {
+    void callTool("say", {
+      // Not «Confirmado»: that word is kept for a call that ran and succeeded.
+      text: `Te reconocí. Alejate un poco y ${name === "set_hand" ? "muevo la mano" : "lo hago"}.`,
+    }).catch(() => {});
+    if (!(await outOfReach(check.reach_m)))
+      return { status: 200, body: { passed: false, reason: "still_in_reach" } };
+  }
   const r = await confirmPending(name, callId, args, user, "face");
   return {
     status: r.status,

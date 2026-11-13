@@ -96,8 +96,9 @@ export const FACE_POLL_MS = 2000;
  * The face instead of «Confirmar», for as long as the card is on screen: asks
  * back (`/skills/:tool/confirm-face`) every FACE_POLL_MS. `state("waiting")`
  * once a check could run, so the card shows the hint; `state("unavailable")`
- * and it stops when the face cannot confirm this call (a T2, face confirm off,
- * no longer pending). `done` once a face ran it, with the same result a click
+ * and it stops when the face cannot confirm this call (face confirm off, no
+ * longer pending). An arm/hand call waits inside one request for the person to
+ * step back (back says so aloud). `done` once a face ran it, with the same result a click
  * gives. Network trouble just tries again. Returns the stop.
  */
 export function watchFace(

@@ -13,7 +13,7 @@
  * in the real `#back/lib/auth-plugin`, which imports `#back/lib/auth`),
  * hence the dynamic import after `mock.module`.
  */
-import { describe, expect, test, mock, beforeEach } from "bun:test";
+import { afterEach, describe, expect, test, mock, beforeEach } from "bun:test";
 
 let sessionUser: { id: string; role: string | null } | null = null;
 
@@ -150,7 +150,8 @@ mock.module("#back/db/drizzle.js", () => ({
   },
 }));
 
-const { skillsRoutes } = await import("./skills");
+const skillsModule = await import("./skills");
+const { skillsRoutes } = skillsModule;
 const confirmations = await import("../agent/confirmations");
 const bridge = (await import("../bridge/client")) as unknown as {
   callTool: ReturnType<typeof mock>;
@@ -853,11 +854,11 @@ describe("POST /skills/:name/confirm-face: an enrolled face instead of the click
     expect(again.status).toBe(409);
   });
 
-  test("the bridge's refusal (a T2, or face confirm off) passes through and runs nothing", async () => {
-    face = () => Response.json({ error: "face_not_for_t2" }, { status: 400 });
+  test("the bridge's refusal (face confirm off) passes through and runs nothing", async () => {
+    face = () => Response.json({ error: "face_confirm_off" }, { status: 403 });
     const res = await post({ callId: "call_1", args });
     globalThis.fetch = realFetch;
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
     expect(bridge.callTool).not.toHaveBeenCalled();
   });
 
@@ -869,6 +870,87 @@ describe("POST /skills/:name/confirm-face: an enrolled face instead of the click
     expect(other.status).toBe(409);
     expect(user.status).toBe(403);
     expect(forwarded).toEqual([]);
+  });
+});
+
+describe("confirm-face on an arm/hand call: the person steps back first", () => {
+  const realFetch = globalThis.fetch;
+  const step = { ...skillsModule.FACE_STEP_BACK };
+  let nearest: (number | null)[] = [];
+  let urls: string[] = [];
+  const args = { side: "right", shape: "v_sign" };
+
+  const post = () =>
+    skillsRoutes.handle(
+      new Request("http://localhost/skills/set_hand/confirm-face", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ callId: "call_h", args }),
+      }),
+    );
+
+  beforeEach(() => {
+    urls = [];
+    inserted = [];
+    bridge.callTool.mockClear();
+    confirmations.clearPending();
+    sessionUser = { id: "u1", role: "admin" };
+    process.env.SAFETY_CONFIRM_SECRET = "s3cret";
+    Object.assign(skillsModule.FACE_STEP_BACK, { timeoutMs: 50, everyMs: 1 });
+    catalogueSkills = [
+      ...FIXTURE_SKILLS,
+      { ...fixtureSkill("set_hand", "gesture"), tier: "T2" },
+    ] as typeof FIXTURE_SKILLS;
+    globalThis.fetch = (async (url: string) => {
+      const u = String(url);
+      urls.push(u);
+      if (u.endsWith("/face/confirm_check"))
+        return Response.json({
+          passed: true,
+          person: { name: "Oliver" },
+          reach_m: 0.8,
+        });
+      if (u.endsWith("/safety/status"))
+        return Response.json({
+          nearest_person_m: nearest.length > 1 ? nearest.shift() : nearest[0],
+        });
+      return Response.json({ granted: true });
+    }) as typeof fetch;
+    confirmations.notePending({
+      id: "call_h",
+      tool: "set_hand",
+      args,
+      ownerId: "u1",
+      chatId: "chat_1",
+      loop: false,
+    });
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    Object.assign(skillsModule.FACE_STEP_BACK, step);
+  });
+
+  test("says so, waits until nobody is within reach, then runs it once", async () => {
+    nearest = [0.6, 0.6, null];
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { passed: boolean }).passed).toBe(true);
+    const calls = bridge.callTool.mock.calls.map((c) => c[0]);
+    expect(calls).toEqual(["say", "set_hand"]);
+    expect(urls.filter((u) => u.endsWith("/safety/status")).length).toBe(3);
+    expect(urls[urls.length - 1]).toEndWith("/safety/confirm");
+  });
+
+  test("still in reach at the deadline: nothing runs and the card stays", async () => {
+    nearest = [0.5];
+    const res = await post();
+    expect(await res.json()).toEqual({
+      passed: false,
+      reason: "still_in_reach",
+    });
+    expect(bridge.callTool.mock.calls.map((c) => c[0])).toEqual(["say"]);
+    expect(urls.some((u) => u.endsWith("/safety/confirm"))).toBe(false);
+    expect(confirmations.listPending("u1", "chat_1")).toHaveLength(1);
   });
 });
 

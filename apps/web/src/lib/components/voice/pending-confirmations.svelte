@@ -8,8 +8,8 @@
 
   BUTTONS ONLY, NO SPOKEN «confirmo» HERE: this conversation hears through the
   robot's own microphone, so anyone near it (or its own voice) could say it.
-  Spoken confirmation exists only on the headset's push-to-talk. A high-danger T1
-  row also runs when an enrolled live face is at the robot (`watchFace`): seen, not heard.
+  Spoken confirmation exists only on the headset's push-to-talk. A row also
+  runs when an enrolled live face is at the robot (`watchFace`): seen, not heard.
 -->
 <script lang="ts">
   import { PUBLIC_API_URL } from "$app/env/public";

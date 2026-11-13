@@ -1781,12 +1781,13 @@ async def set_hand(
         ),
     ] = 0.0,
     shape: Annotated[
-        Literal["open", "power", "pinch", "hook", "point", "v_sign"] | None,
+        Literal["open", "power", "pinch", "hook", "point", "v_sign", "saludo_peronista"] | None,
         Field(
             description=(
                 "A named grasp instead of `closure`: power = wrap, pinch = thumb+index, hook = handles, "
-                "point = index up, v_sign = index and middle up, the rest closed "
-                "(«saludo peronista», «la V», «la V de la victoria»)."
+                "point = index up (ONE finger, for pointing), v_sign = index and middle up, "
+                "the rest closed («la V», «la V de la victoria»); saludo_peronista = the same "
+                "as v_sign: use it for «saludo peronista»."
             )
         ),
     ] = None,
@@ -4425,8 +4426,9 @@ async def face_confirm_check(request):  # noqa: ANN001, ANN201 - starlette types
 
     Body `{"tool": name}`. Grants nothing: apps/back asks this only for a refused call its
     console still shows, and on a pass grants through /safety/confirm (via "face") and runs
-    that one call, exactly as a click does. Never for T2 (arms, hands): the face has to be
-    within 1.2 m and a T2 call refuses anyone inside 0.8 m, so those keep the click.
+    that one call, exactly as a click does. `reach_m` (a T2 under the person rule) is how
+    far everyone must be first: the face had to be within MAX_M, inside an arm's reach, so
+    back says «alejate» and waits for /safety/status to show nobody that close.
     """
     if (refused := _unproven(request)) is not None:
         return refused
@@ -4439,8 +4441,6 @@ async def face_confirm_check(request):  # noqa: ANN001, ANN201 - starlette types
     listed = mcp._tool_manager.get_tool(tool)
     if listed is None or not safety.needs_confirmation(listed.meta):
         return _no_store({"error": "not_confirmable", "tool": tool}, 400)
-    if ((listed.meta or {}).get("c3po") or {}).get("tier") == "T2":
-        return _no_store({"error": "face_not_for_t2", "tool": tool}, 400)
     # background: a gated call waits this out instead of being refused by it.
     code, detail = await face_gate.live_check(background=True)
     if code != face_gate.PASSED:
@@ -4449,7 +4449,9 @@ async def face_confirm_check(request):  # noqa: ANN001, ANN201 - starlette types
     who = await asyncio.to_thread(face_gate.person, detail)
     log.warning("face_gate.confirm_seen", tool=tool, person=detail)
     person = {k: (who or {}).get(k) for k in ("name", "role")} | {"id": detail}
-    return _no_store({"passed": True, "person": person})
+    return _no_store(
+        {"passed": True, "person": person, "reach_m": safety.reach_m(tool, listed.meta)}
+    )
 
 
 @mcp.custom_route("/face/seen", methods=["GET"])

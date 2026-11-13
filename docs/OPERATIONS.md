@@ -442,11 +442,12 @@ The bridge can know people by face. It uses that for two things, both off by def
   front of the head camera. It is one more gate on top of the login and «Confirmar», never
   instead of them.
 - **The face instead of «Confirmar»**: while the console (chat card, /voice, headset)
-  shows a refused **high-danger T1** call (`start_walking_waist`, `arm_navigation`,
-  `zero_torque`), an enrolled person's live face at the head camera runs it, exactly as
-  the click would: once, those arguments, only while the card is shown. The agent says
-  «Confirmá la acción o mostrale la cara de un operador a la cámara para confirmar».
-  **T2 (arms, hands) keep the click**: the face would be inside their 0.8 m reach.
+  shows a refused call, an enrolled person's live face at the head camera runs it, exactly
+  as the click would: once, those arguments, only while the card is shown. The agent says
+  «Confirmá la acción o mostrale la cara de un operador a la cámara para confirmar». An
+  **arm/hand** call (T2) cannot run with anyone inside 0.8 m, and the face had to be
+  closer, so the robot says «Te reconocí. Alejate un poco…» and runs it once nobody is
+  within 0.8 m; after 20 s it gives up and the card stays. A PARAR in between cancels it.
   Off: `C3PO_FACE_CONFIRM=0` in the bridge `.env`.
 - **The greeter** (516c879): the robot says hello by name when an enrolled person comes
   into view, and, if you want, to a stranger.

@@ -143,8 +143,8 @@ T2_CONFIRM = _env_on("SAFETY_T2_CONFIRM")
 # can be issued, so T2 is refused outright: fail closed, never open.
 CONFIRM_SECRET = os.environ.get("SAFETY_CONFIRM_SECRET", "")
 CONFIRM_TTL_S = 30.0
-# An enrolled live face stands in for «Confirmar» on a high-danger T1 call, never a T2
-# (mcp_server /face/confirm_check). 0 = the click only.
+# An enrolled live face stands in for «Confirmar» (mcp_server /face/confirm_check; a T2 then
+# waits for that person to step out of reach). 0 = the click only.
 FACE_CONFIRM = os.environ.get("C3PO_FACE_CONFIRM", "1") != "0"
 # T2 skills that exist to be near a person (skills/manipulation.py).
 HANDOVER_TOOLS: frozenset[str] = frozenset({"handover"})
@@ -428,6 +428,14 @@ def base_moving() -> bool:
 # -- risk tiers and confirmation ----------------------------------------------
 
 
+def reach_m(name: str, meta: dict[str, Any] | None) -> float | None:
+    """How far everyone must be for this call to run (the T2 person rule), or None: no limit."""
+    tier = ((meta or {}).get("c3po") or {}).get("tier")
+    if tier == "T2" and PERSON_RULE and name not in HANDOVER_TOOLS:
+        return PERSON_REACH_M
+    return None
+
+
 def needs_confirmation(meta: dict[str, Any] | None) -> bool:
     """Whether a call of this tool needs an operator's grant first: T2, and high-danger T1."""
     c3po = (meta or {}).get("c3po") or {}
@@ -575,7 +583,7 @@ def _refusal(name: str, meta: dict[str, Any] | None, args_key: str | None, spend
                 "open_hands, release_arm_control and stop still work. Tell the operator "
                 "to charge the robot."
             )
-    if tier == "T2" and PERSON_RULE and name not in HANDOVER_TOOLS:
+    if reach_m(name, meta) is not None:
         nearest, fresh = person_proximity()
         # Fresh or not: a person known to be inside reach refuses the arm.
         if nearest is not None and nearest < PERSON_REACH_M:
@@ -597,7 +605,7 @@ def _refusal(name: str, meta: dict[str, Any] | None, args_key: str | None, spend
         return None
     log.warning("safety.t2_refused", tool=name, reason="no_confirmation")
     kind = "a T2 tool" if tier == "T2" else "a high-danger tool"
-    face = tier != "T2" and FACE_CONFIRM
+    face = FACE_CONFIRM
     return (
         f"refused: {name} is {kind} and needs an operator's confirmation first. "
         "You cannot give it: a human operator presses «Confirmar» for these exact "

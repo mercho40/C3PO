@@ -122,6 +122,9 @@ SHAPES: dict[str, tuple[float, ...]] = {
     # not showing (2026-11-13: at 0.60 it stayed visible).
     "v_sign": (0.95, 0.70, 0.0, 0.0, 0.95, 0.95),
 }
+# The same shape by its Spanish name: the school's chat model picked `point` for «saludo
+# peronista» from the description alone (2026-11-13); a value it reads in the enum it does not miss.
+SHAPES["saludo_peronista"] = SHAPES["v_sign"]
 
 # --- Dex3-1 ------------------------------------------------------------------
 # 7 motors, radians. IDL order is `thumb_0, thumb_1, thumb_2, middle_0,

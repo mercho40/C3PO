@@ -8,6 +8,7 @@ TELEOP_HAND_SIDES skipped loudly, and the no-dead-man warning on every grip.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -279,3 +280,12 @@ def test_v_sign_raises_index_and_middle_and_closes_the_rest():
     thumb, _aux, index, middle, ring, pinky = hands.SHAPES["v_sign"]
     assert index == middle == 0.0
     assert min(thumb, ring, pinky) >= 0.9  # the thumb tucked too, not showing
+
+
+def test_saludo_peronista_is_the_v_sign_by_name():
+    """A model that skips the description still finds «saludo peronista» in the enum."""
+    from bridge import mcp_server
+
+    assert hands.SHAPES["saludo_peronista"] == hands.SHAPES["v_sign"]
+    schema = mcp_server.mcp._tool_manager.get_tool("set_hand").parameters
+    assert "saludo_peronista" in json.dumps(schema["properties"]["shape"])
