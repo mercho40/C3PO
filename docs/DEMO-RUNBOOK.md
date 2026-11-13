@@ -65,3 +65,18 @@ Each one works on its own; skip any that misbehave today.
 ## 4. Teardown
 
 PARAR, then «1 · Amortiguar» with the robot on the gantry. Stop `robot_session.sh` with Ctrl-C. It should leave no ssh, bun or python children behind; check with `pgrep -fl 'ssh|bun|robot_internet'`, which is not yet verified with the cable. Power off.
+
+## 5. The sign at the stand
+
+Print it large and put it at the rope, where people read it before the camera sees them. Uruguay's data protection law (Ley 18.331) is why it is worth having; the text only says what the code does.
+
+> **Este robot tiene una cámara y micrófonos encendidos.**
+>
+> - Reconoce por la cara solo a los integrantes del equipo que dieron su consentimiento.
+> - De las demás personas no guarda nada: ni fotos ni datos de la cara. Solo cuenta cuántos desconocidos saludó.
+> - Lo que le decís se procesa con servicios de inteligencia artificial en la nube.
+> - Las imágenes que salen a internet van con las caras borroneadas.
+>
+> ¿Preguntas o no querés salir en cámara? Hablá con el equipo.
+
+The blurred-faces line is true only once `docs/autonomy/test-day/vlm.md` §10 passes on the robot. Until then, leave it off the printed sign.
