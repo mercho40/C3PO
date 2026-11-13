@@ -39,18 +39,41 @@ def _requested_sides(side: Side) -> tuple[hands.Side, ...]:
     return ("left", "right") if side == "both" else (side,)
 
 
+#: Finger names for `set_hand(fingers=...)`, in `hands.SHAPES` channel order
+#: (BrainCo: Thumb, Thumb_aux, Index, Middle, Ring, Pinky).
+FINGERS = ("thumb", "thumb_rotation", "index", "middle", "ring", "pinky")
+
+
 async def run_set(
-    side: Side, closure: float, ctx: Any | None = None, shape: str | None = None
+    side: Side,
+    closure: float,
+    ctx: Any | None = None,
+    shape: str | None = None,
+    fingers: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Set hand closure: 0.0 fully open .. 1.0 fully closed, or a named `hands.SHAPES` grasp
-    (which then overrides `closure`). Returns a result dict."""
+    (which then overrides `closure`). `fingers` overrides single fingers on top of that base.
+    Returns a result dict; a bad finger name or value moves nothing."""
     if shape is not None and shape not in hands.SHAPES:
         return {"status": "failed", "error": f"unknown_shape_{shape}", "shapes": sorted(hands.SHAPES)}
+    closure = max(0.0, min(1.0, float(closure)))
     closures = hands.SHAPES[shape] if shape is not None else None
-    closure = max(closures) if closures else max(0.0, min(1.0, float(closure)))
+    if fingers:
+        unknown = sorted(set(fingers) - set(FINGERS))
+        if unknown:
+            return {"status": "failed", "error": "unknown_finger", "unknown": unknown, "fingers": list(FINGERS)}
+        out = sorted(n for n, v in fingers.items() if not 0.0 <= float(v) <= 1.0)
+        if out:
+            return {"status": "failed", "error": "finger_closure_out_of_range", "out_of_range": out}
+        base = closures if closures is not None else (closure,) * len(FINGERS)
+        closures = tuple(float(fingers.get(n, b)) for n, b in zip(FINGERS, base, strict=True))
+    if closures is not None:
+        closure = max(closures)
     requested = _requested_sides(side)
 
-    log.info("set_hand.called", side=side, closure=closure, shape=shape, sim_mode=SIM_MODE)
+    log.info(
+        "set_hand.called", side=side, closure=closure, shape=shape, fingers=fingers, sim_mode=SIM_MODE
+    )
 
     if SIM_MODE == "stub":
         return {
@@ -102,6 +125,8 @@ async def run_set(
         "driven_sides": list(driven),
         "stub": False,
     }
+    if closures is not None:
+        result["fingers"] = dict(zip(FINGERS, closures, strict=True))
     if skipped:
         result["skipped_sides"] = list(skipped)
         result["message"] = (

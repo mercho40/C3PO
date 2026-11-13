@@ -1740,11 +1740,28 @@ async def set_hand(
         Literal["open", "power", "pinch", "hook", "point"] | None,
         Field(description="A named grasp instead of `closure`: power = wrap, pinch = thumb+index, hook = handles."),
     ] = None,
+    fingers: Annotated[
+        dict[
+            Literal["thumb", "thumb_rotation", "index", "middle", "ring", "pinky"],
+            Annotated[float, Field(ge=0.0, le=1.0)],
+        ]
+        | None,
+        Field(
+            description=(
+                "Single fingers, 0.0 open .. 1.0 closed, on top of `shape` (or `closure`). "
+                "Fingers not named keep that base. thumb_rotation swings the thumb across the palm."
+            )
+        ),
+    ] = None,
 ) -> dict:
     """Set a dexterous hand's grip — physical fingers move (BrainCo Revo2).
 
-    One closure scalar per hand, 0.0 open to 1.0 closed, published to the
-    hand's command topic. IMPORTANT: these hands have NO firmware dead-man —
+    One closure per hand, 0.0 open to 1.0 closed, published to the hand's
+    command topic. `fingers` moves single fingers: «cerrá solo el índice» is
+    fingers={"index": 1.0}; «abrí el pulgar» is fingers={"thumb": 0.0};
+    «cerrá todo menos el índice» is closure=1.0, fingers={"index": 0.0};
+    «cerrá un poco el meñique» is fingers={"pinky": 0.3}. Fingers you do not
+    name keep `shape`'s value, or `closure` (default 0.0 = open). IMPORTANT: these hands have NO firmware dead-man —
     a closed hand stays closed until open_hands (or stop_everything, which now
     relaxes them) is called, even if the bridge dies. Never leave a grip
     closed on a person.
@@ -1756,7 +1773,7 @@ async def set_hand(
     """
     from bridge.skills.hand import run_set
 
-    return {**await run_set(side, closure, shape=shape), "env": SIM_MODE}
+    return {**await run_set(side, closure, shape=shape, fingers=fingers), "env": SIM_MODE}
 
 
 @mcp.tool(

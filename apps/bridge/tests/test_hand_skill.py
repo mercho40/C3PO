@@ -103,3 +103,77 @@ async def test_open_hands_relaxes_every_configured_side(monkeypatch):
     assert set(fake.sent) == {("left", 0.0), ("right", 0.0)}
     assert result["status"] == "ok"
     assert result["opened_sides"] == ["left", "right"]
+
+
+class ShapeRecorder(FakeHandDriver):
+    def __init__(self, sides=("right",)) -> None:
+        super().__init__(sides)
+        self.shapes: list[tuple[str, tuple[float, ...]]] = []
+
+    def send_shape(self, side, closures) -> None:
+        self.shapes.append((side, tuple(closures)))
+
+
+@pytest.fixture
+def recorder(monkeypatch):
+    monkeypatch.setattr(hand, "SIM_MODE", "real")
+    fake = ShapeRecorder()
+    monkeypatch.setattr(hands, "get_driver", lambda: fake)
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_single_finger_closes_on_an_open_base(recorder):
+    result = await hand.run_set("right", 0.0, fingers={"index": 1.0})
+    assert recorder.shapes == [("right", (0.0, 0.0, 1.0, 0.0, 0.0, 0.0))]
+    assert result["fingers"]["index"] == 1.0 and result["fingers"]["thumb"] == 0.0
+    assert result["closure"] == 1.0 and "dead-man" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_fingers_override_closure_base(recorder):
+    await hand.run_set("right", 1.0, fingers={"index": 0.0, "thumb": 0.2})
+    assert recorder.shapes == [("right", (0.2, 1.0, 0.0, 1.0, 1.0, 1.0))]
+
+
+@pytest.mark.asyncio
+async def test_fingers_override_shape_base(recorder):
+    await hand.run_set("right", 0.0, shape="power", fingers={"pinky": 0.0})
+    assert recorder.shapes == [("right", hands.SHAPES["power"][:5] + (0.0,))]
+
+
+@pytest.mark.asyncio
+async def test_unknown_finger_moves_nothing(recorder):
+    result = await hand.run_set("right", 0.0, fingers={"indice": 1.0})
+    assert result["status"] == "failed" and result["error"] == "unknown_finger"
+    assert result["unknown"] == ["indice"]
+    assert recorder.shapes == [] and recorder.sent == []
+
+
+@pytest.mark.asyncio
+async def test_out_of_range_finger_moves_nothing(recorder):
+    result = await hand.run_set("right", 0.0, fingers={"ring": 1.5})
+    assert result["error"] == "finger_closure_out_of_range"
+    assert recorder.shapes == [] and recorder.sent == []
+
+
+def test_confirmation_is_bound_to_the_fingers():
+    """A grant for one finger set must not cover another: fingers are in the canonical args."""
+    from bridge import mcp_server
+
+    tool = mcp_server.mcp._tool_manager.get_tool("set_hand")
+    plain = mcp_server._canonical_args(tool, {"side": "right"})
+    index = mcp_server._canonical_args(tool, {"side": "right", "fingers": {"index": 1}})
+    pinky = mcp_server._canonical_args(tool, {"side": "right", "fingers": {"pinky": 1}})
+    assert len({plain, index, pinky}) == 3
+
+
+def test_tool_schema_rejects_unknown_finger_and_range():
+    import pydantic
+
+    from bridge import mcp_server
+
+    tool = mcp_server.mcp._tool_manager.get_tool("set_hand")
+    for bad in ({"indice": 1}, {"ring": 1.5}):
+        with pytest.raises(pydantic.ValidationError):
+            mcp_server._canonical_args(tool, {"side": "right", "fingers": bad})
