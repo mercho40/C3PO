@@ -97,6 +97,20 @@ def _read_fsm_mode() -> int | None:
         return None
 
 
+def _fresh_fsm_id() -> int | None:
+    """The FSM id if a recent reading exists, else None. Never creates the sampler."""
+    try:
+        from bridge.sdk.state import existing_sampler
+        from bridge.teleop.arm_sdk import MAX_FSM_AGE_S
+
+        sampler = existing_sampler()
+        state = sampler.get_arm_state() if sampler is not None else {}
+        age = state.get("fsm_age_s")
+        return state.get("fsm_id") if age is not None and age <= MAX_FSM_AGE_S else None
+    except Exception:
+        return None
+
+
 async def run_g1_request(
     skill_name: g1_protocol.SkillName,
     ctx: Any | None = None,
@@ -160,6 +174,22 @@ async def run_g1_request(
                 "note": (
                     f"SIM_MODE={SIM_MODE} doesn't subscribe to "
                     f"{request.topic_kind} — request logged but not dispatched."
+                ),
+            }
+            task.ended_at = time.time()
+            return task.to_dict()
+
+        if skill_name == "prepare" and (fsm_id := _fresh_fsm_id()) in WALK_FSM_IDS:
+            # 2026-11-12: prepare from 501 acked, waited 9 s and did nothing, and the agent
+            # said it had changed mode. Had the firmware taken it, a walking robot drops to 4.
+            task.status = "completed"
+            task.phase = "already_in_locomotion"
+            task.progress = 1.0
+            task.result = {
+                "fsm_after": fsm_id,
+                "note": (
+                    f"nothing sent: the robot is already in a locomotion mode (FSM {fsm_id}); "
+                    "gestures, shake_hand and walking do not need prepare."
                 ),
             }
             task.ended_at = time.time()

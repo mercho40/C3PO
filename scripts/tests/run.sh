@@ -482,6 +482,14 @@ check_not_contains "teleop start no longer reports success on a bare sleep" \
     'sleep 2
 
 if sidecar_pid' "$run_teleop_src"
+# 2026-11-12: 0.0.0.0:8767 on the school Wi-Fi with no TELEOP_SECRET. The tunnel lands on
+# loopback, so that is the default, and an open bind needs the secret.
+check_contains "teleop binds loopback by default, where the tunnel lands" \
+    'export TELEOP_HOST="${TELEOP_HOST:-127.0.0.1}"' "$run_teleop_src"
+check_not_contains "teleop no longer binds every interface by default" \
+    ':-0.0.0.0}' "$run_teleop_src"
+check_contains "teleop refuses an off-loopback bind with no secret" \
+    'reachable from the network and TELEOP_SECRET is empty' "$run_teleop_src"
 
 echo "== robot tunnel =="
 # The reconnecting tunnel (2026-10-15: it dropped twice in one session).

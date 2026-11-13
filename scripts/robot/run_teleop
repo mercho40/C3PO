@@ -42,6 +42,24 @@ if sidecar_pid "$TELEOP_PID" >/dev/null 2>&1; then
     exit 0
 fi
 
+# Loopback by default: the Mac's tunnel (scripts/robot_tunnel.sh) forwards 8767 there and
+# adb reverse carries it to the headset. Off loopback with no secret, anyone on the Wi-Fi
+# can drive the robot (2026-11-12: 0.0.0.0:8767 on the school network), so refuse it.
+# shellcheck disable=SC1091
+from_env() { (cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && printf '%s\n' "${!1:-$2}"); }
+teleop_host="$(from_env TELEOP_HOST 127.0.0.1)"
+case "$teleop_host" in
+    127.*|localhost|::1) ;;
+    *)
+        if [ -z "$(from_env TELEOP_SECRET '')" ]; then
+            err "TELEOP_HOST=$teleop_host is reachable from the network and TELEOP_SECRET is empty"
+            err "anyone on the LAN could drive this robot. Set TELEOP_SECRET in apps/bridge/.env"
+            err "and apps/back/.env, or unset TELEOP_HOST and use the tunnel (scripts/robot_tunnel.sh)."
+            exit 1
+        fi
+        ;;
+esac
+
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
 start_sidecar() {
@@ -54,9 +72,8 @@ start_sidecar() {
         . ./.env
         set +a
         export PATH="$HOME/.local/bin:$PATH"
-        # Direct LAN access is the onboard policy. The Python module itself
-        # still defaults to loopback for ad-hoc developer runs.
-        export TELEOP_HOST="${TELEOP_HOST:-0.0.0.0}"
+        # Same default as the module and the check above: loopback, reached by the tunnel.
+        export TELEOP_HOST="${TELEOP_HOST:-127.0.0.1}"
         # `< /dev/null` matters as much as the nohup, and for a different
         # reason. nohup stops SIGHUP killing the process; the stdin redirect
         # stops `ssh c3po run_teleop` from hanging. A backgrounded child that
@@ -133,9 +150,9 @@ arm_enabled="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEO
 hand_enabled="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_HAND_ENABLED:-}")"
 hand_type="$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_HAND_TYPE:-unset}")"
 
-# The socket is on the LAN, so the handshake is the gate (teleop/server.py authorize).
-if [ -z "$(cd "$BRIDGE_DIR" && set -a && . ./.env && set +a && echo "${TELEOP_SECRET:-}")" ]; then
-    warn "TELEOP_SECRET is empty: any LAN client can open port $teleop_port and drive the robot."
+# The handshake is the gate (teleop/server.py authorize); off loopback it is refused above.
+if [ -z "$(from_env TELEOP_SECRET '')" ]; then
+    warn "TELEOP_SECRET is empty: anything on this robot can open port $teleop_port and drive it."
     warn "Set the same value in apps/bridge/.env and apps/back/.env, then restart both."
 else
     ok "teleop socket needs a token from apps/back (TELEOP_SECRET set)"
@@ -151,14 +168,13 @@ esac
 
 say "Reach it"
 cat <<'DIRECT'
-  teleop:  ws://g1-orin.local:8767                  direct, on the LAN
-  bridge:  http://127.0.0.1:8001/mcp                loopback only — through
-           ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po
+  teleop:  ws://localhost:8767                      loopback (unless TELEOP_HOST is set),
+  bridge:  http://127.0.0.1:8001/mcp                both through scripts/robot_tunnel.sh
+                                                    (-L 8001 and -L 8767 to the robot's loopback)
   camera:  http://localhost:8001/camera             the bridge, through the same tunnel
            (http://localhost:3000/camera = via apps/back, behind its login)
 
-  The Quest's WebXR secure-context path still needs HTTPS/WSS or the existing
-  adb reverse setup; desktop development needs no forward for 8767.
+  The Quest reaches the Mac's 8767 through adb reverse (quest_setup.sh).
 DIRECT
 
 warn "while a headset session is open, do NOT drive the robot from anywhere else."

@@ -170,8 +170,15 @@ async def run(
             task.phase = "already_within_stop_distance"
             task.progress = 1.0
             task.ended_at = time.time()
+            # Not "arrived": 2026-11-12 a 0.20 m step read as success and the agent said it
+            # had repositioned, from the same spot.
             task.result = {
-                "arrived": True,
+                "arrived": False,
+                "moved": False,
+                "note": (
+                    f"nothing moved: target is {initial_distance:.2f} m away, inside "
+                    f"stop_distance_m={stop_distance_m}; for a step under 0.3 m use walk_velocity"
+                ),
                 "initial_distance_m": initial_distance,
                 "final_distance_m": initial_distance,
                 "displacement_m": 0.0,

@@ -69,6 +69,9 @@ REISSUE_PERIOD_S = 0.05
 # turn end on a 0.4 s zero burst, navigate_to's monitor within NAV_POLL_S (0.25 s).
 PREEMPT_WAIT_S = 1.0
 
+#: Task ids cancelled by a newer walk_velocity, which then end without their own zero.
+_superseded: set[str] = set()
+
 
 async def run(
     vx: float,
@@ -138,9 +141,17 @@ async def run(
             log.warning("walk_velocity.fsm_not_walkable", task_id=task.task_id)
             return task.to_dict()
 
-        # Decision 11.6b: deliberate operator input preempts an agent walk. Never another
-        # walk_velocity: the headset renews its walk with overlapping 1 s calls.
+        # The newest walk_velocity is the only commander. An older one kept re-issuing its
+        # setpoint after a zero (2026-11-12, 1.85 s of turning after the stick was released).
+        # Not waited for, and it ends without its own zero: the headset renews its walk with
+        # overlapping 1 s calls, and that zero would stutter the renewal.
         registry = get_registry()
+        for older in registry.list_active():
+            # Only ours: one a stop already cancelled still ends on its zero.
+            if older.skill_name == "walk_velocity" and older.task_id != task.task_id:
+                if registry.cancel(older.task_id):
+                    _superseded.add(older.task_id)
+        # Decision 11.6b: deliberate operator input preempts an agent walk.
         preempted = [
             t
             for t in registry.list_active()
@@ -200,8 +211,11 @@ async def run(
             if deadline - time.monotonic() > 0 and not task.cancel_event.is_set():
                 await send_velocity_async(*setpoint, autonomous=autonomous)
 
-        # Zero now rather than letting the last setpoint run out its 1 s.
-        await send_velocity_async(0.0, 0.0, 0.0, DEFAULT_HEIGHT)
+        # Zero now rather than letting the last setpoint run out its 1 s; unless a newer
+        # walk_velocity took over, whose setpoint this zero would interrupt.
+        if not (cancelled and task.task_id in _superseded):
+            await send_velocity_async(0.0, 0.0, 0.0, DEFAULT_HEIGHT)
+        _superseded.discard(task.task_id)
         if cancelled:
             task.status = "cancelled"
             task.phase = "cancelled"

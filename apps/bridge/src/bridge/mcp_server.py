@@ -1001,10 +1001,12 @@ async def damp(ctx: Context) -> dict:
     )
 )
 async def prepare(ctx: Context) -> dict:
-    """Enter Preparation mode — required gateway to Walk / Walk(waist) / Run.
+    """Enter Preparation mode — the gateway from Damp to Walk / Walk(waist) / Run.
 
     On the G1 FSM: legal only from Damp. From Preparation, you can transition
-    to Walk, Walk(waist), Run, or back to Damp.
+    to Walk, Walk(waist), Run, or back to Damp. Already walking (FSM 500/501)?
+    Do not call it: gestures and shake_hand work from there, and it returns
+    phase already_in_locomotion without sending anything.
 
     Isaac Sim: logged only.
     """
@@ -5048,8 +5050,12 @@ async def camera_cloud_frame(request):  # noqa: ANN001, ANN201 - starlette types
     return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
-async def _relay_stream(url: str, request):  # noqa: ANN001 - starlette Request
-    """Pipe an upstream MJPEG response straight through to the client.
+async def _relay_stream(resp, request):  # noqa: ANN001 - urllib response, starlette Request
+    """Pipe an already-open upstream MJPEG response straight through to the client.
+
+    Opened by the route, not here: a failed open must be a 503 the client backs off
+    from, and inside the generator the 200 is already sent, so it was an empty 200
+    the console reconnected to at once (~20/min, 2026-11-12).
 
     Reads in a thread: `urllib` is blocking, and blocking the event loop here
     would stall every other route — `stop_everything` among them, which is the
@@ -5062,13 +5068,6 @@ async def _relay_stream(url: str, request):  # noqa: ANN001 - starlette Request
     (a reload, a dropped tunnel) and it refuses everyone with 503, the bridge's
     own next relay included. Seen 2026-10-27: a live camera, a black headset.
     """
-    import urllib.request
-
-    try:
-        resp = await asyncio.to_thread(urllib.request.urlopen, url, None, 10.0)
-    except Exception:
-        log.exception("camera.relay_open_failed", url=url)
-        return
     try:
         while True:
             if await request.is_disconnected():
@@ -5138,9 +5137,22 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
         # multipart format with the same boundary, so re-framing it here would
         # be re-encoding a stream we have no reason to touch — and would put a
         # JPEG decode per frame on the bridge, which owns stop_everything.
+        import urllib.request
+
+        url = camera_relay.vision_url("stream.mjpg")
+        try:
+            resp = await asyncio.to_thread(urllib.request.urlopen, url, None, 10.0)
+        except Exception as exc:
+            # e.g. the vision server's "too many stream clients (max 4)".
+            log.warning("camera.relay_open_failed", url=url, error=str(exc))
+            return JSONResponse(
+                {"error": "camera_unavailable", "detail": str(exc)},
+                status_code=503,
+                headers={**camera_relay.camera_headers(origin), "Retry-After": "2"},
+            )
         media_type, headers = camera_relay.relay_headers("stream", origin)
         return StreamingResponse(
-            _relay_stream(camera_relay.vision_url("stream.mjpg"), request),
+            _relay_stream(resp, request),
             media_type=media_type,
             headers=headers,
         )
@@ -5195,6 +5207,9 @@ async def _run_streamable_http() -> None:
         host=BRIDGE_HOST,
         port=BRIDGE_PORT,
         log_level=mcp.settings.log_level.lower(),
+        # MJPEG relays and SSE never end on their own: without a bound, every restart
+        # waited out the unit's TimeoutStopSec=20 and was SIGKILLed past its cleanup.
+        timeout_graceful_shutdown=3,
     )
     async with watching_foreign_stops(), face_greet.greeting_operator(_greet, _speech_busy):
         await uvicorn.Server(config).serve()
@@ -5238,6 +5253,25 @@ def _warm_face() -> None:
         )
 
 
+def _open_hands_at_boot() -> None:
+    """Open the BrainCo hands once, on real hardware: they hold their last command and a
+    restarted bridge cannot know a grip (shake_hand, a pick) was left closed. Same call as
+    stop_everything's, on its own thread so a slow DDS write never delays serving."""
+    if SIM_MODE != "real":
+        return
+    import threading
+
+    from bridge.teleop import hands
+
+    try:
+        driver = hands.get_driver()
+        if driver.sides:
+            threading.Thread(target=driver.relax, name="hands-open-at-boot", daemon=True).start()
+            log.info("hands.opened_at_boot", sides=list(driver.sides), driver=driver.name)
+    except Exception:
+        log.exception("hands.open_at_boot_failed")
+
+
 def main() -> None:
     """Run the MCP server.
 
@@ -5248,6 +5282,7 @@ def main() -> None:
     if face_gate.GATED:
         face_gate.check_config(t.name for t in mcp._tool_manager.list_tools())
     _warm_face()
+    _open_hands_at_boot()
     # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless
     # `LINK_WATCHDOG=on` — read `bridge/watchdog.py` before arming it.
     #

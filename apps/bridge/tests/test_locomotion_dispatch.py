@@ -172,6 +172,10 @@ def _timed_burst(monkeypatch, call_set_velocity):
     """Run a real-mode 0.4 s stop burst; returns `(sent, acked, elapsed_s)`."""
     monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
     monkeypatch.setattr(g1_rpc, "call_set_velocity", call_set_velocity)
+    # The burst warms the vendor client first. Left real, that is an SDK import and a DDS
+    # Init that fails on a laptop, and under load it alone outlasted the time bound below.
+    # The cold client has its own test (test_a_burst_on_a_cold_sport_client_is_still_heard).
+    monkeypatch.setattr(g1_rpc, "_get_sport_client", lambda: None)
     started = time.monotonic()
     sent, acked = _locomotion.stop_motion_sync(height=0.78, duration_s=0.4)
     return sent, acked, time.monotonic() - started

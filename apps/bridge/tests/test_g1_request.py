@@ -289,6 +289,43 @@ async def test_an_unreadable_fsm_is_unverified_not_failed(monkeypatch):
     assert result["result"]["transitioned"] is None
 
 
+@pytest.mark.parametrize("fsm_id", [500, 501])
+async def test_prepare_from_a_walk_program_sends_nothing(monkeypatch, fsm_id):
+    """2026-11-12: prepare from 501 acked, waited 9 s, and the agent narrated a mode change."""
+    from types import SimpleNamespace
+
+    from bridge.sdk import g1_rpc, state
+    from bridge.skills import _g1_request
+
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda *a: pytest.fail("prepare was sent"))
+    sampler = SimpleNamespace(get_arm_state=lambda: {"fsm_id": fsm_id, "fsm_age_s": 0.1})
+    monkeypatch.setattr(state, "existing_sampler", lambda: sampler)
+
+    result = await _g1_request.run_g1_request("prepare", None)
+
+    assert (result["status"], result["phase"]) == ("completed", "already_in_locomotion")
+    assert "do not need prepare" in result["result"]["note"]
+
+
+async def test_prepare_on_a_stale_fsm_reading_is_still_sent(monkeypatch):
+    from types import SimpleNamespace
+
+    from bridge.sdk import g1_rpc, state
+    from bridge.skills import _g1_request
+
+    sent = []
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda *a: sent.append(a) or (0, ""))
+    monkeypatch.setattr(_g1_request, "_await_fsm", _fake_fsm(4))
+    sampler = SimpleNamespace(get_arm_state=lambda: {"fsm_id": 501, "fsm_age_s": 60.0})
+    monkeypatch.setattr(state, "existing_sampler", lambda: sampler)
+
+    await _g1_request.run_g1_request("prepare", None)
+
+    assert sent
+
+
 def _fake_fsm(value):
     async def _fake(target, timeout_s):
         return value

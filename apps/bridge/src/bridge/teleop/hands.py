@@ -59,7 +59,9 @@ logs and publishes nothing — teleop still runs, the fingers just do not move.
 
 from __future__ import annotations
 
+import math
 import os
+import time
 from typing import Any, Literal
 
 import structlog
@@ -169,6 +171,10 @@ class HandDriver:
         for side in self.sides:
             self.send(side, 0.0)
 
+    def server_heard(self, side: Side) -> bool:
+        """Whether something answers for this hand. Unknown on drivers with no state topic."""
+        return True
+
 
 class NullHandDriver(HandDriver):
     """Publishes nothing. The default, and the only safe default."""
@@ -214,6 +220,32 @@ class BrainCoHandDriver(HandDriver):
         self.open_at = open_at
         self.sides = sides
         self._publishers: dict[Side, Any] = {}
+        self._subscribers: dict[Side, Any] = {}
+        self._last_state: dict[Side, float] = {}
+
+    def server_heard(self, side: Side, within_s: float = 1.0) -> bool:
+        """Whether brainco_hand_server published rt/brainco/{side}/state in the last `within_s`.
+
+        A cmd Write succeeds with nobody subscribed, and the server is started by hand, so
+        after a reboot set_hand said ok to a hand nothing drives (2026-11-12). Blocking (up
+        to `within_s` on the first call, while the subscriber joins); run it off the loop.
+        """
+        if side not in self._subscribers:
+            from unitree_sdk2py.core.channel import ChannelSubscriber
+            from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorStates_
+
+            def heard(_msg: Any, side: Side = side) -> None:
+                self._last_state[side] = time.monotonic()
+
+            sub = ChannelSubscriber(f"rt/brainco/{side}/state", MotorStates_)
+            sub.Init(heard, 1)
+            self._subscribers[side] = sub
+        deadline = time.monotonic() + within_s
+        while time.monotonic() - self._last_state.get(side, -math.inf) > within_s:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+        return True
 
     def _publisher(self, side: Side) -> Any:
         if side not in self._publishers:

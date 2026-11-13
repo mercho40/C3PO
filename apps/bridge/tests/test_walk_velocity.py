@@ -185,18 +185,38 @@ async def test_operator_velocity_cancels_an_agent_walk_and_waits_for_it(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_operator_velocity_never_cancels_another_walk_velocity(monkeypatch):
-    """The headset renews its walk by overlapping 1 s calls; cancelling would stutter it."""
-    from bridge.skills.task_runtime import get_registry
+async def test_a_zero_walk_velocity_ends_an_overlapping_one(monkeypatch):
+    """2026-11-12: the stick released (a zero call), and the older call kept re-issuing its
+    turn until its own deadline, 1.85 s in all."""
+    calls = _record(monkeypatch)
 
-    _record(monkeypatch)
-    renewing = get_registry().create("walk_velocity")
-    try:
-        result = await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.1)
-    finally:
-        renewing.status = "completed"  # no loop runs it here
-    assert result["status"] == "completed"
-    assert not renewing.cancel_event.is_set()
+    older = asyncio.ensure_future(walk_velocity.run(vx=0.0, vy=0.0, vyaw=0.2, duration_s=2.0))
+    await asyncio.sleep(0.1)
+    stop = await walk_velocity.run(vx=0.0, vy=0.0, vyaw=0.0, duration_s=0.1)
+    after_stop = len(calls)
+    result = await asyncio.wait_for(older, 1.0)
+
+    assert stop["status"] == "completed"
+    assert result["status"] == "cancelled"
+    assert result["duration_s"] < 1.0
+    assert all(c[:3] == (0.0, 0.0, 0.0) for c in calls[after_stop:])
+
+
+@pytest.mark.asyncio
+async def test_a_renewed_walk_velocity_is_not_interrupted_by_a_zero(monkeypatch):
+    """The headset renews its walk by overlapping 1 s calls: the one it replaces must not
+    put a zero between the new call's setpoints."""
+    calls = _record(monkeypatch)
+
+    older = asyncio.ensure_future(walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=2.0))
+    await asyncio.sleep(0.1)
+    started = len(calls)
+    await walk_velocity.run(vx=0.2, vy=0.0, vyaw=0.0, duration_s=0.2)
+    await asyncio.wait_for(older, 1.0)
+
+    renewal = calls[started:]
+    assert renewal[-1][:3] == (0.0, 0.0, 0.0), "the newest call still ends on its zero"
+    assert all(c[0] > 0 for c in renewal[:-1]), renewal
 
 
 @pytest.mark.asyncio

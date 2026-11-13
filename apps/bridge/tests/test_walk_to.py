@@ -79,7 +79,10 @@ async def test_walk_to_already_within_stop_distance_completes_immediately(monkey
 
     assert result["status"] == "completed"
     assert result["phase"] == "already_within_stop_distance"
-    assert result["result"]["arrived"] is True
+    # Nothing moved, and it must not read as a step taken (2026-11-12, a 0.20 m "walk").
+    assert result["result"]["arrived"] is False
+    assert result["result"]["moved"] is False
+    assert "walk_velocity" in result["result"]["note"]
     assert result["result"]["displacement_m"] == 0.0
 
 

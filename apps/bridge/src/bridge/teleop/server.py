@@ -4,11 +4,11 @@ Run beside the MCP server, as its own process:
 
     uv run python -m bridge.teleop.server
 
-Binds loopback by default for ad-hoc runs; the onboard `c3po` launcher overrides
-that to a direct LAN bind (the headset connects over the LAN). The handshake is
-checked by `authorize`: a browser Origin must be in TELEOP_ORIGINS, and when
-TELEOP_SECRET is set, a token minted by apps/back (GET /teleop/token) is
-required. With no secret it still runs, with a loud warning. Port 8767, chosen
+Binds loopback by default: the headset reaches it through adb reverse and the
+Mac's ssh tunnel (scripts/robot_tunnel.sh). The handshake is checked by
+`authorize`: a browser Origin must be in TELEOP_ORIGINS, and when TELEOP_SECRET
+is set, a token minted by apps/back (GET /teleop/token) is required. A bind
+off loopback with no secret refuses to start (`open_bind_refusal`). Port 8767, chosen
 around everything already spoken for on that Jetson — 8000 `gemm-ai.service`,
 8001 this bridge's MCP, 8081 perception's vision MJPEG, 8765 the colleague's
 foxglove bridge, 55555/60000 teleimager (`docs/ROBOT-HARDWARE.md`).
@@ -69,6 +69,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -144,6 +145,27 @@ def spend_token(token: str, now: float) -> bool:
         return False
     _spent[token] = int(token.partition(".")[0])
     return True
+
+
+def open_bind_refusal(host: str, secret: str) -> str | None:
+    """Why the server must not start on `host`, or None.
+
+    A missing Origin passes `authorize` (any script can forge one anyway), so with no
+    secret the token is the only gate, and off loopback that is anyone on the Wi-Fi.
+    """
+    if secret:
+        return None
+    try:
+        loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = False  # a hostname could resolve to anything: fail closed
+    if loopback:
+        return None
+    return (
+        f"TELEOP_HOST={host} is reachable from the network and TELEOP_SECRET is empty: "
+        "anyone on the LAN could drive this robot. Set TELEOP_SECRET here and in apps/back, "
+        "or bind TELEOP_HOST=127.0.0.1 and use the tunnel."
+    )
 
 
 def authorize(connection: ServerConnection, request: Request) -> Response | None:
@@ -1005,6 +1027,11 @@ async def _shutdown(reason: str) -> None:
 
 
 async def _main() -> None:
+    refusal = open_bind_refusal(TELEOP_HOST, TELEOP_SECRET)
+    if refusal is not None:
+        log.error("teleop.refused_to_start", host=TELEOP_HOST, detail=refusal)
+        raise SystemExit(2)
+
     from bridge.sdk.connection import init_dds
 
     robot_host = os.environ.get("ROBOT_HOST", "127.0.0.1")
@@ -1030,7 +1057,7 @@ async def _main() -> None:
     if not TELEOP_SECRET:
         log.warning(
             "teleop.auth_disabled",
-            detail="TELEOP_SECRET is empty: any LAN client with an allowed (or no) "
+            detail="TELEOP_SECRET is empty: any local client with an allowed (or no) "
             "Origin can drive this robot. Set it here and in apps/back.",
         )
     async with serve(handle_client, TELEOP_HOST, TELEOP_PORT, process_request=authorize):

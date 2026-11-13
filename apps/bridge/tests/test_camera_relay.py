@@ -320,21 +320,48 @@ class _ViewerLeavesAfter:
 def test_a_viewer_leaving_releases_the_vision_slot(monkeypatch):
     """Four abandoned relays fill the vision server (max 4) and it 503s everyone."""
     import asyncio
-    import urllib.request
 
     from bridge import mcp_server
 
     upstream = _EndlessUpstream()
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: upstream)
 
     async def drain() -> int:
         n = 0
-        async for _ in mcp_server._relay_stream("http://vision/stream.mjpg", _ViewerLeavesAfter(2)):
+        async for _ in mcp_server._relay_stream(upstream, _ViewerLeavesAfter(2)):
             n += 1
         return n
 
     assert asyncio.run(asyncio.wait_for(drain(), 5)) == 2
     assert upstream.closed, "the upstream connection outlived the viewer"
+
+
+def test_a_full_vision_server_is_a_503_not_an_empty_200(monkeypatch):
+    """2026-11-12: "too many stream clients (max 4)" came back as an empty 200, which the
+    console reconnects to at once (~20/min). A 503 with Retry-After is a refusal it reads."""
+    import asyncio
+    import urllib.request
+
+    from bridge import mcp_server
+    from bridge.sdk import camera_relay, videohub
+
+    class _DarkCamera:
+        def status(self) -> dict:
+            return DARK_VIDEOHUB
+
+    def full(*_a, **_k):
+        raise OSError("HTTP Error 503: too many stream clients (max 4)")
+
+    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(videohub, "get_camera", lambda: _DarkCamera())
+    monkeypatch.setattr(camera_relay, "upstream_status", lambda now=None: LIVE_VISION)
+    monkeypatch.setattr(urllib.request, "urlopen", full)
+
+    class _Request:
+        headers: dict = {}
+
+    response = asyncio.run(mcp_server.camera_stream(_Request()))
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "2"
 
 
 def test_a_slow_vision_probe_does_not_stall_the_event_loop(monkeypatch):

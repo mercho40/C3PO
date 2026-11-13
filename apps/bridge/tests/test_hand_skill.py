@@ -105,6 +105,97 @@ async def test_open_hands_relaxes_every_configured_side(monkeypatch):
     assert result["opened_sides"] == ["left", "right"]
 
 
+class _NoServer(FakeHandDriver):
+    """brainco_hand_server not started yet, as after the 2026-11-12 reboot."""
+
+    def server_heard(self, side) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_a_grip_with_no_hand_server_is_not_ok(monkeypatch):
+    monkeypatch.setattr(hand, "SIM_MODE", "real")
+    fake = _NoServer(sides=("right",))
+    monkeypatch.setattr(hands, "get_driver", lambda: fake)
+
+    result = await hand.run_set("right", 1.0)
+
+    assert result["status"] == "unavailable"
+    assert result["silent_sides"] == ["right"]
+    assert "brainco_hand_server" in result["message"]
+    assert fake.sent == [], "a close nobody confirmed must not be queued for a late server"
+
+
+@pytest.mark.asyncio
+async def test_open_hands_with_no_hand_server_still_sends_but_says_so(monkeypatch):
+    monkeypatch.setattr(hand, "SIM_MODE", "real")
+    fake = _NoServer(sides=("right",))
+    monkeypatch.setattr(hands, "get_driver", lambda: fake)
+
+    result = await hand.run_open()
+
+    assert fake.sent == [("right", 0.0)]
+    assert result["status"] == "unavailable"
+    assert result["opened_sides"] == []
+    assert "brainco_hand_server" in result["message"]
+
+
+def test_brainco_hears_its_server_only_while_state_arrives(monkeypatch):
+    import unitree_sdk2py.core.channel as channel
+
+    handlers = {}
+
+    class _Sub:
+        def __init__(self, topic, _type) -> None:
+            self.topic = topic
+
+        def Init(self, handler, _depth) -> None:
+            handlers[self.topic] = handler
+
+    monkeypatch.setattr(channel, "ChannelSubscriber", _Sub)
+    driver = hands.BrainCoHandDriver(open_at=0.0, sides=("right",))
+
+    assert driver.server_heard("right", within_s=0.1) is False
+    handlers["rt/brainco/right/state"](object())
+    assert driver.server_heard("right", within_s=0.1) is True
+
+
+def test_a_restarted_bridge_opens_the_hands(monkeypatch):
+    """A BrainCo holds its last command; nothing reopened a grip left closed by the
+    process that died (seven bridge restarts on 2026-11-12)."""
+    import time
+
+    from bridge import mcp_server
+
+    fake = FakeHandDriver(sides=("left", "right"))
+    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(hands, "get_driver", lambda: fake)
+
+    mcp_server._open_hands_at_boot()
+    deadline = time.monotonic() + 2.0
+    while len(fake.sent) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert set(fake.sent) == {("left", 0.0), ("right", 0.0)}
+
+
+def test_main_opens_the_hands_before_serving(monkeypatch):
+    from bridge import face_gate, mcp_server
+
+    order: list[str] = []
+
+    async def serve() -> None:
+        order.append("serve")
+
+    monkeypatch.setattr(face_gate, "warm", lambda: None)
+    monkeypatch.setattr(mcp_server, "_open_hands_at_boot", lambda: order.append("hands"))
+    monkeypatch.setattr(mcp_server, "_run_stdio", serve)
+    monkeypatch.setattr(mcp_server, "_run_streamable_http", serve)
+    mcp_server.main()
+
+    assert order == ["hands", "serve"]
+
+
 class ShapeRecorder(FakeHandDriver):
     def __init__(self, sides=("right",)) -> None:
         super().__init__(sides)

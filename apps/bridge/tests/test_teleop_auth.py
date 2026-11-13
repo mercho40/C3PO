@@ -1,9 +1,9 @@
 """Who may open the teleop socket (X15, backlog 1.5).
 
-It cannot bind loopback (the headset is on the LAN), so the handshake is the
-gate: a browser Origin must be the console's, and when TELEOP_SECRET is set a
-short-lived token minted by apps/back is required. No secret keeps it working,
-with a loud warning, so a test-day setup without one does not silently break.
+The handshake is the gate: a browser Origin must be the console's, and when
+TELEOP_SECRET is set a short-lived token minted by apps/back is required. No
+secret keeps it working on loopback (the tunnel), with a loud warning; off
+loopback the server refuses to start without one.
 """
 
 from __future__ import annotations
@@ -155,3 +155,34 @@ async def test_the_bridge_stamps_its_own_clock_on_every_http_response(monkeypatc
     monkeypatch.setattr(uvicorn, "Server", _Server)
     await mcp_server._run_streamable_http()
     assert [c.date_header for c in configs] == [True]
+    # 2026-11-12: open MJPEG/SSE streams never close, so every restart waited out
+    # TimeoutStopSec=20 and was SIGKILLed. A bound well inside it ends them.
+    assert all(c.timeout_graceful_shutdown is not None for c in configs)
+    assert all(c.timeout_graceful_shutdown < 10 for c in configs)
+
+
+@pytest.mark.parametrize(
+    ("host", "secret", "refused"),
+    [
+        ("127.0.0.1", "", False),
+        ("localhost", "", False),
+        ("::1", "", False),
+        ("0.0.0.0", "", True),
+        ("10.10.32.19", "", True),
+        ("g1-orin.local", "", True),  # a name could resolve to the LAN: fail closed
+        ("0.0.0.0", SECRET, False),
+    ],
+)
+def test_an_open_bind_needs_a_secret(host, secret, refused):
+    """2026-11-12: 0.0.0.0:8767 on the school Wi-Fi with no secret, so anyone could walk it."""
+    assert (srv.open_bind_refusal(host, secret) is not None) is refused
+
+
+async def test_the_server_refuses_to_start_on_the_lan_without_a_secret(monkeypatch):
+    from bridge.sdk import connection
+
+    monkeypatch.setattr(srv, "TELEOP_HOST", "0.0.0.0")
+    monkeypatch.setattr(srv, "TELEOP_SECRET", "")
+    monkeypatch.setattr(connection, "init_dds", lambda **_: pytest.fail("joined DDS first"))
+    with pytest.raises(SystemExit):
+        await srv._main()
