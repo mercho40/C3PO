@@ -342,6 +342,46 @@ export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
   );
 }
 
+/** Stops are never trimmed away: a model asked to stop must always have the tool. */
+const ALWAYS_OFFERED: ReadonlySet<string> = new Set([
+  "stop_everything",
+  "soft_stop",
+  "cancel_task",
+  "cancel_navigation",
+]);
+
+/**
+ * `AGENT_TOOLS=a,b,c` offers only those bridge tools (plus the stops). Unset or empty:
+ * everything, as before. The whole catalogue went into every turn (17k–70k input tokens
+ * on 2026-11-13), which ran the free fallback key into 429 after ~12 turns at the stand.
+ * Read per call so a test or a restart with a new .env takes effect.
+ */
+export function agentToolAllowlist(): ReadonlySet<string> | null {
+  const names = (process.env.AGENT_TOOLS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return names.length ? new Set(names) : null;
+}
+
+let warnedUnknownTools = false;
+/** Names in AGENT_TOOLS the bridge does not have, logged once (a typo hides a tool). */
+export function warnUnknownAgentTools(
+  catalogue: readonly { name: string }[],
+): string[] {
+  const allow = agentToolAllowlist();
+  if (!allow) return [];
+  const known = new Set([...catalogue.map((s) => s.name), ...BACK_TOOL_NAMES]);
+  const unknown = [...allow].filter((n) => !known.has(n));
+  if (unknown.length && !warnedUnknownTools) {
+    warnedUnknownTools = true;
+    console.warn(
+      `[agent] AGENT_TOOLS names the bridge does not have: ${unknown.join(", ")}`,
+    );
+  }
+  return unknown;
+}
+
 /**
  * Whether a skill is offered to the model in this mode. ONE rule for both
  * voice engines (`voice/realtime.ts` uses it too).
@@ -376,6 +416,9 @@ export function offeredInMode(
   if (agentToolExclusions(mode).has(skill.name)) return false;
   // back's own look/verify (agent/look.ts) take the names; the bridge's Gemini ones are not offered.
   if (BACK_TOOL_NAMES.has(skill.name)) return false;
+  const allow = agentToolAllowlist();
+  if (allow && !allow.has(skill.name) && !ALWAYS_OFFERED.has(skill.name))
+    return false;
   if (mode !== "voice") return true;
   const unwatched = !skill.works.sim && !skill.works.real;
   if (
@@ -419,7 +462,9 @@ export async function buildSystemPrompt(
 ): Promise<string> {
   // Only what this mode may call: describing a tool the model is not given
   // invites it to try, and to tell the speaker it did.
-  const offered = (await listSkills()).filter((s) => offeredInMode(s, mode));
+  const catalogue = await listSkills();
+  warnUnknownAgentTools(catalogue);
+  const offered = catalogue.filter((s) => offeredInMode(s, mode));
   const lines = offered.map((s) => {
     const where =
       s.works.sim && s.works.real

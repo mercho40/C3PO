@@ -12,6 +12,7 @@
  */
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -87,7 +88,9 @@ mock.module("#back/skills/index.js", () => ({
 }));
 
 const {
+  agentToolAllowlist,
   agentToolExclusions,
+  warnUnknownAgentTools,
   boundHistory,
   buildSystemPrompt,
   offeredInMode,
@@ -938,5 +941,45 @@ describe("the model cannot confirm a gated call", () => {
     expect(prompt).toContain("do not call it again");
     expect(prompt).toContain("The operator's «Confirmar» runs that exact call");
     expect(prompt).not.toContain("confirm intent before");
+  });
+});
+
+describe("AGENT_TOOLS allowlist (the stand)", () => {
+  const works = { sim: true, real: true };
+  const skill = (name: string, tier = "T1") => ({ name, dangerLevel: "low", tier, works });
+  afterEach(() => {
+    delete process.env.AGENT_TOOLS;
+  });
+
+  test("unset offers everything, as before", () => {
+    expect(agentToolAllowlist()).toBeNull();
+    expect(offeredInMode(skill("dance"), "operator")).toBe(true);
+  });
+
+  test("set, it offers only the named tools, in every mode", () => {
+    process.env.AGENT_TOOLS = " wave , set_hand,run_sequence ";
+    for (const mode of ["operator", "voice"] as const) {
+      expect(offeredInMode(skill("wave"), mode)).toBe(true);
+      expect(offeredInMode(skill("set_hand", "T2"), mode)).toBe(true);
+      expect(offeredInMode(skill("dance"), mode)).toBe(false);
+    }
+  });
+
+  test("the stops are never trimmed away, whatever the list says", () => {
+    process.env.AGENT_TOOLS = "wave";
+    for (const mode of ["operator", "voice"] as const)
+      for (const name of ["stop_everything", "soft_stop", "cancel_task", "cancel_navigation"])
+        expect(offeredInMode(skill(name, "T0"), mode)).toBe(true);
+  });
+
+  test("it never re-adds what the other rules drop", () => {
+    process.env.AGENT_TOOLS = "damp,zero_torque";
+    expect(offeredInMode(skill("damp"), "operator")).toBe(false);
+    expect(offeredInMode(skill("zero_torque"), "operator")).toBe(false);
+  });
+
+  test("a name the bridge does not have is reported", () => {
+    process.env.AGENT_TOOLS = "wave,wavee";
+    expect(warnUnknownAgentTools([{ name: "wave" }])).toEqual(["wavee"]);
   });
 });
