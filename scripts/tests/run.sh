@@ -490,6 +490,18 @@ check_not_contains "teleop no longer binds every interface by default" \
     ':-0.0.0.0}' "$run_teleop_src"
 check_contains "teleop refuses an off-loopback bind with no secret" \
     'reachable from the network and TELEOP_SECRET is empty' "$run_teleop_src"
+# 2026-11-13: the bridge needs TELEOP_ARM_ENABLED=1 for pick, the stand's headset must not drive the arm.
+check_contains "the headset stream can keep the arm off while the bridge has it on" \
+    'export TELEOP_ARM_ENABLED="$TELEOP_STREAM_ARM_ENABLED"' "$run_teleop_src"
+check_contains "the headset stream can keep the hand off while the bridge has it on" \
+    'export TELEOP_HAND_ENABLED="$TELEOP_STREAM_HAND_ENABLED"' "$run_teleop_src"
+
+echo "== robot up =="
+up_steps="$(bash "$repo/scripts/robot_up.sh" --print)"
+check_contains "robot_up starts the hand server" "brainco_hand_server" "$up_steps"
+check_contains "robot_up stops on a running gemm container" "no gemm-* container may be running" "$up_steps"
+up_src="$(cat "$repo/scripts/robot_up.sh")"
+check_not_contains "robot_up never stops gemm's containers itself" "docker stop" "$up_src"
 
 echo "== robot tunnel =="
 # The reconnecting tunnel (2026-10-15: it dropped twice in one session).

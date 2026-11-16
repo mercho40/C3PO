@@ -74,6 +74,14 @@ start_sidecar() {
         export PATH="$HOME/.local/bin:$PATH"
         # Same default as the module and the check above: loopback, reached by the tunnel.
         export TELEOP_HOST="${TELEOP_HOST:-127.0.0.1}"
+        # The bridge reads the same .env and needs TELEOP_ARM/HAND_ENABLED=1 for pick; the
+        # headset stream can keep the operator's own arms and hands from driving the robot's.
+        if [ -n "${TELEOP_STREAM_ARM_ENABLED:-}" ]; then
+            export TELEOP_ARM_ENABLED="$TELEOP_STREAM_ARM_ENABLED"
+        fi
+        if [ -n "${TELEOP_STREAM_HAND_ENABLED:-}" ]; then
+            export TELEOP_HAND_ENABLED="$TELEOP_STREAM_HAND_ENABLED"
+        fi
         # `< /dev/null` matters as much as the nohup, and for a different
         # reason. nohup stops SIGHUP killing the process; the stdin redirect
         # stops `ssh c3po run_teleop` from hanging. A backgrounded child that
