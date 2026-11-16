@@ -21,6 +21,7 @@ def ran(monkeypatch):
     """The steps that reached their tool, in order; run_sequence itself runs for real."""
     monkeypatch.setattr(safety, "T2_CONFIRM", True)
     monkeypatch.setattr(mcp_server.motion_announce, "applies", lambda name, meta: False)
+    monkeypatch.setattr(mcp_server, "SEQUENCE_ARM_HOLD_S", 0.0)  # tests of the lowering set it
     manager = mcp_server.mcp._tool_manager
     real = manager.call_tool
 
@@ -117,3 +118,70 @@ def test_no_chainable_tool_defers_its_warning():
     from bridge import motion_announce
 
     assert not set(mcp_server.SEQUENCE_TOOLS) & motion_announce.SELF
+
+
+@pytest.mark.asyncio
+async def test_with_previous_moves_the_hand_while_the_arm_is_still_moving(ran, monkeypatch):
+    import asyncio
+
+    manager = mcp_server.mcp._tool_manager
+    inner = manager.call_tool
+    order: list[str] = []
+
+    async def slow_arm(name, args, context=None, convert_result=False):
+        if name == "move_arm":
+            order.append("arm start")
+            await asyncio.sleep(0.05)
+            order.append("arm done")
+        elif name == "set_hand":
+            order.append("hand")
+        return await inner(name, args, context=context, convert_result=convert_result)
+
+    monkeypatch.setattr(manager, "call_tool", slow_arm)
+    steps = [STEPS[0], {**STEPS[1], "with_previous": True}]
+    _grant(steps)
+    result = await _run(steps)
+    assert result["status"] == "completed"
+    assert order == ["arm start", "hand", "arm done"]
+    assert [d["tool"] for d in result["done"]] == ["move_arm", "set_hand"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [{**STEPS[1], "with_previous": True}],  # nothing before it
+        [STEPS[2], {**STEPS[1], "with_previous": True}],  # speech is not a partner
+        [STEPS[0], {**STEPS[2], "with_previous": True}],  # only a hand step runs alongside
+    ],
+)
+async def test_with_previous_is_only_a_hand_step_after_an_arm_move(ran, steps):
+    _grant(steps)
+    result = await _run(steps)
+    assert result["status"] == "failed" and result["reason"] == "invalid_step"
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_a_raised_arm_comes_down_by_itself_after_the_sequence(ran, monkeypatch):
+    monkeypatch.setattr(mcp_server, "SEQUENCE_ARM_HOLD_S", 0.3)
+    _grant(STEPS)
+    result = await _run(STEPS)
+    assert [name for name, _ in ran] == ["move_arm", "set_hand", "say", "release_arm_control"]
+    assert result["arm_held_s"] >= 0.3
+
+
+@pytest.mark.asyncio
+async def test_keep_arm_up_or_an_explicit_release_skips_the_lowering(ran, monkeypatch):
+    monkeypatch.setattr(mcp_server, "SEQUENCE_ARM_HOLD_S", 0.3)
+    listed = mcp_server.mcp._tool_manager.get_tool("run_sequence")
+    args = mcp_server._canonical_args(listed, {"steps": STEPS, "keep_arm_up": True})
+    safety.grant_confirmation("run_sequence", args, via="console")
+    out = await mcp_server.mcp.call_tool("run_sequence", {"steps": STEPS, "keep_arm_up": True})
+    assert "release_arm_control" not in [name for name, _ in ran]
+    released = [*STEPS, {"tool": "release_arm_control", "args": {}}]
+    ran.clear()
+    _grant(released)
+    await _run(released)
+    assert [name for name, _ in ran].count("release_arm_control") == 1
+    assert out is not None
