@@ -113,9 +113,9 @@ cat <<EOF
 
 console: http://localhost:3001   (localhost, not 127.0.0.1: CORS)
 
-on the robot (ssh $host), paste:
+robot side: scripts/robot_up.sh already brought it up (no \`c3po up\` needed).
+only before a build on the robot (ssh $host), paste:
   export http_proxy=http://127.0.0.1:18899 https_proxy=http://127.0.0.1:18899 no_proxy=localhost,127.0.0.1,::1
-  c3po up
 
 Ctrl-C stops all three.
 EOF

@@ -63,9 +63,14 @@ elif r "pgrep -f '[b]rainco_hand_server' >/dev/null"; then
 else
     pw="$(osascript -e 'text returned of (display dialog "sudo password for unitree on the G1 (BrainCo hand server)" default answer "" with hidden answer with title "C3PO")')" \
         || die "no password given: the hand server is not running, set_hand will fail honestly"
+    # Judge by the process, not the log: a redirected C++ stdout is block-buffered, so an empty
+    # log is normal, and a grep miss here used to end the script with no message. `pgrep` without
+    # -f matches the process name only, so it cannot match this ssh command's own text.
     printf '%s\n' "$pw" | r 'cd "$HOME/gemm_ai/xr_teleoperate/vendor/brainco_hand_service/bin" &&
-        sudo -S -p "" sh -c "nohup ./brainco_hand_server --network_interface eth0 > /tmp/c3po-brainco-server.log 2>&1 &" &&
-        sleep 8 && grep -E "bound|Failed to get" /tmp/c3po-brainco-server.log | tail -4'
+        sudo -S -p "" sh -c "nohup ./brainco_hand_server --network_interface eth0 > /tmp/c3po-brainco-server.log 2>&1 < /dev/null &" &&
+        sleep 8 && tail -4 /tmp/c3po-brainco-server.log; pgrep brainco_hand >/dev/null' \
+        || die "the hand server is not running (wrong password? /tmp/c3po-brainco-server.log on the robot)"
+    echo "✓ hand server running"
 fi
 
 step "headset stream"
