@@ -664,8 +664,11 @@ for `AGENT_FALLBACK_STICKY_S`, then ia-tic is tried again. Back logs
 `agent.provider` (`primary` or `fallback`). Only the failed model call is retried, so no
 tool the turn already ran runs again. A reply that started streaming and then broke is not
 retried. A PARAR never fails over. With any of the three unset, nothing changes.
-`tic-transcript` has no fallback: the headset's push-to-talk and the robot mic in
-`C3PO_STT=back` still need ia-tic. The manual way above still works.
+Transcription follows it (2026-11-16): when `tic-transcript` is unreachable, answers 5xx or 429,
+the same WAV goes to the fallback model as chat `input_audio`, and later clips go straight there
+for `AGENT_FALLBACK_STICKY_S` (back logs `transcribe.provider_failover`). Measured: «Andá hasta
+la silla y saludá» came back word for word in 3.5 s from gemini-3.5-flash. The robot mic sends
+WAV, so it is covered; a headset recording in webm still needs ia-tic. The manual way above still works.
 
 ---
 

@@ -1,12 +1,19 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import {
   MAX_AUDIO_BYTES,
   TranscribeError,
+  resetTranscribeFailover,
   transcribe,
   transcribeTimeoutMs,
 } from "./transcribe";
 
 process.env.AGENT_API_KEY = "k";
+const FALLBACK_ENV = ["AGENT_FALLBACK_BASE_URL", "AGENT_FALLBACK_MODEL", "AGENT_FALLBACK_API_KEY"];
+// bun loads apps/back/.env, which may hold a real fallback: every test states its own.
+beforeEach(() => {
+  for (const k of FALLBACK_ENV) delete process.env[k];
+  resetTranscribeFailover();
+});
 
 describe("transcribe", () => {
   test("forwards the audio as multipart and returns the trimmed text", async () => {
@@ -52,5 +59,70 @@ describe("transcribeTimeoutMs", () => {
     expect(transcribeTimeoutMs(wav(30))).toBe(11_500);
     expect(transcribeTimeoutMs(wav(60))).toBe(12_000);
     expect(transcribeTimeoutMs(0)).toBe(4_000);
+  });
+});
+
+describe("transcribe failover", () => {
+  function withFallback() {
+    process.env.AGENT_FALLBACK_BASE_URL = "https://fb.test/v1";
+    process.env.AGENT_FALLBACK_MODEL = "gemini-x";
+    process.env.AGENT_FALLBACK_API_KEY = "fk";
+  }
+  function gateway(primaryStatus: number, calls: string[]) {
+    return (async (url: string, init: RequestInit) => {
+      calls.push(url);
+      if (url.endsWith("/audio/transcriptions"))
+        return new Response("down", { status: primaryStatus });
+      const body = JSON.parse(String(init.body));
+      expect(body.model).toBe("gemini-x");
+      expect(body.messages[0].content[1].input_audio.format).toBe("wav");
+      return new Response(JSON.stringify({ choices: [{ message: { content: " Saludá. " } }] }));
+    }) as unknown as typeof fetch;
+  }
+
+  test("ia-tic down: the same WAV is transcribed by the fallback", async () => {
+    withFallback();
+    const calls: string[] = [];
+    const text = await transcribe(new ArrayBuffer(8), "audio/wav", gateway(502, calls));
+    expect(text).toBe("Saludá.");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEndWith("/audio/transcriptions");
+    expect(calls[1]).toBe("https://fb.test/v1/chat/completions");
+  });
+
+  test("after a failover the next clip skips ia-tic until the sticky window ends", async () => {
+    withFallback();
+    let t = 1_000;
+    const calls: string[] = [];
+    await transcribe(new ArrayBuffer(8), "audio/wav", gateway(503, calls), 5_000, () => t);
+    calls.length = 0;
+    t += 1_000;
+    await transcribe(new ArrayBuffer(8), "audio/wav", gateway(503, calls), 5_000, () => t);
+    expect(calls).toEqual(["https://fb.test/v1/chat/completions"]);
+    t += 400_000;
+    calls.length = 0;
+    await transcribe(new ArrayBuffer(8), "audio/wav", gateway(503, calls), 5_000, () => t);
+    expect(calls[0]).toEndWith("/audio/transcriptions");
+  });
+
+  test("a 4xx from ia-tic does not fail over", async () => {
+    withFallback();
+    const calls: string[] = [];
+    await expect(
+      transcribe(new ArrayBuffer(8), "audio/wav", gateway(400, calls)),
+    ).rejects.toThrow("transcription_failed_400");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("no fallback configured, or webm audio: ia-tic's failure stands", async () => {
+    const calls: string[] = [];
+    await expect(
+      transcribe(new ArrayBuffer(8), "audio/wav", gateway(502, calls)),
+    ).rejects.toThrow("transcription_failed_502");
+    withFallback();
+    await expect(
+      transcribe(new ArrayBuffer(8), "audio/webm", gateway(502, calls)),
+    ).rejects.toThrow("transcription_failed_502");
+    expect(calls.every((u) => u.endsWith("/audio/transcriptions"))).toBe(true);
   });
 });
