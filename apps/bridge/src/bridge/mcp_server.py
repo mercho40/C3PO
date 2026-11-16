@@ -1794,7 +1794,10 @@ async def set_hand(
                 "A named grasp instead of `closure`: power = wrap, pinch = thumb+index, hook = handles, "
                 "point = index up (ONE finger, for pointing), v_sign = index and middle up, "
                 "the rest closed («la V», «la V de la victoria»); saludo_peronista = the same "
-                "as v_sign: use it for «saludo peronista»."
+                "as v_sign: use it for «saludo peronista». A «saludo peronista» is the WHOLE "
+                "gesture, never the hand alone: run_sequence with move_arm {side, "
+                "shoulder_pitch_deg: 80, elbow_deg: 0, wrist_roll_deg: -90} (forearm up, palm "
+                "to the audience), then this shape with with_previous: true."
             )
         ),
     ] = None,
@@ -1926,7 +1929,7 @@ async def run_sequence(
                 "operator asks for two or more arm/hand/gesture/speech things together, "
                 "e.g. raise the right arm and make the saludo peronista: "
                 '[{"tool": "move_arm", "args": {"side": "right", "shoulder_pitch_deg": 80, '
-                '"wrist_roll_deg": 90}}, '
+                '"elbow_deg": 0, "wrist_roll_deg": -90}}, '
                 '{"tool": "set_hand", "args": {"side": "right", "shape": "saludo_peronista"}, '
                 '"with_previous": true}]. '
                 "move_arm holds the pose, so a later hand step happens with the arm up; "
