@@ -158,7 +158,9 @@ describe("VoiceConversation", () => {
     await conversation.turn("hola"); // history now full (2)
     const turn = conversation.turn("sí");
     await started.promise;
-    conversation.remember("El operador confirmó pick, pero falló: torso_clearance");
+    conversation.remember(
+      "El operador confirmó pick, pero falló: torso_clearance",
+    );
     gate.resolve();
     await turn;
     expect(conversation.history().map(textOf)).toContain(
@@ -180,7 +182,9 @@ describe("VoiceConversation", () => {
                 toolName: "pick",
                 toolCallId: "c1",
                 input: { label: "botella" },
-                output: { error: "refused: pick needs an operator's confirmation" },
+                output: {
+                  error: "refused: pick needs an operator's confirmation",
+                },
               },
             ],
           },

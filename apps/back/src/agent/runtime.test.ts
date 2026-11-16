@@ -946,7 +946,12 @@ describe("the model cannot confirm a gated call", () => {
 
 describe("AGENT_TOOLS allowlist (the stand)", () => {
   const works = { sim: true, real: true };
-  const skill = (name: string, tier = "T1") => ({ name, dangerLevel: "low", tier, works });
+  const skill = (name: string, tier = "T1") => ({
+    name,
+    dangerLevel: "low",
+    tier,
+    works,
+  });
   afterEach(() => {
     delete process.env.AGENT_TOOLS;
   });
@@ -968,7 +973,12 @@ describe("AGENT_TOOLS allowlist (the stand)", () => {
   test("the stops are never trimmed away, whatever the list says", () => {
     process.env.AGENT_TOOLS = "wave";
     for (const mode of ["operator", "voice"] as const)
-      for (const name of ["stop_everything", "soft_stop", "cancel_task", "cancel_navigation"])
+      for (const name of [
+        "stop_everything",
+        "soft_stop",
+        "cancel_task",
+        "cancel_navigation",
+      ])
         expect(offeredInMode(skill(name, "T0"), mode)).toBe(true);
   });
 

@@ -51,13 +51,18 @@ describe("validateArgs: numbers sent as strings", () => {
   });
 
   test("a numeric string for a string-typed field stays a string", () => {
-    const schema = { type: "object", properties: { label: { type: "string" } } };
+    const schema = {
+      type: "object",
+      properties: { label: { type: "string" } },
+    };
     const r = validateArgs(schema, { label: "7" });
     expect(r.ok).toBe(true);
     expect(r.value.label).toBe("7");
   });
 
   test("range is still checked after the conversion", () => {
-    expect(validateArgs(SET_HAND, { fingers: { index: "1.5" } }).ok).toBe(false);
+    expect(validateArgs(SET_HAND, { fingers: { index: "1.5" } }).ok).toBe(
+      false,
+    );
   });
 });

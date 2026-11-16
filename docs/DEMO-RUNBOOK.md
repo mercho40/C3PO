@@ -31,18 +31,18 @@ The lidar is faulted, so there is no obstacle avoidance. The **right** BrainCo h
 
 Each one works on its own; skip any that misbehave today.
 
-| Show             | How                                                                                              | Verified                                                |
-| ---------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| A conversation   | /voice, legacy engine: talk to it in Spanish                                                     | listen/say ✅                                           |
-| "¿Qué ves?"      | `look`: the school vision model describes the camera frame                                       | look ✅ (2026-10-27)                                    |
-| Counting objects | `describe_surroundings`: detector labels with distance and bearing                               | ✅                                                      |
-| Gestures         | `wave`, `clap`, `shake_hand`, `hug`, `gesture`                                                   | ✅                                                      |
-| Going to a thing | "andá hasta la silla" → `go_to_object`, 1–3 m, in the clear area                                 | ✅ (3 arrivals, 2026-11-05)                             |
-| Turning          | `turn`                                                                                           | ✅                                                      |
-| Greeting by name | «Caras» → «Saludar a conocidos»; an enrolled person crouches 0.5–0.8 m in front, face chest-high | ✅ (2026-11-13: Oliver, Simon) |
-| Answer after the greeting | «Escuchar después de saludar» on: after «Hola X, ¿qué querés que haga?» the robot mic listens 20 s; anyone near is heard | built 2026-11-13, not yet tried |
-| Hand shapes | «cerrá la mano derecha», «cerrá solo el índice», «hacé el saludo peronista con la mano derecha» | ✅ hand moves (2026-11-13); single fingers and the thumb's rotation not checked one by one |
-| Picking a bottle | «agarrá la botella», right hand, after the §1 pick check | pending: the 2026-11-13 fixes have not run on the robot |
+| Show                      | How                                                                                                                      | Verified                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| A conversation            | /voice, legacy engine: talk to it in Spanish                                                                             | listen/say ✅                                                                              |
+| "¿Qué ves?"               | `look`: the school vision model describes the camera frame                                                               | look ✅ (2026-10-27)                                                                       |
+| Counting objects          | `describe_surroundings`: detector labels with distance and bearing                                                       | ✅                                                                                         |
+| Gestures                  | `wave`, `clap`, `shake_hand`, `hug`, `gesture`                                                                           | ✅                                                                                         |
+| Going to a thing          | "andá hasta la silla" → `go_to_object`, 1–3 m, in the clear area                                                         | ✅ (3 arrivals, 2026-11-05)                                                                |
+| Turning                   | `turn`                                                                                                                   | ✅                                                                                         |
+| Greeting by name          | «Caras» → «Saludar a conocidos»; an enrolled person crouches 0.5–0.8 m in front, face chest-high                         | ✅ (2026-11-13: Oliver, Simon)                                                             |
+| Answer after the greeting | «Escuchar después de saludar» on: after «Hola X, ¿qué querés que haga?» the robot mic listens 20 s; anyone near is heard | built 2026-11-13, not yet tried                                                            |
+| Hand shapes               | «cerrá la mano derecha», «cerrá solo el índice», «hacé el saludo peronista con la mano derecha»                          | ✅ hand moves (2026-11-13); single fingers and the thumb's rotation not checked one by one |
+| Picking a bottle          | «agarrá la botella», right hand, after the §1 pick check                                                                 | pending: the 2026-11-13 fixes have not run on the robot                                    |
 
 **Do not demo:**
 
@@ -65,13 +65,13 @@ Each one works on its own; skip any that misbehave today.
 | Nobody is recognised, or no face boxes                                        | The camera points about 48° down: crouch so the face is chest-high to the robot, 0.5–0.8 m away, Quest off. Boxes update only while a greet switch is on in «Caras».                                                                      |
 | Every agent turn fails with `502 upstream_unreachable`                        | ia-tic is down. Restart back on the Gemini fallback (`docs/OPERATIONS.md` §4, "When ia-tic is down"); robot-mic `C3PO_STT=back` cannot work meanwhile.                                                                                    |
 | The cable link and the camera drop together                                   | The USB-Ethernet adapter and the D435 went together twice on 2026-11-11. Re-seat the adapter off the hub and keep the cable out of the walk. After the vision image rebuild the detector reopens the camera by itself; if not, `c3po up`. |
-| The robot rebooted (uptime of minutes) | Nothing of ours starts at boot: `./scripts/robot_up.sh` again, then reload the console and the Quest. Check the battery first. |
-| «ECONNRESET» in /voice or the Quest disconnects | The bridge restarted. Press «Iniciar» on /voice again and reload /vr-control. |
-| The Quest never connects | The console must be started with `C3PO_ROBOT_HOST=localhost` (robot_session.sh does), `adb reverse --list` must show 3001, 3000, 8001, 8767, and the headset stream must listen on 127.0.0.1:8767 (`ss -tln` on the robot). |
-| `set_hand` or pick fails with no hand state | The BrainCo hand server is not running: `./scripts/robot_up.sh` starts it (password dialog). |
-| «Confirmado, pero pick falló: …» | The pick refused before moving; the text says why. `torso` / «out of reach»: put the bottle ~38 cm ahead, 15 cm to the right. `table_clearance`: raise the bottle. Nothing moved. |
-| The greeting no longer opens the mic | Back restarted and forgot who turned the switch on: «Caras» → «Escuchar después de saludar» off and on. |
-| A `gemm-*` container is running at bring-up | `robot_up.sh` stops there on purpose. Someone decides who drives; never delete their files. |
+| The robot rebooted (uptime of minutes)                                        | Nothing of ours starts at boot: `./scripts/robot_up.sh` again, then reload the console and the Quest. Check the battery first.                                                                                                            |
+| «ECONNRESET» in /voice or the Quest disconnects                               | The bridge restarted. Press «Iniciar» on /voice again and reload /vr-control.                                                                                                                                                             |
+| The Quest never connects                                                      | The console must be started with `C3PO_ROBOT_HOST=localhost` (robot_session.sh does), `adb reverse --list` must show 3001, 3000, 8001, 8767, and the headset stream must listen on 127.0.0.1:8767 (`ss -tln` on the robot).               |
+| `set_hand` or pick fails with no hand state                                   | The BrainCo hand server is not running: `./scripts/robot_up.sh` starts it (password dialog).                                                                                                                                              |
+| «Confirmado, pero pick falló: …»                                              | The pick refused before moving; the text says why. `torso` / «out of reach»: put the bottle ~38 cm ahead, 15 cm to the right. `table_clearance`: raise the bottle. Nothing moved.                                                         |
+| The greeting no longer opens the mic                                          | Back restarted and forgot who turned the switch on: «Caras» → «Escuchar después de saludar» off and on.                                                                                                                                   |
+| A `gemm-*` container is running at bring-up                                   | `robot_up.sh` stops there on purpose. Someone decides who drives; never delete their files.                                                                                                                                               |
 | Bridge needs a restart                                                        | `ssh unitree@192.168.123.164 sudo -n /usr/bin/systemctl restart c3po-bridge.service`                                                                                                                                                      |
 
 ## 4. Teardown

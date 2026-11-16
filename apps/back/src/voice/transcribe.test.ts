@@ -8,7 +8,11 @@ import {
 } from "./transcribe";
 
 process.env.AGENT_API_KEY = "k";
-const FALLBACK_ENV = ["AGENT_FALLBACK_BASE_URL", "AGENT_FALLBACK_MODEL", "AGENT_FALLBACK_API_KEY"];
+const FALLBACK_ENV = [
+  "AGENT_FALLBACK_BASE_URL",
+  "AGENT_FALLBACK_MODEL",
+  "AGENT_FALLBACK_API_KEY",
+];
 // bun loads apps/back/.env, which may hold a real fallback: every test states its own.
 beforeEach(() => {
   for (const k of FALLBACK_ENV) delete process.env[k];
@@ -76,14 +80,20 @@ describe("transcribe failover", () => {
       const body = JSON.parse(String(init.body));
       expect(body.model).toBe("gemini-x");
       expect(body.messages[0].content[1].input_audio.format).toBe("wav");
-      return new Response(JSON.stringify({ choices: [{ message: { content: " Saludá. " } }] }));
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: " Saludá. " } }] }),
+      );
     }) as unknown as typeof fetch;
   }
 
   test("ia-tic down: the same WAV is transcribed by the fallback", async () => {
     withFallback();
     const calls: string[] = [];
-    const text = await transcribe(new ArrayBuffer(8), "audio/wav", gateway(502, calls));
+    const text = await transcribe(
+      new ArrayBuffer(8),
+      "audio/wav",
+      gateway(502, calls),
+    );
     expect(text).toBe("Saludá.");
     expect(calls).toHaveLength(2);
     expect(calls[0]).toEndWith("/audio/transcriptions");
@@ -94,14 +104,32 @@ describe("transcribe failover", () => {
     withFallback();
     let t = 1_000;
     const calls: string[] = [];
-    await transcribe(new ArrayBuffer(8), "audio/wav", gateway(503, calls), 5_000, () => t);
+    await transcribe(
+      new ArrayBuffer(8),
+      "audio/wav",
+      gateway(503, calls),
+      5_000,
+      () => t,
+    );
     calls.length = 0;
     t += 1_000;
-    await transcribe(new ArrayBuffer(8), "audio/wav", gateway(503, calls), 5_000, () => t);
+    await transcribe(
+      new ArrayBuffer(8),
+      "audio/wav",
+      gateway(503, calls),
+      5_000,
+      () => t,
+    );
     expect(calls).toEqual(["https://fb.test/v1/chat/completions"]);
     t += 400_000;
     calls.length = 0;
-    await transcribe(new ArrayBuffer(8), "audio/wav", gateway(503, calls), 5_000, () => t);
+    await transcribe(
+      new ArrayBuffer(8),
+      "audio/wav",
+      gateway(503, calls),
+      5_000,
+      () => t,
+    );
     expect(calls[0]).toEndWith("/audio/transcriptions");
   });
 

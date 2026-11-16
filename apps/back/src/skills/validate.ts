@@ -83,8 +83,7 @@ function coerceNumericStrings(schema: unknown, value: unknown): unknown {
       unknown
     >[];
     const props = objects.find((b) => b?.properties)?.properties as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     if (!props) return value;
     const out: Record<string, unknown> = { ...(value as object) };
     for (const [k, v] of Object.entries(out))

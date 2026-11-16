@@ -55,7 +55,13 @@ export async function transcribe(
   if (fallback && now() < fallbackUntil)
     return transcribeFallback(audio, fallback, fetchImpl, timeoutMs);
   try {
-    return await transcribePrimary(audio, contentType, key, fetchImpl, timeoutMs);
+    return await transcribePrimary(
+      audio,
+      contentType,
+      key,
+      fetchImpl,
+      timeoutMs,
+    );
   } catch (err) {
     // Only an unreachable or overloaded gateway; a 4xx is our request and fails there too.
     const down =
@@ -64,7 +70,10 @@ export async function transcribe(
         /^transcription_failed_(5\d\d|429)$/.test(err.message));
     if (!fallback || !down) throw err;
     fallbackUntil = now() + STICKY_MS;
-    console.log("[voice] transcribe.provider_failover", JSON.stringify({ reason: err.message }));
+    console.log(
+      "[voice] transcribe.provider_failover",
+      JSON.stringify({ reason: err.message }),
+    );
     return transcribeFallback(audio, fallback, fetchImpl, timeoutMs);
   }
 }
@@ -91,7 +100,10 @@ async function transcribeFallback(
   try {
     res = await fetchImpl(`${fb.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${fb.key}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${fb.key}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
         model: fb.model,
         messages: [
@@ -104,7 +116,10 @@ async function transcribeFallback(
               },
               {
                 type: "input_audio",
-                input_audio: { data: Buffer.from(audio).toString("base64"), format: "wav" },
+                input_audio: {
+                  data: Buffer.from(audio).toString("base64"),
+                  format: "wav",
+                },
               },
             ],
           },
@@ -115,7 +130,8 @@ async function transcribeFallback(
   } catch {
     throw new TranscribeError(502, "transcription_unavailable");
   }
-  if (!res.ok) throw new TranscribeError(502, `transcription_failed_${res.status}`);
+  if (!res.ok)
+    throw new TranscribeError(502, `transcription_failed_${res.status}`);
   const body = (await res.json().catch(() => ({}))) as {
     choices?: { message?: { content?: unknown } }[];
   };
