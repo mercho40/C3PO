@@ -68,11 +68,7 @@ export type CostmapPlacement = {
  *  - `unreachable`  back, or the bridge behind it, did not answer
  */
 export type CostmapStatus =
-  | "loading"
-  | "live"
-  | "noCostmap"
-  | "noPlacement"
-  | "unreachable";
+  "loading" | "live" | "noCostmap" | "noPlacement" | "unreachable";
 
 const DEFAULT_POLL_MS = 1000;
 /** Non-live answers tolerated at full rate before backing off. */

@@ -151,6 +151,17 @@ describe("voice loop client", () => {
     server.stop(true);
   });
 
+  test("a 403 says an admin account is needed", async () => {
+    const { server, url } = serve({
+      start: { status: 403, body: { error: "admin_required" } },
+    });
+    const result = await voiceCommand(url, "start");
+    expect(!result.ok && result.reason).toBe(
+      "Se requiere una cuenta admin para hablar con el robot.",
+    );
+    server.stop(true);
+  });
+
   test("a 503 carries back's own reason", async () => {
     const { server, url } = serve({
       start: {

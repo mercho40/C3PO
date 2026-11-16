@@ -40,8 +40,8 @@ SYMBOLS THIS RELIES ON, ALL VERIFIED AGAINST THE PINNED BRANCH
   ((SO3, rot)) ((vect3, vel)) ((vect3, bg))   include/use-ikfom.hpp:14,17,18
   deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu   include/common_lib.h:63
 
-MAINTENANCE NOTE: this hunk was GENERATED against hku-mars/FAST_LIO branch ROS2
-(FASTLIO_REF in ../Dockerfile), not hand-written — an earlier hand-written
+MAINTENANCE NOTE: this hunk was GENERATED against hku-mars/FAST_LIO branch ROS2,
+commit a4743b0 (FASTLIO_COMMIT in ../Dockerfile), not hand-written — an earlier hand-written
 version was rejected because upstream's signature is `SharedPtr pubOdomAftMapped`
 rather than `SharedPtr &`, and the function had moved from 618 to 628. Upstream
 is not tagged and laserMapping.cpp does move. If `patch --forward` rejects this,

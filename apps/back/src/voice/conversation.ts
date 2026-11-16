@@ -1,9 +1,31 @@
 import type { UIMessage } from "ai";
 
+/** A model reply. `toolsSettled` covers the robot commands it sent: an abort
+ *  ends the text at once while a walk_to it sent keeps driving. */
+export type VoiceCompletion =
+  | string
+  | AsyncIterable<string>
+  | {
+      textStream: AsyncIterable<string>;
+      toolsSettled: () => Promise<unknown>;
+      /** The AI SDK's steps: what each tool returned, kept for the next turn. */
+      steps?: PromiseLike<
+        ReadonlyArray<{
+          toolResults: ReadonlyArray<{
+            toolName: string;
+            toolCallId: string;
+            input: unknown;
+            output: unknown;
+          }>;
+        }>
+      >;
+    };
+
 export type VoiceConversationDeps = {
   complete: (
     messages: UIMessage[],
-  ) => string | AsyncIterable<string> | Promise<string | AsyncIterable<string>>;
+    signal?: AbortSignal,
+  ) => VoiceCompletion | Promise<VoiceCompletion>;
   speak: (text: string) => Promise<void>;
   newId: () => string;
   now?: () => number;
@@ -97,14 +119,95 @@ function splitForSpeech(text: string): string[] {
   return chunks;
 }
 
-async function* deltasOf(
-  completion: string | AsyncIterable<string>,
-): AsyncGenerator<string> {
+type Env = Record<string, string | undefined>;
+
+/**
+ * Whether the robot says the headset's agent replies out loud. Off unless
+ * `HEADSET_SPEAK_REPLY=1`: the speaker is shared with gemm, and a robot that
+ * starts talking after every push-to-talk is a change an operator should opt
+ * into, not find out about at a demo.
+ */
+export function headsetSpeaksReplies(env: Env = process.env): boolean {
+  return env.HEADSET_SPEAK_REPLY === "1";
+}
+
+/**
+ * Only a voice turn the model finished. `isAborted` is not enough: a headset
+ * that disconnects mid-turn ends as `unknown`, and a turn that failed half-way
+ * as `failed`, and both would otherwise say a partial reply out loud.
+ */
+export function shouldSpeak(input: {
+  enabled: boolean;
+  mode: "operator" | "voice";
+  outcome: { status: string };
+}): boolean {
+  return (
+    input.enabled &&
+    input.mode === "voice" &&
+    input.outcome.status === "completed"
+  );
+}
+
+/**
+ * Says a finished reply's text, the same text the headset panel shows, in
+ * order and one chunk at a time. Sequential, because each `say` takes a new
+ * stream and barges in on the one before. The signal is checked before every
+ * chunk: `say` is allowed while a stop stands, so after PARAR only this check
+ * keeps chunks 2..n from going out.
+ */
+export async function speakReply(
+  parts: ReadonlyArray<{ type: string; text?: unknown }>,
+  speak: (text: string) => Promise<unknown>,
+  signal?: AbortSignal,
+): Promise<number> {
+  const text = parts
+    .filter((p) => p.type === "text" && typeof p.text === "string")
+    .map((p) => (p.text as string).trim())
+    .filter((t) => t.length > 0)
+    .join("\n\n");
+  let spoken = 0;
+  for (const chunk of splitForSpeech(text)) {
+    if (signal?.aborted) break;
+    await speak(chunk);
+    spoken += 1;
+  }
+  return spoken;
+}
+
+async function* deltasOf(completion: VoiceCompletion): AsyncGenerator<string> {
   if (typeof completion === "string") {
     yield completion;
     return;
   }
-  yield* completion;
+  yield* "textStream" in completion ? completion.textStream : completion;
+}
+
+/**
+ * What the turn's tools returned, for the next turn's model: history keeps
+ * only text, so without it «Voy a agarrar la botella» read as done when pick
+ * was refused. Kept as tool parts, so they replay as tool results (never as
+ * the operator's words: a `look` result is camera text). Empty when no tool
+ * ran or the steps are unreadable.
+ */
+async function toolParts(
+  completion: VoiceCompletion,
+): Promise<UIMessage["parts"]> {
+  if (typeof completion !== "object" || !("steps" in completion)) return [];
+  const steps = await Promise.resolve(completion.steps).catch(() => null);
+  const parts: UIMessage["parts"] = (steps ?? []).flatMap((s) =>
+    s.toolResults.map((r) => ({
+      type: "dynamic-tool" as const,
+      toolName: r.toolName,
+      toolCallId: r.toolCallId,
+      state: "output-available" as const,
+      input: r.input,
+      output: r.output,
+    })),
+  );
+  // step-start splits the replay: tool call, its result, then the words.
+  return parts.length
+    ? [{ type: "step-start" }, ...parts, { type: "step-start" }]
+    : [];
 }
 
 /** One bounded, in-memory spoken conversation.
@@ -127,6 +230,18 @@ export class VoiceConversation {
     this.lastTurn = null;
   }
 
+  /** Something the host did for the model (the operator's Confirmar): the next turn sees it; nothing is spoken. */
+  remember(text: string): void {
+    this.messages = [
+      ...this.messages,
+      {
+        id: this.deps.newId(),
+        role: "user" as const,
+        parts: [{ type: "text" as const, text }],
+      },
+    ].slice(-this.maxMessages);
+  }
+
   history(): UIMessage[] {
     return [...this.messages];
   }
@@ -135,7 +250,11 @@ export class VoiceConversation {
     return { phase: this.phase, lastTurn: this.lastTurn };
   }
 
-  async turn(utterance: string): Promise<VoiceTurnMetrics> {
+  /** An aborted turn is neither spoken further nor remembered: it rejects. */
+  async turn(
+    utterance: string,
+    signal?: AbortSignal,
+  ): Promise<VoiceTurnMetrics> {
     const now = this.deps.now ?? (() => performance.now());
     const startedAt = now();
     let firstDeltaAt: number | null = null;
@@ -151,10 +270,14 @@ export class VoiceConversation {
         firstSentenceAt ??= now();
         speechCalls += 1;
         const speak = async (): Promise<void> => {
+          if (signal?.aborted) return;
           firstSpeechAt ??= now();
           await this.deps.speak(chunk);
         };
         speechTail = speechTail ? speechTail.then(speak) : speak();
+        // Not awaited until the stream ends: unhandled until then, and an
+        // unhandled rejection kills apps/back. The await below still throws.
+        speechTail.catch(() => {});
       }
     };
 
@@ -166,8 +289,9 @@ export class VoiceConversation {
     const context = [...this.messages, userMessage];
 
     this.phase = "streaming";
+    let completion: VoiceCompletion | undefined;
     try {
-      const completion = await this.deps.complete(context);
+      completion = await this.deps.complete(context, signal);
       for await (const delta of deltasOf(completion)) {
         if (!delta) continue;
         firstDeltaAt ??= now();
@@ -178,6 +302,8 @@ export class VoiceConversation {
         pendingSentence = parsed.remainder;
         for (const sentence of parsed.sentences) enqueueSpeech(sentence);
       }
+      // An aborted model stream ends normally, so check before keeping it.
+      signal?.throwIfAborted();
 
       const reply = fullReply.trim();
       if (!reply) throw new Error("voice agent returned no spoken reply");
@@ -187,9 +313,17 @@ export class VoiceConversation {
       const assistantMessage: UIMessage = {
         id: this.deps.newId(),
         role: "assistant",
-        parts: [{ type: "text", text: reply }],
+        parts: [
+          ...(await toolParts(completion)),
+          { type: "text", text: reply },
+        ],
       };
-      this.messages = [...context, assistantMessage].slice(-this.maxMessages);
+      // By identity, not index: a remember() (a Confirmar outcome) that landed
+      // while this turn streamed is kept, even once history is full.
+      const added = this.messages.filter((m) => !context.includes(m));
+      this.messages = [...context, assistantMessage, ...added].slice(
+        -this.maxMessages,
+      );
 
       if (speechTail) {
         this.phase = "speaking";
@@ -213,6 +347,10 @@ export class VoiceConversation {
       return metrics;
     } finally {
       this.phase = "idle";
+      // Over only once its robot commands are: the loop's next turn must not
+      // dispatch beside an aborted turn's walk_to.
+      if (typeof completion === "object" && "toolsSettled" in completion)
+        await completion.toolsSettled();
     }
   }
 }

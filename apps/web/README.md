@@ -1,6 +1,6 @@
 # C3PO Web (`apps/web`)
 
-SvelteKit 3 operator console (Svelte 5 runes, Tailwind CSS 4): login/signup and
+SvelteKit 3 operator console (Svelte 5 runes, Tailwind CSS 4): login and
 a `(protected)` group with the dashboard, live map, cameras, agent chat with
 history, voice control, VR control, a health board and settings. The page list
 lives once, in `src/lib/nav.ts` — sidebar entries, topbar titles and browser-tab
@@ -50,8 +50,8 @@ are two different transports, not two addresses for one (below).
   `redirectToLogin()` — an expired session is never shown as a robot that is
   "offline". `redirectTo` is sanitised server-side (`login/auth-params.ts`,
   tested against open-redirect forms).
-- Login/signup are server-rendered and redirect already-authenticated visitors
-  in their `+page.server.ts`. Logout navigates with `refreshAll`, which is
+- Login is server-rendered and redirects already-authenticated visitors in
+  its `+page.server.ts`. Logout navigates with `refreshAll`, which is
   what keeps the root layout's `data.user` from bouncing `/login` →
   `/dashboard` → `/login`.
 - Social buttons render only for providers `back` reports as configured on
@@ -92,7 +92,13 @@ which owns one instance each of `RobotLive` (`/state`), `VoiceLoopControl`
   hold-to-confirm tile) never sees it, and `/vr-control` latches its own walk
   loop on any press. The topbar stop sits above every bits-ui overlay (sheet,
   dialog, alert dialog) — the stop is idempotent, so bypassing a modal is
-  safe, and a modal that swallows the first tap on PARAR is not.
+  safe, and a modal that swallows the first tap on PARAR is not. In
+  immersive-vr, PARAR is both grips held 300 ms (not available under hand
+  tracking; cad99bb). A stop latches on the bridge: the «PARAR ACTIVO ·
+  Reanudar» chip (`shell/stop-latch-chip.svelte`, admin) sends the stamp it
+  showed, so a newer stop is not cleared by accident (`docs/OPERATIONS.md` §4).
+- **A T2 tool card shows «Confirmar <tool>».** One click grants and runs that
+  refused call once, with the arguments shown, within 30 s.
 - **Privacy and autonomy are visible everywhere**: an "Escuchando" chip while a
   voice session runs, and "NAV ARMADO · N s" while Nav2 is armed to drive. An
   armed gate that can no longer be read keeps its chip and says "sin datos" —
@@ -109,13 +115,13 @@ which owns one instance each of `RobotLive` (`/state`), `VoiceLoopControl`
 different ways, and the page picks by env — `PUBLIC_ROBOT_CAM_URL` first, then
 `PUBLIC_SIM_CAM_HOST`:
 
-|           | Simulator                              | Real G1                                          |
-| --------- | -------------------------------------- | ------------------------------------------------ |
-| Server    | teleimager/aiortc, one per camera      | `apps/perception`'s vision container             |
-| Transport | WebRTC (H.264, VP8 retry) over HTTPS   | MJPEG over plain HTTP on the robot LAN           |
-| Client    | `src/lib/webrtc/sim-camera.ts`         | `src/lib/robot/mjpeg-camera.ts`                  |
-| Cameras   | 3 (head stereo + two wrists)           | 1 — the D435i colour node is the only one fitted |
-| Bring-up  | ports 60001-3, accept the cert on each | `c3po up perception`, then use bridge `:8001`    |
+|           | Simulator                              | Real G1                                                                                       |
+| --------- | -------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Server    | teleimager/aiortc, one per camera      | the bridge's `/camera` relay (videohub or the vision container), relayed again by `apps/back` |
+| Transport | WebRTC (H.264, VP8 retry) over HTTPS   | MJPEG over HTTP from `apps/back` on 3000, behind Better Auth                                  |
+| Client    | `src/lib/webrtc/sim-camera.ts`         | `src/lib/robot/mjpeg-camera.ts`                                                               |
+| Cameras   | 3 (head stereo + two wrists)           | 1 — the D435i colour node is the only one fitted                                              |
+| Bring-up  | ports 60001-3, accept the cert on each | `c3po up` on the robot; `PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera`                   |
 
 Both modules carry the reasoning in their headers. The one thing worth
 repeating here: an `<img>` on an MJPEG stream keeps showing the last frame it
@@ -128,9 +134,25 @@ The robot picture is drawn by `src/lib/components/robot-camera-view.svelte`,
 shared with `/vr-control` (which keeps owning the connection, because the XR
 layer uses the same stream). The page shows `/camera/status`'s
 `source`/`sources`/`hint`, and `/camera/frame.jpg` backs the Captura button. A
-failed status fetch is classified as network vs CORS (`BRIDGE_CORS_ORIGINS`)
-vs mixed content (HTTPS console, HTTP camera), because they need different
-fixes and used to share one "network" message.
+failed status fetch is classified as network vs CORS (`apps/back`'s `WEB_URL`, or
+`BRIDGE_CORS_ORIGINS` when pointed straight at the bridge) vs
+mixed content (HTTPS console, HTTP camera), because they need different fixes
+and used to share one "network" message.
+
+**`bun run dev:robot` reads the camera straight from the bridge** (since
+2026-11-11): it sets `PUBLIC_ROBOT_CAM_URL=http://localhost:8001/camera` unless the
+shell sets it, and that wins over `.env`. The bridge grants this origin on its
+camera routes and `/face/seen` only, without credentials, so the cookie is sent
+only when the camera is on `PUBLIC_API_URL`'s origin (`camCredentials`). The
+headset then needs 8001 forwarded: `scripts/quest_reverse.sh`.
+
+**Face boxes** (`src/lib/robot/face-seen.ts`, `components/robot/face-boxes.svelte`).
+While a picture shows and the tab is visible, the view polls `/face/seen` next to the
+camera about once a second and draws a box per face: the name in green,
+«Desconocido» in red, «¿foto?» dimmed when liveness failed. Anything older than
+2 s is cleared. The headset draws the same boxes into the frame before its texture
+upload. A button on the picture hides them per browser. The bridge fills
+`/face/seen` only while a greet switch is on in «Caras» (`/faces`, admins only).
 
 ## The live map
 
@@ -144,26 +166,28 @@ Nav2 actually plans against — which is what you need when a path is refused or
 loops. A 240 x 240 grid encodes to ~540 bytes of indexed PNG, so polling it at
 1 Hz costs less than the `/state` JSON already being polled beside it.
 
-**It takes a different route from the camera, and that asymmetry is deliberate.**
+**It takes the same route as the camera.** Both used to differ — the camera
+went browser → bridge directly — and that asymmetry is gone:
 
-|        | Live camera                     | Live map                          |
-| ------ | ------------------------------- | --------------------------------- |
-| Path   | browser → bridge `:8001/camera` | browser → `back` → bridge `:8001` |
-| Auth   | none (trusted robot LAN)        | Better Auth, via `back`           |
-| Tunnel | none for desktop development    | none                              |
-| Env    | `PUBLIC_ROBOT_CAM_URL`          | none — it uses `PUBLIC_API_URL`   |
+|        | Live camera                                         | Live map                          |
+| ------ | --------------------------------------------------- | --------------------------------- |
+| Path   | browser → `back` `/camera` → bridge `:8001`         | browser → `back` → bridge `:8001` |
+| Auth   | Better Auth, via `back`                             | Better Auth, via `back`           |
+| Tunnel | `back` → bridge, the same 8001 tunnel `/mcp` uses   | the same                          |
+| Env    | `PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera` | none — it uses `PUBLIC_API_URL`   |
 
 The bridge's `:8001/camera` path selects and relays whichever onboard camera
-producer currently owns the device. The same port also serves `/mcp`, so the
-robot Wi-Fi must be treated as a trusted network: the bridge has no authentication
-of its own. The map remains proxied through `back` because its data already comes
-from an MCP tool and belongs behind the app's authentication boundary.
+producer currently owns the device, and `apps/back/src/routes/camera.ts` relays
+that. The same bridge port also serves `/mcp`, the unauthenticated tool surface
+that can walk the robot, which is why it listens on the robot's loopback only
+and no browser is ever handed a route to it.
 
 Two consequences worth knowing before you debug either:
 
-- **The map can work while the camera does not.** The map goes through `back`,
-  while the browser fetches camera bytes from the robot directly. A bad robot
-  hostname, CORS policy, or browser network path can therefore break only video.
+- **The map can work while the camera does not.** They share the path up to the
+  bridge, so when one works and the other does not the difference is on the
+  robot: the camera needs a producer that owns `/dev/video4` (the bridge's
+  `/camera/status` `hint` says which is missing), the map needs a nav2 stage.
 - **"No map" has several distinct forms**, and they need different fixes: `sin
 mapa` means nothing is publishing a costmap — almost always that no nav2 stage
   is running, and the bridge's hint naming the command is in the "¿Por qué?"
@@ -182,7 +206,7 @@ The map and the dashboard's mini-map are the same component,
 wrong way), and an edge arrow with the distance when the robot is out of view.
 The projection math lives in `src/lib/robot/map-geometry.ts`, with tests.
 
-The costmap exists wherever Nav2 does, so `perception_up nav2-fake` brings it up
+The costmap exists wherever Nav2 does, so `c3po perception up nav2-fake` brings it up
 on synthetic odom and scan — **no sensors, nothing taken from the other team.**
 
 ## Voice, health and settings
@@ -192,7 +216,9 @@ on synthetic odom and scan — **no sensors, nothing taken from the other team.*
   realtime session (`ownedByYou`; only the owner can end it or open its
   transcript), what the robot heard, past voice transcripts, and an admin-only
   "Decir". Under the realtime engine the spoken stop phrase does nothing, and
-  the page says so rather than showing a "Paradas 0" counter.
+  the page says so rather than showing a "Paradas 0" counter. The headset has
+  its own «Hablar con el robot»: hold B/Y, the WAV goes to `/voice/transcribe`,
+  and the text runs as a voice-mode turn. Not yet tried on a Quest.
 - **`/health`** is one row per subsystem — server, bridge and catalogue, robot
   link, battery, faults, autonomous navigation, perception, voice, camera,
   map — sorted worst first. The summary never says "todo en orden" while any

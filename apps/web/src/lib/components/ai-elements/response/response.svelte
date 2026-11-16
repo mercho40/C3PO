@@ -18,9 +18,12 @@
   // summary is wider than a phone, and the message bubble clips (overflow
   // hidden), so a full-width table simply lost its right-hand columns. Links
   // are periwinkle, not cyan — cyan means "moving under power" in this console.
+  //
+  // Plugins come from responsePlugins(), which drops unsafe link/image URLs
+  // (`javascript:` and friends) — see safe-urls.ts.
   import Markdown from "svelte-exmarkdown";
-  import { gfmPlugin } from "svelte-exmarkdown/gfm";
   import { cn } from "#lib/utils.js";
+  import { responsePlugins } from "./safe-urls.js";
 
   let { content = "", class: className }: { content?: string; class?: string } =
     $props();
@@ -48,5 +51,5 @@
     className,
   )}
 >
-  <Markdown md={content} plugins={[gfmPlugin()]} />
+  <Markdown md={content} plugins={responsePlugins()} />
 </div>

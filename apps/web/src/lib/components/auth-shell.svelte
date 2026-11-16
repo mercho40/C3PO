@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Shared frame for /login and /signup. Both pages used to render a stock
-  // shadcn card on a bare background, in English — which made the front door
-  // look like a different product from the console behind it.
+  // The frame of /login. It used to render a stock shadcn card on a bare
+  // background, in English — which made the front door look like a different
+  // product from the console behind it.
   import type { Snippet } from "svelte";
   import { resolve } from "$app/paths";
 

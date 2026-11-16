@@ -1,0 +1,35 @@
+# Nav2 in the SAVED MAP's frame — layered over nav2_params.yaml only when
+# `C3PO_NAV_SLAM=localization` (nav2.launch.py `slam:=localization`).
+#
+# What changes, and only this:
+#   * the global costmap stops being a 24 m rolling window in `odom` and becomes
+#     the saved grid (map_server's /map) in `map`, plus live /scan on top;
+#   * the BT navigator and behaviours plan in `map`, so a landmark stored in
+#     `map` means the same spot after a reboot — the point of Phase 3.
+# What does NOT: the local costmap and the controller stay in `odom`. Local
+# obstacle avoidance must keep working through a relocalization jump, and a
+# map->odom correction is exactly such a jump.
+#
+# map->odom comes from slam_toolbox in localization mode; FAST-LIO still owns
+# odom->base_footprint (via g1_odom_tf). Two writers of map->odom would flicker
+# the tree, which is why AMCL is not also here.
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      global_frame: map
+      rolling_window: false            # sized by the map, not by these numbers
+      track_unknown_space: true
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true   # map_server latches; VOLATILE never hears it
+        map_topic: /map
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+
+behavior_server:
+  ros__parameters:
+    global_frame: map

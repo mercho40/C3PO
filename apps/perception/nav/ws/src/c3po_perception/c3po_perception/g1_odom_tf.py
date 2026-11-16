@@ -52,26 +52,13 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from tf2_ros import TransformBroadcaster
 from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 
-
-def quat_to_rpy(x, y, z, w):
-    roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
-    pitch = math.asin(max(-1.0, min(1.0, 2.0 * (w * y - z * x))))
-    yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-    return roll, pitch, yaw
-
-
-def rpy_to_quat(roll, pitch, yaw):
-    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
-    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
-    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
-    return (sr * cp * cy - cr * sp * sy,
-            cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy,
-            cr * cp * cy + sr * sp * sy)
-
-
-# Rx(pi) as a quaternion. The mount correction, in one constant.
-RX180 = (1.0, 0.0, 0.0, 0.0)
+from c3po_perception.odom_math import (
+    RX180,
+    differentiated_twist,
+    fastlio_twist,
+    flat_pose,
+    rpy_to_quat,
+)
 
 
 class G1OdomTf(Node):
@@ -86,6 +73,28 @@ class G1OdomTf(Node):
         # base_link origin expressed in the `body` (inverted IMU) frame, i.e.
         # x forward, y RIGHT, z DOWN. Pelvis below and behind a head-mounted
         # sensor => negative x, positive z. PLACEHOLDERS.
+        # ⚠️ BOTH OF THESE REACH THE STATIC `body -> base_link` TRANSFORM ONLY.
+        # `on_odom` — which publishes the dynamic `odom -> base_footprint` and
+        # the `/odom` that Nav2's controller_server actually reads — never
+        # consults either one. So `base_footprint` is currently the ground
+        # projection of `body` (the sensor), not of `base_link`, even though
+        # this module's header calls it "a PROJECTION of base_link".
+        #
+        # Consequences, and why this is a note rather than a change:
+        #   * mount_yaw_deg is 0.0, so its half is dormant. Set it to a real
+        #     measured value and `base_link` rotates while `base_footprint`'s
+        #     yaw and /odom's orientation do not — the robot would believe a
+        #     heading it is not holding. The warning below exists so that
+        #     calibrating this cannot be silent.
+        #   * base_in_body_xyz's horizontal term (0.10 m) is NOT zero, so
+        #     base_footprint sits ~10 cm from the base_link projection, in a
+        #     direction that rotates with yaw.
+        #
+        # Fixing it means composing the mount offset into the dynamic path, and
+        # that changes what a walking biped believes about where it is. It
+        # wants the robot in front of you and a tape measure, not a refactor
+        # from a laptop — the values are labelled PLACEHOLDERS precisely
+        # because nobody has measured them yet.
         self.declare_parameter("base_in_body_xyz", [-0.10, 0.0, 0.45])
         self.declare_parameter("mount_yaw_deg", 0.0)
         # If the FAST-LIO twist patch is not applied, set this to "differentiate"
@@ -104,7 +113,7 @@ class G1OdomTf(Node):
             Odometry, "/Odometry", self.on_odom,
             QoSProfile(depth=20, reliability=ReliabilityPolicy.RELIABLE),
         )
-        self._last = None
+        self._last: tuple[float, float, float, float] | None = None
         self._v = [0.0, 0.0, 0.0]
 
         if self.twist_source != "fastlio":
@@ -126,6 +135,18 @@ class G1OdomTf(Node):
         h = self.h
         mount = [float(v) for v in self.get_parameter("base_in_body_xyz").value]
         myaw = math.radians(float(self.get_parameter("mount_yaw_deg").value))
+
+        # Somebody calibrating this deserves to know it only lands here. Silence
+        # would mean measuring a real mount yaw, setting it, and getting a
+        # base_link that rotates while base_footprint and /odom do not.
+        if abs(myaw) > 1e-9:
+            self.get_logger().warn(
+                f"mount_yaw_deg={math.degrees(myaw):.3f} applies to the STATIC "
+                "body->base_link transform ONLY. The dynamic "
+                "odom->base_footprint TF and the republished /odom (what Nav2 "
+                "steers on) do not use it, so this calibration is HALF "
+                "APPLIED. See the note beside the parameter declaration."
+            )
 
         t1 = TransformStamped()
         t1.header.stamp = self.get_clock().now().to_msg()
@@ -159,38 +180,16 @@ class G1OdomTf(Node):
         self.static_bc.sendTransform([t1, t2, t3])
 
     def on_odom(self, msg: Odometry) -> None:
-        q = msg.pose.pose.orientation
-        # msg is camera_init -> body. Re-express in odom by composing the static
-        # Rx(pi): under (x,y,z) -> (x,-y,-z) the position maps directly and the
-        # quaternion conjugates in y,z.
-        x = msg.pose.pose.position.x
-        y = -msg.pose.pose.position.y
-        # z would be `-position.z + self.h`, and it is deliberately NOT computed:
-        # base_footprint is the flat frame by definition, published below with
-        # translation.z = 0.0, and Nav2's costmaps are 2-D. Carrying a height
-        # here would be a value nothing consumes and everything could
-        # misinterpret. Same reason roll and pitch are discarded — the footprint
-        # frame is yaw-only, so a pitching torso must not rotate the costmap.
-        ox, oy, oz, ow = q.x, -q.y, -q.z, q.w
-        _roll, _pitch, yaw = quat_to_rpy(ox, oy, oz, ow)
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        # The frame maths lives in odom_math (stdlib-only) so it can be tested.
+        x, y, yaw = flat_pose(p.x, p.y, q.x, q.y, q.z, q.w)
 
         now = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self.twist_source == "fastlio":
-            # Already body-frame from the patch; body is roll-pi from base_link,
-            # so y and z flip.
-            self._v = [msg.twist.twist.linear.x,
-                       -msg.twist.twist.linear.y,
-                       -msg.twist.twist.angular.z]
-        elif self._last is not None:
-            t0, x0, y0, yaw0 = self._last
-            dt = now - t0
-            if 1e-3 < dt < 0.5:
-                dyaw = math.atan2(math.sin(yaw - yaw0), math.cos(yaw - yaw0))
-                c, s = math.cos(yaw), math.sin(yaw)
-                a = 0.35
-                self._v[0] += a * (((x - x0) * c + (y - y0) * s) / dt - self._v[0])
-                self._v[1] += a * ((-(x - x0) * s + (y - y0) * c) / dt - self._v[1])
-                self._v[2] += a * (dyaw / dt - self._v[2])
+            t = msg.twist.twist
+            self._v = fastlio_twist(t.linear.x, t.linear.y, t.angular.z)
+        else:
+            self._v = differentiated_twist(self._v, self._last, now, x, y, yaw)
         self._last = (now, x, y, yaw)
 
         tf = TransformStamped()

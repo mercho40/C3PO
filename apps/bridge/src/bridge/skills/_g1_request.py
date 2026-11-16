@@ -30,6 +30,7 @@ Today:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any
@@ -55,13 +56,12 @@ async def _await_fsm(target: int, timeout_s: float) -> int | None:
     Returns whatever the FSM ended up as — including None when the poller has
     nothing, which is itself the answer that no controller is loaded.
     """
-    import asyncio
 
     from bridge.sdk.state import get_sampler
 
-    deadline = time.time() + timeout_s
+    deadline = time.monotonic() + timeout_s  # an NTP step must not move it
     latest: int | None = None
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         try:
             latest = get_sampler().get_arm_state().get("fsm_id")
         except Exception as exc:
@@ -80,6 +80,35 @@ async def _await_fsm(target: int, timeout_s: float) -> int | None:
 
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
+
+# The walk programs a refused enable is explained for (500 is a no-op on this
+# chassis, but asks for the same preconditions).
+WALK_FSM_IDS = (500, 501)
+
+
+def _read_fsm_mode() -> int | None:
+    """The FSM's static/dynamic flag (7002), for a refusal's note. Never raises."""
+    try:
+        from bridge.sdk.state import get_sampler
+
+        value = get_sampler().get_arm_state().get("fsm_mode")
+        return value if isinstance(value, int) else None
+    except Exception:
+        return None
+
+
+def _fresh_fsm_id() -> int | None:
+    """The FSM id if a recent reading exists, else None. Never creates the sampler."""
+    try:
+        from bridge.sdk.state import existing_sampler
+        from bridge.teleop.arm_sdk import MAX_FSM_AGE_S
+
+        sampler = existing_sampler()
+        state = sampler.get_arm_state() if sampler is not None else {}
+        age = state.get("fsm_age_s")
+        return state.get("fsm_id") if age is not None and age <= MAX_FSM_AGE_S else None
+    except Exception:
+        return None
 
 
 async def run_g1_request(
@@ -150,6 +179,22 @@ async def run_g1_request(
             task.ended_at = time.time()
             return task.to_dict()
 
+        if skill_name == "prepare" and (fsm_id := _fresh_fsm_id()) in WALK_FSM_IDS:
+            # 2026-11-12: prepare from 501 acked, waited 9 s and did nothing, and the agent
+            # said it had changed mode. Had the firmware taken it, a walking robot drops to 4.
+            task.status = "completed"
+            task.phase = "already_in_locomotion"
+            task.progress = 1.0
+            task.result = {
+                "fsm_after": fsm_id,
+                "note": (
+                    f"nothing sent: the robot is already in a locomotion mode (FSM {fsm_id}); "
+                    "gestures, shake_hand and walking do not need prepare."
+                ),
+            }
+            task.ended_at = time.time()
+            return task.to_dict()
+
         # SIM_MODE=real and topic resolved → dispatch via direct DDS RPC
         # (unitree_sdk2py.rpc.client.Client — same base Go2's SportClient
         # uses; no WebRTC involved, see bridge.sdk.g1_rpc). _Call blocks
@@ -157,7 +202,6 @@ async def run_g1_request(
         # on the DDS response, so run it off the event loop — otherwise one
         # in-flight request (e.g. a slow ack) would stall every other tool
         # call, including stop_everything.
-        import asyncio
 
         from bridge.sdk import g1_rpc
 
@@ -205,13 +249,29 @@ async def run_g1_request(
             task.result["transitioned"] = None if reached is None else reached == int(request.data)
             if reached is not None and reached != int(request.data):
                 task.phase = "acked_no_transition"
-                task.result["note"] = (
-                    f"the sport service acked (code 0) but the robot is in FSM {reached}, "
-                    f"not {request.data}. This firmware acks impossible transitions: "
-                    "check that a motion controller is loaded "
-                    "(scripts/select_motion_mode.py --check-only), and note that some "
-                    "transitions are refused from a walk program — damp first."
-                )
+                fsm_mode = _read_fsm_mode()
+                task.result["fsm_mode"] = fsm_mode
+                if int(request.data) in WALK_FSM_IDS and reached == g1_protocol.Mode.PREPARATION:
+                    # 2026-10-15: prepare reached 4, then 501 acked and stayed
+                    # at 4 for 9 s — on the hanger, feet not loaded. The one
+                    # recorded success (2026-08-15) had the feet bearing weight,
+                    # and the vendor's procedure lowers the rope before R1+Y.
+                    task.result["note"] = (
+                        f"the robot acked (code 0) but stayed in FSM 4 (preparation), not "
+                        f"{request.data}. Walking needs both feet on the ground bearing "
+                        "weight: lower the hanger until the feet are loaded (rope slack but "
+                        "attached), wait ~5 s after prepare, then try again. "
+                        f"fsm_mode={fsm_mode} (0 = settled; 1 = still moving, transitions "
+                        "are refused)."
+                    )
+                else:
+                    task.result["note"] = (
+                        f"the sport service acked (code 0) but the robot is in FSM {reached}, "
+                        f"not {request.data}. This firmware acks impossible transitions: "
+                        "check that a motion controller is loaded "
+                        "(scripts/select_motion_mode.py --check-only), and note that some "
+                        "transitions are refused from a walk program — damp first."
+                    )
                 log.warning(
                     "g1_request.acked_no_transition",
                     skill_name=skill_name,
@@ -222,6 +282,16 @@ async def run_g1_request(
             task.error = f"rpc_error_code_{code}"
         task.ended_at = time.time()
         return task.to_dict()
+
+    except asyncio.CancelledError:
+        # BaseException, so `except Exception` missed it and the task stayed
+        # "running" for the process lifetime. The request itself already went
+        # out (its thread finishes regardless); there is nothing to undo.
+        task.status = "cancelled"
+        task.phase = "cancelled"
+        task.ended_at = time.time()
+        log.info("g1_request.cancelled", task_id=task.task_id, skill_name=skill_name)
+        raise
 
     except Exception as exc:
         task.status = "failed"

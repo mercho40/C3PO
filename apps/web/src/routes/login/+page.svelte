@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { resolve } from "$app/paths";
   import AuthShell from "#lib/components/auth-shell.svelte";
   import Callout from "#lib/components/callout.svelte";
   import LoginForm from "#lib/components/login-form.svelte";
@@ -15,12 +14,6 @@
   // "…para volver a Control VR", when the destination is a console page.
   const destination = $derived(
     titleFor(new URL(data.redirectTo, "http://x").pathname),
-  );
-  // Keep the destination across the switch to /signup.
-  const carry = $derived(
-    data.redirectTo === "/dashboard"
-      ? ""
-      : `?${new URLSearchParams({ redirectTo: data.redirectTo })}`,
   );
 </script>
 
@@ -61,12 +54,6 @@
   />
 
   {#snippet footer()}
-    ¿No tenés cuenta?
-    <a
-      href="{resolve('signup')}{carry}"
-      class="text-ink underline-offset-4 hover:underline focus-visible:underline focus-visible:outline-none"
-    >
-      Crear cuenta
-    </a>
+    ¿No tenés cuenta? Pedile una a un admin.
   {/snippet}
 </AuthShell>

@@ -7,3 +7,4 @@ __pycache__/
 .env
 .dds.xml
 uv.lock.bak
+.cache/

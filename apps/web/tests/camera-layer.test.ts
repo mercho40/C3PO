@@ -13,7 +13,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { CameraLayer } from "../src/lib/webxr/camera-layer";
+import {
+  CameraLayer,
+  FILL,
+  UPLOAD_MIN_INTERVAL_MS,
+} from "../src/lib/webxr/camera-layer";
 
 // --- a WebGL context that records what was asked of it ---------------------
 
@@ -36,6 +40,7 @@ function stubGl() {
     CLAMP_TO_EDGE: "CLAMP_TO_EDGE",
     LINEAR: "LINEAR",
     RGB: "RGB",
+    RGBA: "RGBA",
     UNSIGNED_BYTE: "UBYTE",
     ARRAY_BUFFER: "ARRAY_BUFFER",
     STATIC_DRAW: "STATIC_DRAW",
@@ -61,7 +66,14 @@ function stubGl() {
     getProgramParameter: rec("getProgramParameter", true),
     getProgramInfoLog: rec("getProgramInfoLog", ""),
     getAttribLocation: rec("getAttribLocation", 0),
-    getUniformLocation: rec("getUniformLocation", {}),
+    // Returns the uniform's NAME as its location, so a recorded `uniform2f`
+    // says WHICH uniform it set. The layer sets two of them per draw now
+    // (`u_scale` and `u_offset`), and "the last uniform2f" stopped meaning
+    // "the scale" the moment the second one was added.
+    getUniformLocation: (_program: unknown, name: string) => {
+      calls.push({ fn: "getUniformLocation", args: [_program, name] });
+      return name;
+    },
     createBuffer: rec("createBuffer", {}),
     bindBuffer: rec("bindBuffer"),
     bufferData: rec("bufferData"),
@@ -73,6 +85,7 @@ function stubGl() {
     enableVertexAttribArray: rec("enableVertexAttribArray"),
     vertexAttribPointer: rec("vertexAttribPointer"),
     uniform1f: rec("uniform1f"),
+    uniform2f: rec("uniform2f"),
     enable: rec("enable"),
     blendFunc: rec("blendFunc"),
     blendFuncSeparate: rec("blendFuncSeparate"),
@@ -90,6 +103,7 @@ function stubGl() {
 class FakeImage {
   crossOrigin: string | null = null;
   naturalWidth = 0;
+  naturalHeight = 0;
   width = 0;
   height = 0;
   src = "";
@@ -106,19 +120,69 @@ class FakeImage {
     this.attached = false;
   }
   /** Pretend a frame decoded. */
-  arrive(width = 960) {
+  arrive(width = 960, height = 720) {
     this.naturalWidth = width;
+    this.naturalHeight = height;
     this.onload?.();
   }
 }
 
-function withFakeImage<T>(body: (made: FakeImage[]) => T): T {
+/**
+ * The 2D canvas the "no picture, and why" placeholder is painted on.
+ *
+ * Records the text drawn, because what the placeholder SAYS is the entire
+ * point of it — an unreadable or empty card is the black view it replaces.
+ */
+class FakeCanvas {
+  width = 0;
+  height = 0;
+  texts: string[] = [];
+  fills = 0;
+  ctx = {
+    fillStyle: "",
+    strokeStyle: "",
+    lineWidth: 0,
+    font: "",
+    textAlign: "",
+    clearRect: () => {},
+    fillRect: () => {
+      this.fills += 1;
+    },
+    strokeRect: () => {},
+    fillText: (t: string) => {
+      this.texts.push(t);
+    },
+    globalAlpha: 1,
+    drawn: 0,
+    drawImage: () => {
+      this.ctx.drawn += 1;
+    },
+    measureText: () => ({ width: 10 }),
+  };
+  getContext(kind: string) {
+    return kind === "2d" ? this.ctx : null;
+  }
+}
+
+function withFakeImage<T>(
+  body: (made: FakeImage[], canvases: FakeCanvas[]) => T,
+): T {
   const made: FakeImage[] = [];
+  const canvases: FakeCanvas[] = [];
   const original = globalThis.Image;
   const originalDoc = (globalThis as { document?: unknown }).document;
   // A minimal document, so `setStreamUrl` takes the attach path the browser
   // takes. Without one it silently skips it and the test proves nothing.
+  //
+  // `createElement` is here for the same reason: without it the placeholder
+  // path returns null and every assertion about it passes vacuously.
   (globalThis as { document?: unknown }).document = {
+    createElement: (tag: string) => {
+      if (tag !== "canvas") return {};
+      const c = new FakeCanvas();
+      canvases.push(c);
+      return c;
+    },
     body: {
       appendChild: (el: FakeImage) => {
         el.attached = true;
@@ -133,7 +197,7 @@ function withFakeImage<T>(body: (made: FakeImage[]) => T): T {
     return img;
   };
   try {
-    return body(made);
+    return body(made, canvases);
   } finally {
     globalThis.Image = original;
     if (originalDoc === undefined) {
@@ -148,11 +212,29 @@ describe("attach", () => {
   test("sets crossOrigin before src — without it WebGL renders black", () => {
     withFakeImage((made) => {
       const { gl } = stubGl();
-      new CameraLayer(gl).setStreamUrl("http://127.0.0.1:8081/stream.mjpg");
+      new CameraLayer(gl).setStreamUrl(
+        "http://localhost:3000/camera/stream.mjpg",
+      );
       // A texture sourced from an image the page cannot read back throws on
       // upload. The symptom is a black view, not an error anyone sees.
+      // `use-credentials`, not `anonymous`: the feed is behind Better Auth in
+      // apps/back, and an anonymous CORS request drops the session cookie —
+      // a 401, and the same black view.
+      expect(made[0].crossOrigin).toBe("use-credentials");
+      expect(made[0].src).toBe("http://localhost:3000/camera/stream.mjpg");
+    });
+  });
+
+  test("the bridge directly gets an anonymous CORS request", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      // The bridge answers Allow-Origin without Allow-Credentials, so a
+      // credentialed request to it is refused and the headset goes black.
+      new CameraLayer(gl).setStreamUrl(
+        "http://localhost:8001/camera/stream.mjpg",
+        false,
+      );
       expect(made[0].crossOrigin).toBe("anonymous");
-      expect(made[0].src).toBe("http://127.0.0.1:8081/stream.mjpg");
     });
   });
 
@@ -179,13 +261,19 @@ describe("attach", () => {
 });
 
 describe("draw", () => {
-  test("does nothing before a frame arrives, and does not throw", () => {
+  test("before a frame arrives it says so, and counts no uploads", () => {
     withFakeImage(() => {
       const { gl, calls } = stubGl();
       const layer = new CameraLayer(gl);
       layer.setStreamUrl("http://x/stream.mjpg");
       layer.draw(true);
-      expect(calls.some((c) => c.fn === "drawArrays")).toBe(false);
+      // It DOES draw now — the placeholder. Returning early here is what made
+      // "i cannot see the camara" unanswerable from inside the headset.
+      expect(calls.some((c) => c.fn === "drawArrays")).toBe(true);
+      expect(layer.showingNoSignal).toBe(true);
+      // But the frame counter must not move: the page tells a live feed from a
+      // frozen one by watching it, and placeholder repaints would make a dead
+      // camera look like it was delivering pictures.
       expect(layer.framesUploaded).toBe(0);
     });
   });
@@ -217,8 +305,8 @@ describe("draw", () => {
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
 
-      layer.draw(true);
-      layer.draw(false);
+      layer.draw(true, null, 0);
+      layer.draw(false, null, 0);
       const alphas = calls
         .filter((c) => c.fn === "uniform1f")
         .map((c) => c.args[1]);
@@ -250,8 +338,8 @@ describe("draw", () => {
       const layer = new CameraLayer(gl);
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
-      layer.draw(true);
-      layer.draw(true);
+      layer.draw(true, null, 0);
+      layer.draw(true, null, 30);
       expect(layer.framesUploaded).toBe(2);
     });
   });
@@ -304,7 +392,7 @@ describe("reconnection — the failure the source recovers from", () => {
       expect(made.length).toBe(2);
       expect(made[0].src).toBe("");
       expect(made[1].src).toBe("http://x/stream.mjpg?c=2");
-      expect(made[1].crossOrigin).toBe("anonymous");
+      expect(made[1].crossOrigin).toBe("use-credentials");
     });
   });
 
@@ -325,9 +413,9 @@ describe("reconnection — the failure the source recovers from", () => {
       layer.setStreamUrl("http://x/stream.mjpg");
       made[0].arrive();
 
-      layer.draw(true);
+      layer.draw(true, null, 0);
       layer.setLive(false);
-      layer.draw(true);
+      layer.draw(true, null, 0);
 
       const alphas = calls
         .filter((c) => c.fn === "uniform1f")
@@ -421,6 +509,482 @@ describe("the stream element is attached, and cleaned up", () => {
 
       expect(made[0].attached).toBe(false);
       expect(made[0].src).toBe("");
+    });
+  });
+});
+
+/**
+ * An eye whose field is `k` times WIDER than it is tall, in tangent terms.
+ *
+ * This is the number the layer used to approximate as `vpWidth / vpHeight`.
+ * Symmetric (no `P[8]`/`P[9]`) and at the origin, so these tests are about
+ * SHAPE only — the stereo placement that reads the asymmetry lives in
+ * `stereo.test.ts`.
+ */
+function eyeOfShape(k: number) {
+  const P = new Float32Array(16);
+  P[0] = 1;
+  P[5] = k;
+  P[10] = -1;
+  P[11] = -1;
+  return { projection: P, offset: [0, 0, 0] as [number, number, number] };
+}
+
+describe("aspect fit — the picture that was live, correct and deformed", () => {
+  /** The x,y passed to `u_scale` on the most recent draw. */
+  function lastScale(calls: { fn: string; args: unknown[] }[]) {
+    const c = calls
+      .filter((c) => c.fn === "uniform2f" && c.args[0] === "u_scale")
+      .at(-1);
+    return c ? [c.args[1] as number, c.args[2] as number] : null;
+  }
+
+  test("the D435i's 4:3 frame in a Quest eye keeps its proportions", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480); // the D435i's actual output
+
+      const k = 1680 / 1760; // a Quest eye: TALLER than 4:3
+      layer.draw(true, eyeOfShape(k));
+      const [sx, sy] = lastScale(calls)!;
+      // The image is relatively WIDER than the eye, so width is the binding
+      // constraint: fill it, and take bars top and bottom. Shrinking x instead
+      // would squeeze the picture — the deformation being fixed here.
+      expect(sx).toBe(FILL);
+      expect(sy).toBeCloseTo(FILL * (k / (640 / 480)), 5);
+      expect(sy).toBeLessThan(FILL);
+      // And the ANGLES actually subtended match the source: the whole point.
+      // `sx`/`sy` are clip-space, so dividing each by its own focal term is
+      // what turns them back into the shape an eye sees.
+      expect(sx / (sy / k)).toBeCloseTo(640 / 480, 5);
+    });
+  });
+
+  test("a wide frame in a squarer eye is letterboxed", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(1920, 1080); // 16:9
+
+      layer.draw(true, eyeOfShape(1)); // square field
+      const [sx, sy] = lastScale(calls)!;
+      expect(sx).toBe(FILL);
+      expect(sy).toBeCloseTo(FILL * (1 / (1920 / 1080)), 5);
+      expect(sy).toBeLessThan(FILL);
+    });
+  });
+
+  test("a frame matching the eye fills it exactly", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480);
+
+      layer.draw(true, eyeOfShape(640 / 480)); // a field of the same shape
+      // Matching aspect: no letterboxing, so both axes are exactly the inset.
+      const [sx, sy] = lastScale(calls)!;
+      expect(sx).toBeCloseTo(FILL, 5);
+      expect(sy).toBeCloseTo(FILL, 5);
+    });
+  });
+
+  test("never scales ABOVE the inset — the quad stays inside clip space", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480);
+
+      for (const k of [40, 0.025, 1, 1080 / 1920]) {
+        layer.draw(true, eyeOfShape(k), 0);
+        const [sx, sy] = lastScale(calls)!;
+        expect(sx).toBeLessThanOrEqual(FILL);
+        expect(sy).toBeLessThanOrEqual(FILL);
+        expect(sx).toBeGreaterThan(0);
+        expect(sy).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  test("a zero dimension falls back to a square, NOT to NaN", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      // A frame whose height never decoded. Dividing by it gives NaN, and a
+      // NaN vertex position draws NOTHING — the black view this module exists
+      // to prevent, reintroduced by the fix for a distorted one.
+      made[0].arrive(640, 0);
+
+      const k = 1680 / 1760;
+      layer.draw(true, eyeOfShape(k));
+      const [sx, sy] = lastScale(calls)!;
+      expect(Number.isNaN(sx)).toBe(false);
+      expect(Number.isNaN(sy)).toBe(false);
+      // Square in ANGLE, which is not square in clip space. Wrongly shaped —
+      // there is no right shape for an image with no height — but visible,
+      // which is the whole bar this test is holding.
+      expect(sx).toBeCloseTo(FILL, 5);
+      expect(sy).toBeCloseTo(FILL * k, 5);
+      expect(sy).toBeGreaterThan(0);
+    });
+  });
+
+  test("no eye given still draws, with the field assumed square", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480);
+
+      // A caller outside an XR frame, or a runtime that handed us no
+      // projection matrix. It cannot fuse — there is nothing to fuse against —
+      // but it draws, and a picture that does not fuse beats a black view.
+      layer.draw(true);
+      const [sx, sy] = lastScale(calls)!;
+      expect(sx).toBeCloseTo(FILL, 5);
+      expect(sy).toBeCloseTo(FILL * (480 / 640), 5);
+    });
+  });
+});
+
+/**
+ * A BLANK FIELD IS AN ASSERTION, AND IT IS USUALLY WRONG.
+ *
+ * On 2026-08-27 an operator wearing the headset reported "i cannot see the
+ * camara". Answering that took reading source, because every distinct cause —
+ * a stream port never forwarded, a dead vision container, a URL never
+ * configured, a frame still on its way — drew the identical thing: nothing.
+ * `draw()` returned early and the eye stayed black.
+ *
+ * These pin the replacement: when there is no picture, SAY SO, and say why.
+ * The same decision `ScanLayer` already made for the empty radar dial.
+ */
+describe("no signal — the black field that could not be diagnosed", () => {
+  /** The x,y passed to `u_scale` on the most recent draw. */
+  function scaleOf(calls: { fn: string; args: unknown[] }[]) {
+    const c = calls
+      .filter((c) => c.fn === "uniform2f" && c.args[0] === "u_scale")
+      .at(-1);
+    return c ? [c.args[1] as number, c.args[2] as number] : null;
+  }
+
+  test("says SIN IMAGEN even when nobody has given it a reason", () => {
+    withFakeImage((_made, canvases) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.draw(true);
+      // No stream, no reason set, nothing configured at all — the case that
+      // used to be indistinguishable from a healthy camera in a dark room.
+      expect(canvases.length).toBe(1);
+      expect(canvases[0].texts).toContain("SIN IMAGEN");
+    });
+  });
+
+  test("shows the reason and what to do about it", () => {
+    withFakeImage((_made, canvases) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setReason({
+        text: "el puerto de la cámara no llega",
+        hint: "corré scripts/quest_setup.sh de nuevo",
+      });
+      layer.draw(true);
+      expect(canvases[0].texts).toContain("el puerto de la cámara no llega");
+      expect(canvases[0].texts).toContain(
+        "corré scripts/quest_setup.sh de nuevo",
+      );
+    });
+  });
+
+  test("repaints when the reason changes, and not when it does not", () => {
+    withFakeImage((_made, canvases) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setReason({ text: "conectando", hint: "esperá" });
+      layer.draw(true, null, 0);
+      const afterFirst = canvases[0].texts.length;
+
+      // Same reason, more frames: at 72-120 Hz a repaint and upload per frame
+      // would cost more than everything else this layer does.
+      layer.setReason({ text: "conectando", hint: "esperá" });
+      layer.draw(true, null, 30);
+      layer.draw(true, null, 60);
+      expect(canvases[0].texts.length).toBe(afterFirst);
+
+      layer.setReason({ text: "sin señal", hint: "revisá el túnel" });
+      layer.draw(true, null, 90);
+      expect(canvases[0].texts).toContain("sin señal");
+    });
+  });
+
+  test("a real frame takes over — the placeholder is not sticky", () => {
+    withFakeImage((made, canvases) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      layer.draw(true, null, 0);
+      expect(layer.showingNoSignal).toBe(true);
+
+      made[0].arrive(640, 480);
+      layer.draw(true, null, 30);
+      expect(layer.showingNoSignal).toBe(false);
+      expect(layer.framesUploaded).toBe(1);
+      // And the card is not repainted once there is a picture to show.
+      const settled = canvases[0].texts.length;
+      layer.draw(true, null, 60);
+      expect(canvases[0].texts.length).toBe(settled);
+    });
+  });
+
+  test("a feed that dies goes back to saying why", () => {
+    withFakeImage((made) => {
+      const { gl } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive(640, 480);
+      layer.draw(true, null, 0);
+      expect(layer.showingNoSignal).toBe(false);
+
+      // The vision server closes the stream after ~1 s with no frame; the
+      // <img> reports the error and stops being a picture.
+      made[0].onerror?.();
+      layer.draw(true, null, 30);
+      expect(layer.showingNoSignal).toBe(true);
+    });
+  });
+
+  test("it sits exactly where the picture would — 4:3, same letterboxing", () => {
+    withFakeImage((_made, canvases) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      const k = 1680 / 1760;
+      layer.draw(true, eyeOfShape(k));
+      expect(canvases[0].width).toBe(640);
+      expect(canvases[0].height).toBe(480);
+      // It stands in for the picture, so it should not jump when the picture
+      // arrives and replaces it.
+      const [sx, sy] = scaleOf(calls)!;
+      expect(sx).toBe(FILL);
+      expect(sy).toBeCloseTo(FILL * (k / (640 / 480)), 5);
+    });
+  });
+
+  test("no 2D canvas anywhere still does not throw in the frame callback", () => {
+    // Server rendering, or a runtime with no createElement. The frame callback
+    // this runs inside is what samples head pose — an exception escaping it
+    // stops steering for the rest of the session.
+    const { gl, calls } = stubGl();
+    const layer = new CameraLayer(gl);
+    expect(() => layer.draw(true)).not.toThrow();
+    expect(layer.showingNoSignal).toBe(false);
+    expect(calls.some((c) => c.fn === "drawArrays")).toBe(false);
+  });
+});
+
+/**
+ * The upload throttle (backlog 6.4). An <img> gives no "new frame" event, and
+ * uploading on every draw meant one full-frame texImage2D per eye per XR frame:
+ * 180 a second at 90 Hz, for a feed that delivers ~15. These pin that the
+ * throttle drops the redundant uploads and never a needed one.
+ */
+describe("uploads — once per new picture, not per eye per frame", () => {
+  function uploads(calls: Call[], format?: string) {
+    return calls.filter(
+      (c) => c.fn === "texImage2D" && (!format || c.args[2] === format),
+    ).length;
+  }
+
+  test("the two eyes of one frame upload the picture once", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 100);
+      layer.draw(true, null, 100);
+      expect(uploads(calls)).toBe(1);
+      // The second eye still draws: only the upload is skipped.
+      expect(calls.filter((c) => c.fn === "drawArrays").length).toBe(2);
+    });
+  });
+
+  test("the picture goes up again only after the interval", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      layer.draw(true, null, 10);
+      expect(uploads(calls)).toBe(1);
+      layer.draw(true, null, 30);
+      expect(uploads(calls)).toBe(2);
+      expect(layer.framesUploaded).toBe(2);
+    });
+  });
+
+  test("90 Hz for one second uploads at most 40 times, and keeps up with 15 fps", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      for (let i = 0; i < 90; i++) {
+        const now = (i * 1000) / 90;
+        layer.draw(true, null, now); // left eye
+        layer.draw(true, null, now); // right eye
+      }
+      // It was 180: every draw uploaded.
+      expect(uploads(calls)).toBeLessThanOrEqual(1000 / UPLOAD_MIN_INTERVAL_MS);
+      expect(uploads(calls)).toBeGreaterThanOrEqual(15);
+    });
+  });
+
+  test("an unchanged card uploads once, a new reason uploads again", () => {
+    withFakeImage(() => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setReason({ text: "conectando", hint: "esperá" });
+      layer.draw(true, null, 0);
+      layer.draw(true, null, 30);
+      layer.draw(true, null, 60);
+      expect(uploads(calls, "RGBA")).toBe(1);
+
+      // A missed upload here would leave the old reason on the operator's card.
+      layer.setReason({ text: "sin señal", hint: "revisá el túnel" });
+      layer.draw(true, null, 61);
+      expect(uploads(calls, "RGBA")).toBe(2);
+    });
+  });
+
+  test("card to picture uploads at once, whatever the interval", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      layer.draw(true, null, 0);
+      made[0].arrive();
+      layer.draw(true, null, 1);
+      expect(uploads(calls, "RGB")).toBe(1);
+      expect(layer.framesUploaded).toBe(1);
+    });
+  });
+
+  test("picture to card uploads at once, whatever the interval", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      made[0].onerror?.();
+      layer.draw(true, null, 1);
+      expect(uploads(calls, "RGBA")).toBe(1);
+    });
+  });
+
+  test("a new stream URL uploads its first picture at once", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg?c=1");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      layer.setStreamUrl("http://x/stream.mjpg?c=2");
+      made[1].arrive();
+      layer.draw(true, null, 1);
+      expect(uploads(calls, "RGB")).toBe(2);
+    });
+  });
+
+  test("a throwing upload is retried on the next draw", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      const real = (gl as unknown as Record<string, unknown>).texImage2D;
+      (gl as unknown as Record<string, unknown>).texImage2D = () => {
+        throw new Error("half-decoded");
+      };
+      layer.draw(true, null, 30); // throws inside, skips the frame
+      (gl as unknown as Record<string, unknown>).texImage2D = real;
+      layer.draw(true, null, 31); // within the interval, but the last one failed
+      expect(uploads(calls, "RGB")).toBe(2);
+      expect(layer.framesUploaded).toBe(2);
+    });
+  });
+
+  test("dispose forgets the texture, so the next session uploads at once", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.draw(true, null, 0);
+      layer.dispose();
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[1].arrive();
+      layer.draw(true, null, 1);
+      expect(uploads(calls, "RGB")).toBe(2);
+    });
+  });
+});
+
+describe("face boxes in the headset", () => {
+  const seen = (age_s: number) => ({
+    stamp: 1,
+    width: 960,
+    height: 720,
+    age_s,
+    faces: [
+      {
+        box: [10, 10, 50, 50] as [number, number, number, number],
+        name: "Ana",
+        role: null,
+        known: true,
+        live: true,
+      },
+    ],
+  });
+  const uploads = (calls: { fn: string; args: unknown[] }[]) =>
+    calls.filter((c) => c.fn === "texImage2D").map((c) => c.args[5]);
+
+  test("fresh faces are composed into the frame: one upload, from the canvas", () => {
+    withFakeImage((made, canvases) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.setFaces(seen(0.2), Date.now());
+      layer.draw(true, null, 1000);
+      const src = uploads(calls);
+      expect(src.length).toBe(1);
+      const canvas = src[0] as FakeCanvas;
+      expect(canvases).toContain(canvas);
+      expect(canvas.width).toBe(960);
+      expect(canvas.ctx.drawn).toBe(1);
+      expect(canvas.texts).toContain("Ana");
+    });
+  });
+
+  test("stale or no faces upload the bare picture", () => {
+    withFakeImage((made) => {
+      const { gl, calls } = stubGl();
+      const layer = new CameraLayer(gl);
+      layer.setStreamUrl("http://x/stream.mjpg");
+      made[0].arrive();
+      layer.setFaces(seen(2.5), Date.now());
+      layer.draw(true, null, 1000);
+      layer.setFaces(null, Date.now());
+      layer.draw(true, null, 1000 + UPLOAD_MIN_INTERVAL_MS);
+      expect(uploads(calls)).toEqual([made[0], made[0]]);
     });
   });
 });

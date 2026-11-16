@@ -16,10 +16,14 @@ Usage:
   c3po gemm start | stop
   c3po teleop start | stop
   c3po camera take
+  c3po map start [name] | save [name]
 
 Default profile: operator (bridge + camera perception + world model).
 Compatibility aliases: start = up core, stop = down.
 Perception stages: fake, odometry, perception, nav2, nav2-fake, stt
+Nav2 opt-ins (env): C3PO_NAV_SLAM=mapping|localization, C3PO_NAV_MAP=<name>,
+  C3PO_NAV_CONTROLLER=mppi, C3PO_NAV_COLLISION_MONITOR=0 (unset = previous stack)
+Model, camera extrinsic, LiDAR source: ~/.c3po/perception.env (KEY=VALUE; the shell wins)
 No profile arms Nav2 or bypasses preflight/motion gates.
 EOF
 }
@@ -78,7 +82,9 @@ case "$command" in
         fi
 
         sudo systemctl restart c3po-bridge.service
-        for _ in $(seq 1 30); do
+        # 45 s of bridge boot (imports, DDS init); `systemctl restart` already
+        # waited for the venv sync. Ends at once on a failed/inactive unit.
+        for _ in $(seq 1 90); do
             state="$(systemctl is-active c3po-bridge.service 2>/dev/null || true)"
             if [ "$state" = "active" ] && ready_pid="$(bridge_http_ready 8001)"; then
                 strays="$(bridge_process_pids | grep -vx "$ready_pid" || true)"
@@ -130,6 +136,15 @@ case "$command" in
             start) require_no_args "teleop start" "$@"; exec "$here/run_teleop" ;;
             stop)  require_no_args "teleop stop" "$@"; exec "$here/stop_teleop" ;;
             *)     die_usage "teleop needs start or stop" ;;
+        esac
+        ;;
+    map)
+        sub="${1:-}"; shift || true
+        [ "$#" -le 1 ] || die_usage "map $sub takes at most a map name"
+        case "$sub" in
+            start) exec "$here/nav_map_start" "$@" ;;
+            save)  exec "$here/nav_map_save" "$@" ;;
+            *)     die_usage "map needs start or save" ;;
         esac
         ;;
     camera)

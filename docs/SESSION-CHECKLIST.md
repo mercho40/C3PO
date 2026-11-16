@@ -1,0 +1,350 @@
+# Robot session checklist
+
+For a session with the physical G1 in front of you. Ordered so each step only
+runs once the thing it depends on is proven — most bad sessions in this
+project's history came from testing step 4 while step 1 was quietly broken.
+
+Everything here uses tools that already exist (`c3po` — including `c3po status`
+and `c3po preflight` — and `headset_check.py`). Nothing in this file needs to be
+maintained separately from them. This file is the general order. The dated list
+of what to test at the next session is
+[test-day/return-checklist.md](autonomy/test-day/return-checklist.md); the expo
+stand has its own, [DEMO-RUNBOOK.md](DEMO-RUNBOOK.md).
+
+**Read §0 before touching anything.** It is the step that is new, and skipping it
+means testing yesterday's code while believing it is today's.
+
+---
+
+## 0. Deploy — the one that silently does nothing if you get it wrong
+
+The robot runs from a git checkout at `~/c3po`, but
+`/etc/systemd/system/c3po-bridge.service` is a root-owned **copy**, not a
+symlink into it. A merge alone changes nothing systemd runs: the unit
+updates only when `./scripts/robot/c3po install` validates, copies and reloads it
+— **and only from a branch that contains the change**.
+
+The robot has no internet on the cable, so the branch is pushed from the Mac,
+exactly as in `docs/OPERATIONS.md` §5. A merge on the wrong branch is a no-op
+that reports success, and the install then faithfully re-copies the old config.
+Check what you got; do not assume.
+
+```bash
+# On the Mac:
+git push ssh://unitree@192.168.123.164/home/unitree/c3po feat/autonomy:refs/heads/incoming
+# On the robot (ssh -t, in your own terminal: install asks for the sudo password):
+cd ~/c3po
+git status -sb               # WHICH BRANCH is this checkout on? Local changes? Stop and ask.
+mkdir -p ~/.c3po && [ -f ~/.c3po/deployed ] || git rev-parse HEAD > ~/.c3po/previous-deploy
+git merge --ff-only incoming # refuses a diverged checkout: stop and look, never force
+```
+
+The `previous-deploy` line matters only once: until an install has written
+`~/.c3po/deployed`, it records the commit to roll back to, as a bare sha. After that,
+`c3po install` keeps both files itself (`docs/OPERATIONS.md` §5, "Rollback").
+
+What to test on hardware next, in order, is in
+[test-day/return-checklist.md](autonomy/test-day/return-checklist.md).
+
+**Then prove the file actually changed before restarting anything:**
+
+```bash
+grep BRIDGE_HOST ~/c3po/scripts/robot/c3po-bridge.service   # must say 127.0.0.1
+```
+
+If it still says `0.0.0.0`, the merge did not bring the change and everything
+below is testing the old build. Stop and fix that first.
+
+```bash
+./scripts/robot/c3po install && c3po restart                 # from ~/c3po
+grep BRIDGE_HOST /etc/systemd/system/c3po-bridge.service    # the copy: 127.0.0.1
+ss -ltnp | grep 8001                                        # must NOT say 0.0.0.0
+```
+
+### The tunnel, and why one is enough
+
+`/mcp` and `/camera/*` are routes on the **same process, same port**, so the 8001
+forward covers the console, the agent and the headset picture. The headset's
+teleop stream is the one other port, 8767. One ssh carries both forwards:
+
+```bash
+./scripts/robot_tunnel.sh c3po                               # keeps 8001 and 8767 up
+# or by hand:
+ssh -N -L 8001:127.0.0.1:8001 -L 8767:127.0.0.1:8767 -o ControlMaster=no c3po
+```
+
+`ControlMaster=no` is not decoration: a forward on a shared master evaporates
+when the master idles out, which presents as a tunnel that worked and then
+stopped.
+
+⚠️ **`apps/back/.env` must point at the tunnel, not the LAN.** The bridge no
+longer accepts LAN connections:
+
+```
+BRIDGE_URL=http://127.0.0.1:8001/mcp
+```
+
+If you forget, `apps/back` prints the fix to its own log on the first failed
+connect — but you will have spent a minute thinking the robot is dead.
+
+---
+
+## 1. Is the stack up
+
+```bash
+c3po up operator      # bridge + camera perception + world model
+c3po status
+```
+
+`c3po up` runs `c3po status` itself at the end. Read it rather than skim it: it
+reports **where the bridge is actually listening**, read from the socket, not
+from any config file. A `bridge bind` problem line here means §0 did not land.
+
+---
+
+## 2. Verify the things this branch changed that hardware has never seen
+
+These are the claims that are unproven until today. Each one is cheap and tells
+you something specific.
+
+### 2a. The DDS interface pin — `dds.init` must say `pinned`
+
+`DDS_INTERFACE=eth0` reached nothing at all until now: the name went into a file
+the SDK's domain never reads. It is now passed to `ChannelFactoryInitialize`.
+
+```bash
+journalctl -u c3po-bridge -n 200 | grep dds.init
+```
+
+- `interface_reason=pinned` → working as intended.
+- `interface_reason=missing` → the name is not a NIC on this host. **Not fatal**:
+  it falls back to autodetermine, which is exactly what shipped before, so the
+  bridge still works. Fix `DDS_INTERFACE` in `apps/bridge/.env` at your leisure.
+- `interface_reason=autodetermine` → nothing was configured. Fine on a laptop;
+  onboard it means CycloneDDS picks among `eth0`/`wlan0`/`docker0` arbitrarily,
+  and only `eth0` reaches the control board.
+
+The last one matters more once perception is up, because containers raise
+`docker0` — which is precisely when arbitrary selection starts picking wrong.
+
+### 2b. The camera — through apps/back, and a stream that no longer leaks
+
+The console and the headset read the picture from apps/back (`/camera/*`,
+behind the login), and back relays it from the bridge. Check both hops from the
+Mac:
+
+```bash
+curl -s http://127.0.0.1:8001/camera/status                  # bridge, via the tunnel: JSON
+curl -s -o /dev/null -w '%{http_code}\n' \
+     http://localhost:3000/camera/status                     # back: 401 without a session is correct
+```
+
+`./scripts/preflight.sh` checks the same two hops. The bridge's own CORS no
+longer matters for the normal setup.
+
+```bash
+curl -s http://127.0.0.1:8081/status      # vision container, if perception is up
+```
+
+Watch `clients` across a few page reloads. It must come back **down**. If it
+climbs and stays, the client-leak fix is not in the running image — see §5.
+
+### 2c. The lidar ring
+
+```bash
+curl -s http://127.0.0.1:8001/telemetry/scan | head -c 300
+```
+
+What to expect: a `r_cm` array of 120 bearings, `stale: false`, and a small
+`age_s`. Verified on 2026-09-08: 78 of 120 bearings returning, 57 cm to 315 cm.
+`null` entries are bearings with no return, which is normal.
+
+⚠️ **The `lidar_online` fix is NOT in the running container.** It is computed
+from message arrival only as of this branch — so a genuinely clear scan no
+longer reports the sensor as offline — but that code lives in
+`world_model_publisher.py`, which is built into the nav image. Until
+`c3po perception build` is re-run, the robot still runs the old behaviour. See
+§5; do not read an `online: false` in an open room as a new fault.
+
+---
+
+## 3. Headset
+
+### 3a. Serve the console from the checkout you are testing
+
+This is the step that has now cost two sessions, in two different ways.
+
+The dev server must run from the checkout whose code you want to test. On
+2026-08-26 the console was served from a different checkout, so a stereo fix
+that was genuinely committed appeared not to work. On 2026-09-08 port 3001 was
+held by a Vite left running for two WEEKS from that same other checkout, and
+then by a Next.js dev server from an unrelated project — the headset was
+forwarded to both and showed somebody else's website, with a login form no
+account could satisfy.
+
+`quest_setup.sh` now checks the OWNER of ports 3000 and 3001 and refuses to
+forward a port held by a process running outside this repository. It names the
+pid, the working directory and the command, so "the wrong thing is on 3001" is a
+sentence you read rather than a fortnight of confusion. If it fires, kill the
+process it names and start the dev server from here:
+
+```bash
+C3PO_ROBOT_HOST=localhost bun run dev:robot   # from the repo root: 3000 + 3001, teleop via the tunnel's 8767
+```
+
+Confirm what is actually being served before putting the headset on:
+
+```bash
+curl -s http://localhost:3001/ | grep -o 'C3PO'     # must print C3PO
+```
+
+### 3b. Forward the ports
+
+```bash
+scripts/quest_setup.sh          # forwards the ports; prints which .env the
+                                # camera port came from
+```
+
+### 3c. Log in
+
+The console is behind Better Auth and `/vr-control` redirects to `/login`
+without a session. Public sign-up is closed (email and OAuth alike; `/signup`
+answers "El registro está cerrado"), so accounts are made at a terminal.
+Passwords for pre-existing dev accounts are not recoverable — if you do not
+have one, make an account rather than guessing:
+
+```bash
+cd apps/back
+bun scripts/create-user.ts you@example.com "You" --admin
+```
+
+It asks for the password twice with echo off (or reads `C3PO_PASSWORD`),
+refuses anything under 8 characters, and the account can log in at once, no
+restart. Admin matters — without it the walk buttons return 403. Drop
+`--admin` for a view-only account. An address in `ADMIN_EMAILS` is still
+promoted at startup (`[admin] promoted to admin: ...`), but only if its email
+is verified; accounts from this script are.
+
+The same script re-keys or removes an account. Do this for any account nobody
+can vouch for, e.g. `operador@c3po.local` (backlog 8.5), after checking
+/settings → Usuarios:
+
+```bash
+bun scripts/create-user.ts --reset-password operador@c3po.local  # new password, signs it out
+bun scripts/create-user.ts --delete operador@c3po.local          # gone, with its sessions
+```
+
+To confirm sign-up really is closed, with `apps/back` running:
+
+```bash
+curl -s -X POST http://localhost:3000/api/auth/sign-up/email \
+  -H 'Content-Type: application/json' -H 'Origin: http://localhost:3001' \
+  -d '{"email":"probe@example.com","password":"something-typeable","name":"Probe"}'
+# → 400 {"code":"EMAIL_PASSWORD_SIGN_UP_DISABLED",...}
+```
+
+Pick a password you can type on a virtual keyboard. Typing symbols in a headset
+is its own small ordeal.
+
+### 3d. Check what the headset is actually showing
+
+If the Quest browser restored an old tab, everything above can be perfect and
+you will still be looking at the wrong page. With the headset connected:
+
+```bash
+adb forward tcp:9222 localabstract:chrome_devtools_remote
+curl -s http://127.0.0.1:9222/json/list | grep -o '"url": "[^"]*"' | head
+```
+
+Every open tab, by URL. If none of them is `localhost:3001`, that is the
+problem — and you can navigate it from here rather than typing in VR:
+
+```bash
+curl -s -X PUT "http://127.0.0.1:9222/json/new?http://localhost:3001/login"
+```
+
+Then, with the headset on and someone watching the robot:
+
+```bash
+uv run --project apps/bridge apps/bridge/scripts/headset_check.py
+```
+
+Supervised. It reports what the headset **shows**, which is not the same
+question as whether the services are up.
+
+---
+
+## 4. Motion — last, and only after 1–3 are clean
+
+```bash
+c3po preflight        # reports; changes nothing, starts nothing, arms nothing
+```
+
+Then the FSM sequence that this robot actually needs, in order. `damp` first,
+always — it is the state the others are legal from:
+
+| Step | Tool                  | What it does                              |
+| ---- | --------------------- | ----------------------------------------- |
+| 1    | `damp`                | zero stiffness, the canonical rest        |
+| 2    | `prepare`             | stands up and takes its own weight        |
+| 3    | `start_walking_waist` | mode 501 — the walk program for this body |
+
+`start_walking` (500) has twice returned success and done nothing on this
+chassis. Use 501.
+
+**`stop_everything` is the e-stop** and needs no arguments by design. The
+headset's PARAR button and the console dispatch the same call.
+
+---
+
+## 5. Known-unverified, so nobody reports these as new faults
+
+- **BOTH perception containers are running older code than this checkout.**
+  This was stated as a vision-only problem and that was wrong. The nav container
+  mounts `config` and `logs` and nothing else — `ros2 launch c3po_perception`
+  resolves the package from **inside the image** — so a deploy on the robot
+  updates the files on disk and changes nothing about what runs.
+
+  Inert until `c3po perception build` is re-run:
+  - `vision/c3po_vision/stream.py` — the client-slot leak (if §2b shows
+    `clients` climbing across page reloads, this is why)
+  - `world_model_publisher.py` — `lidar_online` computed from arrival, so an
+    open room stops reporting the sensor offline (§2c)
+  - `g1_odom_tf.py` — a >0.5 s odometry gap no longer republishes the pre-stall
+    velocity as current
+
+  The build is long. Start it early, in the background, rather than waiting on
+  it before doing anything else.
+
+- **The mount calibration in `g1_odom_tf` is half applied.**
+  `base_in_body_xyz` and `mount_yaw_deg` reach the static `body -> base_link`
+  transform only; the dynamic `odom -> base_footprint` and the `/odom` Nav2
+  steers on do not use them. `mount_yaw_deg` is 0.0 so that half is dormant, and
+  setting it now logs a warning saying so. The horizontal offset (0.10 m) is
+  live, which puts `base_footprint` ~10 cm from where the header says. **Fixing
+  it wants a tape measure and this robot** — the values are labelled
+  PLACEHOLDERS because nobody has measured them.
+- **Nine skills are `works_real=False`**, and `UNVERIFIED_EXITS`, FSM label 802
+  and the `measure_turn` yaw numbers still need robot time.
+- **802 is Run, and it accepts velocity without moving.** R2+A on the remote
+  puts the robot there; `SetVelocity` answers rpc 0 and nothing moves. Bring-up
+  must end in 501. See `docs/OPERATIONS.md` §5, "Accepts velocity, does not
+  move: FSM 802".
+
+---
+
+## Rollback
+
+The bridge is a git checkout, so rollback is a checkout on the robot of the commit in
+`~/.c3po/previous-deploy`, then `c3po install` and `c3po restart`. Use the exact commands
+in `docs/OPERATIONS.md` §5 ("Rollback"): pushing an older commit to `incoming` does not
+work.
+
+If the bridge will not start at all, `bridge_sync` now refuses to start it when
+the Unitree SDK patch fails to apply — deliberately. An unpatched SDK gives a
+bridge that answers every health check and cannot command the robot, which is an
+e-stop wired to nothing. The log names the fix:
+
+```bash
+cd ~/c3po/apps/bridge && ./scripts/postsync.sh
+```

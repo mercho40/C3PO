@@ -8,18 +8,34 @@ other team lost.
 
 from __future__ import annotations
 
+import os
 from typing import List, Sequence, Tuple
 
 import pytest
 
-from bringup.cli import bring_up
+from bringup import build, cli
+from bringup.cli import bring_up, operator_env, read_env_file
 from bringup.spec import NAV, STT, VISION
 
 
 class FakeRunner:
     """Records every docker call; answers queries from a scripted world."""
 
-    def __init__(self, existing=(), running=(), gemm=(), topic_ready=True, http_ready=True):
+    def __init__(
+        self,
+        existing=(),
+        running=(),
+        gemm=(),
+        topic_ready=True,
+        http_ready=True,
+        logs=None,
+        script_rc=None,
+        files=(),
+    ):
+        #: Exit code per helper script, by basename. 127 is "not on disk" —
+        #: see `Runner.run_script`. Defaults to 0 for anything unlisted.
+        self._script_rc = dict(script_rc or {})
+        self._files = set(files)
         self.calls: List[List[str]] = []
         self.scripts: List[Tuple[str, dict]] = []
         self.slept = 0.0
@@ -29,6 +45,7 @@ class FakeRunner:
         self._gemm = list(gemm)
         self._topic_ready = topic_ready
         self._http_ready = http_ready
+        self._logs = dict(logs or {})
 
     def docker(self, args: Sequence[str], capture: bool = True) -> Tuple[int, str]:
         args = list(args)
@@ -55,6 +72,8 @@ class FakeRunner:
             return 0, ""
         if args[:1] == ["exec"]:
             return (0 if self._topic_ready else 1), ""
+        if args[:1] == ["logs"]:
+            return 0, self._logs.get(args[-1], "")
         return 0, ""
 
     def http_ok(self, url: str, timeout: float = 3.0) -> bool:
@@ -66,12 +85,17 @@ class FakeRunner:
     def makedirs(self, path: str) -> None:
         self.dirs.append(path)
 
+    def exists(self, path: str) -> bool:
+        return path in self._files
+
     def run_script(self, path, env=None):
         self.scripts.append((path, dict(env or {})))
-        return 0
+        return self._script_rc.get(os.path.basename(path), 0)
 
 
 ENV = {"HOME": "/home/unitree", "C3PO_DIR": "/home/unitree/c3po"}
+# The operator said, with the other team's OK, that gemm may be stopped.
+TAKE = dict(ENV, C3PO_TAKE_OVER="1")
 
 
 def created(runner: FakeRunner) -> List[str]:
@@ -135,9 +159,23 @@ def test_a_camera_stage_stops_gemm_and_then_takes_the_camera():
     reported success with the device still held.
     """
     runner = FakeRunner(gemm=["gemm-bringup"])
-    bring_up("nav2", runner, env=ENV, scripts_dir="/s")
+    bring_up("nav2", runner, env=TAKE, scripts_dir="/s")
     ran = [path for path, _ in runner.scripts]
     assert ran == ["/s/stop_gemm", "/s/take_camera"]
+
+
+def test_gemm_is_never_stopped_unasked(capsys):
+    """2026-10-15: our bring-up stopped gemm-bringup while the other team used it.
+
+    Without C3PO_TAKE_OVER=1 a stage that needs gemm's sensor refuses, starts
+    nothing, and prints the command to run once they have agreed.
+    """
+    runner = FakeRunner(gemm=["gemm-bringup"])
+    assert bring_up("nav2", runner, env=ENV, scripts_dir="/s") == 1
+    assert runner.scripts == []
+    assert created(runner) == []
+    printed = capsys.readouterr()
+    assert "C3PO_TAKE_OVER=1" in printed.out + printed.err
 
 
 def test_taking_the_camera_is_confirmed_because_the_stage_was_chosen():
@@ -149,7 +187,7 @@ def test_taking_the_camera_is_confirmed_because_the_stage_was_chosen():
 
 def test_the_lidar_driver_override_makes_an_otherwise_free_stage_claim():
     runner = FakeRunner(gemm=["gemm-bringup"])
-    bring_up("odometry", runner, env=dict(ENV, C3PO_LIDAR_SOURCE="driver"), scripts_dir="/s")
+    bring_up("odometry", runner, env=dict(TAKE, C3PO_LIDAR_SOURCE="driver"), scripts_dir="/s")
     assert "/s/stop_gemm" in [path for path, _ in runner.scripts]
 
 
@@ -173,6 +211,62 @@ def test_a_nav_stack_that_never_publishes_is_rolled_back():
     runner = FakeRunner(topic_ready=False)
     assert bring_up("nav2", runner, env=ENV) == 1
     assert set(removed(runner)) >= {NAV, VISION}
+
+
+def test_the_logs_are_printed_before_the_rollback_destroys_them(capsys):
+    """Release the sensors, but keep the evidence.
+
+    On 2026-08-26 `nav2-fake` reported "no world summary" and rolled back while
+    every synthetic publisher was at message #200+ and world_model_publisher,
+    planner_server and the lifecycle manager were all alive. `docker logs` had
+    already been deleted by the time anyone looked, so the first failure said
+    nothing at all and the run had to be repeated inside a polling loop just to
+    catch the output.
+    """
+    runner = FakeRunner(topic_ready=False, logs={NAV: "boom: could not start\nsecond line"})
+    assert bring_up("nav2", runner, env=ENV) == 1
+    captured = capsys.readouterr()  # ONE call: a second returns only new output
+    printed = captured.out + captured.err
+    assert "boom: could not start" in printed, "the tail must reach the operator"
+    # And it must still be removed: nav2 holds the Livox and the RealSense away
+    # from gemm, so a failed bring-up that leaves containers up takes the other
+    # team's sensors hostage.
+    assert NAV in removed(runner)
+
+
+def test_the_logs_are_read_before_the_container_is_removed(capsys):
+    """Order matters, and it is not observable from the output alone."""
+    runner = FakeRunner(topic_ready=False, logs={NAV: "something"})
+    bring_up("nav2", runner, env=ENV)
+    kinds = [c[0] for c in runner.calls if c[:1] in (["logs"], ["rm"])]
+    assert "logs" in kinds and "rm" in kinds
+    assert kinds.index("logs") < kinds.index("rm"), (
+        "logs were read after the container was destroyed, which is the bug"
+    )
+
+
+def test_the_probe_timeout_tolerates_a_loaded_box():
+    """The measured number, pinned.
+
+    2.25 s at load 10 against a 3 s ceiling; over 3 s at load 15 — which is
+    just what the box reads while the other team runs SLAM. The ceiling has to
+    clear that by enough that a busy robot is not a failed bring-up.
+    """
+    from bringup.cli import PROBE_TIMEOUT_S
+
+    assert PROBE_TIMEOUT_S >= 10
+
+
+def test_the_failure_message_states_the_real_worst_case():
+    """It used to say "after 90s" for a loop that could take six minutes.
+
+    Somebody timing the failure against that number concludes the machine is
+    wedged and starts killing things.
+    """
+    from bringup.cli import PROBE_INTERVAL_S, PROBE_TIMEOUT_S, READY_ATTEMPTS
+
+    worst = READY_ATTEMPTS * (PROBE_TIMEOUT_S + PROBE_INTERVAL_S)
+    assert worst <= 360, "a bring-up must not be able to hang longer than the old one"
 
 
 def test_a_dead_camera_does_not_fail_a_nav_bring_up():
@@ -216,3 +310,213 @@ def test_every_stage_dry_runs_without_touching_the_machine(stage):
     assert runner.calls == []
     assert runner.scripts == []
     assert runner.dirs == []
+
+
+# --- a helper script that is not on disk -------------------------------------
+#
+# On 2026-08-29 `scripts/robot/stop_gemm`, `take_camera` and `run_c3po` were all
+# missing from the robot's working tree — tracked in git, gone from disk, cause
+# never established. Every camera-claiming stage then died on a raw
+# FileNotFoundError traceback out of `subprocess.call`, with the real problem on
+# the last line. The two cases below are the same accident wanting opposite
+# answers, which is the whole reason 127 is told apart from every other rc.
+
+
+def test_a_missing_stop_gemm_refuses_rather_than_starting_anyway():
+    """gemm is running and holding the sensor. Carrying on is the worst option.
+
+    Starting the containers with gemm still on the device is the "one commander"
+    failure `_common.sh` exists to prevent, and it presents as a detector that
+    comes up clean and sees nothing — a far longer debugging session than a
+    refusal that names the missing file.
+    """
+    runner = FakeRunner(gemm=["gemm-ai"], script_rc={"stop_gemm": 127})
+    assert bring_up("perception", runner, env=TAKE, scripts_dir="/s") == 1
+    assert created(runner) == [], "nothing may start while gemm holds the device"
+
+
+def test_the_refusal_names_the_containers_it_actually_found(capsys):
+    """The manual fallback has to act on what was detected, which is containers.
+
+    It first read `sudo systemctl stop gemm-ai`, which is wrong in a way that
+    costs an operator real time: OPERATIONS is explicit that `stop_gemm` does
+    NOT stop `gemm-ai.service` — it filters running *containers*, and that is
+    equally what `gemm_running()` here sees. Naming the unit sends somebody to
+    stop a voice assistant while the containers keep the camera.
+    """
+    runner = FakeRunner(gemm=["gemm-bringup", "gemm-slam"], script_rc={"stop_gemm": 127})
+    bring_up("perception", runner, env=TAKE, scripts_dir="/s")
+    printed = capsys.readouterr()
+    text = printed.out + printed.err
+    assert "docker stop gemm-bringup gemm-slam" in text
+    assert "systemctl" not in text
+
+
+def test_a_missing_stop_gemm_is_not_fatal_when_gemm_is_not_running():
+    """Nothing to release, so its absence costs this stage nothing."""
+    runner = FakeRunner(script_rc={"stop_gemm": 127})
+    assert bring_up("perception", runner, env=ENV, scripts_dir="/s") == 0
+
+
+def test_a_missing_take_camera_warns_but_still_brings_the_stage_up():
+    """Different problem, opposite answer.
+
+    Nothing is announced to be holding the device, so the detector may simply
+    find it — and if it does not, the stage reports it offline honestly.
+    Refusing here would cost the lidar ring too, for a camera that might have
+    worked.
+    """
+    runner = FakeRunner(script_rc={"take_camera": 127})
+    assert bring_up("perception", runner, env=ENV, scripts_dir="/s") == 0
+    assert VISION in created(runner)
+
+
+def test_the_absent_and_the_refused_camera_do_not_share_a_message(capsys):
+    """"could not release the camera" sends somebody into udev and permissions.
+
+    For a file that is simply not on disk that is the wrong hour to spend, so
+    rc 127 and rc 2 must not print the same sentence.
+    """
+    absent = FakeRunner(script_rc={"take_camera": 127})
+    bring_up("perception", absent, env=ENV, scripts_dir="/s")
+    absent_out = capsys.readouterr()  # ONE call: a second returns only new output
+
+    refused = FakeRunner(script_rc={"take_camera": 2})
+    bring_up("perception", refused, env=ENV, scripts_dir="/s")
+    refused_out = capsys.readouterr()
+
+    assert "missing" in absent_out.out + absent_out.err
+    assert "missing" not in refused_out.out + refused_out.err
+
+
+def test_run_script_reports_127_instead_of_raising():
+    """The crash itself, at its source: a return code, not a traceback."""
+    from bringup.cli import Runner
+
+    assert Runner().run_script("/nonexistent/definitely-not-a-real-helper") == 127
+
+
+# --- Phase 3 nav flags --------------------------------------------------------
+
+
+def test_a_mistyped_nav_flag_is_refused_before_gemm_is_touched():
+    runner = FakeRunner(gemm=["gemm-bringup"])
+    assert bring_up("nav2", runner, env=dict(TAKE, C3PO_NAV_SLAM="localisation"),
+                    scripts_dir="/s") == 2
+    assert runner.scripts == [] and created(runner) == []
+
+
+def test_localization_without_a_saved_map_is_refused(capsys):
+    runner = FakeRunner()
+    env = dict(ENV, C3PO_NAV_SLAM="localization")
+    assert bring_up("nav2", runner, env=env, scripts_dir="/s") == 1
+    assert created(runner) == []
+    assert "nav_map_save" in capsys.readouterr().err
+
+
+def test_localization_with_a_saved_map_comes_up():
+    runner = FakeRunner(files={"/home/unitree/.c3po/maps/c3po.yaml"})
+    env = dict(ENV, C3PO_NAV_SLAM="localization")
+    assert bring_up("nav2", runner, env=env, scripts_dir="/s") == 0
+    assert "/home/unitree/.c3po/maps" in runner.dirs
+
+
+# --- ~/.c3po/perception.env ---------------------------------------------------
+#
+# A model swap or a tape-measured extrinsic used to live only in the shell that
+# exported it, so the next `c3po up` from a fresh ssh ran the old model.
+
+
+def _env_file(home, text: str) -> None:
+    (home / ".c3po").mkdir()
+    (home / ".c3po" / "perception.env").write_text(text)
+
+
+def _create_line(out: str, name: str) -> str:
+    return next(line for line in out.splitlines()
+                if line.startswith(f"docker create --name {name} "))
+
+
+def test_a_persisted_model_reaches_the_vision_container(tmp_path, capsys):
+    _env_file(tmp_path, "C3PO_ONNX=/m/y.onnx\nC3PO_ENGINE=/e/y.plan\nC3PO_LABELS=/m/y.txt\n")
+    env = operator_env({"HOME": str(tmp_path), "C3PO_DIR": "/c"})
+    assert bring_up("perception", FakeRunner(), env=env, dry_run=True) == 0
+    out = capsys.readouterr().out
+    vision = _create_line(out, VISION)
+    for flag in ("-e C3PO_ONNX=/m/y.onnx", "-e C3PO_ENGINE=/e/y.plan", "-e C3PO_LABELS=/m/y.txt"):
+        assert flag in vision
+    assert "C3PO_ENGINE, C3PO_LABELS, C3PO_ONNX" in out, "say which keys came from the file"
+
+
+def test_a_shell_export_beats_the_file(tmp_path, capsys):
+    _env_file(tmp_path, "C3PO_LABELS=/from/file\n")
+    assert operator_env({"HOME": str(tmp_path), "C3PO_LABELS": "x"})["C3PO_LABELS"] == "x"
+    assert "C3PO_LABELS" not in capsys.readouterr().out, "the file's value was not taken"
+
+
+def test_a_missing_file_is_empty(tmp_path):
+    assert read_env_file(str(tmp_path / "perception.env")) == {}
+    assert operator_env({"HOME": str(tmp_path)}) == {"HOME": str(tmp_path)}
+
+
+def test_export_comments_and_quoted_paths_parse(tmp_path):
+    path = tmp_path / "perception.env"
+    path.write_text(
+        "# measured 2026-11-03\n\n"
+        "export C3PO_CAMERA_PITCH_DEG=47.6  # URDF\n"
+        'C3PO_ONNX="/opt/c3po/models/my model.onnx"\n'
+    )
+    assert read_env_file(str(path)) == {
+        "C3PO_CAMERA_PITCH_DEG": "47.6",
+        "C3PO_ONNX": "/opt/c3po/models/my model.onnx",
+    }
+
+
+@pytest.mark.parametrize("bad", ['C3PO_LABELS="/m/y.txt', "C3PO_LABELS /m/y.txt", "=/m/y.txt"])
+def test_a_malformed_line_refuses_with_its_number_before_docker(tmp_path, monkeypatch, capsys, bad):
+    _env_file(tmp_path, f"C3PO_ONNX=/m/y.onnx\n{bad}\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runner = FakeRunner()
+    monkeypatch.setattr(cli, "Runner", lambda: runner)
+    assert cli.main(["perception"]) == 2
+    assert "perception.env:2:" in capsys.readouterr().err
+    assert runner.calls == [] and runner.scripts == []
+    assert build.main(["engine"]) == 2, "build_perception refuses the same file"
+    assert runner.calls == []
+
+
+def test_keys_outside_the_allowlist_are_ignored_with_a_warning(tmp_path, capsys):
+    """A persisted take-over or fake detector would silently change every boot."""
+    _env_file(tmp_path, "C3PO_TAKE_OVER=1\nC3PO_VISION_FAKE=1\nC3PO_ONNX=/m/y.onnx\n")
+    env = operator_env({"HOME": str(tmp_path)})
+    assert "C3PO_TAKE_OVER" not in env and "C3PO_VISION_FAKE" not in env
+    assert env["C3PO_ONNX"] == "/m/y.onnx"
+    out = capsys.readouterr().out
+    assert "C3PO_TAKE_OVER ignored" in out and "C3PO_VISION_FAKE ignored" in out
+    assert bring_up("nav2", FakeRunner(gemm=["gemm-bringup"]), env=env, scripts_dir="/s") == 1
+
+
+def test_a_persisted_lidar_source_reaches_the_launch(tmp_path, capsys):
+    _env_file(tmp_path, "C3PO_LIDAR_SOURCE=driver\n")
+    env = operator_env({"HOME": str(tmp_path)})
+    assert bring_up("odometry", FakeRunner(), env=env, dry_run=True) == 0
+    assert _create_line(capsys.readouterr().out, NAV).endswith(" lidar_source:=driver")
+
+
+def test_build_perception_builds_the_persisted_model(tmp_path, monkeypatch, capsys):
+    _env_file(tmp_path, "C3PO_ONNX=/m/y.onnx\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("C3PO_FAKE_ARCH", "aarch64")
+    monkeypatch.delenv("C3PO_ONNX", raising=False)
+    monkeypatch.setattr(cli, "Runner", FakeRunner)
+    assert build.main(["engine", "--dry-run"]) == 0
+    assert "-e C3PO_ONNX=/m/y.onnx" in capsys.readouterr().out
+
+
+def test_a_persisted_stream_rate_reaches_the_vision_container(tmp_path, capsys):
+    _env_file(tmp_path, "C3PO_VISION_STREAM_HZ=7\n")
+    env = operator_env({"HOME": str(tmp_path), "C3PO_DIR": "/c"})
+    assert bring_up("perception", FakeRunner(), env=env, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "-e C3PO_VISION_STREAM_HZ=7" in _create_line(out, VISION)
+    assert "C3PO_VISION_STREAM_HZ ignored" not in out

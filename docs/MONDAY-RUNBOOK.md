@@ -4,14 +4,18 @@ Run this in order on the first supervised hardware window. The order keeps read-
 non-motion checks ahead of sensor takeover and motion. Record the command output and stop
 at the first failed gate; do not "try the next thing" around a safety refusal.
 
+This was the first window's sequence. For the next session, the dated list is
+`docs/autonomy/test-day/return-checklist.md`; deploy as in `docs/OPERATIONS.md` §5.
+
 ## People and stop conditions
 
 Before connecting:
 
 - One operator is beside the G1 with the physical e-stop in reach.
 - The floor is clear and the robot starts standing still.
-- The other team has agreed to the sensor/build window before `c3po gemm stop`,
-  `c3po camera take`, `c3po perception up perception`, or an eight-core image build.
+- `docker ps` shows no `gemm-*` containers before `c3po camera take`,
+  `c3po perception up perception`, or an eight-core image build. The G1 is C3PO-only since
+  2026-10-27; if gemm's containers are up, `docker stop` them and never touch their files.
 - Nobody enables `TELEOP_ARM_ENABLED` until `arm_sign_check.py` has completed.
 - Any unexpected motion, second commander, unknown gate state, missing physical e-stop, or
   failed health check ends the run. Use the physical e-stop first if motion is unexpected.
@@ -54,21 +58,25 @@ real values rather than `UNKNOWN`.
 
 ## 3. Install the simplified stack
 
-Record the pre-deploy commit before pulling. The software e-stop disappears briefly during
-the restart, so keep the physical e-stop in reach and do this before any motion test.
+Record the pre-deploy commit before pulling, as a bare sha, but only while
+`~/.c3po/deployed` does not exist: after that `c3po install` records it itself, and a sha
+written by hand would point a rollback at the commit now running. The software e-stop
+disappears briefly during the restart, so keep the physical e-stop in reach and do this
+before any motion test.
 
 ```bash
 cd ~/c3po
-printf 'previous=%s\n' "$(git rev-parse HEAD)" | tee ~/.c3po/previous-deploy
+mkdir -p ~/.c3po && [ -f ~/.c3po/deployed ] || git rev-parse HEAD > ~/.c3po/previous-deploy
 ./scripts/robot/c3po install
 c3po restart
+cat ~/.c3po/deployed ~/.c3po/previous-deploy   # runs now; what a rollback goes back to
 systemctl is-active c3po-bridge
 curl -sS http://127.0.0.1:8001/telemetry/gate
 c3po status
 docker ps
-sudo systemctl stop c3po-bridge
+sudo systemctl stop c3po-bridge.service
 docker ps
-sudo systemctl start c3po-bridge
+sudo systemctl start c3po-bridge.service
 c3po restart   # proves systemd's MainPID owns 127.0.0.1:8001
 curl -sS http://127.0.0.1:8001/telemetry/gate
 docker ps
@@ -78,26 +86,10 @@ Pass if both starts become `active`, the gate reports closed, `c3po status` read
 systemd-owned PID, and stopping the bridge never stops perception containers. Also confirm
 that `~/.local/bin` exposes `c3po` rather than the old lifecycle command set.
 
-If it fails, restore the prior checkout and the exact bridge unit that the new installer
-backed up. Do **not** run the old full-stack installer: it would restore the retired
-perception unit and repair timer.
-
-```bash
-previous="$(cut -d= -f2 ~/.c3po/previous-deploy)"
-git switch --detach "$previous"
-sudo install -o root -g root -m 0644 \
-  /var/lib/c3po/previous-c3po-bridge.service \
-  /etc/systemd/system/c3po-bridge.service
-sudo systemctl daemon-reload
-
-# Restore only that checkout's user commands, never its systemd automation.
-if [ -x ./scripts/robot/install_robot_scripts.sh ]; then
-  SKIP_LOGROTATE=1 ./scripts/robot/install_robot_scripts.sh
-elif [ -x ./scripts/robot/c3po ]; then
-  ln -sf "$PWD/scripts/robot/c3po" ~/.local/bin/c3po
-fi
-sudo systemctl restart c3po-bridge.service
-```
+If it fails, roll back as in `docs/OPERATIONS.md` §5 ("Rollback"), to the commit in
+`~/.c3po/previous-deploy`. Do **not** run the old full-stack installer: it would restore the
+retired perception unit and repair timer. That recipe says when to restore the backed-up
+unit instead.
 
 This rollback keeps perception foreground-only. Do not continue to sensor or motion tests
 after a rollback.
@@ -208,7 +200,7 @@ c3po status
 docker ps
 ```
 
-Return the sensors/stack according to the agreement with the other team. Preserve
+Leave gemm's containers stopped; their autostart is off. Preserve
 `~/.c3po/logs/monday-validation.log`, note every failed gate, and update the "Written and
 never run on hardware" inventory in `docs/OPERATIONS.md` only for checks that actually
 passed.

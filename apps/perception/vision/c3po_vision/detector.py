@@ -12,10 +12,18 @@ needs a camera, a GPU or a DDS stack is here, behind a lazy import.
 
 WHAT THIS PUBLISHES, AND WHY EVERY TICK
 ---------------------------------------
-    {"v": 1, "stamp_unix": 1755530000.25, "objects": [...], "objects_omitted": 0}
+    {"v": 1, "stamp_unix": 1755530000.25, "objects": [...], "objects_omitted": 0,
+     "unranged": [...]}
 
 `objects` are ALREADY EGOCENTRIC — label, range_m, bearing_deg, confidence,
-exactly `world_model.Observation`'s keyword arguments. D2.2 option 1: this
+exactly `world_model.Observation`'s keyword arguments — plus ADDITIVE
+fields older consumers ignore: `track_id` (tracking.py), `cam_xyz` (optical-frame point, m), `depth_source`
+("direct" | "plane", grounding.ground_box) and, for "direct" only, `near_m` (the near face's range), and
+`support` (grounding.fit_support: the surface under the object, base_link, and the same top in
+the optical frame as cam_top_xyz / cam_near_xyz; absent if none). `unranged` (also additive) holds
+what was SEEN but could not be ranged — label, bearing_deg, confidence,
+track_id, depth_source "invalid" — kept out of `objects` because a thing with
+no range is not an obstacle at range 0. D2.2 option 1: this
 container owns the base_link<-camera extrinsic as a constant and resolves
 range/bearing itself, so there is no TF here, none in the nav container for
 detections, and none in the bridge.
@@ -74,10 +82,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import sys
 import time
-from typing import Any, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 # Stdlib-only at module scope (Pillow and numpy are lazy inside it), so this
 # import keeps the "importable on a Mac" property the docstring above claims.
@@ -88,9 +97,13 @@ from c3po_vision.grounding import (
     MIN_VALID_DEPTH_M,
     CameraExtrinsic,
     Intrinsics,
+    clamp_box,
+    fit_support,
     ground_box,
+    ray_bearing_deg,
     to_observation,
 )
+from c3po_vision.tracking import IouTracker
 
 # --------------------------------------------------------------------------
 # Wire contract
@@ -115,7 +128,9 @@ DOMAIN_ID = int(os.environ.get("C3PO_DDS_DOMAIN", "42"))
 # are summed the whole way to the model (ours -> objects_omitted -> the
 # bridge's extra_omitted). A model shown 8 of 40 obstacles with no indication
 # the other 32 exist will reason confidently about a scene it cannot see.
-MAX_OBJECTS_ON_WIRE = 32
+# An env var since YOLOE's ~1,200 classes see more per frame; above 32 the nav
+# container's own cap truncates (and counts) the rest.
+MAX_OBJECTS_ON_WIRE = int(os.environ.get("C3PO_VISION_MAX_OBJECTS", "32"))
 
 # --------------------------------------------------------------------------
 # Tuning. Every one of these is an env var because Stage 6 tunes them against a
@@ -135,6 +150,48 @@ COLOR_FPS = int(os.environ.get("C3PO_VISION_COLOR_FPS", "30"))
 CONF_THRESHOLD = float(os.environ.get("C3PO_VISION_CONF", "0.35"))
 NMS_IOU = float(os.environ.get("C3PO_VISION_IOU", "0.45"))
 
+
+def parse_class_conf(raw: str, floor: float) -> Tuple[Dict[str, float], List[str]]:
+    """`C3PO_VISION_CLASS_CONF` -> ({label: threshold}, ["entry (why it was ignored)"]).
+
+    `cooker=0.6, toaster=0.6, thumbtack=off`: a comma-separated list of
+    label=threshold, label exactly as in the labels file (inner spaces kept; quote
+    the value in perception.env), `off` to drop the class. A bad entry is
+    reported and skipped, never fatal. Only RAISING a bar works: the decoder
+    already dropped everything under `floor` (C3PO_VISION_CONF). `person` is
+    refused: bridge.safety's person rule reads that label, and a higher bar for
+    it hides people from the stop and slow distances.
+    """
+    conf: Dict[str, float] = {}
+    ignored: List[str] = []
+    for entry in raw.split(","):
+        label, sep, value = (part.strip() for part in entry.partition("="))
+        if not (label or value):
+            continue
+        if not sep or not label:
+            ignored.append(f"{entry.strip()} (expected label=threshold)")
+            continue
+        if label == "person":
+            ignored.append(f"{entry.strip()} (person follows C3PO_VISION_CONF)")
+            continue
+        if value.lower() == "off":
+            conf[label] = float("inf")
+            continue
+        try:
+            threshold = float(value)
+        except ValueError:
+            threshold = float("nan")
+        if not floor < threshold <= 1.0:
+            ignored.append(f"{entry.strip()} (needs a number above {floor} and at most 1, or off)")
+            continue
+        conf[label] = threshold
+    return conf, ignored
+
+
+CLASS_CONF, CLASS_CONF_IGNORED = parse_class_conf(
+    os.environ.get("C3PO_VISION_CLASS_CONF", ""), CONF_THRESHOLD
+)
+
 # Above this in base_link the thing is ceiling, signage or a light fitting, and
 # the robot is 1.3 m tall. Reporting them costs tokens and invites the model to
 # plan around an obstacle it will walk under.
@@ -142,6 +199,21 @@ MAX_HEIGHT_M = float(os.environ.get("C3PO_VISION_MAX_HEIGHT_M", "2.0"))
 
 MIN_DEPTH_M = float(os.environ.get("C3PO_VISION_MIN_DEPTH_M", str(MIN_VALID_DEPTH_M)))
 MAX_DEPTH_M = float(os.environ.get("C3PO_VISION_MAX_DEPTH_M", str(MAX_VALID_DEPTH_M)))
+
+# How much FARTHER than the surface under it an object may read before its
+# depth is distrusted and the support plane is tried (grounding.ground_box).
+# <= 0 disables the plane fallback entirely.
+BEHIND_M = float(os.environ.get("C3PO_VISION_BEHIND_M", "0.30"))
+
+# The surface each non-person detection stands on (grounding.fit_support), for the arm
+# planner. On unless C3PO_VISION_SUPPORT=0; read in ground_all so a test can flip it.
+SUPPORT_ENV = "C3PO_VISION_SUPPORT"
+# Only the nearest few: pure Python inside the 10 Hz tick, ~1 ms a fit on a Mac, a few on the Jetson.
+SUPPORT_PER_FRAME = 4
+# Furniture is the support, not on one (the label's last word: 'dining table'): its fit spent
+# the budget an object on it needed (robot 2026-11-13: a 'chair' 0.32 m away came first).
+NO_SUPPORT_LABELS = frozenset({"table", "desk", "chair", "armchair", "highchair", "bench",
+                               "sofa", "couch", "bed", "counter", "shelf", "cabinet"})
 
 ENGINE_PATH = os.environ.get("C3PO_ENGINE", "/opt/c3po/engines/yolo11n.fp16.plan")
 
@@ -157,17 +229,39 @@ LABELS_PATH = os.environ.get("C3PO_LABELS", "/opt/c3po/models/labels.txt")
 # be told. Silently retrying a dead D435i for an hour is not.
 MAX_CONSECUTIVE_FAILURES = int(os.environ.get("C3PO_VISION_MAX_FAILURES", "20"))
 
+# How long start() waits for a hardware-reset D435 to re-enumerate. Not an env
+# var: it only bounds a one-time recovery, and a longer wait hides a dead camera.
+RESET_WAIT_S = 15.0
+
+# Mid-run USB drop (re-enumeration, renumbered /dev/videoN): how long, and how
+# many failed reopens, before run() gives up and exits for the bring-up/operator.
+RECOVER_S = 60.0
+RECOVER_ATTEMPTS = 5
+
+# What librealsense says when the device went away under a running pipeline:
+# its own reconnect failing, the EIO it hit doing so, and every read after that.
+# A plain "Frame didn't arrive within N" is NOT here: that is a slow frame.
+_CAMERA_LOST = re.compile(
+    r"disconnected|errno=(?:5|19)\b|no such device|cannot be called before start\(\)",
+    re.IGNORECASE,
+)
+
+
+def camera_lost(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and bool(_CAMERA_LOST.search(str(exc)))
+
 
 def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
 def camera_extrinsic_from_env() -> CameraExtrinsic:
-    """The mount, overridable without a rebuild. UNMEASURED by default.
+    """The mount, overridable without a rebuild. URDF CAD by default.
 
-    grounding.DEFAULT_CAMERA_EXTRINSIC is a reasoned default and says so twice;
-    Stage 6 owes this project a tape measure. Until then these four env vars are
-    how a measurement gets applied at 2 a.m. without a 25-minute image build.
+    grounding.DEFAULT_CAMERA_EXTRINSIC is the URDF's d435_joint seen from the
+    pelvis, not a tape measurement. If the robot check (a floor object 1.0 m
+    ahead) disagrees, these env vars, set in ~/.c3po/perception.env, are how the
+    measured mount gets applied without a 25-minute image build.
     """
     d = DEFAULT_CAMERA_EXTRINSIC
     return CameraExtrinsic(
@@ -205,7 +299,10 @@ def load_labels(path: str) -> list[str]:
         if not names:
             raise ValueError("labels file is empty")
         return names
-    except Exception as exc:  # noqa: BLE001 - missing or unreadable labels are non-fatal
+    # BLIND EXCEPT, DELIBERATE: any failure to read the labels file — missing,
+    # unreadable, empty, wrong encoding — has the one same answer, and it is
+    # not to take the detector down. The log names the consequence.
+    except Exception as exc:  # noqa: BLE001
         log("labels.missing", path=path, error=repr(exc),
             consequence="objects will be reported as class_<index>")
         return []
@@ -251,7 +348,22 @@ class RealSenseSource:
         config.enable_stream(rs.stream.depth, COLOR_W, COLOR_H, rs.format.z16, COLOR_FPS)
 
         self._pipeline = rs.pipeline()
-        profile = self._pipeline.start(config)
+        try:
+            profile = self._pipeline.start(config)
+        except RuntimeError as exc:
+            # errno=5 (EIO) on S_FMT is a D435 left wedged by its last owner; a
+            # hardware reset clears it. Kept that narrow on purpose: errno=16 is
+            # another process holding the camera, and a reset would yank it away.
+            if "VIDIOC_S_FMT" not in str(exc) or not re.search(r"errno=5\b", str(exc)):
+                raise
+            log("camera.wedged", error=str(exc))
+            devs = rs.context().query_devices()
+            if len(devs) == 0:
+                raise
+            self._reset_and_wait(rs, devs[0])
+            # Once only: a second failure propagates and the container exits.
+            self._pipeline = rs.pipeline()
+            profile = self._pipeline.start(config)
         self._align = rs.align(rs.stream.color)
 
         # Queried, never assumed. The nominal 0.001 is right on most D435i units
@@ -269,6 +381,50 @@ class RealSenseSource:
         log("camera.ready", w=intr.width, h=intr.height, fx=round(intr.fx, 1),
             fy=round(intr.fy, 1), ppx=round(intr.ppx, 1), ppy=round(intr.ppy, 1),
             depth_scale=self.depth_scale)
+
+    @staticmethod
+    def _reset_and_wait(rs: Any, dev: Any) -> None:
+        serial = dev.get_info(rs.camera_info.serial_number)
+        dev.hardware_reset()
+        time.sleep(2.0)  # let the old node drop first, or the poll finds it still listed
+        for _ in range(int(RESET_WAIT_S / 0.5)):
+            listed = rs.context().query_devices()
+            if any(d.get_info(rs.camera_info.serial_number) == serial for d in listed):
+                log("camera.reset", serial=serial)
+                return
+            time.sleep(0.5)
+        raise RuntimeError(f"D435 {serial} did not re-enumerate within {RESET_WAIT_S}s of a reset")
+
+    def recover(self, stopping: Callable[[], bool]) -> bool:
+        """Reopen after the D435 dropped mid-run. False once RECOVER_S/RECOVER_ATTEMPTS run out.
+
+        Same config, same process: start() is re-run as-is, so its errno=5 reset
+        still applies. A device still listed right after the drop is reset first,
+        as the manual `perception_up` effectively did; one that left is waited for.
+        """
+        rs = self._rs
+        self.close()
+        deadline = time.monotonic() + RECOVER_S
+        delay = 0.5
+        attempts = 0
+        reset = len(rs.context().query_devices()) > 0
+        while attempts < RECOVER_ATTEMPTS and not stopping() and time.monotonic() < deadline:
+            devs = rs.context().query_devices()
+            if len(devs) > 0:
+                attempts += 1
+                try:
+                    if reset:
+                        reset = False
+                        self._reset_and_wait(rs, devs[0])
+                    self.start()
+                    log("camera.reopened", attempts=attempts)
+                    return True
+                except Exception as exc:  # noqa: BLE001 - any failure is one spent attempt
+                    log("camera.reopen_failed", attempt=attempts, error=repr(exc))
+                    self.close()
+            time.sleep(delay)
+            delay = min(delay * 2, 4.0)
+        return False
 
     def read(self) -> tuple[Any, Any]:
         """(colour BGR HxWx3 uint8, depth HxW uint16). Raises on timeout.
@@ -289,9 +445,13 @@ class RealSenseSource:
 
     def close(self) -> None:
         if self._pipeline is not None:
+            # Shutdown path. A RealSense pipeline that will not stop cleanly
+            # has nothing left to tell us — the process is going away either
+            # way, and raising here would mask whatever we were shutting down
+            # FOR. Silence is correct exactly once, and this is the place.
             try:
                 self._pipeline.stop()
-            except Exception:  # noqa: BLE001, S110 - best-effort hardware shutdown
+            except Exception:  # noqa: BLE001, S110
                 pass
 
 
@@ -366,8 +526,76 @@ class SyntheticSource:
 # --------------------------------------------------------------------------
 
 
+# `trt.nptype()` cannot be called on this image. TensorRT's Python bindings
+# build their dtype table with `np.bool`, an alias NumPy REMOVED in 1.24.0 —
+# and vision/Dockerfile pins numpy to 1.24.4 EXACTLY, on purpose (the base
+# image ships 1.17.4, which a `numpy<2` bound would silently satisfy). The pin
+# is right; the call site was the problem.
+#
+# The failure is nastier than a normal version skew because the table is built
+# lazily, inside nptype(). Importing tensorrt works, constructing the engine
+# works, and it dies on the FIRST BINDING of the first engine load with
+# `AttributeError: module 'numpy' has no attribute 'bool'` from inside a
+# vendor file — which reads as a broken TensorRT install rather than two
+# pinned versions disagreeing. Cost us the camera on 2026-08-21.
+#
+# Mapping it here depends on neither. Built on first use, not at import: numpy
+# and tensorrt are function-local imports throughout this module, on purpose —
+# it stays importable on a machine with neither installed, which is what lets
+# the tests run off the Jetson.
+#
+# This is half the fix. It removes the dependence at the one call site we own;
+# TensorRTDetector.__init__ also defines `np.bool` before importing tensorrt,
+# for the call sites inside the bindings that we do not own. Both are needed —
+# see the comment there.
+_TRT_TO_NUMPY: Optional[Dict[Any, Any]] = None
+
+
+def _np_dtype(dt: Any) -> Any:
+    """TensorRT binding dtype -> numpy dtype, by exact byte width.
+
+    Deliberately raises on anything unmapped (BF16, FP8) rather than widening
+    to the nearest numpy type. These allocations are sized by `host.nbytes`
+    and copied by width, so a dtype that is close but not the same size does
+    not degrade the output — it silently mis-sizes the device buffer.
+    """
+    global _TRT_TO_NUMPY
+    if _TRT_TO_NUMPY is None:
+        import numpy as np
+        import tensorrt as trt
+
+        # getattr so a TensorRT lacking a member drops that entry rather than
+        # failing here — the same class of breakage this function exists to fix.
+        _TRT_TO_NUMPY = {
+            getattr(trt.DataType, name): np_type
+            for name, np_type in (
+                ("FLOAT", np.float32),
+                ("HALF", np.float16),
+                ("INT8", np.int8),
+                ("UINT8", np.uint8),
+                ("INT32", np.int32),
+                ("INT64", np.int64),
+                ("BOOL", np.bool_),
+            )
+            if hasattr(trt.DataType, name)
+        }
+    try:
+        return _TRT_TO_NUMPY[dt]
+    except KeyError:
+        raise RuntimeError(
+            f"no exact numpy dtype for TensorRT binding dtype {dt!r}. "
+            "Re-export the engine in a supported precision, or add the "
+            "mapping here only if the byte width matches exactly."
+        ) from None
+
+
 class TensorRTDetector:
-    """YOLO11 on a prebuilt TRT plan. NMS on the CPU, on purpose.
+    """YOLO11 or YOLOE-26 on a prebuilt TRT plan. NMS on the CPU, on purpose.
+
+    Which model is decided by the PLAN, not a flag: `decode_head` reads the
+    output shape. YOLO11n (one output, raw head) and YOLOE-26-seg exported by
+    tools/export_yoloe_onnx.py (NMS-free head + mask protos) both load here, so
+    switching is C3PO_ENGINE/C3PO_ONNX/C3PO_LABELS and nothing else.
 
     The plan is built by ../entrypoint.sh at first container start, because a
     plan is tied to the exact GPU, TRT version and build flags and therefore
@@ -390,35 +618,22 @@ class TensorRTDetector:
         import pycuda.autoinit  # noqa: F401  (import side effect: CUDA context)
         import pycuda.driver as cuda
 
-        # `np.bool` BEFORE tensorrt, because whether it exists is not stable.
+        # The BELT to `_np_dtype`'s braces. Both exist on purpose; neither is
+        # dead code, and deleting either one re-opens a bug that cost us the
+        # camera twice. See the comment above `_np_dtype` for the bug itself.
         #
-        # JetPack 5.1.1 ships TensorRT 8.5.2.2, whose `nptype()` builds a dtype
-        # table containing a literal `np.bool` (`tensorrt/__init__.py:166`).
-        # numpy expired that alias in 1.24, and this image pins numpy at exactly
-        # 1.24.4 — deliberately, with an assertion, because cv2's ABI needs it.
+        # `_np_dtype` covers the ONE call site we own. This covers the ones we
+        # do not: anything inside the TensorRT bindings that reaches for
+        # `np.bool` on a numpy that no longer has it. It has to run BEFORE
+        # `import tensorrt`, because whether the alias resolves depends on
+        # import order — which is why the same image, same container, failed on
+        # a cold engine cache and ran fine on a warm one (robot, 2026-08-22):
+        # the build path and the load path import a different set of modules
+        # before reaching here. A startup coin-flip that costs the detector.
         #
-        # Observed on the robot 2026-08-22, SAME image, SAME container, two
-        # consecutive starts:
-        #
-        #   first start   AttributeError: module 'numpy' has no attribute 'bool'
-        #                 at trt.nptype(...), exit 139, and because TensorRT had
-        #                 already allocated, the visible tail was CUDA
-        #                 deallocation errors — which read as a GPU or engine
-        #                 fault and are neither.
-        #   second start  ran fine, and has been detecting since.
-        #
-        # The difference is the engine: the first start BUILDS it, the second
-        # loads it from cache, and those two paths import a different set of
-        # modules before reaching here. So whether `np.bool` resolves depends on
-        # whether something else in the process happened to define it first —
-        # which makes this a startup coin-flip, and a coin-flip that costs the
-        # whole detector whenever it lands wrong. A cold cache is exactly when
-        # it lands wrong: first run after a rebuild or a new device.
-        #
-        # Defining it removes the dependence on import order, and it is what the
-        # table wants: `np.bool` WAS `bool`, and that entry maps TRT's BOOL to
-        # the builtin. The numpy pin is left alone — cv2 depends on it, and
-        # moving it to please TensorRT trades a caught error for an ABI mismatch.
+        # This is what the table wants anyway: `np.bool` WAS `bool`. The numpy
+        # pin stays where it is — cv2 depends on 1.24.4, and moving it to please
+        # TensorRT trades a caught error for an ABI mismatch.
         if not hasattr(np, "bool"):
             np.bool = bool  # type: ignore[attr-defined]
 
@@ -446,30 +661,45 @@ class TensorRTDetector:
         self._bindings: list[int] = []
         self._host: dict[int, Any] = {}
         self._device: dict[int, Any] = {}
-        self._input_index: int | None = None
-        self._output_index: int | None = None
+        # Discovered as Optional, then STORED AS int once proven. The check
+        # after the loop already guarantees both are set before anything calls
+        # `infer` — but it lives in a different method from every use, so the
+        # guarantee was invisible: `self._host[self._input_index]` is a dict
+        # indexed by a value typed `int | None`, four times, in the hot loop.
+        # Narrowing here turns "we checked once, trust us" into the type.
+        input_index: Optional[int] = None
+        outputs: list[tuple[int, tuple]] = []
 
         for i in range(self._engine.num_bindings):
             shape = tuple(self._engine.get_binding_shape(i))
-            dtype = trt.nptype(self._engine.get_binding_dtype(i))
+            dtype = _np_dtype(self._engine.get_binding_dtype(i))
             host = np.empty(shape, dtype=dtype)
             device = cuda.mem_alloc(host.nbytes)
             self._host[i] = host
             self._device[i] = device
             self._bindings.append(int(device))
             if self._engine.binding_is_input(i):
-                self._input_index = i
+                input_index = i
                 self._input_shape = shape
             else:
-                self._output_index = i
-                self._output_shape = shape
+                outputs.append((i, shape))
 
-        if self._input_index is None or self._output_index is None:
-            raise RuntimeError(f"engine {engine_path} has no input or no output binding")
+        # A -seg plan has TWO outputs: detections (rank 3) and mask prototypes
+        # (1, 32, 160, 160). Taking "the last output" as the head — what this
+        # loop used to do — would decode the prototypes as boxes, silently.
+        heads = [o for o in outputs if len(o[1]) == 3]
+        protos = [o for o in outputs if len(o[1]) == 4]
+        if input_index is None or not heads:
+            raise RuntimeError(f"engine {engine_path} has no input or no rank-3 output binding")
+        self._input_index: int = input_index
+        self._output_index: int = heads[0][0]
+        self._output_shape = heads[0][1]
+        self._proto_index: Optional[int] = protos[0][0] if protos else None
+        self._num_masks = int(protos[0][1][1]) if protos else 0
 
         self._stream = cuda.Stream()
         log("engine.ready", path=engine_path, input=self._input_shape,
-            output=self._output_shape, trt=trt.__version__)
+            output=self._output_shape, masks=self._num_masks, trt=trt.__version__)
 
     # -- preprocessing ------------------------------------------------------
 
@@ -521,8 +751,10 @@ class TensorRTDetector:
 
     # -- inference ----------------------------------------------------------
 
-    def infer(self, image: Any) -> list[tuple[int, float, tuple[float, float, float, float]]]:
-        """One colour frame -> [(class_index, confidence, (x0, y0, x1, y1))].
+    def infer(self, image: Any) -> list[tuple]:
+        """One colour frame -> [(class_index, confidence, (x0, y0, x1, y1)[, mask])].
+
+        The mask (bool, over the clamped box) is there only for a -seg plan.
 
         Boxes come back in COLOUR-IMAGE pixels, which is the frame grounding.py
         expects and the frame the aligned depth shares.
@@ -539,111 +771,192 @@ class TensorRTDetector:
         self._context.execute_async_v2(
             bindings=self._bindings, stream_handle=self._stream.handle
         )
-        cuda.memcpy_dtoh_async(
-            self._host[self._output_index], self._device[self._output_index], self._stream
-        )
+        for index in (self._output_index, self._proto_index):
+            if index is not None:
+                cuda.memcpy_dtoh_async(self._host[index], self._device[index], self._stream)
         self._stream.synchronize()
 
-        return self.decode(
-            self._host[self._output_index], scale, pad_x, pad_y,
-            width=image.shape[1], height=image.shape[0],
+        width, height = image.shape[1], image.shape[0]
+        net_hw = (self._input_shape[2], self._input_shape[3])
+        dets = decode_head(
+            np, self._host[self._output_index], net_hw=net_hw, scale=scale,
+            pad_x=pad_x, pad_y=pad_y, width=width, height=height,
+            num_masks=self._num_masks,
         )
-
-    # -- postprocessing -----------------------------------------------------
-
-    def decode(
-        self,
-        output: Any,
-        scale: float,
-        pad_x: int,
-        pad_y: int,
-        *,
-        width: int,
-        height: int,
-    ) -> list[tuple[int, float, tuple[float, float, float, float]]]:
-        """YOLO11's raw head -> boxes in colour-image pixels, after class-wise NMS.
-
-        The head is (1, 4 + num_classes, num_anchors) — cx, cy, w, h in NETWORK
-        pixels, then per-class scores with the sigmoid already applied. There is
-        NO objectness channel (that went away with v8); multiplying by one, as
-        every v5-era snippet does, would silently halve every confidence.
-
-        The transposed (1, num_anchors, 4 + num_classes) layout is accepted too,
-        because which one you get depends on the exporter version and the
-        failure mode of guessing wrong is a detector that finds nothing at all
-        rather than an error.
-        """
-        np = self._np
-        pred = np.asarray(output)
-        if pred.ndim == 3:
-            pred = pred[0]
-        if pred.shape[0] < pred.shape[1]:
-            pred = pred.T            # (anchors, 4 + nc)
-
-        if pred.shape[1] < 5:
-            return []
-
-        boxes_xywh = pred[:, :4]
-        scores_all = pred[:, 4:]
-        class_ids = scores_all.argmax(axis=1)
-        scores = scores_all[np.arange(scores_all.shape[0]), class_ids]
-
-        keep = scores >= CONF_THRESHOLD
-        if not keep.any():
-            return []
-        boxes_xywh = boxes_xywh[keep]
-        scores = scores[keep]
-        class_ids = class_ids[keep]
-
-        # Network pixels -> colour-image pixels: undo the pad, then the scale.
-        cx, cy = boxes_xywh[:, 0], boxes_xywh[:, 1]
-        bw, bh = boxes_xywh[:, 2], boxes_xywh[:, 3]
-        x0 = (cx - bw / 2.0 - pad_x) / scale
-        y0 = (cy - bh / 2.0 - pad_y) / scale
-        x1 = (cx + bw / 2.0 - pad_x) / scale
-        y1 = (cy + bh / 2.0 - pad_y) / scale
-        x0 = x0.clip(0, width - 1)
-        y0 = y0.clip(0, height - 1)
-        x1 = x1.clip(0, width - 1)
-        y1 = y1.clip(0, height - 1)
-
-        out: list[tuple[int, float, tuple[float, float, float, float]]] = []
-        for cls in np.unique(class_ids):
-            idx = np.where(class_ids == cls)[0]
-            kept = self._nms(x0[idx], y0[idx], x1[idx], y1[idx], scores[idx], NMS_IOU)
-            for k in kept:
-                j = idx[k]
-                out.append(
-                    (int(cls), float(scores[j]),
-                     (float(x0[j]), float(y0[j]), float(x1[j]), float(y1[j])))
-                )
-        out.sort(key=lambda d: d[1], reverse=True)
+        if self._proto_index is None:
+            return [(c, s, b) for c, s, b, _coeffs in dets]
+        protos = self._host[self._proto_index]
+        out = []
+        for c, s, b, coeffs in dets:
+            clipped = clamp_box(b, width, height)
+            mask = None if clipped is None else instance_mask(
+                np, coeffs, protos, clipped, net_hw=net_hw, scale=scale,
+                pad_x=pad_x, pad_y=pad_y,
+            )
+            out.append((c, s, b, mask))
         return out
 
-    def _nms(self, x0: Any, y0: Any, x1: Any, y1: Any, scores: Any, iou: float) -> list[int]:
-        """Greedy IoU suppression within one class. Plain numpy, ~microseconds.
 
-        Class-wise, not global: a chair overlapping a person is two objects, and
-        a global NMS would delete one of them.
-        """
-        np = self._np
-        areas = (x1 - x0 + 1.0) * (y1 - y0 + 1.0)
-        order = scores.argsort()[::-1]
-        keep: list[int] = []
-        while order.size > 0:
-            i = int(order[0])
-            keep.append(i)
-            if order.size == 1:
-                break
-            rest = order[1:]
-            xx0 = np.maximum(x0[i], x0[rest])
-            yy0 = np.maximum(y0[i], y0[rest])
-            xx1 = np.minimum(x1[i], x1[rest])
-            yy1 = np.minimum(y1[i], y1[rest])
-            inter = np.maximum(0.0, xx1 - xx0 + 1.0) * np.maximum(0.0, yy1 - yy0 + 1.0)
-            overlap = inter / (areas[i] + areas[rest] - inter)
-            order = rest[overlap <= iou]
-        return keep
+# --------------------------------------------------------------------------
+# Postprocessing. Module-level and handed `np`, so tests can drive them with
+# synthetic tensors on a machine with numpy and no TensorRT.
+# --------------------------------------------------------------------------
+
+
+def anchor_count(net_h: int, net_w: int) -> int:
+    """Anchors of a stride-8/16/32 head: 8400 at 640x640. Identifies a raw head."""
+    return sum((net_h // s) * (net_w // s) for s in (8, 16, 32))
+
+
+def decode_head(
+    np: Any,
+    output: Any,
+    *,
+    net_hw: tuple[int, int],
+    scale: float,
+    pad_x: int,
+    pad_y: int,
+    width: int,
+    height: int,
+    conf_threshold: Optional[float] = None,
+    iou: Optional[float] = None,
+    num_masks: int = 0,
+) -> list[tuple[int, float, tuple[float, float, float, float], Any]]:
+    """Either head -> [(class, confidence, (x0, y0, x1, y1), mask_coeffs | None)].
+
+    Boxes in COLOUR-IMAGE pixels, best first. Two layouts, told apart by shape:
+
+    RAW HEAD (YOLO11, or YOLOE exported with --raw-head): (1, 4 + nc + nm,
+    anchors) — cx, cy, w, h in NETWORK pixels, nc sigmoid scores, then nm mask
+    coefficients. There is NO objectness channel (that went away with v8);
+    multiplying by one, as every v5-era snippet does, would silently halve every
+    confidence. Class-wise NMS here. The transposed (1, anchors, C) layout is
+    accepted too, because which one you get depends on the exporter version.
+
+    NMS-FREE HEAD (YOLOE-26 / YOLO26, the export tool's default): (1, max_det,
+    6 + nm) — x0, y0, x1, y1 in network pixels, score, class, coefficients,
+    already one box per object (one-to-one head, class-agnostic top-k at export).
+    No NMS: that is the point of it, and with ~1,200 classes it is also what
+    keeps the CPU out of this — the raw head is 42 MB of floats per frame.
+    """
+    conf = CONF_THRESHOLD if conf_threshold is None else conf_threshold
+    iou_thr = NMS_IOU if iou is None else iou
+    pred = np.asarray(output)
+    if pred.ndim == 3:
+        pred = pred[0]
+    anchors = anchor_count(*net_hw)
+
+    if anchors not in pred.shape and pred.shape[1] == 6 + num_masks:
+        rows = pred[pred[:, 4] >= conf]
+        rows = rows[rows[:, 4].argsort()[::-1]]
+        out = []
+        for r in rows:
+            box = _unletterbox(r[0], r[1], r[2], r[3], scale, pad_x, pad_y, width, height)
+            out.append((int(r[5]), float(r[4]), box, r[6:] if num_masks else None))
+        return out
+
+    # Raw head, CHANNEL-FIRST (4 + nc + nm, anchors): reducing over the class
+    # axis in this layout is ~5x cheaper than the transposed argmax at nc=1223.
+    if pred.shape[0] == anchors or (pred.shape[1] != anchors and pred.shape[0] > pred.shape[1]):
+        pred = pred.T
+    nc = pred.shape[0] - 4 - num_masks
+    if nc < 1:
+        return []
+    scores_all = pred[4:4 + nc]
+    best = scores_all.max(axis=0)
+    keep = np.flatnonzero(best >= conf)
+    if keep.size == 0:
+        return []
+    class_ids = scores_all[:, keep].argmax(axis=0)
+    scores = best[keep]
+    cx, cy, bw, bh = pred[0, keep], pred[1, keep], pred[2, keep], pred[3, keep]
+    coeffs = pred[4 + nc:, keep].T if num_masks else None
+
+    # Network pixels -> colour-image pixels: undo the pad, then the scale.
+    x0 = ((cx - bw / 2.0 - pad_x) / scale).clip(0, width - 1)
+    y0 = ((cy - bh / 2.0 - pad_y) / scale).clip(0, height - 1)
+    x1 = ((cx + bw / 2.0 - pad_x) / scale).clip(0, width - 1)
+    y1 = ((cy + bh / 2.0 - pad_y) / scale).clip(0, height - 1)
+
+    out = []
+    for cls in np.unique(class_ids):
+        idx = np.where(class_ids == cls)[0]
+        for k in nms(np, x0[idx], y0[idx], x1[idx], y1[idx], scores[idx], iou_thr):
+            j = idx[k]
+            out.append(
+                (int(cls), float(scores[j]),
+                 (float(x0[j]), float(y0[j]), float(x1[j]), float(y1[j])),
+                 None if coeffs is None else coeffs[j])
+            )
+    out.sort(key=lambda d: d[1], reverse=True)
+    return out
+
+
+def _unletterbox(
+    x0: float, y0: float, x1: float, y1: float,
+    scale: float, pad_x: int, pad_y: int, width: int, height: int,
+) -> tuple[float, float, float, float]:
+    def fit(v: float, pad: int, hi: int) -> float:
+        return float(min(max((float(v) - pad) / scale, 0.0), hi - 1))
+
+    return (fit(x0, pad_x, width), fit(y0, pad_y, height),
+            fit(x1, pad_x, width), fit(y1, pad_y, height))
+
+
+def nms(np: Any, x0: Any, y0: Any, x1: Any, y1: Any, scores: Any, iou: float) -> list[int]:
+    """Greedy IoU suppression within one class. Plain numpy, ~microseconds.
+
+    Class-wise, not global: a chair overlapping a person is two objects, and
+    a global NMS would delete one of them.
+    """
+    areas = (x1 - x0 + 1.0) * (y1 - y0 + 1.0)
+    order = scores.argsort()[::-1]
+    keep: list[int] = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx0 = np.maximum(x0[i], x0[rest])
+        yy0 = np.maximum(y0[i], y0[rest])
+        xx1 = np.minimum(x1[i], x1[rest])
+        yy1 = np.minimum(y1[i], y1[rest])
+        inter = np.maximum(0.0, xx1 - xx0 + 1.0) * np.maximum(0.0, yy1 - yy0 + 1.0)
+        overlap = inter / (areas[i] + areas[rest] - inter)
+        order = rest[overlap <= iou]
+    return keep
+
+
+def instance_mask(
+    np: Any,
+    coeffs: Any,
+    protos: Any,
+    box: tuple[int, int, int, int],
+    *,
+    net_hw: tuple[int, int],
+    scale: float,
+    pad_x: int,
+    pad_y: int,
+) -> Any:
+    """Boolean mask over a CLIPPED image box, (y1 - y0, x1 - x0), from coeffs x protos.
+
+    Only the prototype pixels under the box are multiplied (a few hundred, not
+    25,600), then nearest-sampled back to image pixels. sigmoid(x) > 0.5 is
+    x > 0, so no sigmoid. grounding.median_depth_m indexes it relative to the
+    box's top-left, which is why the box must be grounding's own clamp_box.
+    """
+    p = protos[0] if protos.ndim == 4 else protos
+    nm, ph, pw = p.shape
+    x0, y0, x1, y1 = box
+    us = (((np.arange(x0, x1) + 0.5) * scale + pad_x) * (pw / float(net_hw[1])))
+    vs = (((np.arange(y0, y1) + 0.5) * scale + pad_y) * (ph / float(net_hw[0])))
+    us = us.astype(np.int64).clip(0, pw - 1)
+    vs = vs.astype(np.int64).clip(0, ph - 1)
+    u0, u1, v0, v1 = int(us[0]), int(us[-1]) + 1, int(vs[0]), int(vs[-1]) + 1
+    logits = np.asarray(coeffs, dtype=np.float32) @ p[:, v0:v1, u0:u1].reshape(nm, -1)
+    logits = logits.reshape(v1 - v0, u1 - u0)
+    return logits[(vs - v0)[:, None], (us - u0)[None, :]] > 0.0
 
 
 # --------------------------------------------------------------------------
@@ -766,7 +1079,12 @@ class StdoutPublisher:
 # --------------------------------------------------------------------------
 
 
-def build_report(objects: list[dict[str, Any]], omitted: int, stamp: float) -> dict[str, Any]:
+def build_report(
+    objects: list[dict[str, Any]],
+    omitted: int,
+    stamp: float,
+    unranged: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
     """The published payload. Pure, so its shape is checkable without a camera.
 
     `objects` are already `Observation.to_dict()`-shaped (grounding.to_observation
@@ -774,50 +1092,115 @@ def build_report(objects: list[dict[str, Any]], omitted: int, stamp: float) -> d
     container adds its own truncation to it and the bridge adds a third, and all
     three are summed — a count that is silently zero is worse than no count.
     """
-    return {
+    report = {
         "v": OBJECTS_SCHEMA_VERSION,
         "stamp_unix": round(stamp, 3),
         "objects": objects,
         "objects_omitted": int(omitted),
     }
+    # Additive: v stays 1, and the nav container reads only the keys above.
+    if unranged is not None:
+        report["unranged"] = unranged
+    return report
 
 
 def ground_all(
-    detections: Sequence[tuple[int, float, tuple[float, float, float, float]]],
+    detections: Sequence[tuple],
     depth: Any,
     intrinsics: Intrinsics,
     extrinsic: CameraExtrinsic,
     labels: Sequence[str],
     depth_scale: float,
-) -> tuple[list[dict[str, Any]], int]:
-    """2-D detections -> wire objects. Returns (objects, omitted).
+    tracker: Optional[IouTracker] = None,
+    max_objects: Optional[int] = None,
+    stamp: Optional[float] = None,
+) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
+    """2-D detections -> wire objects. Returns (objects, omitted, unranged).
+
+    A detection is (class_index, confidence, box) or, from a -seg engine,
+    (class_index, confidence, box, mask) — the mask feeds the depth median.
 
     Ordering is by range, NEAREST FIRST, before the cap: if anything has to be
     dropped it must be the far things. A cap that dropped the nearest obstacle
     would be worse than no cap.
 
-    A detection whose depth cannot be resolved is dropped, NOT reported at range
-    0 — that would be an obstacle materialising inside the robot. Dropping one
-    detection is not the same as an empty scene, and the tick still publishes.
+    A detection whose depth cannot be resolved is NOT reported in `objects` at
+    range 0 — that would be an obstacle materialising inside the robot. It goes
+    to `unranged` (label + bearing, depth_source "invalid") instead, so "I see
+    your wallet over there but cannot tell how far" still reaches the memory.
     """
-    grounded: list[tuple[float, dict[str, Any]]] = []
-    for class_id, confidence, box in detections:
+    cap = MAX_OBJECTS_ON_WIRE if max_objects is None else max_objects
+    support_on = _env_flag(SUPPORT_ENV, "1")
+    if CLASS_CONF:  # before the tracker, so a dropped class never takes a track id
+        detections = [
+            d for d in detections if d[1] >= CLASS_CONF.get(label_for(labels, d[0]), 0.0)
+        ]
+    names = [label_for(labels, d[0]) for d in detections]
+    ids: list[Optional[int]] = (
+        list(tracker.update([(n, tuple(d[2])) for n, d in zip(names, detections)]))
+        if tracker is not None else [None] * len(detections)
+    )
+    grounded: list[tuple[float, dict[str, Any], Any, Any]] = []
+    unranged: list[dict[str, Any]] = []
+    for det, label, track_id in zip(detections, names, ids):
+        confidence, box = det[1], det[2]
         g = ground_box(
             box, depth, intrinsics,
             extr=extrinsic,
             depth_scale=depth_scale,
             min_depth_m=MIN_DEPTH_M,
             max_depth_m=MAX_DEPTH_M,
+            mask=det[3] if len(det) > 3 else None,
+            behind_m=BEHIND_M if BEHIND_M > 0 else None,
         )
         if g is None:
+            entry: dict[str, Any] = {
+                "label": label,
+                "bearing_deg": round(ray_bearing_deg(
+                    (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0, intrinsics, extrinsic), 1),
+                "confidence": round(float(confidence), 2),
+                "depth_source": "invalid",
+            }
+            if track_id is not None:
+                entry["track_id"] = track_id
+            unranged.append(entry)
             continue
         if g.z_m > MAX_HEIGHT_M:
             continue
-        grounded.append((g.range_m, to_observation(label_for(labels, class_id), g, confidence)))
+        obj = to_observation(label, g, confidence)
+        obj["depth_source"] = g.depth_source
+        if g.near_m is not None:
+            obj["near_m"] = round(g.near_m, 2)
+        if g.p_opt is not None:
+            obj["cam_xyz"] = [round(v, 3) for v in g.p_opt]
+        if track_id is not None:
+            obj["track_id"] = track_id
+        grounded.append((g.range_m, obj, g, box))
 
-    grounded.sort(key=lambda pair: pair[0])
-    objects = [obj for _rng, obj in grounded[:MAX_OBJECTS_ON_WIRE]]
-    return objects, max(0, len(grounded) - MAX_OBJECTS_ON_WIRE)
+    grounded.sort(key=lambda entry: entry[0])
+    budget = SUPPORT_PER_FRAME if support_on else 0
+    for _rng, obj, g, box in grounded[:cap]:
+        if budget <= 0:
+            break
+        last = str(obj["label"]).lower().split()[-1:]
+        if obj["label"] == "person" or (last and last[0] in NO_SUPPORT_LABELS):
+            continue
+        budget -= 1
+        s = fit_support(box, depth, g, intrinsics, extr=extrinsic, depth_scale=depth_scale,
+                        min_depth_m=MIN_DEPTH_M, max_depth_m=MAX_DEPTH_M)
+        if s is not None:
+            obj["support"] = {
+                "z_m": round(s.z_m, 3),
+                "near_edge_m": None if s.near_edge_m is None else round(s.near_edge_m, 3),
+                "inliers": s.inliers,
+                "rms_m": round(s.rms_m, 4),
+                "stamp_unix": None if stamp is None else round(stamp, 3),
+                "cam_top_xyz": [round(v, 3) for v in s.cam_top_xyz],
+                "cam_near_xyz": [round(v, 3) for v in s.cam_near_xyz],
+            }
+    objects = [entry[1] for entry in grounded[:cap]]
+    unranged.sort(key=lambda o: o["confidence"], reverse=True)
+    return objects, max(0, len(grounded) - cap), unranged[:cap]
 
 
 # --------------------------------------------------------------------------
@@ -850,24 +1233,46 @@ def run() -> int:
 
     log("start", fake=fake, dry_run=dry_run, hz=TICK_HZ, domain=DOMAIN_ID,
         topic=OBJECTS_TOPIC, conf=CONF_THRESHOLD,
+        class_conf=",".join(f"{k}={v}" for k, v in CLASS_CONF.items()) or "none",
         extrinsic=(
             f"x={extrinsic.x_m:.3f} y={extrinsic.y_m:.3f} z={extrinsic.z_m:.3f} "
             f"pitch={extrinsic.pitch_deg:.1f} yaw={extrinsic.yaw_deg:.1f}"
         ),
-        extrinsic_status="UNMEASURED — Stage 6 owes this a tape measure")
+        extrinsic_source=(
+            "env" if any(k.startswith("C3PO_CAMERA_") for k in os.environ)
+            else "URDF d435_joint (CAD)"
+        ))
+    if CLASS_CONF_IGNORED:
+        log("class_conf.ignored", entries="; ".join(CLASS_CONF_IGNORED))
 
     source = SyntheticSource() if fake else RealSenseSource()
     source.start()
 
+    # READ ONCE, HERE, AND FAIL LOUDLY IF ABSENT.
+    #
+    # `RealSenseSource.intrinsics` starts as None and is filled by `start()`
+    # from the stream profile. Passing it straight into `ground_all` on every
+    # tick meant a source that started without producing a profile would fail
+    # deep inside the deprojection maths, per-tick, swallowed by the blind
+    # except below and counted as "inference failed" — a camera calibration
+    # problem reported as a detector problem, ten times a second.
+    intrinsics = source.intrinsics
+    if intrinsics is None:
+        raise RuntimeError("camera source produced no intrinsics after start()")
+
     detector = None
-    if fake:
+    if isinstance(source, SyntheticSource):
         labels = source.labels()
     else:
         detector = TensorRTDetector()
         labels = load_labels(LABELS_PATH)
+    unknown = sorted(set(CLASS_CONF) - set(labels))
+    if unknown:
+        log("class_conf.unknown_labels", labels=",".join(unknown), effect="no effect")
 
     publisher = StdoutPublisher() if dry_run else ObjectsPublisher()
     publisher.start()
+    tracker = IouTracker()
 
     # Off unless asked for. The video is a convenience for a human watching;
     # `perception_up` turns it on for the stages that claim the camera, and a
@@ -880,6 +1285,9 @@ def run() -> int:
     period = 1.0 / TICK_HZ if TICK_HZ > 0 else 0.1
     failures = 0
     ticks = 0
+    # Wall time of successful ticks (grab -> publish), for the `alive` line:
+    # trtexec measures the GPU, this measures what the 10 Hz budget actually pays.
+    busy_s = 0.0
     next_tick = time.time()
 
     while not stopper.stop:
@@ -891,9 +1299,18 @@ def run() -> int:
 
         try:
             color, depth = source.read()
-            if fake:
+            # Capture time: read() blocks until the frame lands, so `now` would be early.
+            captured = time.time()
+            # `isinstance` rather than the `fake` flag: the flag and the
+            # object's type say the same thing, but only one of them says it
+            # to a reader (or a type checker) looking at THIS line.
+            if isinstance(source, SyntheticSource):
                 detections = source.boxes()
             else:
+                # Non-None whenever `source` is a RealSenseSource — the branch
+                # above built it. Forty lines apart, and correlated through a
+                # flag, so it has to be said rather than inferred.
+                assert detector is not None
                 detections = detector.infer(color)
             # AFTER the frame grab and the inference both succeeded, and inside
             # the try for a reason: a tick that threw did not look at anything,
@@ -903,12 +1320,19 @@ def run() -> int:
             # publish below, applied to pixels.
             if video is not None:
                 video.offer(
-                    stream_mod.test_pattern(COLOR_W, COLOR_H, ticks) if fake else color
+                    stream_mod.test_pattern(COLOR_W, COLOR_H, ticks) if fake else color,
+                    depth=depth, intrinsics=intrinsics, depth_scale=source.depth_scale,
                 )
-            objects, omitted = ground_all(
-                detections, depth, source.intrinsics, extrinsic, labels, source.depth_scale
+            objects, omitted, unranged = ground_all(
+                detections, depth, intrinsics, extrinsic, labels, source.depth_scale,
+                tracker=tracker, stamp=captured,
             )
-        except Exception as exc:  # noqa: BLE001 - a failed tick must never publish
+        # BLIND EXCEPT, DELIBERATE: the whole point. A tick can fail in CUDA, in TensorRT,
+        # in pyrealsense2 or in numpy, and the correct response to every one of
+        # them is identical — do not publish, count it, keep the loop alive.
+        # Narrowing this would let an unlisted exception kill the detector,
+        # which is the one outcome the branch below exists to prevent.
+        except Exception as exc:  # noqa: BLE001
             # NO PUBLISH ON A FAILED TICK. See the module docstring: an empty
             # object list means "I looked and the room is clear", and this
             # branch is precisely the case where we did not look. Silence is
@@ -917,6 +1341,22 @@ def run() -> int:
             failures += 1
             log("tick.failed", error=repr(exc), consecutive=failures,
                 published="no — silence, not an empty scene")
+            if isinstance(source, RealSenseSource) and camera_lost(exc):
+                # Blocks the loop, so nothing is published while it runs: the
+                # same silence the nav container already reads as detector offline.
+                log("camera.lost", error=repr(exc), budget_s=RECOVER_S, attempts=RECOVER_ATTEMPTS)
+                if source.recover(lambda: stopper.stop):
+                    intrinsics = source.intrinsics or intrinsics
+                    failures = 0
+                    continue
+                if stopper.stop:
+                    break
+                log("giving.up", reason="camera did not come back", budget_s=RECOVER_S,
+                    consequence="container exits; world model reports the detector offline")
+                source.close()
+                if video is not None:
+                    video.close()
+                return 1
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 log("giving.up", consecutive=failures,
                     consequence="container exits; world model reports the detector offline")
@@ -928,11 +1368,17 @@ def run() -> int:
 
         failures = 0
         # THE HEARTBEAT. Unconditional, including when `objects` is empty.
-        publisher.publish(build_report(objects, omitted, time.time()))
+        # Stamped at the grab, not the publish: the nav container ages every object from it.
+        # shortcut: host time at read() return, use the frameset's global_time if the robot shows lag.
+        publisher.publish(build_report(objects, omitted, captured, unranged))
 
         ticks += 1
-        if ticks % int(max(1.0, TICK_HZ) * 30) == 0:
-            log("alive", ticks=ticks, last_objects=len(objects), omitted=omitted)
+        busy_s += time.time() - now
+        window = int(max(1.0, TICK_HZ) * 30)
+        if ticks % window == 0:
+            log("alive", ticks=ticks, last_objects=len(objects), omitted=omitted,
+                unranged=len(unranged), mean_tick_ms=round(busy_s / window * 1000.0, 1))
+            busy_s = 0.0
 
     source.close()
     if video is not None:

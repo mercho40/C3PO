@@ -32,13 +32,7 @@ export type Load = "limp" | "damped" | "holding" | "moving" | "unknown";
 
 /** Which schematic pose to draw. */
 export type Pose =
-  | "stand"
-  | "walk"
-  | "squat"
-  | "sit"
-  | "lie"
-  | "slump"
-  | "unknown";
+  "stand" | "walk" | "squat" | "sit" | "lie" | "slump" | "unknown";
 
 export type PostureInfo = {
   /** Spanish label for the operator. */

@@ -6,6 +6,7 @@
   import StopButton from "./stop-button.svelte";
   import VoiceChip from "./shell/voice-chip.svelte";
   import GateChip from "./shell/gate-chip.svelte";
+  import StopLatchChip from "./shell/stop-latch-chip.svelte";
 
   // From `#lib/nav`, the one list of console pages — this used to be a private
   // map of four routes, so /vr-control got an empty <h1>. An error page is
@@ -67,6 +68,7 @@
     class="col-span-full row-start-2 flex min-w-0 flex-wrap items-center gap-2 xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:justify-end"
   >
     <RobotStatus />
+    <StopLatchChip />
     <GateChip />
     <VoiceChip />
   </div>

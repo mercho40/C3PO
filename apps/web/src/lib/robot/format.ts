@@ -42,6 +42,26 @@ export function batteryTone(pct: number | null | undefined): string {
   return BATTERY_TONE[batteryLevel(pct)];
 }
 
+/**
+ * Whether the battery banner shows, and how loud. Its own thresholds, not the
+ * chip's bands: warn under 25 %, alert at or under 20 %, where the vendor
+ * raises `low_battery_*` and the bridge will refuse long motion. A stub's
+ * invented reading never warns. Feed it the raw reading, not `batteryPct`'s
+ * rounded one, or 24.6 % would round to 25 and show nothing.
+ * shortcut: no hysteresis, so a reading bouncing across a line flickers the
+ * banner; SoC is an integer that only falls while discharging, add it if it
+ * ever chatters.
+ */
+export function batteryWarning(
+  pct: number | null | undefined,
+  simulated: boolean,
+): "warn" | "alert" | null {
+  if (simulated || pct == null || Number.isNaN(pct)) return null;
+  if (pct <= 20) return "alert";
+  if (pct < 25) return "warn";
+  return null;
+}
+
 /** Whole-percent battery, or null when there is no reading. */
 export function batteryPct(pct: number | null | undefined): number | null {
   return pct == null || Number.isNaN(pct) ? null : Math.round(pct);

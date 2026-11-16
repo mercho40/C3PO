@@ -16,6 +16,7 @@
  * loop as running because a button was pressed. `back`'s reply is the state.
  */
 
+import { ADMIN_REQUIRED_HINT } from "#lib/chat/chat-error.js";
 /** Engine names as `back` speaks them. The console's own are in `voice-view.ts`. */
 export type WireEngine = "legacy" | "openai-realtime";
 
@@ -37,6 +38,16 @@ export type VoiceLoopState = {
    * Null when nothing is running, or for the unowned legacy loop.
    */
   ownedByYou?: boolean | null;
+  /**
+   * Calls the bridge refused until this operator confirms them (T2 or
+   * high-danger T1), with the exact arguments a Confirmar would run.
+   */
+  confirmations?: {
+    id: string;
+    tool: string;
+    args: Record<string, unknown>;
+    askedAt: string;
+  }[];
   utterancesHeard: number;
   agentRuns: number;
   /** Null under the realtime engine, which does not act on spoken stops. */
@@ -123,6 +134,9 @@ async function ask(url: string, init: RequestInit): Promise<VoiceResult> {
   }
   if (res.status === 401) {
     return { ok: false, status: 401, reason: "Sesión vencida." };
+  }
+  if (res.status === 403) {
+    return { ok: false, status: 403, reason: ADMIN_REQUIRED_HINT };
   }
   if (res.status === 409) {
     const otherEngine =

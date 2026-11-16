@@ -57,9 +57,31 @@ export const RPC_HINTS: Record<string, string> = {
     "El robot no está en modo de marcha — habilitá la marcha primero",
 };
 
+/**
+ * The bridge's coded refusals: `refused (<code>): …` in a tool error. Today the
+ * operator face gate (apps/bridge/src/bridge/face_gate.py).
+ */
+export const REFUSAL_HINTS: Record<string, string> = {
+  operator_face_not_seen:
+    "No veo al operador: parate junto al robot, sin el visor, de frente y cerca de la cámara de la cabeza, y reintentá",
+  operator_face_not_live:
+    "Reconocí al operador, pero no en persona (¿foto, pantalla o muy lejos?): parate junto al robot, cerca de la cámara de la cabeza",
+  operator_face_not_enrolled:
+    "No hay operador registrado: corré face_enroll.py en el robot",
+  operator_face_check_unavailable:
+    "No se pudo verificar la cara del operador (¿contenedor de visión o modelos?)",
+};
+
+/** The code of a coded bridge refusal we have a hint for, or null. */
+export function refusalCode(detail: string | null): string | null {
+  const code = detail ? /^refused \((\w+)\)/.exec(detail)?.[1] : undefined;
+  return code && code in REFUSAL_HINTS ? code : null;
+}
+
 /** Phases whose meaning is the same wherever they appear. */
 const PHASE_TEXT: Record<string, string> = {
   teleop_active: "Otro operador tiene la locomoción (teleoperación activa)",
+  teleop_takeover: "El operador del visor tomó el control",
   arm_sdk_engaged: "Los brazos están tomados por el espejo de teleoperación",
   unknown_gesture: "Gesto desconocido",
   bad_arguments: "Parámetros inválidos",
@@ -68,6 +90,8 @@ const PHASE_TEXT: Record<string, string> = {
   release_failed: "Hecho, pero no logró soltar el brazo",
   exception: "Error interno del puente",
   unavailable: "No disponible en este robot",
+  target_lost: "Perdí de vista el objetivo",
+  stale_detection: "La detección es vieja; mirá de nuevo",
 };
 
 const str = (v: unknown): string | null =>
@@ -119,7 +143,7 @@ export function classifySkillResult(body: unknown): SkillOutcome {
   if (status === "failed" || err) {
     const code = err ?? (phase || null);
     const text =
-      (err && RPC_HINTS[err]) ??
+      (err && (RPC_HINTS[err] ?? PHASE_TEXT[err])) ??
       PHASE_TEXT[phase] ??
       (phase === "rpc_error" ? "El robot rechazó el pedido" : null) ??
       "Falló";
@@ -174,10 +198,23 @@ export function classifySkillResult(body: unknown): SkillOutcome {
   // so a zero code proves nothing about a bring-up step. The bridge checks
   // afterwards and says so.
   if (phase === "acked_no_transition" || result.transitioned === false) {
-    return make("error", "Aceptado, pero el robot NO cambió de estado", {
-      detail: note,
-      code: "acked_no_transition",
-    });
+    // 2026-10-15: 501 from FSM 4 on the hanger, feet not loaded. The fix is
+    // physical, so say it in the operator's language, not the bridge's.
+    const walkRefused =
+      (result.fsm_target === 501 || result.fsm_target === 500) &&
+      result.fsm_after === 4;
+    return make(
+      "error",
+      walkRefused
+        ? "No pasó a marcha: apoyá los pies en el piso"
+        : "Aceptado, pero el robot NO cambió de estado",
+      {
+        detail: walkRefused
+          ? "El robot quedó en FSM 4 (preparado). Para caminar los dos pies tienen que cargar peso: bajá el arnés hasta que apoye (cuerda floja pero enganchada), esperá ~5 s después de Preparar y volvé a probar."
+          : note,
+        code: "acked_no_transition",
+      },
+    );
   }
 
   if (result.arrived === false) {
@@ -233,6 +270,17 @@ export function classifySkillResult(body: unknown): SkillOutcome {
  * `body` is back's error body — `{error: "bridge_unavailable"}`,
  * `{error: "tool_error", detail}`, `{error: "admin_required"}`, …
  */
+/** Ajv issues as "path message; …", or nothing: never the word "null" on screen. */
+function issuesText(issues: unknown): string | undefined {
+  if (!Array.isArray(issues) || issues.length === 0) return undefined;
+  return issues
+    .map((i) => {
+      const o = obj(i);
+      return [str(o?.path), str(o?.message)].filter(Boolean).join(" ");
+    })
+    .join("; ");
+}
+
 export function classifyHttpError(
   status: number | null,
   body: unknown,
@@ -257,7 +305,7 @@ export function classifyHttpError(
   }
   if (status === 422 || code === "invalid_params") {
     return make("error", "Parámetros inválidos", {
-      detail: detail ?? JSON.stringify(b?.issues ?? null),
+      detail: detail ?? issuesText(b?.issues),
       code: "invalid_params",
     });
   }
@@ -282,7 +330,28 @@ export function classifyHttpError(
       code: "bridge_timeout",
     });
   }
+  if (code === "confirmation_not_configured") {
+    return make("error", "Falta configurar la confirmación", {
+      detail: "SAFETY_CONFIRM_SECRET en apps/back/.env",
+      code,
+    });
+  }
+  // The operator's Confirmar of a call that is no longer waiting (already
+  // run, cancelled, too old) or that changed under the card: nothing was sent.
+  if (code === "not_pending" || code === "args_mismatch") {
+    return make(
+      "warn",
+      code === "not_pending"
+        ? "Ya no está pendiente"
+        : "No coinciden los argumentos",
+      { detail, code },
+    );
+  }
   if (code === "tool_error") {
+    const refused = refusalCode(detail);
+    if (refused) {
+      return make("error", REFUSAL_HINTS[refused], { detail, code: refused });
+    }
     return make("error", "El puente devolvió un error", { detail, code });
   }
   return make("error", `Falló (HTTP ${status})`, { detail, code });

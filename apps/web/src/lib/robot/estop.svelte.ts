@@ -25,6 +25,7 @@ import {
   STILL_MOVING_MS,
   STOP_REQUEST_TIMEOUT_MS,
   STOPPED_CLEAR_MS,
+  stopHeldGait,
   type EstopPhase,
   type Telemetry,
 } from "./estop";
@@ -35,6 +36,8 @@ class EStop {
   outcome = $state.raw<SkillOutcome | null>(null);
 
   #acceptedAt: number | null = null;
+  /** The last stop's answer said the robot was left standing in its gait. */
+  #heldGait = false;
   /** Bumped per press, so a late answer to an old press cannot overwrite a new one. */
   #seq = 0;
   #source: (() => Telemetry) | null = null;
@@ -84,11 +87,13 @@ class EStop {
 
     const signal = AbortSignal.timeout(STOP_REQUEST_TIMEOUT_MS);
     let result: ReturnType<typeof classifyStopResponse>;
+    let heldGait = false;
     try {
       const res = await createApi(fetch)
         .skills({ name: "stop_everything" })
         .invoke.post({}, { fetch: { signal } });
       result = classifyStopResponse(res);
+      heldGait = stopHeldGait(res.data);
     } catch {
       result = classifyStopResponse(
         signal.aborted ? { timedOut: true } : { threw: true },
@@ -102,6 +107,7 @@ class EStop {
     if (seq !== this.#seq) return;
 
     this.outcome = result.outcome;
+    this.#heldGait = heldGait;
     this.phase = result.phase;
     if (result.phase === "accepted") {
       this.#acceptedAt = Date.now();
@@ -132,7 +138,13 @@ class EStop {
   }
 
   #observe(t: Telemetry): void {
-    const next = advance(this.phase, this.#acceptedAt, t, Date.now());
+    const next = advance(
+      this.phase,
+      this.#acceptedAt,
+      t,
+      Date.now(),
+      this.#heldGait,
+    );
     if (next === this.phase) return;
     this.phase = next;
     if (next === "stopped") {

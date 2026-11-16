@@ -23,7 +23,7 @@ from bridge.sdk import state
 def _sampler(soc: int | None = None, *, soh: int = 100, current: int = -1500) -> state.StateSampler:
     # Timestamps must be *now*: `get_state` adds a staleness fault past 1 s, and
     # a fixed epoch would bury the battery assertions under it.
-    now = time.time()
+    now = time.monotonic()
     sampler = state.StateSampler()
     sampler._lowstate = state._LowStateSnapshot(
         received_at=now,
@@ -98,3 +98,21 @@ def test_bms_handler_populates_the_snapshot():
 
     sampler._on_bms(FakeBms())
     assert sampler._bms.raw_message_count == 2
+
+
+def test_a_wall_clock_step_does_not_age_a_fresh_reading(monkeypatch):
+    """No RTC on the robot: NTP steps the clock, and a fresh pack must not read as an hour old."""
+
+    class FakeBms:
+        soc = 64
+        soh = 98
+        current = -2200
+
+    sampler = state.StateSampler()
+    sampler._on_bms(FakeBms())
+    real_time = time.time
+    monkeypatch.setattr(time, "time", lambda: real_time() + 3600.0)
+
+    pct, age = sampler.battery()
+
+    assert pct == 64 and age < 1.0

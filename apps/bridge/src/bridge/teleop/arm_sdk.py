@@ -57,6 +57,7 @@ from typing import Any
 
 import structlog
 
+from bridge import kinematics
 from bridge.teleop.retarget import NEUTRAL, ArmAngles, clamp
 
 log = structlog.get_logger(__name__)
@@ -68,12 +69,31 @@ ARM_SDK_TOPIC = "rt/arm_sdk"
 # Motor array layout — docs/ROBOT-API.md §9.3.
 LEFT_ARM_BASE = 15
 RIGHT_ARM_BASE = 22
+# Waist yaw/roll/pitch. Upstream's g1_arm7_sdk_dds_example puts these in the
+# arm_sdk joint list at the same kp/kd under the same weight: the blend covers
+# them, so leaving them unwritten commands kp=0 at w=1, a limp waist (sdk2_python
+# #146, the torso folding forward). Held at the q measured at engage.
+WAIST_SLOTS = (12, 13, 14)
 WEIGHT_SLOT = 29
 MOTOR_SLOTS = 35
 
-# Vendor example gains for the arm_sdk path.
+# Vendor example gains for the arm_sdk path; the waist holds at these.
 KP = 60.0
 KD = 1.5
+
+# Per arm joint, shoulder pitch .. wrist yaw: Unitree xr_teleoperate's own rt/arm_sdk gains
+# (robot_arm.py motion_mode, kp_low/kd_low and kp_wrist/kd_wrist; on this robot under
+# ~/c3po_vr_teleop). The doubled shoulder/elbow damping is against the wobble seen 2026-11-13.
+ARM_KP = (80.0, 80.0, 80.0, 80.0, 40.0, 40.0, 40.0)
+ARM_KD = (3.0, 3.0, 3.0, 3.0, 1.5, 1.5, 1.5)
+
+# Gravity feedforward in each arm motor's tau (kinematics.gravity_torques at the commanded pose),
+# as xr_teleoperate sends pinocchio's rnea there. Without it the PD carries the arm and the hand
+# on position error alone: ~6 N·m at the shoulder with the arm out is 4-6 degrees of sag at these
+# gains. On unless ARM_GRAVITY_FF=0; read at engage.
+GRAVITY_FF_ENV = "ARM_GRAVITY_FF"
+# Never more than half each joint's URDF effort limit: a wrong mass model pushes, it cannot slam.
+TAU_FF_MAX_NM = tuple(0.5 * j.effort for j in kinematics.arm_chain("left"))
 
 CONTROL_HZ = 50
 CONTROL_PERIOD_S = 1.0 / CONTROL_HZ
@@ -161,7 +181,12 @@ class ArmSdkDriver:
         # Current (commanded) and target joint angles, 14 values: left then right.
         self._current: list[float] = [0.0] * 14
         self._target: list[float] = [0.0] * 14
+        # Waist yaw/roll/pitch to hold, set from lowstate by engage(). Empty
+        # until then, so a command built without a measured waist raises in
+        # _build_command (zip strict) instead of shipping a limp waist.
+        self._waist_hold: list[float] = []
         self._mode_machine = 0
+        self._gravity_ff = True
         #: Monotonic, not wall clock — see the note above STALE_FRAME_S in
         #: server.py. This one guards the arm-hold timeout, and a backwards
         #: clock step here holds a stale arm pose indefinitely instead of
@@ -199,6 +224,37 @@ class ArmSdkDriver:
         for callers that only want to change some joints."""
         return tuple(self._target)
 
+    def measured_angles(self) -> tuple[float, ...] | None:
+        """Where the arms ARE: rt/lowstate's 14 angles, left then right, motor convention. None
+        when there is no reading or it is older than MAX_LOWSTATE_AGE_S."""
+        try:
+            from bridge.sdk.state import get_sampler
+
+            state = get_sampler().get_arm_state()
+        except Exception:  # noqa: BLE001 — no state is "not measured", not a crash
+            return None
+        age, q = state.get("lowstate_age_s"), tuple(state.get("arm_q") or ())
+        if age is None or age > MAX_LOWSTATE_AGE_S or len(q) != 14:
+            return None
+        return q
+
+    def tracking_error_deg(self) -> list[float] | None:
+        """Measured minus commanded, degrees, 14 joints; None when not engaged or not measured."""
+        q = self.measured_angles() if self._engaged else None
+        if q is None:
+            return None
+        return [round(math.degrees(m - c), 1) for m, c in zip(q, self._current, strict=True)]
+
+    def gravity_tau(self) -> list[float]:
+        """The 14 feedforward torques for the commanded pose, clamped; zeros when switched off."""
+        if not self._gravity_ff:
+            return [0.0] * 14
+        tau = [
+            *kinematics.gravity_torques("left", self._current[0:7]),
+            *kinematics.gravity_torques("right", self._current[7:14]),
+        ]
+        return [clamp(t, -m, m) for t, m in zip(tau, TAU_FF_MAX_NM * 2, strict=True)]
+
     def clear_failure(self) -> None:
         """Allow engaging again after a publish-loop failure.
 
@@ -217,16 +273,18 @@ class ArmSdkDriver:
             "releasing": self._releasing,
             "weight": round(self._weight, 3),
             "published": self._published,
+            "gravity_ff": self._gravity_ff,
+            "tracking_error_deg": self.tracking_error_deg(),
             "enabled_by_env": _env_flag("TELEOP_ARM_ENABLED"),
             "sim_mode": SIM_MODE,
         }
 
     # -- preconditions --------------------------------------------------
 
-    def _check_preconditions(self) -> tuple[tuple[float, ...], int]:
+    def _check_preconditions(self) -> tuple[tuple[float, ...], tuple[float, ...], int]:
         """Raise `ArmSdkUnavailable` unless it is safe to engage.
 
-        Returns the measured arm pose and `mode_machine` on success, so the
+        Returns the measured arm and waist pose and `mode_machine` on success, so the
         caller cannot engage using values read at a different instant than the
         ones that were checked.
         """
@@ -270,6 +328,15 @@ class ArmSdkDriver:
                 "A 23-DoF or arms-only variant needs its own slot mapping before this runs."
             )
 
+        waist_q: tuple[float, ...] = tuple(state.get("waist_q") or ())
+        if len(waist_q) != len(WAIST_SLOTS):
+            raise ArmSdkUnavailable(
+                f"lowstate reported {len(waist_q)} waist joints, expected 3 (G1JointIndex 12-14). "
+                "The waist must be held while arm_sdk is engaged, or the blend leaves it limp "
+                "and the torso folds forward; without its measured pose there is nothing safe "
+                "to hold it at."
+            )
+
         fsm_age = state["fsm_age_s"]
         if fsm_age is None:
             raise ArmSdkUnavailable(
@@ -304,7 +371,7 @@ class ArmSdkDriver:
                 "the documented cause of error 7400. Let it finish, or stop_everything first."
             )
 
-        return arm_q, int(state["mode_machine"])
+        return arm_q, waist_q, int(state["mode_machine"])
 
     # -- lifecycle ------------------------------------------------------
 
@@ -312,9 +379,23 @@ class ArmSdkDriver:
         """Take the arms, starting from wherever they currently are."""
         if self._engaged:
             return
-        arm_q, mode_machine = self._check_preconditions()
+        from bridge import estop
+
+        if estop.stop_is_standing():
+            raise ArmSdkUnavailable(
+                "PARAR is standing: the arms are not taken until an operator resumes (Reanudar)."
+            )
+        arm_q, waist_q, mode_machine = self._check_preconditions()
 
         self._mode_machine = mode_machine
+        self._gravity_ff = os.environ.get(GRAVITY_FF_ENV, "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        # Same snapshot as arm_q, so the lowstate age check above covers it too.
+        self._waist_hold = list(waist_q)
         # Both current and target start at the *measured* pose. Countermeasure
         # 1 in the module docstring: with no gap, the ramp has nothing to drag
         # the arm across, and the first operator frame moves it from there at
@@ -343,6 +424,9 @@ class ArmSdkDriver:
         """
         if not self._engaged or self._releasing:
             return
+        # Freeze where the arm IS: the loop keeps slewing toward _target while
+        # it ramps down, so an abort mid-motion would otherwise finish the move.
+        self._target = list(self._current)
         self._releasing = True
         log.info("arm_sdk.releasing", weight=round(self._weight, 3))
 
@@ -462,11 +546,20 @@ class ArmSdkDriver:
 
         cmd = unitree_hg_msg_dds__LowCmd_()
         cmd.mode_machine = self._mode_machine
+        tau = self.gravity_tau()
         for i in range(14):
             slot = (LEFT_ARM_BASE + i) if i < 7 else (RIGHT_ARM_BASE + i - 7)
             motor = cmd.motor_cmd[slot]
             motor.mode = 1  # 1 = Enable. 0 is silently ignored — see the docstring.
             motor.q = float(self._current[i])
+            motor.dq = 0.0
+            motor.tau = float(tau[i])
+            motor.kp = ARM_KP[i % 7]
+            motor.kd = ARM_KD[i % 7]
+        for slot, q in zip(WAIST_SLOTS, self._waist_hold, strict=True):
+            motor = cmd.motor_cmd[slot]
+            motor.mode = 1
+            motor.q = float(q)
             motor.dq = 0.0
             motor.tau = 0.0
             motor.kp = KP

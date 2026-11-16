@@ -55,7 +55,7 @@ Two computers, plus a LiDAR that is its own network host. **[live]**
 | -------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
 | Jetson Orin NX (`g1-orin`) | `192.168.123.164` (eth0), DHCP (wlan0) | General-purpose host. SSH. Where our bridge runs.                                  |
 | Control board ("PC1")      | `192.168.123.161`                      | Publishes the robot's DDS topics. **No SSH** — the only open TCP port is **9991**. |
-| Livox Mid-360 LiDAR        | `192.168.123.120`                      | Direct network peer on the internal LAN.                                           |
+| Livox Mid-360S LiDAR       | `192.168.123.120`                      | Direct network peer on the internal LAN. Scan module faulted (§4.6).               |
 | Mac (when cabled)          | `192.168.123.99`                       | Static, set by hand — the internal LAN has **no DHCP server**.                     |
 
 The control board pushes **~24 MB/s to multicast `239.255.0.1`** and has **no wireless
@@ -93,6 +93,10 @@ different device entirely — so a stale IP does not fail closed, it fails _misl
 name in `~/.ssh/config`, `BRIDGE_URL`, and anywhere else the robot needs naming. A static
 DHCP reservation for `14:0a:02:f0:63:f6` would work too, but mDNS needs no cooperation from
 the school's network team.
+
+**2026-10-13:** the operator reported the robot at `192.168.77.1`, reached by cable
+(`c3po-wire`). Not yet reached from the Mac — record which interface owns it, and
+whether `g1-orin.local` resolves over the cable, the first time it is. **[?]**
 
 The SSH user is **`unitree`** (home `/home/unitree`). `c3po` (Wi-Fi/mDNS) and `c3po-wire`
 (cabled path) are `Host` aliases in the Mac's `~/.ssh/config`, not accounts on the robot.
@@ -137,10 +141,13 @@ Consequences:
   arbitrarily among `eth0`, `docker0`, `wlan0` — logged verbatim as
   `selected arbitrarily from: eth0, docker0, wlan0`. Unpinned, the bridge may see none of
   the robot. Hence `DDS_INTERFACE=eth0` onboard (the env var and its comment live in
-  `apps/bridge/.env.example`). ⚠️ The pinning **currently does not reach CycloneDDS** —
-  the vendor SDK's inline config overrides the bridge's `CYCLONEDDS_URI`; it has worked
-  only because autodetermine lands on `eth0` while `docker0` is down. The pending fix is
-  tracked in `docs/ROBOT-API.md` (known divergences). The vendor independently
+  `apps/bridge/.env.example`). Since 2026-08-29 the pin **reaches the SDK's domain**: the
+  bridge passes the name to `ChannelFactoryInitialize` (`bridge/sdk/connection.py`), because the vendor SDK's inline config overrides the bridge's
+  `CYCLONEDDS_URI` — before that the variable was logged and inert, and the bridge worked
+  only because autodetermine landed on `eth0` while `docker0` was down. The XML file still
+  does not reach that domain (its unicast `<Peers>` block cannot), and the pin is
+  unconfirmed on hardware: check that `dds.init` logs `interface_reason=pinned`
+  (`docs/ROBOT-API.md`, known divergences). The vendor independently
   corroborates the choice: their own `videohub_pc4` CycloneDDS config pins `eth0` with
   the 0.10.2 schema (§6.5).
 
@@ -447,6 +454,29 @@ the raw point clouds and IMU data, and the head is fixed vertically upward witho
 looseness. If the front and rear point cloud frames are obviously stratified when the lidar
 illuminates the same static vertical plane in a static state, or the IMU values are
 significantly abnormal, contact sales for lidar repair."_ **[web]**
+
+**SETTLED 2026-11-03: it is a Mid-360S, and on that day its scan module was faulted.** **[live]**
+
+- **The model.** The Livox SDK reports `dev_type 35` (`kLivoxLidarTypeMid360s`), SN
+  `ARMCNAF0030677`, at `192.168.123.120`. gemm reached the same conclusion on 2026-10-03
+  (`~/gemm_ai/lidar/g1_lidar.cpp`).
+- **Why the republish is always empty.** The control board's `lidar_driver` runs
+  Livox-SDK2 < 1.3.1. That SDK does not know type 35 and drops the sensor, so
+  `rt/utlidar/cloud_livox_mid360` exists but never publishes. Switching the service on
+  (`scripts/robot/lidar_service.py`) changes nothing. Route 1 is dead on this robot.
+- **Why our own driver got nothing (§4.5, 2026-08-21).** SDK2 1.3.1 (already in the nav
+  image) configures only the device types its JSON has a section for. With `MID360` alone
+  it discovered the sensor and never pointed it at us. The fix is to add a `"Mid360s"`
+  section, with `host_net_info` as a list holding `host_ip` (commit a0243e5). After that,
+  the driver sets the data type, pattern, attitude, work mode Normal and IMU, and binds
+  56301/56401.
+- **The sensor then reported `work_state 4` (Error), HMS `0x02100003`, and ~65.6 °C
+  internal temperature.** Per the Livox HMS table, ID `0x0210` at level 3 means _"Scan
+  module is abnormal, the system is trying to recover … try restarting the device."_ The
+  fault persisted across a cold power cycle (battery swap), with nothing touching the dome
+  and no audible motor. No points came by any route. **Treat it as a hardware fault and
+  take it to Unitree/Livox with the code and the SN.** Once it scans, the software path
+  (driver → FAST-LIO → Nav2) needs no further change.
 
 ### 4.7 Message layouts if we run our own driver
 
@@ -843,9 +873,9 @@ depth will not resolve, still needs the device.
 
 **The two routes are mutually exclusive, and that decides a run before it starts:**
 
-| `videohub_pc4` | `:8001/camera` | our detector | who typically causes it           |
-| -------------- | -------------- | ------------ | --------------------------------- |
-| alive          | **works**      | cannot start | nobody has taken the camera       |
+| `videohub_pc4` | `:8001/camera` | our detector | who typically causes it                |
+| -------------- | -------------- | ------------ | -------------------------------------- |
+| alive          | **works**      | cannot start | nobody has taken the camera            |
 | killed         | dark, says why | **works**    | `c3po camera take`, or gemm's bring-up |
 
 `scripts/robot/take_camera` is the one place that performs the swap, because stopping
@@ -996,8 +1026,8 @@ returns **nothing** — no Dex3 service binary, no systemd unit, no `/unitree/mo
 ⚠️ **The conclusion once drawn from that had to be withdrawn.** An earlier version of this
 survey read _"even if a Dex3 were plugged in, nothing on this Jetson would publish
 `rt/dex3/_/state`"* and used it as evidence against Dex3. Unitree states plainly:
-*"**Unitree does not deploy services on the NVIDIA Jetson Orin module.**"* **[web]** The
-Dex3 driver is *"a resident service program"* the robot provides itself — i.e. it runs on
+_"**Unitree does not deploy services on the NVIDIA Jetson Orin module.**"_ **[web]** The
+Dex3 driver is _"a resident service program"_ the robot provides itself — i.e. it runs on
 the control board at `192.168.123.161`, which has no SSH. **The search was aimed at the
 wrong host.** The observation stands; the inference does not. (The 2026-08-15 silent-topic
 probe above is the _right_-host version of the same test, and it too came back empty.)
@@ -1194,8 +1224,8 @@ Our Isaac sim profile's `rt/dex1/{left,right}/{cmd,state}` with `MotorCmds_` is 
 - ✅ **Applied 2026-08-20.** `apps/bridge/src/bridge/sdk/g1_protocol.py` (`REAL_TOPICS`)
   carried `dex_left_cmd="rt/api/dex3/left/request"` / `dex_right_cmd=…`. **The hands are
   not an RPC service** — no api*id, no JSON envelope, and no `rt/api/dex3/*`topic in any
-vendor source on this robot nor in any of the six official hand-related pages. Now`rt/brainco/{left,right}/{cmd,state}`, carrying bare
-`unitree_go::msg::dds*::MotorCmds*`/`MotorStates\*` sequences. **[src]**
+  vendor source on this robot nor in any of the six official hand-related pages. Now`rt/brainco/{left,right}/{cmd,state}`, carrying bare
+  `unitree_go::msg::dds*::MotorCmds*`/`MotorStates\*` sequences. **[src]**
 - **`/api/dex3_msg_controller`**, which earlier inventories cited, appears in **no**
   vendor source, binary or config anywhere on this robot. Its only occurrences were our
   own doc files. Unsourced; struck. **[live]**

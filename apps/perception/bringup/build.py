@@ -13,7 +13,7 @@ without a Jetson, an ONNX file, or a co-tenant to annoy.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from bringup.spec import NAV_IMAGE, VISION_IMAGE
 
@@ -203,6 +203,20 @@ def _power_mode(runner) -> str:
     return text if text.strip() else runner.shell(["nvpmodel", "-q"])[1]
 
 
+_PROXY_KEYS = ("http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+
+
+def proxy_build_args(env: Mapping[str, str]) -> list[str]:
+    """`docker build` flags for building through a proxy, or [] when none is set.
+
+    The robot has no internet of its own; scripts/robot_internet.py lends it the
+    Mac's on 127.0.0.1:18899. A build container only reaches the host's loopback
+    on the host network, hence `--network host` (the classic builder takes it).
+    """
+    args = [a for k in _PROXY_KEYS if env.get(k) for a in ("--build-arg", f"{k}={env[k]}")]
+    return ["--network", "host", *args] if args else []
+
+
 def run_build(
     target: str,
     runner,
@@ -222,6 +236,15 @@ def run_build(
     perception_dir = os.path.join(c3po_dir, "apps", "perception")
     models_dir = env.get("C3PO_MODELS_DIR", os.path.join(home, ".c3po", "models"))
     engine_volume = env.get("C3PO_ENGINE_VOLUME", "c3po-trt-engines")
+    # Which model: the same three env vars the vision container reads, so the
+    # engine built here is the one perception_up then loads (test-day doc).
+    onnx = env.get("C3PO_ONNX", "/opt/c3po/models/yolo11n.onnx")
+    labels = env.get("C3PO_LABELS", "/opt/c3po/models/labels.txt")
+    engine = env.get("C3PO_ENGINE", "/opt/c3po/engines/yolo11n.fp16.plan")
+    model_env: List[str] = []
+    for key in ("C3PO_ONNX", "C3PO_ENGINE"):
+        if env.get(key):
+            model_env += ["-e", f"{key}={env[key]}"]
 
     allowed, lines = precheck(
         arch=env.get("C3PO_FAKE_ARCH") or os.uname().machine,
@@ -248,7 +271,9 @@ def run_build(
             if dry_run:
                 say(f"docker build -t {image} {context}")
                 continue
-            code, _ = runner.docker(["build", "-t", image, context], capture=False)
+            code, _ = runner.docker(
+                ["build", *proxy_build_args(os.environ), "-t", image, context], capture=False
+            )
             if code != 0:
                 err("build failed — the reason is usually one of the Dockerfile's own")
                 err("assertions, not the last line. Search the output for ASSERT/Error.")
@@ -257,7 +282,7 @@ def run_build(
 
         elif step == "engine":
             if not dry_run:
-                for required in ("yolo11n.onnx", "labels.txt"):
+                for required in (os.path.basename(onnx), os.path.basename(labels)):
                     if not os.path.exists(os.path.join(models_dir, required)):
                         err(f"no {required} in {models_dir}")
                         err("export it off-robot with opset<=17 — ultralytics defaults to 20,")
@@ -269,6 +294,7 @@ def run_build(
                 "run", "--rm", "--runtime", "nvidia",
                 "-v", f"{models_dir}:/opt/c3po/models:ro",
                 "-v", f"{engine_volume}:/opt/c3po/engines",
+                *model_env,
                 VISION_IMAGE, "true",
             ]
             if dry_run:
@@ -284,7 +310,7 @@ def run_build(
                 "-v", f"{engine_volume}:/opt/c3po/engines",
                 VISION_IMAGE,
                 "/usr/src/tensorrt/bin/trtexec",
-                "--loadEngine=/opt/c3po/engines/yolo11n.fp16.plan",
+                f"--loadEngine={engine}",
                 "--iterations=200", "--avgRuns=100", "--noDataTransfers",
             ]
             if dry_run:
@@ -308,14 +334,21 @@ def run_build(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    import os
     import sys
 
-    from bringup.cli import Runner
+    from bringup.cli import Runner, err, operator_env
 
     args = list(sys.argv[1:] if argv is None else argv)
     dry_run = "--dry-run" in args
     args = [a for a in args if a != "--dry-run"]
-    return run_build(args[0] if args else "all", Runner(), dry_run=dry_run)
+    try:
+        # The persisted model, so `build engine` builds what `perception_up` loads.
+        env = operator_env(os.environ)
+    except ValueError as exc:
+        err(str(exc))
+        return 2
+    return run_build(args[0] if args else "all", Runner(), env=env, dry_run=dry_run)
 
 
 if __name__ == "__main__":

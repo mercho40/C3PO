@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   batteryLevel,
+  batteryWarning,
   formatAge,
   formatDistance,
   formatPose,
@@ -25,6 +26,26 @@ describe("format", () => {
     expect(batteryLevel(35)).toBe("low");
     expect(batteryLevel(55)).toBe("ok");
     expect(batteryLevel(87)).toBe("full");
+  });
+
+  test("battery banner: warn under 25 %, alert at or under 20 %, never a stub", () => {
+    const cases: [number | null, "warn" | "alert" | null][] = [
+      [null, null],
+      [Number.NaN, null],
+      [30, null],
+      [25, null],
+      [24.9, "warn"],
+      [24.6, "warn"],
+      [20.5, "warn"],
+      [20, "alert"],
+      [15, "alert"],
+      [14, "alert"],
+      [0, "alert"],
+    ];
+    for (const [pct, band] of cases) {
+      expect(batteryWarning(pct, false)).toBe(band);
+      expect(batteryWarning(pct, true)).toBeNull();
+    }
   });
 
   test("distance stays in metres for a lab session", () => {

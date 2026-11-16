@@ -45,6 +45,8 @@ BASE_IN_BODY_XYZ = [-0.10, 0.0, 0.45]
 
 def generate_launch_description() -> LaunchDescription:
     share = FindPackageShare("c3po_perception")
+    # Carries a "Mid360s" section too: this G1's sensor is a Mid-360S (dev_type 35),
+    # and Livox-SDK2 only points a device at us when its type has a section here.
     mid360_json = PathJoinSubstitution([share, "config", "MID360_config.json"])
     fastlio_yaml = PathJoinSubstitution([share, "config", "fastlio_mid360_g1.yaml"])
     p2l_yaml = PathJoinSubstitution([share, "config", "pointcloud_to_laserscan.yaml"])

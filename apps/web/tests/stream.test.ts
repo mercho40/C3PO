@@ -23,7 +23,9 @@ import { describe, expect, test } from "bun:test";
 import {
   buildFrame,
   connectTeleop,
+  idlePayload,
   type TeleopInput,
+  teleopUrl,
 } from "../src/lib/teleop/stream";
 
 const STALE_AFTER = 800;
@@ -210,6 +212,7 @@ describe("stall detection — 'Conectado' on a dead link", () => {
 
     return {
       states,
+      handle,
       socket: () => made!,
       advance: (ms: number) => {
         clock += ms;
@@ -237,6 +240,32 @@ describe("stall detection — 'Conectado' on a dead link", () => {
       await new Promise((r) => setTimeout(r, 60));
 
       expect(h.states.map((s) => s.state)).toContain("stalled");
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("stop() sends one estop frame at once, even on a backed-up link", () => {
+    const h = harness();
+    try {
+      h.socket().emit("open");
+      h.socket().bufferedAmount = 10_000; // the tick would skip; a stop must not
+      h.handle.stop();
+      const sent = h.socket().sent.map((m) => JSON.parse(m));
+      expect(sent.length).toBe(1);
+      expect(sent[0].estop).toBe(true);
+      expect(sent[0].enabled).toBe(false);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("stop() on a closed socket sends nothing", () => {
+    const h = harness();
+    try {
+      h.socket().readyState = 3;
+      h.handle.stop();
+      expect(h.socket().sent.length).toBe(0);
     } finally {
       h.restore();
     }
@@ -276,5 +305,86 @@ describe("stall detection — 'Conectado' on a dead link", () => {
     } finally {
       h.restore();
     }
+  });
+});
+
+describe("observe-only — a headset that watches and commands nothing", () => {
+  /**
+   * The failure this guards against is not a wrong movement, it is a WRONG
+   * BELIEF: someone puts on a headset having been told it is passive, turns
+   * their head to look around, and the robot turns. Every assertion below is
+   * a pose that WOULD command something in a normal session.
+   */
+
+  test("a large head yaw commands nothing", () => {
+    const f = buildFrame(
+      input({ observeOnly: true, yawErrorRadians: BIG_YAW }),
+    );
+    expect(f.enabled).toBe(false);
+    expect(f.head.yaw).toBe(0);
+  });
+
+  test("a held walk button commands nothing", () => {
+    for (const dir of ["forward", "back"] as const) {
+      const f = buildFrame(input({ observeOnly: true, walking: dir }));
+      expect(f.enabled).toBe(false);
+      expect(f.walk).toBe(0);
+    }
+  });
+
+  test("requested arms are not mirrored", () => {
+    const f = buildFrame(
+      input({
+        observeOnly: true,
+        armsRequested: true,
+        left: {
+          position: [0.2, 1.3, -0.3],
+          orientation: [0, 0, 0, 1],
+          grip: 0.9,
+        },
+      }),
+    );
+    expect(f.arms).toBe(false);
+    expect(f.hands.left?.tracked).not.toBe(true);
+  });
+
+  test("everything at once still yields exactly the idle payload", () => {
+    // The worst case: an observer walking, turning and gesturing at once.
+    const f = buildFrame(
+      input({
+        observeOnly: true,
+        yawErrorRadians: BIG_YAW,
+        walking: "forward",
+        armsRequested: true,
+        headPosition: [1, 2, 3],
+      }),
+    );
+    expect(f).toEqual(idlePayload());
+  });
+
+  test("omitting the flag is unchanged behaviour, not silent passivity", () => {
+    // Default-off matters as much as the flag working: every existing caller
+    // omits it, and a frame that quietly stopped commanding would be a robot
+    // that stopped responding with nothing to point at.
+    const normal = buildFrame(input({ yawErrorRadians: BIG_YAW }));
+    expect(normal.enabled).toBe(true);
+    expect(normal.head.yaw).toBeCloseTo(BIG_YAW, 6);
+    expect(
+      buildFrame(input({ observeOnly: false, walking: "forward" })).walk,
+    ).toBe(1);
+  });
+});
+
+describe("teleopUrl (X15)", () => {
+  test("carries apps/back's token to the bridge's handshake", () => {
+    expect(teleopUrl("ws://g1-orin.local:8767", "123.ab/c")).toBe(
+      "ws://g1-orin.local:8767/?token=123.ab%2Fc",
+    );
+  });
+
+  test("no token (no secret, or back down) leaves the URL alone", () => {
+    expect(teleopUrl("ws://g1-orin.local:8767", null)).toBe(
+      "ws://g1-orin.local:8767",
+    );
   });
 });

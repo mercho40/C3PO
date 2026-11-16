@@ -59,7 +59,9 @@ logs and publishes nothing — teleop still runs, the fingers just do not move.
 
 from __future__ import annotations
 
+import math
 import os
+import time
 from typing import Any, Literal
 
 import structlog
@@ -89,6 +91,40 @@ BRAINCO_SPEED = 1.0
 # the thumb collides with the closing fingers. Applied after polarity, so the
 # cap always means "never quite fully closed" regardless of wire direction.
 BRAINCO_CLOSURE_CAPS = (0.98, 0.70, 0.98, 0.98, 0.98, 0.98)
+
+# `rt/brainco/{side}/state` (`unitree_go MotorStates_`, 6 entries, q in the same [0,1] as the
+# command) arrives at ~100 Hz while `brainco_hand_server` runs; older than this is no reading.
+BRAINCO_STATE_MAX_AGE_S = 0.5
+
+
+def commanded_closures(closures: tuple[float, ...]) -> tuple[float, ...]:
+    """What a BrainCo is actually told for `closures` (SHAPES order): clamped, then capped."""
+    return tuple(
+        min(_clamp01(c), cap) for c, cap in zip(closures, BRAINCO_CLOSURE_CAPS, strict=True)
+    )
+
+
+# Named grasp shapes, per-channel closure in the same order (0 open .. 1 closed), BEFORE the caps.
+# For grasping (skills/manipulation.py) and `set_hand(shape=...)`. Drivers without per-finger
+# control (Dex3 here) get the shape's mean as one scalar.
+# shortcut: Thumb_aux's direction (does closure swing the thumb across the palm?) is unobserved;
+# these assume it does. Watch one `power` close and fix channel 1 here if the thumb goes outward.
+SHAPES: dict[str, tuple[float, ...]] = {
+    "open": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    # Wrap a cup, bottle, remote: thumb opposed, all fingers round it.
+    "power": (0.55, 0.70, 0.85, 0.85, 0.85, 0.85),
+    # Thin or small things (keys, wallet edge, watch): thumb and index meet, the rest tucked.
+    "pinch": (0.55, 0.70, 0.60, 0.60, 0.95, 0.95),
+    # Bag handles: fingers curled, thumb out of the way.
+    "hook": (0.0, 0.0, 0.70, 0.70, 0.70, 0.70),
+    "point": (0.60, 0.70, 0.0, 0.95, 0.95, 0.95),
+    # «Saludo peronista» / V sign: index and middle up, the rest closed; the thumb fully tucked,
+    # not showing (2026-11-13: at 0.60 it stayed visible).
+    "v_sign": (0.95, 0.70, 0.0, 0.0, 0.95, 0.95),
+}
+# The same shape by its Spanish name: the school's chat model picked `point` for «saludo
+# peronista» from the description alone (2026-11-13); a value it reads in the enum it does not miss.
+SHAPES["saludo_peronista"] = SHAPES["v_sign"]
 
 # --- Dex3-1 ------------------------------------------------------------------
 # 7 motors, radians. IDL order is `thumb_0, thumb_1, thumb_2, middle_0,
@@ -141,10 +177,23 @@ class HandDriver:
     def send(self, side: Side, grip: float) -> None:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def send_shape(self, side: Side, closures: tuple[float, ...]) -> None:
+        """Per-finger closure (SHAPES order). Single-scalar hands close to the shape's mean."""
+        self.send(side, sum(closures) / len(closures))
+
+    def measured(self, side: Side) -> tuple[float, ...] | None:
+        """Measured per-finger closure (SHAPES order, 0 open .. 1 closed), or None: this hand
+        reports no state, or none recently."""
+        return None
+
     def relax(self) -> None:
         """Open every driven hand. Called on release and on the dead-man."""
         for side in self.sides:
             self.send(side, 0.0)
+
+    def server_heard(self, side: Side) -> bool:
+        """Whether something answers for this hand. Unknown on drivers with no state topic."""
+        return True
 
 
 class NullHandDriver(HandDriver):
@@ -163,6 +212,23 @@ class NullHandDriver(HandDriver):
         return
 
 
+class SimulatedHandDriver(HandDriver):
+    """Publishes nothing, but lets pick/place run their whole sequence: for a body whose hands are dead.
+
+    shortcut: no finger moves and nothing is gripped; results say so. Swap back to
+    TELEOP_HAND_TYPE=brainco once the hands answer on their serial lines again.
+    """
+
+    name = "simulated"
+
+    def __init__(self, sides: tuple[Side, ...] = DEFAULT_SIDES) -> None:
+        self.sides = sides
+        log.warning("teleop.hands.simulated", sides=list(sides), note="no finger will move")
+
+    def send(self, side: Side, grip: float) -> None:
+        log.info("teleop.hands.simulated.send", side=side, grip=round(_clamp01(grip), 2))
+
+
 class BrainCoHandDriver(HandDriver):
     """`rt/brainco/{side}/cmd`, `unitree_go MotorCmds_`, 6 entries in [0,1]."""
 
@@ -174,6 +240,35 @@ class BrainCoHandDriver(HandDriver):
         self.open_at = open_at
         self.sides = sides
         self._publishers: dict[Side, Any] = {}
+        self._subscribers: dict[Side, Any] = {}
+        #: side -> (monotonic arrival, the 6 wire q). Written by the DDS thread.
+        self._state: dict[Side, tuple[float, tuple[float, ...]]] = {}
+
+    def _subscribe_state(self, side: Side) -> None:
+        """One rt/brainco/{side}/state reader per side, shared by measured() and server_heard()."""
+        if side in self._subscribers:
+            return
+        from unitree_sdk2py.core.channel import ChannelSubscriber
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorStates_
+
+        sub = ChannelSubscriber(f"rt/brainco/{side}/state", MotorStates_)
+        sub.Init(lambda msg, s=side: self._on_state(s, msg), 10)
+        self._subscribers[side] = sub
+
+    def server_heard(self, side: Side, within_s: float = 1.0) -> bool:
+        """Whether brainco_hand_server published rt/brainco/{side}/state in the last `within_s`.
+
+        A cmd Write succeeds with nobody subscribed, and the server is started by hand, so
+        after a reboot set_hand said ok to a hand nothing drives (2026-11-12). Blocking (up
+        to `within_s` on the first call, while the subscriber joins); run it off the loop.
+        """
+        self._subscribe_state(side)
+        deadline = time.monotonic() + within_s
+        while time.monotonic() - self._state.get(side, (-math.inf,))[0] > within_s:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+        return True
 
     def _publisher(self, side: Side) -> Any:
         if side not in self._publishers:
@@ -184,25 +279,42 @@ class BrainCoHandDriver(HandDriver):
             pub = ChannelPublisher(topic, MotorCmds_)
             pub.Init()
             self._publishers[side] = pub
+            # The state reader rides along: whoever commands a hand next asks where it got to.
+            self._subscribe_state(side)
             log.info("teleop.hands.publisher.ready", hand="brainco", topic=topic)
         return self._publishers[side]
 
+    def _on_state(self, side: Side, msg: Any) -> None:
+        self._state[side] = (time.monotonic(), tuple(float(m.q) for m in msg.states))
+
+    def measured(self, side: Side) -> tuple[float, ...] | None:
+        got = self._state.get(side)
+        if got is None or time.monotonic() - got[0] > BRAINCO_STATE_MAX_AGE_S:
+            return None
+        if len(got[1]) != BRAINCO_MOTORS:
+            return None
+        # The wire is open_at at open, so closure is the distance from it, on either polarity.
+        return tuple(abs(q - self.open_at) for q in got[1])
+
     def send(self, side: Side, grip: float) -> None:
+        self.send_shape(side, (_clamp01(grip),) * BRAINCO_MOTORS)
+
+    def send_shape(self, side: Side, closures: tuple[float, ...]) -> None:
         if side not in self.sides:
             return
+        if len(closures) != BRAINCO_MOTORS:
+            raise ValueError(f"BrainCo takes {BRAINCO_MOTORS} closures, got {len(closures)}")
         from unitree_sdk2py.idl.default import unitree_go_msg_dds__MotorCmd_
         from unitree_sdk2py.idl.unitree_go.msg.dds_ import MotorCmds_
 
         # `open_at` is the wire value meaning "open", so closure runs from it
         # toward the other end. Written this way rather than as an `if` so the
         # polarity stays one number, not two code paths.
-        closure = _clamp01(grip)
-
         cmds = []
-        for cap in BRAINCO_CLOSURE_CAPS:
-            # Cap the CLOSURE, then map to the wire — so "thumb never quite
-            # fully closed" holds on either polarity.
-            position = self.open_at + (1.0 - 2.0 * self.open_at) * min(closure, cap)
+        # Cap the CLOSURE, then map to the wire — so "thumb never quite
+        # fully closed" holds on either polarity.
+        for closure in commanded_closures(closures):
+            position = self.open_at + (1.0 - 2.0 * self.open_at) * closure
             cmd = unitree_go_msg_dds__MotorCmd_()
             cmd.q = float(position)
             cmd.dq = float(BRAINCO_SPEED)
@@ -316,6 +428,9 @@ def build_driver() -> HandDriver:
 
     if hand_type == "dex3":
         return Dex3HandDriver(sides=sides)  # type: ignore[arg-type]
+
+    if hand_type == "simulated":
+        return SimulatedHandDriver(sides=sides)  # type: ignore[arg-type]
 
     return NullHandDriver(
         f"TELEOP_HAND_TYPE={hand_type!r} is not one of 'brainco' or 'dex3'. This robot has "

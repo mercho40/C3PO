@@ -73,3 +73,39 @@ def test_all_registered_api_ids_are_applied():
     client.Init()
 
     assert calls["api_ids"] == list(ids)
+
+
+def test_threads_racing_for_the_sport_client_get_one_client(monkeypatch):
+    """The stop burst sends each setpoint from its own thread. A first stop
+    after boot raced the lazy init, and each racer stood up its own channels."""
+    import threading
+    import time
+
+    built: list = []
+
+    class SlowClient:
+        # Like the SDK: the base __init__ stands up the channels (and sleeps
+        # 0.5 s doing it), then Init sets the timeout and registers the api_ids.
+        def __init__(self, *args, **kwargs):
+            self.ready = False
+            time.sleep(0.05)
+            built.append(self)
+
+        def Init(self):
+            time.sleep(0.05)
+            self.ready = True
+
+    monkeypatch.setattr(g1_rpc, "_sport_client", None)
+    monkeypatch.setattr(g1_rpc, "_G1Client", SlowClient)
+    got: list = []
+    threads = [
+        threading.Thread(target=lambda: got.append(g1_rpc._get_sport_client().ready))
+        for _ in range(5)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(2.0)
+
+    assert len(built) == 1
+    assert got == [True] * 5  # nobody was handed a client before its Init ran

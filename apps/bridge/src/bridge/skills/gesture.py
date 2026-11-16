@@ -190,6 +190,7 @@ async def run(
         task.ended_at = time.time()
         return task.to_dict()
 
+    dispatch: asyncio.Future[tuple[int, Any]] | None = None
     try:
         if ctx is not None:
             try:
@@ -200,8 +201,10 @@ async def run(
                 pass  # progress is best-effort
 
         # Off the event loop: call_arm blocks up to ARM_TIMEOUT_S because the
-        # arm service acks on COMPLETION of the motion, not receipt.
-        code, data = await asyncio.to_thread(g1_rpc.call_arm, int(gesture))
+        # arm service acks on COMPLETION of the motion, not receipt. A future,
+        # so a cancelled turn can still learn whether the gesture latched.
+        dispatch = asyncio.ensure_future(asyncio.to_thread(g1_rpc.call_arm, int(gesture)))
+        code, data = await asyncio.shield(dispatch)
 
         task.status = "completed" if code == 0 else "failed"
         task.phase = "dispatched" if code == 0 else "rpc_error"
@@ -228,6 +231,7 @@ async def run(
             if hold_s > 0:
                 task.phase = "holding_pose"
                 await asyncio.sleep(hold_s)
+            task.phase = "releasing"
             release_code, _ = await asyncio.to_thread(
                 g1_rpc.call_arm, int(g1_protocol.Gesture.RELEASE_ARM)
             )
@@ -254,6 +258,30 @@ async def run(
         task.ended_at = time.time()
         return task.to_dict()
 
+    except asyncio.CancelledError:
+        # The turn that asked for this ended (PARAR, closed tab, turn budget).
+        # CancelledError is a BaseException, so `except Exception` misses it:
+        # without this the hold was cut short, RELEASE_ARM never went out and
+        # the arm stayed latched in the pose, with the task pinned "running".
+        # Already sending its own release: its thread finishes regardless.
+        releasing = task.phase == "releasing"
+        task.status = "cancelled"
+        task.phase = "cancelled"
+        task.ended_at = time.time()
+        log.info("gesture.cancelled", task_id=task.task_id, name=normalized)
+        if (
+            dispatch is not None
+            and not releasing
+            and auto_release
+            and gesture != g1_protocol.Gesture.RELEASE_ARM
+        ):
+            try:
+                # Shielded: the release goes out even though we were cancelled.
+                await asyncio.shield(asyncio.ensure_future(_release_after(dispatch)))
+            except (Exception, asyncio.CancelledError):
+                log.warning("gesture.cancel_release_failed", task_id=task.task_id, exc_info=True)
+        raise  # never swallow cancellation
+
     except Exception as exc:
         task.status = "failed"
         task.phase = "exception"
@@ -261,3 +289,20 @@ async def run(
         task.ended_at = time.time()
         log.exception("gesture.failed", task_id=task.task_id, name=normalized)
         return task.to_dict()
+
+
+async def _release_after(dispatch: asyncio.Future[tuple[int, Any]]) -> None:
+    """Let go of a gesture a cancelled turn left behind.
+
+    Waits for the dispatch first: its thread keeps running after the cancel,
+    and a release sent while the gesture is still executing would race it on
+    the one arm client. Only a gesture that latched (code 0) is released; a
+    released pose is the arms letting go, which is what PARAR asks for too.
+    """
+    code, _ = await dispatch
+    if code != 0:
+        return
+    release_code, _ = await asyncio.to_thread(
+        g1_rpc.call_arm, int(g1_protocol.Gesture.RELEASE_ARM)
+    )
+    log.info("gesture.cancel_released", rpc_code=release_code)

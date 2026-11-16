@@ -234,6 +234,30 @@ async def test_a_posture_that_never_transitions_says_so(monkeypatch):
     assert "controller" in result["result"]["note"]
 
 
+async def test_a_refused_walk_enable_says_to_load_the_feet(monkeypatch):
+    """2026-10-15: start_walking_waist from FSM 4, on the hanger, stayed at 4.
+
+    The old note sent the operator to the motion controller, which was loaded
+    (prepare had just transitioned). The precondition that was missing is the
+    feet bearing weight — say that.
+    """
+    from bridge.sdk import g1_rpc
+    from bridge.skills import _g1_request
+
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda api_id, data: (0, ""))
+    monkeypatch.setattr(_g1_request, "_await_fsm", _fake_fsm(4))
+    monkeypatch.setattr(_g1_request, "_read_fsm_mode", lambda: 1)
+
+    result = await _g1_request.run_g1_request("start_walking_waist", None)
+
+    assert result["phase"] == "acked_no_transition"
+    assert result["result"]["fsm_after"] == 4
+    assert result["result"]["fsm_mode"] == 1
+    assert "feet" in result["result"]["note"]
+    assert "fsm_mode=1" in result["result"]["note"]
+
+
 async def test_a_posture_that_lands_reports_transitioned(monkeypatch):
     from bridge.sdk import g1_rpc
     from bridge.skills import _g1_request
@@ -265,8 +289,84 @@ async def test_an_unreadable_fsm_is_unverified_not_failed(monkeypatch):
     assert result["result"]["transitioned"] is None
 
 
+@pytest.mark.parametrize("fsm_id", [500, 501])
+async def test_prepare_from_a_walk_program_sends_nothing(monkeypatch, fsm_id):
+    """2026-11-12: prepare from 501 acked, waited 9 s, and the agent narrated a mode change."""
+    from types import SimpleNamespace
+
+    from bridge.sdk import g1_rpc, state
+    from bridge.skills import _g1_request
+
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda *a: pytest.fail("prepare was sent"))
+    sampler = SimpleNamespace(get_arm_state=lambda: {"fsm_id": fsm_id, "fsm_age_s": 0.1})
+    monkeypatch.setattr(state, "existing_sampler", lambda: sampler)
+
+    result = await _g1_request.run_g1_request("prepare", None)
+
+    assert (result["status"], result["phase"]) == ("completed", "already_in_locomotion")
+    assert "do not need prepare" in result["result"]["note"]
+
+
+async def test_prepare_on_a_stale_fsm_reading_is_still_sent(monkeypatch):
+    from types import SimpleNamespace
+
+    from bridge.sdk import g1_rpc, state
+    from bridge.skills import _g1_request
+
+    sent = []
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda *a: sent.append(a) or (0, ""))
+    monkeypatch.setattr(_g1_request, "_await_fsm", _fake_fsm(4))
+    sampler = SimpleNamespace(get_arm_state=lambda: {"fsm_id": 501, "fsm_age_s": 60.0})
+    monkeypatch.setattr(state, "existing_sampler", lambda: sampler)
+
+    await _g1_request.run_g1_request("prepare", None)
+
+    assert sent
+
+
 def _fake_fsm(value):
     async def _fake(target, timeout_s):
         return value
 
     return _fake
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_request_is_not_left_running(monkeypatch):
+    """An ended agent turn cancels its MCP call. CancelledError skipped
+    `except Exception`, and the task stayed "running" for the process lifetime."""
+    import asyncio
+    import time as _time
+
+    from bridge.skills.task_runtime import get_registry
+
+    monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_sport_api", lambda api_id, data: _time.sleep(0.3) or (0, ""))
+
+    call = asyncio.ensure_future(_g1_request.run_g1_request("damp"))
+    await asyncio.sleep(0.05)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert not [t for t in get_registry().list_active() if t.skill_name == "damp"]
+
+
+async def test_a_wall_clock_step_does_not_cut_the_fsm_wait(monkeypatch):
+    """NTP stepping the clock forward mid-wait read as a posture that never landed."""
+    import time
+    from types import SimpleNamespace
+
+    real_time, step, readings = time.time, [0.0], iter([4, 501])
+
+    def get_arm_state():
+        step[0] = 3600.0
+        return {"fsm_id": next(readings)}
+
+    monkeypatch.setattr(time, "time", lambda: real_time() + step[0])
+    monkeypatch.setattr(
+        "bridge.sdk.state.get_sampler", lambda: SimpleNamespace(get_arm_state=get_arm_state)
+    )
+
+    assert await _g1_request._await_fsm(501, 5.0) == 501

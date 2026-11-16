@@ -6,7 +6,9 @@
  * that leads to a "missing client_id" page is drawn at all.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_REDIRECT,
   oauthErrorMessage,
@@ -98,5 +100,39 @@ describe("oauthErrorMessage", () => {
   test("known and unknown codes are Spanish", () => {
     expect(oauthErrorMessage("access_denied")).toContain("Cancelaste");
     expect(oauthErrorMessage("something_new")).toContain("No se pudo ingresar");
+  });
+});
+
+describe("authErrorMessage", () => {
+  // auth-client.ts reads the API URL from SvelteKit's env module, which only
+  // exists inside a SvelteKit build. Same keys and values as
+  // vr-control-runtime.test.ts: bun keeps the first mock's export names.
+  mock.module("$app/env/public", () => ({
+    PUBLIC_API_URL: "http://localhost:3000",
+    PUBLIC_ROBOT_CAM_URL: "",
+    PUBLIC_TELEOP_HOST: "",
+    PUBLIC_TELEOP_PORT: "",
+  }));
+
+  test("closed sign-up says who to ask, in Spanish", async () => {
+    const { authErrorMessage } = await import("../src/lib/auth-client");
+    expect(
+      authErrorMessage({
+        code: "EMAIL_PASSWORD_SIGN_UP_DISABLED",
+        status: 400,
+      }),
+    ).toBe("El registro está cerrado. Pedile una cuenta a un admin.");
+  });
+});
+
+describe("no way in but /login", () => {
+  const at = (path: string) => fileURLToPath(new URL(path, import.meta.url));
+  test("sign-up is closed on back, so no page offers it", () => {
+    expect(existsSync(at("../src/routes/signup"))).toBe(false);
+    for (const page of [
+      "../src/routes/login/+page.svelte",
+      "../src/routes/+page.svelte",
+    ])
+      expect(readFileSync(at(page), "utf8")).not.toContain("signup");
   });
 });

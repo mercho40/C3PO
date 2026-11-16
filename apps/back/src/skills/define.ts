@@ -7,6 +7,9 @@ import { t, type TSchema } from "elysia";
  */
 export type DangerLevel = "low" | "medium" | "high";
 
+/** The bridge's risk tier (bridge/skill_meta.py). T2 needs an operator confirmation. */
+export type RiskTier = "T0" | "T1" | "T2";
+
 /**
  * Coarse grouping used by the supervisor UI to bucket skills in the catalogue
  * sidebar. Add new values as we expand the catalogue — keep the set small.
@@ -85,6 +88,7 @@ export interface SkillCatalogueEntry {
   typicalFailureModes: readonly string[];
   classification: SkillClassification;
   dangerLevel: DangerLevel;
+  tier?: RiskTier;
   status: SkillStatus;
   works: { sim: boolean; real: boolean };
 }

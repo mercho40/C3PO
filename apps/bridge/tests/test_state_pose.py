@@ -17,6 +17,8 @@ import math
 import time
 import types
 
+import pytest
+
 from bridge.sdk import g1_protocol, state
 
 
@@ -143,11 +145,11 @@ def test_a_failing_fsm_poll_is_reported_not_hidden(monkeypatch):
 
     sampler = state_mod.StateSampler()
     sampler._lowstate = state_mod._LowStateSnapshot(
-        received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
+        received_at=time.monotonic(), tick=1, mode_machine=5, motor_count=35, has_imu=True
     )
     # A run of failed polls, as the poller now records them.
     sampler._fsm = state_mod._FsmSnapshot(
-        received_at=time.time(),
+        received_at=time.monotonic(),
         fsm_id=501,
         fsm_mode=0,
         consecutive_failures=state_mod.FSM_FAILURES_BEFORE_FAULT,
@@ -167,9 +169,11 @@ def test_an_old_fsm_reading_is_called_stale(monkeypatch):
 
     sampler = state_mod.StateSampler()
     sampler._lowstate = state_mod._LowStateSnapshot(
-        received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
+        received_at=time.monotonic(), tick=1, mode_machine=5, motor_count=35, has_imu=True
     )
-    sampler._fsm = state_mod._FsmSnapshot(received_at=time.time() - 3600, fsm_id=501, fsm_mode=0)
+    sampler._fsm = state_mod._FsmSnapshot(
+        received_at=time.monotonic() - 3600, fsm_id=501, fsm_mode=0
+    )
 
     faults = sampler.get_state()["faults"]
 
@@ -181,11 +185,11 @@ def test_a_dead_odom_subscription_is_reported(monkeypatch):
 
     sampler = state_mod.StateSampler()
     sampler._lowstate = state_mod._LowStateSnapshot(
-        received_at=time.time(), tick=1, mode_machine=5, motor_count=35, has_imu=True
+        received_at=time.monotonic(), tick=1, mode_machine=5, motor_count=35, has_imu=True
     )
     # Pose arrived once, long ago, and then stopped — lowstate is still fine.
     sampler._pose = state_mod._PoseSnapshot(
-        received_at=time.time() - 60,
+        received_at=time.monotonic() - 60,
         x_meters_world=1.0,
         y_meters_world=2.0,
         z_meters_world=0.0,
@@ -198,3 +202,46 @@ def test_a_dead_odom_subscription_is_reported(monkeypatch):
         "every distance and angle measured in this project comes from odom; a "
         "dead subscription must be visible, not silently frozen"
     )
+
+
+# --- pose_at: the pose a detection's bearing was measured from (E2) ----------
+
+
+def _sim_msg(x: float, y: float) -> types.SimpleNamespace:
+    inner = {"articulation": {"robot": {"root_pose": [[x, y, 0.8, 1.0, 0.0, 0.0, 0.0]]}}}
+    return types.SimpleNamespace(data=json.dumps({"init_state": json.dumps(inner)}))
+
+
+def test_pose_at_picks_the_newest_sample_at_or_before_t(monkeypatch):
+    sampler = state.StateSampler()
+    clock = iter([10.0, 10.5, 11.0])
+    monkeypatch.setattr(state.time, "monotonic", lambda: next(clock))
+    for x in (1.0, 2.0, 3.0):
+        sampler._on_odom(_fake_odom_msg(x, 0.0, 0.0, x / 10))
+
+    assert sampler.pose_at(10.7) == (2.0, 0.0, 0.2)
+    assert sampler.pose_at(10.5) == (2.0, 0.0, 0.2)
+    assert sampler.pose_at(99.0) == (3.0, 0.0, pytest.approx(0.3))
+    assert sampler.pose_at(9.9) is None  # older than the history: unknown, not the oldest
+
+
+def test_pose_at_is_none_without_history():
+    assert state.StateSampler().pose_at(1e12) is None
+
+
+def test_pose_at_records_the_sim_pose_too(monkeypatch):
+    sampler = state.StateSampler()
+    clock = iter([5.0, 6.0])
+    monkeypatch.setattr(state.time, "monotonic", lambda: next(clock))
+    sampler._on_sim_state(_sim_msg(1.5, 2.5))
+    sampler._on_sim_state(_sim_msg(4.0, 4.0))
+
+    x, y, yaw = sampler.pose_at(5.5)
+    assert (x, y) == (1.5, 2.5) and yaw == pytest.approx(0.0, abs=1e-9)
+
+
+def test_pose_history_is_bounded():
+    sampler = state.StateSampler()
+    for i in range(1500):
+        sampler._on_odom(_fake_odom_msg(float(i), 0.0, 0.0, 0.0))
+    assert len(sampler._pose_history) == 1000

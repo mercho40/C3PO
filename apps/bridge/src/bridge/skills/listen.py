@@ -35,14 +35,17 @@ recogniser is verifiable today and the mic is a swap when it unblocks.
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import secrets
 import queue
 import socket
 import threading
 import time
 import struct
-from collections import deque
+import wave
+from collections import OrderedDict, deque
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -184,6 +187,16 @@ class StopPhraseDetector:
         partial = json.loads(self._rec.PartialResult()).get("partial", "")
         return self._hit(partial)
 
+    def flush(self) -> str | None:
+        """The stop phrase in whatever is still buffered, at end of stream.
+
+        A final result needs trailing silence, and on a short clip the partials
+        can lag the audio: "emergencia" with nothing after it was missed in 3 of
+        5 runs on real Vosk. A live mic keeps sending silence, so this matters
+        for finite sources, and a stop is the one result never to drop.
+        """
+        return self._hit(json.loads(self._rec.FinalResult()).get("text", ""))
+
     def reset(self) -> None:
         self._rec.Reset()
 
@@ -203,7 +216,7 @@ def detect_in_pcm(
         hit = det.feed(pcm[off : off + frame_bytes])
         if hit:
             return hit
-    return None
+    return det.flush()
 
 
 class Transcriber:
@@ -229,10 +242,13 @@ class Transcriber:
         Only finals are returned. Partials matter for the stop phrase, where
         latency is the whole point, and are noise here — an agent should act on
         what someone finished saying, not on the first syllable of it.
+
+        An empty final (room noise Vosk decoded as nothing) is "", not None: it
+        is still a boundary, and back mode must clear its audio buffer on it or
+        the silence ships with the next utterance.
         """
         if self._rec.AcceptWaveform(pcm):
-            text = json.loads(self._rec.Result()).get("text", "").strip()
-            return text or None
+            return str(json.loads(self._rec.Result()).get("text", "")).strip()
         return None
 
     def flush(self) -> str | None:
@@ -315,6 +331,15 @@ VISION_TIMEOUT_S = float(os.environ.get("C3PO_VISION_STT_TIMEOUT_S", "30"))
 # Runs on its own timer thread, which stops as soon as it has upgraded — see
 # `MicListener._watch_backend`.
 REMOTE_RECHECK_S = float(os.environ.get("C3PO_STT_RECHECK_S", "30"))
+
+# `C3PO_STT=back` hands each finished utterance's audio to apps/back, which
+# transcribes it with ia-tic (the robot has no internet, the operator's Mac
+# does). Vosk still segments and the stop detector still runs here, unchanged.
+# Anything else keeps the on-robot Whisper path.
+STT_MODE = os.environ.get("C3PO_STT", "local")
+# A few utterances for a few seconds: back fetches each one as its event lands.
+UTTERANCE_AUDIO_KEEP = 4
+UTTERANCE_AUDIO_TTL_S = 15.0
 
 
 class RemoteWhisper:
@@ -568,6 +593,14 @@ def listen_loop(
             if better and on_text is not None:
                 on_text(better)
 
+    # The stop first, as in the loop: an utterance cut off by the end of the
+    # stream may still be the stop.
+    hit = detector.flush()
+    if hit:
+        log.warning("listen.stop_phrase", phrase=hit)
+        if on_stop is not None:
+            on_stop(hit)
+
     # FLUSH, and it is not an edge case. Vosk emits a final result only at an
     # utterance boundary — i.e. trailing silence — so a finite source (a file, a
     # synthesised clip, a mic stream that ends) leaves its LAST utterance, and
@@ -745,13 +778,13 @@ class MicListener:
     thread sits in a socket timeout loop. There is no audio to decode and no
     model work to do until somebody presses the button.
 
-    The stop phrase is detected here and REPORTED, not acted on. D6.2 had it
-    bypass the agent straight into stop_everything; that made sense when the
-    microphone was assumed always-on, and does not now — whoever is holding the
-    remote to make the robot hear at all already has a physical e-stop under
-    their thumb, which is faster and cannot mis-hear. Auto-triggering on a
-    mis-decode would halt the robot mid-task on a word nobody said. Pass
-    `on_stop=` to opt into acting on it.
+    The stop phrase is detected here and always REPORTED. It is ACTED on only
+    while a voice session is connected: the realtime audio stream and the legacy
+    loop's event stream each arm `on_stop` (stop_everything inside the bridge,
+    no apps/back or model in the path) and disarm it when they disconnect. In a
+    session a mis-decode halts the robot, the cheap direction to be wrong in.
+    Outside one nobody is talking to the robot, so a mis-decode would halt it
+    mid-task on a word nobody said; the agent's `listen` poll still sees it.
     """
 
     def __init__(
@@ -762,6 +795,7 @@ class MicListener:
         source: Callable[[], Iterator[bytes]] | None = None,
         build: Callable[[], tuple[Any, Any, Any]] | None = None,
         playback_active: Callable[[], bool] | None = None,
+        stt_mode: str | None = None,
     ) -> None:
         """`source` and `build` exist so this is testable off the robot.
 
@@ -773,6 +807,8 @@ class MicListener:
         that run everywhere, and only the models themselves need the robot.
         """
         self._whisper = whisper
+        self._stt_back = (STT_MODE if stt_mode is None else stt_mode) == "back"
+        self._utterance_audio: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
         #: The live transcriber. Swapped by `_watch_backend` when the GPU server
         #: appears, so the audio loop must read it rather than close over it.
         self._whisperer: Any | None = None
@@ -793,7 +829,9 @@ class MicListener:
         # ALSA device or competing for the multicast source. Queues are bounded:
         # fresh voice audio is useful; seconds-old audio after a slow network is not.
         self._audio_subscribers: set[queue.Queue[bytes]] = set()
-        self._on_stop: Callable[[str], None] | None = None
+        #: Every voice session's armed stop, oldest first. A tuple swapped whole,
+        #: so the mic thread's read is one atomic attribute load.
+        self._armed: tuple[Callable[[str], None], ...] = ()
 
         self._frames = 0
         self._utterances = 0
@@ -814,15 +852,35 @@ class MicListener:
 
     # -- lifecycle -----------------------------------------------------------
 
-    def set_on_stop(self, on_stop: Callable[[str], None] | None) -> None:
-        """Arm/disarm session-scoped stop action without restarting the listener."""
-        self._on_stop = on_stop
+    @property
+    def _on_stop(self) -> Callable[[str], None] | None:
+        """The stop action to run: the newest armed session's, or None."""
+        armed = self._armed
+        return armed[-1] if armed else None
+
+    def set_on_stop(self, on_stop: Callable[[str], None]) -> None:
+        """Arm a session's stop action without restarting the listener."""
+        self._armed = (*self._armed, on_stop)
+
+    def clear_on_stop(self, on_stop: Callable[[str], None] | None) -> None:
+        """Disarm `on_stop` only; every other armed session stays armed.
+
+        Counted per subscriber, not one slot: any page that opens and closes the
+        event stream used to disarm the voice loop's still-open connection, and
+        the spoken stop then never reached stop_everything.
+        """
+        armed = list(self._armed)
+        for i, cb in enumerate(armed):
+            if cb is on_stop:
+                del armed[i]
+                self._armed = tuple(armed)
+                return
 
     def start(self, on_stop: Callable[[str], None] | None = None) -> None:
-        # A Realtime audio subscriber may arrive after the boot-started listener.
-        # Updating the callback even when the thread is already alive lets that
-        # explicit session arm bridge-local spoken stop without restarting audio.
-        self.set_on_stop(on_stop)
+        # Only an explicit callback arms: a bare start() (boot, the `listen`
+        # tool's restart) must not disarm a live session's spoken stop.
+        if on_stop is not None:
+            self.set_on_stop(on_stop)
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_evt.clear()
@@ -845,7 +903,9 @@ class MicListener:
             else:
                 detector = StopPhraseDetector(phrases=self._phrases)
                 transcriber = Transcriber()
-                whisperer = build_whisperer() if self._whisper else None
+                whisperer = (
+                    build_whisperer() if self._whisper and not self._stt_back else None
+                )
         except ListenUnavailable as exc:
             # Recorded rather than raised: this is a daemon thread, and an
             # exception here would vanish into stderr while `poll()` kept
@@ -864,6 +924,9 @@ class MicListener:
         #
         # A timer thread owns it instead. The loop reads `self._whisperer` each
         # time rather than closing over a local, so the swap actually reaches it.
+        if self._stt_back:
+            whisperer = None
+            log.info("listen.whisper_backend", backend="apps-back")
         self._whisperer = whisperer
         if whisperer is not None:
             threading.Thread(
@@ -880,15 +943,25 @@ class MicListener:
                 self._frames += 1
                 self._last_audio_at = time.monotonic()
 
+            stopped = False
             if hit := detector.feed(frame):
                 detector.reset()
                 log.warning("mic_listener.stop_phrase", phrase=hit)
                 self._record(hit, kind="stop")
-                if self._on_stop is not None:
+                # Read once: a clear between a check and a call would make it None.
+                if (on_stop := self._on_stop) is not None:
                     try:
-                        self._on_stop(hit)
+                        on_stop(hit)
                     except Exception:
                         log.exception("mic_listener.on_stop_failed")
+                # The segment holding the phrase ("caminá a la puerta, para para")
+                # would close AFTER the stop and start a turn while PARAR stands,
+                # so its audio and its decode are thrown away, this frame included.
+                utterance.clear()
+                reset = getattr(transcriber, "reset", None)
+                if reset is not None:
+                    reset()
+                stopped = True
 
             # The multicast mic hears the robot's own speaker. Feeding that back
             # to the voice loop creates a recursive conversation: answer -> hear
@@ -914,12 +987,26 @@ class MicListener:
                 suppressing_playback = False
 
             self._publish_audio(frame)
+            if stopped:
+                continue
 
             current = self._whisperer
-            if current is not None:
+            if current is not None or self._stt_back:
                 utterance.extend(frame)
 
             text = transcriber.feed(frame)
+            if self._stt_back:
+                # Only a segment Vosk heard words in goes to apps/back: its
+                # transcriber has no VAD and can invent text on silence. An empty
+                # final is a boundary all the same, and a talker with no pause is
+                # trimmed to the newest 30 s rather than published mid-sentence.
+                if text:
+                    self._publish_utterance(bytes(utterance))
+                if text is not None:
+                    utterance.clear()
+                elif len(utterance) > MAX_UTTERANCE_BYTES:
+                    del utterance[:-MAX_UTTERANCE_BYTES]
+                continue
             if text:
                 if current is not None:
                     if len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S:
@@ -949,7 +1036,35 @@ class MicListener:
                 self._whisperer = upgraded
                 return
 
-    def _record(self, text: str, kind: str) -> None:
+    def _publish_utterance(self, pcm: bytes) -> None:
+        """Keep the audio for apps/back to fetch, and announce it as an event."""
+        if not pcm:
+            return
+        audio_id = secrets.token_hex(8)
+        with self._lock:
+            self._utterance_audio[audio_id] = (time.monotonic(), pcm)
+            while len(self._utterance_audio) > UTTERANCE_AUDIO_KEEP:
+                self._utterance_audio.popitem(last=False)
+        self._record("", kind="audio", audio_id=audio_id)
+
+    def utterance_wav(self, audio_id: str) -> bytes | None:
+        """One kept utterance as a 16 kHz mono 16-bit WAV, or None once gone."""
+        with self._lock:
+            cutoff = time.monotonic() - UTTERANCE_AUDIO_TTL_S
+            for key in [k for k, (at, _) in self._utterance_audio.items() if at < cutoff]:
+                del self._utterance_audio[key]
+            kept = self._utterance_audio.get(audio_id)
+        if kept is None:
+            return None
+        out = io.BytesIO()
+        with wave.open(out, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(MIC_SAMPLE_RATE)
+            wav.writeframes(kept[1])
+        return out.getvalue()
+
+    def _record(self, text: str, kind: str, **extra: str) -> None:
         with self._changed:
             self._sequence += 1
             item = {
@@ -957,8 +1072,9 @@ class MicListener:
                 "kind": kind,
                 "at": time.monotonic(),
                 "_seq": self._sequence,
+                **extra,
             }
-            if kind == "speech":
+            if kind in ("speech", "audio"):
                 self._utterances += 1
             self._pending.append(item)
             self._history.append(item)

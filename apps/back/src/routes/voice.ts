@@ -33,18 +33,40 @@ import { createIdGenerator } from "ai";
 
 import { runAgentChat } from "#back/agent/runtime.js";
 import { callTool } from "#back/bridge/client.js";
+import { auditedCall } from "#back/bridge/audited.js";
 import { deleteChat, ensureChat } from "#back/db/chats.js";
+import {
+  decideSpoken,
+  listPending,
+  onChatOutcome,
+  onLoopOutcome,
+  type PendingConfirmation,
+} from "#back/agent/confirmations.js";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 import { VoiceConversation } from "#back/voice/conversation.js";
-import { bridgeVoiceEvents, bridgeVoiceStatus } from "#back/voice/events.js";
+import {
+  bridgeUtteranceAudio,
+  bridgeVoiceEvents,
+  bridgeVoiceStatus,
+} from "#back/voice/events.js";
+import { ListenWindow } from "#back/voice/listen-window.js";
 import { VoiceLoop } from "#back/voice/loop.js";
+import { readStoppedAt } from "#back/agent/stop-watch.js";
+import { bridgeSiblingUrl } from "#back/bridge/url.js";
 import { RealtimeVoiceSession } from "#back/voice/realtime.js";
+import {
+  MAX_AUDIO_BYTES,
+  TranscribeError,
+  transcribe,
+  transcribeTimeoutMs,
+} from "#back/voice/transcribe.js";
 import {
   availableEngines,
   chooseEngine,
   defaultEngine,
   type VoiceEngine,
 } from "#back/voice/engine.js";
+import { cancelPending, confirmPending } from "./skills";
 
 const newId = createIdGenerator();
 
@@ -69,31 +91,68 @@ const newId = createIdGenerator();
  */
 let legacyStartedBy: string | null = null;
 
+/**
+ * Every legacy-loop `say`, one at a time: each takes a new stream on the
+ * bridge and barges in on the one playing, so the Confirmar line cut into a
+ * turn's sentence (2026-11-13 13:56:59). A failed say does not block the next.
+ */
+let speech: Promise<unknown> = Promise.resolve();
+function speakInOrder(text: string): Promise<unknown> {
+  speech = speech
+    .catch(() => {})
+    .then(() =>
+      auditedCall(
+        "say",
+        { text, language: "spanish", wait_for_completion: true },
+        { userId: legacyStartedBy, source: "voice" },
+      ),
+    );
+  return speech;
+}
+
 const conversation = new VoiceConversation({
-  complete: async (messages) => {
-    const result = await runAgentChat(messages, {
+  // The whole result, not just its text: the turn also waits on toolsSettled.
+  complete: (messages, signal) =>
+    runAgentChat(messages, {
       mode: "voice",
       userId: legacyStartedBy,
-    });
-    return result.textStream;
-  },
+      abortSignal: signal,
+    }),
   speak: async (text) => {
-    await callTool("say", {
-      text,
-      language: "spanish",
-      wait_for_completion: true,
-    });
+    await speakInOrder(text);
   },
   newId,
 });
 
-async function runAgentOnUtterance(utterance: string): Promise<void> {
-  const metrics = await conversation.turn(utterance);
+// A Confirmar/Cancelar of a call this loop asked for: its next turn reads the
+// outcome, and the robot says it in one line, queued behind any sentence the
+// loop is saying.
+onLoopOutcome((message, spoken) => {
+  conversation.remember(message);
+  void speakInOrder(spoken).catch(() => {});
+});
+
+/** A refused call waiting for this operator, as the /voice page shows it. */
+const publicPending = (p: PendingConfirmation) => ({
+  id: p.id,
+  tool: p.tool,
+  args: p.args,
+  askedAt: new Date(p.at).toISOString(),
+});
+
+async function runAgentOnUtterance(
+  utterance: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const metrics = await conversation.turn(utterance, signal);
   console.log("[voice] turn complete", metrics);
 }
 
 let loop: VoiceLoop | null = null;
 const realtime = new RealtimeVoiceSession();
+// A Confirmar/Cancelar of a call the realtime session asked for: it hears the
+// outcome (it checks the chat is still its own).
+onChatOutcome((chatId, message) => realtime.informOutcome(chatId, message));
 
 /**
  * The engine status describes: whichever is running, else whichever ran last.
@@ -138,13 +197,16 @@ function voiceStatus(userId?: string) {
       // for anyone else.
       chatId: ownedByYou ? chatId : null,
       ownedByYou,
+      confirmations:
+        ownedByYou && userId && chatId
+          ? listPending(userId, chatId).map(publicPending)
+          : [],
       // Compatibility fields keep the existing dashboard readable while the
       // richer Realtime state is additive.
       utterancesHeard: state.utterancesHeard,
       agentRuns: state.agentRuns,
-      // Null, not 0: the realtime session does not act on spoken stop phrases
-      // at all (only the legacy loop does), so a counter reading "0" would
-      // imply a guard that is not there.
+      // Null, not 0: in a realtime session the bridge acts on the stop phrase
+      // itself and apps/back never sees it, so "0" would read as none heard.
       stopsTriggered: null,
       micEverOpen: state.micEverOpen,
       alwaysListening: null,
@@ -161,6 +223,12 @@ function voiceStatus(userId?: string) {
     chatId: null,
     // The legacy loop is process-wide and unowned: anyone signed in may stop it.
     ownedByYou: null,
+    // Its refused calls wait for whoever started it (their turns asked).
+    confirmations: userId
+      ? listPending(userId, null)
+          .filter((p) => p.loop)
+          .map(publicPending)
+      : [],
     conversation: conversation.state(),
   };
 }
@@ -168,9 +236,31 @@ function voiceStatus(userId?: string) {
 function getLoop(): VoiceLoop {
   if (loop === null) {
     loop = new VoiceLoop({
-      callTool: (name, args) => callTool(name, args),
+      // Audited, except the `listen` poll: it commands nothing and runs several
+      // times a second. The spoken "stop" goes out through here, and is
+      // exactly the command an audit trail must not miss.
+      callTool: (name, args) =>
+        name === "listen"
+          ? callTool(name, args)
+          : auditedCall(name, args, {
+              userId: legacyStartedBy,
+              source: "voice",
+            }),
       runAgent: runAgentOnUtterance,
       events: bridgeVoiceEvents,
+      // Bridge C3PO_STT=back: the robot mic's utterances, transcribed by ia-tic.
+      transcribeAudio: async (audioId) => {
+        const wav = await bridgeUtteranceAudio(
+          audioId,
+          AbortSignal.timeout(2_000),
+        );
+        return transcribe(
+          wav,
+          "audio/wav",
+          fetch,
+          transcribeTimeoutMs(wav.byteLength),
+        );
+      },
       inputStatus: bridgeVoiceStatus,
       log: (event, detail) => console.log(`[voice] ${event}`, detail ?? ""),
     });
@@ -178,11 +268,82 @@ function getLoop(): VoiceLoop {
   return loop;
 }
 
+/** Start the legacy loop for `owner`, as /voice/start does on stopped -> running. */
+function startLegacy(owner: string): void {
+  const l = getLoop();
+  if (!l.snapshot().running) {
+    conversation.reset();
+    legacyStartedBy = owner;
+  }
+  lastEngine = "legacy";
+  l.start();
+}
+
+async function stopLegacy(): Promise<void> {
+  await getLoop().stop();
+  legacyStartedBy = null;
+}
+
+/** The bridge's last enrolled greeting (/face/seen `greet`), or null. */
+async function readGreet() {
+  try {
+    const res = await fetch(bridgeSiblingUrl("/face/seen"), {
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!res.ok) return null;
+    const g = ((await res.json()) as { greet?: Record<string, unknown> }).greet;
+    if (!g || typeof g.seq !== "number") return null;
+    return {
+      seq: g.seq,
+      name: typeof g.name === "string" ? g.name : null,
+      listen: g.listen_after_greet === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const LISTEN_AFTER_GREET_MS =
+  (Number(process.env.C3PO_LISTEN_AFTER_GREET_S) || 20) * 1000;
+
+/** «Escuchar después de saludar» (voice/listen-window.ts). */
+export const listenWindow = new ListenWindow(
+  {
+    readGreet,
+    readStoppedAt,
+    loopRunning: () => runningEngine() !== null,
+    startLoop: startLegacy,
+    stopLoop: stopLegacy,
+    activity: () => {
+      const s = getLoop().snapshot();
+      return s.utterancesHeard + s.agentRuns;
+    },
+    stops: () => getLoop().snapshot().stopsTriggered,
+    busy: () => conversation.state().phase !== "idle",
+    log: (event, detail) => console.log(`[voice] ${event}`, detail ?? ""),
+  },
+  LISTEN_AFTER_GREET_MS,
+);
+
+/** Once a second, for the process's life (index.ts). Ticks never overlap. */
+export function startListenAfterGreet(): void {
+  const run = async () => {
+    await listenWindow.tick().catch((e) => {
+      console.error("[voice] listen_window.tick_failed", e);
+    });
+    setTimeout(run, 1000).unref?.();
+  };
+  void run();
+}
+
 export const voiceRoutes = new Elysia({ prefix: "/voice" })
   .use(betterAuth)
   .post(
     "/start",
     async ({ user, session, body, status }) => {
+      // 1.4: driving the robot through a model is an admin's job, like /invoke.
+      if (user.role !== "admin")
+        return status(403, { error: "admin_required" });
       const decision = chooseEngine({
         requested: body?.engine,
         running: runningEngine(),
@@ -234,14 +395,15 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
         return voiceStatus(user.id);
       }
 
-      const l = getLoop();
       // A stopped -> running transition begins a fresh conversation. Repeated
       // start requests are idempotent and must not erase an active dialogue.
-      if (!l.snapshot().running) {
-        conversation.reset();
+      // An admin's own start takes over a listen-after-greet window's loop:
+      // the window must not stop it later, and its turns are this admin's.
+      if (listenWindow.isOpen()) {
+        listenWindow.release();
         legacyStartedBy = user.id;
       }
-      l.start();
+      startLegacy(user.id);
       return voiceStatus(user.id);
     },
     {
@@ -270,8 +432,7 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
           return status(409, voiceStatus(user.id));
         await realtime.stop();
       } else {
-        await getLoop().stop();
-        legacyStartedBy = null;
+        await stopLegacy();
       }
       return voiceStatus(user.id);
     },
@@ -280,6 +441,88 @@ export const voiceRoutes = new Elysia({ prefix: "/voice" })
       detail: {
         summary:
           "End the spoken conversation. The robot keeps listening, but no turns are processed.",
+        tags: ["voice"],
+      },
+    },
+  )
+  .post(
+    "/transcribe",
+    async ({ request, status, user, query, server }) => {
+      // Admin only too: it spends the shared transcription key, and its text drives /agent.
+      if (user.role !== "admin")
+        return status(403, { error: "admin_required" });
+      const declared = Number(request.headers.get("content-length") ?? 0);
+      if (declared > MAX_AUDIO_BYTES) {
+        return status(413, { error: "audio_too_long" });
+      }
+      try {
+        // Stage times for the headset's voice latency (the Quest logs the rest).
+        const since = (t: number) => Math.round(performance.now() - t);
+        const startedAt = performance.now();
+        const audio = await request.arrayBuffer();
+        const uploadedAt = performance.now();
+        const text = await transcribe(
+          audio,
+          request.headers.get("content-type") ?? "audio/wav",
+        );
+        const stages = `[voice] transcribe ${audio.byteLength} B: upload ${Math.round(uploadedAt - startedAt)} ms, transcribe ${since(uploadedAt)} ms`;
+        // The admin's OWN push-to-talk, decided here and never by the model:
+        // «confirmo» runs the one refused call this client shows (`pending`,
+        // in chat `chatId`) exactly as the Confirmar button would. Anything
+        // else, or no call on screen, goes to the agent as usual.
+        const decision = decideSpoken(
+          text,
+          query.chatId ? listPending(user.id, query.chatId) : [],
+          query.pending,
+        );
+        if (decision.kind !== "confirm") console.log(stages);
+        if (decision.kind === "none") return { text };
+        server?.timeout(request, 0); // the confirmed call may outlast Bun's 10 s idle cut
+        if (decision.kind === "ambiguous")
+          return {
+            text,
+            confirmation: { action: "ambiguous", count: decision.count },
+          };
+        const p = decision.pending;
+        if (decision.kind === "cancel") {
+          const r = cancelPending(p.tool, p.id, user);
+          return {
+            text,
+            confirmation: { action: "cancelled", tool: p.tool, ...r.body },
+          };
+        }
+        const confirmAt = performance.now();
+        const r = await confirmPending(p.tool, p.id, p.args, user, "voice");
+        console.log(`${stages}, confirm ${since(confirmAt)} ms`);
+        return {
+          text,
+          confirmation: {
+            action: "confirmed",
+            tool: p.tool,
+            args: p.args,
+            httpStatus: r.status,
+            ...r.body,
+          },
+        };
+      } catch (error) {
+        if (error instanceof TranscribeError) {
+          return status(error.status, { error: error.message });
+        }
+        throw error;
+      }
+    },
+    {
+      auth: true,
+      parse: "none",
+      // The headset's chat and the refused call it shows: spoken «confirmo»
+      // applies to that call only.
+      query: t.Object({
+        chatId: t.Optional(t.String({ maxLength: 64 })),
+        pending: t.Optional(t.String({ maxLength: 128 })),
+      }),
+      detail: {
+        summary:
+          "Speech to text for the headset's push-to-talk (WAV in, {text} out).",
         tags: ["voice"],
       },
     },

@@ -107,6 +107,27 @@ describe("classifySkillResult", () => {
     expect(o.text).toContain("teleoperación");
   });
 
+  test("teleop_takeover says the headset took over", () => {
+    const o = classifySkillResult({
+      status: "failed",
+      phase: "teleop_takeover",
+    });
+    expect(o.kind).toBe("error");
+    expect(o.text).toContain("El operador del visor tomó el control");
+  });
+
+  test("go_to_object's target_lost phase and stale_detection error are named", () => {
+    expect(
+      classifySkillResult({ status: "failed", phase: "target_lost" }).text,
+    ).toBe("Perdí de vista el objetivo");
+    const stale = classifySkillResult({
+      status: "failed",
+      error: "stale_detection",
+    });
+    expect(stale.text).toBe("La detección es vieja; mirá de nuevo");
+    expect(stale.code).toBe("stale_detection");
+  });
+
   test("a stub bridge's {status: ok, stub: true} is not success", () => {
     const o = classifySkillResult({ status: "ok", stub: true });
     expect(o.kind).toBe("warn");
@@ -141,10 +162,47 @@ describe("classifyHttpError", () => {
     expect(classifyHttpError(null, null).code).toBe("network");
   });
 
+  test("invalid_params shows the issues, never the word null", () => {
+    const o = classifyHttpError(422, {
+      error: "invalid_params",
+      issues: [{ path: "/fingers/index", message: "must be number" }],
+    });
+    expect(o.code).toBe("invalid_params");
+    expect(o.detail).toBe("/fingers/index must be number");
+    const bare = classifyHttpError(422, { error: "invalid_params" });
+    expect(bare.detail ?? "").not.toContain("null");
+  });
+
   test("403 is admin_required, as a warning", () => {
     const o = classifyHttpError(403, { error: "admin_required" });
     expect(o.kind).toBe("warn");
     expect(o.code).toBe("admin_required");
+  });
+
+  test("confirmation_not_configured names the missing secret", () => {
+    const o = classifyHttpError(503, { error: "confirmation_not_configured" });
+    expect(o.kind).toBe("error");
+    expect(o.text).toContain("Falta configurar la confirmación");
+    expect(o.detail).toContain("SAFETY_CONFIRM_SECRET");
+  });
+
+  test("a face-gate refusal names its code and says what to do", () => {
+    const detail =
+      "refused (operator_face_not_seen): pick needs the enrolled operator's live face";
+    const o = classifyHttpError(502, { error: "tool_error", detail });
+    expect(o.code).toBe("operator_face_not_seen");
+    expect(o.text).toContain("cerca de la cámara de la cabeza");
+    // The bridge's max distance is configurable: the console must not name one.
+    expect(o.text).not.toContain("1,5 m");
+    expect(o.detail).toBe(detail);
+  });
+
+  test("an unknown coded refusal stays a plain tool_error", () => {
+    const o = classifyHttpError(502, {
+      error: "tool_error",
+      detail: "refused (something_else): no",
+    });
+    expect(o.code).toBe("tool_error");
   });
 
   test("tool_error carries the bridge's detail", () => {
@@ -177,5 +235,29 @@ describe("classifyInvoke", () => {
     expect(
       classifyInvoke({ data: { status: "failed", error: "x" } }).kind,
     ).toBe("error");
+  });
+});
+
+describe("a refused walk enable", () => {
+  test("FSM 4 -> 501 that stayed at 4 tells the operator to load the feet", () => {
+    const o = classifySkillResult({
+      status: "completed",
+      phase: "acked_no_transition",
+      result: { fsm_target: 501, fsm_after: 4, transitioned: false },
+    });
+    expect(o.kind).toBe("error");
+    expect(o.code).toBe("acked_no_transition");
+    expect(o.text).toContain("pies");
+    expect(o.detail).toContain("arnés");
+  });
+
+  test("any other refused transition keeps the generic text", () => {
+    const o = classifySkillResult({
+      status: "completed",
+      phase: "acked_no_transition",
+      result: { fsm_target: 4, fsm_after: 501, transitioned: false, note: "n" },
+    });
+    expect(o.text).toBe("Aceptado, pero el robot NO cambió de estado");
+    expect(o.detail).toBe("n");
   });
 });

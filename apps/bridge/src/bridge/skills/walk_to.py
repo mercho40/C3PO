@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from typing import Any
 
 import structlog
 
+from bridge import motion_announce
 from bridge.skills._locomotion import (
     DEFAULT_HEIGHT,
     KP_LIN,
@@ -26,7 +28,12 @@ from bridge.skills._locomotion import (
     MAX_FWD_VEL,
     MAX_LAT_VEL,
     MAX_YAW_VEL,
+    POSE_STALE,
+    TELEOP_TAKEOVER,
+    arm_hold_conflict,
+    fsm_conflict,
     maybe_report_progress,
+    pose_stale,
     teleop_conflict,
     send_velocity_async,
     stop_motion,
@@ -34,6 +41,23 @@ from bridge.skills._locomotion import (
 from bridge.skills.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
+
+RETARGET_PERIOD_S = 1.0
+# The skills behind the no_active_walk_task precondition: each puts velocity on the base,
+# navigate_to through Nav2's cmd_vel and look_around through its turns.
+WALK_SKILLS = ("walk_to", "turn", "walk_velocity", "navigate_to", "look_around")
+
+
+def active_walk(ignore: tuple[str, ...] = ()) -> str | None:
+    """The task_id of a walk already running, skills in `ignore` aside, or None."""
+    return next(
+        (
+            t.task_id
+            for t in get_registry().list_active()
+            if t.skill_name in WALK_SKILLS and t.skill_name not in ignore
+        ),
+        None,
+    )
 
 
 async def run(
@@ -43,8 +67,13 @@ async def run(
     timeout_s: float = 60.0,
     height: float = DEFAULT_HEIGHT,
     ctx: Any | None = None,
+    autonomous: bool = False,
+    retarget: Callable[[], tuple[float, float] | None] | None = None,
 ) -> dict[str, Any]:
     """Drive the G1 to (target_x, target_y) world-frame and stop near it.
+
+    `retarget`, if given, is called about every RETARGET_PERIOD_S while walking:
+    a tuple is the new target, None ends the walk as failed/target_lost.
 
     Returns the full task dict (see `Task.to_dict`).
     """
@@ -52,7 +81,15 @@ async def run(
 
     from bridge.sdk.state import get_sampler
 
+    running = active_walk()  # before create(): the new task is a walk too
     task = get_registry().create("walk_to")
+    if running is not None:
+        task.status = "failed"
+        task.phase = "walk_task_active"
+        task.error = f"walk task {running} is still running; cancel_task it or wait"
+        task.ended_at = time.time()
+        log.warning("walk_to.walk_task_active", task_id=task.task_id, running=running)
+        return task.to_dict()
 
     # Checked before the sampler is built, because building one initialises
     # DDS — and a skill that is about to refuse has no business opening a
@@ -67,6 +104,22 @@ async def run(
         task.error = conflict
         task.ended_at = time.time()
         log.warning("walk_to.teleop_active", task_id=task.task_id)
+        return task.to_dict()
+    conflict = arm_hold_conflict()
+    if conflict is not None:
+        task.status = "failed"
+        task.phase = "arm_held"
+        task.error = conflict
+        task.ended_at = time.time()
+        log.warning("walk_to.arm_held", task_id=task.task_id)
+        return task.to_dict()
+    conflict = fsm_conflict()
+    if conflict is not None:
+        task.status = "failed"
+        task.phase = "fsm_not_walkable"
+        task.error = conflict
+        task.ended_at = time.time()
+        log.warning("walk_to.fsm_not_walkable", task_id=task.task_id)
         return task.to_dict()
 
     sampler = get_sampler()
@@ -90,6 +143,13 @@ async def run(
             task.ended_at = time.time()
             log.warning("walk_to.no_pose", task_id=task.task_id)
             return task.to_dict()
+        if pose_stale(sampler):
+            task.status = "failed"
+            task.phase = "pose_stale"
+            task.error = POSE_STALE
+            task.ended_at = time.time()
+            log.warning("walk_to.pose_stale", task_id=task.task_id)
+            return task.to_dict()
 
         start_x = float(pose["x_meters_world"])
         start_y = float(pose["y_meters_world"])
@@ -110,8 +170,15 @@ async def run(
             task.phase = "already_within_stop_distance"
             task.progress = 1.0
             task.ended_at = time.time()
+            # Not "arrived": 2026-11-12 a 0.20 m step read as success and the agent said it
+            # had repositioned, from the same spot.
             task.result = {
-                "arrived": True,
+                "arrived": False,
+                "moved": False,
+                "note": (
+                    f"nothing moved: target is {initial_distance:.2f} m away, inside "
+                    f"stop_distance_m={stop_distance_m}; for a step under 0.3 m use walk_velocity"
+                ),
                 "initial_distance_m": initial_distance,
                 "final_distance_m": initial_distance,
                 "displacement_m": 0.0,
@@ -124,15 +191,35 @@ async def run(
             await stop_motion(height)
             return task.to_dict()
 
+        # Every check passed: «voy a caminar» now. A stop during it, and nothing walks.
+        if not await motion_announce.before_motion() or task.cancel_event.is_set():
+            task.status, task.phase, task.ended_at = "cancelled", "stopped", time.time()
+            task.error = "stopped during the spoken warning; nothing moved"
+            log.info("walk_to.stopped_during_warning", task_id=task.task_id)
+            return task.to_dict()
+
         task.phase = "walking"
-        deadline = time.time() + timeout_s
+        deadline = time.monotonic() + timeout_s
         last_reported = 0.0
         arrived = False
         cancelled = False
+        taken_over = False
+        stale = False
+        lost = False
+        next_retarget = time.monotonic() + RETARGET_PERIOD_S
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             if task.cancel_event.is_set():
                 cancelled = True
+                break
+            # The headset took over mid-motion: the person in the room wins.
+            # Still stopped below, not skipped: an arm-mirror takeover sends
+            # no velocity, and the robot would hold our last setpoint.
+            if teleop_conflict() is not None:
+                taken_over = True
+                break
+            if pose_stale(sampler):
+                stale = True
                 break
 
             state = sampler.get_state()
@@ -144,6 +231,14 @@ async def run(
             x = float(pose["x_meters_world"])
             y = float(pose["y_meters_world"])
             yaw = float(pose["yaw_radians_world"])
+
+            if retarget is not None and time.monotonic() >= next_retarget:
+                next_retarget = time.monotonic() + RETARGET_PERIOD_S
+                new_target = retarget()
+                if new_target is None:
+                    lost = True
+                    break
+                target_x, target_y = new_target
 
             dx_world = target_x - x
             dy_world = target_y - y
@@ -172,7 +267,7 @@ async def run(
             vx = max(MAX_BACK_VEL, min(MAX_FWD_VEL, KP_LIN * dx_body * gate))
             vy = max(-MAX_LAT_VEL, min(MAX_LAT_VEL, KP_LIN * dy_body * gate))
 
-            await send_velocity_async(vx, vy, vyaw, height)
+            await send_velocity_async(vx, vy, vyaw, height, autonomous=autonomous)
             await asyncio.sleep(LOOP_PERIOD_S)
 
         task.phase = "stopping"
@@ -186,6 +281,20 @@ async def run(
         if cancelled:
             task.status = "cancelled"
             task.phase = "cancelled"
+        elif taken_over:
+            task.status = "failed"
+            task.phase = "teleop_takeover"
+            task.error = TELEOP_TAKEOVER
+            log.warning("walk_to.teleop_takeover", task_id=task.task_id)
+        elif stale:
+            task.status = "failed"
+            task.phase = "pose_stale"
+            task.error = POSE_STALE
+            log.warning("walk_to.pose_stale", task_id=task.task_id)
+        elif lost:
+            task.status = "failed"
+            task.phase = "target_lost"
+            task.error = "target_lost: the target was in view and not detected for a while"
         elif arrived:
             task.status = "completed"
             task.phase = "arrived"
@@ -235,7 +344,11 @@ async def run(
             # awaiting it re-raises at once, but the shielded task completes.
             await asyncio.shield(asyncio.ensure_future(stop_motion(height)))
         except (Exception, asyncio.CancelledError):
-            pass
+            # The firmware deadman still halts this, so a failure here is not
+            # dangerous — but silence makes a stop path that fails every time
+            # look exactly like one that works. `teleop/_safe_stop` logs all of
+            # its failure branches; these skills were the odd ones out.
+            log.warning("walk_to.cancel_stop_failed", task_id=task.task_id, exc_info=True)
         raise  # never swallow cancellation
 
     except Exception as exc:
@@ -247,5 +360,5 @@ async def run(
         try:
             await stop_motion(height)
         except Exception:
-            pass
+            log.warning("walk_to.failure_stop_failed", task_id=task.task_id, exc_info=True)
         return task.to_dict()

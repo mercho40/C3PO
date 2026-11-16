@@ -3,7 +3,7 @@
   `#lib/robot/health.ts`; this only lays it out.
 
   Bridge text (hints, errors, notes) is shown verbatim and tagged English, so a
-  screen reader pronounces "perception_up nav2" as what it is — after its
+  screen reader pronounces "c3po perception up nav2" as what it is — after its
   Spanish rendering when `health.ts` knows the string.
 -->
 <script lang="ts">

@@ -54,7 +54,13 @@ async function proxyJson(
   }
   if (!upstream.ok) return status(502, { error: "bridge_error" });
 
-  return new Response(await upstream.arrayBuffer(), {
+  // The timeout covers reading the BODY too: headers that arrive just before
+  // it leave `arrayBuffer()` to throw, which escaped as a 500 — a server bug,
+  // to the console — instead of the bridge being slow.
+  const body = await upstream.arrayBuffer().catch(() => null);
+  if (body === null) return status(502, { error: "bridge_unavailable" });
+
+  return new Response(body, {
     headers: {
       "Content-Type": "application/json",
       // Never cache. A cached scene or transcript is indistinguishable from a
@@ -72,6 +78,17 @@ export const telemetryRoutes = new Elysia()
       detail: {
         summary:
           "The D7 world-model snapshot — the same one the agent is given, never a parallel view.",
+        tags: ["telemetry"],
+      },
+    },
+  )
+  .get(
+    "/telemetry/scan",
+    ({ status }) => proxyJson("/telemetry/scan", status),
+    {
+      detail: {
+        summary:
+          "The lidar ring — ~120 bearings of centimetres, with its age and a stale flag.",
         tags: ["telemetry"],
       },
     },

@@ -21,9 +21,13 @@
  * reimplementing multipart framing and JPEG decode to arrive at the same
  * pixels, slower.
  *
- * The cost is that an <img> gives no "new frame" event — so `draw()` uploads on
- * every XR frame regardless. At 72-120 Hz against a 5 Hz stream that is mostly
- * redundant work, and cheap enough not to matter.
+ * The cost is that an <img> gives no "new frame" event, so `draw()` cannot
+ * upload only on a new picture. It used to upload on every draw, which is per
+ * eye per XR frame: 180 full-frame texImage2D calls a second at 90 Hz against
+ * a ~15 fps feed, all on the frame callback that also samples head pose. Now
+ * the picture is uploaded at most every `UPLOAD_MIN_INTERVAL_MS`, so the
+ * second eye of a frame only binds and draws, and the placeholder card only
+ * when it is repainted or replaces the picture.
  *
  * THIS CLASS DOES NOT OWN LIVENESS, DELIBERATELY
  * ----------------------------------------------
@@ -49,14 +53,175 @@
  * heads-up view over the real world, in VR it is the world.
  */
 
+import {
+  drawFaceBoxes,
+  freshFaces,
+  type FaceSeen,
+} from "#lib/robot/face-seen.js";
+import { fovAspect, placeQuad, type EyePose } from "./stereo";
+
 const VERT = `
 attribute vec2 a_pos;
+uniform vec2 u_scale;
+uniform vec2 u_offset;
 varying vec2 v_uv;
 void main() {
   // Flip V: WebGL texture origin is bottom-left, image origin is top-left.
+  // UVs come from the UNSCALED attribute, so the image still maps 0..1 across
+  // the quad however the quad is scaled or shifted — the scale letterboxes, it
+  // does not crop or zoom.
   v_uv = vec2((a_pos.x + 1.0) * 0.5, 1.0 - (a_pos.y + 1.0) * 0.5);
-  gl_Position = vec4(a_pos, 0.0, 1.0);
+  // u_offset IS NOT DECORATION AND IS NOT ZERO. The picture is centred on the
+  // operator's forward direction, and the centre of an eye's render target is
+  // not that direction — a Quest's frusta are asymmetric, mirrored between the
+  // eyes. Drawing at a fixed 0 put the two images ~10 degrees apart, outward,
+  // which no vergence angle can fuse. See stereo.ts; the menu and the radar
+  // have had this uniform all along, which is why they were the two the
+  // operator could see doubled.
+  gl_Position = vec4(a_pos * u_scale + u_offset, 0.0, 1.0);
 }`;
+
+/**
+ * How much of the eye the picture fills, after aspect fitting.
+ *
+ * 1.0 puts the frame edge-to-edge, which is what the first real session got
+ * and what the operator asked to back off: a 4:3 image stretched across the
+ * full field sits too close to focus on comfortably, and the eye has nowhere
+ * to rest. Insetting it makes the frame something you look AT rather than
+ * something pressed against your face — the same reason a cinema screen is not
+ * the whole room.
+ *
+ * Not a distance: this is a clip-space scale, so it changes the ANGLE the
+ * picture subtends, which is the thing that actually reads as "further away".
+ * There is no depth here to move it in — the quad is drawn in clip space, not
+ * positioned in the scene.
+ *
+ * 0.72 was chosen to leave a visible black margin on all sides at the Quest 3's
+ * aspect without shrinking the frame to a postage stamp. Reported from the
+ * first session that could see anything at all, 2026-08-21.
+ */
+export const FILL = 0.72;
+
+/**
+ * What to tell the operator when there is no picture.
+ *
+ * WHY THE ABSENCE OF A PICTURE IS ITSELF SOMETHING TO DRAW
+ * -------------------------------------------------------
+ * On 2026-08-27 the report was "i cannot see the camara", and finding out why
+ * meant reading source. It could not have been found from inside the headset,
+ * because a camera whose stream never connected drew EXACTLY the same thing as
+ * a camera still connecting, a dead vision container, and a broken shader:
+ * nothing at all. `draw()` returned early and the frame stayed black.
+ *
+ * That is the same mistake the radar already refuses to make — `ScanLayer`
+ * paints an empty dial that always says why it is empty — and the same one the
+ * readiness banner was added to fix. A blank field is not a neutral default in
+ * a headset; it is an assertion that everything is fine, and it is usually
+ * wrong.
+ *
+ * The actual cause on the day was that `PUBLIC_ROBOT_CAM_URL` points at 8001
+ * and `scripts/quest_setup.sh` forwarded 8081, so the headset's own localhost
+ * had nothing listening. That is fixed in the script. This exists because the
+ * NEXT cause will be different and the symptom will be identical.
+ */
+export type CameraReason = { text: string; hint: string } | null;
+
+/** The placeholder's canvas. 4:3, like the picture it stands in for. */
+const CARD_W = 640;
+const CARD_H = 480;
+
+/**
+ * The shortest gap between two uploads of the picture: 25 ms, at most 40/s,
+ * well above the ~15 fps the feed delivers, and longer than the gap between
+ * the two eyes of one frame. A feed above 40 fps is capped at 40 in the
+ * headset.
+ */
+export const UPLOAD_MIN_INTERVAL_MS = 25;
+
+/**
+ * Turn the page's camera state into something worth reading in a headset.
+ *
+ * Phrased as WHAT TO DO, not as what is wrong — the same rule `readinessFor`
+ * follows in the menu layer. "error" is true and useless with your eyes
+ * covered; "the port is not reaching the headset, re-run quest_setup" is the
+ * same fact and can be acted on without taking anything off.
+ *
+ * `connecting` deliberately gets a reason too. A camera that is still coming
+ * up and a camera that will never come up looked identical from inside the
+ * headset, and the difference is whether it is worth waiting.
+ */
+export function cameraReasonFor(
+  state: "connecting" | "live" | "stale" | "error" | "closed",
+  detail?: string,
+  /**
+   * Whether a camera URL is configured at all. False is not a failure to
+   * report to the operator as a fault — it is a console that was never told
+   * where the camera is, and the fix is in `.env`, not in the robot.
+   */
+  configured = true,
+): CameraReason {
+  if (!configured) {
+    return {
+      text: "cámara no configurada",
+      hint: "falta PUBLIC_ROBOT_CAM_URL en apps/web/.env",
+    };
+  }
+  switch (state) {
+    case "connecting":
+      return { text: "conectando con la cámara", hint: detail || "esperá" };
+    case "error":
+      return {
+        text: "la cámara no responde",
+        hint: detail || "revisá el túnel y corré scripts/quest_setup.sh",
+      };
+    case "closed":
+      return {
+        text: "la cámara está desconectada",
+        hint: detail || "usá Reconectar en la consola",
+      };
+    // `stale` and `live` both mean frames have been arriving, so the picture
+    // itself is shown — dimmed if stale. If the placeholder is somehow up in
+    // these states, the honest thing to say is that we do not know why.
+    default:
+      return { text: "sin señal de la cámara", hint: detail || "" };
+  }
+}
+
+/**
+ * Paint "there is no picture, and here is why".
+ *
+ * Deliberately plain: a border, a line, and a line under it. It is read once,
+ * in a hurry, by somebody who has just discovered their view is black.
+ */
+export function paintNoSignal(
+  ctx: CanvasRenderingContext2D,
+  reason: CameraReason,
+): void {
+  ctx.clearRect(0, 0, CARD_W, CARD_H);
+  ctx.fillStyle = "rgba(8, 11, 17, 0.92)";
+  ctx.fillRect(0, 0, CARD_W, CARD_H);
+  ctx.strokeStyle = "rgba(248, 113, 113, 0.85)";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(2, 2, CARD_W - 4, CARD_H - 4);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(248, 113, 113, 0.95)";
+  ctx.font = "bold 40px system-ui, sans-serif";
+  ctx.fillText("SIN IMAGEN", CARD_W / 2, CARD_H / 2 - 40);
+
+  // The reason, then what to do about it. Both are optional: a layer that has
+  // simply not been told anything yet still says SIN IMAGEN, which is already
+  // the difference between "broken" and "black".
+  ctx.fillStyle = "rgba(226, 232, 240, 0.92)";
+  ctx.font = "26px system-ui, sans-serif";
+  if (reason)
+    ctx.fillText(reason.text.slice(0, 42), CARD_W / 2, CARD_H / 2 + 8);
+  ctx.fillStyle = "rgba(148, 163, 184, 0.9)";
+  ctx.font = "22px system-ui, sans-serif";
+  if (reason)
+    ctx.fillText(reason.hint.slice(0, 52), CARD_W / 2, CARD_H / 2 + 46);
+  ctx.textAlign = "left";
+}
 
 const FRAG = `
 precision mediump float;
@@ -91,11 +256,27 @@ export class CameraLayer {
   #texture: WebGLTexture | null = null;
   #posLoc = -1;
   #alphaLoc: WebGLUniformLocation | null = null;
+  #scaleLoc: WebGLUniformLocation | null = null;
+  #offsetLoc: WebGLUniformLocation | null = null;
   #img: HTMLImageElement | null = null;
   #ready = false;
   #uploaded = 0;
   #url = "";
   #live = true;
+  #reason: CameraReason = null;
+  #card: HTMLCanvasElement | null = null;
+  #cardCtx: CanvasRenderingContext2D | null = null;
+  #cardDirty = true;
+  #cardShown = false;
+  // What the texture currently holds, so an unchanged card is not re-uploaded
+  // and a picture is not uploaded twice within UPLOAD_MIN_INTERVAL_MS.
+  #texHolds: "img" | "card" | null = null;
+  #uploadedAt = 0;
+  #faces: FaceSeen | null = null;
+  #facesAt = 0;
+  // The frame and its face boxes composed here, then uploaded as ONE texture.
+  #compose: HTMLCanvasElement | null = null;
+  #composeCtx: CanvasRenderingContext2D | null = null;
 
   constructor(gl: WebGLRenderingContext) {
     this.#gl = gl;
@@ -119,15 +300,26 @@ export class CameraLayer {
    * session that reconnects a few times ends up holding several open MJPEG
    * streams at once, each still costing bandwidth over the robot's Wi-Fi.
    *
-   * `crossOrigin = "anonymous"` is required: WebGL refuses to sample a texture
-   * from an image the page cannot read back, and without it every upload
-   * throws a security error rather than showing a picture. The vision server
-   * sets `Access-Control-Allow-Origin: *` on every response including the
-   * stream, so this works — verified against its source, not assumed.
+   * A CORS mode is required: WebGL refuses to sample a texture from an image
+   * the page cannot read back, and without one the image does not load at all
+   * — `onerror` fires, `#ready` stays false, and this layer draws nothing.
+   *
+   * `"use-credentials"`, NOT `"anonymous"`. The feed is served by apps/back
+   * behind Better Auth (`routes/camera.ts`), and an anonymous CORS request
+   * drops the session cookie: a 401, and the same black view as every other
+   * camera failure this layer has had. apps/back's CORS already allows
+   * `WEB_URL` with credentials, which is what this mode requires.
+   *
+   * History worth keeping: the feed used to come straight from the bridge on
+   * 8001, which needed the bridge to grant CORS (`BRIDGE_CORS_ORIGINS`) and
+   * `quest_setup.sh` to forward the port that also serves `/mcp` into the
+   * headset. Relaying through apps/back removed both.
    */
-  setStreamUrl(streamUrl: string): void {
+  setStreamUrl(streamUrl: string, withCredentials = true): void {
     if (streamUrl === this.#url) return;
     this.#url = streamUrl;
+    // A new source: its first picture goes up on the next draw.
+    this.#texHolds = null;
     if (this.#img) {
       // Detach BEFORE cutting src. The old element's handlers close over
       // `this`, so an error event dispatched after the swap would set
@@ -140,7 +332,9 @@ export class CameraLayer {
       this.#img.remove();
     }
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    // The bridge on 8001 sends Allow-Origin but not Allow-Credentials, so a
+    // credentialed request to it fails; apps/back's relay needs the cookie.
+    img.crossOrigin = withCredentials ? "use-credentials" : "anonymous";
     img.onload = () => (this.#ready = true);
     img.onerror = () => (this.#ready = false);
     img.src = streamUrl;
@@ -151,8 +345,8 @@ export class CameraLayer {
     // animated image, and Blink pauses that for elements with no rendering
     // observer. A detached image is exactly that: `onload` fires for the first
     // decoded part, so `#ready` and `hasFrame` go true and everything looks
-    // healthy — and then the bitmap may simply stop updating. The texture is
-    // re-uploaded every XR frame from a picture that never changes, which
+    // healthy — and then the bitmap may simply stop updating. The texture keeps
+    // being re-uploaded from a picture that never changes, which
     // reads in the headset as a live camera showing one frozen moment.
     //
     // 1x1 and transparent rather than `display: none`, because a display:none
@@ -181,6 +375,96 @@ export class CameraLayer {
     this.#live = live;
   }
 
+  /**
+   * Who the camera sees (`receivedAt` in Date.now() ms). Drawn into the
+   * picture until it is FACE_STALE_S old; null clears it.
+   */
+  setFaces(seen: FaceSeen | null, receivedAt: number): void {
+    this.#faces = seen;
+    this.#facesAt = receivedAt;
+  }
+
+  /**
+   * The picture with its face boxes on a 2D canvas, or the bare <img> when
+   * there are none (or no canvas): the upload source either way, so it stays
+   * one texImage2D per picture.
+   */
+  #source(img: HTMLImageElement): HTMLImageElement | HTMLCanvasElement {
+    const seen = this.#faces;
+    const faces = freshFaces(seen, (Date.now() - this.#facesAt) / 1000);
+    if (!seen || !faces.length) return img;
+    if (!this.#compose) {
+      if (typeof document === "undefined" || !document.createElement)
+        return img;
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext?.("2d");
+      if (!ctx) return img;
+      this.#compose = canvas;
+      this.#composeCtx = ctx;
+    }
+    const canvas = this.#compose;
+    const ctx = this.#composeCtx!;
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+    drawFaceBoxes(ctx, faces, seen.width, seen.height, { x: 0, y: 0, w, h });
+    return canvas;
+  }
+
+  /**
+   * Why there is no picture, for the placeholder to show.
+   *
+   * Cheap to call every poll: an unchanged reason does not repaint. The
+   * placeholder is only ever drawn when no frame has decoded, so setting this
+   * on a healthy feed costs nothing and means the text is already right at the
+   * moment the feed drops.
+   */
+  setReason(reason: CameraReason): void {
+    const prev = this.#reason;
+    if (prev?.text === reason?.text && prev?.hint === reason?.hint) return;
+    this.#reason = reason;
+    this.#cardDirty = true;
+  }
+
+  /** Whether the operator is currently being shown the placeholder. */
+  get showingNoSignal(): boolean {
+    return this.#cardShown;
+  }
+
+  /**
+   * The placeholder canvas, painted only when its text has changed.
+   *
+   * Returns null where there is no DOM to make a canvas in — server rendering,
+   * and the tests that do not stub one. A null here means the operator gets
+   * the old black field, which is worse but is not a crash inside the frame
+   * callback that also samples head pose.
+   */
+  #ensureCard(): HTMLCanvasElement | null {
+    if (typeof document === "undefined" || !document.createElement) return null;
+    if (!this.#card) {
+      const canvas = document.createElement("canvas");
+      // A canvas element with no 2D context is possible (a stubbed document,
+      // a context already taken as webgl). Do not cache a canvas we cannot
+      // paint — retrying next frame costs nothing.
+      const ctx = canvas.getContext?.("2d");
+      if (!ctx) return null;
+      canvas.width = CARD_W;
+      canvas.height = CARD_H;
+      this.#card = canvas;
+      this.#cardCtx = ctx;
+      this.#cardDirty = true;
+    }
+    if (this.#cardDirty && this.#cardCtx) {
+      paintNoSignal(this.#cardCtx, this.#reason);
+      this.#cardDirty = false;
+      // The texture holds the old text now, if it holds the card at all.
+      this.#texHolds = null;
+    }
+    return this.#card;
+  }
+
   #init(): void {
     const gl = this.#gl;
     const program = gl.createProgram();
@@ -201,6 +485,8 @@ export class CameraLayer {
     this.#program = program;
     this.#posLoc = gl.getAttribLocation(program, "a_pos");
     this.#alphaLoc = gl.getUniformLocation(program, "u_alpha");
+    this.#scaleLoc = gl.getUniformLocation(program, "u_scale");
+    this.#offsetLoc = gl.getUniformLocation(program, "u_offset");
 
     this.#buffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.#buffer);
@@ -222,22 +508,98 @@ export class CameraLayer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   }
 
-  /** Draw the newest frame across the whole view. Safe to call every frame. */
-  draw(opaque: boolean): void {
+  /**
+   * Draw the newest frame into the current viewport, preserving aspect ratio.
+   * Safe to call every frame.
+   *
+   * `eye` is the eye being drawn into, and it is not optional in practice. The
+   * quad used to cover clip space outright, which stretches the frame to
+   * whatever shape the eye viewport is: the D435i serves 640x480 (4:3) and a
+   * Quest 3 eye viewport is nothing like 4:3, so the picture arrived visibly
+   * distorted — and in VR, where this quad IS the world, that distortion is
+   * the entire view. Reported from the first real session, 2026-08-21.
+   *
+   * It also carries the frustum asymmetry and the eye offset, without which
+   * the picture is drawn at the same spot on both render targets and does not
+   * fuse — the doubling reported on 2026-08-27 of the panel and the radar. The
+   * camera was not named in that report only because it was not visible at
+   * all; it had the identical bug. See `stereo.ts`.
+   *
+   * Letterboxed, never cropped: the operator is driving a robot by this
+   * picture, and silently discarding the edges of their field of view is a
+   * worse failure than black bars. Callers with no eye get the old full-field
+   * behaviour, which keeps the non-XR paths working.
+   *
+   * `now` is a clock in ms (the default is `performance.now()`); it only
+   * throttles uploads, see `UPLOAD_MIN_INTERVAL_MS`.
+   */
+  draw(
+    opaque: boolean,
+    eye?: EyePose | null,
+    now: number = performance.now(),
+  ): void {
     const gl = this.#gl;
     const img = this.#img;
-    if (!img || !this.#ready || img.naturalWidth === 0) return;
+    const havePicture = !!img && this.#ready && img.naturalWidth > 0;
+
+    // NO PICTURE IS A THING TO DRAW, NOT A REASON TO RETURN. This used to be
+    // `if (!img || !this.#ready) return;`, and that early return is why "i
+    // cannot see the camara" had to be answered by reading source: from inside
+    // the headset, a stream that never connected looked exactly like one still
+    // connecting, and exactly like a dead container. See `CameraReason`.
+    const card = havePicture ? null : this.#ensureCard();
+    this.#cardShown = !havePicture && !!card;
+    // Nothing to show and nowhere to draw it — no 2D canvas in this runtime.
+    // Falling through would upload a null texture and paint the eye black.
+    if (!havePicture && !card) return;
+
     if (!this.#program) this.#init();
     if (!this.#program) return;
 
     gl.bindTexture(gl.TEXTURE_2D, this.#texture);
-    try {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
-      this.#uploaded += 1;
-    } catch {
-      // A tainted or half-decoded image throws here. Skip the frame rather
-      // than tear down the session — the next one is 200ms away.
-      return;
+    const holds = havePicture ? "img" : "card";
+    // Something else in the texture always goes up at once. The same picture
+    // again only after the interval; the same card never (a repaint clears
+    // #texHolds in #ensureCard).
+    const upload =
+      this.#texHolds !== holds ||
+      (havePicture && now - this.#uploadedAt >= UPLOAD_MIN_INTERVAL_MS);
+    if (upload) {
+      try {
+        if (havePicture) {
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGB,
+            gl.RGB,
+            gl.UNSIGNED_BYTE,
+            this.#source(img!),
+          );
+          this.#uploaded += 1;
+        } else {
+          // RGBA, not RGB: the card is drawn with alpha so it reads as a panel
+          // over passthrough rather than a black rectangle punched in the room.
+          // It is NOT counted as an upload — `framesUploaded` is how the page
+          // tells a live feed from a frozen one, and placeholder repaints would
+          // make a dead camera look like it was delivering frames.
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            card!,
+          );
+        }
+        this.#texHolds = holds;
+        this.#uploadedAt = now;
+      } catch {
+        // A tainted or half-decoded image throws here. Skip the frame rather
+        // than tear down the session, and retry on the next draw: what the
+        // texture holds after a failed upload is unknown.
+        this.#texHolds = null;
+        return;
+      }
     }
 
     gl.useProgram(this.#program);
@@ -245,9 +607,44 @@ export class CameraLayer {
     gl.enableVertexAttribArray(this.#posLoc);
     gl.vertexAttribPointer(this.#posLoc, 2, gl.FLOAT, false, 0, 0);
     // Dim a stale feed rather than hide it: losing the picture entirely
-    // mid-motion is worse than seeing an obviously-old one.
-    const alpha = (opaque ? 1.0 : 0.85) * (this.#live ? 1.0 : 0.45);
+    // mid-motion is worse than seeing an obviously-old one. The placeholder is
+    // never dimmed and never blended down — it is the thing being read, and it
+    // only appears when there is nothing else to look at.
+    const alpha = havePicture
+      ? (opaque ? 1.0 : 0.85) * (this.#live ? 1.0 : 0.45)
+      : 1.0;
     gl.uniform1f(this.#alphaLoc, alpha);
+
+    // Fit the frame inside the FILL box without distorting it. Shrink one axis
+    // — never grow, so the quad always stays within the box.
+    //
+    // The fit is angular now, not in render-target pixels: the picture should
+    // subtend width and height in the ratio the sensor delivers, which is what
+    // "undistorted" means to an eye. `fovAspect` is the eye's own field ratio
+    // and replaces the viewport's pixel shape, which was only ever close to it.
+    //
+    // Every input is checked for > 0 before dividing. A zero or missing
+    // dimension would make this NaN, and a NaN vertex position does not draw a
+    // wrong picture — it draws NOTHING, which is the black view this whole
+    // module exists to stop. Falling back to the inset gives the old
+    // full-field behaviour scaled down: distorted, but visible, and visible
+    // wins.
+    const iw = havePicture ? img!.naturalWidth : CARD_W;
+    const ih = havePicture ? img!.naturalHeight : CARD_H;
+    // Half-height over half-width, as an angle ratio. 1 keeps the square
+    // fallback rather than a division by a zero-sized image.
+    const aspect = iw > 0 && ih > 0 ? ih / iw : 1;
+    const k = fovAspect(eye);
+    let sx = FILL;
+    // What that width implies for the height, in the same units. Over the box
+    // means the picture is the taller shape, so height is the binding
+    // constraint and width gives way — bars left and right instead of top and
+    // bottom.
+    const impliedSy = FILL * k * aspect;
+    if (impliedSy > FILL) sx = FILL * (FILL / impliedSy);
+    const p = placeQuad(eye, { ox: 0, oy: 0, sx, aspect });
+    gl.uniform2f(this.#scaleLoc, p.sx, p.sy);
+    gl.uniform2f(this.#offsetLoc, p.ox, p.oy);
     gl.enable(gl.BLEND);
     // Separate, because the straight `blendFunc` applies SRC_ALPHA to the
     // alpha channel as well — so the framebuffer alpha came out as the square
@@ -289,6 +686,13 @@ export class CameraLayer {
     this.#texture = null;
     this.#buffer = null;
     this.#program = null;
+    this.#texHolds = null;
     this.#ready = false;
+    // Dropped with the context: the canvas is only ever a texture source, and
+    // a repaint on the next session is one draw call.
+    this.#card = null;
+    this.#cardCtx = null;
+    this.#cardDirty = true;
+    this.#cardShown = false;
   }
 }

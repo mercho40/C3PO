@@ -21,6 +21,8 @@
  */
 
 /** One thing the robot heard, as `listen` reports it. */
+import { abortAllTurns, beginTurn } from "../agent/turns";
+
 export type Heard = { text: string; age_s: number };
 
 /** The shape of `listen`'s result that this loop depends on. */
@@ -36,17 +38,25 @@ export type ListenResult = {
 
 export type VoiceInputEvent = {
   seq: number;
-  kind: "speech" | "stop";
+  kind: "speech" | "stop" | "audio";
   text: string;
+  /** `kind: "audio"`: the bridge kept the utterance's WAV under this id. */
+  audio_id?: string;
 };
 
 export type VoiceLoopDeps = {
   /** Calls a bridge tool. Injected so the loop is testable with no robot. */
   callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
-  /** Runs the agent over an utterance. Injected so tests need no model. */
-  runAgent: (utterance: string) => Promise<void>;
+  /** Runs the agent over an utterance. Injected so tests need no model.
+   *  `signal` aborts on PARAR (any source) and when the loop stops. Even
+   *  aborted, it must settle only once the bridge calls it sent have
+   *  (VoiceConversation.turn awaits runAgentChat's toolsSettled). */
+  runAgent: (utterance: string, signal?: AbortSignal) => Promise<void>;
   /** Production uses the bridge's SSE stream. Omit to retain the polling fallback. */
   events?: (signal: AbortSignal) => AsyncIterable<VoiceInputEvent>;
+  /** Speech -> text for `kind: "audio"` events (bridge `C3PO_STT=back`).
+   *  Must be bounded: a hang delays every later utterance, never the stop. */
+  transcribeAudio?: (audioId: string) => Promise<string>;
   /** Non-consuming microphone diagnostics used alongside the event stream. */
   inputStatus?: (
     signal: AbortSignal,
@@ -67,8 +77,16 @@ export type VoiceLoopOptions = {
    *  plainly means stop. It is still NOT the safety story — whoever is holding
    *  the remote to make the robot hear at all has a physical e-stop under their
    *  thumb, which is faster and cannot mis-hear. A mis-decode costs a halted
-   *  robot, which is the cheap direction to be wrong in. */
+   *  robot, which is the cheap direction to be wrong in.
+   *
+   *  Setting it false only stops THIS loop from acting: the bridge acts on the
+   *  phrase itself while a legacy subscriber is connected. */
   actOnStopPhrase?: boolean;
+  /** Robot-mic audio still waiting for its transcription to START this long
+   *  after it was heard is dropped: a command acted on late is a different
+   *  command. The transcription itself is bounded by transcribeAudio's own
+   *  timeout (scaled to the clip), so this bounds only the queue. */
+  staleAudioMs?: number;
 };
 
 export type VoiceLoopState = {
@@ -83,6 +101,7 @@ export type VoiceLoopState = {
 };
 
 const DEFAULT_POLL_MS = 1000;
+const DEFAULT_STALE_AUDIO_MS = 6000;
 
 export class VoiceLoop {
   private readonly deps: Required<
@@ -91,10 +110,20 @@ export class VoiceLoop {
     VoiceLoopDeps;
   private readonly pollMs: number;
   private readonly actOnStopPhrase: boolean;
+  private readonly staleAudioMs: number;
 
   private stopping = false;
+  /** Bumped by stop(): a transcription from before it must not run after a start(). */
+  private generation = 0;
   private task: Promise<void> | null = null;
   private eventAbort: AbortController | null = null;
+  // Instance-wide and never reset: a turn aborted by stop() settles only after
+  // its walk_to does (see runAgent), and a restarted loop chains behind it.
+  private turnTail: Promise<void> = Promise.resolve();
+  private turnAbort: AbortController | null = null;
+  private transcribeTail: Promise<void> = Promise.resolve();
+  private pending: string[] = [];
+  private stopWords = new Set<string>();
   private state: VoiceLoopState = {
     running: false,
     utterancesHeard: 0,
@@ -110,6 +139,7 @@ export class VoiceLoop {
     this.deps = deps;
     this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
     this.actOnStopPhrase = options.actOnStopPhrase ?? true;
+    this.staleAudioMs = options.staleAudioMs ?? DEFAULT_STALE_AUDIO_MS;
   }
 
   snapshot(): VoiceLoopState {
@@ -124,9 +154,13 @@ export class VoiceLoop {
     this.task = this.deps.events ? this.runEvents() : this.runPolling();
   }
 
-  /** Stops after the current iteration. Awaitable so tests are deterministic. */
+  /** Stops after the current iteration. Awaitable so tests are deterministic.
+   *  On the event path it aborts the turn in flight and does not wait for it. */
   async stop(): Promise<void> {
     this.stopping = true;
+    this.generation += 1;
+    this.pending = [];
+    this.turnAbort?.abort(new Error("voice conversation ended"));
     this.eventAbort?.abort();
     await this.task?.catch(() => {});
     this.eventAbort = null;
@@ -169,9 +203,13 @@ export class VoiceLoop {
           this.state.micEverOpen = Boolean(status.mic_ever_open);
           this.state.alwaysListening = Boolean(status.always_listening);
         }
+        // Turns are chained, never awaited here, so a stop event is read and
+        // acted on while the agent is still thinking.
         for await (const event of this.deps.events(signal)) {
           if (this.stopping) return;
-          await this.handleEvent(event);
+          if (event.kind === "stop") await this.handleStop(event);
+          else if (event.kind === "audio") this.hearAudio(event);
+          else this.hear(event.text, event.seq);
         }
         if (!this.stopping) throw new Error("voice event stream ended");
       } catch (e) {
@@ -183,26 +221,110 @@ export class VoiceLoop {
     }
   }
 
-  private async handleEvent(event: VoiceInputEvent): Promise<void> {
-    if (event.kind === "stop") {
-      if (!this.actOnStopPhrase) return;
-      this.state.stopsTriggered += 1;
-      this.log("voice.stop_phrase", { phrase: event.text, seq: event.seq });
+  private async handleStop(event: VoiceInputEvent): Promise<void> {
+    if (!this.actOnStopPhrase) return;
+    this.state.stopsTriggered += 1;
+    this.log("voice.stop_phrase", { phrase: event.text, seq: event.seq });
+    for (const word of words(event.text)) this.stopWords.add(word);
+    // Speech heard before the stop is dropped on purpose: it asked for
+    // something the person has since called off.
+    this.pending = [];
+    // Aborts this loop's turn too: it is registered through beginTurn.
+    abortAllTurns("PARAR (voice)");
+    try {
       await this.deps.callTool("stop_everything", {});
-      return;
+    } catch (e) {
+      // Recorded, not rethrown: reconnecting the stream would drop events.
+      this.state.lastError = (e as Error).message;
+      this.log("voice.stop_failed", { error: this.state.lastError });
     }
-    await this.handleUtterance(event.text, event.seq);
   }
 
-  private async handleUtterance(text: string, seq?: number): Promise<void> {
+  /** Transcribe off the event pump, in spoken order, then hear it as speech. */
+  private hearAudio(event: VoiceInputEvent): void {
+    const transcribe = this.deps.transcribeAudio;
+    const audioId = event.audio_id;
+    if (!transcribe || !audioId) {
+      this.log("voice.audio_unhandled", { seq: event.seq });
+      return;
+    }
+    const stopsBefore = this.state.stopsTriggered;
+    const generation = this.generation;
+    const heardAt = Date.now();
+    this.transcribeTail = this.transcribeTail.then(async () => {
+      if (generation !== this.generation) return;
+      if (Date.now() - heardAt > this.staleAudioMs) {
+        this.log("voice.dropped_stale", {
+          waitedMs: Date.now() - heardAt,
+          seq: event.seq,
+        });
+        return;
+      }
+      let text: string;
+      try {
+        text = await transcribe(audioId);
+      } catch (e) {
+        // Dropped, never run on nothing: the next utterance still works.
+        this.state.lastError = (e as Error).message;
+        this.log("voice.transcribe_failed", {
+          error: this.state.lastError,
+          seq: event.seq,
+        });
+        return;
+      }
+      // Heard by a loop that has since been stopped (and maybe restarted).
+      if (this.stopping || generation !== this.generation) return;
+      // Said before a stop that landed while it was being transcribed.
+      if (this.state.stopsTriggered !== stopsBefore) {
+        this.log("voice.dropped_after_stop", { text, seq: event.seq });
+        return;
+      }
+      this.hear(text, event.seq);
+    });
+  }
+
+  private hear(text: string, seq: number): void {
     const utterance = text.trim();
     if (!utterance) return;
+    // The listener transcribes the stop phrase as speech too, right after the
+    // stop event. Answering it would start a turn while PARAR stands.
+    const said = words(utterance);
+    if (said.length > 0 && said.every((w) => this.stopWords.has(w))) {
+      this.log("voice.stop_echo_dropped", { text: utterance, seq });
+      return;
+    }
     this.state.utterancesHeard += 1;
     this.state.lastHeard = utterance;
+    this.log("voice.utterance", { text: utterance, seq });
+    this.pending.push(utterance);
+    this.turnTail = this.turnTail.then(() => this.runPending());
+  }
+
+  /** One turn for everything heard since the last one began. Never rejects. */
+  private async runPending(): Promise<void> {
+    if (this.pending.length === 0) return;
+    // Joined like the polling path: Vosk splits one sentence on a breath.
+    const utterance = this.pending.splice(0).join(" ");
+    const local = new AbortController();
+    const { signal, done } = beginTurn(local.signal);
+    this.turnAbort = local;
     this.state.agentRuns += 1;
     this.state.lastError = null;
-    this.log("voice.utterance", { text: utterance, seq });
-    await this.deps.runAgent(utterance);
+    try {
+      await this.deps.runAgent(utterance, signal);
+    } catch (e) {
+      // An abort is not a failure, and must not overwrite a failed stop.
+      if (signal.aborted) {
+        this.log("voice.turn_aborted", { reason: (e as Error).message });
+        return;
+      }
+      // Per turn: a model error must not tear down the event stream.
+      this.state.lastError = (e as Error).message;
+      this.log("voice.turn_failed", { error: this.state.lastError });
+    } finally {
+      done();
+      if (this.turnAbort === local) this.turnAbort = null;
+    }
   }
 
   /** One poll. Exposed for tests so they never need timers. */
@@ -218,6 +340,7 @@ export class VoiceLoop {
     if (result?.stop_heard && this.actOnStopPhrase) {
       this.state.stopsTriggered += 1;
       this.log("voice.stop_phrase", { phrase: result.stop_heard });
+      abortAllTurns("PARAR (voice)");
       await this.deps.callTool("stop_everything", {});
     }
 
@@ -240,4 +363,13 @@ export class VoiceLoop {
     // agent's turn is lost — it is simply picked up on the next tick.
     await this.deps.runAgent(utterance);
   }
+}
+
+function words(text: string): string[] {
+  return text
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
 }

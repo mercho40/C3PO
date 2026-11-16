@@ -126,10 +126,14 @@ def test_the_vision_container_gets_both_device_classes():
 def test_usb_is_bound_as_a_directory_not_a_node():
     """libusb node numbers are renumbered on every enumeration.
 
-    A `--device /dev/bus/usb/003/004` breaks on the first replug.
+    A `--device /dev/bus/usb/003/004` breaks on the first replug. Same for
+    `--device /dev/video6`: after a USB drop the D435 comes back as /dev/video0-5,
+    and only the live /dev bind (plus the 81:* cgroup rule) lets the detector
+    reopen it without the container being recreated.
     """
     volumes = by_name(build("nav2"))[VISION].volumes
     assert "/dev/bus/usb:/dev/bus/usb" in volumes
+    assert "/dev:/dev" in volumes
 
 
 @pytest.mark.parametrize("stage", sorted(STAGES))
@@ -196,9 +200,37 @@ def test_the_camera_stream_binds_loopback_unless_someone_says_otherwise():
     assert vision.env["C3PO_VISION_STREAM_HOST"] == "127.0.0.1"
 
 
+def test_the_stream_defaults_to_the_detector_rate():
+    """The detector runs at 10 Hz; streaming at 5 halved what the operator saw."""
+    assert by_name(build("nav2"))[VISION].env["C3PO_VISION_STREAM_HZ"] == "10"
+
+
 def test_the_stream_host_can_be_overridden_deliberately():
     vision = by_name(build("nav2", env={"C3PO_VISION_STREAM_HOST": "0.0.0.0"}))[VISION]
     assert vision.env["C3PO_VISION_STREAM_HOST"] == "0.0.0.0"
+
+
+# --- a model swap is an env var, not an edit -------------------------------
+
+
+def test_the_model_and_the_measured_mount_reach_the_vision_container():
+    env = {
+        "C3PO_ENGINE": "/opt/c3po/engines/yoloe-26s-seg.fp16.plan",
+        "C3PO_LABELS": "/opt/c3po/models/yoloe-26s-seg.labels.txt",
+        "C3PO_CAMERA_PITCH_DEG": "28.5",
+        "C3PO_VISION_FAKE": "1",
+    }
+    vision = by_name(build("nav2", env=env))[VISION]
+    assert vision.env["C3PO_ENGINE"] == env["C3PO_ENGINE"]
+    assert vision.env["C3PO_LABELS"] == env["C3PO_LABELS"]
+    assert vision.env["C3PO_CAMERA_PITCH_DEG"] == "28.5"
+    # Not on the list: a stale shell export must not fake the robot's detector.
+    assert "C3PO_VISION_FAKE" not in vision.env
+
+
+def test_unset_model_vars_leave_the_image_defaults_alone():
+    vision = by_name(build("nav2"))[VISION]
+    assert "C3PO_ENGINE" not in vision.env and "C3PO_ONNX" not in vision.env
 
 
 # --- argv generation --------------------------------------------------------
@@ -219,3 +251,90 @@ def test_every_stage_labels_its_containers_with_the_stage():
     for name in STAGES:
         for container in build(name):
             assert container.labels.get("c3po.stage") == name
+
+
+# --- the lidar ring without giving up a camera ------------------------------
+#
+# Added after a headset session where the only stage producing a real radar was
+# `perception`, which starts the vision container, which takes the RealSense —
+# so the operator had to choose between the lidar and the head camera. The
+# ring comes from `world_model_publisher`, which needs no camera at all.
+
+
+def test_the_lidar_stage_claims_nothing():
+    """The entire point. If this ever claims the camera it has no reason to exist."""
+    assert STAGES["lidar"].claims_camera is False
+
+
+def test_the_lidar_stage_runs_the_world_model_and_only_the_nav_container():
+    # `world_model_publisher` is what publishes /c3po/scan — the ring the
+    # headset draws. It lives in perception.launch.py, which is
+    # odometry.launch.py plus the world model, and neither touches a device.
+    stage = STAGES["lidar"]
+    assert stage.launch_file == "perception.launch.py"
+    containers = build("lidar")
+    assert len(containers) == 1, "a second container is what takes the camera"
+    assert containers[0].labels.get("c3po.stage") == "lidar"
+
+
+def test_it_runs_the_same_launch_file_as_perception():
+    """Same ring, same world model — the difference is only the container set.
+
+    If these ever diverge, `lidar` has quietly become a different stage and
+    the radar it produces is no longer the one `perception` was verified with.
+    """
+    assert STAGES["lidar"].launch_file == STAGES["perception"].launch_file
+
+
+def test_it_says_the_detector_will_be_offline():
+    """An honest degradation, stated up front.
+
+    Objects report OFFLINE rather than as an empty scene — 'absent is not
+    empty'. An operator who is not told will read a clear radar as a clear
+    room.
+    """
+    text = " ".join(STAGES["lidar"].summary).lower()
+    assert "detector" in text
+    assert "offline" in text
+
+
+# --- Phase 3 nav flags ------------------------------------------------------
+
+
+def test_unset_nav_flags_reproduce_the_previous_argv_exactly():
+    """Unsetting every C3PO_NAV_* is the whole rollback, so the default must
+    pass no new launch argument and mount nothing new."""
+    nav = by_name(build("nav2"))[NAV]
+    assert not any(a.startswith(("slam:=", "controller:=", "collision_monitor:=", "map:="))
+                   for a in nav.command)
+    assert not any("/opt/c3po/maps" in v for v in nav.volumes)
+
+
+def test_localization_reaches_the_launch_file_and_mounts_the_maps():
+    env = {"C3PO_NAV_SLAM": "localization", "C3PO_NAV_MAP": "lab"}
+    nav = by_name(build("nav2", env=env))[NAV]
+    assert "slam:=localization" in nav.command
+    assert "map:=lab" in nav.command
+    assert "/home/unitree/.c3po/maps:/opt/c3po/maps" in nav.volumes
+
+
+def test_controller_and_monitor_flags_reach_the_launch_file():
+    env = {"C3PO_NAV_CONTROLLER": "mppi", "C3PO_NAV_COLLISION_MONITOR": "0"}
+    args = by_name(build("nav2-fake", env=env))[NAV].command
+    assert "controller:=mppi" in args
+    assert "collision_monitor:=false" in args
+
+
+def test_nav_flags_never_reach_a_launch_file_that_does_not_declare_them():
+    args = by_name(build("perception", env={"C3PO_NAV_SLAM": "mapping"}))[NAV].command
+    assert not any(a.startswith("slam:=") for a in args)
+
+
+@pytest.mark.parametrize("env", [
+    {"C3PO_NAV_SLAM": "localisation"},
+    {"C3PO_NAV_CONTROLLER": "teb"},
+    {"C3PO_NAV_SLAM": "mapping", "C3PO_NAV_MAP": "../etc"},
+])
+def test_a_mistyped_nav_flag_is_refused_not_defaulted(env):
+    with pytest.raises(ValueError):
+        build("nav2", env=env)

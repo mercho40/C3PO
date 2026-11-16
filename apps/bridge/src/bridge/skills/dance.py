@@ -37,6 +37,7 @@ from typing import Any
 import structlog
 
 from bridge.sdk import g1_protocol, g1_rpc
+from bridge.skills.gesture import _release_after
 from bridge.skills.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
@@ -97,6 +98,10 @@ async def run(ctx: Any | None = None) -> dict[str, Any]:
     # (call_arm blocks up to ARM_TIMEOUT_S waiting on the completion ack —
     # same reasoning as _g1_request.py's dispatch branch).
     steps: list[dict[str, Any]] = []
+    # The last step sent, as a shielded future: a cancelled turn can still learn
+    # whether that gesture latched, and release it (gesture.py's pattern).
+    dispatch: asyncio.Future[tuple[int, Any]] | None = None
+    dispatched = g1_protocol.Gesture.RELEASE_ARM
     try:
         for i, gesture in enumerate(SEQUENCE):
             if task.cancel_event.is_set():
@@ -126,7 +131,9 @@ async def run(ctx: Any | None = None) -> dict[str, Any]:
                 except Exception:
                     pass  # progress is best-effort
 
-            code, data = await asyncio.to_thread(g1_rpc.call_arm, int(gesture))
+            dispatched = gesture
+            dispatch = asyncio.ensure_future(asyncio.to_thread(g1_rpc.call_arm, int(gesture)))
+            code, data = await asyncio.shield(dispatch)
             steps.append(
                 {"gesture": int(gesture), "name": gesture.name, "rpc_code": code, "rpc_data": data}
             )
@@ -157,6 +164,13 @@ async def run(ctx: Any | None = None) -> dict[str, Any]:
         task.result = {"steps": steps}
         task.ended_at = time.time()
         log.info("dance.cancelled", task_id=task.task_id)
+        # A RELEASE_ARM in flight finishes in its own thread; a gesture latches.
+        if dispatch is not None and dispatched != g1_protocol.Gesture.RELEASE_ARM:
+            try:
+                # Shielded: the release goes out even though we were cancelled.
+                await asyncio.shield(asyncio.ensure_future(_release_after(dispatch)))
+            except (Exception, asyncio.CancelledError):
+                log.warning("dance.cancel_release_failed", task_id=task.task_id, exc_info=True)
         raise  # never swallow cancellation -- the caller is entitled to it
 
     except Exception as exc:

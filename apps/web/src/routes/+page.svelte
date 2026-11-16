@@ -260,19 +260,12 @@
         >
           {loggingOut ? "Cerrando…" : "Cerrar sesión"}
         </button>
-      {:else}
-        <a
-          href={resolve("login")}
-          class="rounded-full px-3 py-2 text-sm text-ink-dim transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none sm:px-4"
-        >
-          Ingresar
-        </a>
       {/if}
       <a
-        href={resolve(data.user ? "dashboard" : "signup")}
+        href={resolve(data.user ? "dashboard" : "login")}
         class="flex items-center gap-2 rounded-full cta px-4 py-2 text-sm font-medium focus-visible:ring-2 focus-visible:ring-cyan-hot/60 focus-visible:outline-none sm:px-5"
       >
-        {data.user ? "Ir a la consola" : "Crear cuenta"}
+        {data.user ? "Ir a la consola" : "Ingresar"}
         <ArrowRight class="size-3.5" aria-hidden="true" />
       </a>
     </div>
@@ -297,52 +290,14 @@
         parada de emergencia siempre a mano.
       </p>
 
-      {#if data.user}
-        <a
-          href={resolve("dashboard")}
-          class="mt-10 flex items-center gap-2.5 rounded-full cta px-6 py-3 text-sm font-medium focus-visible:ring-2 focus-visible:ring-cyan-hot/60 focus-visible:outline-none"
-        >
-          Ir a la consola
-          <ArrowRight class="size-4" aria-hidden="true" />
-        </a>
-      {:else}
-        <!-- The pill carries the focus ring (focus-within), because the input
-             inside it has none of its own. -->
-        <!-- A plain GET form: there is no waitlist backend, and signup IS the
-             real flow, so the email simply rides along as ?email= and the
-             signup form pre-fills it. SvelteKit turns this into a client-side
-             navigation; without JS it still works. -->
-        <!-- The hint is described on the INPUT: on a <form> (where it was) no
-             screen reader reads it when the field takes focus. -->
-        <form
-          method="GET"
-          action={resolve("signup")}
-          class="mt-10 flex w-full max-w-[520px] items-center gap-2 rounded-full border border-hairline-strong bg-panel p-[7px] shadow-(--c3-shadow-float) focus-within:border-accent-edge focus-within:ring-2 focus-within:ring-cyan-hot/50"
-        >
-          <label for="hero-email" class="sr-only">Tu email</label>
-          <input
-            id="hero-email"
-            name="email"
-            type="email"
-            autocomplete="email"
-            placeholder="operador@ejemplo.com"
-            required
-            aria-describedby="hero-form-hint"
-            class="h-10 min-w-0 flex-1 bg-transparent px-4 font-mono text-base text-ink placeholder:text-ink-mute focus:outline-none sm:px-5 md:text-sm"
-          />
-          <button
-            type="submit"
-            class="flex h-10 shrink-0 items-center gap-2 rounded-full cta px-4 text-sm font-medium focus-visible:ring-2 focus-visible:ring-cyan-hot/60 focus-visible:outline-none"
-          >
-            <span class="hidden sm:inline">Crear cuenta</span>
-            <span class="sr-only sm:hidden">Crear cuenta</span>
-            <ArrowRight class="size-4" aria-hidden="true" />
-          </button>
-        </form>
-        <p id="hero-form-hint" class="mt-3 text-xs text-ink-mute">
-          Te llevamos a crear tu cuenta con este email.
-        </p>
-      {/if}
+      <!-- Sign-up is closed (apps/back auth.ts): an admin makes every account. -->
+      <a
+        href={resolve(data.user ? "dashboard" : "login")}
+        class="mt-10 flex items-center gap-2.5 rounded-full cta px-6 py-3 text-sm font-medium focus-visible:ring-2 focus-visible:ring-cyan-hot/60 focus-visible:outline-none"
+      >
+        {data.user ? "Ir a la consola" : "Ingresar"}
+        <ArrowRight class="size-4" aria-hidden="true" />
+      </a>
 
       {@render scrollArrow(
         "como-funciona",

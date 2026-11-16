@@ -33,19 +33,22 @@ bun run db:migrate
 > against a local Postgres in testing here, even though the driver connects
 > fine directly (isolated with a one-off `postgres` package script) — looks
 > like a `drizzle-kit` CLI bug, not a connection problem. If it hangs, Ctrl-C
-> and apply the SQL directly instead, in order:
+> and apply the SQL directly instead — every file in `migrations/`, in order
+> (the `NNNN_` prefixes sort correctly):
 >
 > ```bash
-> psql "$DATABASE_URL" -f migrations/0000_magenta_black_tom.sql
-> psql "$DATABASE_URL" -f migrations/0001_whole_smasher.sql
+> for f in migrations/*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" || break; done
 > ```
+>
+> On a database that already has some of them, start at the first one missing.
+> Nothing is recorded in drizzle's `__drizzle_migrations` table this way, so a
+> later `db:migrate` against the same database will try them all again.
 
 The bridge must be running with `BRIDGE_TRANSPORT=http` and reachable at
 `BRIDGE_URL` for `/state`, `/skills/*/invoke` and `/tasks` to work (see
 `apps/bridge/README.md`). Without it those routes return
-`502 bridge_unavailable`; auth and route validation still work. Standing
-blocker: under Bun the MCP client currently cannot connect to the bridge at
-all — see `docs/OPERATIONS.md`.
+`502 bridge_unavailable`; auth and route validation still work. Against the
+real robot `BRIDGE_URL` is the SSH tunnel's local end (`.env.example`).
 
 ## Development
 
@@ -54,9 +57,12 @@ bun run dev
 ```
 
 Runs on `http://localhost:3000` (`PORT` in `.env` to change). All routes
-except `/health` require a session — sign up / log in via `apps/web`, or
-directly against `POST /api/auth/sign-up/email` (Better Auth's REST surface;
-handy for headless/API-only testing).
+except `/health` require a session. Public sign-up is closed (`disableSignUp`
+on email and on the GitHub/Google providers, `src/lib/auth.ts`), so accounts
+are made from this directory with `bun scripts/create-user.ts <email> <name>
+[--admin]`; the same script takes `--reset-password <email>` and `--delete
+<email>`. Then log in via `apps/web`, or directly against
+`POST /api/auth/sign-in/email` for headless/API-only testing.
 
 `bun scripts/smoke-agent.ts` checks the internal agent's LLM link (key,
 model, tool calling) without needing the bridge, the DB, or a port.
@@ -78,23 +84,43 @@ level (needs the bridge running in HTTP mode; no DB/auth/port boot).
 ```
 src/
   index.ts             Elysia app — /health open, everything else behind {auth: true}
+  lib/env.ts           startup-validated env (fails fast, naming what is missing)
   lib/auth.ts          Better Auth config (Drizzle adapter, admin + organization plugins)
   lib/auth-plugin.ts   Elysia plugin defining the `auth: true` macro (see Auth below)
-  db/                  Drizzle schema + client + chat persistence queries
+  lib/admin-bootstrap.ts  grants role "admin" to ADMIN_EMAILS at boot
+  db/                  Drizzle schema + client + chat persistence queries (chats.ts)
+  bridge/audited.ts    callTool + audit row, for paths outside /skills and the agent
   bridge/client.ts     MCP client — calls the bridge's tools over BRIDGE_URL
+  bridge/url.ts        BRIDGE_URL and its sibling HTTP routes, in one place
   routes/
     state.ts           GET /state — proxies get_state
-    skills.ts          GET /skills, GET /skills/:name, POST /skills/:name/{invoke,dry-run}
+    skills.ts          GET /skills, GET /skills/:name,
+                       POST /skills/:name/{invoke,dry-run,confirm,cancel} — confirm
+                       (admin) grants AND runs the refused call once
+    safety.ts          GET /safety/status, POST /safety/ack (admin, «Reanudar»)
     tasks.ts           GET /tasks, POST /tasks/:task_id/cancel
     agent.ts           POST /agent — streaming internal-agent chat (needs AGENT_API_KEY)
-    chats.ts           GET /chats, GET /chats/:id, DELETE /chats/:id — history
-    telemetry.ts       GET /telemetry/{surroundings,voice} — the bridge's own,
-                       proxied so a browser never reaches port 8001 directly
+    chats.ts           GET /chats, GET/PATCH/DELETE /chats/:id — history
+    audit.ts           GET /audit — the command log (tool_call_log), admin-only
+    telemetry.ts       GET /telemetry/{surroundings,scan,voice,gate} — the bridge's
+                       own, proxied so a browser never reaches port 8001 directly
+    map.ts             GET /map/costmap.png — Nav2's costmap, same reason
+    camera.ts          GET /camera/{status,frame.jpg,stream.mjpg} — the robot
+                       camera, same reason (when PUBLIC_ROBOT_CAM_URL points here;
+                       dev:robot reads the bridge's 8001 instead)
+    face.ts            /face — the «Caras» page (admins): people, switches, enroll,
+                       delete, photo, each behind a Confirmar card; GET /face/seen,
+                       the camera's face boxes, for any signed-in user
     voice.ts           POST /voice/{start,stop}, GET /voice/status — explicit
-                       operator-owned legacy or OpenAI Realtime voice session
-  voice/loop.ts        legacy transcript → text-agent → Piper fallback
+                       operator-owned legacy or OpenAI Realtime voice session;
+                       POST /voice/transcribe — headset push-to-talk STT
+  voice/loop.ts        legacy transcript → text-agent → Piper fallback; with the
+                       bridge on C3PO_STT=back it fetches each robot-mic WAV and
+                       transcribes it with tic-transcript (AGENT_TRANSCRIBE_MODEL)
   voice/realtime.ts    PCM ↔ OpenAI WebSocket, tool dispatch, durable transcript
                        (design: docs/ARCHITECTURE.md §4.1)
+  voice/conversation.ts, events.ts, pcm.ts
+                       turn assembly, the bridge's voice events, PCM resampling
   skills/              catalogue derived from the bridge at runtime (listTools +
                        cache — see catalogue.ts), not hand-mirrored; metadata like
                        danger level and preconditions rides in the tools' _meta
@@ -124,7 +150,14 @@ skills read the catalogue, which is reused for 5 s (the VR walk loop invokes
 about once a second) and whose `tools/list` is bounded at 3 s. `POST /agent`
 passes the request's abort signal to the agent loop, so a stopped reply (or a
 closed tab) ends its next steps instead of leaving it dispatching skills
-unseen. Unexpected errors are answered with a generic `internal_error` body;
+unseen. PARAR (the `stop_everything` invoke), `soft_stop`, the `/tasks` estop and
+the spoken stop abort every running agent turn (`agent/turns.ts` `abortAllTurns`).
+A stop latched on the bridge directly, such as the headset's, does too:
+`agent/stop-watch.ts` polls `/safety/status` while a turn runs.
+An ended turn (abort or the 240 s budget) cancels the bridge call it is waiting on,
+except a stop; the latch itself is the
+bridge's (`docs/OPERATIONS.md` §4). `damp` and `zero_torque` are never offered to
+a model (`agent/runtime.ts` `agentToolExclusions`). Unexpected errors are answered with a generic `internal_error` body;
 the real one goes to the log (a drizzle error's message is its SQL).
 `GET /audit` (the command log) is admin-only; `GET /health` is public and also
 reports which social sign-in providers are configured (`auth.providers`), so

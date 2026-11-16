@@ -1,21 +1,24 @@
-"""Tests for velocity dispatch (`bridge.skills._locomotion`) and the DDS
-interface pin (`bridge.sdk.connection`).
+"""Tests for velocity dispatch (`bridge.skills._locomotion`).
 
-Both are things that fail *silently* in production — a velocity command sent
-to the wrong channel is a no-op, and an unpinned NIC picks the wrong network
-only sometimes — so they're worth pinning down in tests that never touch DDS.
+This fails *silently* in production — a velocity command sent to the wrong
+channel is a no-op — so it is worth pinning down in tests that never touch DDS.
 
 `_locomotion.SIM_MODE` is read once at import, so tests monkeypatch the module
 attribute rather than the environment.
+
+The DDS interface pin used to be tested here too; it lives in
+test_dds_connection.py now.
 """
 
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import pytest
 
-from bridge.sdk import connection, g1_protocol, g1_rpc
+from bridge.sdk import g1_protocol, g1_rpc
 from bridge.skills import _locomotion
 
 
@@ -71,16 +74,23 @@ def test_real_mode_clamps_to_hardware_vetted_caps(monkeypatch):
     _locomotion.send_velocity(
         _locomotion.MAX_FWD_VEL, _locomotion.MAX_LAT_VEL, _locomotion.MAX_YAW_VEL, height=0.78
     )
-    assert seen["vx"] == MAX_LINEAR_VEL
-    assert seen["vy"] == MAX_LINEAR_VEL
+    # Saturated on both axes: the governor caps the vector (safety.govern), so each is cap/sqrt(2).
+    edge = MAX_LINEAR_VEL / 2**0.5
+    assert seen["vx"] == pytest.approx(edge)
+    assert seen["vy"] == pytest.approx(edge)
     assert seen["omega"] == MAX_YAW_VEL
 
     # ...and in the negative direction, where MAX_BACK_VEL is the sim cap.
+    # From rest: straight after the forward command this is a reversal, which
+    # the governor's acceleration cap ramps (test_safety.py covers that).
+    from bridge import safety
+
+    safety.reset()
     _locomotion.send_velocity(
         _locomotion.MAX_BACK_VEL, -_locomotion.MAX_LAT_VEL, -_locomotion.MAX_YAW_VEL, height=0.78
     )
-    assert seen["vx"] == -MAX_LINEAR_VEL
-    assert seen["vy"] == -MAX_LINEAR_VEL
+    assert seen["vx"] == pytest.approx(-edge)
+    assert seen["vy"] == pytest.approx(-edge)
     assert seen["omega"] == -MAX_YAW_VEL
 
 
@@ -158,6 +168,95 @@ def test_stop_motion_sync_zeroes_velocity_on_real(monkeypatch):
     assert all(c[:3] == (0, 0, 0) for c in calls)
 
 
+def _timed_burst(monkeypatch, call_set_velocity):
+    """Run a real-mode 0.4 s stop burst; returns `(sent, acked, elapsed_s)`."""
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "call_set_velocity", call_set_velocity)
+    # The burst warms the vendor client first. Left real, that is an SDK import and a DDS
+    # Init that fails on a laptop, and under load it alone outlasted the time bound below.
+    # The cold client has its own test (test_a_burst_on_a_cold_sport_client_is_still_heard).
+    monkeypatch.setattr(g1_rpc, "_get_sport_client", lambda: None)
+    started = time.monotonic()
+    sent, acked = _locomotion.stop_motion_sync(height=0.78, duration_s=0.4)
+    return sent, acked, time.monotonic() - started
+
+
+def test_a_hung_reply_does_not_hold_the_stop_burst(monkeypatch):
+    """SET_VELOCITY waits up to SPORT_TIMEOUT_S (10 s) for its ack. One slow
+    reply held the whole burst, and acked == 0 then damped a standing robot."""
+    hang = threading.Event()
+    calls: list = []
+
+    def call_set_velocity(*a):
+        first = not calls
+        calls.append(a)
+        if first:
+            hang.wait(5.0)
+            return 3104, None
+        return 0, ""
+
+    try:
+        sent, acked, elapsed = _timed_burst(monkeypatch, call_set_velocity)
+    finally:
+        hang.set()
+
+    assert elapsed < 0.4 + _locomotion.STOP_ACK_GRACE_S + 0.5
+    assert sent >= 10, "the zero setpoints keep their 50 Hz schedule"
+    assert sent - 3 <= acked <= sent - 1
+
+
+def test_a_burst_nobody_answers_ends_on_time_with_no_ack(monkeypatch):
+    hang = threading.Event()
+
+    def call_set_velocity(*a):
+        hang.wait(5.0)
+        return 3104, None
+
+    try:
+        sent, acked, elapsed = _timed_burst(monkeypatch, call_set_velocity)
+    finally:
+        hang.set()
+
+    assert elapsed < 0.4 + _locomotion.STOP_ACK_GRACE_S + 0.5
+    assert sent >= 10
+    assert acked == 0
+
+
+def test_a_slow_reply_inside_the_grace_window_still_counts(monkeypatch):
+    def call_set_velocity(*a):
+        time.sleep(0.1)
+        return 0, ""
+
+    sent, acked, _ = _timed_burst(monkeypatch, call_set_velocity)
+
+    assert acked == sent
+
+
+def test_a_burst_on_a_cold_sport_client_is_still_heard(monkeypatch):
+    """The vendor client's first Init takes >= 0.7 s. Built inside the burst's
+    window, every setpoint queued on it, acked came back 0, and the stop damped
+    a standing robot that heard it."""
+
+    class ColdClient:
+        def __init__(self, *a, **kw):
+            time.sleep(0.75)
+
+        def Init(self):
+            pass
+
+        def call_raw(self, api_id, parameter):
+            return 0, ""
+
+    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(g1_rpc, "_sport_client", None)
+    monkeypatch.setattr(g1_rpc, "_G1Client", ColdClient)
+
+    sent, acked = _locomotion.stop_motion_sync(height=0.78, duration_s=0.4)
+
+    assert sent >= 10
+    assert acked == sent
+
+
 # --------------------------------------------------------------------------
 # SET_VELOCITY parameter shape
 # --------------------------------------------------------------------------
@@ -184,29 +283,5 @@ def test_set_velocity_parameter_matches_vendor_schema(monkeypatch):
     }
 
 
-# --------------------------------------------------------------------------
-# DDS interface pin
-# --------------------------------------------------------------------------
-
-
-def test_interface_element_defaults_to_autodetermine():
-    assert 'autodetermine="true"' in connection._interface_element(None)
-    assert 'autodetermine="true"' in connection._interface_element("")
-
-
-def test_interface_element_pins_named_nic():
-    element = connection._interface_element("eth0")
-    assert element == '<NetworkInterface name="eth0" />'
-    assert "autodetermine" not in element
-
-
-def test_peer_xml_embeds_pinned_interface_and_host(tmp_path, monkeypatch):
-    monkeypatch.setattr(connection.tempfile, "gettempdir", lambda: str(tmp_path))
-
-    xml = connection._write_peer_xml("192.168.123.161", "eth0").read_text()
-
-    assert '<NetworkInterface name="eth0" />' in xml
-    assert '<Peer address="192.168.123.161" />' in xml
-    # Unicast peers only: multicast is what we can't rely on across the Mac's
-    # Wi-Fi, and onboard the peer address is enough to find the control board.
-    assert "<AllowMulticast>false</AllowMulticast>" in xml
+# The DDS interface-pin tests that lived here moved to test_dds_connection.py
+# when the pin was made to actually reach the SDK.

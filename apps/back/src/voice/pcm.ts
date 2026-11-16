@@ -1,17 +1,28 @@
 export class Pcm16Resampler {
   private samples: number[] = [];
+  // HTTP chunk boundaries fall wherever the transport put them, not on samples:
+  // the robot's mic stream does hand over odd-length chunks, and refusing one
+  // used to end the whole Realtime session. The stray byte waits for its pair.
+  private carry: number | null = null;
   private position = 0;
   private readonly step: number;
 
   constructor(inputRate: number, outputRate: number) {
-    if (inputRate <= 0 || outputRate <= 0) throw new Error("sample rates must be positive");
+    if (inputRate <= 0 || outputRate <= 0)
+      throw new Error("sample rates must be positive");
     this.step = inputRate / outputRate;
   }
 
-  push(pcm: Uint8Array): Uint8Array {
-    if (pcm.byteLength % 2 !== 0) throw new Error("PCM16 input must contain complete samples");
-    const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
-    for (let offset = 0; offset < pcm.byteLength; offset += 2) {
+  push(chunk: Uint8Array): Uint8Array {
+    let pcm = chunk;
+    if (this.carry !== null && pcm.byteLength > 0) {
+      pcm = concatBytes(Uint8Array.of(this.carry), pcm);
+      this.carry = null;
+    }
+    const whole = pcm.byteLength - (pcm.byteLength % 2);
+    if (whole < pcm.byteLength) this.carry = pcm[whole]!;
+    const view = new DataView(pcm.buffer, pcm.byteOffset, whole);
+    for (let offset = 0; offset < whole; offset += 2) {
       this.samples.push(view.getInt16(offset, true));
     }
 
@@ -19,7 +30,9 @@ export class Pcm16Resampler {
     while (this.position + 1 < this.samples.length) {
       const left = Math.floor(this.position);
       const fraction = this.position - left;
-      const sample = this.samples[left]! * (1 - fraction) + this.samples[left + 1]! * fraction;
+      const sample =
+        this.samples[left]! * (1 - fraction) +
+        this.samples[left + 1]! * fraction;
       output.push(Math.max(-32768, Math.min(32767, Math.round(sample))));
       this.position += this.step;
     }
@@ -32,7 +45,9 @@ export class Pcm16Resampler {
 
     const encoded = new Uint8Array(output.length * 2);
     const encodedView = new DataView(encoded.buffer);
-    output.forEach((sample, index) => encodedView.setInt16(index * 2, sample, true));
+    output.forEach((sample, index) =>
+      encodedView.setInt16(index * 2, sample, true),
+    );
     return encoded;
   }
 }

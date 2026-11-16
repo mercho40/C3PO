@@ -49,18 +49,18 @@ cp .env.example .env
 
 ### The two MCP servers — know which machine you are about to move
 
-The repo's `.mcp.json` defines two bridge entries, and the distinction is a safety property, not bookkeeping — the tool-name prefix tells you which machine is about to move:
+A local `.mcp.json` at the repo root defines two bridge entries. It is gitignored, not part of the repo, so each developer writes their own with these two. The distinction is a safety property, not bookkeeping — the tool-name prefix tells you which machine is about to move:
 
-| Server        | Tools                 | Target                                                                                                          |
-| ------------- | --------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `c3po-sim`    | `mcp__c3po-sim__*`    | **Isaac Sim.** Spawned locally by Claude Code (`uv run … bridge.mcp_server`, `SIM_MODE=isaac`)                  |
-| `c3po-bridge` | `mcp__c3po-bridge__*` | **The real G1.** `type: http` → `http://g1-orin.local:8001/mcp` — the onboard daemon over the LAN |
+| Server        | Tools                 | Target                                                                                                   |
+| ------------- | --------------------- | -------------------------------------------------------------------------------------------------------- |
+| `c3po-sim`    | `mcp__c3po-sim__*`    | **Isaac Sim.** Spawned locally by Claude Code (`uv run … bridge.mcp_server`, `SIM_MODE=isaac`)           |
+| `c3po-bridge` | `mcp__c3po-bridge__*` | **The real G1.** `type: http` → `http://127.0.0.1:8001/mcp` — the onboard daemon, through the SSH tunnel |
 
-`c3po-sim` can never reach the real robot no matter what you set: it runs on the Mac, and the control board publishes DDS only on the robot's internal wired LAN (see `docs/ROBOT-HARDWARE.md`). Conversely, `mcp__c3po-bridge__*` tools command real hardware whenever the robot is reachable on the LAN.
+`c3po-sim` can never reach the real robot no matter what you set: it runs on the Mac, and the control board publishes DDS only on the robot's internal wired LAN (see `docs/ROBOT-HARDWARE.md`). Conversely, `mcp__c3po-bridge__*` tools command real hardware whenever the tunnel to the robot is up.
 
 ### As an MCP child over stdio (sim / local dev)
 
-Claude Code auto-spawns `c3po-sim` per `.mcp.json` (its env block there carries the sim settings). Manual run for debugging or other MCP clients — with `.env` configured:
+Claude Code auto-spawns `c3po-sim` per your `.mcp.json` (its env block there carries the sim settings). Manual run for debugging or other MCP clients — with `.env` configured:
 
 ```bash
 uv run python -m bridge.mcp_server
@@ -71,19 +71,26 @@ uv run python -m bridge.mcp_server
 `apps/back` and the `c3po-bridge` MCP entry connect over **streamable-http**, so a daemon has to be told to serve that transport:
 
 ```bash
-BRIDGE_TRANSPORT=http BRIDGE_HOST=0.0.0.0 BRIDGE_PORT=8001 \
+BRIDGE_TRANSPORT=http BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=8001 \
 uv run python -m bridge.mcp_server
 ```
 
 This is not optional polish. The default transport is **stdio**, which is right when an MCP client spawns the bridge as a child and talks over pipes — but a daemon's stdin is `/dev/null`, so on stdio it reads EOF and exits immediately, before it ever reaches the robot. The symptom is a process that "fails to start" with almost nothing in the log.
 
-Onboard the G1 you do not run this by hand: `c3po up core` delegates the process lifecycle to `c3po-bridge.service` — see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md). The unit deliberately binds the daemon to the LAN; it can command the robot's legs and has no auth of its own.
+Onboard the G1 you do not run this by hand: `c3po up core` delegates the process lifecycle to `c3po-bridge.service` — see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md). The unit binds the daemon to loopback (`BRIDGE_HOST=127.0.0.1`, since 2026-09-06; the unit file has the reasoning): it can command the robot's legs and has no auth of its own, so nothing off the robot reaches it except through an SSH tunnel.
 
 ### Driving the real robot from Claude Code
 
-Start the bridge onboard with `c3po up core`, then point the MCP client directly
-at `http://g1-orin.local:8001/mcp`. The repository's local `.mcp.json` already
-uses that URL. The mDNS name matters because the robot's DHCP address moves.
+Start the bridge onboard with `c3po up core`, open the tunnel, then point the MCP
+client at your end of it:
+
+```bash
+ssh -f -N -o ControlMaster=no -L 8001:127.0.0.1:8001 c3po   # `c3po` = g1-orin.local
+```
+
+`c3po-bridge` in your local `.mcp.json` should say `http://127.0.0.1:8001/mcp`.
+`g1-orin.local:8001` is refused — the bridge is not on the LAN. Tunnel via the
+`c3po` alias (mDNS), never an IP: the robot's DHCP address moves.
 
 **Why not spawn it over SSH instead**, which would need no tunnel:
 
@@ -95,7 +102,7 @@ uses that URL. The mDNS name matters because the robot's DHCP address moves.
 }
 ```
 
-That starts a _second_ bridge process beside `c3po-bridge.service` — two processes able to command the legs through the same API, the exact condition `c3po up` refuses (one-commander invariant: `docs/OPERATIONS.md`). Keep one systemd-owned bridge and reach it directly.
+That starts a _second_ bridge process beside `c3po-bridge.service` — two processes able to command the legs through the same API, the exact condition `c3po up` refuses (one-commander invariant: `docs/OPERATIONS.md`). Keep one systemd-owned bridge and reach it through the tunnel.
 
 ### The teleop stream (Quest arm mirroring)
 
@@ -115,10 +122,10 @@ its own. The Python module retains a loopback default for ad-hoc developer runs.
 **Both hardware paths are off by default**, and stay off until a person has
 verified what the documentation cannot tell us:
 
-| Path                | Gate                                         | What has to happen first                                                                                                                |
-| ------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Arms (`rt/arm_sdk`) | `TELEOP_ARM_ENABLED=1` + `SIM_MODE=real`     | `scripts/arm_sign_check.py` — no source gives the positive direction of any G1 arm joint                                                |
-| Fingers             | `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE` | `scripts/hand_probe.py` — which hands are fitted is unresolved, and the two candidates disagree on topic, type, motor count _and units_ |
+| Path                | Gate                                         | What has to happen first                                                                                           |
+| ------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Arms (`rt/arm_sdk`) | `TELEOP_ARM_ENABLED=1` + `SIM_MODE=real`     | `scripts/arm_sign_check.py` — shoulder signs match the URDF (2026-11-03); wrists still open (BACKLOG 5.5)          |
+| Fingers             | `TELEOP_HAND_ENABLED=1` + `TELEOP_HAND_TYPE` | two BrainCo, and neither answers (BACKLOG 5.1); the robot runs `TELEOP_HAND_TYPE=simulated`, which moves no finger |
 
 With neither set, the stream still runs: head yaw turns the robot and the walk
 axis drives it, which is the part that rides on already-vetted machinery
@@ -138,23 +145,28 @@ print(asyncio.run(run(target_x=1.0, target_y=0.0, stop_distance_m=0.4, timeout_s
 
 ## Diagnostic scripts
 
-| Script                          | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scripts/dds_scan.py`           | List DDS participants + topics across candidate domains — diagnose which domain a peer is on, what it publishes/subscribes                                                                                                                                                                                                                                                                                                                                                       |
-| `scripts/peek_sim_state.py`     | Subscribe to `rt/sim_state` and print decoded pose JSON                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `scripts/rotate.py <radians>`   | Rotate the robot in place by a yaw delta (see its docstring for the `--` trick with negative radians)                                                                                                                                                                                                                                                                                                                                                                            |
-| `scripts/vr_smoke_test.py`      | **Supervised first-motion ladder** for the VR teleop path: read-only → speech → `wave` → `dance` → first `walk_velocity` → stop path. Prompts before every escalation, refuses to run against a stub, aborts on the first failure. Run it standing next to the robot with the e-stop in reach; `--skip-legs` omits the only stage that commands the legs                                                                                                                         |
-| `scripts/teleop_smoke_test.py`  | **Supervised bring-up for the teleop stream**, acting as the browser so nothing needs a headset. Preflight -> confirm the arms are refused -> confirm a released dead-man commands nothing -> **settle the yaw sign** -> walk axis -> confirm a dropped socket stops the robot. Stage 4 is the one that matters: if the sign is inverted, turning your head left turns the robot right, and that is a bad thing to find out while wearing something that covers your eyes        |
-| `scripts/arm_sign_check.py`     | **Settle the arm joint sign conventions.** Engages `rt/arm_sdk` from the measured pose, moves ONE joint by 12 degrees, holds, asks which way it went, returns to neutral. Prints a `JOINT_SIGNS` block to paste into `teleop/retarget.py`. Every prompt defaults to abort, and `--dry` rehearses the whole prompt sequence with no DDS and no motion. Run it standing next to a **standing** robot with the e-stop in reach — `arm_sdk` while walking is a reported balance loss |
-| `scripts/select_motion_mode.py` | **Load a motion controller back on.** The fix for "every command returns rpc_code 0 and the robot does nothing" — which is what `xr_teleoperate` leaves behind: it calls `Enter_Debug_Mode()`, which releases the controller entirely, and that state survives killing their processes. Presents as `check_motion_mode` returning an empty name, 7001/7002 answering nothing, and `posture="unknown"`. Needed once per session on a shared robot                                 |
-| `scripts/hand_probe.py`         | Passively subscribe to every candidate hand state topic and print what answers. Writes nothing. Largely historical now that the hands are settled as two BrainCo by inspection (`docs/ROBOT-HARDWARE.md`), but still the quickest way to confirm a hand is _connected_ — one was found unplugged                                                                                                                                                                                 |
-| `scripts/postsync.sh`           | Patch unitree_sdk2py's broken `__init__.py` after `uv sync`                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `scripts/mic_probe.py`          | Is the mic multicast flowing? Joins `239.168.123.161:5555` **bound to eth0** and counts packets. Verifies the join against `/proc/net/igmp` first, because binding the wrong interface returns zero packets with no error and a silent socket otherwise looks exactly like a gated microphone                                                                                                                                                                                    |
-| `scripts/mic_wakeup_probe.py`   | The same count, **plus the remote's buttons** decoded from `LowState_.wireless_remote`. Settles whether audio is gated on wake-up mode: a run where nobody pressed anything and a run where the press changed nothing are the same column of zeros, and only the button field tells them apart. Reports INCONCLUSIVE rather than a confident zero                                                                                                                                |
-| `scripts/listen_live.py`        | Live mic → Spanish transcript, printed as you speak. Prints packet counts either way, so a silent terminal can be told apart from "nobody is talking"                                                                                                                                                                                                                                                                                                                            |
-| `scripts/listen_stdin.py`       | The same recogniser over **16 kHz mono PCM on stdin** — pipe a laptop microphone in over ssh. Makes the gated robot mic a source swap rather than a blocker                                                                                                                                                                                                                                                                                                                      |
-| `scripts/install_piper.sh`      | Install Piper + the `es_AR` voice (Spanish TTS). Verifies against the server's `Content-Length` and resumes — a truncated model otherwise fails much later with `Model config doesn't exist`                                                                                                                                                                                                                                                                                     |
-| `scripts/install_vosk.sh`       | Place the Vosk Spanish model for the spoken stop. Fetching it from the robot is the slow path (~7 KB/s); push it from a laptop instead                                                                                                                                                                                                                                                                                                                                           |
+| Script                           | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/dds_scan.py`            | List DDS participants + topics across candidate domains — diagnose which domain a peer is on, what it publishes/subscribes                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `scripts/peek_sim_state.py`      | Subscribe to `rt/sim_state` and print decoded pose JSON                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `scripts/rotate.py <radians>`    | Rotate the robot in place by a yaw delta (see its docstring for the `--` trick with negative radians)                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `scripts/vr_smoke_test.py`       | **Supervised first-motion ladder** for the VR teleop path: read-only → speech → `wave` → `dance` → first `walk_velocity` → stop path. Prompts before every escalation, refuses to run against a stub, aborts on the first failure. Run it standing next to the robot with the e-stop in reach; `--skip-legs` omits the only stage that commands the legs                                                                                                                                                                   |
+| `scripts/headset_check.py`       | **Supervised check of what the headset shows**, with the Quest on someone's head and /vr-control open in it (`scripts/quest_setup.sh` and the 8001 tunnel first). It asks the bridge before each visual check, so missing data is recorded BLOCKED, not FAIL. Read-only: it never commands the robot; the two motion checks ask the operator to drive                                                                                                                                                                      |
+| `scripts/measure_turn.py`        | **Measure `turn`'s own closed loop** on the robot: yaw before, yaw after, and whether the residual is inside tolerance, printed for a commit. One confirmed rotation per run (`--degrees`, default 40, refuses over 60; `--runs`, default 2). Expect under-travel of about 2.2x: record it, do not raise the angle. E-stop in reach                                                                                                                                                                                        |
+| `scripts/teleop_smoke_test.py`   | **Supervised bring-up for the teleop stream**, acting as the browser so nothing needs a headset. Preflight -> confirm the arms are refused -> confirm a released dead-man commands nothing -> **settle the yaw sign** -> walk axis -> confirm a dropped socket stops the robot. Stage 4 is the one that matters: if the sign is inverted, turning your head left turns the robot right, and that is a bad thing to find out while wearing something that covers your eyes                                                  |
+| `scripts/arm_sign_check.py`      | **Settle the arm joint sign conventions.** Engages `rt/arm_sdk` from the measured pose, moves ONE joint by 12 degrees, holds, asks which way it went, returns to neutral. Prints a `JOINT_SIGNS` block to paste into `teleop/retarget.py`. Every prompt defaults to abort, and `--dry` rehearses the whole prompt sequence with no DDS and no motion. Run it standing next to a **standing** robot with the e-stop in reach — `arm_sdk` while walking is a reported balance loss                                           |
+| `scripts/select_motion_mode.py`  | **Load a motion controller back on.** The fix for "every command returns rpc_code 0 and the robot does nothing" — which is what `xr_teleoperate` leaves behind: it calls `Enter_Debug_Mode()`, which releases the controller entirely, and that state survives killing their processes. Presents as `check_motion_mode` returning an empty name, 7001/7002 answering nothing, and `posture="unknown"`. Needed once per session on a shared robot                                                                           |
+| `scripts/hand_probe.py`          | **Do the BrainCo hands answer on their serial lines?** Modbus RTU reads only (460800 baud, slave 126 left, 127 right) on every `/dev/ttyUSB*`, without the vendor server. Refuses while anything holds a port. Exit 0 both hands, 1 one, 2 none, 3 refused. Run with `sudo` on the robot: `docs/autonomy/test-day/hand-and-gantry.md`                                                                                                                                                                                      |
+| `scripts/hand_dds_probe.py`      | Passively subscribe to every candidate hand state topic and print what answers. Writes nothing. Largely historical now that the hands are settled as two BrainCo by inspection (`docs/ROBOT-HARDWARE.md`), but still the quickest way to confirm a hand is _connected_ — one was found unplugged                                                                                                                                                                                                                           |
+| `scripts/install_face_models.sh` | Fetch the operator face gate's two models (YuNet, SFace) into `~/.c3po/face/models`, pinned by commit and sha256. Run on the robot. Setup: `docs/OPERATIONS.md` §4, "The operator face gate"                                                                                                                                                                                                                                                                                                                               |
+| `scripts/face_enroll.py`         | Enroll a person for the face gate and the greeter, on the robot, after a consent prompt: `--name NAME --role superadmin\|operator` (`--replace` to re-enroll a name that exists), `--list`, `--delete NAME`, `--delete-all`. Every frame must be one live face, all of the same person; crouch, the camera points about 48° down. Stores SFace vectors and one 160 px photo per person in `~/.c3po/face/people/<id>/` (files 0600, folders 0700). The console's «Caras» page does the same. Setup: `docs/OPERATIONS.md` §4 |
+| `scripts/postsync.sh`            | Patch unitree_sdk2py's broken `__init__.py` after `uv sync`                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `scripts/mic_probe.py`           | Is the mic multicast flowing? Joins `239.168.123.161:5555` **bound to eth0** and counts packets. Verifies the join against `/proc/net/igmp` first, because binding the wrong interface returns zero packets with no error and a silent socket otherwise looks exactly like a gated microphone                                                                                                                                                                                                                              |
+| `scripts/mic_wakeup_probe.py`    | The same count, **plus the remote's buttons** decoded from `LowState_.wireless_remote`. Settles whether audio is gated on wake-up mode: a run where nobody pressed anything and a run where the press changed nothing are the same column of zeros, and only the button field tells them apart. Reports INCONCLUSIVE rather than a confident zero                                                                                                                                                                          |
+| `scripts/listen_live.py`         | Live mic → Spanish transcript, printed as you speak. Prints packet counts either way, so a silent terminal can be told apart from "nobody is talking"                                                                                                                                                                                                                                                                                                                                                                      |
+| `scripts/listen_stdin.py`        | The same recogniser over **16 kHz mono PCM on stdin** — pipe a laptop microphone in over ssh. Makes the gated robot mic a source swap rather than a blocker                                                                                                                                                                                                                                                                                                                                                                |
+| `scripts/install_piper.sh`       | Install Piper + the `es_AR` voice (Spanish TTS). Pins the voice to a commit and a sha256 per file, and resumes — a truncated model otherwise fails much later with `Model config doesn't exist`                                                                                                                                                                                                                                                                                                                            |
+| `scripts/install_vosk.sh`        | Place the Vosk Spanish model for the spoken stop. Fetching it from the robot is the slow path (~7 KB/s); push it from a laptop instead                                                                                                                                                                                                                                                                                                                                                                                     |
 
 All scripts assume `CYCLONEDDS_HOME`, `ROBOT_HOST`, and `DDS_DOMAIN_ID` are set in the environment.
 
@@ -169,6 +181,23 @@ uv run mypy src               # type-check
 
 No DDS/hardware needed — everything that touches DDS is monkeypatched (`unitree_sdk2py`'s `ChannelPublisher`/`ChannelSubscriber`/RPC client are never actually constructed in test runs).
 
+### The MuJoCo arm twin (`tests/sim/`)
+
+Checks `kinematics.py` and the pick/place/handover plans against MuJoCo Menagerie's G1
+(`unitree_g1/g1.xml` at commit `98a70c569c4c`, BSD-3-Clause, ~22 MB of meshes, fetched and
+sha256-checked, never committed): motor slot order, joint limits, FK parity, `move_arm`'s
+envelope, whether the model's hand reaches the planned grasp, and mesh contact with the body.
+Kinematics only: no stepping, no DDS, no SIM_MODE change.
+
+```bash
+uv sync --extra sim
+bash scripts/fetch_menagerie_g1.sh     # -> .cache/menagerie/unitree_g1 (gitignored)
+uv run --extra sim pytest -m sim
+```
+
+Without the extra or the model the module skips, so plain `uv run pytest` stays offline. CI
+sets `C3PO_SIM_REQUIRED=1`, which turns that skip into a failure.
+
 ## Layout
 
 ```
@@ -176,6 +205,10 @@ src/bridge/
   mcp_server.py         FastMCP server — the skill catalogue as MCP tools; stdio or http transport
   skill_meta.py         safety/capability metadata attached to every tool (MCP _meta)
   watchdog.py           operator-link watchdog — safe the robot when the link drops
+  estop.py              the PARAR sentinel and ack files under ~/.c3po/run (the latch)
+  safety.py             governor, tier gate, T2 grants, the latch check; the
+                        /safety/{status,confirm,ack} routes are in mcp_server.py
+  kinematics.py         FK/IK over the G1 URDF (pure Python)
   world_model.py        world-model contract: what perception hands the agent
   sdk/
     connection.py       CycloneDDS init; generates unicast peer XML (macOS multicast workaround)
@@ -190,7 +223,10 @@ src/bridge/
     walk_to.py, turn.py cancellable locomotion tasks
     landmarks.py        remember/recall/list named poses
     task_runtime.py     Task records + registry, cooperative cancellation
-    stop_everything.py  cancel-all + arm/hand release + zero-velocity burst (+ damp on real)
+    stop_everything.py  cancel-all + arm/hand release + zero-velocity burst (+ damp on real if unacknowledged)
+                        + latches PARAR until /safety/ack
+    go_to_object.py     walk to a detected or remembered object, camera only
+    manipulation.py     reach / pick / place / handover plans over kinematics.py
     walk_velocity.py    open-loop velocity, real hardware only — no pose needed
     dance.py            choreographed gesture sequence via call_arm()
     gesture.py          any preset action from the firmware's own 23-entry catalogue, by name

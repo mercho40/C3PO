@@ -32,6 +32,7 @@ import math
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -48,6 +49,7 @@ LOWSTATE_TOPIC = _TOPICS.lowstate
 # Arm joints in the fixed 35-slot motor array: 15-21 left, 22-28 right, in the
 # order shoulder pitch/roll/yaw, elbow, wrist roll/pitch/yaw. Index 29 is not a
 # joint at all — it is the `rt/arm_sdk` blend weight. See docs/ROBOT-API.md §9.3.
+WAIST_JOINT_START = 12
 ARM_JOINT_START = 15
 ARM_JOINT_END = 29
 SIM_STATE_TOPIC = _TOPICS.sportmodestate
@@ -63,6 +65,8 @@ _POSE_SOURCE = "odom" if (_SIM_MODE == "real" and ODOM_TOPIC) else "sim_state"
 class _LowStateSnapshot:
     """Latest LowState_ values we care about, plus capture time."""
 
+    #: time.monotonic(), like every received_at here: each only ever becomes an age, and
+    #: the robot has no RTC, so an NTP step would age (or freshen) every reading at once.
     received_at: float = 0.0
     tick: int = 0
     mode_machine: int = 0
@@ -78,6 +82,10 @@ class _LowStateSnapshot:
     # is explicit that a position gap plus a moving weight "may cause the
     # robotic arm to move at high speed" (`docs/ROBOT-API.md`).
     arm_q: tuple[float, ...] = ()
+    # Measured waist yaw/roll/pitch (G1JointIndex 12-14), radians, from the same
+    # message. `teleop.arm_sdk` holds these while engaged: the arm_sdk blend
+    # covers the waist too, and an uncommanded waist slot at full weight is kp=0.
+    waist_q: tuple[float, ...] = ()
 
 
 @dataclass
@@ -131,6 +139,8 @@ FSM_STALE_AFTER_S = 10.0
 #: How old a pose reading can be before it is called stale. Odom publishes at
 #: ~50 Hz on this robot, so two seconds is forty missed messages.
 POSE_STALE_AFTER_S = 2.0
+# The vendor's own low-battery threshold (`soc < 20`); the safety gate refuses long and arm tools under it.
+LOW_BATTERY_PCT = 20
 
 
 @dataclass
@@ -161,6 +171,8 @@ class StateSampler:
         self._lock = threading.Lock()
         self._lowstate = _LowStateSnapshot()
         self._pose = _PoseSnapshot()
+        # (monotonic received_at, x, y, yaw): ~2 s at 500 Hz, for pose_at.
+        self._pose_history: deque[tuple[float, float, float, float]] = deque(maxlen=1000)
         self._fsm = _FsmSnapshot()
         self._bms = _BmsSnapshot()
         self._lowstate_sub: Any = None
@@ -246,7 +258,9 @@ class StateSampler:
                 self._note_fsm_failure()
                 continue
             with self._lock:
-                self._fsm = _FsmSnapshot(received_at=time.time(), fsm_id=fsm_id, fsm_mode=fsm_mode)
+                self._fsm = _FsmSnapshot(
+                    received_at=time.monotonic(), fsm_id=fsm_id, fsm_mode=fsm_mode
+                )
 
     def _note_fsm_failure(self) -> None:
         with self._lock:
@@ -265,15 +279,17 @@ class StateSampler:
         except Exception as exc:  # malformed / unexpected layout
             log.warning("odom.parse_failed", error=str(exc))
             return
+        now = time.monotonic()
         with self._lock:
             self._pose = _PoseSnapshot(
-                received_at=time.time(),
+                received_at=now,
                 x_meters_world=x,
                 y_meters_world=y,
                 z_meters_world=z,
                 yaw_radians_world=yaw,
                 raw_message_count=self._pose.raw_message_count + 1,
             )
+            self._pose_history.append((now, x, y, yaw))
 
     def _on_lowstate(self, msg: Any) -> None:
         motors = msg.motor_state
@@ -281,17 +297,20 @@ class StateSampler:
         # array, and this runs in a DDS callback where an IndexError would be
         # swallowed by the SDK's reader thread rather than surfacing.
         arm_q: tuple[float, ...] = ()
+        waist_q: tuple[float, ...] = ()
         if len(motors) >= ARM_JOINT_END:
             arm_q = tuple(float(motors[i].q) for i in range(ARM_JOINT_START, ARM_JOINT_END))
+            waist_q = tuple(float(motors[i].q) for i in range(WAIST_JOINT_START, ARM_JOINT_START))
         with self._lock:
             self._lowstate = _LowStateSnapshot(
-                received_at=time.time(),
+                received_at=time.monotonic(),
                 tick=int(msg.tick),
                 mode_machine=int(msg.mode_machine),
                 motor_count=len(motors),
                 has_imu=msg.imu_state is not None,
                 raw_message_count=self._lowstate.raw_message_count + 1,
                 arm_q=arm_q,
+                waist_q=waist_q,
             )
 
     def get_arm_state(self) -> dict[str, Any]:
@@ -308,8 +327,9 @@ class StateSampler:
             fsm = self._fsm
         return {
             "arm_q": low.arm_q,
+            "waist_q": low.waist_q,
             "mode_machine": low.mode_machine,
-            "lowstate_age_s": (time.time() - low.received_at) if low.received_at else None,
+            "lowstate_age_s": (time.monotonic() - low.received_at) if low.received_at else None,
             "fsm_id": fsm.fsm_id,
             # The FSM comes from a DIFFERENT snapshot than the lowstate, with
             # its own arrival time, and the caller gates on both. Returning the
@@ -317,7 +337,7 @@ class StateSampler:
             # while deciding on an FSM reading from minutes earlier — which is
             # the difference between "the robot is standing locked" and "the
             # robot has been walking since the last time anyone asked".
-            "fsm_age_s": (time.time() - fsm.received_at) if fsm.received_at else None,
+            "fsm_age_s": (time.monotonic() - fsm.received_at) if fsm.received_at else None,
         }
 
     def _on_bms(self, msg: Any) -> None:
@@ -326,7 +346,7 @@ class StateSampler:
         # tells you charging state without a separate flag.
         with self._lock:
             self._bms = _BmsSnapshot(
-                received_at=time.time(),
+                received_at=time.monotonic(),
                 soc_pct=int(msg.soc),
                 soh_pct=int(msg.soh),
                 current_ma=int(msg.current),
@@ -346,15 +366,44 @@ class StateSampler:
             return
 
         yaw = _yaw_from_quaternion(qw, qx, qy, qz)
+        now = time.monotonic()
         with self._lock:
             self._pose = _PoseSnapshot(
-                received_at=time.time(),
+                received_at=now,
                 x_meters_world=x,
                 y_meters_world=y,
                 z_meters_world=z,
                 yaw_radians_world=yaw,
                 raw_message_count=self._pose.raw_message_count + 1,
             )
+            self._pose_history.append((now, x, y, yaw))
+
+    def pose_at(self, t: float) -> tuple[float, float, float] | None:
+        """(x, y, yaw) of the newest pose received at or before `t` (time.monotonic()).
+
+        None when there is no history yet or `t` is older than all of it.
+        """
+        with self._lock:
+            for at, x, y, yaw in reversed(self._pose_history):
+                if at <= t:
+                    return x, y, yaw
+        return None
+
+    def latest_pose(self) -> tuple[float, float, float] | None:
+        """`(x, y, seconds since it arrived)` of the newest pose, or None before the first."""
+        with self._lock:
+            if not self._pose_history:
+                return None
+            at, x, y, _ = self._pose_history[-1]
+        return x, y, time.monotonic() - at
+
+    def battery(self) -> tuple[int | None, float | None]:
+        """`(soc %, seconds since that BmsState_)`, or (None, None) before the first one."""
+        with self._lock:
+            bms = self._bms
+        if not bms.received_at:
+            return None, None
+        return bms.soc_pct, time.monotonic() - bms.received_at
 
     def get_state(self) -> dict[str, Any]:
         """Return the current state in the shape the MCP `get_state` tool exposes."""
@@ -380,7 +429,7 @@ class StateSampler:
                 },
             }
 
-        now = time.time()
+        now = time.monotonic()
         lowstate_age = now - low.received_at
         faults: list[str] = []
 
@@ -439,7 +488,7 @@ class StateSampler:
         pose_age = round(now - pose_snap.received_at, 3) if pose_snap.received_at else None
         # Low battery is a real fault, and the one most likely to end a session
         # mid-task. 20% is the vendor's own threshold.
-        if bms.soc_pct is not None and bms.soc_pct < 20:
+        if bms.soc_pct is not None and bms.soc_pct < LOW_BATTERY_PCT:
             faults.append(f"low_battery_{bms.soc_pct}pct")
 
         return {
@@ -478,6 +527,11 @@ class StateSampler:
 
 
 _sampler_singleton: StateSampler | None = None
+
+
+def existing_sampler() -> StateSampler | None:
+    """The singleton if this process made one, else None — never creates it (the safety gate)."""
+    return _sampler_singleton
 
 
 def get_sampler() -> StateSampler:

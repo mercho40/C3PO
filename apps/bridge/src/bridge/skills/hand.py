@@ -39,18 +39,53 @@ def _requested_sides(side: Side) -> tuple[hands.Side, ...]:
     return ("left", "right") if side == "both" else (side,)
 
 
-async def run_set(side: Side, closure: float, ctx: Any | None = None) -> dict[str, Any]:
-    """Set hand closure: 0.0 fully open .. 1.0 fully closed. Returns a result dict."""
+#: Finger names for `set_hand(fingers=...)`, in `hands.SHAPES` channel order
+#: (BrainCo: Thumb, Thumb_aux, Index, Middle, Ring, Pinky).
+FINGERS = ("thumb", "thumb_rotation", "index", "middle", "ring", "pinky")
+
+_NO_SERVER = (
+    "brainco_hand_server not running: no hand state from {sides} in the last second, so "
+    "nothing moved that hand. It is started by hand after a reboot; start it, then retry."
+)
+
+
+async def run_set(
+    side: Side,
+    closure: float,
+    ctx: Any | None = None,
+    shape: str | None = None,
+    fingers: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Set hand closure: 0.0 fully open .. 1.0 fully closed, or a named `hands.SHAPES` grasp
+    (which then overrides `closure`). `fingers` overrides single fingers on top of that base.
+    Returns a result dict; a bad finger name or value moves nothing."""
+    if shape is not None and shape not in hands.SHAPES:
+        return {"status": "failed", "error": f"unknown_shape_{shape}", "shapes": sorted(hands.SHAPES)}
     closure = max(0.0, min(1.0, float(closure)))
+    closures = hands.SHAPES[shape] if shape is not None else None
+    if fingers:
+        unknown = sorted(set(fingers) - set(FINGERS))
+        if unknown:
+            return {"status": "failed", "error": "unknown_finger", "unknown": unknown, "fingers": list(FINGERS)}
+        out = sorted(n for n, v in fingers.items() if not 0.0 <= float(v) <= 1.0)
+        if out:
+            return {"status": "failed", "error": "finger_closure_out_of_range", "out_of_range": out}
+        base = closures if closures is not None else (closure,) * len(FINGERS)
+        closures = tuple(float(fingers.get(n, b)) for n, b in zip(FINGERS, base, strict=True))
+    if closures is not None:
+        closure = max(closures)
     requested = _requested_sides(side)
 
-    log.info("set_hand.called", side=side, closure=closure, sim_mode=SIM_MODE)
+    log.info(
+        "set_hand.called", side=side, closure=closure, shape=shape, fingers=fingers, sim_mode=SIM_MODE
+    )
 
     if SIM_MODE == "stub":
         return {
             "status": "ok",
             "side": side,
             "closure": closure,
+            "shape": shape,
             "driver": "stub",
             "stub": True,
         }
@@ -77,26 +112,39 @@ async def run_set(side: Side, closure: float, ctx: Any | None = None) -> dict[st
             "driver": driver.name,
         }
 
-    driven = tuple(s for s in requested if s in driver.sides)
+    configured = tuple(s for s in requested if s in driver.sides)
     skipped = tuple(s for s in requested if s not in driver.sides)
+    # A publish with no hand server is a silent no-op that read as ok (2026-11-12).
+    silent = [s for s in configured if not await asyncio.to_thread(driver.server_heard, s)]
+    driven = tuple(s for s in configured if s not in silent)
     for s in driven:
         # DDS publish — blocking, so off the event loop like every other write.
-        await asyncio.to_thread(driver.send, s, closure)
+        if closures is not None:
+            await asyncio.to_thread(driver.send_shape, s, closures)
+        else:
+            await asyncio.to_thread(driver.send, s, closure)
 
     result: dict[str, Any] = {
         "status": "ok" if driven else "unavailable",
         "side": side,
         "closure": closure,
+        "shape": shape,
         "driver": driver.name,
         "driven_sides": list(driven),
         "stub": False,
     }
+    if closures is not None:
+        result["fingers"] = dict(zip(FINGERS, closures, strict=True))
     if skipped:
         result["skipped_sides"] = list(skipped)
         result["message"] = (
             f"{', '.join(skipped)} not driven — not in TELEOP_HAND_SIDES "
             f"(configured: {', '.join(driver.sides)})."
         )
+    if silent:
+        result["silent_sides"] = list(silent)
+        no_server = _NO_SERVER.format(sides=", ".join(silent))
+        result["message"] = f"{result['message']} {no_server}" if skipped else no_server
     if driven and closure > 0.0:
         result["warning"] = (
             "This hand has no firmware dead-man: it stays gripped until "
@@ -128,10 +176,17 @@ async def run_open(ctx: Any | None = None) -> dict[str, Any]:
             "driver": driver.name,
         }
 
+    # Always sent (opening is the safe direction); only the report depends on who answered.
     await asyncio.to_thread(driver.relax)
-    return {
-        "status": "ok",
+    silent = [s for s in driver.sides if not await asyncio.to_thread(driver.server_heard, s)]
+    opened = [s for s in driver.sides if s not in silent]
+    result: dict[str, Any] = {
+        "status": "ok" if opened else "unavailable",
         "driver": driver.name,
-        "opened_sides": list(driver.sides),
+        "opened_sides": opened,
         "stub": False,
     }
+    if silent:
+        result["silent_sides"] = silent
+        result["message"] = _NO_SERVER.format(sides=", ".join(silent))
+    return result

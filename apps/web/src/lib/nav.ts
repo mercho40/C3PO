@@ -15,6 +15,7 @@ import {
   Map,
   MessageSquare,
   Mic,
+  ScanFace,
   Settings,
   Video,
 } from "@lucide/svelte";
@@ -23,6 +24,8 @@ export type NavItem = {
   title: string;
   href: string;
   icon: Component;
+  /** Listed only for admins; back refuses everyone else anyway. */
+  adminOnly?: true;
 };
 
 export type NavGroup = {
@@ -46,10 +49,19 @@ export const NAV: NavGroup[] = [
     label: "Sistema",
     items: [
       { title: "Salud", href: "/health", icon: HeartPulse },
+      { title: "Caras", href: "/faces", icon: ScanFace, adminOnly: true },
       { title: "Configuración", href: "/settings", icon: Settings },
     ],
   },
 ];
+
+/** The sidebar for this session: admin-only pages hidden from operators. */
+export function navFor(isAdmin: boolean): NavGroup[] {
+  return NAV.map((g) => ({
+    ...g,
+    items: g.items.filter((i) => isAdmin || !i.adminOnly),
+  }));
+}
 
 const ALL: NavItem[] = NAV.flatMap((g) => g.items);
 

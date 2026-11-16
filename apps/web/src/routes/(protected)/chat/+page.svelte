@@ -689,7 +689,21 @@
                           <Reasoning.Content content={part.text} />
                         </Reasoning.Root>
                       {:else if isToolUIPart(part)}
-                        <ToolCard {part} {live} />
+                        <ToolCard
+                          {part}
+                          {live}
+                          onconfirmed={(message: string) =>
+                            // Confirmar already ran it; the agent reads the
+                            // outcome and continues. A voice transcript is
+                            // read-only: back tells its realtime session.
+                            isVoice
+                              ? toast.info(
+                                  "Se ejecutó. Si la sesión de voz sigue activa, el agente ya lo sabe.",
+                                )
+                              : send(message).catch((e: Error) =>
+                                  toast.error(e.message),
+                                )}
+                        />
                       {/if}
                     {/each}
                   </Message.Content>

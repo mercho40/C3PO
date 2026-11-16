@@ -108,16 +108,16 @@ export async function appendMessage(opts: {
   // `generateMessageId` (see routes/agent.ts).
   const id = opts.id || crypto.randomUUID();
 
-  const write = (messageId: string) =>
-    db
+  const write = (tx: Pick<typeof db, "insert">, messageId: string) =>
+    tx
       .insert(chatMessage)
       .values({
         id: messageId,
         chatId: opts.chatId,
         role: opts.role,
         parts: opts.parts,
-        // Computed in the INSERT so concurrent appends can't both read the same
-        // max and collide; the unique (chat_id, seq) index is the backstop.
+        // Read under the chat row's lock (below), so two appends never share
+        // a max; the unique (chat_id, seq) index is the backstop.
         seq: sql`(select coalesce(max(${chatMessage.seq}), 0) + 1 from ${chatMessage} where ${chatMessage.chatId} = ${opts.chatId})`,
       })
       .onConflictDoUpdate({
@@ -133,20 +133,24 @@ export async function appendMessage(opts: {
       })
       .returning({ id: chatMessage.id });
 
-  // No row back means the id exists but belongs to another chat, so `setWhere`
-  // held the update back. Keep the message; give it an id of our own.
-  let finalId = id;
-  if ((await write(id)).length === 0) {
-    finalId = crypto.randomUUID();
-    await write(finalId);
-  }
+  // The chat row's lock first, held to commit: a concurrent append to the same
+  // chat waits, then its max(seq) sees this row. Without it both read the same
+  // max, and all but one failed on the (chat_id, seq) index.
+  return db.transaction(async (tx) => {
+    await tx
+      .update(chat)
+      .set({ updatedAt: new Date() })
+      .where(eq(chat.id, opts.chatId));
 
-  await db
-    .update(chat)
-    .set({ updatedAt: new Date() })
-    .where(eq(chat.id, opts.chatId));
-
-  return finalId;
+    // No row back means the id exists but belongs to another chat, so `setWhere`
+    // held the update back. Keep the message; give it an id of our own.
+    let finalId = id;
+    if ((await write(tx, id)).length === 0) {
+      finalId = crypto.randomUUID();
+      await write(tx, finalId);
+    }
+    return finalId;
+  });
 }
 
 /**
@@ -217,6 +221,13 @@ export async function logToolCall(opts: {
   status: "ok" | "error";
   error?: string | null;
   durationMs?: number;
+  /**
+   * When the command was sent (epoch ms). The row is written when the call
+   * SETTLES, so without this `created_at` is the finish time: a 1 s walk was
+   * stamped 1 s late, and a press and its stop finished — and sorted — in the
+   * same millisecond, which on 2026-10-15 read as duplicate commands.
+   */
+  startedAt?: number;
 }): Promise<void> {
   const bodyFailure = opts.status === "ok" ? resultFailure(opts.result) : null;
   const chatId = opts.chatId ?? null;
@@ -238,6 +249,10 @@ export async function logToolCall(opts: {
       status: bodyFailure ? "error" : opts.status,
       error: opts.error ?? bodyFailure,
       durationMs: opts.durationMs ?? null,
+      // Always from JS: the column has no time zone, a Date is written as UTC
+      // and the default now() as the DB's local time, so mixing them skewed
+      // agent rows 3 h from the confirms they caused.
+      createdAt: new Date(opts.startedAt ?? Date.now()),
     });
   } catch (err) {
     // A failed audit write must not abort a robot command that already ran.

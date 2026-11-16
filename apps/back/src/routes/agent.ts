@@ -6,11 +6,17 @@
  * (`toUIMessageStreamResponse()`): the model's tokens, its tool calls (skills
  * dispatched to the bridge), and tool results arrive incrementally.
  *
+ * Only the LAST message is taken from the client, reduced to user text; the
+ * rest of the history comes from the database (see `trustedHistory`).
+ *
  * The turn is also persisted. `id` is the chat id — generated client-side so
  * the first streamed turn and the row it writes to agree without a round-trip.
  * The incoming user message is saved before streaming starts (so an aborted or
  * failed turn still leaves a record of what was asked), and the assistant
  * message is saved from `onEnd` once the stream completes.
+ *
+ * With HEADSET_SPEAK_REPLY=1, a headset (voice-mode) turn that completes is
+ * also said by the robot (B8), under its own agent turn so PARAR cuts it.
  *
  * This is the backend taking over as the conversation host (docs/ARCHITECTURE.md §3) — the
  * same skill registry the external MCP path uses, now driven server-side.
@@ -24,8 +30,20 @@ import { Elysia, t } from "elysia";
 import { createIdGenerator, type UIMessage } from "ai";
 
 import { runAgentChat } from "#back/agent/runtime.js";
-import { appendMessage, ensureChat, titleFromParts } from "#back/db/chats.js";
+import { beginTurn } from "#back/agent/turns.js";
+import { auditedCall } from "#back/bridge/audited.js";
+import {
+  appendMessage,
+  ensureChat,
+  getChatWithMessages,
+  titleFromParts,
+} from "#back/db/chats.js";
 import { betterAuth } from "#back/lib/auth-plugin.js";
+import {
+  headsetSpeaksReplies,
+  shouldSpeak,
+  speakReply,
+} from "#back/voice/conversation.js";
 
 /**
  * Ids for the assistant messages we persist.
@@ -60,51 +78,131 @@ function messageIdsFor(replaceId: string | undefined): () => string {
   };
 }
 
+type Incoming = { id: string; role: string; parts: unknown[] };
+
+/**
+ * What a client may author: user text. Anything else in a message (tool parts,
+ * files, provider metadata) is dropped, and a non-user role yields null.
+ */
+export function userText(m: Incoming | undefined): UIMessage | null {
+  if (m?.role !== "user") return null;
+  const parts = m.parts.flatMap((p) =>
+    typeof p === "object" &&
+    p !== null &&
+    (p as { type?: unknown }).type === "text" &&
+    typeof (p as { text?: unknown }).text === "string"
+      ? [{ type: "text" as const, text: (p as { text: string }).text }]
+      : [],
+  );
+  return parts.length > 0 ? { id: m.id, role: "user", parts } : null;
+}
+
+/**
+ * The history a turn runs on. A client could otherwise forge assistant turns
+ * or tool results (a "confirmed" result, a reply steering the model), so:
+ * with a persisted chat it is the database's rows — the server wrote every
+ * assistant row, and user rows are re-reduced to text because older rows were
+ * stored verbatim from the client; without one, only the client's user text.
+ * `replaceId` drops the failed reply a retry is about to overwrite, as the
+ * client's `regenerate()` does.
+ */
+export function trustedHistory(
+  client: Incoming[],
+  stored: Incoming[] | null,
+  replaceId?: string,
+): UIMessage[] {
+  if (!stored) return client.flatMap((m) => userText(m) ?? []);
+  return stored.flatMap((m) => {
+    if (m.id === replaceId) return [];
+    if (m.role === "user") return userText(m) ?? [];
+    return [{ id: m.id, role: m.role, parts: m.parts } as UIMessage];
+  });
+}
+
+/** Longest a headset turn plus its spoken reply may stay registered. */
+const SPEECH_TURN_MAX_MS = 10 * 60_000;
+
 export const agentRoutes = new Elysia({ prefix: "/agent" })
   .use(betterAuth)
   .post(
     "/",
     async ({ body, user, session, status, request }) => {
-      const messages = body.messages as UIMessage[];
-      const latest = messages[messages.length - 1];
+      // 1.4: driving the robot through a model is an admin's job, like /invoke.
+      if (user.role !== "admin")
+        return status(403, { error: "admin_required" });
+      // The one thing taken from the client's history: its new user message.
+      const latest = userText(body.messages[body.messages.length - 1]);
+      if (!latest) return status(400, { error: "last_message_not_user_text" });
 
       // Persistence is best-effort around the stream: a database problem should
       // degrade this to an unsaved conversation, not refuse to drive the robot.
+      // On a failure the history is the client's user text only (`stored`
+      // null), never its assistant or tool parts; an unverified owner (the
+      // ensureChat itself failed) also leaves `chatId` null, so nothing is
+      // written into a chat that may not be theirs.
       let chatId: string | null = null;
-      if (body.id && latest) {
-        const owned = await ensureChat({
-          id: body.id,
-          userId: user.id,
-          // Better Auth's organization plugin tracks the active org on the
-          // session, not the user — a user can belong to several.
-          organizationId: session.activeOrganizationId ?? null,
-          title: titleFromParts(latest.parts ?? []),
-        });
-        if (!owned) return status(403);
-        // Voice transcripts are deliberately read-only in typed chat. Without
-        // this server-side check a caller could bypass the UI and merge channels.
-        if (owned.channel !== "text") return status(409);
-        chatId = owned.id;
+      let stored: Incoming[] | null = null;
+      if (body.id) {
+        try {
+          const owned = await ensureChat({
+            id: body.id,
+            userId: user.id,
+            // Better Auth's organization plugin tracks the active org on the
+            // session, not the user — a user can belong to several.
+            organizationId: session.activeOrganizationId ?? null,
+            title: titleFromParts(latest.parts),
+          });
+          if (!owned) return status(403);
+          // Voice transcripts are deliberately read-only in typed chat. Without
+          // this server-side check a caller could bypass the UI and merge channels.
+          if (owned.channel !== "text") return status(409);
+          chatId = owned.id;
 
-        if (latest.role === "user") {
           await appendMessage({
             id: latest.id,
             chatId,
             role: "user",
-            parts: latest.parts ?? [],
+            parts: latest.parts,
           });
+          // Read after the append, so it ends in the message just saved.
+          stored = (await getChatWithMessages(chatId, user.id))?.messages ?? [];
+        } catch (err) {
+          console.warn("[agent] chat not saved, turn runs on user text", err);
         }
       }
+      const messages = trustedHistory(
+        body.messages,
+        stored,
+        chatId ? body.replaceMessageId : undefined,
+      );
+
+      const mode = body.mode === "voice" ? "voice" : "operator";
+      const speakReplies = headsetSpeaksReplies();
+      // The spoken reply's own turn, registered now rather than when speech
+      // starts: a PARAR between the model's last token and the first `say`
+      // still aborts it, and stop-watch keeps one baseline across both, so a
+      // stop latched on the bridge in that gap is not read as the new normal.
+      const speech = mode === "voice" && speakReplies ? beginTurn() : null;
+      // Backstop: `onEnd` releases it, but a stream nobody reads might never
+      // end, and a turn left registered keeps stop-watch polling for good.
+      if (speech) setTimeout(speech.done, SPEECH_TURN_MAX_MS).unref?.();
 
       // `userId` attributes the audit rows even when the chat is not persisted
       // (no chat id to look the owner up from).
-      const result = await runAgentChat(messages, {
-        chatId,
-        userId: user.id,
-        // Aborts when the browser goes away (Stop, or leaving /chat). `onEnd`
-        // below still persists what the aborted turn produced.
-        abortSignal: request.signal,
-      });
+      let result: Awaited<ReturnType<typeof runAgentChat>>;
+      try {
+        result = await runAgentChat(messages, {
+          chatId,
+          userId: user.id,
+          mode,
+          // Aborts when the browser goes away (Stop, or leaving /chat). `onEnd`
+          // below still persists what the aborted turn produced.
+          abortSignal: request.signal,
+        });
+      } catch (err) {
+        speech?.done();
+        throw err;
+      }
 
       return result.toUIMessageStreamResponse({
         originalMessages: messages,
@@ -114,7 +212,26 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
           chatId ? body.replaceMessageId : undefined,
         ),
         // `onFinish` is the deprecated spelling of this callback in ai@7.
-        onEnd: async ({ responseMessage, isAborted }) => {
+        onEnd: async ({ responseMessage, isAborted, outcome }) => {
+          if (speech) {
+            if (shouldSpeak({ enabled: speakReplies, mode, outcome })) {
+              // Not awaited: persistence and the HTTP stream do not wait on
+              // the speaker. wait_for_completion, so chunk n+1 does not cut
+              // chunk n off.
+              void speakReply(
+                responseMessage.parts ?? [],
+                (text) =>
+                  auditedCall(
+                    "say",
+                    { text, language: "spanish", wait_for_completion: true },
+                    { userId: user.id, source: "voice" },
+                  ),
+                speech.signal,
+              )
+                .catch((e) => console.warn("[agent] voice reply not spoken", e))
+                .finally(speech.done);
+            } else speech.done();
+          }
           // An aborted turn still persists what was generated — a half-finished
           // sequence of tool calls is exactly the history an operator needs.
           if (!chatId) return;
@@ -123,7 +240,9 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
             chatId,
             role: "assistant",
             parts: responseMessage.parts ?? [],
-          });
+          }).catch((err) =>
+            console.warn("[agent] reply not saved", { chatId }, err),
+          );
           if (isAborted) console.warn("agent turn aborted", { chatId });
         },
         // Surface the real cause (e.g. missing AGENT_API_KEY, an unreachable
@@ -135,14 +254,30 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
     {
       auth: true,
       // The chat client posts { id, messages, trigger, ... }; we need id and
-      // messages, and TypeBox lets the extra fields through.
+      // messages, and TypeBox lets the extra fields through. Only the shape is
+      // checked here: what is trusted is `trustedHistory`'s call.
       body: t.Object({
         id: t.Optional(t.String()),
-        messages: t.Array(t.Any()),
+        messages: t.Array(
+          t.Object({
+            id: t.String({ minLength: 1, maxLength: 64 }),
+            role: t.Union([
+              t.Literal("user"),
+              t.Literal("assistant"),
+              t.Literal("system"),
+            ]),
+            parts: t.Array(t.Unknown()),
+          }),
+          { minItems: 1 },
+        ),
         // On a retry: the failed assistant message to overwrite (see
         // `messageIdsFor`). A foreign id is harmless — `appendMessage` refuses
         // to update another chat's row and writes a fresh one instead.
         replaceMessageId: t.Optional(t.String({ maxLength: 64 })),
+        // The headset's push-to-talk sends "voice": transcribed speech gets the
+        // voice-mode toolset (no high-danger T1, no damp). A client can only ask
+        // for the stricter mode; anything else stays "operator".
+        mode: t.Optional(t.String({ maxLength: 16 })),
       }),
       detail: {
         summary:

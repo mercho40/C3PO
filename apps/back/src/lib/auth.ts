@@ -28,23 +28,40 @@ export const auth = betterAuth({
     provider: "pg",
   }),
   plugins: [admin(), organization()],
+  // Sign-up is closed: every account is made at a terminal with
+  // scripts/create-user.ts. A model with a robot behind it should not be one
+  // self-registration away from anyone on the network. Better Auth checks the
+  // flag server-side (sign-up.mjs), so no client can opt back in; admin
+  // createUser called from the server is not affected.
   emailAndPassword: {
     enabled: true,
+    disableSignUp: true,
   },
   baseURL: env.BETTER_AUTH_URL,
+  // disableSignUp on each provider too: without it an OAuth callback for an
+  // unknown address creates the user implicitly, which is sign-up by another
+  // door (callback.mjs reads `provider.options.disableSignUp`). Existing
+  // accounts still sign in with their linked provider.
   socialProviders: {
     github: {
       enabled: enabledSocialProviders.includes("github"),
+      disableSignUp: true,
       clientId: env.GITHUB_CLIENT_ID,
       clientSecret: env.GITHUB_CLIENT_SECRET,
     },
     google: {
       enabled: enabledSocialProviders.includes("google"),
+      disableSignUp: true,
       clientId: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
     },
   },
   trustedOrigins: [env.WEB_URL],
+  // Better Auth only turns this on under NODE_ENV=production, which nothing
+  // here sets. Keyed on the socket address (auth-plugin.ts): the browser signs
+  // in straight to back. /get-session is exempt: the console's server hooks
+  // ask it for every operator from one address, and a token is not guessable.
+  rateLimit: { enabled: true, customRules: { "/get-session": false } },
   // Joined session reads — one query instead of N on getSession.
   // Lives under advanced.database; better-auth 1.7 dropped `experimental.joins`.
   advanced: { database: { joins: true } },

@@ -15,7 +15,9 @@ staleness maths can all be exercised with a tuple of bytes.
 from __future__ import annotations
 
 import time
+from collections import namedtuple
 
+import pytest
 from c3po_vision import stream
 
 
@@ -168,3 +170,218 @@ def test_offer_ignores_a_missing_frame():
     fs.running = True
     fs.offer(None)
     assert fs.status()["frames"] == 0
+
+
+# --- the stream that reported healthy and served nothing --------------------
+#
+# Observed on the robot, 2026-08-29: `clients` climbed 0 -> 12 -> 14 over an
+# evening of page reloads and never came down. At 14 the endpoint accepted
+# connections and delivered ZERO BYTES IN FIVE SECONDS while `/status` still
+# said `live: true`, so the headset showed SIN IMAGEN while every check
+# available said the camera was fine.
+#
+# The count was never wrong. A browser that navigates away without closing
+# leaves a HALF-OPEN socket, and a write to one of those does not raise — it
+# blocks until the OS gives up minutes later. So the handler's `finally` never
+# ran. On a container pinned to one core those parked threads also contend
+# with the JPEG encoder.
+
+
+def test_a_client_socket_gets_a_timeout():
+    """The one line that stops a vanished browser parking a thread forever."""
+    assert stream.CLIENT_TIMEOUT_S > 0
+    # Long enough that a live loopback peer is never cut off mid-frame, short
+    # enough to beat the kernel's default by minutes.
+    assert 1.0 <= stream.CLIENT_TIMEOUT_S <= 30.0
+
+
+def test_socket_timeout_is_treated_as_a_closed_stream_not_an_error():
+    """`socket.timeout` is what the new timeout actually raises.
+
+    Catching only BrokenPipeError/ConnectionResetError was correct for a peer
+    that closes politely and useless for one that vanishes — and once the
+    timeout exists, an uncaught one would turn the ordinary end of a stream
+    into a traceback.
+    """
+    import inspect
+
+    source = inspect.getsource(stream._handler_class)
+    assert "socket.timeout" in source
+
+
+def test_there_is_a_cap_and_it_is_small():
+    # This feed has one legitimate consumer at a time — the console, or the
+    # headset. A cap turns "it mysteriously stopped serving" into a 503 that
+    # names the reason.
+    assert 1 <= stream.MAX_STREAM_CLIENTS <= 8
+
+
+def test_status_says_when_it_is_saturated():
+    """`clients` alone did not help: nobody knows what number is too many."""
+    latest = stream._Latest()
+    st = latest.status(time.time())
+    assert st["clients_max"] == stream.MAX_STREAM_CLIENTS
+    assert st["at_capacity"] is False
+
+    latest.clients = stream.MAX_STREAM_CLIENTS
+    st = latest.status(time.time())
+    assert st["at_capacity"] is True
+
+
+def test_at_capacity_is_reported_even_while_the_feed_is_live():
+    """The exact 2026-08-29 shape: live frames, and nobody can be served.
+
+    A status that says `live: true` and nothing else is what sent us looking
+    at the renderer, the tunnel and the CORS headers for an hour.
+    """
+    latest = stream._Latest()
+    latest.offer(stream.RawFrame(width=2, height=1, rgb=b"\xff\x00\x00\x00\xff\x00"), time.time())
+    latest.clients = stream.MAX_STREAM_CLIENTS
+
+    st = latest.status(time.time())
+    assert st["live"] is True
+    assert st["at_capacity"] is True
+
+
+# --- the slot must come back even when the headers never go out --------------
+
+
+def _detached_handler(latest):
+    """A Handler with no socket. `__init__` would run a whole request cycle."""
+    handler_cls = stream._handler_class(latest, quality=60, scale=1.0)
+    return handler_cls.__new__(handler_cls)
+
+
+def test_a_client_that_vanishes_before_the_headers_does_not_leak_its_slot():
+    """The window between claiming the slot and writing the first byte.
+
+    `_headers` ends in `end_headers()`, which flushes to the socket — so a
+    client that closed the tab in that window raises BrokenPipeError out of it.
+    While that call sat OUTSIDE the try/finally, the exception escaped before
+    the decrement was ever reached and the slot was taken permanently. Four of
+    those and this endpoint answers 503 forever while `/status` reports four
+    clients that do not exist: "reports healthy, serves nothing" again, reached
+    from the other side.
+    """
+    latest = stream._Latest()
+    handler = _detached_handler(latest)
+
+    def explode(*_args, **_kwargs):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    handler._headers = explode  # type: ignore[method-assign]
+
+    try:
+        handler._stream()
+    except BrokenPipeError:
+        # Escaping is acceptable — BaseHTTPRequestHandler's caller deals with
+        # it. Leaking the slot on the way out is not.
+        pass
+
+    assert latest.clients == 0, "the slot was claimed and never released"
+
+
+def test_the_refused_client_never_took_a_slot_to_begin_with():
+    """The 503 path returns before the try, so it must not decrement either.
+
+    Symmetry matters here: an over-eager `finally` would push `clients`
+    negative on every refusal, and a negative count reads as free capacity —
+    turning the cap into the opposite of a cap.
+    """
+    latest = stream._Latest()
+    latest.clients = stream.MAX_STREAM_CLIENTS
+    handler = _detached_handler(latest)
+
+    errors = []
+    handler.send_error = lambda code, msg=None: errors.append(code)  # type: ignore[method-assign]
+    handler._headers = lambda *a, **k: pytest.fail("headers sent to a refused client")
+
+    handler._stream()
+
+    assert errors == [503]
+    assert latest.clients == stream.MAX_STREAM_CLIENTS
+
+
+# -- /depth_points: the bridge's face-liveness read -----------------------------
+
+INTR = namedtuple("Intr", "fx fy cx cy")(600.0, 610.0, 20.0, 18.0)
+
+
+def _depth(width: int, height: int, mm: int) -> list:
+    return [[mm] * width for _ in range(height)]
+
+
+def test_depth_at_points_takes_each_patch_median_and_skips_holes():
+    """A nose 3 cm proud of a cheek: each point is its own patch's median, zeros are holes."""
+    depth = _depth(40, 40, 800)
+    for v in range(8, 13):
+        for u in range(8, 13):
+            depth[v][u] = 770
+    depth[30][30] = 0  # one hole in a 3x3 patch still leaves it valid
+    for v in range(4):
+        for u in range(4):
+            depth[v][u] = 0  # a patch mostly holes is no reading
+    got = stream.depth_at_points(depth, [(10, 10), (30, 30), (1, 1), (50, 5)], 1, 0.001)
+    assert got == [0.77, 0.8, None, None]
+
+
+def test_depth_at_answers_for_the_frame_asked_for_or_not_at_all():
+    """Colour and depth must be one moment: a gone stamp is None, never the newest."""
+    latest = stream._Latest()
+    for i in range(stream.DEPTH_KEEP + 1):
+        latest.offer(stream.test_pattern(4, 2, i), 100.0 + i, _depth(4, 2, 800 + i), INTR)
+    assert latest.depth_at(101.0)[1][0][0] == 801
+    assert latest.depth_at(100.0) is None  # pushed out of the ring
+    assert latest.depth_at(None)[0] == 100.0 + stream.DEPTH_KEEP
+    assert latest.depth_at(99.0) is None
+
+
+@pytest.fixture
+def depth_server():
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    latest = stream._Latest()
+    depth = _depth(40, 40, 0)
+    for v in range(20, 40):
+        for u in range(20, 40):
+            depth[v][u] = 1000
+    latest.offer(stream.test_pattern(40, 40, 0), 5.25, depth, INTR)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), stream._handler_class(latest, 75, 0.5))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/depth_points?"
+    server.shutdown()
+    server.server_close()
+
+
+def _get(url: str) -> tuple:
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+
+
+def test_depth_points_endpoint_uses_the_frame_pixels_and_its_stamp(depth_server):
+    """Over HTTP on loopback: points and r are in /frame.jpg pixels (scale undone), the
+    intrinsics come back in them too, and the frame's stamp picks the depth."""
+    # (15, 15) at scale 0.5 is depth pixel (30, 30): 1 m; (2, 2) is (4, 4): a hole.
+    code, body = _get(depth_server + "pts=15,15;2,2&r=1&stamp=5.25")
+    assert code == 200 and body["stamp"] == 5.25
+    assert (body["fx"], body["fy"], body["cx"], body["cy"]) == (300.0, 305.0, 10.0, 9.0)
+    assert body["depth_m"] == [1.0, None]
+    assert _get(depth_server + "pts=15,15&stamp=4.0")[0] == 503
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["pts=a,1", "pts=1", "pts=nan,1", "pts=inf,1", "pts=1,1&r=nan", "pts=1,1&stamp=nan",
+     "pts=1,1&r=-1", "pts=" + ";".join(["1,1"] * 9), "r=1"],
+)
+def test_depth_points_refuses_what_it_cannot_measure_with_a_400(depth_server, query):
+    """Non-finite numbers used to escape the handler; now every bad query is a 400."""
+    assert _get(depth_server + query)[0] == 400

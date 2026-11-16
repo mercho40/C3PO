@@ -466,12 +466,12 @@ describe("classifyMap", () => {
         at: NOW,
         ms: 5,
         status: 503,
-        body: { error: "no costmap received", hint: "perception_up nav2" },
+        body: { error: "no costmap received", hint: "c3po perception up nav2" },
       },
       NOW,
     );
     expect(r.tone).toBe("warn");
-    expect(r.bridgeText).toBe("perception_up nav2");
+    expect(r.bridgeText).toBe("c3po perception up nav2");
   });
 
   test("the stale header is honoured", () => {

@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyToolPart,
   INTERRUPTED_NOTE,
+  needsConfirmation,
   toolName,
 } from "../src/lib/chat/tool-part";
 import {
@@ -43,6 +44,80 @@ const tool = (state: string, extra: Record<string, unknown> = {}) => ({
   type: "tool-walk_to",
   state,
   ...extra,
+});
+
+describe("safety refusals read as the gate working, not as errors", () => {
+  const card = (error: string) =>
+    classifyToolPart(
+      { type: "tool-reach", state: "output-available", output: { error } },
+      { live: false },
+    );
+  test("waiting for a confirmation is amber and says who acts", () => {
+    const d = card(
+      "tool_error: refused: reach is a T2 tool and needs an operator's confirmation first.",
+    );
+    expect(d.label).toBe("Requiere confirmación");
+    expect(d.tone).toBe("warn");
+  });
+  test("a standing PARAR is amber and points at Reanudar", () => {
+    const d = card(
+      "tool_error: refused: PARAR (stop_everything) is standing, so turn does not run.",
+    );
+    expect(d.label).toBe("Detenido (PARAR)");
+    expect(d.note).toContain("Reanudar");
+  });
+  test("a face-gate refusal is amber with the Spanish hint", () => {
+    const d = card(
+      "tool_error: refused (operator_face_not_live): pick needs the enrolled operator's live face",
+    );
+    expect(d.label).toBe("Rechazado");
+    expect(d.tone).toBe("warn");
+    expect(d.note).toContain("foto");
+  });
+  test("any other bridge refusal is still an error", () => {
+    expect(card("tool_error: refused: a person is 0.40 m away").tone).toBe(
+      "error",
+    );
+  });
+});
+
+describe("needsConfirmation", () => {
+  const refused = {
+    error:
+      "tool_error: refused: move_arm is a T2 tool and needs an operator's confirmation first. ...",
+  };
+  test("a T2 refusal for want of confirmation offers the button", () => {
+    const part = {
+      type: "tool-move_arm",
+      state: "output-available",
+      output: refused,
+    };
+    expect(needsConfirmation(part)).toBe("move_arm");
+  });
+  test("other refusals and results do not", () => {
+    const person = {
+      error: "tool_error: refused: a person is 0.40 m away, inside arm's reach",
+    };
+    expect(
+      needsConfirmation({
+        type: "tool-move_arm",
+        state: "output-available",
+        output: person,
+      }),
+    ).toBeNull();
+    expect(
+      needsConfirmation({
+        type: "tool-move_arm",
+        state: "input-available",
+        output: refused,
+      }),
+    ).toBeNull();
+    expect(
+      needsConfirmation(
+        tool("output-available", { output: { status: "completed" } }),
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("classifyToolPart — liveness", () => {
@@ -360,6 +435,14 @@ describe("describeChatError", () => {
 
   test("403 is someone else's chat", () => {
     expect(describeChatError("Forbidden", 403).hint).toContain("otra cuenta");
+  });
+
+  test("403 admin_required says an admin account is needed, not another chat", () => {
+    const v = describeChatError('{"error":"admin_required"}', 403);
+    expect(v.hint).toBe(
+      "Se requiere una cuenta admin para hablar con el robot.",
+    );
+    expect(v.suggestNewChat).toBe(false);
   });
 
   test("a mid-stream gateway failure is recognised from its text", () => {

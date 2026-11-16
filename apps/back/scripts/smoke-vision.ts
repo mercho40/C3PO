@@ -5,7 +5,9 @@
  *   bun apps/back/scripts/smoke-vision.ts [frame.jpg]
  *
  * With no argument it fetches the robot's newest frame from the bridge
- * (BRIDGE_URL's host, `/camera/frame.jpg` — open the tunnel first). The check
+ * (BRIDGE_URL's host, `/camera/cloud_frame.jpg`, faces blurred like `look`'s:
+ * a cloud model never gets the sharp `/camera/frame.jpg`. Open the tunnel
+ * first; a 503 `face_blur_failed` means the bridge could not blur it). The check
  * that matters is reading the reply against the picture yourself: a model that
  * ignores image parts still answers fluently, it just describes nothing that is
  * there. Sends through the installed AI SDK, not curl, because what the SDK
@@ -40,10 +42,12 @@ if (path) {
   image = new Uint8Array(await Bun.file(path).arrayBuffer());
 } else {
   const bridge = new URL(process.env.BRIDGE_URL ?? "http://127.0.0.1:8001/mcp");
-  bridge.pathname = "/camera/frame.jpg";
+  bridge.pathname = "/camera/cloud_frame.jpg";
   const res = await fetch(bridge);
   if (!res.ok) {
-    console.error(`no frame from ${bridge} (HTTP ${res.status})`);
+    console.error(
+      `no frame from ${bridge} (HTTP ${res.status}): ${await res.text()}`,
+    );
     process.exit(1);
   }
   image = new Uint8Array(await res.arrayBuffer());

@@ -26,10 +26,12 @@
   import DetailsNote from "./details-note.svelte";
   import { formatAge } from "#lib/robot/format.js";
   import {
+    PRESETS as PRESET_SKILLS,
     gestureCaveat,
     moreGestures,
     needsHoldConfirm,
     realBadge,
+    type PresetName,
     type CatalogueHealth,
     type PostureGate,
   } from "#lib/robot/vr-logic.js";
@@ -58,18 +60,17 @@
     gestureTool: boolean | null;
   } = $props();
 
-  // Presets: one-shot gestures, each its own bridge tool. `dance` is new
-  // (apps/bridge/src/bridge/skills/dance.py) and, like walk_velocity, is not yet
-  // live-tested — the catalogue's `works.real` flag drives the badge rather than
-  // hiding the button.
-  const PRESETS = [
-    { name: "wave", label: "Saludar", icon: Hand },
-    { name: "dance", label: "Bailar", icon: Music },
-    { name: "shake_hand", label: "Dar la mano", icon: Handshake },
-    { name: "hug", label: "Abrazar", icon: HeartHandshake },
-    { name: "clap", label: "Aplaudir", icon: PartyPopper },
-    { name: "release_arm", label: "Relajar brazos", icon: RotateCcw },
-  ] as const;
+  // The list itself lives in vr-logic, shared with the headset's menu; only
+  // the icons are this panel's.
+  const ICONS: Record<PresetName, typeof Hand> = {
+    wave: Hand,
+    dance: Music,
+    shake_hand: Handshake,
+    hug: HeartHandshake,
+    clap: PartyPopper,
+    release_arm: RotateCcw,
+  };
+  const PRESETS = PRESET_SKILLS.map((p) => ({ ...p, icon: ICONS[p.name] }));
 
   const more = $derived(
     moreGestures(

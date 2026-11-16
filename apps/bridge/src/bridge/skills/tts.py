@@ -153,12 +153,16 @@ def available() -> tuple[bool, str]:
     return True, ""
 
 
-def synthesize(text: str) -> bytes:
+def synthesize(text: str, *, deterministic: bool = False) -> bytes:
     """Spanish text -> 16 kHz mono 16-bit PCM, ready for PlayStream.
 
     `--output-raw` streams headerless PCM at the voice's native rate, so there is
     no WAV header to strip and no temp file to clean up. Piper's own rate is
     22 050; the resample is not optional.
+
+    `deterministic` zeroes Piper's sampling noise, so the same text gives the
+    same audio. For tests: with the noise on, the decode tests passed or failed
+    by draw ("detener" was heard in 7 of 15 syntheses).
     """
     ok, why = available()
     if not ok:
@@ -172,7 +176,13 @@ def synthesize(text: str) -> bytes:
         raise TtsUnavailable(f"piper vanished between the check and the call ({PIPER_BIN})")
 
     proc = subprocess.run(
-        [binary, "--model", PIPER_VOICE, "--output-raw"],
+        [
+            binary,
+            "--model",
+            PIPER_VOICE,
+            "--output-raw",
+            *(["--noise_scale", "0", "--noise_w", "0"] if deterministic else []),
+        ],
         input=text.encode("utf-8"),
         capture_output=True,
         timeout=SYNTH_TIMEOUT_S,

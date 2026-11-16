@@ -33,6 +33,19 @@ until someone checks.
 Coordinates are odometry, which drifts. Fine for "walk back to roughly there",
 not a survey mark. Durable global coordinates need SLAM/map localisation
 (D2/D3), at which point landmarks should be re-anchored to the map frame.
+
+A SECOND POSE, IN A FRAME NAV2 OWNS (Phase 3). The `*_world` pose above is the
+vendor's leg odometry, and Nav2 has never heard of that frame: its `odom` is
+FAST-LIO's, with a different origin. So when the nav container's goal relay is
+reporting, a landmark also records `nav_pose` — the robot in the relay's
+global frame, plus that frame's name and the relay session:
+
+  * `map`  — slam_toolbox localization was on. Survives reboots; that is the point.
+  * `odom` — FAST-LIO's frame, which re-origins whenever the nav container
+    restarts. Valid only in the session that saved it, and `nav_target` says so.
+
+`navigate_to_landmark` uses only `nav_pose`, never the vendor pose. The JSON
+file stays; the two poses are just two fields.
 """
 
 from __future__ import annotations
@@ -75,6 +88,9 @@ class Landmark:
     # Control-board `tick` when saved — identifies the odometry frame these
     # coordinates belong to. None when unknown (stub mode, or no lowstate yet).
     frame_tick: int | None = None
+    # {x, y, yaw, frame: "map"|"odom", session} from the nav relay, or None
+    # when the nav stack was not up at save time. See the module docstring.
+    nav_pose: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +101,7 @@ class Landmark:
             "saved_at": self.saved_at,
             "age_s": round(time.time() - self.saved_at, 1),
             "frame_tick": self.frame_tick,
+            "nav_pose": self.nav_pose,
         }
 
     @classmethod
@@ -97,6 +114,7 @@ class Landmark:
             saved_at=float(d.get("saved_at", time.time())),
             seq=int(d.get("seq", 0)),
             frame_tick=(int(d["frame_tick"]) if d.get("frame_tick") is not None else None),
+            nav_pose=d.get("nav_pose") if isinstance(d.get("nav_pose"), dict) else None,
         )
 
 
@@ -112,6 +130,43 @@ def frame_is_stale(saved_tick: int | None, current_tick: int | None) -> bool:
     if saved_tick is None or current_tick is None:
         return False
     return current_tick < saved_tick
+
+
+def nav_pose_from_status(status: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The robot's pose in Nav2's global frame, from a live relay heartbeat."""
+    if not status or not status.get("pose"):
+        return None
+    pose = status["pose"]
+    return {
+        "x": float(pose["x_m"]),
+        "y": float(pose["y_m"]),
+        "yaw": float(pose["yaw_rad"]),
+        "frame": str(status["global_frame"]),
+        "session": str(status["session"]),
+    }
+
+
+def nav_target(
+    landmark: Landmark, status: dict[str, Any] | None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """(nav_pose, None) if Nav2 can be sent there now, else (None, reason).
+
+    The refusals are the point. A `map` pose with localization off, or an
+    `odom` pose from a previous container session, names a place Nav2 would
+    resolve somewhere else entirely — and walk there confidently.
+    """
+    nav = landmark.nav_pose
+    if nav is None:
+        return None, "no_nav_pose"
+    if status is None:
+        return None, "nav_relay_offline"
+    if nav.get("frame") == "map":
+        if status.get("global_frame") != "map":
+            return None, "map_not_loaded"
+        return nav, None
+    if nav.get("session") != status.get("session"):
+        return None, "odom_frame_restarted"
+    return nav, None
 
 
 class LandmarkStore:
@@ -165,6 +220,7 @@ class LandmarkStore:
                         "saved_at": lm.saved_at,
                         "seq": lm.seq,
                         "frame_tick": lm.frame_tick,
+                        "nav_pose": lm.nav_pose,
                     }
                     for lm in self._landmarks.values()
                 ],
@@ -192,6 +248,7 @@ class LandmarkStore:
         name: str,
         pose: dict[str, float],
         frame_tick: int | None = None,
+        nav_pose: dict[str, Any] | None = None,
     ) -> Landmark:
         with self._lock:
             self._next_seq += 1
@@ -203,6 +260,7 @@ class LandmarkStore:
                 saved_at=time.time(),
                 seq=self._next_seq,
                 frame_tick=frame_tick,
+                nav_pose=nav_pose,
             )
             self._landmarks[name] = landmark
             self._save_locked()

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Save the map from a running mapping session, in both forms a reboot needs.
+#
+#   nav_map_save [name]         (or: c3po map save [name])
+#
+#   ~/.c3po/maps/<name>.posegraph + .data   slam_toolbox's serialized graph —
+#                                           what localization mode relocalizes in
+#   ~/.c3po/maps/<name>.yaml + .pgm         the occupancy grid — what map_server
+#                                           hands Nav2's global costmap
+#
+# Both, because they answer different questions: the grid alone cannot
+# relocalize, and the pose graph alone is not something Nav2 can plan on.
+# An existing map of the same name is moved aside, never overwritten — a bad
+# second session must not cost the good first one.
+#
+# Then boot into it:  C3PO_NAV_SLAM=localization C3PO_NAV_MAP=<name> c3po up nav2
+
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=_common.sh
+. "$here/_common.sh"
+
+name="${1:-${C3PO_NAV_MAP:-c3po}}"
+case "$name" in
+    ''|*[!A-Za-z0-9_-]*) err "map name '$name': letters, digits, '_' and '-' only"; exit 2 ;;
+esac
+maps="$HOME/.c3po/maps"
+nav=c3po-perception-nav
+# entrypoint.sh sources both ROS overlays; a bare `docker exec ros2` sees neither.
+in_nav() { _docker exec "$nav" /entrypoint.sh "$@"; }
+
+if [ "$(_docker inspect -f '{{.State.Running}}' "$nav" 2>/dev/null || true)" != "true" ]; then
+    err "$nav is not running — start a session with: c3po map start $name"
+    exit 1
+fi
+if ! in_nav ros2 node list 2>/dev/null | grep -qx /slam_toolbox; then
+    err "no /slam_toolbox in $nav — this is not a mapping session (c3po map start $name)"
+    exit 1
+fi
+
+if [ -e "$maps/$name.yaml" ] || [ -e "$maps/$name.posegraph" ]; then
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    for ext in posegraph data yaml pgm; do
+        if [ -e "$maps/$name.$ext" ]; then mv "$maps/$name.$ext" "$maps/$name.bak-$stamp.$ext"; fi
+    done
+    warn "previous '$name' moved aside as $name.bak-$stamp.*"
+fi
+
+say "Saving map '$name' to $maps"
+in_nav ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph \
+    "{filename: '/opt/c3po/maps/$name'}"
+in_nav ros2 run nav2_map_server map_saver_cli -f "/opt/c3po/maps/$name" \
+    --ros-args -p map_subscribe_transient_local:=true
+
+missing=""
+for ext in posegraph data yaml pgm; do
+    [ -s "$maps/$name.$ext" ] || missing="$missing $name.$ext"
+done
+if [ -n "$missing" ]; then
+    err "save incomplete, missing:$missing"
+    exit 1
+fi
+ok "saved $name.{posegraph,data,yaml,pgm}"
+info "boot into it: C3PO_NAV_SLAM=localization C3PO_NAV_MAP=$name c3po up nav2"

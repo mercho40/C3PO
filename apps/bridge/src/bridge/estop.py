@@ -66,15 +66,25 @@ def sentinel_path() -> Path:
     return DEFAULT_RUN_DIR / SENTINEL_NAME
 
 
-def signal_stop() -> float:
-    """Record that a stop happened. Returns the timestamp written.
+#: This process's own copy of its last stop, as a time.time() stamp so it
+#: compares against the ack file's mtime. A sentinel write that fails, or a
+#: sentinel deleted afterwards, must not unlatch the process that signalled.
+_signalled_at = 0.0
+
+
+def signal_stop() -> bool:
+    """Record that a stop happened. Returns whether the sentinel file landed.
 
     Best-effort by construction: this runs *after* the in-process cancellation
     in `stop_everything`, and must never be able to turn a working e-stop into
     a failed one. A read-only filesystem or a missing directory costs the
-    cross-process half of the signal, not the half that already worked.
+    cross-process half of the signal, not the half that already worked: this
+    process stays latched on `_signalled_at`. Another process (the teleop
+    stream) reads only the file, so on False it never hears this stop.
     """
+    global _signalled_at
     now = time.time()
+    _signalled_at = now
     try:
         DEFAULT_RUN_DIR.mkdir(parents=True, exist_ok=True)
         path = sentinel_path()
@@ -83,18 +93,28 @@ def signal_stop() -> float:
         # every reader uses, and a filesystem with coarse timestamps would
         # otherwise make two stops a second apart indistinguishable.
         os.utime(path, (now, now))
-        return now
+        return True
     except OSError as exc:
-        log.warning("estop.sentinel_write_failed", path=str(sentinel_path()), error=str(exc))
-        return now
+        log.error(
+            "estop.sentinel_write_failed",
+            path=str(sentinel_path()),
+            error=str(exc),
+            latched_in_process_only=True,
+        )
+        return False
 
 
-def last_stop_at() -> float:
-    """When the last stop was signalled, or 0.0 if there has never been one."""
+def _file_stop_at() -> float:
+    """The sentinel's mtime alone: what every *other* process sees."""
     try:
         return sentinel_path().stat().st_mtime
     except OSError:
         return 0.0
+
+
+def last_stop_at() -> float:
+    """When the last stop was signalled, or 0.0 if there has never been one."""
+    return max(_file_stop_at(), _signalled_at)
 
 
 ACK_NAME = "stop_acknowledged"
@@ -104,8 +124,8 @@ def ack_path() -> Path:
     return DEFAULT_RUN_DIR / ACK_NAME
 
 
-def record_ack() -> float:
-    """Record that an operator cleared the standing stop. Returns the timestamp.
+def record_ack() -> bool:
+    """Record that an operator cleared the standing stop. Returns whether it landed.
 
     Acknowledges every stop up to now rather than one specific timestamp: the
     operator is at the controls confirming they are ready to resume, and that
@@ -121,10 +141,10 @@ def record_ack() -> float:
         path = ack_path()
         path.write_text(f"{now}\n")
         os.utime(path, (now, now))
-        return now
+        return True
     except OSError as exc:
         log.warning("estop.ack_write_failed", path=str(ack_path()), error=str(exc))
-        return now
+        return False
 
 
 def last_ack_at() -> float:
@@ -173,7 +193,9 @@ def stop_is_standing() -> bool:
 LEASE_NAME = "teleop_driving"
 
 #: How long a lease stays valid without renewal. The dispatch loop renews at
-#: 20-50 Hz, so this is generous by two orders of magnitude — it is sized so
+#: 20 Hz while a session commands motion (head yaw counts) or holds the arms,
+#: and drops it the tick the operator lets go. Running walks yield to it. This
+#: is generous by two orders of magnitude — it is sized so
 #: that a teleop server which dies mid-session frees locomotion in about a
 #: second, not so that a busy one keeps it by a hair.
 LEASE_TTL_S = 2.0
