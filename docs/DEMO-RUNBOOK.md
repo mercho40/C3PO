@@ -2,7 +2,7 @@
 
 The G1 at a stand, with people walking past. **Show only what has worked on this robot.** As of 2026-11-05, that means the skills marked `works_real` in the catalogue, plus the back-side `look`.
 
-The lidar is faulted and the hands are dead (`docs/autonomy/hardware-tickets.md`), so there is no obstacle avoidance and no grasping.
+The lidar is faulted, so there is no obstacle avoidance. The **right** BrainCo hand works since its wrist cable was reseated (2026-11-13); the left one is dead (`docs/autonomy/hardware-tickets.md` §2). Pick is shown to the public with the right hand **only after the morning gantry check in §1 passes** (the user's decision, 2026-11-13).
 
 ## 0. The area
 
@@ -19,12 +19,13 @@ The lidar is faulted and the hands are dead (`docs/autonomy/hardware-tickets.md`
 ## 1. Bring-up (about 15 min before doors open)
 
 1. Power on the robot, on the gantry. On the Mac, set `en11` to static `192.168.123.99`.
-2. `ssh unitree@192.168.123.164 docker ps`: no `gemm-*` containers should be running. If any are, stop them; their autostart is off, but check anyway.
-3. Run `scripts/robot_session.sh unitree@192.168.123.164`. All six rows should show ✓. The `agent` row makes one real model call: it takes up to 60 s, and off the campus network it fails. Open http://localhost:3001 (not 127.0.0.1).
-4. Start perception on the robot: `c3po perception up perception`.
+2. Battery full: the robot rebooted at 19 % on 2026-11-13.
+3. Robot side, one command: `./scripts/robot_up.sh`. It deploys `feat/autonomy`, checks that no `gemm-*` container runs (it stops if one does: decide who drives), restarts the bridge, starts perception, the BrainCo hand server (a macOS dialog asks for the robot's sudo password) and the headset stream on loopback. Run it again after any robot reboot: nothing of ours starts at boot.
+4. Mac side: `./scripts/robot_session.sh unitree@192.168.123.164` (tunnel, console on http://localhost:3001). Quest on USB: `bash scripts/quest_reverse.sh`, then http://localhost:3001/vr-control. In «Caras», turn «Escuchar después de saludar» on (again after every back restart: who turned it on lives in back's memory).
 5. At **/vr-control**: «1 · Amortiguar» → «2 · Preparar» → lower the gantry until the feet carry weight → «3 · Habilitar marcha». Only FSM **501** walks: check `get_state` before each walk.
-6. Smoke test: say "hola", `wave`, `look`, and `describe_surroundings`, from /chat or /voice.
-7. Battery: read it on the console's topbar chip, and watch it during the day. At the amber «Batería baja» banner (under 25 %), finish the current round, press PARAR, then «1 · Amortiguar» with the robot on the gantry, and charge. At 20 % or less the banner turns red («Batería crítica»), and under 20 % the bridge refuses `walk_to`, `go_to_object` and the T2 arm tools; gestures and `turn` still run.
+6. Smoke test: say "hola", `wave`, `look`, and `describe_surroundings`, from /chat or /voice. Each move is preceded by «Atención, todos los humanos córranse: voy a …».
+7. **Pick check, on the gantry, before doors open (15 min).** An opaque plastic bottle upright on a 0.80–0.95 m table, about 38 cm in front of the robot and 15 cm to its right. «agarrá la botella» three times. All three must: plan from the side (result `approach_tilt_deg` ≤ 30), keep the elbow off the torso and the fingers off the table, end with the palm on the bottle, speak without overlaps, and say «Confirmado: ejecuté pick.» only when it holds it (a refusal says «Confirmado, pero pick falló…»). If any fails: `C3PO_ALLOW_PICK=0` in the robot's `apps/bridge/.env`, `sudo -n systemctl restart c3po-bridge.service`, and leave pick out today.
+8. Battery: read it on the console's topbar chip, and watch it during the day. At the amber «Batería baja» banner (under 25 %), finish the current round, press PARAR, then «1 · Amortiguar» with the robot on the gantry, and charge. At 20 % or less the banner turns red («Batería crítica»), and under 20 % the bridge refuses `walk_to`, `go_to_object` and the T2 arm tools; gestures and `turn` still run.
 
 ## 2. The loop to show
 
@@ -38,11 +39,15 @@ Each one works on its own; skip any that misbehave today.
 | Gestures         | `wave`, `clap`, `shake_hand`, `hug`, `gesture`                                                   | ✅                                                      |
 | Going to a thing | "andá hasta la silla" → `go_to_object`, 1–3 m, in the clear area                                 | ✅ (3 arrivals, 2026-11-05)                             |
 | Turning          | `turn`                                                                                           | ✅                                                      |
-| Greeting by name | «Caras» → «Saludar a conocidos»; an enrolled person crouches 0.5–0.8 m in front, face chest-high | open (2026-11-11: enrolled, stranger greeting untested) |
+| Greeting by name | «Caras» → «Saludar a conocidos»; an enrolled person crouches 0.5–0.8 m in front, face chest-high | ✅ (2026-11-13: Oliver, Simon) |
+| Answer after the greeting | «Escuchar después de saludar» on: after «Hola X, ¿qué querés que haga?» the robot mic listens 20 s; anyone near is heard | built 2026-11-13, not yet tried |
+| Hand shapes | «cerrá la mano derecha», «cerrá solo el índice», «hacé el saludo peronista con la mano derecha» | ✅ hand moves (2026-11-13); single fingers and the thumb's rotation not checked one by one |
+| Picking a bottle | «agarrá la botella», right hand, after the §1 pick check | pending: the 2026-11-13 fixes have not run on the robot |
 
 **Do not demo:**
 
-- **pick, place or handover:** the hands are dead and the arm path is unverified on the robot.
+- **pick, place or handover with the left hand**, or any pick if the §1 check failed today.
+- **the arm held out for long while standing:** on 2026-11-13 it made the robot wobble.
 - **Nav2 navigation:** the lidar is down.
 - **dance, squat, sit_g1, lie_up:** not verified on this robot.
 
@@ -60,6 +65,13 @@ Each one works on its own; skip any that misbehave today.
 | Nobody is recognised, or no face boxes                                        | The camera points about 48° down: crouch so the face is chest-high to the robot, 0.5–0.8 m away, Quest off. Boxes update only while a greet switch is on in «Caras».                                                                      |
 | Every agent turn fails with `502 upstream_unreachable`                        | ia-tic is down. Restart back on the Gemini fallback (`docs/OPERATIONS.md` §4, "When ia-tic is down"); robot-mic `C3PO_STT=back` cannot work meanwhile.                                                                                    |
 | The cable link and the camera drop together                                   | The USB-Ethernet adapter and the D435 went together twice on 2026-11-11. Re-seat the adapter off the hub and keep the cable out of the walk. After the vision image rebuild the detector reopens the camera by itself; if not, `c3po up`. |
+| The robot rebooted (uptime of minutes) | Nothing of ours starts at boot: `./scripts/robot_up.sh` again, then reload the console and the Quest. Check the battery first. |
+| «ECONNRESET» in /voice or the Quest disconnects | The bridge restarted. Press «Iniciar» on /voice again and reload /vr-control. |
+| The Quest never connects | The console must be started with `C3PO_ROBOT_HOST=localhost` (robot_session.sh does), `adb reverse --list` must show 3001, 3000, 8001, 8767, and the headset stream must listen on 127.0.0.1:8767 (`ss -tln` on the robot). |
+| `set_hand` or pick fails with no hand state | The BrainCo hand server is not running: `./scripts/robot_up.sh` starts it (password dialog). |
+| «Confirmado, pero pick falló: …» | The pick refused before moving; the text says why. `torso` / «out of reach»: put the bottle ~38 cm ahead, 15 cm to the right. `table_clearance`: raise the bottle. Nothing moved. |
+| The greeting no longer opens the mic | Back restarted and forgot who turned the switch on: «Caras» → «Escuchar después de saludar» off and on. |
+| A `gemm-*` container is running at bring-up | `robot_up.sh` stops there on purpose. Someone decides who drives; never delete their files. |
 | Bridge needs a restart                                                        | `ssh unitree@192.168.123.164 sudo -n /usr/bin/systemctl restart c3po-bridge.service`                                                                                                                                                      |
 
 ## 4. Teardown
