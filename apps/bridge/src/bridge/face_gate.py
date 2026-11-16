@@ -517,10 +517,14 @@ def set_role(pid: str, role: str) -> dict[str, Any] | None:
         if person(pid) is None:
             return None
         path = people_dir() / pid / "person.json"
-        info = _json(path) | {"role": role}
+        info = _json(path)
+        if info is None:  # unreadable since person() read it: change nothing
+            return None
+        info["role"] = role
         _save_owner_only(path, json.dumps(info).encode())
         _forget_seen()  # /face/seen must not keep showing the old role
-        return public(person(pid))
+        updated = person(pid)
+        return public(updated) if updated is not None else None
 
 
 def delete_all() -> None:

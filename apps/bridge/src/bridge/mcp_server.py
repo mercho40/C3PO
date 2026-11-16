@@ -34,7 +34,7 @@ import math
 import os
 import time
 import uuid
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 import structlog
 from mcp.server.fastmcp import Context, FastMCP
@@ -158,7 +158,7 @@ class GovernedMCP(FastMCP):
         if refusal is not None:
             raise ToolError(refusal)
         token = None
-        if motion_announce.applies(name, meta):
+        if tool is not None and motion_announce.applies(name, meta):
             md = tool.fn_metadata
             try:
                 args = md.arg_model.model_validate(md.pre_parse_json(arguments or {})).model_dump()
@@ -1825,7 +1825,8 @@ async def set_hand(
     """
     from bridge.skills.hand import run_set
 
-    return {**await run_set(side, closure, shape=shape, fingers=fingers), "env": SIM_MODE}
+    # dict keys are invariant: the Literal-keyed schema dict is a plain str-keyed one to run_set.
+    return {**await run_set(side, closure, shape=shape, fingers=cast("dict[str, float] | None", fingers)), "env": SIM_MODE}
 
 
 #: What run_sequence may chain: the arm, the hand, the gestures and speech. Not walking,
