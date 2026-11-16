@@ -116,7 +116,7 @@ export function realtimeSessionUpdate(
             interrupt_response: true,
           },
         },
-        output: { format: { type: "audio/pcm" }, voice: VOICE },
+        output: { format: { type: "audio/pcm", rate: 24_000 }, voice: VOICE },
       },
       tools: realtimeTools(skills),
       tool_choice: "auto",
@@ -150,11 +150,14 @@ class RobotAudioSink {
     return this.tail;
   }
 
-  interrupt(): Promise<void> {
+  /** `robot: false` drops only our queued audio: the robot's stop would also cut a
+   *  tool's motion warning, and the bridge then refuses the motion. */
+  interrupt(robot = true): Promise<void> {
     this.epoch += 1;
     this.pending = new Uint8Array();
     this.resampler = new Pcm16Resampler(24_000, 16_000);
     this.streamId = crypto.randomUUID();
+    if (!robot) return this.tail;
     this.tail = this.tail
       .catch(() => {})
       .then(async () => {
@@ -199,6 +202,7 @@ export class RealtimeVoiceSession {
   private socket: WebSocket | null = null;
   private inputAbort: AbortController | null = null;
   private audio = new RobotAudioSink();
+  private toolsRunning = 0;
   /**
    * The tool names this session DECLARED to the model. A function call naming
    * anything else is refused here: what was declared to OpenAI is a request,
@@ -381,7 +385,8 @@ export class RealtimeVoiceSession {
     // immediately even while an earlier tool is still completing.
     if (event.type === "input_audio_buffer.speech_started") {
       this.state.phase = "listening";
-      void this.audio.interrupt();
+      // Any voice in a crowd triggers this; mid-tool it would cancel the wave (2026-11-16).
+      void this.audio.interrupt(this.toolsRunning === 0);
       return;
     }
     if (event.type === "response.output_audio.delta") {
@@ -466,6 +471,7 @@ export class RealtimeVoiceSession {
       args = {};
     }
 
+    this.toolsRunning += 1;
     const started = performance.now();
     let result: unknown;
     let status: "ok" | "error" = "ok";
@@ -513,6 +519,7 @@ export class RealtimeVoiceSession {
           });
       }
     }
+    this.toolsRunning -= 1;
     this.state.toolCalls += 1;
     // Fire-and-forget, like the agent's: `logToolCall` never throws, and
     // awaiting it made the model wait on a database write before it could hear
