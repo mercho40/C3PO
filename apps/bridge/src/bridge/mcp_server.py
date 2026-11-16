@@ -1651,7 +1651,14 @@ async def move_arm(
     ] = None,
     wrist_roll_deg: Annotated[
         float | None,
-        Field(ge=-45, le=45, description="Wrist roll, degrees. Sign convention UNVERIFIED."),
+        Field(
+            ge=-90,
+            le=90,
+            description=(
+                "Wrist roll (turns the forearm), degrees. Sign convention UNVERIFIED. "
+                "±90 turns the palm a quarter turn, e.g. to face outward for the saludo peronista."
+            ),
+        ),
     ] = None,
     wrist_pitch_deg: Annotated[
         float | None,
@@ -1918,7 +1925,8 @@ async def run_sequence(
                 "each {tool, args} with that tool's own arguments. Use it whenever the "
                 "operator asks for two or more arm/hand/gesture/speech things together, "
                 "e.g. raise the right arm and make the saludo peronista: "
-                '[{"tool": "move_arm", "args": {"side": "right", "shoulder_pitch_deg": 80}}, '
+                '[{"tool": "move_arm", "args": {"side": "right", "shoulder_pitch_deg": 80, '
+                '"wrist_roll_deg": 90}}, '
                 '{"tool": "set_hand", "args": {"side": "right", "shape": "saludo_peronista"}, '
                 '"with_previous": true}]. '
                 "move_arm holds the pose, so a later hand step happens with the arm up; "
