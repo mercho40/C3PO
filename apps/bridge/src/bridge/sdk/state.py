@@ -139,8 +139,9 @@ FSM_STALE_AFTER_S = 10.0
 #: How old a pose reading can be before it is called stale. Odom publishes at
 #: ~50 Hz on this robot, so two seconds is forty missed messages.
 POSE_STALE_AFTER_S = 2.0
-# The vendor's own low-battery threshold (`soc < 20`); the safety gate refuses long and arm tools under it.
-LOW_BATTERY_PCT = 20
+# Long and arm tools are refused under it. The vendor's own threshold is `soc < 20`, but on
+# 2026-11-16 this G1 cut power hard at ~40 % twice, mid-stance, so ours sits higher.
+LOW_BATTERY_PCT = 30
 
 
 @dataclass
@@ -487,7 +488,7 @@ class StateSampler:
 
         pose_age = round(now - pose_snap.received_at, 3) if pose_snap.received_at else None
         # Low battery is a real fault, and the one most likely to end a session
-        # mid-task. 20% is the vendor's own threshold.
+        # mid-task. LOW_BATTERY_PCT says why it is above the vendor's 20 %.
         if bms.soc_pct is not None and bms.soc_pct < LOW_BATTERY_PCT:
             faults.append(f"low_battery_{bms.soc_pct}pct")
 
