@@ -102,6 +102,7 @@ async def test_find_object_points_to_bearing_range_and_map_xy(server, monkeypatc
     assert out["count"] == 1
     assert inst["bearing_deg"] == 0.0  # centre column = straight ahead
     assert inst["range_m"] == 1.5  # borrowed from the cup at 0.5 deg
+    assert "different object" in inst["range_from"]  # a cup is not the wallet
     # Facing +y (yaw 90) from (1, 2), 1.5 m ahead -> (1, 3.5).
     assert inst["map_xy_m"] == [1.0, 3.5]
 
@@ -111,6 +112,24 @@ async def test_a_point_with_no_detector_object_nearby_has_no_range(server, monke
     inst = (await server.find_object(query="reloj"))["instances"][0]
     assert inst["bearing_deg"] > 30  # left edge is to the LEFT, positive
     assert inst["range_m"] is None and "map_xy_m" not in inst
+
+
+async def test_find_object_borrows_the_range_of_the_same_object_first(server, monkeypatch):
+    """2026-11-16: the bottle at 0.38 m came back at 2.96 m, a person's range behind it."""
+    monkeypatch.setattr(
+        server,
+        "surroundings_snapshot",
+        lambda: {
+            "objects": [
+                {"label": "person", "range_m": 2.96, "bearing_deg": 0.5},  # nearer in bearing
+                {"label": "bottle", "range_m": 0.38, "bearing_deg": 3.0},
+            ]
+        },
+    )
+    _reply(monkeypatch, '[{"point": [600, 500], "label": "botella"}]')
+    inst = (await server.find_object(query="botella"))["instances"][0]
+    assert inst["range_m"] == 0.38
+    assert inst["range_from"] == "detector 'bottle' at 3.0 deg"
 
 
 async def test_verify_normalises_the_answer(server, monkeypatch):
