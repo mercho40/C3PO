@@ -206,6 +206,16 @@ def test_an_interactions_400_falls_back_to_generate_content(monkeypatch):
     assert urls[1].endswith(f"/models/{vlm.MODEL}:generateContent")
 
 
+def test_interactions_gets_thinking_level_flat_in_generation_config(monkeypatch):
+    # The robot logged 400 "Unknown parameter 'thinking_config' at 'generation_config'".
+    sent = _reply(monkeypatch, "ok")
+    vlm.generate(JPEG, "p")
+    (url, body), = sent
+    assert url.endswith("/interactions")
+    assert body["generation_config"] == {"thinking_level": vlm.THINKING_LEVEL}
+    assert "thinking_config" not in json.dumps(body)
+
+
 def test_points_out_of_range_are_dropped(monkeypatch):
     _reply(monkeypatch, '[{"point": [500, 1200], "label": "a"}, {"point": [10, 20], "label": "b"}]')
     assert vlm.point(JPEG, "q") == [{"y": 10.0, "x": 20.0, "label": "b"}]
