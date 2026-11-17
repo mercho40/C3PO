@@ -210,7 +210,7 @@ def test_interactions_gets_thinking_level_flat_in_generation_config(monkeypatch)
     # The robot logged 400 "Unknown parameter 'thinking_config' at 'generation_config'".
     sent = _reply(monkeypatch, "ok")
     vlm.generate(JPEG, "p")
-    (url, body), = sent
+    ((url, body),) = sent
     assert url.endswith("/interactions")
     assert body["generation_config"] == {"thinking_level": vlm.THINKING_LEVEL}
     assert "thinking_config" not in json.dumps(body)
