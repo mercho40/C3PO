@@ -46,6 +46,9 @@ Environment=BRIDGE_TRANSPORT=http
 Environment=BRIDGE_HOST=127.0.0.1
 Environment=BRIDGE_PORT=8001
 Environment=BRIDGE_CORS_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
+# The Unitree SDK print()s its errors; unbuffered, they land in the journal when
+# they happen, not glued to the next structlog line (which flushes stdout).
+Environment=PYTHONUNBUFFERED=1
 
 # Hash-gated and offline-safe. It exits successfully with an existing venv when
 # the network is unavailable, but fails a first install that has no interpreter.

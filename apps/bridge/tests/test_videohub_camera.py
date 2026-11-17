@@ -11,7 +11,13 @@ import struct
 
 import pytest
 
-from bridge.sdk.videohub import STALE_AFTER_S, VideohubCamera, jpeg_dimensions
+from bridge.sdk.videohub import (
+    QUIET_AFTER_FAILURES,
+    RETRY_WHILE_DOWN_S,
+    STALE_AFTER_S,
+    VideohubCamera,
+    jpeg_dimensions,
+)
 
 
 def _jpeg(width: int, height: int, *, decoy: bool = False) -> bytes:
@@ -183,3 +189,16 @@ def test_an_rpc_that_raises_is_a_failure_not_a_crash():
     assert status["consecutive_failures"] == 1
     assert "RuntimeError" in status["last_error"]
     assert status["live"] is False
+
+
+def test_a_dead_feed_is_retried_slowly_and_a_frame_restores_the_rate():
+    """With videohub_pc4 killed every call blocks a second and the SDK prints
+    `[ClientStub] send request error`; polling that at 10 Hz filled the journal."""
+    cam = _camera([(3102, b"")] * (QUIET_AFTER_FAILURES + 1) + [(0, _jpeg(640, 480))])
+    for _ in range(QUIET_AFTER_FAILURES):
+        _poll(cam)
+    assert cam._pause_s(0.0) == pytest.approx(0.1)  # noqa: SLF001 - a blip keeps the rate
+    _poll(cam)
+    assert cam._pause_s(0.0) == RETRY_WHILE_DOWN_S  # noqa: SLF001
+    _poll(cam)
+    assert cam._pause_s(0.0) == pytest.approx(0.1)  # noqa: SLF001
