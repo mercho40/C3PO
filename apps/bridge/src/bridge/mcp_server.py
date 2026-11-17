@@ -1647,7 +1647,14 @@ async def move_arm(
     ] = None,
     elbow_deg: Annotated[
         float | None,
-        Field(ge=0, le=110, description="Elbow flexion, degrees. 0 = straight arm."),
+        Field(
+            ge=0,
+            le=110,
+            description=(
+                "Elbow, degrees, URDF convention: 0 = bent about 90° (forearm square to the "
+                "upper arm); larger straightens it, about 90 is nearly straight."
+            ),
+        ),
     ] = None,
     wrist_roll_deg: Annotated[
         float | None,
