@@ -66,7 +66,7 @@ import {
   BridgeToolError,
   BridgeUnavailableError,
 } from "#back/bridge/client.js";
-import { beginTurn } from "./turns";
+import { beginTurn, holdVoiceLoop } from "./turns";
 import { notePending } from "./confirmations";
 import {
   LOOK_PROMPT_LINE,
@@ -742,6 +742,9 @@ export async function runAgentChat(
      * finishes — this stops the NEXT step, not the robot.
      */
     abortSignal?: AbortSignal;
+    /** An operator's turn (the /agent route): the voice loop answers no
+     *  overheard speech until it and its robot calls settle. See turns.ts. */
+    holdVoiceLoop?: boolean;
     /** Tests only: the API key and provider are fixed at module load. Never
      *  set it from a route. */
     model?: LanguageModel;
@@ -758,6 +761,7 @@ export async function runAgentChat(
   const mode = opts.mode ?? "operator";
   // Registered before the prompt build, so a PARAR during it still ends the turn.
   const { signal: abortSignal, done } = beginTurn(opts.abortSignal);
+  const releaseVoice = opts.holdVoiceLoop ? holdVoiceLoop() : () => {};
   const inFlight = new Set<Promise<unknown>>();
   const turn = { mode, chatId: opts.chatId ?? null, startedAt: Date.now() };
   // onEnd never sees these turns, so they get their own line.
@@ -819,6 +823,14 @@ export async function runAgentChat(
     // Trade-off: reading it drains a tee'd branch, so a client that stops
     // reading no longer pauses the loop; request.signal and PARAR still end it.
     void result.steps.then(done, (err) => failed(streamError ?? err));
+    // After the steps, not with them: an aborted turn's robot call settles later.
+    void Promise.resolve(result.steps)
+      .catch(() => {})
+      .then(() => Promise.allSettled(inFlight))
+      .finally(releaseVoice);
+    // Backstop: a stream nobody ends must not leave the voice loop deaf. Its
+    // robot calls are cut at the deadline anyway.
+    setTimeout(releaseVoice, TURN_BUDGET_MS + 30_000).unref?.();
     // An abort ends the text stream at once while a walk_to the turn already
     // sent keeps driving; the voice turn waits on this before it ends.
     return Object.assign(result, {
@@ -826,6 +838,7 @@ export async function runAgentChat(
     });
   } catch (err) {
     failed(err);
+    releaseVoice();
     throw err;
   }
 }

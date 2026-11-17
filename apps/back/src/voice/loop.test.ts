@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { abortAllTurns } from "../agent/turns";
+import { abortAllTurns, beginTurn, holdVoiceLoop } from "../agent/turns";
 import { VoiceConversation } from "./conversation";
 import {
   VoiceLoop,
@@ -643,5 +643,68 @@ describe("VoiceLoop event path", () => {
     expect(asked).toBe(0);
     h.runs[0]!.release();
     await h.loop.stop();
+  });
+});
+
+describe("VoiceLoop while an operator's /agent turn is in flight", () => {
+  // 2026-11-16: mid-pick from /chat, the loop answered something it overheard
+  // («Hola, ¿en qué te puedo ayudar?») on top of the pick's own speech.
+  test("overheard speech is heard and logged but starts no turn", async () => {
+    const h = eventHarness();
+    const release = holdVoiceLoop();
+    try {
+      h.loop.start();
+      h.push("speech", "hola");
+      await until(() => h.logs.includes("voice.dropped_operator_turn"));
+      expect(h.runs).toEqual([]);
+      expect(h.loop.snapshot()).toMatchObject({
+        utterancesHeard: 1,
+        agentRuns: 0,
+        lastHeard: "hola",
+      });
+    } finally {
+      release();
+    }
+    // Resumes after: the next utterance is answered, the dropped one is not.
+    h.push("speech", "¿qué hora es?");
+    await until(() => h.runs.length === 1);
+    expect(h.texts()).toEqual(["¿qué hora es?"]);
+    h.runs[0]!.release();
+    await h.loop.stop();
+  });
+
+  test("the spoken stop still reaches the bridge, and aborts the operator's turn", async () => {
+    const h = eventHarness();
+    const release = holdVoiceLoop();
+    // Stands in for the operator's runAgentChat turn (registered the same way).
+    const chatTurn = beginTurn();
+    try {
+      h.loop.start();
+      h.push("stop", "emergencia");
+      await until(() => h.calls.includes("stop_everything"));
+      expect(chatTurn.signal.aborted).toBe(true);
+      expect(h.loop.snapshot().stopsTriggered).toBe(1);
+      expect(h.runs).toEqual([]);
+    } finally {
+      chatTurn.done();
+      release();
+      await h.loop.stop();
+    }
+  });
+
+  test("the polling path drops it too, and still stops", async () => {
+    const { loop, calls, agentRuns } = harness([
+      { ...said("hola"), stop_heard: "emergencia" },
+    ]);
+    const release = holdVoiceLoop();
+    try {
+      await loop.tick();
+    } finally {
+      release();
+    }
+    expect(calls.map((c) => c.name)).toContain("stop_everything");
+    expect(agentRuns).toEqual([]);
+    await loop.tick();
+    expect(agentRuns).toEqual(["hola"]);
   });
 });

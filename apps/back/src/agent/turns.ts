@@ -44,3 +44,25 @@ export function abortAllTurns(reason = "PARAR"): number {
 export function activeTurnCount(): number {
   return activeTurns.size;
 }
+
+let voiceHolds = 0;
+
+/**
+ * An operator's /agent turn holds the voice loop from its start until the robot
+ * calls it sent have settled: meanwhile the loop answers no overheard speech
+ * (2026-11-16, mid-pick, it answered a passer-by over the pick's own speech).
+ * Not a turn: PARAR does not end it, and the loop's stop phrase ignores it.
+ * Returns the release; calling it twice is harmless.
+ */
+export function holdVoiceLoop(): () => void {
+  voiceHolds += 1;
+  let held = true;
+  return () => {
+    if (held) voiceHolds -= 1;
+    held = false;
+  };
+}
+
+export function voiceLoopHeld(): boolean {
+  return voiceHolds > 0;
+}
