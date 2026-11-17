@@ -138,7 +138,7 @@ export function realtimeSessionUpdate(
       type: "realtime" as const,
       model: MODEL,
       output_modalities: ["audio"],
-      instructions,
+      instructions: `${instructions}\n\nRealtime voice safety: high-danger tools are intentionally unavailable. Ask the operator to use the authenticated console for those actions.`,
       audio: {
         input: {
           format: { type: "audio/pcm", rate: 24_000 },
@@ -289,11 +289,9 @@ export class RealtimeVoiceSession {
     this.audio = new RobotAudioSink();
 
     try {
-      const [baseInstructions, skills] = await Promise.all([
-        buildSystemPrompt("voice"),
-        listSkills(),
-      ]);
-      const instructions = `${baseInstructions}\n\nRealtime voice safety: high-danger tools are intentionally unavailable. Ask the operator to use the authenticated console for those actions.`;
+      // One catalogue for both, so the prompt describes the tools declared.
+      const skills = await listSkills();
+      const instructions = await buildSystemPrompt("voice", skills);
       const url = new URL("wss://api.openai.com/v1/realtime");
       url.searchParams.set("model", MODEL);
       const socket = new WebSocket(url, {
