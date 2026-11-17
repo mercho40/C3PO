@@ -26,7 +26,7 @@ import { MockLanguageModelV4, convertArrayToReadableStream } from "ai/test";
 import type { SkillCatalogueEntry } from "#back/skills/index.js";
 import * as bridgeClient from "#back/bridge/client.js";
 import * as chats from "#back/db/chats.js";
-import { abortAllTurns, activeTurnCount } from "./turns";
+import { abortAllTurns, activeTurnCount, voiceLoopHeld } from "./turns";
 
 const FIXTURE_SKILLS: SkillCatalogueEntry[] = [
   {
@@ -568,6 +568,70 @@ describe("runAgentChat toolsSettled", () => {
     } finally {
       restore();
     }
+  });
+
+  test("an operator's turn holds the voice loop until its sent walk_to answers", async () => {
+    // 2026-11-16: the loop answered a passer-by mid-pick, over the pick.
+    let sent!: () => void;
+    const walkSent = new Promise<void>((r) => (sent = r));
+    let answer!: (v: unknown) => void;
+    const restore = bridge(() => {
+      sent();
+      return new Promise((r) => (answer = r));
+    });
+    try {
+      const model = new MockLanguageModelV4({
+        doStream: async () => ({ stream: convertArrayToReadableStream(walk) }),
+      });
+      const stop = new AbortController();
+      const result = await runAgentChat(hello, {
+        model,
+        abortSignal: stop.signal,
+        holdVoiceLoop: true,
+      });
+      expect(voiceLoopHeld()).toBe(true);
+      const text = drain(result.textStream);
+      await walkSent;
+      stop.abort();
+      await text;
+      await result.steps.then(undefined, () => {});
+      await new Promise((r) => setTimeout(r, 10));
+      expect(voiceLoopHeld()).toBe(true);
+      answer({ status: "ok" });
+      await result.toolsSettled();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(voiceLoopHeld()).toBe(false);
+
+      // The loop's own turns (no flag) never hold it.
+      const own = await runAgentChat(hello, {
+        model: new MockLanguageModelV4({
+          doStream: async () => ({ stream: new ReadableStream() }),
+        }),
+      });
+      expect(voiceLoopHeld()).toBe(false);
+      abortAllTurns();
+      await drain(own.textStream);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a turn that fails before the stream releases the voice loop", async () => {
+    listSkills.mockImplementationOnce(async () => {
+      throw new Error("bridge_unavailable");
+    });
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await expect(
+        runAgentChat(hello, {
+          model: new MockLanguageModelV4({}),
+          holdVoiceLoop: true,
+        }),
+      ).rejects.toThrow("bridge_unavailable");
+    } finally {
+      log.mockRestore();
+    }
+    expect(voiceLoopHeld()).toBe(false);
   });
 
   const sentWith = async (toolName: string) => {
