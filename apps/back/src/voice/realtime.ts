@@ -471,7 +471,6 @@ export class RealtimeVoiceSession {
       args = {};
     }
 
-    this.toolsRunning += 1;
     const started = performance.now();
     let result: unknown;
     let status: "ok" | "error" = "ok";
@@ -481,6 +480,9 @@ export class RealtimeVoiceSession {
       error = `tool_not_offered: ${name}`;
       result = { error };
     } else {
+      // Only a dispatched call counts; `finally`, so a throw in the catch
+      // below cannot leave barge-in sparing the robot's speech for good.
+      this.toolsRunning += 1;
       try {
         const back = BACK_TOOLS.find((t) => t.def.name === name);
         if (back) {
@@ -517,9 +519,10 @@ export class RealtimeVoiceSession {
             chatId,
             loop: false,
           });
+      } finally {
+        this.toolsRunning -= 1;
       }
     }
-    this.toolsRunning -= 1;
     this.state.toolCalls += 1;
     // Fire-and-forget, like the agent's: `logToolCall` never throws, and
     // awaiting it made the model wait on a database write before it could hear

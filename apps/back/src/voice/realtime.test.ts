@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as chats from "#back/db/chats.js";
+import * as client from "#back/bridge/client.js";
+import * as confirmations from "#back/agent/confirmations.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -282,5 +284,129 @@ describe("a Realtime error event", () => {
       { code: "session_expired" },
     ])
       expect(isRecoverableRealtimeError(error)).toBe(false);
+  });
+});
+
+describe("barge-in while a tool call is in flight", () => {
+  // 2026-11-16: a voice in the crowd during «saludá» sent the robot-side stop,
+  // which cut the bridge's spoken motion warning, and the bridge then refused
+  // the wave. Mid-tool, barge-in drops only back's queued audio.
+  const deletes: string[] = [];
+  let release: (() => void) | null = null;
+  let toolCall: () => Promise<unknown> = async () => ({ status: "ok" });
+  const spies: Array<ReturnType<typeof spyOn>> = [];
+  beforeEach(() => {
+    deletes.length = 0;
+    toolCall = () =>
+      new Promise((r) => {
+        release = () => r({ status: "ok" });
+      });
+    spies.push(
+      spyOn(globalThis, "fetch").mockImplementation((async (
+        url: string | URL,
+        init?: RequestInit,
+      ) => {
+        if (init?.method === "DELETE") deletes.push(String(url));
+        return new Response(null, { status: 204 });
+      }) as never),
+      spyOn(client, "callTool").mockImplementation((() => toolCall()) as never),
+      spyOn(chats, "appendMessage").mockImplementation(async () => "msg"),
+      spyOn(chats, "logToolCall").mockImplementation(async () => {}),
+      spyOn(console, "error").mockImplementation(() => {}),
+    );
+  });
+  afterEach(() => {
+    for (const s of spies.splice(0)) s.mockRestore();
+  });
+
+  function running() {
+    const s = new RealtimeVoiceSession();
+    const inner = s as unknown as {
+      socket: unknown;
+      state: {
+        running: boolean;
+        chatId: string | null;
+        ownerId: string | null;
+      };
+      declaredTools: Set<string>;
+      toolsRunning: number;
+      eventTail: Promise<void>;
+      audio: { tail: Promise<void> };
+      receive: (raw: Buffer) => void;
+    };
+    inner.socket = { readyState: 1, send: () => {}, close: () => {} };
+    inner.state.running = true;
+    inner.state.chatId = "chat_rt";
+    inner.state.ownerId = "operator";
+    inner.declaredTools = new Set(["wave"]);
+    const receive = (event: Record<string, unknown>) =>
+      inner.receive(Buffer.from(JSON.stringify(event)));
+    const callWave = () =>
+      receive({
+        type: "response.function_call_arguments.done",
+        name: "wave",
+        call_id: "call_1",
+        arguments: "{}",
+      });
+    const bargeIn = async () => {
+      receive({ type: "input_audio_buffer.speech_started" });
+      await inner.audio.tail;
+    };
+    return { s, inner, callWave, bargeIn };
+  }
+
+  async function until(cond: () => boolean) {
+    for (let i = 0; i < 200 && !cond(); i++)
+      await new Promise((r) => setTimeout(r, 1));
+    expect(cond()).toBe(true);
+  }
+
+  test("mid-tool, barge-in does not tell the bridge to stop speaking", async () => {
+    const { inner, callWave, bargeIn } = running();
+    callWave();
+    await until(() => inner.toolsRunning === 1);
+    await bargeIn();
+    expect(deletes).toEqual([]);
+    release?.();
+    await inner.eventTail;
+    expect(inner.toolsRunning).toBe(0);
+  });
+
+  test("with no tool in flight, barge-in stops the robot's speech", async () => {
+    const { bargeIn } = running();
+    await bargeIn();
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]).toContain("/telemetry/voice/audio/output");
+  });
+
+  test("after the tool returns, barge-in stops the robot's speech again", async () => {
+    const { inner, callWave, bargeIn } = running();
+    callWave();
+    await until(() => inner.toolsRunning === 1);
+    release?.();
+    await inner.eventTail;
+    await bargeIn();
+    expect(deletes).toHaveLength(1);
+  });
+
+  test("a tool path that throws does not leave the counter up", async () => {
+    // notePending throwing inside the catch used to skip the decrement, and
+    // every later barge-in spared the robot's speech.
+    toolCall = async () => {
+      throw new client.BridgeToolError(
+        "wave",
+        "wave needs an operator's confirmation",
+      );
+    };
+    spies.push(
+      spyOn(confirmations, "notePending").mockImplementation(() => {
+        throw new Error("boom");
+      }),
+    );
+    const { inner, callWave } = running();
+    callWave();
+    await inner.eventTail.catch(() => {});
+    await until(() => inner.state.running === false);
+    expect(inner.toolsRunning).toBe(0);
   });
 });
