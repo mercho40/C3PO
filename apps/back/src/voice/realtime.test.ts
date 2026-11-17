@@ -96,13 +96,13 @@ describe("a function call the session never declared", () => {
 
   test("the declared names are recorded from the same list sent to OpenAI", () => {
     expect(src).toContain(
-      "this.declaredTools = new Set(realtimeTools(skills).map((t) => t.name));",
+      "realtimeTools(skills).map((t) => [t.name, t.parameters]),",
     );
   });
 
   test("an undeclared name is refused before callTool", () => {
     const body = src.slice(src.indexOf("private async executeTool"));
-    const guard = body.indexOf("if (!this.declaredTools.has(name)) {");
+    const guard = body.indexOf("this.declaredTools.has(name)");
     expect(guard).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(body.indexOf("await callTool(name, args)"));
   });
@@ -328,7 +328,7 @@ describe("barge-in while a tool call is in flight", () => {
         chatId: string | null;
         ownerId: string | null;
       };
-      declaredTools: Set<string>;
+      declaredTools: Map<string, unknown>;
       toolsRunning: number;
       eventTail: Promise<void>;
       audio: { tail: Promise<void> };
@@ -338,7 +338,9 @@ describe("barge-in while a tool call is in flight", () => {
     inner.state.running = true;
     inner.state.chatId = "chat_rt";
     inner.state.ownerId = "operator";
-    inner.declaredTools = new Set(["wave"]);
+    inner.declaredTools = new Map([
+      ["wave", { type: "object", properties: {} }],
+    ]);
     const receive = (event: Record<string, unknown>) =>
       inner.receive(Buffer.from(JSON.stringify(event)));
     const callWave = () =>
@@ -408,5 +410,106 @@ describe("barge-in while a tool call is in flight", () => {
     await inner.eventTail.catch(() => {});
     await until(() => inner.state.running === false);
     expect(inner.toolsRunning).toBe(0);
+  });
+});
+
+describe("arguments that do not fit the declared schema", () => {
+  // The bridge's own walk_to schema, as tools/list returns it (pydantic).
+  const WALK_TO = {
+    type: "object",
+    properties: {
+      target_x_meters_world_frame: { type: "number" },
+      target_y_meters_world_frame: { type: "number" },
+      stop_distance_m: { type: "number", default: 1.0, minimum: 0.3 },
+      timeout_s: { type: "number", default: 60.0 },
+    },
+    required: ["target_x_meters_world_frame", "target_y_meters_world_frame"],
+  };
+  const calls: unknown[][] = [];
+  const sent: { type: string; item?: { output?: string } }[] = [];
+  const spies: Array<ReturnType<typeof spyOn>> = [];
+  beforeEach(() => {
+    calls.length = 0;
+    sent.length = 0;
+    spies.push(
+      spyOn(client, "callTool").mockImplementation((async (
+        ...args: unknown[]
+      ) => {
+        calls.push(args);
+        return { status: "ok" };
+      }) as never),
+      spyOn(chats, "appendMessage").mockImplementation(async () => "msg"),
+      spyOn(chats, "logToolCall").mockImplementation(async () => {}),
+    );
+  });
+  afterEach(() => {
+    for (const s of spies.splice(0)) s.mockRestore();
+  });
+
+  async function call(args: Record<string, unknown>) {
+    const s = new RealtimeVoiceSession();
+    const inner = s as unknown as {
+      socket: unknown;
+      state: { running: boolean; chatId: string | null };
+      declaredTools: Map<string, unknown>;
+      toolsRunning: number;
+      eventTail: Promise<void>;
+      receive: (raw: Buffer) => void;
+    };
+    inner.socket = {
+      readyState: 1,
+      send: (raw: string) => sent.push(JSON.parse(raw)),
+      close: () => {},
+    };
+    inner.state.running = true;
+    inner.state.chatId = "chat_rt";
+    inner.declaredTools = new Map([["walk_to", WALK_TO]]);
+    inner.receive(
+      Buffer.from(
+        JSON.stringify({
+          type: "response.function_call_arguments.done",
+          name: "walk_to",
+          call_id: "call_1",
+          arguments: JSON.stringify(args),
+        }),
+      ),
+    );
+    await inner.eventTail;
+    expect(inner.toolsRunning).toBe(0);
+    return sent.find((e) => e.type === "conversation.item.create")?.item
+      ?.output;
+  }
+
+  test("the stand's walk_to (2026-11-16) reaches no robot and names the right keys", async () => {
+    const output = await call({
+      target_x_meters_world: 1.2,
+      target_y_meters_world: 0.4,
+      stop_distance_m: 0.3,
+      timeout_s: 20,
+    });
+    expect(calls).toEqual([]);
+    expect(output).toContain(
+      "Unknown parameters: target_x_meters_world, target_y_meters_world.",
+    );
+    expect(output).toContain(
+      "Missing required: target_x_meters_world_frame, target_y_meters_world_frame.",
+    );
+    expect(output).toContain(
+      "walk_to accepts exactly: target_x_meters_world_frame, target_y_meters_world_frame, stop_distance_m, timeout_s.",
+    );
+    // The model is asked to answer, so it can retry in the same turn.
+    expect(sent[sent.length - 1]).toEqual({ type: "response.create" });
+  });
+
+  test("a call that fits still goes to the bridge unchanged", async () => {
+    const args = {
+      target_x_meters_world_frame: 1.2,
+      target_y_meters_world_frame: 0.4,
+      stop_distance_m: 0.3,
+      timeout_s: 20,
+    };
+    const output = await call(args);
+    expect(calls).toEqual([["walk_to", args]]);
+    expect(output).toBe(JSON.stringify({ status: "ok" }));
   });
 });

@@ -12,6 +12,7 @@ import {
 } from "#back/agent/runtime.js";
 import { notePending } from "#back/agent/confirmations.js";
 import { listSkills } from "#back/skills/index.js";
+import { validateArgs } from "#back/skills/validate.js";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
 const messageId = createIdGenerator({ prefix: "msg", size: 16 });
@@ -92,6 +93,39 @@ export function realtimeTools(skills: RealtimeSkill[]) {
       parameters: def.parameters as Record<string, unknown>,
     })),
   ];
+}
+
+/**
+ * Why a call's arguments do not fit the schema this session declared, or null.
+ * Realtime does not enforce it: on 2026-11-16 walk_to got `target_x_meters_world`
+ * (copied from get_state) for `target_x_meters_world_frame`. Unknown names are
+ * checked by hand because pydantic's schemas do not set `additionalProperties`.
+ */
+export function argumentProblem(
+  name: string,
+  schema: unknown,
+  args: Record<string, unknown>,
+): string | null {
+  const s = (schema ?? {}) as {
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  const accepted = Object.keys(s.properties ?? {});
+  const unknown = Object.keys(args).filter((k) => !accepted.includes(k));
+  const checked = validateArgs(schema ?? {}, args);
+  if (!unknown.length && checked.ok) return null;
+  const missing = (s.required ?? []).filter((k) => !(k in args));
+  return [
+    `invalid_arguments: nothing was sent to the robot.`,
+    unknown.length && `Unknown parameters: ${unknown.join(", ")}.`,
+    missing.length && `Missing required: ${missing.join(", ")}.`,
+    !checked.ok &&
+      `Problems: ${checked.issues.map((i) => `${i.path} ${i.message}`).join("; ")}.`,
+    `${name} accepts exactly: ${accepted.join(", ") || "no parameters"}.`,
+    `Call ${name} again now with these exact names.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 export function realtimeSessionUpdate(
@@ -209,7 +243,7 @@ export class RealtimeVoiceSession {
    * not an enforcement, and `executeTool` used to dispatch whatever name came
    * back — including a high-danger skill the declaration had left out.
    */
-  private declaredTools: ReadonlySet<string> = new Set();
+  private declaredTools: ReadonlyMap<string, unknown> = new Map();
   private eventTail: Promise<void> = Promise.resolve();
   private state: RealtimeVoiceState = {
     running: false,
@@ -277,7 +311,9 @@ export class RealtimeVoiceSession {
           this.fail(new Error("OpenAI Realtime connection closed"));
       });
 
-      this.declaredTools = new Set(realtimeTools(skills).map((t) => t.name));
+      this.declaredTools = new Map(
+        realtimeTools(skills).map((t) => [t.name, t.parameters]),
+      );
       this.send(realtimeSessionUpdate(instructions, skills));
 
       this.state.phase = "listening";
@@ -466,7 +502,11 @@ export class RealtimeVoiceSession {
     if (!name || !callId || !chatId) return;
     let args: Record<string, unknown> = {};
     try {
-      args = JSON.parse(event.arguments || "{}") as Record<string, unknown>;
+      // `?? {}`: a "null" argument string must not throw in the schema check.
+      args = (JSON.parse(event.arguments || "{}") ?? {}) as Record<
+        string,
+        unknown
+      >;
     } catch {
       args = {};
     }
@@ -475,9 +515,13 @@ export class RealtimeVoiceSession {
     let result: unknown;
     let status: "ok" | "error" = "ok";
     let error: string | null = null;
-    if (!this.declaredTools.has(name)) {
+    // Either refusal sends the robot nothing, so neither counts as running.
+    const refused = this.declaredTools.has(name)
+      ? argumentProblem(name, this.declaredTools.get(name), args)
+      : `tool_not_offered: ${name}`;
+    if (refused) {
       status = "error";
-      error = `tool_not_offered: ${name}`;
+      error = refused;
       result = { error };
     } else {
       // Only a dispatched call counts; `finally`, so a throw in the catch
