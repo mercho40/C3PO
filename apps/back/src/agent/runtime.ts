@@ -460,10 +460,12 @@ const VOICE_PREAMBLE = [
  * Exported for testing — pure string generation once the catalogue is in hand. */
 export async function buildSystemPrompt(
   mode: AgentMode = "operator",
+  // scripts/probe-realtime.ts passes a fixture: it must not reach the bridge.
+  given?: Awaited<ReturnType<typeof listSkills>>,
 ): Promise<string> {
   // Only what this mode may call: describing a tool the model is not given
   // invites it to try, and to tell the speaker it did.
-  const catalogue = await listSkills();
+  const catalogue = given ?? (await listSkills());
   warnUnknownAgentTools(catalogue);
   const offered = catalogue.filter((s) => offeredInMode(s, mode));
   const lines = offered.map((s) => {

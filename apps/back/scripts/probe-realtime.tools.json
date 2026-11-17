@@ -1,0 +1,207 @@
+[
+  {
+    "name": "walk_to",
+    "description": "Walk the robot toward a world-frame XY position and stop near it.\n\n    Stub mode: logs and returns a fake result with a task_id.\n    Isaac/real mode: creates a Task in the registry and drives the robot via\n    `rt/run_command/cmd` with a body-frame velocity loop. Emits progress\n    notifications via `ctx.report_progress` during the walk. Returns the\n    final task dict when motion finishes (arrived / timeout / cancelled / failed).\n\n    To interrupt in flight, call `cancel_task(task_id)` from another MCP\n    session or direct Python — for the current stdio transport, mid-flight\n    cancel from the same Claude session isn't possible while this tool blocks.\n    ",
+    "inputSchema": {
+      "properties": {
+        "target_x_meters_world_frame": {
+          "description": "Target X coordinate in meters, world frame.",
+          "title": "Target X Meters World Frame",
+          "type": "number"
+        },
+        "target_y_meters_world_frame": {
+          "description": "Target Y coordinate in meters, world frame.",
+          "title": "Target Y Meters World Frame",
+          "type": "number"
+        },
+        "stop_distance_m": {
+          "default": 1.0,
+          "description": "How close to the target the robot should stop. Smaller values mean closer; minimum 0.3 m to avoid collisions.",
+          "maximum": 5.0,
+          "minimum": 0.3,
+          "title": "Stop Distance M",
+          "type": "number"
+        },
+        "timeout_s": {
+          "default": 60.0,
+          "description": "Maximum seconds to spend walking before giving up. The current Isaac Sim policy walks at ~10-15% of commanded velocity, so allow generous time per metre.",
+          "maximum": 300.0,
+          "minimum": 5.0,
+          "title": "Timeout S",
+          "type": "number"
+        }
+      },
+      "required": [
+        "target_x_meters_world_frame",
+        "target_y_meters_world_frame"
+      ],
+      "title": "walk_toArguments",
+      "type": "object"
+    },
+    "_meta": {
+      "c3po": {
+        "classification": "locomotion",
+        "danger_level": "medium",
+        "tier": "T1",
+        "status": "real",
+        "cancellable": true,
+        "expected_duration_s": 20.0,
+        "works": {
+          "sim": true,
+          "real": true
+        },
+        "preconditions": [
+          "robot_upright",
+          "battery_pct_gt_15",
+          "no_active_walk_task"
+        ],
+        "typical_failure_modes": ["path_blocked", "timeout", "no_pose"]
+      }
+    }
+  },
+  {
+    "name": "go_to_object",
+    "description": "Walk to an object the camera sees now, or saw in the last 10 minutes.\n\n    Use this for \"andá hasta la silla\" / \"go to the backpack\". It needs NO\n    map: it takes the object's range and bearing from the detector (or from\n    object memory, so `look_around` first helps) and stops with the robot's\n    front `stop_distance_m` from the object's near side. Without a near-side\n    reading (memory, an older detector) the stop is measured from the object's\n    centre and `target.range_to` says \"centre\". Refuses targets over 4 m, and\n    live detections over 1 s old (`stale_detection`: look again). Two result\n    shapes:\n\n    - Nav2 active and the gate already armed by a person: status 'started',\n      `via: 'nav2'` and a task_id at once; Nav2 plans around obstacles. Poll\n      navigation_status(). This tool never arms the gate.\n    - Otherwise: a camera-only walk that blocks until it ends, the walk_to task\n      dict with `via: 'walk_to'` and `nav2_refused` (why Nav2 was not used).\n      No obstacle avoidance: it walks straight at the target, re-aiming at it\n      about once a second; the person rule still slows and stops it. Phase\n      'target_lost' when the object stayed out of the detections while in view.\n\n    Both carry `target` (label, range, bearing, live or memory). The camera\n    walk also carries `clearance_m` (front to near side, the number to tell the\n    user) and a `note` saying what was measured; `final_distance_m` is from the\n    pelvis, never the gap.\n\n    Several matches: `choose` picks one (\"nearest\" unless the user said which:\n    «la de la izquierda» -> \"left\"). One already inside the stop distance is\n    skipped while another is further; when every match is, nothing walks and\n    the phase is 'already_within_stop_distance'. `target.candidates` says how\n    many matched and `target.chosen_by` how one was picked.\n    ",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "description": "What to walk to, any language: 'silla', 'the chair', 'mochila', 'persona'.",
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Query",
+          "type": "string"
+        },
+        "stop_distance_m": {
+          "default": 0.7,
+          "description": "Stop this far from the object, metres: from the robot's front to the object's near side.",
+          "maximum": 2.0,
+          "minimum": 0.5,
+          "title": "Stop Distance M",
+          "type": "number"
+        },
+        "choose": {
+          "default": "nearest",
+          "description": "Which one when several match: «la más cercana» nearest, «la más lejana» farthest, «la de la izquierda» left, «la de la derecha» right, «la de enfrente» center (most straight ahead); confidence = the detector's surest.",
+          "enum": [
+            "nearest",
+            "farthest",
+            "left",
+            "right",
+            "center",
+            "confidence"
+          ],
+          "title": "Choose",
+          "type": "string"
+        }
+      },
+      "required": ["query"],
+      "title": "go_to_objectArguments",
+      "type": "object"
+    },
+    "_meta": {
+      "c3po": {
+        "classification": "locomotion",
+        "danger_level": "medium",
+        "tier": "T1",
+        "status": "real",
+        "cancellable": true,
+        "expected_duration_s": 20.0,
+        "works": {
+          "sim": false,
+          "real": true
+        },
+        "preconditions": [
+          "robot_upright",
+          "battery_pct_gt_15",
+          "no_active_walk_task"
+        ],
+        "typical_failure_modes": [
+          "not_found",
+          "stale_detection",
+          "too_far",
+          "no_pose",
+          "target_lost",
+          "drift"
+        ]
+      }
+    }
+  },
+  {
+    "name": "wave",
+    "description": "Wave the upper arm — friendly greeting gesture.\n\n    G1 firmware `wave_above_head` (api_id=7106, data=26). The robot's own\n    GetActionList reports this action as UNGATED — no FSM and no mode_machine\n    requirement — and it executed on hardware 2026-08-15 from fsm_id 802,\n    taking 7.3 s because the arm service acks on completion of the motion, not\n    on receipt. Only one action in the whole table (`turn_back_wave`, id 1) is\n    FSM-gated.\n\n    Isaac Sim: logged only (sim doesn't subscribe to `rt/api/arm/request`).\n    ",
+    "inputSchema": {
+      "properties": {},
+      "title": "waveArguments",
+      "type": "object"
+    },
+    "_meta": {
+      "c3po": {
+        "classification": "gesture",
+        "danger_level": "low",
+        "tier": "T1",
+        "status": "real",
+        "cancellable": false,
+        "expected_duration_s": 3.0,
+        "works": {
+          "sim": false,
+          "real": true
+        },
+        "preconditions": ["fsm_state_in_{walk,walk_waist,run}"],
+        "typical_failure_modes": [
+          "fsm_not_locomotion_state",
+          "transport_unsupported"
+        ]
+      }
+    }
+  },
+  {
+    "name": "say",
+    "description": "Speak text aloud through the robot's own speaker (voice service, TTS).\n\n    TWO DIFFERENT MECHANISMS LIVE BEHIND ONE TOOL, and the split is forced by\n    the firmware rather than chosen:\n\n      spanish  -> synthesised locally by Piper (`es_AR/daniela`), resampled to\n                  16 kHz, and pushed as PCM through `PlayStream` (1003).\n      en / zh  -> the firmware's own TTS (1001), `speaker_id` 1 / 0.\n\n    The firmware has exactly two voices and no third. It was verified on this\n    robot that neither reads Spanish intelligibly, and — the part that matters —\n    passing Spanish to firmware TTS returns **rpc_code 0** while emitting\n    unusable audio. A false success, which is why Spanish never touches that\n    path here and why this tool refuses loudly instead of falling back to it\n    when local synthesis is unavailable. Silence with an explanation beats\n    confident noise. See `docs/DECISIONS.md` D6.1/D6.3.\n\n    Everything is local and offline: no cloud, no API key, and Spanish still\n    works with the network down — which is exactly when \"estoy atascado\" is\n    worth saying. Logs only on stub and sim, which have no speaker.\n\n    SPANISH SPEECH QUEUES. Every Spanish `say` (yours, the motion warning, the\n    greeter, the console's lines) waits for the one before it to finish playing,\n    in arrival order, so nothing talks over anything. Only stop_everything cuts\n    speech, and it drops what is still queued (status 'stopped'). Firmware TTS\n    has no such queue and no documented behaviour for overlapping calls.\n\n    The robot's speaker is SHARED with the co-tenant `gemm` stack and there is\n    no arbitration. We publish under our own `app_name` (\"c3po\"), so their\n    assistant cannot stop our speech and we cannot stop theirs — expect\n    occasional talking over each other; it is not a bug to fix here.\n\n    Worth reaching for more than it sounds. Speech is not gated by the\n    locomotion FSM, so it is a channel the robot still has when motion is being\n    refused — which is a situation this robot gets into. Saying what you are\n    about to do, or that you are stuck, is usually better than silence when a\n    person is standing next to a humanoid.\n\n    Measured rather than assumed, 2026-08-21: the voice service answered\n    GET_VOLUME with rpc_code 0 while fsm_id was 0 (ZeroTorque) — the robot limp,\n    with motion categorically unavailable and another stack owning it. What that\n    establishes is that the SERVICE is reachable in that state; it is not proof\n    that audio reached the speaker, which cannot be checked without making noise\n    in a shared room. That confirmation has since happened: Spanish played audibly\n    through the speaker on 2026-08-21, so the whole path is proven, not merely\n    accepted by the RPC.\n\n    One utterance at a time, and one language per utterance: the firmware has\n    no mixed Chinese/English voice. There is also no documented behaviour for\n    calling it while speech is already playing, so this is not the tool to use\n    for anything that must be interruptible — `PlayStream` is, and its\n    `stream_id` is the interrupt model (same id concatenates, new id barges in).\n    ",
+    "inputSchema": {
+      "properties": {
+        "text": {
+          "description": "What the robot should say, spoken aloud through its own speaker.",
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "language": {
+          "default": "spanish",
+          "description": "Language of `text`. **spanish** is this deployment's operating language and the default; it is synthesised on the robot and played as audio, so it does not use the firmware's voices at all. english/chinese use the firmware's own two voices. Match this to the text you actually wrote — labelling Spanish as english does not fail, it produces an English voice attempting Spanish phonemes. One language per utterance; send separate calls to switch.",
+          "enum": ["spanish", "english", "chinese"],
+          "title": "Language",
+          "type": "string"
+        },
+        "wait_for_completion": {
+          "default": false,
+          "description": "Return only once the robot has actually STOPPED talking, rather than as soon as the audio has been handed to the firmware. Off by default, which keeps this tool fast. Turn it on when the next thing you do would talk over this — chaining two utterances, or listening for a reply, since the robot's own microphone hears its own speaker.",
+          "title": "Wait For Completion",
+          "type": "boolean"
+        }
+      },
+      "required": ["text"],
+      "title": "sayArguments",
+      "type": "object"
+    },
+    "_meta": {
+      "c3po": {
+        "classification": "speech",
+        "danger_level": "low",
+        "tier": "T0",
+        "status": "real",
+        "cancellable": false,
+        "expected_duration_s": 3.0,
+        "works": {
+          "sim": false,
+          "real": true
+        },
+        "preconditions": [],
+        "typical_failure_modes": [
+          "voice_service_no_answer",
+          "bridge_disconnected"
+        ]
+      }
+    }
+  }
+]

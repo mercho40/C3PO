@@ -59,7 +59,7 @@ let mustRefetch = false;
 let inflight: Promise<CatalogueSnapshot> | null = null;
 
 /** Turn one MCP tool into the catalogue shape the rest of `back` already speaks. */
-function toEntry(tool: {
+export function toEntry(tool: {
   name: string;
   description?: string;
   inputSchema: unknown;
