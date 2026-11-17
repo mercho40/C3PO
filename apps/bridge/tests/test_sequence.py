@@ -8,6 +8,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from bridge import estop, mcp_server, safety
+from bridge.skills import manipulation
 
 STEPS = [
     {"tool": "move_arm", "args": {"side": "right", "shoulder_pitch_deg": 80}},
@@ -22,6 +23,7 @@ def ran(monkeypatch):
     monkeypatch.setattr(safety, "T2_CONFIRM", True)
     monkeypatch.setattr(mcp_server.motion_announce, "applies", lambda name, meta: False)
     monkeypatch.setattr(mcp_server, "SEQUENCE_ARM_HOLD_S", 0.0)  # tests of the lowering set it
+    monkeypatch.setattr(manipulation, "CLOSE_SETTLE_S", 0.0)  # the hand-settle test sets it
     manager = mcp_server.mcp._tool_manager
     real = manager.call_tool
 
@@ -185,3 +187,34 @@ async def test_keep_arm_up_or_an_explicit_release_skips_the_lowering(ran, monkey
     await _run(released)
     assert [name for name, _ in ran].count("release_arm_control") == 1
     assert out is not None
+
+
+@pytest.mark.asyncio
+async def test_a_hand_step_settles_before_the_next_step(ran, monkeypatch):
+    """2026-11-16: a close then an open went out in the same second; the hand never closed."""
+    import time
+
+    monkeypatch.setattr(manipulation, "CLOSE_SETTLE_S", 0.2)
+    manager = mcp_server.mcp._tool_manager
+    inner = manager.call_tool
+    at: list[tuple[str, float]] = []
+
+    async def timed(name, args, context=None, convert_result=False):
+        at.append((name, time.monotonic()))
+        return await inner(name, args, context=context, convert_result=convert_result)
+
+    monkeypatch.setattr(manager, "call_tool", timed)
+    close = {"tool": "set_hand", "args": {"side": "right", "closure": 1}}
+    steps = [close, {"tool": "open_hands", "args": {}}]
+    _grant(steps)
+    assert (await _run(steps))["status"] == "completed"
+    (_, t_close), (_, t_open) = [a for a in at if a[0] != "run_sequence"]
+    assert t_open - t_close >= 0.2
+
+    # with_previous: the hand moves WITH the arm, so nothing waits between them.
+    at.clear()
+    steps = [STEPS[0], {**close, "with_previous": True}]
+    _grant(steps)
+    assert (await _run(steps))["status"] == "completed"
+    (_, t_arm), (_, t_hand) = [a for a in at if a[0] != "run_sequence"]
+    assert t_hand - t_arm < 0.1

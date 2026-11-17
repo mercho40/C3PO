@@ -1957,7 +1957,9 @@ async def run_sequence(
     accepts, with_previous only on a hand step right after an arm move or gesture), and
     each still meets PARAR, the battery and the person rule as it starts
     (`safety.tool_refusal(..., confirmed=True)` skips only the per-step grant), with its
-    own spoken warning. The chain stops at the first step refused or failed and says which.
+    own spoken warning. A hand step gets CLOSE_SETTLE_S to travel before the next step
+    starts (one moving with_previous shares its leader's time instead).
+    The chain stops at the first step refused or failed and says which.
     An arm it leaves raised comes down after SEQUENCE_ARM_HOLD_S unless keep_arm_up.
     """
     if not 1 <= len(steps) <= SEQUENCE_MAX:
@@ -2039,6 +2041,12 @@ async def run_sequence(
             if _step_failed(result):
                 return {"status": "failed", "reason": "step_failed", **end}
         i += len(group)
+        if i < len(planned) and any(planned[k][0] in _SEQUENCE_PARTNERS for k in group):
+            from bridge.skills.manipulation import CLOSE_SETTLE_S
+
+            # set_hand only publishes a target: on 2026-11-16 a close then an open went out in
+            # the same second and the fingers never visibly closed. with_previous is its group.
+            await asyncio.sleep(CLOSE_SETTLE_S)
     out: dict[str, Any] = {"status": "completed", "done": done, "env": SIM_MODE}
     if not keep_arm_up and SEQUENCE_ARM_HOLD_S > 0 and _leaves_arm_held(planned):
         from bridge import estop
