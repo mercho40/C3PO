@@ -22,7 +22,7 @@ steps=(
     "gemm     no gemm-* container may be running (stops here if one is)"
     "bridge   sudo -n systemctl restart c3po-bridge.service, wait for :8001"
     "vision   c3po perception up perception"
-    "hands    brainco_hand_server (sudo password dialog) when TELEOP_HAND_TYPE=brainco"
+    "hands    brainco_hand_server when TELEOP_HAND_TYPE=brainco: nothing if c3po-brainco-hand.service runs, else start it (sudo password dialog)"
     "headset  run_teleop on loopback, with TELEOP_STREAM_ARM/HAND_ENABLED=0 added to .env if unset"
 )
 if [ "$print" = 1 ]; then
@@ -58,18 +58,27 @@ step "hands"
 hand_type="$(r "grep -E '^TELEOP_HAND_TYPE=' ~/c3po/apps/bridge/.env | cut -d= -f2" || true)"
 if [ "$hand_type" != "brainco" ]; then
     echo "– TELEOP_HAND_TYPE=${hand_type:-unset}: no hand server needed"
+elif r 'systemctl is-active --quiet c3po-brainco-hand.service'; then
+    echo "✓ hand server already running (c3po-brainco-hand.service)"
 elif r "pgrep -f '[b]rainco_hand_server' >/dev/null"; then
-    echo "✓ hand server already running"
+    echo "✓ hand server already running (started by hand, not by systemd)"
 else
     pw="$(osascript -e 'text returned of (display dialog "sudo password for unitree on the G1 (BrainCo hand server)" default answer "" with hidden answer with title "C3PO")')" \
         || die "no password given: the hand server is not running, set_hand will fail honestly"
-    # Judge by the process, not the log: a redirected C++ stdout is block-buffered, so an empty
-    # log is normal, and a grep miss here used to end the script with no message. `pgrep` without
-    # -f matches the process name only, so it cannot match this ssh command's own text.
-    printf '%s\n' "$pw" | r 'cd "$HOME/gemm_ai/xr_teleoperate/vendor/brainco_hand_service/bin" &&
-        sudo -S -p "" sh -c "nohup ./brainco_hand_server --network_interface eth0 > /tmp/c3po-brainco-server.log 2>&1 < /dev/null &" &&
-        sleep 8 && tail -4 /tmp/c3po-brainco-server.log; pgrep brainco_hand >/dev/null' \
-        || die "the hand server is not running (wrong password? /tmp/c3po-brainco-server.log on the robot)"
+    if r 'systemctl cat c3po-brainco-hand.service >/dev/null 2>&1'; then
+        # Installed by `c3po install`: start the unit, so systemd is the process's one owner.
+        printf '%s\n' "$pw" | r 'sudo -S -p "" systemctl start c3po-brainco-hand.service &&
+            sleep 8 && systemctl is-active --quiet c3po-brainco-hand.service' \
+            || die "c3po-brainco-hand.service is not running (wrong password? journalctl -u c3po-brainco-hand.service)"
+    else
+        # Judge by the process, not the log: a redirected C++ stdout is block-buffered, so an empty
+        # log is normal, and a grep miss here used to end the script with no message. `pgrep` without
+        # -f matches the process name only, so it cannot match this ssh command's own text.
+        printf '%s\n' "$pw" | r 'cd "$HOME/gemm_ai/xr_teleoperate/vendor/brainco_hand_service/bin" &&
+            sudo -S -p "" sh -c "nohup ./brainco_hand_server --network_interface eth0 > /tmp/c3po-brainco-server.log 2>&1 < /dev/null &" &&
+            sleep 8 && tail -4 /tmp/c3po-brainco-server.log; pgrep brainco_hand >/dev/null' \
+            || die "the hand server is not running (wrong password? /tmp/c3po-brainco-server.log on the robot)"
+    fi
     echo "✓ hand server running"
 fi
 

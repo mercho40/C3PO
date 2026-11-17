@@ -226,7 +226,10 @@ def generate(jpeg: bytes, prompt: str) -> str:
             {
                 "model": MODEL,
                 "input": {"parts": parts},
-                "generation_config": {"thinking_config": {"thinking_level": THINKING_LEVEL}},
+                # Interactions takes `thinking_level` flat in `generation_config`;
+                # the nested `thinking_config` is generateContent's shape, and the
+                # robot logged HTTP 400 "Unknown parameter 'thinking_config'" for it.
+                "generation_config": {"thinking_level": THINKING_LEVEL},
             },
         ),
         (

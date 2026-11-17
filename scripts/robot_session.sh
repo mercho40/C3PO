@@ -64,13 +64,26 @@ for port in 3000 3001 8899; do
     fi
 done
 
+# A tunnel already on 8001 that answers is reused, not fought: robot_tunnel.sh refuses a held
+# port, and its exit used to stop the console with it (2026-11-16, a 3-day-old tunnel loop).
+reuse_tunnel=""
+if [ "$(lsof -nP -iTCP:8001 -sTCP:LISTEN 2>/dev/null | awk 'NR == 2 { print $1 }')" = ssh ] &&
+    curl -s -m3 -o /dev/null http://127.0.0.1:8001/telemetry/gate; then
+    reuse_tunnel=1
+fi
+
 # (3) The three jobs. Without job control they share this script's process group.
 cd "$repo" || exit 1
 mkdir -p "$log_dir"
 # shortcut: `kill 0` signals the whole process group, so it also kills a parent that wraps this script (e.g. `bun run`); give each child its own group if that ever matters.
 trap 'trap - EXIT INT TERM; kill 0' EXIT INT TERM
-scripts/robot_tunnel.sh "$host" </dev/null >"$log_dir/tunnel.log" 2>&1 &
-tunnel_pid=$!
+if [ -n "$reuse_tunnel" ]; then
+    echo "reusing the ssh tunnel already on 127.0.0.1:8001 (it answers)" | tee "$log_dir/tunnel.log"
+    tunnel_pid=$$ # not ours to watch or stop; if it drops, the bridge row and the console say so
+else
+    scripts/robot_tunnel.sh "$host" </dev/null >"$log_dir/tunnel.log" 2>&1 &
+    tunnel_pid=$!
+fi
 python3 -u scripts/robot_internet.py "$host" </dev/null >"$log_dir/internet.log" 2>&1 &
 internet_pid=$!
 C3PO_ROBOT_HOST="$robot_host" bun run dev:robot </dev/null >"$log_dir/console.log" 2>&1 &

@@ -195,6 +195,7 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
           chatId,
           userId: user.id,
           mode,
+          holdVoiceLoop: true,
           // Aborts when the browser goes away (Stop, or leaving /chat). `onEnd`
           // below still persists what the aborted turn produced.
           abortSignal: request.signal,

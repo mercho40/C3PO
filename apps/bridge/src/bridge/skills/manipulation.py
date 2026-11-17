@@ -897,7 +897,20 @@ def detected_target(
             + " — retry with that exact label or track_id, or turn toward it / find_object"
         )
     best = max(found, key=lambda o: float(o.get("confidence") or 0))
-    return kinematics.camera_to_torso(best["cam_xyz"]), _own_support(report, best)
+    x, y, z = kinematics.camera_to_torso(best["cam_xyz"])
+    return (x, y, z + pick_z_offset_m()), _own_support(report, best)
+
+
+def pick_z_offset_m() -> float:
+    """C3PO_PICK_Z_OFFSET_M, metres added to a detection's height (2026-11-16 expo: the camera
+    read a bottle the operator could see in reach ~20 cm low). Clamped to [0, 0.30]: only ever
+    up, so a wrong value closes the hand in the air above the object, never into its table.
+    shortcut: a hand-set fudge; replace with a camera extrinsic checked against a taped table."""
+    try:
+        v = float(os.environ.get("C3PO_PICK_Z_OFFSET_M", "0") or 0)
+    except ValueError:
+        return 0.0
+    return min(max(v, 0.0), 0.30)
 
 
 def _fresh_report() -> tuple[dict[str, Any], list[dict[str, Any]]]:

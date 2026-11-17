@@ -53,9 +53,10 @@ A5 matters: this branch writes `tool_call_log.user_id` and `source`, and reads
 `chat.channel`. Against an older database the audit rows are silently dropped
 (the insert fails, by design never blocking the command) and `/chat` errors.
 
-The school AI (`https://ia-tic.ort.edu.ar/api/v1`, https — http answers a 301) only resolves on the school network, so chat and voice can only be
-checked there. A VPN such as Cloudflare WARP hides the school DNS: on
-2026-10-15 the AI failed until WARP was disconnected.
+The school AI is `https://proyectos-tic.ort.edu.ar/c3po/api/v1` since 2026-11-16, and it
+answers off campus (checked from the expo venue). The old `ia-tic.ort.edu.ar` only resolved on
+the school network; a VPN such as Cloudflare WARP hid the school DNS (on 2026-10-15 the AI
+failed until WARP was disconnected).
 
 Network that worked on 2026-10-15: the Mac on the robot's Wi-Fi
 (`g1-robot`, robot at 192.168.77.1, ssh alias `c3po-wire`) and internet over

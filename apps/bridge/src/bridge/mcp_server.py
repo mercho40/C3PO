@@ -1647,11 +1647,25 @@ async def move_arm(
     ] = None,
     elbow_deg: Annotated[
         float | None,
-        Field(ge=0, le=110, description="Elbow flexion, degrees. 0 = straight arm."),
+        Field(
+            ge=0,
+            le=110,
+            description=(
+                "Elbow, degrees, URDF convention: 0 = bent about 90° (forearm square to the "
+                "upper arm); larger straightens it, about 90 is nearly straight."
+            ),
+        ),
     ] = None,
     wrist_roll_deg: Annotated[
         float | None,
-        Field(ge=-45, le=45, description="Wrist roll, degrees. Sign convention UNVERIFIED."),
+        Field(
+            ge=-90,
+            le=90,
+            description=(
+                "Wrist roll (turns the forearm), degrees. Sign convention UNVERIFIED. "
+                "±90 turns the palm a quarter turn, e.g. to face outward for the saludo peronista."
+            ),
+        ),
     ] = None,
     wrist_pitch_deg: Annotated[
         float | None,
@@ -1787,7 +1801,10 @@ async def set_hand(
                 "A named grasp instead of `closure`: power = wrap, pinch = thumb+index, hook = handles, "
                 "point = index up (ONE finger, for pointing), v_sign = index and middle up, "
                 "the rest closed («la V», «la V de la victoria»); saludo_peronista = the same "
-                "as v_sign: use it for «saludo peronista»."
+                "as v_sign: use it for «saludo peronista». A «saludo peronista» is the WHOLE "
+                "gesture, never the hand alone: run_sequence with move_arm {side, "
+                "shoulder_pitch_deg: 80, elbow_deg: 0, wrist_roll_deg: -90} (forearm up, palm "
+                "to the audience), then this shape with with_previous: true."
             )
         ),
     ] = None,
@@ -1918,7 +1935,8 @@ async def run_sequence(
                 "each {tool, args} with that tool's own arguments. Use it whenever the "
                 "operator asks for two or more arm/hand/gesture/speech things together, "
                 "e.g. raise the right arm and make the saludo peronista: "
-                '[{"tool": "move_arm", "args": {"side": "right", "shoulder_pitch_deg": 80}}, '
+                '[{"tool": "move_arm", "args": {"side": "right", "shoulder_pitch_deg": 80, '
+                '"elbow_deg": 0, "wrist_roll_deg": -90}}, '
                 '{"tool": "set_hand", "args": {"side": "right", "shape": "saludo_peronista"}, '
                 '"with_previous": true}]. '
                 "move_arm holds the pose, so a later hand step happens with the arm up; "
@@ -1946,7 +1964,9 @@ async def run_sequence(
     accepts, with_previous only on a hand step right after an arm move or gesture), and
     each still meets PARAR, the battery and the person rule as it starts
     (`safety.tool_refusal(..., confirmed=True)` skips only the per-step grant), with its
-    own spoken warning. The chain stops at the first step refused or failed and says which.
+    own spoken warning. A hand step gets CLOSE_SETTLE_S to travel before the next step
+    starts (one moving with_previous shares its leader's time instead).
+    The chain stops at the first step refused or failed and says which.
     An arm it leaves raised comes down after SEQUENCE_ARM_HOLD_S unless keep_arm_up.
     """
     if not 1 <= len(steps) <= SEQUENCE_MAX:
@@ -2028,6 +2048,12 @@ async def run_sequence(
             if _step_failed(result):
                 return {"status": "failed", "reason": "step_failed", **end}
         i += len(group)
+        if i < len(planned) and any(planned[k][0] in _SEQUENCE_PARTNERS for k in group):
+            from bridge.skills.manipulation import CLOSE_SETTLE_S
+
+            # set_hand only publishes a target: on 2026-11-16 a close then an open went out in
+            # the same second and the fingers never visibly closed. with_previous is its group.
+            await asyncio.sleep(CLOSE_SETTLE_S)
     out: dict[str, Any] = {"status": "completed", "done": done, "env": SIM_MODE}
     if not keep_arm_up and SEQUENCE_ARM_HOLD_S > 0 and _leaves_arm_held(planned):
         from bridge import estop
@@ -4026,13 +4052,12 @@ async def find_object(
     if err or jpeg is None:
         return err or {"error": "no_frame"}
     from bridge import vlm
+    from bridge.object_memory import label_matches
 
     t0 = time.monotonic()
     try:
         points = await asyncio.to_thread(vlm.point, jpeg, query)
     except vlm.VlmError as exc:
-        from bridge.object_memory import label_matches
-
         world = surroundings_snapshot()
         out = _detector_only(exc, world)
         found = []
@@ -4072,10 +4097,14 @@ async def find_object(
             "range_m": None,
         }
         near = [o for o in objects if abs(o["bearing_deg"] - bearing) <= _MATCH_DEG]
+        # The same object first: on 2026-11-16 a bottle at 0.38 m took a person's 2.96 m.
+        same = [o for o in near if label_matches(o["label"], query) or label_matches(o["label"], p["label"])]
         if near:
-            match = min(near, key=lambda o: abs(o["bearing_deg"] - bearing))
+            match = min(same or near, key=lambda o: abs(o["bearing_deg"] - bearing))
             inst["range_m"] = match["range_m"]
-            inst["range_from"] = f"detector '{match['label']}' at {match['bearing_deg']} deg"
+            inst["range_from"] = f"detector '{match['label']}' at {match['bearing_deg']} deg" + (
+                "" if same else ", a different object: the range may be wrong"
+            )
             xy = _map_xy(pose, bearing, match["range_m"])
             if xy:
                 inst["map_xy_m"] = xy
@@ -4087,8 +4116,9 @@ async def find_object(
         "frame_source": source,
         "range_note": (
             "No depth reaches the bridge: range_m is borrowed from a detector "
-            f"object within ±{_MATCH_DEG:g} deg of the bearing, or null. Bearing "
-            "is good to a few degrees; range is approximate."
+            f"object within ±{_MATCH_DEG:g} deg of the bearing (the same kind of object "
+            "if one is there, else the nearest in bearing, flagged in range_from), or "
+            "null. Bearing is good to a few degrees; range is approximate."
         ),
         "latency_s": round(time.monotonic() - t0, 2),
         "data_notice": _SEEN_NOTE,

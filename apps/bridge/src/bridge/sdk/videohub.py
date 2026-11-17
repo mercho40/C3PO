@@ -97,6 +97,14 @@ RPC_TIMEOUT_S = 1.0
 # poll at 10 Hz would bury everything else the bridge says.
 QUIET_AFTER_FAILURES = 3
 
+# Poll period once the feed is down (past QUIET_AFTER_FAILURES). With
+# `videohub_pc4` killed (`take_camera`, i.e. `c3po perception up perception`)
+# nothing serves the RPC, so every GetImageSample blocks RPC_TIMEOUT_S and the
+# SDK prints `[ClientStub] send request error` to stdout: at 10 Hz that was a
+# line a second in the journal, forever. This is also how long a restarted
+# `master_service` waits for its picture to come back.
+RETRY_WHILE_DOWN_S = 5.0
+
 
 def jpeg_dimensions(data: bytes) -> Tuple[Optional[int], Optional[int]]:
     """(width, height) from a JPEG's SOF marker, or (None, None).
@@ -239,13 +247,20 @@ class VideohubCamera:
         if client is None:
             return
 
-        period = 1.0 / self._hz
         while not self._stop.is_set():
             started = time.monotonic()
             self.poll_once(client)
-            # Pace from the START of the call, not the end, so a slow RPC eats
-            # its own slack instead of adding to the period.
-            self._stop.wait(max(0.0, period - (time.monotonic() - started)))
+            self._stop.wait(self._pause_s(time.monotonic() - started))
+
+    def _pause_s(self, elapsed: float) -> float:
+        """Seconds until the next poll: the frame period, or RETRY_WHILE_DOWN_S once down."""
+        with self._lock:
+            down = self._failures > QUIET_AFTER_FAILURES
+        if down:
+            return RETRY_WHILE_DOWN_S
+        # Pace from the START of the call, not the end, so a slow RPC eats its
+        # own slack instead of adding to the period.
+        return max(0.0, 1.0 / self._hz - elapsed)
 
     def poll_once(self, client: Any) -> bool:
         """One RPC and its recording. True if a frame landed.

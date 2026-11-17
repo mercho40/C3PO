@@ -12,6 +12,7 @@ import {
 } from "#back/agent/runtime.js";
 import { notePending } from "#back/agent/confirmations.js";
 import { listSkills } from "#back/skills/index.js";
+import { validateArgs } from "#back/skills/validate.js";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
 const messageId = createIdGenerator({ prefix: "msg", size: 16 });
@@ -43,6 +44,7 @@ type RealtimeEvent = {
   arguments?: string;
   call_id?: string;
   error?: RealtimeError;
+  response?: { status?: string; status_details?: unknown };
 };
 
 type RealtimeError = { type?: string; code?: string; message?: string };
@@ -94,6 +96,39 @@ export function realtimeTools(skills: RealtimeSkill[]) {
   ];
 }
 
+/**
+ * Why a call's arguments do not fit the schema this session declared, or null.
+ * Realtime does not enforce it: on 2026-11-16 walk_to got `target_x_meters_world`
+ * (copied from get_state) for `target_x_meters_world_frame`. Unknown names are
+ * checked by hand because pydantic's schemas do not set `additionalProperties`.
+ */
+export function argumentProblem(
+  name: string,
+  schema: unknown,
+  args: Record<string, unknown>,
+): string | null {
+  const s = (schema ?? {}) as {
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  const accepted = Object.keys(s.properties ?? {});
+  const unknown = Object.keys(args).filter((k) => !accepted.includes(k));
+  const checked = validateArgs(schema ?? {}, args);
+  if (!unknown.length && checked.ok) return null;
+  const missing = (s.required ?? []).filter((k) => !(k in args));
+  return [
+    `invalid_arguments: nothing was sent to the robot.`,
+    unknown.length && `Unknown parameters: ${unknown.join(", ")}.`,
+    missing.length && `Missing required: ${missing.join(", ")}.`,
+    !checked.ok &&
+      `Problems: ${checked.issues.map((i) => `${i.path} ${i.message}`).join("; ")}.`,
+    `${name} accepts exactly: ${accepted.join(", ") || "no parameters"}.`,
+    `Call ${name} again now with these exact names.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export function realtimeSessionUpdate(
   instructions: string,
   skills: RealtimeSkill[],
@@ -104,7 +139,7 @@ export function realtimeSessionUpdate(
       type: "realtime" as const,
       model: MODEL,
       output_modalities: ["audio"],
-      instructions,
+      instructions: `${instructions}\n\nRealtime voice safety: high-danger tools are intentionally unavailable. Ask the operator to use the authenticated console for those actions.`,
       audio: {
         input: {
           format: { type: "audio/pcm", rate: 24_000 },
@@ -116,7 +151,7 @@ export function realtimeSessionUpdate(
             interrupt_response: true,
           },
         },
-        output: { format: { type: "audio/pcm" }, voice: VOICE },
+        output: { format: { type: "audio/pcm", rate: 24_000 }, voice: VOICE },
       },
       tools: realtimeTools(skills),
       tool_choice: "auto",
@@ -150,11 +185,14 @@ class RobotAudioSink {
     return this.tail;
   }
 
-  interrupt(): Promise<void> {
+  /** `robot: false` drops only our queued audio: the robot's stop would also cut a
+   *  tool's motion warning, and the bridge then refuses the motion. */
+  interrupt(robot = true): Promise<void> {
     this.epoch += 1;
     this.pending = new Uint8Array();
     this.resampler = new Pcm16Resampler(24_000, 16_000);
     this.streamId = crypto.randomUUID();
+    if (!robot) return this.tail;
     this.tail = this.tail
       .catch(() => {})
       .then(async () => {
@@ -199,13 +237,14 @@ export class RealtimeVoiceSession {
   private socket: WebSocket | null = null;
   private inputAbort: AbortController | null = null;
   private audio = new RobotAudioSink();
+  private toolsRunning = 0;
   /**
    * The tool names this session DECLARED to the model. A function call naming
    * anything else is refused here: what was declared to OpenAI is a request,
    * not an enforcement, and `executeTool` used to dispatch whatever name came
    * back — including a high-danger skill the declaration had left out.
    */
-  private declaredTools: ReadonlySet<string> = new Set();
+  private declaredTools: ReadonlyMap<string, unknown> = new Map();
   private eventTail: Promise<void> = Promise.resolve();
   private state: RealtimeVoiceState = {
     running: false,
@@ -251,11 +290,15 @@ export class RealtimeVoiceSession {
     this.audio = new RobotAudioSink();
 
     try {
-      const [baseInstructions, skills] = await Promise.all([
-        buildSystemPrompt("voice"),
-        listSkills(),
-      ]);
-      const instructions = `${baseInstructions}\n\nRealtime voice safety: high-danger tools are intentionally unavailable. Ask the operator to use the authenticated console for those actions.`;
+      // One catalogue for both, so the prompt describes the tools declared.
+      const skills = await listSkills();
+      // Empty means the bridge was unreachable with nothing cached: the session
+      // would hear everything and could move nothing, not even stop.
+      if (!skills.length)
+        throw new Error(
+          "robot tool catalogue unavailable (bridge unreachable): not starting voice",
+        );
+      const instructions = await buildSystemPrompt("voice", skills);
       const url = new URL("wss://api.openai.com/v1/realtime");
       url.searchParams.set("model", MODEL);
       const socket = new WebSocket(url, {
@@ -273,8 +316,13 @@ export class RealtimeVoiceSession {
           this.fail(new Error("OpenAI Realtime connection closed"));
       });
 
-      this.declaredTools = new Set(realtimeTools(skills).map((t) => t.name));
+      this.declaredTools = new Map(
+        realtimeTools(skills).map((t) => [t.name, t.parameters]),
+      );
       this.send(realtimeSessionUpdate(instructions, skills));
+      console.log(
+        `[voice/realtime] declared tools: ${[...this.declaredTools.keys()].join(", ")}`,
+      );
 
       this.state.phase = "listening";
       this.inputAbort = new AbortController();
@@ -381,7 +429,8 @@ export class RealtimeVoiceSession {
     // immediately even while an earlier tool is still completing.
     if (event.type === "input_audio_buffer.speech_started") {
       this.state.phase = "listening";
-      void this.audio.interrupt();
+      // Any voice in a crowd triggers this; mid-tool it would cancel the wave (2026-11-16).
+      void this.audio.interrupt(this.toolsRunning === 0);
       return;
     }
     if (event.type === "response.output_audio.delta") {
@@ -427,6 +476,15 @@ export class RealtimeVoiceSession {
       case "response.function_call_arguments.done":
         await this.executeTool(event);
         break;
+      // Heard but did nothing (2026-11-16): a response cut by noise (barge-in,
+      // `turn_detected`) ends here, before any function call.
+      case "response.done":
+        if (event.response?.status !== "completed")
+          console.warn(
+            `[voice/realtime] response ${event.response?.status}`,
+            JSON.stringify(event.response?.status_details),
+          );
+        break;
     }
   }
 
@@ -461,7 +519,11 @@ export class RealtimeVoiceSession {
     if (!name || !callId || !chatId) return;
     let args: Record<string, unknown> = {};
     try {
-      args = JSON.parse(event.arguments || "{}") as Record<string, unknown>;
+      // `?? {}`: a "null" argument string must not throw in the schema check.
+      args = (JSON.parse(event.arguments || "{}") ?? {}) as Record<
+        string,
+        unknown
+      >;
     } catch {
       args = {};
     }
@@ -470,11 +532,18 @@ export class RealtimeVoiceSession {
     let result: unknown;
     let status: "ok" | "error" = "ok";
     let error: string | null = null;
-    if (!this.declaredTools.has(name)) {
+    // Either refusal sends the robot nothing, so neither counts as running.
+    const refused = this.declaredTools.has(name)
+      ? argumentProblem(name, this.declaredTools.get(name), args)
+      : `tool_not_offered: ${name}`;
+    if (refused) {
       status = "error";
-      error = `tool_not_offered: ${name}`;
+      error = refused;
       result = { error };
     } else {
+      // Only a dispatched call counts; `finally`, so a throw in the catch
+      // below cannot leave barge-in sparing the robot's speech for good.
+      this.toolsRunning += 1;
       try {
         const back = BACK_TOOLS.find((t) => t.def.name === name);
         if (back) {
@@ -511,6 +580,8 @@ export class RealtimeVoiceSession {
             chatId,
             loop: false,
           });
+      } finally {
+        this.toolsRunning -= 1;
       }
     }
     this.state.toolCalls += 1;

@@ -23,20 +23,22 @@ describe("format", () => {
     expect(batteryLevel(null)).toBe("unknown");
     expect(batteryLevel(15)).toBe("critical");
     expect(batteryLevel(20)).toBe("critical");
+    expect(batteryLevel(30)).toBe("critical");
     expect(batteryLevel(35)).toBe("low");
     expect(batteryLevel(55)).toBe("ok");
     expect(batteryLevel(87)).toBe("full");
   });
 
-  test("battery banner: warn under 25 %, alert at or under 20 %, never a stub", () => {
+  test("battery banner: warn under 40 %, alert at or under 30 %, never a stub", () => {
     const cases: [number | null, "warn" | "alert" | null][] = [
       [null, null],
       [Number.NaN, null],
-      [30, null],
-      [25, null],
-      [24.9, "warn"],
-      [24.6, "warn"],
-      [20.5, "warn"],
+      [45, null],
+      [40, null],
+      [39.9, "warn"],
+      [39.6, "warn"],
+      [30.5, "warn"],
+      [30, "alert"],
       [20, "alert"],
       [15, "alert"],
       [14, "alert"],

@@ -776,7 +776,7 @@ def test_a_long_t0_tool_is_never_battery_refused(monkeypatch):
     assert safety.tool_refusal("listen", long_t0) is None
 
 
-@pytest.mark.parametrize(("soc", "age_s"), [(25, 0.0), (20, 0.0), (None, 0.0), (15, 120.0)])
+@pytest.mark.parametrize(("soc", "age_s"), [(35, 0.0), (30, 0.0), (None, 0.0), (15, 120.0)])
 def test_a_charged_unknown_or_stale_battery_is_allowed(listed, monkeypatch, soc, age_s):
     _battery(monkeypatch, soc, age_s=age_s)
     assert "battery" not in (_refusal("walk_to", listed) or "")

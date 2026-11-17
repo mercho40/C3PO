@@ -1419,3 +1419,13 @@ async def test_the_warning_goes_before_the_step_and_not_again_for_the_arm(monkey
     out = await m.pick("bottle")
     assert out["status"] == "completed", out
     assert said == [(False, 0)]  # before the step, once
+
+
+def test_pick_z_offset_only_raises_and_is_clamped(monkeypatch):
+    from bridge.skills.manipulation import pick_z_offset_m
+
+    monkeypatch.delenv("C3PO_PICK_Z_OFFSET_M", raising=False)
+    assert pick_z_offset_m() == 0.0
+    for raw, want in (("0.2", 0.2), ("-0.5", 0.0), ("9", 0.30), ("x", 0.0)):
+        monkeypatch.setenv("C3PO_PICK_Z_OFFSET_M", raw)
+        assert pick_z_offset_m() == want

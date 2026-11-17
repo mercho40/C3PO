@@ -1,0 +1,34 @@
+# The BrainCo hand server, run as a unit instead of `sudo nohup` after every boot.
+#
+# The binary is the vendor's, under the other team's tree, and is run IN PLACE:
+# this unit only points at it. Never copy, edit or move anything under
+# ~/gemm_ai. On a robot without it, ConditionPathExists skips the unit cleanly.
+#
+# OPT-IN. `c3po install` installs this file and does NOT enable it: the server
+# drives the hand motors on whatever arrives on rt/brainco/*/cmd, and nothing
+# that drives motors starts at boot unless an operator chose it. Whether the
+# binary moves the fingers on its own at start is unverified.
+# To start it at every boot (docs/DEMO-RUNBOOK.md §1):
+#
+#     sudo systemctl enable --now c3po-brainco-hand.service
+#
+# Root, like the manual start it replaces: it opens /dev/ttyUSB* and joins DDS on eth0.
+
+[Unit]
+Description=BrainCo hand server (vendor binary, run in place; opt-in at boot)
+Documentation=file:///home/unitree/c3po/docs/DEMO-RUNBOOK.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/home/unitree/gemm_ai/xr_teleoperate/vendor/brainco_hand_service/bin/brainco_hand_server
+
+[Service]
+Type=exec
+WorkingDirectory=/home/unitree/gemm_ai/xr_teleoperate/vendor/brainco_hand_service/bin
+ExecStart=/home/unitree/gemm_ai/xr_teleoperate/vendor/brainco_hand_service/bin/brainco_hand_server --network_interface eth0
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
