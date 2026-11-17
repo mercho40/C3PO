@@ -393,6 +393,25 @@ check "a retry after a half-done install keeps the backup" "loaded" "$(backup_wi
 check "same commit re-install keeps the backup" "loaded" "$(backup_with newer)"
 rm -rf "$install_tmp"
 
+# The hand server unit: the vendor binary in place, opt-in at boot, never enabled here.
+hand_unit_source="$(cat "$repo/scripts/robot/c3po-brainco-hand.service")"
+hand_bin=/home/unitree/gemm_ai/xr_teleoperate/vendor/brainco_hand_service/bin/brainco_hand_server
+check_contains "the hand unit runs the vendor binary in place" \
+    "ExecStart=$hand_bin --network_interface eth0" "$hand_unit_source"
+check_contains "the hand unit runs from the binary's own directory" \
+    "WorkingDirectory=${hand_bin%/*}" "$hand_unit_source"
+check_contains "the hand unit is skipped where the binary is absent" \
+    "ConditionPathExists=$hand_bin" "$hand_unit_source"
+check_contains "the hand unit restarts a crashed server" "Restart=on-failure" "$hand_unit_source"
+check_contains "the hand unit waits for the network DDS joins" "After=network-online.target" "$hand_unit_source"
+check_contains "install_stack installs the hand unit" \
+    'sudo mv -f "/etc/systemd/system/.$hand_unit.c3po-new" "/etc/systemd/system/$hand_unit"' \
+    "$install_stack_source"
+# Nothing that drives motors starts at boot unless an operator enables it.
+check "install_stack enables only the bridge, and starts nothing" \
+    "sudo systemctl enable c3po-bridge.service >/dev/null" \
+    "$(grep -E '^sudo systemctl (enable|start|restart)' "$repo/scripts/robot/install_stack.sh")"
+
 bridge_unit_source="$(cat "$repo/scripts/robot/c3po-bridge.service")"
 check_contains "systemd directly supervises the bridge" "Type=exec" "$bridge_unit_source"
 # LOOPBACK, NOT THE LAN. This asserted `BRIDGE_HOST=0.0.0.0` until 2026-09-06,
@@ -502,6 +521,40 @@ check_contains "robot_up starts the hand server" "brainco_hand_server" "$up_step
 check_contains "robot_up stops on a running gemm container" "no gemm-* container may be running" "$up_steps"
 up_src="$(cat "$repo/scripts/robot_up.sh")"
 check_not_contains "robot_up never stops gemm's containers itself" "docker stop" "$up_src"
+
+# The hands step against a fake robot: FAKE_HAND is the hand unit's state there
+# (active | installed | none). ssh answers from the remote command's text.
+up_fake="$(mktemp -d)"
+# shellcheck disable=SC2016  # the $vars are for the stubs to expand, not us
+printf '%s\n' '#!/bin/sh' 'echo "$*" >>"$FAKE_SSH_LOG"' 'case "$*" in' \
+    '*"sudo -S"*) cat >/dev/null ;;' \
+    '*"systemctl is-active --quiet c3po-brainco-hand.service") [ "$FAKE_HAND" = active ] ;;' \
+    '*"[b]rainco_hand_server"*) exit 1 ;;' \
+    '*"systemctl cat c3po-brainco-hand.service"*) [ "$FAKE_HAND" != none ] ;;' \
+    '*TELEOP_HAND_TYPE*) echo brainco ;;' \
+    '*"docker ps"*) echo 0 ;;' \
+    'esac' >"$up_fake/ssh"
+printf '#!/bin/sh\necho osascript >>"$FAKE_SSH_LOG"; echo pw\n' >"$up_fake/osascript"
+printf '#!/bin/sh\nexit 0\n' >"$up_fake/git"
+chmod +x "$up_fake/"*
+run_up() {  # run_up <hand unit state>: robot_up's output, then every remote command it sent
+    : >"$up_fake/log.$1"
+    FAKE_HAND="$1" FAKE_SSH_LOG="$up_fake/log.$1" PATH="$up_fake:$PATH" \
+        bash "$repo/scripts/robot_up.sh" fake-host 2>&1
+    cat "$up_fake/log.$1"
+}
+up_active="$(run_up active)"
+check_contains "a running hand unit counts as already running" \
+    "✓ hand server already running (c3po-brainco-hand.service)" "$up_active"
+check_not_contains "a running hand unit asks for no password" "osascript" "$up_active"
+check_not_contains "a running hand unit is not started a second time" "sudo -S" "$up_active"
+up_installed="$(run_up installed)"
+check_contains "an installed, stopped hand unit is started through systemd" \
+    'sudo -S -p "" systemctl start c3po-brainco-hand.service' "$up_installed"
+check_not_contains "an installed hand unit is never bypassed with nohup" "nohup" "$up_installed"
+check_contains "with no hand unit the manual start remains" \
+    "nohup ./brainco_hand_server --network_interface eth0" "$(run_up none)"
+rm -rf "$up_fake"
 
 echo "== robot tunnel =="
 # The reconnecting tunnel (2026-10-15: it dropped twice in one session).

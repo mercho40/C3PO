@@ -205,14 +205,15 @@ There is one installer and one operator command:
 c3po status
 ```
 
-The installer links only `c3po` onto `~/.local/bin`, validates and copies one root-owned
-systemd unit (never a symlink into the writable checkout), and installs root-owned
+The installer links only `c3po` onto `~/.local/bin`, validates and copies two root-owned
+systemd units (never a symlink into the writable checkout), and installs root-owned
 logrotate/sudoers policies. It starts nothing. Re-run `c3po install` after merging a unit
 change.
 
-| Unit                  | What it owns                                                    |
-| --------------------- | --------------------------------------------------------------- |
-| `c3po-bridge.service` | The bridge directly (`Type=exec`); no wrapper, nohup or pidfile |
+| Unit                        | What it owns                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------------ |
+| `c3po-bridge.service`       | The bridge directly (`Type=exec`); no wrapper, nohup or pidfile                            |
+| `c3po-brainco-hand.service` | The vendor `brainco_hand_server`, run in place; installed, never enabled by `c3po install` |
 
 There is deliberately no perception unit and no repair timer. Every perception stage,
 including sensor-free ones, is a foreground `c3po up <stage>` decision. Boot may
@@ -789,6 +790,9 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
   explicit `PATH` and does not depend on a login shell.
 - **Boot unit.** `c3po install` installs and enables `c3po-bridge.service`. The unit
   directly supervises the interpreter, claims no sensor, and issues no motion command.
+  It also installs `c3po-brainco-hand.service` and leaves it disabled: it drives the hand
+  motors, so boot start is opt-in (`sudo systemctl enable --now c3po-brainco-hand.service`,
+  `docs/DEMO-RUNBOOK.md` §1).
 - **What was deployed.** `c3po install` (since 31b2d64) writes `~/.c3po/deployed` as
   `<sha> <UTC time>`. When the commit changes, the one it replaces goes to
   `~/.c3po/previous-deploy` as a bare sha, and the loaded unit goes to
