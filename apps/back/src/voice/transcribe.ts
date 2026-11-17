@@ -7,7 +7,8 @@
  * the text then goes through the ordinary agent turn and every bridge gate.
  * The gateway key stays on this server.
  */
-const BASE_URL = process.env.AGENT_BASE_URL ?? "https://proyectos-tic.ort.edu.ar/c3po/api/v1";
+const BASE_URL =
+  process.env.AGENT_BASE_URL ?? "https://proyectos-tic.ort.edu.ar/c3po/api/v1";
 const MODEL = process.env.AGENT_TRANSCRIBE_MODEL ?? "tic-transcript";
 /** ~60 s of 16 kHz mono 16-bit WAV; a push-to-talk utterance is far shorter. */
 export const MAX_AUDIO_BYTES = 2_000_000;
