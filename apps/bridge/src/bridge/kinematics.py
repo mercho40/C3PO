@@ -7,8 +7,8 @@ A compiled solver would add a heavy dependency there for no speed we need.
 
 Frames — everything here is in **`torso_link`**. In the URDF, both arms *and* the D435 hang off
 `torso_link`. So a point the head camera sees reaches the arm through two fixed CAD transforms
-and nothing else: no waist angle, and none of the vision container's `base_link` extrinsic,
-which is unmeasured. `torso_link`: +x forward, +y left, +z up.
+and nothing else: no waist angle, and none of the vision container's `base_link` extrinsic
+unless its C3PO_CAMERA_* are set here too (CAMERA_ENV, scripts/camera_calibrate.py). `torso_link`: +x forward, +y left, +z up.
 
 Angles are the **URDF = motor convention**. That is what `rt/lowstate` reports and what
 `rt/arm_sdk` takes; Unitree's RL deploy and `xr_teleoperate` feed URDF angles straight to the
@@ -26,8 +26,9 @@ for it), the hand's own geometry beyond one tool-centre offset, and arm flex und
 from __future__ import annotations
 
 import math
+import os
 import xml.etree.ElementTree as ET
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -461,17 +462,72 @@ def solve(
 
 # --- the head camera -----------------------------------------------------------------------------
 
+#: The vision container's mount override (apps/perception/vision/c3po_vision/grounding.py
+#: CameraExtrinsic), in ITS frame: base_link = pelvis with the waist at zero, pitch positive
+#: nose-down, yaw positive left. Set in apps/bridge/.env they move camera_to_torso too, so the arm
+#: and the vision container use one measured mount (scripts/camera_calibrate.py prints them).
+#: Unset: the URDF d435_joint, as before. Read once per process: restart the bridge to apply.
+CAMERA_ENV = (
+    "C3PO_CAMERA_X_M",
+    "C3PO_CAMERA_Y_M",
+    "C3PO_CAMERA_Z_M",
+    "C3PO_CAMERA_PITCH_DEG",
+    "C3PO_CAMERA_YAW_DEG",
+)
+
+
+def link_pose(tip: str, root: str, q: Mapping[str, float]) -> tuple[Vec3, Mat3]:
+    """`tip`'s origin and rotation in `root`, revolute joints at q[name] (radians, 0 if absent)."""
+    pos: Vec3 = (0.0, 0.0, 0.0)
+    rot = _I3
+    for joint in _path(tip, root):
+        pos, rot = _add(pos, _mv(rot, joint.xyz)), _mm(rot, joint.rot)
+        if joint.name in q:
+            rot = _mm(rot, _axis_angle(joint.axis, float(q[joint.name])))
+    return pos, rot
+
+
+def mount_in_pelvis(xyz: Sequence[float], rot: Mat3) -> tuple[float, float, float, float, float]:
+    """A torso_link camera mount as the C3PO_CAMERA_* five: (x, y, z, pitch_deg, yaw_deg) in the
+    pelvis, waist at zero. Roll is dropped, as the vision side drops it."""
+    pos_t, rot_t = _torso_in_pelvis()
+    p = _add(pos_t, _mv(rot_t, xyz))
+    return (p[0], p[1], p[2], *pitch_yaw_deg(_mm(rot_t, rot)))
+
+
+def pitch_yaw_deg(rot: Mat3) -> tuple[float, float]:
+    """(pitch, yaw) in degrees of a rotation Rz(yaw) Ry(pitch); any roll is ignored."""
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, -rot[2][0]))))
+    return pitch, math.degrees(math.atan2(rot[1][0], rot[0][0]))
+
+
+def mount_from_pelvis(
+    x: float, y: float, z: float, pitch_deg: float, yaw_deg: float
+) -> tuple[Vec3, Mat3]:
+    """`mount_in_pelvis` undone: the five back to a torso_link (xyz, rotation)."""
+    _, rot_t = _torso_in_pelvis()
+    rot_tt: Mat3 = tuple(zip(*rot_t))  # type: ignore[assignment]
+    rot = _mm(rot_tt, _rpy(0.0, math.radians(pitch_deg), math.radians(yaw_deg)))
+    return base_to_torso((x, y, z)), rot
+
 
 @cache
 def _camera_mount() -> tuple[Vec3, Mat3]:
     (joint,) = _path("d435_link")
-    return joint.xyz, joint.rot
+    if not any(os.environ.get(k) for k in CAMERA_ENV):
+        return joint.xyz, joint.rot
+    cad = mount_in_pelvis(joint.xyz, joint.rot)
+    x, y, z, pitch, yaw = (
+        float(os.environ.get(k) or d) for k, d in zip(CAMERA_ENV, cad, strict=True)
+    )
+    return mount_from_pelvis(x, y, z, pitch, yaw)
 
 
 def camera_to_torso(p_optical: Sequence[float]) -> Vec3:
     """D435 colour-optical point (x right, y down, z forward, metres) -> torso_link.
 
-    Uses the URDF's CAD mount, which tilts the camera ~47.6° nose-down.
+    Uses the URDF's CAD mount, which tilts the camera ~47.6° nose-down, unless CAMERA_ENV says
+    otherwise.
     """
     x, y, z = (float(v) for v in p_optical)
     link = (z, -x, -y)  # REP-103 optical -> body: forward = z, left = -x, up = -y
@@ -481,11 +537,7 @@ def camera_to_torso(p_optical: Sequence[float]) -> Vec3:
 
 @cache
 def _torso_in_pelvis() -> tuple[Vec3, Mat3]:
-    pos: Vec3 = (0.0, 0.0, 0.0)
-    rot = _I3
-    for joint in _path(ROOT_LINK, "pelvis"):  # the three waist joints, at zero
-        pos, rot = _add(pos, _mv(rot, joint.xyz)), _mm(rot, joint.rot)
-    return pos, rot
+    return link_pose(ROOT_LINK, "pelvis", {})  # the three waist joints, at zero
 
 
 def base_to_torso(p_base: Sequence[float]) -> Vec3:
