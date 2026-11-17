@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as chats from "#back/db/chats.js";
 import * as client from "#back/bridge/client.js";
 import * as confirmations from "#back/agent/confirmations.js";
+import * as skills from "#back/skills/index.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -62,6 +63,29 @@ describe("OpenAI Realtime session contract", () => {
         }),
       ).rejects.toThrow("OPENAI_API_KEY");
     } finally {
+      if (previous === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previous;
+    }
+  });
+
+  test("refuses to start with no robot tools: the bridge was unreachable", async () => {
+    const previous = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "test-key";
+    const spies = [
+      spyOn(skills, "listSkills").mockImplementation(async () => []),
+      spyOn(globalThis, "fetch").mockImplementation(
+        (async () => new Response(null, { status: 204 })) as never,
+      ),
+    ];
+    try {
+      await expect(
+        new RealtimeVoiceSession().start({
+          chatId: "chat",
+          ownerId: "operator",
+        }),
+      ).rejects.toThrow("robot tool catalogue unavailable");
+    } finally {
+      for (const s of spies) s.mockRestore();
       if (previous === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = previous;
     }

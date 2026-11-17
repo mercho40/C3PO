@@ -44,6 +44,7 @@ type RealtimeEvent = {
   arguments?: string;
   call_id?: string;
   error?: RealtimeError;
+  response?: { status?: string; status_details?: unknown };
 };
 
 type RealtimeError = { type?: string; code?: string; message?: string };
@@ -291,6 +292,12 @@ export class RealtimeVoiceSession {
     try {
       // One catalogue for both, so the prompt describes the tools declared.
       const skills = await listSkills();
+      // Empty means the bridge was unreachable with nothing cached: the session
+      // would hear everything and could move nothing, not even stop.
+      if (!skills.length)
+        throw new Error(
+          "robot tool catalogue unavailable (bridge unreachable): not starting voice",
+        );
       const instructions = await buildSystemPrompt("voice", skills);
       const url = new URL("wss://api.openai.com/v1/realtime");
       url.searchParams.set("model", MODEL);
@@ -313,6 +320,9 @@ export class RealtimeVoiceSession {
         realtimeTools(skills).map((t) => [t.name, t.parameters]),
       );
       this.send(realtimeSessionUpdate(instructions, skills));
+      console.log(
+        `[voice/realtime] declared tools: ${[...this.declaredTools.keys()].join(", ")}`,
+      );
 
       this.state.phase = "listening";
       this.inputAbort = new AbortController();
@@ -465,6 +475,15 @@ export class RealtimeVoiceSession {
         break;
       case "response.function_call_arguments.done":
         await this.executeTool(event);
+        break;
+      // Heard but did nothing (2026-11-16): a response cut by noise (barge-in,
+      // `turn_detected`) ends here, before any function call.
+      case "response.done":
+        if (event.response?.status !== "completed")
+          console.warn(
+            `[voice/realtime] response ${event.response?.status}`,
+            JSON.stringify(event.response?.status_details),
+          );
         break;
     }
   }
