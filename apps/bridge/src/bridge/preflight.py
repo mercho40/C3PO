@@ -118,9 +118,18 @@ def best_state(states: Sequence[str]) -> str:
     return "alive" if "alive" in states else states[0]
 
 
+def _loopback(host: str) -> bool:
+    return host == "localhost" or host == "::1" or host.startswith("127.")
+
+
 def direct_service_finding(
     host: str, port: int, label: str, fatal: bool, starter: str, state: str
 ) -> Finding:
+    # On loopback the robot is reached through the Mac's tunnel, not the LAN.
+    if _loopback(host):
+        route = "check that the tunnel forwards {}: scripts/robot_tunnel.sh".format(port)
+    else:
+        route = "check that {} resolves and both machines are on the same LAN".format(host)
     if state == "alive":
         return Finding(OK, "{}:{}  {} — answering directly".format(host, port, label))
     if state == "empty":
@@ -134,15 +143,12 @@ def direct_service_finding(
         return Finding(
             BAD,
             "{}:{}  {} — timed out".format(host, port, label),
-            ["check that this machine and the robot are on the same LAN"],
+            [route],
         )
     return Finding(
         BAD if fatal else WARN,
         "{}:{}  {} — unreachable".format(host, port, label),
-        [
-            "check that {} resolves and both machines are on the same LAN".format(host),
-            "on the robot:  {}".format(starter),
-        ],
+        [route, "on the robot:  {}".format(starter)],
     )
 
 
@@ -1021,11 +1027,13 @@ def _robot_section(repo_root: str) -> Section:
     import os
 
     # The teleop stream is the one robot service the headset dials DIRECTLY,
-    # on the LAN. The bridge is not: it listens on the robot's loopback, and
-    # apps/back reaches it through the tunnel — so it is checked there, where
-    # back will actually dial it. Probing g1-orin.local:8001 instead failed on
-    # every correctly deployed robot.
-    host = os.environ.get("C3PO_ROBOT_HOST", "g1-orin.local")
+    # not through apps/back. run_teleop binds it to the robot's loopback, so by
+    # default it is the tunnel's 127.0.0.1:8767 (scripts/robot_tunnel.sh), the
+    # same `localhost` robot_session.sh gives the console. C3PO_ROBOT_HOST names
+    # the robot only for a TELEOP_HOST off loopback. Probing g1-orin.local:8767
+    # by default was refused on every robot deployed that way, as probing
+    # g1-orin.local:8001 for the bridge once was.
+    host = os.environ.get("C3PO_ROBOT_HOST") or "localhost"
     state, _ = _probe("http://{}:8767/".format(host), timeout=4)
     teleop = direct_service_finding(host, 8767, "teleop stream", True, "c3po up teleop", state)
     base = _bridge_base(repo_root)
