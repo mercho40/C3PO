@@ -1,0 +1,1299 @@
+{
+  "$comment": "GENERATED from the bridge's MCP catalogue. Do not edit: cd apps/bridge && uv run python scripts/export_contracts.py",
+  "tools": {
+    "arm_navigation": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "high",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {
+          "reason": {
+            "maxLength": 200,
+            "minLength": 3,
+            "type": "string"
+          },
+          "seconds": {
+            "default": 30.0,
+            "maximum": 120.0,
+            "minimum": 1.0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "arm_state": {
+      "tier": "T0",
+      "classification": "introspection",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "ask_user": {
+      "tier": "T0",
+      "classification": "speech",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "question": {
+            "maxLength": 300,
+            "minLength": 1,
+            "type": "string"
+          },
+          "language": {
+            "default": "spanish",
+            "enum": [
+              "spanish",
+              "english",
+              "chinese"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      }
+    },
+    "balance_stand": {
+      "tier": "T1",
+      "classification": "posture",
+      "danger_level": "medium",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "cancel_navigation": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "cancel_task": {
+      "tier": "T0",
+      "classification": "task",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      }
+    },
+    "check_motion_mode": {
+      "tier": "T0",
+      "classification": "introspection",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "clap": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "damp": {
+      "tier": "T1",
+      "classification": "posture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "dance": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "describe_surroundings": {
+      "tier": "T0",
+      "classification": "perception",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "disarm_navigation": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "reason": {
+            "default": "operator disarmed",
+            "maxLength": 200,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "find_object": {
+      "tier": "T0",
+      "classification": "perception",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "query": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    },
+    "forget_landmark": {
+      "tier": "T0",
+      "classification": "memory",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "forget_object": {
+      "tier": "T0",
+      "classification": "memory",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "object_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id"
+        ],
+        "type": "object"
+      }
+    },
+    "gesture": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "auto_release": {
+            "default": true,
+            "type": "boolean"
+          },
+          "hold_s": {
+            "default": 2.0,
+            "maximum": 15.0,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "get_state": {
+      "tier": "T0",
+      "classification": "introspection",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "go_to_object": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "medium",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "query": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "stop_distance_m": {
+            "default": 0.7,
+            "maximum": 2.0,
+            "minimum": 0.5,
+            "type": "number"
+          },
+          "choose": {
+            "default": "nearest",
+            "enum": [
+              "nearest",
+              "farthest",
+              "left",
+              "right",
+              "center",
+              "confidence"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    },
+    "handover": {
+      "tier": "T2",
+      "classification": "gesture",
+      "danger_level": "high",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {
+          "side": {
+            "default": "right",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "hug": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "lie_up": {
+      "tier": "T1",
+      "classification": "posture",
+      "danger_level": "medium",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "list_active_tasks": {
+      "tier": "T0",
+      "classification": "task",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "include_recent": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "list_landmarks": {
+      "tier": "T0",
+      "classification": "memory",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "list_objects": {
+      "tier": "T0",
+      "classification": "memory",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "listen": {
+      "tier": "T0",
+      "classification": "perception",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "wait_s": {
+            "default": 0.0,
+            "maximum": 30.0,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "look": {
+      "tier": "T0",
+      "classification": "perception",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "question": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      }
+    },
+    "look_around": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "total_degrees": {
+            "default": 360.0,
+            "maximum": 360.0,
+            "minimum": 60.0,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "move_arm": {
+      "tier": "T2",
+      "classification": "gesture",
+      "danger_level": "high",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {
+          "side": {
+            "default": "right",
+            "enum": [
+              "left",
+              "right",
+              "both"
+            ],
+            "type": "string"
+          },
+          "shoulder_pitch_deg": {
+            "anyOf": [
+              {
+                "maximum": 90,
+                "minimum": -90,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "shoulder_roll_deg": {
+            "anyOf": [
+              {
+                "maximum": 90,
+                "minimum": -10,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "shoulder_yaw_deg": {
+            "anyOf": [
+              {
+                "maximum": 45,
+                "minimum": -45,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "elbow_deg": {
+            "anyOf": [
+              {
+                "maximum": 110,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "wrist_roll_deg": {
+            "anyOf": [
+              {
+                "maximum": 90,
+                "minimum": -90,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "wrist_pitch_deg": {
+            "anyOf": [
+              {
+                "maximum": 30,
+                "minimum": -30,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "wrist_yaw_deg": {
+            "anyOf": [
+              {
+                "maximum": 30,
+                "minimum": -30,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "hold": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "navigate_to": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "medium",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "x": {
+            "maximum": 100.0,
+            "minimum": -100.0,
+            "type": "number"
+          },
+          "y": {
+            "maximum": 100.0,
+            "minimum": -100.0,
+            "type": "number"
+          },
+          "yaw": {
+            "anyOf": [
+              {
+                "maximum": 3.141592653589793,
+                "minimum": -3.141592653589793,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "frame": {
+            "anyOf": [
+              {
+                "enum": [
+                  "map",
+                  "odom"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "type": "object"
+      }
+    },
+    "navigate_to_landmark": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "medium",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "navigation_status": {
+      "tier": "T0",
+      "classification": "introspection",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "open_hands": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "pick": {
+      "tier": "T2",
+      "classification": "gesture",
+      "danger_level": "high",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "side": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "shape": {
+            "default": "power",
+            "enum": [
+              "power",
+              "pinch",
+              "hook"
+            ],
+            "type": "string"
+          },
+          "track_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      }
+    },
+    "place": {
+      "tier": "T2",
+      "classification": "gesture",
+      "danger_level": "high",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {
+          "side": {
+            "default": "right",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "onto": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "drop_m": {
+            "default": 0.05,
+            "maximum": 0.15,
+            "minimum": 0.0,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "point_at": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "prepare": {
+      "tier": "T1",
+      "classification": "posture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "reach": {
+      "tier": "T2",
+      "classification": "gesture",
+      "danger_level": "high",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {
+          "x_m": {
+            "maximum": 1.5,
+            "minimum": -1.0,
+            "type": "number"
+          },
+          "y_m": {
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "type": "number"
+          },
+          "z_m": {
+            "maximum": 1.5,
+            "minimum": -1.0,
+            "type": "number"
+          },
+          "side": {
+            "default": "right",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "frame": {
+            "default": "torso",
+            "enum": [
+              "torso",
+              "camera"
+            ],
+            "type": "string"
+          },
+          "fingers": {
+            "default": "forward",
+            "enum": [
+              "forward",
+              "down",
+              "free"
+            ],
+            "type": "string"
+          },
+          "hold": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "x_m",
+          "y_m",
+          "z_m"
+        ],
+        "type": "object"
+      }
+    },
+    "recall_landmark": {
+      "tier": "T0",
+      "classification": "memory",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "recall_object": {
+      "tier": "T0",
+      "classification": "memory",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "query": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    },
+    "release_arm": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "release_arm_control": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "remember_landmark": {
+      "tier": "T0",
+      "classification": "memory",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "run_sequence": {
+      "tier": "T2",
+      "classification": "gesture",
+      "danger_level": "high",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {
+          "steps": {
+            "items": {
+              "properties": {
+                "tool": {
+                  "enum": [
+                    "move_arm",
+                    "set_hand",
+                    "open_hands",
+                    "release_arm_control",
+                    "wave",
+                    "point_at",
+                    "shake_hand",
+                    "hug",
+                    "clap",
+                    "release_arm",
+                    "dance",
+                    "gesture",
+                    "say"
+                  ],
+                  "type": "string"
+                },
+                "args": {
+                  "type": "object"
+                },
+                "with_previous": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          },
+          "keep_arm_up": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "type": "object"
+      }
+    },
+    "say": {
+      "tier": "T0",
+      "classification": "speech",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "text": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "language": {
+            "default": "spanish",
+            "enum": [
+              "spanish",
+              "english",
+              "chinese"
+            ],
+            "type": "string"
+          },
+          "wait_for_completion": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "set_hand": {
+      "tier": "T2",
+      "classification": "gesture",
+      "danger_level": "medium",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {
+          "side": {
+            "default": "right",
+            "enum": [
+              "left",
+              "right",
+              "both"
+            ],
+            "type": "string"
+          },
+          "closure": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "type": "number"
+          },
+          "shape": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "power",
+                  "pinch",
+                  "hook",
+                  "point",
+                  "v_sign",
+                  "saludo_peronista"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "fingers": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "thumb": {
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "thumb_rotation": {
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "index": {
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "middle": {
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "ring": {
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "pinky": {
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      }
+    },
+    "shake_hand": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "sit_g1": {
+      "tier": "T1",
+      "classification": "posture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "soft_stop": {
+      "tier": "T0",
+      "classification": "safety",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "squat": {
+      "tier": "T1",
+      "classification": "posture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "start_walking": {
+      "tier": "T1",
+      "classification": "posture",
+      "danger_level": "medium",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "start_walking_waist": {
+      "tier": "T1",
+      "classification": "posture",
+      "danger_level": "high",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "stop_everything": {
+      "tier": "T0",
+      "classification": "safety",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "turn": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "delta_yaw_radians": {
+            "maximum": 6.2832,
+            "minimum": -6.2832,
+            "type": "number"
+          },
+          "timeout_s": {
+            "default": 30.0,
+            "maximum": 120.0,
+            "minimum": 5.0,
+            "type": "number"
+          },
+          "tolerance_degrees": {
+            "default": 3.0,
+            "maximum": 20.0,
+            "minimum": 0.5,
+            "type": "number"
+          }
+        },
+        "required": [
+          "delta_yaw_radians"
+        ],
+        "type": "object"
+      }
+    },
+    "verify": {
+      "tier": "T0",
+      "classification": "perception",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "question": {
+            "maxLength": 300,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "type": "object"
+      }
+    },
+    "walk_to": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "medium",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "target_x_meters_world_frame": {
+            "type": "number"
+          },
+          "target_y_meters_world_frame": {
+            "type": "number"
+          },
+          "stop_distance_m": {
+            "default": 1.0,
+            "maximum": 5.0,
+            "minimum": 0.3,
+            "type": "number"
+          },
+          "timeout_s": {
+            "default": 60.0,
+            "maximum": 300.0,
+            "minimum": 5.0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "target_x_meters_world_frame",
+          "target_y_meters_world_frame"
+        ],
+        "type": "object"
+      }
+    },
+    "walk_velocity": {
+      "tier": "T1",
+      "classification": "locomotion",
+      "danger_level": "medium",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {
+          "vx": {
+            "default": 0.0,
+            "maximum": 0.3,
+            "minimum": -0.3,
+            "type": "number"
+          },
+          "vy": {
+            "default": 0.0,
+            "maximum": 0.3,
+            "minimum": -0.3,
+            "type": "number"
+          },
+          "vyaw": {
+            "default": 0.0,
+            "maximum": 0.3,
+            "minimum": -0.3,
+            "type": "number"
+          },
+          "duration_s": {
+            "default": 1.0,
+            "maximum": 3.0,
+            "minimum": 0.1,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "wave": {
+      "tier": "T1",
+      "classification": "gesture",
+      "danger_level": "low",
+      "needs_confirmation": false,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "zero_torque": {
+      "tier": "T1",
+      "classification": "posture",
+      "danger_level": "high",
+      "needs_confirmation": true,
+      "parameters": {
+        "properties": {},
+        "type": "object"
+      }
+    }
+  },
+  "safety_tools": [
+    "soft_stop",
+    "stop_everything"
+  ],
+  "gestures": [
+    "blow_kiss_both_hands",
+    "blow_kiss_left_hand",
+    "blow_kiss_right_hand",
+    "both_hands_up",
+    "both_hands_up_deviate_right",
+    "box_both_hand_win",
+    "box_left_hand_win",
+    "box_right_hand_win",
+    "clamp",
+    "forward_push",
+    "heart_both_hands",
+    "heart_right_hand",
+    "high_five",
+    "hug",
+    "refuse",
+    "release_arm",
+    "right_hand_on_heart",
+    "right_hand_up",
+    "shake_hand",
+    "turn_back_wave",
+    "ultraman_ray",
+    "wave_above_head",
+    "wave_under_head"
+  ]
+}

@@ -31,3 +31,11 @@ bun.lock
 
 # Migrations (drizzle-generated)
 apps/back/migrations
+
+# Written by apps/bridge/scripts/export_contracts.py, byte for byte: its pytest
+# fails when the committed file differs from what the script writes, so a
+# reformat here would read as a stale contract. contracts/conforms.ts is
+# hand-written and stays formatted.
+contracts/bridge-tools.json
+contracts/bridge-payloads.schema.json
+contracts/bridge-payloads.ts

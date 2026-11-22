@@ -4,8 +4,13 @@ Nothing else in this package imports `bridge.mcp_server`. That is a problem
 worth a dedicated test: every tool is registered by an `@mcp.tool()` decorator
 and invoked by name over the wire, so a tool that gets renamed, or lost to a bad
 merge, or accidentally dropped out of the module, breaks a robot capability
-without failing anything. `apps/back` binds to these names as strings from
-TypeScript, so nothing on that side catches it either.
+without failing anything here.
+
+The consumers are covered from the other side. apps/back and apps/web name
+these tools as string literals in TypeScript, so `scripts/export_contracts.py`
+writes the catalogue to `contracts/bridge-tools.json`, `test_contracts.py`
+fails while that file is stale, and their own suites check every name they
+call against it. Renaming a tool here is caught there, in the same CI run.
 
 Importing this module is safe only because `SIM_MODE=stub` short-circuits the
 DDS init at import time (`mcp_server.py`, the `if SIM_MODE != "stub"` guard).
@@ -34,7 +39,8 @@ def tools() -> dict:
 
 # The complete surface. Adding a tool means adding it here — deliberately, so
 # that "the robot gained a capability" is a visible line in a diff rather than
-# something that appears silently.
+# something that appears silently. Then regenerate contracts/ (test_contracts.py
+# says how), which is what tells apps/back and apps/web.
 EXPECTED_TOOLS = {
     # state / introspection
     "get_state",
@@ -119,40 +125,6 @@ def test_tool_surface_is_exactly_what_we_expect(tools):
     actual = set(tools)
     assert actual == EXPECTED_TOOLS, (
         f"missing: {sorted(EXPECTED_TOOLS - actual)}  unexpected: {sorted(actual - EXPECTED_TOOLS)}"
-    )
-
-
-#: Every skill `apps/web`'s /vr-control dispatches by name. That page is the
-#: only consumer that hard-codes skill names in a different language, so
-#: nothing else catches a rename — a removed or renamed tool here turns a
-#: button in a headset into a silent 404, discovered while wearing it.
-VR_CONTROL_DEPENDENCIES = {
-    # Locomotion, from the walk buttons and head-yaw turning.
-    "walk_velocity",
-    # Bring-up. The order matters and 501 is the walk program for this body:
-    # `start_walking` (500) returned success and did nothing for two sessions.
-    "damp",
-    "prepare",
-    "start_walking_waist",
-    # Preset gestures.
-    "wave",
-    "dance",
-    "shake_hand",
-    "hug",
-    "clap",
-    "release_arm",
-    # The e-stop, which the console's PARAR button and the teleop latch share.
-    "stop_everything",
-}
-
-
-def test_vr_control_can_still_reach_every_skill_it_names(tools):
-    missing = VR_CONTROL_DEPENDENCIES - set(tools)
-    assert not missing, (
-        f"/vr-control dispatches {sorted(missing)}, which the bridge no longer offers. "
-        "Those are hard-coded strings in a .svelte file, so nothing else fails first — "
-        "the button just returns 404 to somebody wearing a headset. Update "
-        "apps/web/src/routes/(protected)/vr-control/+page.svelte in the same change."
     )
 
 
@@ -370,8 +342,11 @@ def test_exactly_one_tool_is_classified_safety(tools):
     authorization meaning are not the same word, and only one of them belongs
     in this field.
 
-    apps/back pins its own half in `SAFETY_SKILLS` (`skills.test.ts`). This is
-    the other half of that contract; the two are meant to name the same tools.
+    The set is exported to `contracts/bridge-tools.json` (`safety_tools`), and
+    apps/back's `contracts.test.ts` fails unless `SAFETY_SKILLS` equals it, so
+    the two halves are compared rather than each pinned on its own. It is still
+    spelled out here on purpose: widening it is an authorization change, and it
+    should be a line somebody has to edit and a reviewer has to read.
     `soft_stop` joined on 2026-11-02: it is the first stop tier, never damps,
     and an operator must not need admin rights to end a walk.
     """
@@ -383,7 +358,8 @@ def test_exactly_one_tool_is_classified_safety(tools):
     assert safety == ["soft_stop", "stop_everything"], (
         f"tools classified 'safety': {safety}. Anything on this list bypasses "
         "the admin gate in apps/back/src/routes/skills.ts. If a tool genuinely "
-        "belongs here, add it to SAFETY_SKILLS there in the same change."
+        "belongs here, add it to SAFETY_SKILLS there in the same change and "
+        "regenerate contracts/ (scripts/export_contracts.py)."
     )
 
 
