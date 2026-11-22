@@ -15,11 +15,9 @@
   const ago = $derived(stoppedAgo(latch.status, Date.now()));
 </script>
 
-<span role="status" class="sr-only"
-  >{latch.standing
-    ? "PARAR activo: el robot no se mueve hasta reanudar"
-    : ""}</span
->
+<span role="status" class="sr-only">
+  {latch.standing ? "PARAR activo: el robot no se mueve hasta reanudar" : ""}
+</span>
 
 {#if latch.standing}
   <span
@@ -29,8 +27,9 @@
     <OctagonX class="size-3.5 shrink-0" aria-hidden="true" />
     <span
       class="hidden readout font-medium tracking-[0.12em] whitespace-nowrap uppercase sm:inline"
-      >Parar activo</span
     >
+      Parar activo
+    </span>
     <button
       type="button"
       onclick={() => void latch.resume()}

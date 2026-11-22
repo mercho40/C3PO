@@ -73,8 +73,9 @@
     vieja, atenuada a propósito para que se note. No manejes con eso.
     <DetailsNote>
       <p>
-        Como sí llegaron cuadros, la percepción (<code>c3po perception up</code
-        >) está corriendo — lo que falló son sus ticks, o el enlace.
+        Como sí llegaron cuadros, la percepción (<code>
+          c3po perception up
+        </code>) está corriendo — lo que falló son sus ticks, o el enlace.
       </p>
     </DetailsNote>
   </Callout>

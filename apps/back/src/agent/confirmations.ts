@@ -212,13 +212,15 @@ export const cancelMessage = (tool: string) =>
 
 /**
  * Where a legacy-voice-loop outcome goes (routes/voice.ts sets it): that
- * conversation has no client to relay the message.
+ * conversation has no client to relay the message. Returns the handler it
+ * replaces, so a caller that swaps it in briefly can put the old one back.
  */
-let loopFeedback: ((message: string, spoken: string) => void) | null = null;
-export function onLoopOutcome(
-  fn: ((message: string, spoken: string) => void) | null,
-): void {
+type LoopFeedback = (message: string, spoken: string) => void;
+let loopFeedback: LoopFeedback | null = null;
+export function onLoopOutcome(fn: LoopFeedback | null): LoopFeedback | null {
+  const previous = loopFeedback;
   loopFeedback = fn;
+  return previous;
 }
 export function feedLoop(message: string, spoken: string): void {
   loopFeedback?.(message, spoken);

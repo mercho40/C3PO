@@ -197,8 +197,9 @@
   <span
     lang={labelLang}
     class={layout === "step" ? "font-display font-semibold" : undefined}
-    >{label}</span
   >
+    {label}
+  </span>
   {#if caveat}
     <span class="text-2xs font-medium text-warn">{caveat}</span>
   {:else if hint}
@@ -211,8 +212,9 @@
     <Badge
       variant="outline"
       class="h-auto max-w-full text-center text-2xs leading-tight whitespace-normal text-ink-mute"
-      >{BADGE_TEXT[badge]}</Badge
     >
+      {BADGE_TEXT[badge]}
+    </Badge>
   {/if}
   {#if holdToConfirm && !busy}
     <span class={["text-xs", holding ? "text-ink-dim" : "text-ink-mute"]}>

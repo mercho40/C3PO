@@ -44,9 +44,9 @@
       <Icon class="size-4 shrink-0 {TONE_TEXT[row.tone]}" aria-hidden="true" />
       <h3 id={headingId} class="text-sm font-medium text-ink">{row.name}</h3>
     </div>
-    <span class="shrink-0 readout {TONE_TEXT[row.tone]}"
-      >{TONE_LABEL[row.tone]}</span
-    >
+    <span class="shrink-0 readout {TONE_TEXT[row.tone]}">
+      {TONE_LABEL[row.tone]}
+    </span>
   </div>
 
   <div class="flex min-w-0 flex-col gap-1">
@@ -81,9 +81,9 @@
           ? 'text-ink-mute'
           : 'text-ink-dim'}"
       >
-        <span class="sr-only">Texto del puente: </span><span lang="en"
-          >{row.bridgeText}</span
-        >
+        <span class="sr-only">Texto del puente: </span><span lang="en">
+          {row.bridgeText}
+        </span>
       </p>
     </div>
   {/if}
@@ -126,8 +126,9 @@
         <div class="flex min-w-0 flex-col gap-0.5">
           <dt class="eyebrow">{fact.label}</dt>
           <dd class="font-mono text-xs break-words {factTone(fact.tone)}">
-            {#if fact.lang}<span lang={fact.lang}>{fact.value}</span
-              >{:else}{fact.value}{/if}
+            {#if fact.lang}<span lang={fact.lang}>
+                {fact.value}
+              </span>{:else}{fact.value}{/if}
           </dd>
         </div>
       {/each}

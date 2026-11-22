@@ -73,9 +73,9 @@
         <p class="text-sm text-ink">
           El agente quiere ejecutar <strong>{row.tool}</strong> con:
         </p>
-        <code class="max-w-full min-w-0 readout text-xs break-all text-ink-dim"
-          >{row.argsText}</code
-        >
+        <code class="max-w-full min-w-0 readout text-xs break-all text-ink-dim">
+          {row.argsText}
+        </code>
         {#if faces[row.id] === "waiting"}
           <p class="text-xs text-ink-mute">
             Confirmá la acción o mostrale la cara de un operador a la cámara del

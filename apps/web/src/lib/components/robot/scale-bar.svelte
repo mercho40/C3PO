@@ -37,9 +37,9 @@
          trims the leading space inside the inner span, which rendered
          "2 m· cuadrícula". -->
     <span class="readout text-ink-dim">
-      {fmt(bar.meters)} m{#if showGrid}<span class="text-ink-mute"
-          >{` · cuadrícula ${fmt(step)} m`}</span
-        >{/if}
+      {fmt(bar.meters)} m{#if showGrid}<span class="text-ink-mute">
+          {` · cuadrícula ${fmt(step)} m`}
+        </span>{/if}
     </span>
   </div>
 {/if}

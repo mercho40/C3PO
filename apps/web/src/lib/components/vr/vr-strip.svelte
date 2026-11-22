@@ -32,9 +32,9 @@
     <!-- Not a live region: the yaw changes five times a second. The stale
          flag is the part worth announcing, so only it is. -->
     <span class="readout">
-      {ctl.yawDisplayDeg}° de giro<span role="status" class="text-warn"
-        >{ctl.trackingStale ? " · seguimiento perdido" : ""}</span
-      >
+      {ctl.yawDisplayDeg}° de giro<span role="status" class="text-warn">
+        {ctl.trackingStale ? " · seguimiento perdido" : ""}
+      </span>
     </span>
     <span class="readout">Puente: {teleopShort(ctl.teleopState)}</span>
     {#if ctl.viewOnly}

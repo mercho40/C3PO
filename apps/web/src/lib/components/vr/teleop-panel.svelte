@@ -146,8 +146,9 @@
       <div>
         <dt class="eyebrow">Manos</dt>
         <dd class="readout">
-          {#if hands.known}{hands.text}{:else}<span lang="en">{hands.text}</span
-            >{/if}
+          {#if hands.known}{hands.text}{:else}<span lang="en">
+              {hands.text}
+            </span>{/if}
         </dd>
       </div>
     </dl>

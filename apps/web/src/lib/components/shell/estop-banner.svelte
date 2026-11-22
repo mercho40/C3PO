@@ -50,9 +50,9 @@
   >
     {message.body}
     {#if detail && message.level === "alert"}
-      <span class="mt-1 block readout break-words" lang={detailLang}
-        >{detail}</span
-      >
+      <span class="mt-1 block readout break-words" lang={detailLang}>
+        {detail}
+      </span>
     {/if}
     {#snippet action()}
       <button

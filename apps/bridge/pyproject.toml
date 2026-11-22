@@ -58,6 +58,12 @@ build-backend = "uv_build"
 line-length = 100
 target-version = "py312"
 
+# ruff's long-standing default set, written out: 0.17 widened the default to
+# pyupgrade, blind-except and more (451 findings here). Adopting those is its
+# own change, not something a lockfile bump should do to the CI gate.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.mypy]
 python_version = "3.12"
 # unitree_sdk2py / cyclonedds ship no type stubs -- without this every

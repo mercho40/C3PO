@@ -244,8 +244,10 @@
       {error.text}
       {#if error.verbatim}<span
           class="mt-0.5 block readout break-words"
-          lang="en">{error.verbatim}</span
-        >{/if}
+          lang="en"
+        >
+          {error.verbatim}
+        </span>{/if}
     </Callout>
   {/if}
 
@@ -285,12 +287,12 @@
               <span
                 class="col-start-1 flex min-w-0 flex-col gap-0.5 sm:col-start-auto"
               >
-                <span class="font-mono text-sm break-all text-ink" lang="en"
-                  >{row.skillName}</span
-                >
-                <span class="text-xs {OUTCOME_TONE[outcome.kind]}"
-                  >{outcome.text}</span
-                >
+                <span class="font-mono text-sm break-all text-ink" lang="en">
+                  {row.skillName}
+                </span>
+                <span class="text-xs {OUTCOME_TONE[outcome.kind]}">
+                  {outcome.text}
+                </span>
               </span>
               <span
                 class="col-start-1 flex min-w-0 flex-col gap-0.5 sm:col-start-auto"

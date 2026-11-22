@@ -78,9 +78,9 @@
           navegador del Quest para entrar en VR; el resto funciona igual.
         </p>
       {/if}
-      <span class="readout"
-        >Puente de teleoperación: {teleopShort(ctl.teleopState)}</span
-      >
+      <span class="readout">
+        Puente de teleoperación: {teleopShort(ctl.teleopState)}
+      </span>
     </div>
   </div>
 
@@ -95,9 +95,9 @@
     <Callout tone="danger" title="No se pudo entrar en VR">
       {ctl.vrError.text}
       {#if ctl.vrError.raw}
-        <span class="mt-1 block readout"
-          ><span lang="en">{ctl.vrError.raw}</span></span
-        >
+        <span class="mt-1 block readout">
+          <span lang="en">{ctl.vrError.raw}</span>
+        </span>
       {/if}
     </Callout>
   {/if}

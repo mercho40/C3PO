@@ -648,7 +648,11 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
 
   test("a voice-loop call's outcome is fed back to that loop", async () => {
     const fed: string[] = [];
-    confirmations.onLoopOutcome((message, spoken) => fed.push(message, spoken));
+    // Put back routes/voice.ts's own handler, not null: it is registered once,
+    // at import, and test files after this one share the module.
+    const voiceLoop = confirmations.onLoopOutcome((message, spoken) =>
+      fed.push(message, spoken),
+    );
     confirmations.notePending({
       id: "v1",
       tool: "pick",
@@ -659,7 +663,7 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
     });
     const res = await post("pick", "confirm", { callId: "v1", args: pick });
     globalThis.fetch = realFetch;
-    confirmations.onLoopOutcome(null);
+    confirmations.onLoopOutcome(voiceLoop);
     expect(res.status).toBe(200);
     expect(fed[0]).toStartWith("El operador confirmó y se ejecutó pick");
     expect(fed[1]).toBe("Confirmado: ejecuté pick.");
@@ -668,7 +672,9 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
   // 2026-11-13: five refused picks were each announced «Confirmado: ejecuté pick.».
   test("a pick the planner refuses (a 200 with status failed) is said and told as failed", async () => {
     const fed: string[] = [];
-    confirmations.onLoopOutcome((message, spoken) => fed.push(message, spoken));
+    const voiceLoop = confirmations.onLoopOutcome((message, spoken) =>
+      fed.push(message, spoken),
+    );
     confirmations.notePending({
       id: "v2",
       tool: "pick",
@@ -690,7 +696,7 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
     bridge.callTool.mockImplementationOnce(async () => refused as never);
     const res = await post("pick", "confirm", { callId: "v2", args: pick });
     globalThis.fetch = realFetch;
-    confirmations.onLoopOutcome(null);
+    confirmations.onLoopOutcome(voiceLoop);
     // The console card still paints from the 200 body.
     expect(res.status).toBe(200);
     const body = (await res.json()) as { result: unknown; message: string };
@@ -703,7 +709,9 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
   // A PARAR during the bridge's spoken warning ends the pick "cancelled".
   test("a confirmed pick stopped before it moved is not said as done", async () => {
     const fed: string[] = [];
-    confirmations.onLoopOutcome((message, spoken) => fed.push(message, spoken));
+    const voiceLoop = confirmations.onLoopOutcome((message, spoken) =>
+      fed.push(message, spoken),
+    );
     confirmations.notePending({
       id: "v3",
       tool: "pick",
@@ -723,7 +731,7 @@ describe("POST /skills/:name/confirm runs the refused call", () => {
     bridge.callTool.mockImplementationOnce(async () => stopped as never);
     const res = await post("pick", "confirm", { callId: "v3", args: pick });
     globalThis.fetch = realFetch;
-    confirmations.onLoopOutcome(null);
+    confirmations.onLoopOutcome(voiceLoop);
     expect(res.status).toBe(200);
     expect(fed[0]).toStartWith("El operador confirmó pick, pero falló");
     expect(fed[1]).toBe("Confirmado, pero pick se canceló.");

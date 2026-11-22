@@ -645,17 +645,21 @@
                   <p class="max-w-md text-xs text-ink-mute">
                     Las sugerencias completan el mensaje: revisalo antes de
                     enviarlo. Para frenar el robot usá <strong
-                      class="text-ink-dim">Parar</strong
+                      class="text-ink-dim"
                     >
+                      Parar
+                    </strong>
                     en la barra superior (<kbd
                       class="rounded border border-hairline-strong px-1 font-mono text-2xs"
-                      >Shift</kbd
                     >
+                      Shift
+                    </kbd>
                     +
                     <kbd
                       class="rounded border border-hairline-strong px-1 font-mono text-2xs"
-                      >Espacio</kbd
-                    >), no el chat.
+                    >
+                      Espacio
+                    </kbd>), no el chat.
                   </p>
                 </div>
               {/if}

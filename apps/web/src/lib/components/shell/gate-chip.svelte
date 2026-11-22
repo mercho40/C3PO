@@ -63,9 +63,9 @@
 
 <!-- Persistent region: arming from a chat must be announced, not just drawn.
      Only the arming itself — a per-second countdown would be noise. -->
-<span role="status" class="sr-only"
-  >{gate.armed ? "Navegación autónoma armada" : ""}</span
->
+<span role="status" class="sr-only">
+  {gate.armed ? "Navegación autónoma armada" : ""}
+</span>
 
 {#if gate.armed}
   <a

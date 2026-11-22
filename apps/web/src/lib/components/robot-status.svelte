@@ -166,9 +166,9 @@
       ]}
       aria-hidden="true"
     >
-      <span class="sm:hidden">{shortWord}</span><span class="hidden sm:inline"
-        >{word}</span
-      >
+      <span class="sm:hidden">{shortWord}</span><span class="hidden sm:inline">
+        {word}
+      </span>
     </span>
     <span class="sr-only">{word}.</span>
   </span>
@@ -188,8 +188,10 @@
     <BatteryIcon class="size-4" aria-hidden="true" />
     <span class="readout whitespace-nowrap text-[inherit]" aria-hidden="true">
       {pct != null ? `${pct} %` : "—"}{#if simulated}<span
-          class="hidden text-ink-mute sm:inline">&nbsp;stub</span
-        >{/if}
+          class="hidden text-ink-mute sm:inline"
+        >
+          &nbsp;stub
+        </span>{/if}
     </span>
     <span class="sr-only">{batterySentence}.</span>
   </span>

@@ -39,9 +39,9 @@
         {#if form?.phase === "accepted"}
           <!-- Nothing on this page polls telemetry, so "Esperando que la
                telemetría lo confirme" would wait forever. -->
-          <span class="mt-1 block"
-            >Sin JavaScript esta página no puede confirmarlo: mirá el robot.</span
-          >
+          <span class="mt-1 block">
+            Sin JavaScript esta página no puede confirmarlo: mirá el robot.
+          </span>
         {/if}
       </Callout>
     {:else}

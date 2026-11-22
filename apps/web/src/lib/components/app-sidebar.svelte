@@ -49,12 +49,12 @@
                 />
               </div>
               <div class="grid flex-1 text-start text-sm leading-tight">
-                <span class="truncate font-semibold tracking-tight text-ink"
-                  >C3PO</span
-                >
-                <span class="truncate text-xs text-sidebar-foreground/60"
-                  >Consola de operador</span
-                >
+                <span class="truncate font-semibold tracking-tight text-ink">
+                  C3PO
+                </span>
+                <span class="truncate text-xs text-sidebar-foreground/60">
+                  Consola de operador
+                </span>
               </div>
             </a>
           {/snippet}

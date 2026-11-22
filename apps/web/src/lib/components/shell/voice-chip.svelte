@@ -59,8 +59,8 @@
     {#if stale}
       <span aria-hidden="true">?</span>
       <span class="sr-only">
-        (último estado conocido; no se pudo leer el estado de voz)</span
-      >
+        (último estado conocido; no se pudo leer el estado de voz)
+      </span>
     {/if}
   </a>
 {/if}

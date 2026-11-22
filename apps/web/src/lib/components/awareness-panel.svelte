@@ -86,8 +86,9 @@
           <div class="flex items-baseline gap-2">
             <h2 class="eyebrow">Ve</h2>
             {#if scene?.report_age_s != null}
-              <span class="readout">escena {formatAge(scene.report_age_s)}</span
-              >
+              <span class="readout">
+                escena {formatAge(scene.report_age_s)}
+              </span>
             {/if}
           </div>
           {#if scene}
@@ -115,8 +116,8 @@
             {awareness.reason}
             {#if awareness.bridgeReason}
               <span class="readout text-ink-dim">
-                Puente: <span lang="en">{awareness.bridgeReason}</span></span
-              >
+                Puente: <span lang="en">{awareness.bridgeReason}</span>
+              </span>
             {/if}
           </Callout>
         {/if}
@@ -177,20 +178,22 @@
                         "font-medium",
                         current ? "text-ink" : "text-ink-mute",
                       ]}
-                      lang="en">{obj.label}</span
+                      lang="en"
                     >
+                      {obj.label}
+                    </span>
                     <span
                       class="flex flex-wrap items-baseline gap-x-2 text-ink-dim"
                     >
-                      <span class="font-mono"
-                        >{formatRange(obj.range_m)} · {bearingWords(
+                      <span class="font-mono">
+                        {formatRange(obj.range_m)} · {bearingWords(
                           obj.bearing_deg,
-                        )}</span
-                      >
+                        )}
+                      </span>
                       {#if formatConfidence(obj.confidence)}
-                        <span class="readout"
-                          >conf. {formatConfidence(obj.confidence)}</span
-                        >
+                        <span class="readout">
+                          conf. {formatConfidence(obj.confidence)}
+                        </span>
                       {/if}
                       {#if obj.age_s != null}
                         <span class="readout">{formatAge(obj.age_s)}</span>
@@ -233,15 +236,15 @@
                     <li
                       class="flex flex-wrap items-baseline justify-between gap-x-3"
                     >
-                      <span class={current ? "text-ink" : "text-ink-mute"}
-                        >{lm.label}</span
-                      >
+                      <span class={current ? "text-ink" : "text-ink-mute"}>
+                        {lm.label}
+                      </span>
                       <span class="flex items-baseline gap-2 text-ink-dim">
-                        <span class="font-mono"
-                          >{formatRange(lm.range_m)} · {bearingWords(
+                        <span class="font-mono">
+                          {formatRange(lm.range_m)} · {bearingWords(
                             lm.bearing_deg,
-                          )}</span
-                        >
+                          )}
+                        </span>
                         {#if lm.age_s != null}
                           <span class="readout">{formatAge(lm.age_s)}</span>
                         {/if}
@@ -289,9 +292,8 @@
             {awareness.voiceReason}
             {#if awareness.voiceBridgeReason}
               <span class="readout text-ink-dim">
-                Puente: <span lang="en">{awareness.voiceBridgeReason}</span
-                ></span
-              >
+                Puente: <span lang="en">{awareness.voiceBridgeReason}</span>
+              </span>
             {/if}
           </Callout>
         {/if}
@@ -324,9 +326,9 @@
             <p class="text-sm text-warn">
               {#if voice.always_listening}
                 El micrófono está siempre abierto, pero todavía no llegó audio.
-                Revisá el micrófono del robot (fuente: <span class="font-mono"
-                  >{voice.audio_source}</span
-                >).
+                Revisá el micrófono del robot (fuente: <span class="font-mono">
+                  {voice.audio_source}
+                </span>).
               {:else}
                 El robot todavía no pudo escuchar nada. Su micrófono solo se
                 abre mientras alguien mantiene <strong>L1+L2</strong> en el control:
@@ -334,9 +336,9 @@
               {/if}
             </p>
           {:else if voice.seconds_since_audio != null}
-            <span class="readout"
-              >último audio {formatAge(voice.seconds_since_audio)}</span
-            >
+            <span class="readout">
+              último audio {formatAge(voice.seconds_since_audio)}
+            </span>
           {/if}
 
           {#if voice.recent.length > 0}
