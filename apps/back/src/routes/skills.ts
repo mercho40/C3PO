@@ -48,16 +48,12 @@ import { Elysia, t } from "elysia";
 
 import { getCatalogue, getSkill } from "../skills";
 import { validateArgs } from "../skills/validate";
-import {
-  callTool,
-  BridgeUnavailableError,
-  BridgeToolError,
-} from "../bridge/client";
+import { callTool } from "../bridge/client";
+import { dispatchDirect, STOP_TIMEOUT, stopRobot } from "../bridge/stop";
 import { bridgeSiblingUrl } from "../bridge/url";
 import { bridgeProof } from "../bridge/proof";
 import { betterAuth } from "#back/lib/auth-plugin.js";
 import { logToolCall, resultFailure } from "#back/db/chats.js";
-import { abortAllTurns } from "#back/agent/turns.js";
 import {
   cancelMessage,
   dropPending,
@@ -80,9 +76,6 @@ type Via = "button" | "voice" | "face";
 //: own classification whenever the catalogue IS available, so the two cannot
 //: drift silently — see the test.
 export const SAFETY_SKILLS = new Set(["stop_everything", "soft_stop"]);
-
-/** How long PARAR waits for the bridge before answering 504 (the stop keeps running). */
-const SAFETY_TIMEOUT_MS = 8000;
 
 /**
  * Ask the bridge to grant ONE call of `name` with exactly `args`, and audit
@@ -235,98 +228,21 @@ async function invokeSkill(
     if (granted.status >= 300) return granted;
   }
 
-  // Audited whatever happens next. `void`, never `await`: an audit
-  // row is not allowed to sit between an operator and PARAR.
-  // `logToolCall` never throws, and reads a 200 body that reports a
-  // failure (`status: "failed"`, a non-empty `error`) as `error`.
-  const startedAt = Date.now();
-  const audit = (
-    outcome:
-      { result: unknown } | { error: string; body: Record<string, unknown> },
-  ) =>
-    void logToolCall({
-      userId: user.id,
-      source: "direct",
-      skillName: name,
-      params: args,
-      ...("result" in outcome
-        ? { result: outcome.result, status: "ok" as const }
-        : {
-            result: outcome.body,
-            status: "error" as const,
-            error: outcome.error,
-          }),
-      durationMs: Date.now() - startedAt,
-      startedAt,
-    });
-
-  const failureBody = (err: unknown) =>
-    err instanceof BridgeUnavailableError
-      ? { error: "bridge_unavailable", name }
-      : err instanceof BridgeToolError
-        ? { error: "tool_error", name, detail: err.detail }
-        : { error: "bridge_error", name };
-  const auditFailure = (err: unknown) => {
-    const body = failureBody(err);
-    audit({
-      error: "detail" in body ? `${body.error}: ${body.detail}` : body.error,
-      body,
-    });
-    return body;
-  };
-
-  // Every stop also ends every agent turn in flight, before the stop is
-  // even sent: the model must not plan a next step around it.
-  if (SAFETY_SKILLS.has(name)) {
-    const aborted = abortAllTurns(name);
-    if (aborted)
-      console.warn(`[skills] ${name} aborted ${aborted} agent turn(s)`);
-  }
-
-  // The dispatch, audited when it SETTLES — however long that takes —
-  // so the log records what really happened, not when we stopped
-  // waiting.
-  const dispatch = callTool(name, args).then(
-    (result) => {
-      audit({ result });
-      return { ok: true as const, result };
-    },
-    (err: unknown) => ({ ok: false as const, body: auditFailure(err) }),
-  );
-
-  // A stop must answer quickly or not at all: unbounded, a hung bridge
-  // held PARAR on "Parando…" for the MCP SDK's 60 s default. But the
-  // bound is on our WAITING, not on the call: the SDK's own timeout
-  // sends `notifications/cancelled`, which made the bridge cancel the
-  // stop_everything it was in the middle of — zero velocity may already
-  // have gone out and a damp may still land. So the call keeps running
-  // and the operator is told the truth: no answer yet (504), not "the
-  // order never left". Other skills keep the default — gestures and
-  // walks legitimately run for tens of seconds.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const settled = await (isSafety
-    ? Promise.race([
-        dispatch,
-        new Promise<{ ok: "timeout" }>((resolve) => {
-          timer = setTimeout(
-            () => resolve({ ok: "timeout" }),
-            SAFETY_TIMEOUT_MS,
-          );
-        }),
-      ])
-    : dispatch);
-  if (timer) clearTimeout(timer);
-
-  if (settled.ok === "timeout") {
-    return {
-      status: 504,
-      body: { error: "bridge_timeout", name },
-      dispatched: true,
-    };
-  }
-  if (settled.ok)
-    return { status: 200, body: settled.result, dispatched: true };
-  return { status: 502, body: settled.body, dispatched: true };
+  // Audited when it settles, never awaited (bridge/stop.ts). A stop goes
+  // through `stopRobot`, the one stop path the /tasks estop shares: it ends
+  // every agent turn first, and answers 504 after 8 s while the stop keeps
+  // running. Other skills keep no bound — gestures and walks legitimately
+  // run for tens of seconds — except one the catalogue classifies as safety.
+  const who = { userId: user.id, source: "direct" as const };
+  const r = SAFETY_SKILLS.has(name)
+    ? await stopRobot(name, who)
+    : await dispatchDirect(
+        name,
+        args,
+        who,
+        isSafety ? STOP_TIMEOUT.ms : undefined,
+      );
+  return { ...r, dispatched: true };
 }
 
 // `detail` is for the operator; `message` is reserved for what the agent reads.

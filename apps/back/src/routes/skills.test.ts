@@ -153,6 +153,7 @@ mock.module("#back/db/drizzle.js", () => ({
 const skillsModule = await import("./skills");
 const { skillsRoutes } = skillsModule;
 const confirmations = await import("../agent/confirmations");
+const stop = await import("../bridge/stop");
 const bridge = (await import("../bridge/client")) as unknown as {
   callTool: ReturnType<typeof mock>;
   BridgeUnavailableError: new (message?: string) => Error;
@@ -431,6 +432,133 @@ describe("POST /skills/:name/invoke writes the audit trail", () => {
     expect((await invoke("walk_velocity", { vx: "fast" })).status).toBe(422);
     expect((await invoke("not_a_real_skill", {})).status).toBe(404);
     expect(inserted.length).toBe(0);
+  });
+});
+
+/**
+ * PARAR through /skills and the /tasks estop are ONE stop (bridge/stop.ts): the
+ * estop used to await the bridge with no bound, so a hung bridge held it for the
+ * MCP default while /skills answered 504 after 8 s.
+ */
+describe("the /tasks estop and /skills PARAR are the same stop", () => {
+  const saved = stop.STOP_TIMEOUT.ms;
+  let release: (() => void) | undefined;
+
+  beforeEach(() => {
+    sessionUser = null;
+    catalogueSkills = FIXTURE_SKILLS;
+    inserted = [];
+    insertHangs = false;
+    stop.STOP_TIMEOUT.ms = 50;
+  });
+  afterEach(async () => {
+    stop.STOP_TIMEOUT.ms = saved;
+    release?.();
+    release = undefined;
+    await Bun.sleep(5); // its audit row lands here, not in the next test
+  });
+
+  /** The next callTool hangs until `release()`, then resolves like the stop did. */
+  function bridgeHangs() {
+    bridge.callTool.mockImplementationOnce(
+      (name: string) =>
+        new Promise((resolve) => {
+          release = () => resolve({ called: name, args: {} });
+        }),
+    );
+  }
+
+  function estop() {
+    return import("./tasks").then(({ tasksRoutes }) =>
+      tasksRoutes.handle(
+        new Request("http://localhost/tasks/t1/cancel", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mode: "estop" }),
+        }),
+      ),
+    );
+  }
+
+  async function settled<T>(p: Promise<T>, ms = 2000): Promise<T | "blocked"> {
+    return Promise.race([
+      p,
+      new Promise<"blocked">((r) => setTimeout(() => r("blocked"), ms)),
+    ]);
+  }
+
+  test("a hung bridge: the estop answers 504 bridge_timeout, like PARAR", async () => {
+    bridgeHangs();
+    const res = await settled(estop());
+    expect(res).not.toBe("blocked");
+    expect((res as Response).status).toBe(504);
+    expect(await (res as Response).json()).toEqual({
+      error: "bridge_timeout",
+      task_id: "t1",
+    });
+  });
+
+  test("a hung bridge: /skills PARAR answers 504 with its own shape", async () => {
+    sessionUser = { id: "u1", role: null };
+    bridgeHangs();
+    const res = await settled(invoke("stop_everything", {}));
+    expect(res).not.toBe("blocked");
+    expect((res as Response).status).toBe(504);
+    expect(await (res as Response).text()).toBe(
+      JSON.stringify({ error: "bridge_timeout", name: "stop_everything" }),
+    );
+  });
+
+  test("the timed-out estop keeps running, and is audited when it settles", async () => {
+    bridgeHangs();
+    expect(((await estop()) as Response).status).toBe(504);
+    expect(inserted.length).toBe(0);
+    release!();
+    await Bun.sleep(5);
+    expect(inserted.length).toBe(1);
+    expect(inserted[0]!.skillName).toBe("stop_everything");
+    expect(inserted[0]!.source).toBe("direct");
+    expect(inserted[0]!.status).toBe("ok");
+  });
+
+  test("an estop answer keeps its shape: mode, task_id, then the bridge's result", async () => {
+    const res = await estop();
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(
+      JSON.stringify({
+        mode: "estop",
+        task_id: "t1",
+        called: "stop_everything",
+        args: {},
+      }),
+    );
+  });
+
+  test("estop failures keep the /tasks error shapes", async () => {
+    bridge.callTool.mockImplementationOnce(async () => {
+      throw new bridge.BridgeUnavailableError("down");
+    });
+    let res = await estop();
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({
+      error: "bridge_unavailable",
+      task_id: "t1",
+    });
+
+    bridge.callTool.mockImplementationOnce(async () => {
+      throw new bridgeErrors.BridgeToolError("stop_everything", "damp failed");
+    });
+    res = await estop();
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({
+      error: "tool_error",
+      task_id: "t1",
+      detail: "damp failed",
+    });
+    expect(inserted.map((r) => r.error)).toEqual([
+      "bridge_unavailable",
+      "tool_error: damp failed",
+    ]);
   });
 });
 
