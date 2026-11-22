@@ -21,7 +21,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { plugin } from "bun";
 import { readFileSync } from "node:fs";
 import { compileModule } from "svelte/compiler";
-import * as realXr from "../src/lib/webxr/xr-teleop";
+import type { XrSession } from "../src/lib/robot/vr-control.svelte";
 import type {
   XrButtons,
   XrSample,
@@ -52,25 +52,32 @@ mock.module("$app/navigation", () => ({ goto: async () => {} }));
 
 class FakeXr {
   static last: FakeXr | null = null;
+  static made = 0;
+  /** While set, start() waits on it: the headset's consent prompt is up. */
+  static prompt: Promise<void> | null = null;
+  /** start() rejects with this (the wearer declined, or WebXR failed). */
+  static refuse: Error | null = null;
   active = true;
   mode = "immersive-vr";
+  stops = 0;
   constructor(public cb: XrTeleopCallbacks) {
     FakeXr.last = this;
+    FakeXr.made++;
     // Every setter the controller pushes into the headset is a no-op here.
     return new Proxy(this, {
       get: (t, k) => (k in t ? t[k as keyof FakeXr] : () => {}),
     });
   }
-  async start() {}
+  async start() {
+    if (FakeXr.prompt) await FakeXr.prompt;
+    if (FakeXr.refuse) throw FakeXr.refuse;
+  }
   stop() {
+    this.stops++;
     this.active = false;
     this.cb.onEnd?.();
   }
 }
-mock.module("#lib/webxr/xr-teleop.js", () => ({
-  ...realXr,
-  XrTeleopSession: FakeXr,
-}));
 
 class FakeSocket {
   static OPEN = 1;
@@ -159,10 +166,15 @@ async function harness() {
   };
   FakeSocket.made = [];
   FakeXr.last = null;
+  FakeXr.made = 0;
+  FakeXr.prompt = null;
+  FakeXr.refuse = null;
 
   const voice = { busy: false, cancelled: 0, talks: 0 };
   const ctl = new VrControl({
     posture: () => null,
+    // Injected, not mocked: the real xr-teleop module stays loaded.
+    xrSession: (cb) => new FakeXr(cb) as unknown as XrSession,
     voice: {
       onItem: () => false,
       onTalk: () => voice.talks++,
@@ -782,6 +794,61 @@ describe("leaving the page", () => {
       await Bun.sleep(0);
       const last = JSON.parse(h.socket().sent.at(-1)!) as Frame;
       expect(last.estop).toBe(true);
+    } finally {
+      h.restore();
+    }
+  });
+});
+
+describe("the consent prompt window", () => {
+  test("leaving the page while the prompt is up stops that session and adopts nothing", async () => {
+    const h = await harness();
+    try {
+      let grant!: () => void;
+      FakeXr.prompt = new Promise<void>((r) => (grant = r));
+      const entering = h.ctl.enterVr({} as HTMLElement);
+      await Bun.sleep(0);
+      expect(h.ctl.enteringVr).toBe(true);
+      h.ctl.destroy();
+      expect(h.xr().stops).toBe(1); // stopped while still pending
+      grant();
+      await entering;
+      expect(h.ctl.vrActive).toBe(false);
+      // Nothing adopted: no readouts, no radar, no walk loop on a gone page.
+      expect(h.periods()).toEqual([1000, 5000]);
+      h.look(0.5);
+      await Bun.sleep(5);
+      expect(h.walks).toEqual([]);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("a start that fails is not adopted and says why", async () => {
+    const h = await harness();
+    try {
+      FakeXr.refuse = new Error("NotAllowedError");
+      await h.ctl.enterVr({} as HTMLElement);
+      expect(h.ctl.vrActive).toBe(false);
+      expect(h.ctl.vrError).not.toBeNull();
+      expect(h.ctl.enteringVr).toBe(false);
+      expect(h.periods()).toEqual([1000, 5000]);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("a second tap while the prompt is up starts no second session", async () => {
+    const h = await harness();
+    try {
+      let grant!: () => void;
+      FakeXr.prompt = new Promise<void>((r) => (grant = r));
+      const first = h.ctl.enterVr({} as HTMLElement);
+      await h.ctl.enterVr({} as HTMLElement);
+      expect(FakeXr.made).toBe(1);
+      grant();
+      await first;
+      expect(h.ctl.vrActive).toBe(true);
     } finally {
       h.restore();
     }

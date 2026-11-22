@@ -52,6 +52,8 @@ import {
   checkXrSupport,
   type HandSample,
   type XrButtons,
+  type XrTeleopCallbacks,
+  type XrTeleopOptions,
   type XrTeleopSupport,
 } from "#lib/webxr/xr-teleop.js";
 import {
@@ -119,6 +121,15 @@ export type WalkDir = "forward" | "back";
 /** A walk refusal, or a stop that did not land. */
 export type WalkNotice = StampedOutcome & { stopFailed: boolean };
 
+/** What the controller uses of an XR session: `XrTeleopSession`'s public face. */
+export type XrSession = Pick<XrTeleopSession, keyof XrTeleopSession>;
+
+/** Builds the session `enterVr` starts. Tests pass a fake; the page passes nothing. */
+export type XrSessionFactory = (
+  callbacks: XrTeleopCallbacks,
+  options: XrTeleopOptions,
+) => XrSession;
+
 export type VrControlOptions = {
   /** The live posture token, or null while offline. Outcomes key off it. */
   posture: () => string | null;
@@ -141,6 +152,12 @@ export type VrControlOptions = {
     cancelTalk: () => void;
     busy: () => boolean;
   };
+  /**
+   * Builds the WebXR session. Default: a real `XrTeleopSession`. Injected so
+   * the runtime tests drive a fake one without mocking the xr-teleop module
+   * for the whole test process.
+   */
+  xrSession?: XrSessionFactory;
 };
 
 export class VrControl {
@@ -438,14 +455,14 @@ export class VrControl {
   #handLeft: HandSample | null = null;
   #handRight: HandSample | null = null;
 
-  #vr: XrTeleopSession | null = null;
+  #vr: XrSession | null = null;
   // The session between `new` and `start()` resolving — which includes the
   // headset's consent prompt, for as long as the wearer leaves it up. `#vr` is
   // only assigned after that await, so a page left during the prompt used to
   // call `this.#vr?.stop()` on null, and the session then started DETACHED:
   // no controls, no PARAR, and this page's 900 ms loop still sending head-yaw
   // walk_velocity. `destroy()` stops this one too.
-  #pendingVr: XrTeleopSession | null = null;
+  #pendingVr: XrSession | null = null;
   #teleop: TeleopHandle | null = null;
   #connectSeq = 0;
   #camHandle: RobotCamHandle | null = null;
@@ -456,7 +473,9 @@ export class VrControl {
     this.#menuItems = opts.menuItems ?? (() => []);
     this.#voice = opts.voice;
     this.#battery = opts.battery ?? (() => null);
+    this.#xrSession = opts.xrSession ?? ((cb, o) => new XrTeleopSession(cb, o));
   }
+  #xrSession: XrSessionFactory;
 
   /** Re-read `menuItems` into a running session (voice mode swaps the list). */
   refreshMenu(): void {
@@ -1277,7 +1296,7 @@ export class VrControl {
     // CLOSES the stream whenever it goes stale. Two independent connections
     // would also mean two MJPEG streams over the same robot Wi-Fi link.
     const camBase = PUBLIC_ROBOT_CAM_URL.trim();
-    const session = new XrTeleopSession(
+    const session = this.#xrSession(
       {
         onSample: (s) => {
           this.#applyStopChord(s.buttons.grips, Date.now());
