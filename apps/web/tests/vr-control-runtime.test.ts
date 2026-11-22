@@ -8,6 +8,13 @@
  * is held through the headset's own voice turn and until the head is centred
  * again (C8), the grips chord is PARAR only after 300 ms, observe-only sends
  * nothing but PARAR, and PARAR drops the arms.
+ *
+ * And the page's own walk loop, with no stream: which intervals run at which
+ * period, the 900 ms re-send, the 8 s dead-man, the 0.5 s stop pulses on
+ * release, blur, a hidden page, session end and page leave, the 4 s refusal
+ * hold-off, head-yaw scaling and staleness, and how PARAR latches it. Those
+ * were pinned before the controller was split into units, so the split could
+ * not move a period or the order of a stop unnoticed.
  */
 
 import { describe, expect, mock, test } from "bun:test";
@@ -89,6 +96,8 @@ class FakeSocket {
   }
 }
 
+type WalkBody = { vx: number; vy: number; vyaw: number; duration_s: number };
+
 type Frame = {
   enabled: boolean;
   head: { yaw: number };
@@ -109,19 +118,44 @@ async function harness() {
     window: g.window,
     document: g.document,
     location: g.location,
+    setInterval: g.setInterval,
+    clearInterval: g.clearInterval,
   };
   let tokens = 0;
   const fetched: string[] = [];
+  /** walk_velocity bodies, in the order they were sent. */
+  const walks: WalkBody[] = [];
+  const answers = {
+    walk: (): Promise<Response> | Response => Response.json({}),
+  };
   g.WebSocket = FakeSocket;
   g.window = new EventTarget();
   g.document = Object.assign(new EventTarget(), { visibilityState: "visible" });
   g.location = { hostname: "page", protocol: "http:" };
-  g.fetch = async (input: unknown) => {
+  g.fetch = async (input: unknown, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     fetched.push(url);
     if (url.includes("/teleop/token"))
       return Response.json({ token: `tok${++tokens}` });
+    if (url.includes("/skills/walk_velocity/")) {
+      const raw =
+        input instanceof Request ? await input.clone().text() : init?.body;
+      walks.push(JSON.parse(String(raw)) as WalkBody);
+      return answers.walk();
+    }
     return Response.json({});
+  };
+  // Every interval the controller arms, by period, so a test can see which
+  // loops run and fire one tick by hand instead of waiting it out.
+  const intervals = new Map<unknown, { ms: number; fn: () => void }>();
+  g.setInterval = (fn: () => void, ms: number) => {
+    const id = saved.setInterval(fn, ms);
+    intervals.set(id, { ms, fn });
+    return id;
+  };
+  g.clearInterval = (id: unknown) => {
+    intervals.delete(id);
+    saved.clearInterval(id);
   };
   FakeSocket.made = [];
   FakeXr.last = null;
@@ -184,6 +218,16 @@ async function harness() {
       return JSON.parse(FakeSocket.made.at(-1)!.sent.at(-1)!) as Frame;
     },
     tokens: () => tokens,
+    walks,
+    answers,
+    /** The periods of every interval running now, sorted. */
+    periods: () =>
+      [...intervals.values()].map((t) => t.ms).sort((a, b) => a - b),
+    /** Run one tick of every interval with this period, then let fetches land. */
+    async fire(ms: number) {
+      for (const t of [...intervals.values()]) if (t.ms === ms) t.fn();
+      await Bun.sleep(5);
+    },
     restore() {
       unmount();
       ctl.destroy();
@@ -420,6 +464,324 @@ describe("PARAR drops the arms", () => {
       h.estop.phase = "idle"; // the stop is over: nobody asked for the arms again
       h.look(0);
       expect((await h.frame()).arms).toBe(false);
+    } finally {
+      h.restore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The page's OWN walk loop: no teleop stream, so walk_velocity over /invoke is
+// the commander. Pinned by behaviour so the controller can be split without
+// moving a period, a threshold or the order of a stop.
+// ---------------------------------------------------------------------------
+
+const STOP_PULSE: WalkBody = { vx: 0, vy: 0, vyaw: 0, duration_s: 0.5 };
+const FORWARD: WalkBody = { vx: 0.2, vy: 0, vyaw: 0, duration_s: 1 };
+
+describe("the loops the controller runs, by period", () => {
+  test("mount: the 1 s clock and the 5 s link probe; VR adds the 200 ms readouts, the 250 ms radar and the 900 ms loop", async () => {
+    const h = await harness();
+    try {
+      expect(h.periods()).toEqual([1000, 5000]);
+      await h.ctl.enterVr({} as HTMLElement);
+      expect(h.periods()).toEqual([200, 250, 900, 1000, 5000]);
+      h.xr().stop();
+      expect(h.periods()).toEqual([1000, 5000]);
+    } finally {
+      h.restore();
+    }
+  });
+});
+
+describe("hold-to-walk over /invoke", () => {
+  test("one call at once, re-sent every 900 ms tick, one 0.5 s stop pulse on release", async () => {
+    const h = await harness();
+    try {
+      h.ctl.startWalking("forward");
+      await Bun.sleep(5);
+      expect(h.walks).toEqual([FORWARD]);
+      expect(h.periods()).toContain(900);
+      await h.fire(900);
+      expect(h.walks).toEqual([FORWARD, FORWARD]);
+      h.ctl.stopWalking();
+      await Bun.sleep(5);
+      expect(h.walks.at(-1)).toEqual(STOP_PULSE);
+      expect(h.walks.length).toBe(3);
+      expect(h.periods()).not.toContain(900);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("the dead-man: 8 s of motion is allowed, past 8 s it latches, sends one stop and the loop ends", async () => {
+    const h = await harness();
+    const t = clock();
+    try {
+      h.ctl.startWalking("forward");
+      t.advance(8000);
+      await h.fire(900);
+      expect(h.ctl.deadManTripped).toBe(false);
+      expect(h.walks.at(-1)).toEqual(FORWARD);
+      t.advance(1);
+      await h.fire(900);
+      expect(h.ctl.deadManTripped).toBe(true);
+      expect(h.ctl.latchCause).toBe("deadman");
+      expect(h.ctl.walking).toBeNull();
+      expect(h.walks.at(-1)).toEqual(STOP_PULSE);
+      const sent = h.walks.length;
+      await h.fire(900); // nothing held and no VR: the loop stops itself
+      expect(h.walks.length).toBe(sent);
+      expect(h.periods()).not.toContain(900);
+      // A fresh press is the re-arm.
+      h.ctl.startWalking("forward");
+      await Bun.sleep(5);
+      expect(h.ctl.deadManTripped).toBe(false);
+      expect(h.walks.at(-1)).toEqual(FORWARD);
+    } finally {
+      t.restore();
+      h.restore();
+    }
+  });
+
+  for (const [label, emit] of [
+    ["pointerup", () => window.dispatchEvent(new Event("pointerup"))],
+    ["pointercancel", () => window.dispatchEvent(new Event("pointercancel"))],
+    ["blur", () => window.dispatchEvent(new Event("blur"))],
+    [
+      "a hidden page",
+      () => {
+        Object.assign(document, { visibilityState: "hidden" });
+        document.dispatchEvent(new Event("visibilitychange"));
+      },
+    ],
+  ] as const) {
+    test(`${label} releases a held button with one stop pulse`, async () => {
+      const h = await harness();
+      try {
+        h.ctl.startWalking("back");
+        await Bun.sleep(5);
+        emit();
+        await Bun.sleep(5);
+        expect(h.ctl.walking).toBeNull();
+        expect(h.walks).toEqual([{ ...FORWARD, vx: -0.2 }, STOP_PULSE]);
+        expect(h.periods()).not.toContain(900);
+      } finally {
+        h.restore();
+      }
+    });
+  }
+
+  test("a page made visible again releases nothing", async () => {
+    const h = await harness();
+    try {
+      h.ctl.startWalking("forward");
+      document.dispatchEvent(new Event("visibilitychange")); // still "visible"
+      await Bun.sleep(5);
+      expect(h.ctl.walking).toBe("forward");
+      expect(h.walks).toEqual([FORWARD]);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("a refused walk clears the button, says why and ends the loop", async () => {
+    const h = await harness();
+    try {
+      h.answers.walk = () =>
+        Response.json({ status: "failed", phase: "rpc_error" });
+      h.ctl.startWalking("forward");
+      await Bun.sleep(5);
+      expect(h.ctl.walking).toBeNull();
+      expect(h.ctl.walkNotice?.stopFailed).toBe(false);
+      expect(h.ctl.announcement).toContain("No camina:");
+      expect(h.periods()).not.toContain(900);
+    } finally {
+      h.restore();
+    }
+  });
+});
+
+describe("head yaw over /invoke (VR, no stream)", () => {
+  test("6° deadzone, 0.3 rad/s at 30°, and a pose older than 800 ms steers nothing", async () => {
+    const h = await harness();
+    const t = clock();
+    try {
+      await h.ctl.enterVr({} as HTMLElement);
+      h.look(0.05); // inside the 6° deadzone
+      await h.fire(900);
+      expect(h.walks).toEqual([]);
+      h.look(0.5);
+      await h.fire(900);
+      const dead = (6 * Math.PI) / 180;
+      const full = (30 * Math.PI) / 180;
+      expect(h.walks.at(-1)!.vx).toBe(0);
+      expect(h.walks.at(-1)!.duration_s).toBe(1);
+      expect(h.walks.at(-1)!.vyaw).toBeCloseTo(
+        ((0.5 - dead) / (full - dead)) * 0.3,
+        6,
+      );
+      h.look(-1);
+      await h.fire(900);
+      expect(h.walks.at(-1)!.vyaw).toBe(-0.3);
+      t.advance(801); // no sample since: tracking is stale
+      await h.fire(900);
+      expect(h.walks.at(-1)).toEqual(STOP_PULSE);
+    } finally {
+      t.restore();
+      h.restore();
+    }
+  });
+
+  test("a refusal holds steering off for 4 s, then it resumes", async () => {
+    const h = await harness();
+    const t = clock();
+    try {
+      await h.ctl.enterVr({} as HTMLElement);
+      h.answers.walk = () =>
+        Response.json({ status: "failed", phase: "rpc_error" });
+      h.look(0.5);
+      await h.fire(900);
+      expect(h.walks.length).toBe(1);
+      h.answers.walk = () => Response.json({});
+      t.advance(3999);
+      h.look(0.5);
+      await h.fire(900);
+      expect(h.walks.length).toBe(1); // held off
+      t.advance(2);
+      h.look(0.5);
+      await h.fire(900);
+      expect(h.walks.length).toBe(2);
+      expect(h.walks.at(-1)!.vyaw).toBeGreaterThan(0);
+    } finally {
+      t.restore();
+      h.restore();
+    }
+  });
+
+  test("ending the session mid-walk stops the walk and both VR loops", async () => {
+    const h = await harness();
+    try {
+      await h.ctl.enterVr({} as HTMLElement);
+      h.ctl.startWalking("forward");
+      await Bun.sleep(5);
+      h.xr().stop();
+      await Bun.sleep(5);
+      expect(h.ctl.vrActive).toBe(false);
+      expect(h.ctl.walking).toBeNull();
+      // releaseAllControls's pulse, then the session end's own.
+      expect(h.walks).toEqual([FORWARD, STOP_PULSE, STOP_PULSE]);
+      expect(h.periods()).toEqual([1000, 5000]);
+    } finally {
+      h.restore();
+    }
+  });
+});
+
+describe("PARAR and the page's own walk loop", () => {
+  test("no stop pulse of its own, the loop ends, and it stays latched until a fresh press", async () => {
+    const h = await harness();
+    try {
+      h.ctl.startWalking("forward");
+      await Bun.sleep(5);
+      h.estop.phase = "sending";
+      await Bun.sleep(0);
+      expect(h.ctl.walking).toBeNull();
+      expect(h.ctl.deadManTripped).toBe(true);
+      expect(h.ctl.latchCause).toBe("estop");
+      expect(h.periods()).not.toContain(900);
+      h.ctl.startWalking("forward"); // refused while the stop is going out
+      expect(h.ctl.walking).toBeNull();
+      expect(h.ctl.announcement).toContain("PARAR en curso");
+      h.estop.phase = "idle";
+      await Bun.sleep(5);
+      expect(h.walks).toEqual([FORWARD]);
+      expect(h.ctl.deadManTripped).toBe(true);
+      h.ctl.startWalking("forward");
+      await Bun.sleep(5);
+      expect(h.ctl.deadManTripped).toBe(false);
+      expect(h.walks).toEqual([FORWARD, FORWARD]);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("an answer to a walk sent before PARAR is not news", async () => {
+    const h = await harness();
+    try {
+      let answer!: (r: Response) => void;
+      h.answers.walk = () => new Promise<Response>((r) => (answer = r));
+      h.ctl.startWalking("forward");
+      await Bun.sleep(5);
+      h.estop.phase = "sending";
+      await Bun.sleep(0);
+      answer(Response.json({ status: "cancelled" }));
+      await Bun.sleep(5);
+      expect(h.ctl.walkNotice).toBeNull();
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("in VR, the loop comes back latched once the stop is over, and a centred head re-arms it", async () => {
+    const h = await harness();
+    try {
+      await h.ctl.enterVr({} as HTMLElement);
+      h.estop.phase = "sending";
+      await Bun.sleep(0);
+      expect(h.periods()).not.toContain(900);
+      h.estop.phase = "idle";
+      await Bun.sleep(0);
+      expect(h.periods()).toContain(900);
+      expect(h.ctl.deadManTripped).toBe(true);
+      h.look(0);
+      await h.fire(900);
+      expect(h.ctl.deadManTripped).toBe(false);
+      expect(h.walks).toEqual([]);
+    } finally {
+      h.restore();
+    }
+  });
+});
+
+describe("leaving the page", () => {
+  test("an idle page sends no walk at all", async () => {
+    const h = await harness();
+    try {
+      h.ctl.destroy();
+      await Bun.sleep(5);
+      expect(h.walks).toEqual([]);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("a walking page sends exactly one stop pulse and stops every loop it ran", async () => {
+    const h = await harness();
+    try {
+      await h.ctl.enterVr({} as HTMLElement);
+      h.ctl.startWalking("forward");
+      await Bun.sleep(5);
+      h.ctl.destroy();
+      await Bun.sleep(5);
+      expect(h.walks).toEqual([FORWARD, STOP_PULSE]);
+      expect(h.ctl.walking).toBeNull();
+      // The clock and the link probe belong to mount()'s teardown.
+      expect(h.periods()).toEqual([1000, 5000]);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("with the stream open, PARAR still goes down it after the session ended", async () => {
+    const h = await harness();
+    try {
+      await h.drive();
+      h.xr().stop();
+      h.estop.phase = "sending";
+      await Bun.sleep(0);
+      const last = JSON.parse(h.socket().sent.at(-1)!) as Frame;
+      expect(last.estop).toBe(true);
     } finally {
       h.restore();
     }
