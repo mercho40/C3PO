@@ -261,7 +261,7 @@ The granular commands below are retained for diagnostics and partial-stack work:
 and `stop_everything` with it, would be gone after the next reboot. `c3po install` enables
 it. `c3po preflight` warns, and does not block, when the person rule is off
 (`SAFETY_PERSON_RULE`), when the geofence is off (`SAFETY_GEOFENCE_M` ≤ 0), or when a PARAR
-still stands. On the Mac, `./scripts/preflight.sh` says whether the teleop socket wants a
+still stands. On the Mac, `./scripts/headset_preflight.sh` says whether the teleop socket wants a
 token (§6).
 
 Starting either stack stops the other. The systemd bridge boot path still starts no sensor;
@@ -1413,7 +1413,7 @@ With it, every connection to the teleop socket (8767) needs a one-use token that
 mints, with its expiry read off the robot's clock (the bridge's HTTP `Date` header), so the
 Mac's clock does not matter. Empty on the robot: any LAN client can open 8767 and drive.
 Set on the robot but not in `back`: every headset connect is refused with 401. After a
-change, restart `back` and `c3po up teleop`. `./scripts/preflight.sh` on the Mac reads
+change, restart `back` and `c3po up teleop`. `./scripts/headset_preflight.sh` on the Mac reads
 which it is: the socket answers a plain GET with 401 when it wants a token, 426 when it
 does not. It reports OK (401, and `back` has the secret), BAD (401, `back` has none) or
 WARN (426).

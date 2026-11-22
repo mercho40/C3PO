@@ -1675,7 +1675,7 @@ Done off the robot, each with tests that fail without the fix. Stop and safety:
 - ✅ A cancelled dance (an ended agent turn) releases the arm it latched (889b35a).
 - ✅ Voice is not offered postures nobody has watched work (squat, sit_g1, dance, lie_up), and the prompt no longer says such a skill "produces no motion" (51f62fa).
 - ✅ The first call after `c3po restart`, PARAR included, retries once on a fresh MCP session (dc70f80, 763c222).
-- ✅ `./scripts/preflight.sh` says whether the teleop socket wants a token (401 / 426), and `c3po status` whether the bridge starts at boot (f8e116e). The teleop token's expiry is minted on the robot's clock (0f1257d).
+- ✅ `./scripts/headset_preflight.sh` says whether the teleop socket wants a token (401 / 426), and `c3po status` whether the bridge starts at boot (f8e116e). The teleop token's expiry is minted on the robot's clock (0f1257d).
 - ✅ `c3po preflight` warns when the person rule or the geofence is off, or a PARAR stands (f9e7716). Its "cannot read perception state" line is still a warning, not a blocker.
 - ✅ Sign-in is rate limited per real client address (2afa2d1). The sign-up page is gone (90f724c).
 - ✅ `smoke-vision.ts` uploads the face-blurred frame (5f5bd5f). `smoke-agent.ts` reaches the gateway over https (d2993b2); which gateway host is right is still open.

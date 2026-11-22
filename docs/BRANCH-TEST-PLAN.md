@@ -144,7 +144,7 @@ ssh session if you want to test it, otherwise skip §D3.
 ```bash
 ./scripts/robot_tunnel.sh c3po-wire   # terminal 1: 8001 + 8767, reconnects by itself, says if the bridge answers
 bun run dev                            # terminal 2, from ../c3po-integrate: back :3000 + web :3001
-./scripts/preflight.sh                 # terminal 3
+./scripts/headset_preflight.sh                 # terminal 3
 ./scripts/audit_watch.sh               # terminal 3 afterwards: every command the robot is sent, live
 ```
 
