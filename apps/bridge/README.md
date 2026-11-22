@@ -49,7 +49,7 @@ cp .env.example .env
 
 ### The two MCP servers — know which machine you are about to move
 
-A local `.mcp.json` at the repo root defines two bridge entries. It is gitignored, not part of the repo, so each developer writes their own with these two. The distinction is a safety property, not bookkeeping — the tool-name prefix tells you which machine is about to move:
+A local `.mcp.json` at the repo root defines two bridge entries. It is gitignored, so each developer keeps their own: `cp .mcp.json.example .mcp.json` and set the sim host and `CYCLONEDDS_HOME` in it. The distinction is a safety property, not bookkeeping — the tool-name prefix tells you which machine is about to move:
 
 | Server        | Tools                 | Target                                                                                                   |
 | ------------- | --------------------- | -------------------------------------------------------------------------------------------------------- |

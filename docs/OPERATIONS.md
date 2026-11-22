@@ -65,7 +65,7 @@ why `back` must not be is argued in `docs/ARCHITECTURE.md`.
 blocks sim-host→Mac UDP across VLANs, so a Mac-hosted bridge cannot receive state from
 the sim — drive it from a bridge running locally on that box. Connection values for the
 locally spawned sim server live in your local `.mcp.json` (`c3po-sim`) — gitignored, so
-each developer writes their own; `apps/bridge/README.md` lists the two entries it needs.
+each developer keeps their own, from `.mcp.json.example`; `apps/bridge/README.md` explains the two entries.
 
 ---
 
