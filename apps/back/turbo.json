@@ -3,8 +3,8 @@
   // Files outside this package that its tests read or import. Without them a
   // turbo cache hit replays a pass recorded against an older bridge: the
   // contracts/ files (contracts.test.ts, by import and by read), and the
-  // bridge and console sources camera-contract.test.ts and telemetry.test.ts
-  // compare against back's routes.
+  // bridge and console sources (and dev:robot's camera URL in web's package.json)
+  // camera-contract.test.ts and telemetry.test.ts compare against back's routes.
   "tasks": {
     "test": {
       "inputs": [
@@ -12,7 +12,8 @@
         "$TURBO_ROOT$/contracts/**",
         "$TURBO_ROOT$/apps/bridge/src/bridge/mcp_server.py",
         "$TURBO_ROOT$/apps/web/src/**",
-        "$TURBO_ROOT$/apps/web/.env.example"
+        "$TURBO_ROOT$/apps/web/.env.example",
+        "$TURBO_ROOT$/apps/web/package.json"
       ]
     },
     // contracts.test.ts's RobotState comparison is a type check.

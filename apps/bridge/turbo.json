@@ -1,0 +1,16 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/perception/bringup/spec.py",
+        "$TURBO_ROOT$/apps/perception/config/**",
+        "$TURBO_ROOT$/apps/perception/vision/c3po_vision/**",
+        "$TURBO_ROOT$/apps/perception/nav/ws/src/**",
+        "$TURBO_ROOT$/apps/back/src/skills/**",
+        "$TURBO_ROOT$/scripts/robot/c3po_preflight"
+      ]
+    }
+  }
+}

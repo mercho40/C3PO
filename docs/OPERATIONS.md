@@ -106,10 +106,10 @@ c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the t
 `BRIDGE_URL=http://127.0.0.1:8001/mcp` — the default in `apps/back/.env.example` and in
 `bun run dev:robot`. Anything still dialling `g1-orin.local:8001` gets a refused connection;
 `apps/back` logs the tunnel line when that happens (`unreachableHint`).
-**Port 3000 taken on the Mac** (another local project): run back and web from their own
-folders with another port, since the root `bun run dev:robot` passes no such variables
-through turbo. `cd apps/back && PORT=3010 BETTER_AUTH_URL=http://localhost:3010 bun run dev:robot`,
-then `cd apps/web && PUBLIC_API_URL=http://localhost:3010 bun run dev:robot`. For the
+**Port 3000 taken on the Mac** (another local project): move back to another port from the
+root, `PORT=3010 BETTER_AUTH_URL=http://localhost:3010 PUBLIC_API_URL=http://localhost:3010
+PUBLIC_ROBOT_CAM_URL=http://localhost:3010/camera bun run dev:robot`. Turbo passes those
+through to both apps (`turbo.json`, `dev:robot`'s `passThroughEnv`), and `BRIDGE_URL` too. For the
 headset, `BACK_PORT=3010 bash scripts/quest_reverse.sh` (it reads `PORT` from
 `apps/back/.env` otherwise).
 `scripts/robot_session.sh [host]` does the whole Mac side in one command (tunnel, robot internet, `bun run dev:robot`, a status table, the robot-side `export`/`c3po up` lines); open the console at `http://localhost:3001`.
@@ -671,7 +671,7 @@ Seen on 2026-11-11: every model answered `502 upstream_unreachable` while `GET /
 answered 200, so the agent, `look` and `tic-transcript` all failed. The fallback that
 worked was Gemini through its OpenAI-compatible endpoint. Start `apps/back` with these in
 its process environment only, never in a committed file. Run it from `apps/back`: the root
-`bun run dev:robot` goes through turbo, which passes on only `C3PO_ROBOT_HOST`.
+`bun run dev:robot` goes through turbo, which passes on only the few names in `turbo.json`.
 
 ```bash
 cd apps/back
