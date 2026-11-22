@@ -1518,7 +1518,7 @@ Plain facts, not a roadmap. Each stays here until fixed.
 
 - **Written and never run on hardware.** These are not suspected broken — they
   are untested, which is a different claim and a weaker one. Run them in the
-  fail-closed order in [`MONDAY-RUNBOOK.md`](MONDAY-RUNBOOK.md); the inventory is:
+  fail-closed order in [`archive/MONDAY-RUNBOOK.md`](archive/MONDAY-RUNBOOK.md); the inventory is:
 
   | What                                                    | How to check it                                                                              |
   | ------------------------------------------------------- | -------------------------------------------------------------------------------------------- |

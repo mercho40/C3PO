@@ -6,7 +6,7 @@ list of what only the hardware can prove, with what "pass" looks like for each,
 so one session produces the evidence the merge decision needs.
 
 General procedure, safety rules and background live in
-[SESSION-CHECKLIST.md](SESSION-CHECKLIST.md) and
+[SESSION-CHECKLIST.md](../SESSION-CHECKLIST.md) and
 [MONDAY-RUNBOOK.md](MONDAY-RUNBOOK.md). This file only adds what is new in this
 branch. **Stop at the first failed gate** and write down what you saw — a
 refusal is a result, not an obstacle.
