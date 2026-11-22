@@ -60,11 +60,100 @@ import math
 import os
 import threading
 import time
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 import structlog
 
 log = structlog.get_logger(__name__)
+
+
+# -- the HTTP contract ----------------------------------------------------------
+#
+# What GET /safety/status and the /safety/* POSTs (mcp_server.py) answer, typed
+# here, next to the functions that build it, because apps/back and apps/web read
+# these bodies from TypeScript. `scripts/export_contracts.py` writes them out
+# as JSON Schema under contracts/ at the repo root, and the TS tests hold the
+# console's own types to that file. Change a key here and the file is stale
+# until regenerated; regenerate it and the console's type check names the
+# field it still expects.
+
+
+class SafetyCaps(TypedDict):
+    linear_mps: float
+    yaw_rps: float
+    accel_mps2: float
+    yaw_accel_rps2: float
+
+
+class Geofence(TypedDict):
+    radius_m: float | None
+    anchor: list[float] | None
+    distance_m: float | None
+    inside: bool | None
+
+
+class StopLatch(TypedDict):
+    """The PARAR latch (`stop_latch`), merged into /safety/status and the /safety/ack bodies."""
+
+    stop_standing: bool
+    stopped_at: float | None
+    acknowledged_at: float | None
+
+
+class SafetyStatus(StopLatch):
+    """`status()`. GET /safety/status answers this plus `face_greet` (SafetyStatusBody)."""
+
+    caps: SafetyCaps
+    person_rule: bool
+    stale_policy: str
+    t2_confirm: bool
+    confirm_configured: bool
+    pending_confirmations: list[str]
+    perception_fresh: bool
+    obstacles_fresh: bool
+    geofence: Geofence
+    nearest_person_m: float | None
+    last_command: list[float]
+    last_command_age_s: float | None
+    last_reason: str | None
+
+
+class SafetyStatusBody(SafetyStatus):
+    """GET /safety/status: `status()` plus `face_greet.status()`."""
+
+    face_greet: dict[str, Any]
+
+
+#: Every `error` the /safety/* routes answer with. Bare strings on the wire, and
+#: the console matches them by value (`newer_stop` in apps/web's stop-latch.ts),
+#: so they are a contract: a renamed code turns a precise message into a
+#: generic one with nothing failing. `tests/test_contracts.py` drives each route
+#: into each code and checks it is listed here.
+SafetyRouteError = Literal[
+    # /safety/confirm, /safety/ack, /face/*: no or wrong X-C3PO-Confirm-Secret.
+    "forbidden",
+    "confirmation_not_configured",
+    # /safety/confirm
+    "not_confirmable",
+    "invalid_arguments",
+    # /safety/ack: a newer PARAR than the one the operator saw (409), and the
+    # ack file did not land so the latch still stands (500).
+    "newer_stop",
+    "ack_not_recorded",
+]
+
+
+class StopAckRefused(StopLatch):
+    """The /safety/ack refusal bodies: `newer_stop` (409) and `ack_not_recorded` (500)."""
+
+    error: SafetyRouteError
+
+
+class StopAcknowledged(StopLatch):
+    """The /safety/ack success body."""
+
+    acknowledged: bool
+    was_standing: bool
 
 
 def _env_float(name: str, default: float) -> float:
@@ -325,7 +414,7 @@ def anchor_geofence(*, renewing: bool) -> None:
     log.warning("safety.geofence_anchored", anchor=pose, radius_m=GEOFENCE_M, renewing=renewing)
 
 
-def geofence() -> dict[str, Any]:
+def geofence() -> Geofence:
     """The fence as arm_navigation and /safety/status report it."""
     pose = _pose_now()
     with _lock:
@@ -631,7 +720,7 @@ def _refusal(
     )
 
 
-def status() -> dict[str, Any]:
+def status() -> SafetyStatus:
     """Everything the test-day checklist needs to see, for GET /safety/status."""
     nearest, fresh = person_proximity()
     with _lock:
@@ -660,7 +749,7 @@ def status() -> dict[str, Any]:
     }
 
 
-def stop_latch() -> dict[str, Any]:
+def stop_latch() -> StopLatch:
     """The PARAR latch as the console shows it: standing or not, and since when."""
     from bridge import estop
 

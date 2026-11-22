@@ -1,0 +1,20 @@
+{
+  "extends": ["//"],
+  // Files outside this package that its tests read or import, so a turbo cache
+  // hit cannot replay a pass recorded against an older bridge or back:
+  // contracts/ (tests/contracts.test.ts) and back's safety relay, whose error
+  // codes the same test checks the console's against.
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/contracts/**",
+        "$TURBO_ROOT$/apps/back/src/routes/safety.ts"
+      ]
+    },
+    // tests/contracts.test.ts's SafetyStatus comparison is a type check.
+    "check-types": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/contracts/**"]
+    }
+  }
+}

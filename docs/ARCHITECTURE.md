@@ -187,6 +187,15 @@ source of truth; `apps/back/src/skills/catalogue.ts` derives its catalogue
 from the bridge's `listTools` and caches the last good answer with its age
 attached rather than ever inventing a default.
 
+What TypeScript still has to name at build time — tools called by literal
+name, the safety set, the gesture fallback, and the HTTP payloads
+(`/safety/status`, `get_state`) restated as TS types — is checked against
+`contracts/` at the repo root. Those files are generated from the running
+bridge (`apps/bridge/scripts/export_contracts.py`); the bridge's pytest fails
+while they are stale, and `contracts.test.ts` in `apps/back` and `apps/web`
+fails when a consumer names something they do not contain. Data files, not a
+package: nothing imports a runtime value from them.
+
 **Console ↔ control plane typing** needs no shared package: `apps/back`
 exports its Elysia router type (`App`) from `src/index.ts`, and `apps/web`
 imports it from the `@repo/back` workspace package for full end-to-end

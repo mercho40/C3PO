@@ -1,0 +1,477 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "GENERATED from bridge/safety.py and bridge/sdk/state.py. Do not edit: cd apps/bridge && uv run python scripts/export_contracts.py",
+  "$defs": {
+    "Geofence": {
+      "properties": {
+        "radius_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "anchor": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "distance_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inside": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "radius_m",
+        "anchor",
+        "distance_m",
+        "inside"
+      ],
+      "type": "object"
+    },
+    "RobotPose": {
+      "properties": {
+        "x_meters_world": {
+          "type": "number"
+        },
+        "y_meters_world": {
+          "type": "number"
+        },
+        "z_meters_world": {
+          "type": "number"
+        },
+        "yaw_radians_world": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x_meters_world",
+        "y_meters_world",
+        "yaw_radians_world"
+      ],
+      "type": "object"
+    },
+    "RobotState": {
+      "properties": {
+        "pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RobotPose"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "battery_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "posture": {
+          "type": "string"
+        },
+        "faults": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "env": {
+          "type": "string"
+        },
+        "stub": {
+          "type": "boolean"
+        },
+        "raw": {
+          "$ref": "#/$defs/RobotStateRaw"
+        }
+      },
+      "required": [
+        "pose",
+        "battery_pct",
+        "posture",
+        "faults",
+        "env",
+        "stub"
+      ],
+      "type": "object"
+    },
+    "RobotStateRaw": {
+      "properties": {
+        "tick": {
+          "type": "integer"
+        },
+        "mode_machine": {
+          "type": "integer"
+        },
+        "motor_count": {
+          "type": "integer"
+        },
+        "lowstate_messages_received": {
+          "type": "integer"
+        },
+        "lowstate_age_s": {
+          "type": "number"
+        },
+        "pose_source": {
+          "type": "string"
+        },
+        "pose_messages_received": {
+          "type": "integer"
+        },
+        "pose_age_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fsm_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fsm_mode": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fsm_age_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "battery_soh_pct": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "battery_current_ma": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "battery_messages_received": {
+          "type": "integer"
+        },
+        "battery_age_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "tick",
+        "mode_machine",
+        "motor_count",
+        "lowstate_messages_received",
+        "pose_source",
+        "pose_messages_received"
+      ],
+      "type": "object"
+    },
+    "SafetyCaps": {
+      "properties": {
+        "linear_mps": {
+          "type": "number"
+        },
+        "yaw_rps": {
+          "type": "number"
+        },
+        "accel_mps2": {
+          "type": "number"
+        },
+        "yaw_accel_rps2": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "linear_mps",
+        "yaw_rps",
+        "accel_mps2",
+        "yaw_accel_rps2"
+      ],
+      "type": "object"
+    },
+    "SafetyRouteError": {
+      "enum": [
+        "forbidden",
+        "confirmation_not_configured",
+        "not_confirmable",
+        "invalid_arguments",
+        "newer_stop",
+        "ack_not_recorded"
+      ],
+      "type": "string"
+    },
+    "SafetyStatusBody": {
+      "properties": {
+        "stop_standing": {
+          "type": "boolean"
+        },
+        "stopped_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acknowledged_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "caps": {
+          "$ref": "#/$defs/SafetyCaps"
+        },
+        "person_rule": {
+          "type": "boolean"
+        },
+        "stale_policy": {
+          "type": "string"
+        },
+        "t2_confirm": {
+          "type": "boolean"
+        },
+        "confirm_configured": {
+          "type": "boolean"
+        },
+        "pending_confirmations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "perception_fresh": {
+          "type": "boolean"
+        },
+        "obstacles_fresh": {
+          "type": "boolean"
+        },
+        "geofence": {
+          "$ref": "#/$defs/Geofence"
+        },
+        "nearest_person_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_command": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "last_command_age_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "face_greet": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "stop_standing",
+        "stopped_at",
+        "acknowledged_at",
+        "caps",
+        "person_rule",
+        "stale_policy",
+        "t2_confirm",
+        "confirm_configured",
+        "pending_confirmations",
+        "perception_fresh",
+        "obstacles_fresh",
+        "geofence",
+        "nearest_person_m",
+        "last_command",
+        "last_command_age_s",
+        "last_reason",
+        "face_greet"
+      ],
+      "type": "object"
+    },
+    "StopAckRefused": {
+      "properties": {
+        "stop_standing": {
+          "type": "boolean"
+        },
+        "stopped_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acknowledged_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "enum": [
+            "forbidden",
+            "confirmation_not_configured",
+            "not_confirmable",
+            "invalid_arguments",
+            "newer_stop",
+            "ack_not_recorded"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "stop_standing",
+        "stopped_at",
+        "acknowledged_at",
+        "error"
+      ],
+      "type": "object"
+    },
+    "StopAcknowledged": {
+      "properties": {
+        "stop_standing": {
+          "type": "boolean"
+        },
+        "stopped_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acknowledged_at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acknowledged": {
+          "type": "boolean"
+        },
+        "was_standing": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "stop_standing",
+        "stopped_at",
+        "acknowledged_at",
+        "acknowledged",
+        "was_standing"
+      ],
+      "type": "object"
+    }
+  }
+}

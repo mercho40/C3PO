@@ -181,6 +181,17 @@ uv run mypy src               # type-check
 
 No DDS/hardware needed — everything that touches DDS is monkeypatched (`unitree_sdk2py`'s `ChannelPublisher`/`ChannelSubscriber`/RPC client are never actually constructed in test runs).
 
+### The contract files (`contracts/` at the repo root)
+
+Adding, renaming or re-tiering a tool, or changing a field of `get_state` or `/safety/status`, changes what `apps/back` and `apps/web` are tested against. Regenerate and commit the result in the same change:
+
+```bash
+uv run python scripts/export_contracts.py           # rewrite contracts/
+uv run python scripts/export_contracts.py --check   # exit 1 if stale
+```
+
+`tests/test_contracts.py` fails until you do. The payload types it exports live next to the code that builds them: `SafetyStatus` and `SafetyRouteError` in `bridge/safety.py`, `RobotState` in `bridge/sdk/state.py`.
+
 ### The MuJoCo arm twin (`tests/sim/`)
 
 Checks `kinematics.py` and the pick/place/handover plans against MuJoCo Menagerie's G1

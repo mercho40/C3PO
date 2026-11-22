@@ -34,7 +34,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, NotRequired, TypedDict, cast
 
 import structlog
 
@@ -59,6 +59,65 @@ BMS_TOPIC = _TOPICS.bmsstate
 # Which channel supplies world-frame pose. These are different topics carrying
 # different types, so the subscriber differs too — see `StateSampler.start`.
 _POSE_SOURCE = "odom" if (_SIM_MODE == "real" and ODOM_TOPIC) else "sim_state"
+
+
+# -- the `get_state` contract ---------------------------------------------------
+#
+# apps/back restates this shape in TypeScript (`RobotState`, routes/state.ts)
+# and the console renders it. `scripts/export_contracts.py` writes these out as
+# JSON Schema under contracts/ at the repo root, and back's type check holds
+# its copy to that file. NotRequired marks a key some branch leaves out: the
+# stub has no `z_meters_world` and no `raw`, and the no-data branch below has
+# no ages.
+
+
+class RobotPose(TypedDict):
+    x_meters_world: float
+    y_meters_world: float
+    z_meters_world: NotRequired[float]
+    yaw_radians_world: float
+
+
+class RobotStateRaw(TypedDict):
+    """The diagnostic block. Every age is seconds since the last message; null = never received."""
+
+    tick: int
+    mode_machine: int
+    motor_count: int
+    lowstate_messages_received: int
+    lowstate_age_s: NotRequired[float]
+    pose_source: str
+    pose_messages_received: int
+    pose_age_s: NotRequired[float | None]
+    fsm_id: NotRequired[int | None]
+    fsm_mode: NotRequired[int | None]
+    fsm_age_s: NotRequired[float | None]
+    battery_soh_pct: NotRequired[int | None]
+    battery_current_ma: NotRequired[int | None]
+    battery_messages_received: NotRequired[int]
+    battery_age_s: NotRequired[float | None]
+
+
+class SampledState(TypedDict):
+    """`StateSampler.get_state()`: what isaac and real read off DDS."""
+
+    pose: RobotPose | None
+    battery_pct: int | None
+    posture: str
+    faults: list[str]
+    raw: RobotStateRaw
+
+
+class RobotState(TypedDict):
+    """The `get_state` MCP tool: SampledState plus `env`/`stub`, or the stub's fabricated one."""
+
+    pose: RobotPose | None
+    battery_pct: float | None
+    posture: str
+    faults: list[str]
+    env: str
+    stub: bool
+    raw: NotRequired[RobotStateRaw]
 
 
 @dataclass
@@ -407,7 +466,16 @@ class StateSampler:
         return bms.soc_pct, time.monotonic() - bms.received_at
 
     def get_state(self) -> dict[str, Any]:
-        """Return the current state in the shape the MCP `get_state` tool exposes."""
+        """Return the current state in the shape the MCP `get_state` tool exposes.
+
+        Typed loosely because its callers (walk_to, turn, mcp_server) index it
+        loosely; `sample()` is the same value, typed, so mypy holds the keys
+        built there to the contract.
+        """
+        return cast("dict[str, Any]", self.sample())
+
+    def sample(self) -> SampledState:
+        """The current state as `SampledState`. See `get_state`."""
         with self._lock:
             low = self._lowstate
             pose_snap = self._pose
@@ -477,7 +545,7 @@ class StateSampler:
 
         # Pose comes from whichever source this target publishes (see
         # `_POSE_SOURCE`). Null until the first message arrives.
-        pose: dict[str, float] | None = None
+        pose: RobotPose | None = None
         if pose_snap.received_at > 0.0:
             pose = {
                 "x_meters_world": pose_snap.x_meters_world,
