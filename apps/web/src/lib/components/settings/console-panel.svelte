@@ -65,9 +65,9 @@
         {#if robotCam}
           Robot · <span class="font-mono text-xs break-all">{robotCam}</span>
         {:else}
-          Simulador (WebRTC) · <span class="font-mono text-xs"
-            >{simHost || "el host de esta consola"}</span
-          >
+          Simulador (WebRTC) · <span class="font-mono text-xs">
+            {simHost || "el host de esta consola"}
+          </span>
         {/if}
       </dd>
     </div>
@@ -93,13 +93,15 @@
         <dd>
           <kbd
             class="rounded border border-hairline-strong px-1.5 py-0.5 font-mono text-xs text-ink"
-            >Shift</kbd
           >
+            Shift
+          </kbd>
           +
           <kbd
             class="rounded border border-hairline-strong px-1.5 py-0.5 font-mono text-xs text-ink"
-            >Espacio</kbd
           >
+            Espacio
+          </kbd>
         </dd>
       </div>
       <div class="flex flex-wrap items-center justify-between gap-2">
@@ -107,18 +109,21 @@
         <dd>
           <kbd
             class="rounded border border-hairline-strong px-1.5 py-0.5 font-mono text-xs text-ink"
-            >Ctrl</kbd
           >
+            Ctrl
+          </kbd>
           /
           <kbd
             class="rounded border border-hairline-strong px-1.5 py-0.5 font-mono text-xs text-ink"
-            >⌘</kbd
           >
+            ⌘
+          </kbd>
           +
           <kbd
             class="rounded border border-hairline-strong px-1.5 py-0.5 font-mono text-xs text-ink"
-            >B</kbd
           >
+            B
+          </kbd>
         </dd>
       </div>
     </dl>

@@ -128,9 +128,9 @@
         <div class="flex flex-wrap items-end gap-3">
           {#if spec.languages.length > 1}
             <div class="flex flex-col gap-1.5">
-              <label for="say-language" class="text-sm text-ink-dim"
-                >Idioma</label
-              >
+              <label for="say-language" class="text-sm text-ink-dim">
+                Idioma
+              </label>
               <select
                 id="say-language"
                 value={chosenLanguage}
@@ -157,8 +157,8 @@
             <p class="mt-3 text-sm {OUTCOME_TONE[outcome.kind]}">
               {outcome.text}{#if outcome.simulated}
                 <span class="text-ink-mute">
-                  · simulación: no se reprodujo audio</span
-                >
+                  · simulación: no se reprodujo audio
+                </span>
               {/if}
             </p>
             {#if outcome.detail}
@@ -177,8 +177,10 @@
         <Callout tone="danger" title={outcome.text}>
           {#if outcome.detail}<span
               class="readout break-words"
-              lang={detailLang(outcome.detail)}>{outcome.detail}</span
-            >{/if}
+              lang={detailLang(outcome.detail)}
+            >
+              {outcome.detail}
+            </span>{/if}
         </Callout>
       {/if}
 

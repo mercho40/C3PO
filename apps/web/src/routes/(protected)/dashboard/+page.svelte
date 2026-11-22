@@ -146,9 +146,9 @@
        long value rather than invisibly a wrong one. -->
   <div class="flex min-w-0 flex-col gap-1 border-t border-hairline pt-2.5">
     <span class="eyebrow">{label}{mark ? ` · ${mark}` : ""}</span>
-    <span class="font-mono text-sm break-words {mark ? 'text-ink-mute' : tone}"
-      >{value}</span
-    >
+    <span class="font-mono text-sm break-words {mark ? 'text-ink-mute' : tone}">
+      {value}
+    </span>
   </div>
 {/snippet}
 
@@ -205,9 +205,9 @@
             <h2 id="hero-unit" class="stamp text-2xl text-ink sm:text-[30px]">
               {UNIT_ID}
             </h2>
-            <span class="readout"
-              >Unitree G1{robot?.env ? ` · ${robot.env}` : ""}</span
-            >
+            <span class="readout">
+              Unitree G1{robot?.env ? ` · ${robot.env}` : ""}
+            </span>
           </div>
 
           <!-- Only what changes when the STATE changes is live. The age of a
@@ -367,8 +367,10 @@
           class={[
             "font-mono text-sm",
             live.trail.length > 0 ? "text-peri" : "text-ink-mute",
-          ]}>{travelled}</span
+          ]}
         >
+          {travelled}
+        </span>
       </div>
     </section>
 

@@ -126,8 +126,10 @@
       </Button>
       <code
         class="max-w-full min-w-0 truncate readout text-xs text-ink-mute"
-        title={confirmArgs}>{confirmArgs}</code
+        title={confirmArgs}
       >
+        {confirmArgs}
+      </code>
       {#if face === "waiting" && !final}
         <p class="w-full text-xs text-ink-mute">
           o mostrale la cara de un operador a la cámara del robot (agachado, a

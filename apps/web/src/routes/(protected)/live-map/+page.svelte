@@ -307,9 +307,9 @@
               pose.yaw_radians_world,
             )}deg)"
           />
-          <span class={["readout", poseOld ? "text-ink-mute" : "text-ink-dim"]}
-            >{yawDeg}°</span
-          >
+          <span class={["readout", poseOld ? "text-ink-mute" : "text-ink-dim"]}>
+            {yawDeg}°
+          </span>
         {:else}
           <span class="readout">—</span>
         {/if}
@@ -348,9 +348,9 @@
                every poll, and inside the status region they re-announced the
                map once a second. -->
           <p class="readout {mapLineTone}">
-            <span role="status">{mapLine.label}</span>{#if mapLine.meta}<span
-                >{` · ${mapLine.meta}`}</span
-              >{/if}
+            <span role="status">{mapLine.label}</span>{#if mapLine.meta}<span>
+                {` · ${mapLine.meta}`}
+              </span>{/if}
           </p>
           {#if mapLine.detail || mapLine.hint}
             <details class="group max-w-[46ch]">
@@ -446,16 +446,18 @@
         <h2 class="eyebrow">Postura</h2>
         <span
           class="stamp-quiet text-lg break-words {LOAD_TEXT[posture.load]}"
-          aria-live="polite">{posture.label}</span
+          aria-live="polite"
         >
+          {posture.label}
+        </span>
         {#if !online || posture.stale || live.simulated}
-          <span class="text-xs leading-snug text-ink-mute"
-            >{posture.detail}</span
-          >
+          <span class="text-xs leading-snug text-ink-mute">
+            {posture.detail}
+          </span>
         {/if}
-        <span class="readout break-words"
-          >Unitree G1{robot?.env ? ` · ${robot.env}` : ""}</span
-        >
+        <span class="readout break-words">
+          Unitree G1{robot?.env ? ` · ${robot.env}` : ""}
+        </span>
       </div>
     </div>
 
@@ -468,8 +470,9 @@
           class="font-mono text-sm {batteryMark
             ? 'text-ink-mute'
             : batteryTone(robot?.battery_pct)}"
-          >{battery != null ? `${battery} %` : "—"}</span
         >
+          {battery != null ? `${battery} %` : "—"}
+        </span>
       </div>
       <div class="h-1 overflow-hidden rounded-full bg-hairline-strong">
         <div

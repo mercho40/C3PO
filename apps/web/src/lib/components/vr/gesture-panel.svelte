@@ -95,9 +95,9 @@
       robot — <em>no</em> quiere decir que estén verificados. Revisá que el
       puente esté corriendo y el túnel abierto.
       {#if catalogue.error && catalogue.error !== "empty_catalogue"}
-        <span class="mt-1 block readout"
-          ><span lang="en">{catalogue.error}</span></span
-        >
+        <span class="mt-1 block readout">
+          <span lang="en">{catalogue.error}</span>
+        </span>
       {/if}
     </Callout>
   {:else if catalogue.staleAgeS !== null}

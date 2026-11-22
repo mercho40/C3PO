@@ -525,9 +525,9 @@
               ? `${robot.status.stream_width}×${robot.status.stream_height}`
               : "—"} · {robot.fps === null ? "—" : robot.fps.toFixed(1)} fps
           </span>
-          <span class={chip}
-            >MJPEG · {source ? SOURCE_LABEL[source] : "sin fuente"}</span
-          >
+          <span class={chip}>
+            MJPEG · {source ? SOURCE_LABEL[source] : "sin fuente"}
+          </span>
         </div>
       {:else}
         {@render simFeed("head", 60001, true)}
@@ -551,10 +551,10 @@
         <div
           class="pointer-events-none absolute inset-x-3 bottom-3 z-30 flex flex-wrap items-end justify-between gap-2 readout"
         >
-          <span class={chip}
-            ><span class="text-ink">Cabeza · ojo izq.</span> · {host ||
-              "…"}:60001</span
-          >
+          <span class={chip}>
+            <span class="text-ink">Cabeza · ojo izq.</span> · {host ||
+              "…"}:60001
+          </span>
           <span class={chip}>{liveCount}/3 en vivo · WebRTC</span>
         </div>
       {/if}
@@ -656,18 +656,18 @@
               {@const hint = s?.live ? null : cameraHint(s?.hint)}
               <li class="flex flex-col gap-0.5">
                 <span class="flex items-baseline justify-between gap-3">
-                  <span class="inline-block text-ink first-letter:uppercase"
-                    >{SOURCE_LABEL[key]}</span
-                  >
+                  <span class="inline-block text-ink first-letter:uppercase">
+                    {SOURCE_LABEL[key]}
+                  </span>
                   <span class={s?.live ? "text-ok" : "text-ink-mute"}>
                     {s?.live ? "en vivo" : "sin cuadros"}
                   </span>
                 </span>
                 <span class="readout">{SOURCE_TECH[key]}</span>
                 {#if hint?.es}
-                  <span class="text-xs leading-relaxed text-ink-dim"
-                    >{hint.es}</span
-                  >
+                  <span class="text-xs leading-relaxed text-ink-dim">
+                    {hint.es}
+                  </span>
                 {/if}
                 {#if hint}
                   <span class="readout break-words" lang="en">{hint.en}</span>

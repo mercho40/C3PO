@@ -100,9 +100,9 @@
           >
             {@render avatar()}
             <div class="grid flex-1 text-start leading-tight">
-              <span class="truncate text-sm font-medium text-ink"
-                >{displayName}</span
-              >
+              <span class="truncate text-sm font-medium text-ink">
+                {displayName}
+              </span>
               <span class="truncate text-2xs text-ink-mute" title={roleHint}>
                 {subline}
               </span>
@@ -134,8 +134,10 @@
                 isAdmin
                   ? "border-accent-edge text-ink-dim"
                   : "border-hairline-strong text-ink-mute",
-              ]}>{role}</span
+              ]}
             >
+              {role}
+            </span>
             {roleHint}
           </p>
         </DropdownMenu.Label>

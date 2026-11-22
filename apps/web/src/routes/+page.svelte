@@ -230,18 +230,21 @@
       <a
         href="#como-funciona"
         class="transition-colors hover:text-ink focus-visible:text-ink focus-visible:underline focus-visible:outline-none"
-        >¿Cómo funciona?</a
       >
+        ¿Cómo funciona?
+      </a>
       <a
         href="#caracteristicas"
         class="transition-colors hover:text-ink focus-visible:text-ink focus-visible:underline focus-visible:outline-none"
-        >Características</a
       >
+        Características
+      </a>
       <a
         href={REPO}
         class="transition-colors hover:text-ink focus-visible:text-ink focus-visible:underline focus-visible:outline-none"
-        >Código</a
       >
+        Código
+      </a>
     </div>
     <div
       class={[
@@ -460,22 +463,25 @@
           <h2 class="mb-4 eyebrow">Producto</h2>
           <ul class="space-y-3 text-sm text-ink-mute">
             <li>
-              <a href="#como-funciona" class="transition-colors hover:text-ink"
-                >¿Cómo funciona?</a
-              >
+              <a href="#como-funciona" class="transition-colors hover:text-ink">
+                ¿Cómo funciona?
+              </a>
             </li>
             <li>
               <a
                 href="#caracteristicas"
-                class="transition-colors hover:text-ink">Características</a
+                class="transition-colors hover:text-ink"
               >
+                Características
+              </a>
             </li>
             <li>
               <a
                 href={resolve(data.user ? "dashboard" : "login")}
                 class="transition-colors hover:text-ink"
-                >{data.user ? "Consola" : "Ingresar"}</a
               >
+                {data.user ? "Consola" : "Ingresar"}
+              </a>
             </li>
           </ul>
         </div>
@@ -483,15 +489,17 @@
           <h2 class="mb-4 eyebrow">Proyecto</h2>
           <ul class="space-y-3 text-sm text-ink-mute">
             <li>
-              <a href={REPO} class="transition-colors hover:text-ink"
-                >Código fuente</a
-              >
+              <a href={REPO} class="transition-colors hover:text-ink">
+                Código fuente
+              </a>
             </li>
             <li>
               <a
                 href="{REPO}/tree/main/docs"
-                class="transition-colors hover:text-ink">Documentación</a
+                class="transition-colors hover:text-ink"
               >
+                Documentación
+              </a>
             </li>
           </ul>
         </div>

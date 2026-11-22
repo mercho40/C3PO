@@ -290,9 +290,9 @@
   {#if error}
     <Callout tone="danger" title="No se pudo leer la lista de usuarios">
       {error.text}
-      {#if error.verbatim}<span class="block readout" lang="en"
-          >{error.verbatim}</span
-        >{/if}
+      {#if error.verbatim}<span class="block readout" lang="en">
+          {error.verbatim}
+        </span>{/if}
     </Callout>
   {/if}
 
@@ -328,9 +328,9 @@
           >
             <div class="flex min-w-0 flex-col gap-1">
               <p class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span class="text-sm break-words text-ink"
-                  >{u.name || "Sin nombre"}</span
-                >
+                <span class="text-sm break-words text-ink">
+                  {u.name || "Sin nombre"}
+                </span>
                 {#if me}<span class="readout text-ink-dim">(vos)</span>{/if}
                 <span
                   class={[
@@ -446,9 +446,9 @@
       <AlertDialog.Header>
         <AlertDialog.Title>{TITLE[pending.kind]}</AlertDialog.Title>
         <AlertDialog.Description>
-          <span class="font-medium text-ink"
-            >{pending.user.name || pending.user.email}</span
-          >
+          <span class="font-medium text-ink">
+            {pending.user.name || pending.user.email}
+          </span>
           ({pending.user.email}).
           {#if pending.kind === "promote"}
             Va a poder ejecutar habilidades directamente sobre el robot, ver el
@@ -469,9 +469,9 @@
       </AlertDialog.Header>
       {#if pending.kind === "ban"}
         <div class="flex flex-col gap-1.5">
-          <label for="ban-reason" class="text-xs text-ink-dim"
-            >Motivo (opcional)</label
-          >
+          <label for="ban-reason" class="text-xs text-ink-dim">
+            Motivo (opcional)
+          </label>
           <input
             id="ban-reason"
             bind:value={banReason}

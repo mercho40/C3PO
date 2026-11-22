@@ -78,8 +78,10 @@
           >
             {#each overlay.body as part, i (i)}
               {#if typeof part === "string"}{part}{:else}<code
-                  class="font-mono text-2xs text-ink-dim">{part.code}</code
-                >{/if}
+                  class="font-mono text-2xs text-ink-dim"
+                >
+                  {part.code}
+                </code>{/if}
             {/each}
           </p>
         {/if}

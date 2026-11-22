@@ -85,9 +85,9 @@
               {fault.text}
             </span>
             {#if fault.action}
-              <span class={["text-ink-dim", compact ? "text-xs" : "text-sm"]}
-                >{fault.action}</span
-              >
+              <span class={["text-ink-dim", compact ? "text-xs" : "text-sm"]}>
+                {fault.action}
+              </span>
             {/if}
             <span class="readout break-all">
               {fault.scope === "bridge" ? "puente" : "robot"} · {fault.raw}

@@ -89,14 +89,14 @@
                 {t.title ?? "Conversación de voz"}
               </span>
               <span class="readout">
-                <time datetime={t.createdAt}
-                  >{when.format(new Date(t.createdAt))}</time
-                >
+                <time datetime={t.createdAt}>
+                  {when.format(new Date(t.createdAt))}
+                </time>
                 {#if t.updatedAt !== t.createdAt}
                   · última actividad
-                  <time datetime={t.updatedAt}
-                    >{when.format(new Date(t.updatedAt))}</time
-                  >
+                  <time datetime={t.updatedAt}>
+                    {when.format(new Date(t.updatedAt))}
+                  </time>
                 {/if}
               </span>
             </span>

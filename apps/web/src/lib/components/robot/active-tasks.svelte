@@ -206,8 +206,10 @@
                 "min-w-0 flex-1 truncate font-mono text-sm",
                 stale ? "text-ink-mute" : "text-ink",
               ]}
-              lang="en">{task.skill_name}</span
+              lang="en"
             >
+              {task.skill_name}
+            </span>
             <span class="readout">{Math.round(task.duration_s)} s</span>
             <!-- 40 px on touch, 32 px with a pointer. -->
             <button
@@ -248,9 +250,9 @@
     </ul>
     <p class="text-xs leading-relaxed text-ink-mute">
       Cancelar pide una parada suave. Todavía no está verificado sobre una
-      caminata real en curso: ante la duda, usá PARAR (<kbd class="font-mono"
-        >Shift+Espacio</kbd
-      >).
+      caminata real en curso: ante la duda, usá PARAR (<kbd class="font-mono">
+        Shift+Espacio
+      </kbd>).
     </p>
   {/if}
 
@@ -259,9 +261,9 @@
       <summary
         class="cursor-pointer list-none rounded readout text-ink-mute hover:text-ink focus-visible:ring-2 focus-visible:ring-cyan-hot/50 focus-visible:outline-none [&::-webkit-details-marker]:hidden"
       >
-        <span class="group-open:hidden"
-          >Ver recientes ({tasks.recent.length})</span
-        >
+        <span class="group-open:hidden">
+          Ver recientes ({tasks.recent.length})
+        </span>
         <span class="hidden group-open:inline">Ocultar recientes</span>
       </summary>
       <ul class="mt-2 flex flex-col gap-1.5 text-sm">
@@ -272,14 +274,15 @@
           }}
           <li class="flex flex-col">
             <span class="flex items-baseline justify-between gap-3">
-              <span class="font-mono text-ink" lang="en">{task.skill_name}</span
-              >
+              <span class="font-mono text-ink" lang="en">
+                {task.skill_name}
+              </span>
               <span class="readout {st.tone}">{st.word}</span>
             </span>
             {#if task.error}
-              <span class="readout break-words text-danger-soft" lang="en"
-                >{task.error}</span
-              >
+              <span class="readout break-words text-danger-soft" lang="en">
+                {task.error}
+              </span>
             {/if}
             <!-- Duration, not "ended N s ago": the bridge computes the first
                  on its own clock; the second would set the Jetson's epoch

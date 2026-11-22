@@ -529,8 +529,10 @@
       ]}
       style:left="{s.left}px"
       style:top="{s.top - 38}px"
-      aria-hidden="true">{label}</span
+      aria-hidden="true"
     >
+      {label}
+    </span>
   {/if}
 
   {#if offView && pill}
