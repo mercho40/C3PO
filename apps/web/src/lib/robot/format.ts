@@ -17,13 +17,13 @@ export const UNIT_ID = "BIPED-01";
 export type BatteryLevel = "unknown" | "critical" | "low" | "ok" | "full";
 
 /**
- * Battery bands. 20 % is the vendor's own low-battery threshold (the bridge
- * raises `low_battery_*` below it); 40 % is where a session should be planned
+ * Battery bands. 30 % is the bridge's LOW_BATTERY_PCT (it raises
+ * `low_battery_*` below it); 40 % is where a session should be planned
  * around a dock; above 60 % the glyph reads as full.
  */
 export function batteryLevel(pct: number | null | undefined): BatteryLevel {
   if (pct == null || Number.isNaN(pct)) return "unknown";
-  if (pct <= 20) return "critical";
+  if (pct <= 30) return "critical";
   if (pct <= 40) return "low";
   if (pct <= 60) return "ok";
   return "full";
@@ -44,8 +44,9 @@ export function batteryTone(pct: number | null | undefined): string {
 
 /**
  * Whether the battery banner shows, and how loud. Its own thresholds, not the
- * chip's bands: warn under 25 %, alert at or under 20 %, where the vendor
- * raises `low_battery_*` and the bridge will refuse long motion. A stub's
+ * chip's bands: warn under 40 %, alert at or under 30 %, where the bridge
+ * raises `low_battery_*` and refuses long motion (LOW_BATTERY_PCT: this G1 cut
+ * power at ~40 % twice on 2026-11-16). A stub's
  * invented reading never warns. Feed it the raw reading, not `batteryPct`'s
  * rounded one, or 24.6 % would round to 25 and show nothing.
  * shortcut: no hysteresis, so a reading bouncing across a line flickers the
@@ -57,8 +58,8 @@ export function batteryWarning(
   simulated: boolean,
 ): "warn" | "alert" | null {
   if (simulated || pct == null || Number.isNaN(pct)) return null;
-  if (pct <= 20) return "alert";
-  if (pct < 25) return "warn";
+  if (pct <= 30) return "alert";
+  if (pct < 40) return "warn";
   return null;
 }
 

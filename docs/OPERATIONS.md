@@ -205,14 +205,15 @@ There is one installer and one operator command:
 c3po status
 ```
 
-The installer links only `c3po` onto `~/.local/bin`, validates and copies one root-owned
-systemd unit (never a symlink into the writable checkout), and installs root-owned
+The installer links only `c3po` onto `~/.local/bin`, validates and copies two root-owned
+systemd units (never a symlink into the writable checkout), and installs root-owned
 logrotate/sudoers policies. It starts nothing. Re-run `c3po install` after merging a unit
 change.
 
-| Unit                  | What it owns                                                    |
-| --------------------- | --------------------------------------------------------------- |
-| `c3po-bridge.service` | The bridge directly (`Type=exec`); no wrapper, nohup or pidfile |
+| Unit                        | What it owns                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------------ |
+| `c3po-bridge.service`       | The bridge directly (`Type=exec`); no wrapper, nohup or pidfile                            |
+| `c3po-brainco-hand.service` | The vendor `brainco_hand_server`, run in place; installed, never enabled by `c3po install` |
 
 There is deliberately no perception unit and no repair timer. Every perception stage,
 including sensor-free ones, is a foreground `c3po up <stage>` decision. Boot may
@@ -433,6 +434,41 @@ same frame as the object.
 `C3PO_VISION_SUPPORT=0` in `~/.c3po/perception.env` turns it off at the next `c3po up`; the
 planner then falls back to the old rule. The vision image must be rebuilt once for it
 (`c3po perception build vision`).
+
+### Calibrating the camera mount — `camera_calibrate.py` 🔧
+
+The arm (`kinematics.camera_to_torso`) and the vision container both use the URDF's CAD
+mount for the D435 (47.6° nose-down, 0.474 m above the pelvis) unless `C3PO_CAMERA_*` says
+otherwise. On 2026-11-16 a pick put a bottle in reach about 0.2 m too low, and
+`C3PO_PICK_Z_OFFSET_M=0.20` was set by hand. This measures the real mount instead. Nothing
+moves. Not yet run on the robot.
+
+On the robot, standing still in its normal stance, perception up, one object in view:
+
+```bash
+cd ~/c3po/apps/bridge
+.venv/bin/python scripts/camera_calibrate.py --reset
+# per placement: tape, then one run (it averages 20 frames and refits all samples)
+.venv/bin/python scripts/camera_calibrate.py --label bottle --ahead-m 0.45 --left-m -0.15 --height-m 0.82
+```
+
+- **What to tape:** the middle of the object's **near face** (`cam_xyz` is the surface the
+  camera sees; a box square to the robot is best). `--ahead-m` from the floor point
+  between the two ankle joints, along the feet. `--left-m` to the robot's own left
+  (negative = its right). `--height-m` above the floor.
+- **How many:** 3 to 5, at 0.4–1.2 m and at different heights (table, floor, shelf). One
+  sample fits pitch and z exactly and shows no error. Samples whose ranges span 0.3 m or
+  more also fit the forward offset x; y and yaw are kept.
+- **Torso height:** read from the legs (`rt/lowstate` + URDF). `--torso-height-m` skips that
+  (torso upright above the ankles assumed); the output says which.
+- **Apply:** paste the five `C3PO_CAMERA_*` lines it prints into **both**
+  `~/.c3po/perception.env` and `~/c3po/apps/bridge/.env` (same numbers, pelvis frame), set
+  `C3PO_PICK_Z_OFFSET_M=0` in `apps/bridge/.env`, then `c3po up` and `c3po restart`. Check
+  the per-sample residual first: with the fitted mount it should be a few cm.
+- **Undo:** delete those lines from both files (and put the offset back if you need it),
+  then `c3po up` and `c3po restart`.
+
+Offline, from a logged `cam_xyz`: `--cam X Y Z --torso-height-m H` instead of `--label`.
 
 ### Faces: the gate, the greeter and «Caras»
 
@@ -789,6 +825,9 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
   explicit `PATH` and does not depend on a login shell.
 - **Boot unit.** `c3po install` installs and enables `c3po-bridge.service`. The unit
   directly supervises the interpreter, claims no sensor, and issues no motion command.
+  It also installs `c3po-brainco-hand.service` and leaves it disabled: it drives the hand
+  motors, so boot start is opt-in (`sudo systemctl enable --now c3po-brainco-hand.service`,
+  `docs/DEMO-RUNBOOK.md` §1).
 - **What was deployed.** `c3po install` (since 31b2d64) writes `~/.c3po/deployed` as
   `<sha> <UTC time>`. When the commit changes, the one it replaces goes to
   `~/.c3po/previous-deploy` as a bare sha, and the loaded unit goes to

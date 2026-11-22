@@ -21,7 +21,7 @@
  */
 
 /** One thing the robot heard, as `listen` reports it. */
-import { abortAllTurns, beginTurn } from "../agent/turns";
+import { abortAllTurns, beginTurn, voiceLoopHeld } from "../agent/turns";
 
 export type Heard = { text: string; age_s: number };
 
@@ -305,6 +305,11 @@ export class VoiceLoop {
     if (this.pending.length === 0) return;
     // Joined like the polling path: Vosk splits one sentence on a breath.
     const utterance = this.pending.splice(0).join(" ");
+    // Dropped, not queued: answered after the operator's turn it is stale.
+    if (voiceLoopHeld()) {
+      this.log("voice.dropped_operator_turn", { text: utterance });
+      return;
+    }
     const local = new AbortController();
     const { signal, done } = beginTurn(local.signal);
     this.turnAbort = local;
@@ -355,6 +360,10 @@ export class VoiceLoop {
     // answer the other half without the first half's context.
     const utterance = utterances.join(" ").trim();
     this.state.lastHeard = utterance;
+    if (voiceLoopHeld()) {
+      this.log("voice.dropped_operator_turn", { text: utterance });
+      return;
+    }
     this.state.agentRuns += 1;
     this.log("voice.utterance", { text: utterance });
 

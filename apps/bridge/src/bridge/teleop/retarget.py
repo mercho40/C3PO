@@ -147,7 +147,7 @@ LIMITS: dict[str, tuple[float, float]] = {
     "shoulder_roll": (math.radians(-10), math.radians(90)),
     "shoulder_yaw": (math.radians(-45), math.radians(45)),
     "elbow": (math.radians(0), math.radians(110)),
-    "wrist_roll": (math.radians(-45), math.radians(45)),
+    "wrist_roll": (math.radians(-90), math.radians(90)),  # URDF ±113°; -90 faces the saludo's palm out
     "wrist_pitch": (math.radians(-30), math.radians(30)),
     "wrist_yaw": (math.radians(-30), math.radians(30)),
 }

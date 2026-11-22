@@ -143,8 +143,9 @@ the vision container's default extrinsic is that CAD mount (x 0.054, y 0.018, z 
 the pelvis); the start log says `extrinsic_source=URDF d435_joint (CAD)`, or `env` if a
 `C3PO_CAMERA_*` override is set. Verify it: put one object on the floor 1.0 m ahead (tape
 from the pelvis projection) and read its `range_m`, which should be within about 5 cm. If it
-is not, measure the mount and put the numbers in `~/.c3po/perception.env`
-(`C3PO_CAMERA_PITCH_DEG=…`, no rebuild), then read it again. Write down both. This changes
+is not, measure the mount with `scripts/camera_calibrate.py` (OPERATIONS.md, "Calibrating
+the camera mount"), put the lines it prints in `~/.c3po/perception.env` and
+`apps/bridge/.env` (no rebuild), then read it again. Write down both. This changes
 every range: person rule, object memory, `find_object`.
 
 **Per-class bars (pending robot test, 8575b2d).** Only on a vision image rebuilt from this

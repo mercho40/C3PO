@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# The one robot installer. It installs one operator CLI and one systemd unit:
-# the bridge. Perception remains foreground-only and can never start at boot.
+# The one robot installer. It installs one operator CLI and two systemd units:
+# the bridge (enabled at boot) and the BrainCo hand server (installed, never
+# enabled here: it drives the hand motors, so boot start is the operator's
+# opt-in). Perception remains foreground-only and can never start at boot.
 
 set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -16,6 +18,9 @@ if [ "$here" != "$root" ]; then
 fi
 
 unit="c3po-bridge.service"
+hand_unit="c3po-brainco-hand.service"
+# The other team's vendor binary, run in place by $hand_unit. Read, never written.
+hand_bin="/home/unitree/gemm_ai/xr_teleoperate/vendor/brainco_hand_service/bin/brainco_hand_server"
 implementations="c3po run_c3po stop_c3po run_gemm stop_gemm perception_up
     stop_perception build_perception measure.sh run_teleop stop_teleop
     c3po_health c3po_preflight take_camera bridge_sync _common.sh"
@@ -26,7 +31,7 @@ for file in $implementations; do
     }
     bash -n "$here/$file"
 done
-for file in "$unit" c3po-logs.logrotate c3po.sudoers; do
+for file in "$unit" "$hand_unit" c3po-logs.logrotate c3po.sudoers; do
     [ -f "$here/$file" ] || {
         echo "install_stack: missing $here/$file" >&2
         exit 1
@@ -47,7 +52,13 @@ trap cleanup EXIT
 sudo install -o root -g root -m 0644 "$here/$unit" "$stage/$unit"
 sudo install -o root -g root -m 0644 "$here/c3po-logs.logrotate" "$stage/c3po.logrotate"
 sudo install -o root -g root -m 0440 "$here/c3po.sudoers" "$stage/c3po.sudoers"
+sudo install -o root -g root -m 0644 "$here/$hand_unit" "$stage/$hand_unit"
 sudo systemd-analyze verify "$stage/$unit" >/dev/null
+# verify fails on a missing ExecStart binary; without it the unit's
+# ConditionPathExists skips it, so install it anyway.
+if [ -x "$hand_bin" ]; then
+    sudo systemd-analyze verify "$stage/$hand_unit" >/dev/null
+fi
 sudo logrotate --debug "$stage/c3po.logrotate" >/dev/null
 sudo visudo -cf "$stage/c3po.sudoers" >/dev/null
 
@@ -87,6 +98,8 @@ fi
 # legacy symlink rather than following it back into the writable checkout.
 sudo install -o root -g root -m 0644 "$stage/$unit" "/etc/systemd/system/.$unit.c3po-new"
 sudo mv -f "/etc/systemd/system/.$unit.c3po-new" "/etc/systemd/system/$unit"
+sudo install -o root -g root -m 0644 "$stage/$hand_unit" "/etc/systemd/system/.$hand_unit.c3po-new"
+sudo mv -f "/etc/systemd/system/.$hand_unit.c3po-new" "/etc/systemd/system/$hand_unit"
 sudo install -o root -g root -m 0644 "$stage/c3po.logrotate" /etc/logrotate.d/c3po
 sudo install -o root -g root -m 0440 "$stage/c3po.sudoers" /etc/sudoers.d/c3po
 sudo rm -f /etc/sudoers.d/c3po-camera \
@@ -122,6 +135,10 @@ Installed. Nothing was started, no sensor was claimed, and motion is not armed.
   c3po down                          # stop teleop, perception, then bridge
   c3po status                        # read-only health
   c3po preflight                     # required before any supervised arm
+
+The bridge starts at boot (it claims no sensor and commands no motion).
+The BrainCo hand server is installed but NOT enabled; to start it at boot:
+  sudo systemctl enable --now c3po-brainco-hand.service
 
 Perception has no boot unit or repair timer. Every stage remains an explicit
 operator action through an `up` profile. Nav2 lifecycle and the bridge motion

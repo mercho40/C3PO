@@ -64,10 +64,10 @@ def test_battery_pct_reports_soc():
     assert result["faults"] == []
 
 
-def test_low_battery_raises_a_fault_at_the_vendor_threshold():
-    # The vendor's own predicate is `soc < 20`.
-    assert _sampler(soc=20).get_state()["faults"] == []
-    assert "low_battery_19pct" in _sampler(soc=19).get_state()["faults"]
+def test_low_battery_raises_a_fault_at_our_threshold():
+    # Ours is `soc < 30`, above the vendor's 20: this G1 cut power at ~40 % (2026-11-16).
+    assert _sampler(soc=30).get_state()["faults"] == []
+    assert "low_battery_29pct" in _sampler(soc=29).get_state()["faults"]
 
 
 def test_battery_survives_a_flat_pack_reading():
