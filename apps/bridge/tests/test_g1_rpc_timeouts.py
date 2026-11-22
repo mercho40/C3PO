@@ -11,6 +11,8 @@ be wrong in: an operator or LLM would conclude it was ignored and retry.
 
 from __future__ import annotations
 
+import pytest
+
 from bridge.sdk import g1_protocol, g1_rpc
 
 
@@ -100,6 +102,55 @@ def test_threads_racing_for_the_sport_client_get_one_client(monkeypatch):
     got: list = []
     threads = [
         threading.Thread(target=lambda: got.append(g1_rpc._get_sport_client().ready))
+        for _ in range(5)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(2.0)
+
+    assert len(built) == 1
+    assert got == [True] * 5  # nobody was handed a client before its Init ran
+
+
+@pytest.mark.parametrize(
+    ("global_name", "getter"),
+    [
+        ("_arm_client", "_get_arm_client"),
+        ("_voice_client", "_get_voice_client"),
+        ("_motion_switcher_client", "_get_motion_switcher_client"),
+    ],
+)
+def test_threads_racing_for_the_other_clients_get_one_ready_client(
+    monkeypatch, global_name, getter
+):
+    """The sport client's race, on the other services. stop_everything calls
+    stop_play from its own thread, so the voice client is raced by the stop too:
+    the global used to be published before Init, and a racer called through a
+    client whose api_ids were not registered yet."""
+    import threading
+    import time
+
+    built: list = []
+
+    class SlowClient:
+        def __init__(self, *args, **kwargs):
+            self.ready = False
+            time.sleep(0.05)
+            built.append(self)
+
+        def _SetApiVerson(self, version):  # noqa: N802 - the SDK's spelling
+            pass
+
+        def Init(self):  # noqa: N802
+            time.sleep(0.05)
+            self.ready = True
+
+    monkeypatch.setattr(g1_rpc, global_name, None)
+    monkeypatch.setattr(g1_rpc, "_G1Client", SlowClient)
+    got: list = []
+    threads = [
+        threading.Thread(target=lambda: got.append(getattr(g1_rpc, getter)().ready))
         for _ in range(5)
     ]
     for t in threads:
