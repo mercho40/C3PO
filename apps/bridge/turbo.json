@@ -9,8 +9,15 @@
         "$TURBO_ROOT$/apps/perception/vision/c3po_vision/**",
         "$TURBO_ROOT$/apps/perception/nav/ws/src/**",
         "$TURBO_ROOT$/apps/back/src/skills/**",
-        "$TURBO_ROOT$/scripts/robot/c3po_preflight"
+        "$TURBO_ROOT$/scripts/robot/c3po_preflight",
+        "$TURBO_ROOT$/.github/workflows/ci.yml"
       ]
+    },
+    "lint": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/scripts/robot_internet.py"]
+    },
+    "check-types": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/scripts/robot_internet.py"]
     }
   }
 }

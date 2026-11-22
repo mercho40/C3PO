@@ -72,6 +72,7 @@ entries.
 | `bun run start`            | Start production builds against the configured bridge                   |
 | `bun run build`            | Build the monorepo                                                      |
 | `bun run check-types`      | Type-check across the monorepo                                          |
+| `bun run lint`             | Lint the Python apps (ruff), with CI's paths                            |
 | `bun run test`             | Test across the monorepo                                                |
 | `bun run format`           | Format with Prettier                                                    |
 

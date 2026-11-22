@@ -10,6 +10,7 @@
     "dev:robot": "turbo run dev:robot",
     "format": "prettier --write \"**/*.{ts,tsx,svelte,json,md}\"",
     "check-types": "turbo run check-types",
+    "lint": "turbo run lint",
     "test": "turbo run test",
     "start": "turbo run start"
   },

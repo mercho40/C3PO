@@ -285,6 +285,10 @@ jobs:
       # runs while STANDING NEXT TO A HUMANOID holding an e-stop
       # (`vr_smoke_test.py`, `measure_turn.py`, `headset_check.py`). An
       # unbound name in one of those surfaces at the worst possible moment.
+      #
+      # This job has no bun, so it spells out apps/bridge/package.json's `lint`
+      # (and `check-types` below) instead of calling them.
+      # tests/test_lint_parity.py fails when the two differ.
       - name: ruff
         working-directory: apps/bridge
         run: >
