@@ -4,6 +4,7 @@
     "test": {
       "inputs": [
         "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/contracts/**",
         "$TURBO_ROOT$/apps/perception/bringup/spec.py",
         "$TURBO_ROOT$/apps/perception/config/**",
         "$TURBO_ROOT$/apps/perception/vision/c3po_vision/**",
