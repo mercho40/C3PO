@@ -427,7 +427,7 @@ error. **The rebuild carrying that pin has not run yet.**
   Switching model is `C3PO_ONNX`/`C3PO_ENGINE`/`C3PO_LABELS` in
   `~/.c3po/perception.env`, which `perception_up` and `build_perception` read on
   every run (a shell export still wins; only `bringup/spec.py: PERSISTENT_ENV_KEYS`
-  are taken from the file) — they pass through
+  are taken from the file, and `.env.example` here lists them with their defaults) — they pass through
   (`bringup/spec.py: VISION_ENV_PASSTHROUGH`). Steps:
   `docs/autonomy/test-day/perception.md`. A class that keeps showing up where
   it is not gets its own bar the same way, with no re-export:
