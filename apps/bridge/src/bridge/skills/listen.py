@@ -47,7 +47,7 @@ import struct
 import wave
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import Any, NamedTuple
 
 import structlog
 
@@ -96,6 +96,11 @@ DEFAULT_STOP_PHRASES = ["emergencia", "para para", "detener"]
 # paused, so the loop cuts and transcribes instead.
 MAX_UTTERANCE_BYTES = 30 * 16000 * 2
 
+# Finished utterances allowed to wait for Whisper before a new one goes without
+# it. Whisper runs beside the stop detector, not in front of it, so a talker who
+# outpaces it costs transcript quality (the segmenter's text) and never memory.
+STT_MAX_QUEUED = 3
+
 # 16-bit mono at 16 kHz: 0.125 s. Small enough that stop latency is dominated by
 # the decoder rather than by buffering.
 FRAME_BYTES = 4000
@@ -103,6 +108,19 @@ FRAME_BYTES = 4000
 
 class ListenUnavailable(RuntimeError):
     """Vosk or its model is missing. Carries the fix."""
+
+
+class _SttJob(NamedTuple):
+    """One finished utterance on its way to Whisper, off the mic thread."""
+
+    #: The listener's stop count when the utterance closed. A stop since then
+    #: makes the job stale, and its text is dropped.
+    epoch: int
+    whisperer: Any
+    #: None: keep `fallback` (short utterance, or Whisper backed up).
+    pcm: bytes | None
+    #: The segmenter's text, used when Whisper is skipped or returns nothing.
+    fallback: str
 
 
 def available() -> tuple[bool, str]:
@@ -832,6 +850,9 @@ class MicListener:
         #: Every voice session's armed stop, oldest first. A tuple swapped whole,
         #: so the mic thread's read is one atomic attribute load.
         self._armed: tuple[Callable[[str], None], ...] = ()
+        #: Bumped under `_lock` by every stop phrase. A transcript from an
+        #: utterance that closed before the bump is dropped, never recorded.
+        self._stt_epoch = 0
 
         self._frames = 0
         self._utterances = 0
@@ -928,11 +949,33 @@ class MicListener:
             whisperer = None
             log.info("listen.whisper_backend", backend="apps-back")
         self._whisperer = whisperer
+        jobs: queue.Queue[_SttJob | None] | None = None
+        worker: threading.Thread | None = None
         if whisperer is not None:
             threading.Thread(
                 target=self._watch_backend, name="stt-backend-watch", daemon=True
             ).start()
+            # WHISPER RUNS BESIDE THE STOP DETECTOR, NOT IN FRONT OF IT. It takes
+            # 3.5-6.6 s per utterance on the CPU and up to 30 s over HTTP; on this
+            # thread every frame waited for it, PARAR included. One worker, one
+            # FIFO queue: transcripts still come out in the order they were said.
+            jobs = queue.Queue()
+            worker = threading.Thread(
+                target=self._transcribe_jobs, args=(jobs,), name="stt-worker", daemon=True
+            )
+            worker.start()
 
+        try:
+            self._listen(detector, transcriber, jobs)
+        finally:
+            # The queue is this run's own, so a later start() never shares it.
+            if jobs is not None and worker is not None:
+                jobs.put(None)
+                worker.join()
+
+    def _listen(
+        self, detector: Any, transcriber: Any, jobs: queue.Queue[_SttJob | None] | None
+    ) -> None:
         utterance = bytearray()
         suppressing_playback = False
         for frame in self._source():
@@ -946,6 +989,10 @@ class MicListener:
             stopped = False
             if hit := detector.feed(frame):
                 detector.reset()
+                with self._lock:
+                    # Before the stop is recorded or acted on: every utterance
+                    # already handed to Whisper is now stale, in flight or queued.
+                    self._stt_epoch += 1
                 log.warning("mic_listener.stop_phrase", phrase=hit)
                 self._record(hit, kind="stop")
                 # Read once: a clear between a check and a call would make it None.
@@ -1008,15 +1055,52 @@ class MicListener:
                     del utterance[:-MAX_UTTERANCE_BYTES]
                 continue
             if text:
-                if current is not None:
-                    if len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S:
-                        text = current.transcribe(bytes(utterance)) or text
+                if current is not None and jobs is not None:
+                    # Short ones skip Whisper but still queue, behind any long
+                    # one in flight, so they cannot overtake it.
+                    long_enough = len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S
+                    self._submit(jobs, current, bytes(utterance) if long_enough else None, text)
                     utterance.clear()
-                self._record(text, kind="speech")
-            elif current is not None and len(utterance) > MAX_UTTERANCE_BYTES:
-                if better := current.transcribe(bytes(utterance)):
-                    self._record(better, kind="speech")
+                else:
+                    self._record(text, kind="speech")
+            elif current is not None and jobs is not None and len(utterance) > MAX_UTTERANCE_BYTES:
+                self._submit(jobs, current, bytes(utterance), "")
                 utterance.clear()
+
+    def _submit(
+        self, jobs: queue.Queue[_SttJob | None], whisperer: Any, pcm: bytes | None, fallback: str
+    ) -> None:
+        """Queue a closed utterance for the STT worker. Never blocks the mic thread."""
+        if pcm is not None and jobs.qsize() >= STT_MAX_QUEUED:
+            log.warning("mic_listener.stt_backlog", queued=jobs.qsize(), kept_segmenter=bool(fallback))
+            pcm = None
+        if pcm is None and not fallback:
+            return
+        with self._lock:
+            epoch = self._stt_epoch
+        jobs.put(_SttJob(epoch, whisperer, pcm, fallback))
+
+    def _transcribe_jobs(self, jobs: queue.Queue[_SttJob | None]) -> None:
+        """The STT worker: transcribe in order, and drop whatever a stop overtook.
+
+        A stop cannot cancel a Whisper call already running, so its result is
+        checked against the stop count as it is recorded (under the same lock the
+        stop bumps it under). The utterance closed before PARAR, but a turn must
+        not start while PARAR stands. Queued jobs are skipped before transcribing.
+        """
+        while (job := jobs.get()) is not None:
+            if job.epoch != self._stt_epoch:
+                continue
+            text = job.fallback
+            if job.pcm is not None:
+                try:
+                    text = job.whisperer.transcribe(job.pcm) or text
+                except Exception:
+                    # Off the mic thread now, but a dead worker would still
+                    # silence every transcript after it. Keep the segmenter's.
+                    log.exception("mic_listener.transcribe_failed")
+            if text and not self._record(text, kind="speech", epoch=job.epoch):
+                log.info("mic_listener.transcript_dropped_after_stop")
 
     def _watch_backend(self) -> None:
         """Re-probe for the GPU transcriber until it appears, then stop.
@@ -1064,8 +1148,11 @@ class MicListener:
             wav.writeframes(kept[1])
         return out.getvalue()
 
-    def _record(self, text: str, kind: str, **extra: str) -> None:
+    def _record(self, text: str, kind: str, *, epoch: int | None = None, **extra: str) -> bool:
+        """Append an event. With `epoch`, only if no stop has come since it."""
         with self._changed:
+            if epoch is not None and epoch != self._stt_epoch:
+                return False
             self._sequence += 1
             item = {
                 "text": text,
@@ -1083,6 +1170,7 @@ class MicListener:
             if len(self._pending) > self._max_keep:
                 del self._pending[: -self._max_keep]
             self._changed.notify_all()
+        return True
 
     # -- reading -------------------------------------------------------------
 

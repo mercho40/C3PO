@@ -92,6 +92,33 @@ describe("callTool", () => {
   }, 30_000);
 });
 
+describe("connecting", () => {
+  test("a bridge that accepts the connection but never answers is given up on in seconds", async () => {
+    // A stalled tunnel or a wedged bridge: TCP connects, nothing comes back.
+    // The connect had no bound of its own, so the SDK's 60 s initialize
+    // default applied, and every call meanwhile, PARAR included, waited on
+    // that same pending session. The watchdog turns "still hanging" into 5.
+    const code = await inFreshProcess(`
+      setTimeout(() => process.exit(5), 15_000);
+      const silent = Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        socket: { data() {}, open() {} },
+      });
+      process.env.BRIDGE_URL = "http://127.0.0.1:" + silent.port + "/mcp";
+      const t0 = Date.now();
+      try {
+        await callTool("stop_everything", {});
+        process.exit(2);
+      } catch (err) {
+        if (!(err instanceof BridgeUnavailableError)) process.exit(3);
+        process.exit(Date.now() - t0 < 8_000 ? 0 : 4);
+      }
+    `);
+    expect(code).toBe(0); // 5 = still hanging, 4 = slower than PARAR's 8 s
+  }, 30_000);
+});
+
 describe("a discarded session is actually closed", () => {
   /**
    * Nulling `clientPromise` stops the NEXT call reusing the session. It does

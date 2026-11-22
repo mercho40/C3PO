@@ -19,7 +19,7 @@ import {
   BridgeToolError,
 } from "../bridge/client";
 import { auditedCall } from "../bridge/audited";
-import { abortAllTurns } from "../agent/turns";
+import { stopRobot } from "../bridge/stop";
 
 /**
  * The signed-in user, from the auth guard this module is mounted inside
@@ -43,21 +43,30 @@ export const tasksRoutes = new Elysia({ prefix: "/tasks" })
       } = ctx;
       const mode = body?.mode ?? "graceful";
       const who = { userId: userIdOf(ctx), source: "direct" as const };
-      try {
-        if (mode === "estop") {
-          // As in /skills: the model must not plan a next step around a stop.
-          abortAllTurns("PARAR (task estop)");
-          const raw = await auditedCall("stop_everything", {}, who);
-          // Bridge tools always return a dict today, but nothing at the
-          // type level guarantees it -- spreading a non-object (e.g. a bare
-          // string) into a response object silently produces garbage
-          // indexed keys instead of erroring, so guard explicitly.
-          const result =
-            raw !== null && typeof raw === "object" && !Array.isArray(raw)
-              ? (raw as Record<string, unknown>)
-              : { raw };
-          return { mode, task_id, ...result };
+      if (mode === "estop") {
+        // The same stop as /skills PARAR (bridge/stop.ts): agent turns end
+        // first, and a bridge that does not answer is a 504 after 8 s while
+        // the stop keeps running, not a request held for the MCP default.
+        const r = await stopRobot("stop_everything", who);
+        if (r.status !== 200) {
+          // This route's own error shapes: `task_id` where /skills says `name`.
+          const { name: _name, ...failure } = r.body;
+          return r.status === 504
+            ? status(504, { ...failure, task_id })
+            : status(502, { ...failure, task_id });
         }
+        // Bridge tools always return a dict today, but nothing at the
+        // type level guarantees it -- spreading a non-object (e.g. a bare
+        // string) into a response object silently produces garbage
+        // indexed keys instead of erroring, so guard explicitly.
+        const raw = r.body;
+        const result =
+          raw !== null && typeof raw === "object" && !Array.isArray(raw)
+            ? (raw as Record<string, unknown>)
+            : { raw };
+        return { mode, task_id, ...result };
+      }
+      try {
         return await auditedCall("cancel_task", { task_id }, who);
       } catch (err) {
         if (err instanceof BridgeUnavailableError)

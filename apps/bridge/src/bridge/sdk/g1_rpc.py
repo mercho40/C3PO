@@ -65,6 +65,7 @@ class _G1Client(Client):
 _sport_client: _G1Client | None = None
 _sport_client_lock = threading.Lock()
 _arm_client: _G1Client | None = None
+_arm_client_lock = threading.Lock()
 
 
 def _get_sport_client() -> _G1Client:
@@ -95,11 +96,14 @@ def _get_sport_client() -> _G1Client:
 
 def _get_arm_client() -> _G1Client:
     global _arm_client
-    if _arm_client is None:
-        _arm_client = _G1Client(
-            "arm", (g1_protocol.API_ID_G1_UPPER_LIMBS,), timeout_s=ARM_TIMEOUT_S
-        )
-        _arm_client.Init()
+    # The sport client's pattern, for the same reason: locked, published after Init.
+    with _arm_client_lock:
+        if _arm_client is None:
+            client = _G1Client(
+                "arm", (g1_protocol.API_ID_G1_UPPER_LIMBS,), timeout_s=ARM_TIMEOUT_S
+            )
+            client.Init()
+            _arm_client = client
     return _arm_client
 
 
@@ -129,29 +133,35 @@ def call_arm(gesture: int) -> tuple[int, str | None]:
 
 
 _voice_client: _G1Client | None = None
+_voice_client_lock = threading.Lock()
 _tts_index = 0
 
 
 def _get_voice_client() -> _G1Client:
     global _voice_client
-    if _voice_client is None:
-        _voice_client = _G1Client(
-            g1_protocol.VOICE_SERVICE,
-            (
-                g1_protocol.API_ID_VOICE_TTS,
-                g1_protocol.API_ID_VOICE_START_PLAY,
-                g1_protocol.API_ID_VOICE_STOP_PLAY,
-                g1_protocol.API_ID_VOICE_GET_VOLUME,
-                g1_protocol.API_ID_VOICE_SET_VOLUME,
-            ),
-            # TTS synthesises before it answers, so size this like the arm
-            # service rather than the sport one: it acks on completion, not on
-            # receipt. See the ARM_TIMEOUT_S note above — we have already been
-            # caught once reading a slow ack as a failure.
-            timeout_s=ARM_TIMEOUT_S,
-        )
-        _voice_client._SetApiVerson(g1_protocol.VOICE_API_VERSION)
-        _voice_client.Init()
+    # Locked and published after Init, like the sport client: stop_everything
+    # calls stop_play from its own thread while speech may be asking too, and a
+    # racer used to get the global before its api_ids were registered.
+    with _voice_client_lock:
+        if _voice_client is None:
+            client = _G1Client(
+                g1_protocol.VOICE_SERVICE,
+                (
+                    g1_protocol.API_ID_VOICE_TTS,
+                    g1_protocol.API_ID_VOICE_START_PLAY,
+                    g1_protocol.API_ID_VOICE_STOP_PLAY,
+                    g1_protocol.API_ID_VOICE_GET_VOLUME,
+                    g1_protocol.API_ID_VOICE_SET_VOLUME,
+                ),
+                # TTS synthesises before it answers, so size this like the arm
+                # service rather than the sport one: it acks on completion, not on
+                # receipt. See the ARM_TIMEOUT_S note above — we have already been
+                # caught once reading a slow ack as a failure.
+                timeout_s=ARM_TIMEOUT_S,
+            )
+            client._SetApiVerson(g1_protocol.VOICE_API_VERSION)
+            client.Init()
+            _voice_client = client
     return _voice_client
 
 
@@ -274,23 +284,27 @@ def stop_play(app_name: str = PLAY_APP_NAME) -> tuple[int, str | None]:
 
 
 _motion_switcher_client: _G1Client | None = None
+_motion_switcher_client_lock = threading.Lock()
 
 
 def _get_motion_switcher_client() -> _G1Client:
     global _motion_switcher_client
-    if _motion_switcher_client is None:
-        # ONLY CHECK_MODE is registered. SELECT_MODE and RELEASE_MODE transfer
-        # ownership of the robot between controllers, and `_RegistApi` is what
-        # makes an api_id sendable at all — leaving them unregistered means a
-        # future caller cannot reach them by accident. Registering an api_id
-        # you do not intend to send is how it gets sent eventually.
-        _motion_switcher_client = _G1Client(
-            g1_protocol.MOTION_SWITCHER_SERVICE,
-            (g1_protocol.API_ID_MS_CHECK_MODE,),
-            timeout_s=SPORT_TIMEOUT_S,
-        )
-        _motion_switcher_client._SetApiVerson(g1_protocol.MOTION_SWITCHER_API_VERSION)
-        _motion_switcher_client.Init()
+    # Locked and published after Init, like the sport client.
+    with _motion_switcher_client_lock:
+        if _motion_switcher_client is None:
+            # ONLY CHECK_MODE is registered. SELECT_MODE and RELEASE_MODE transfer
+            # ownership of the robot between controllers, and `_RegistApi` is what
+            # makes an api_id sendable at all — leaving them unregistered means a
+            # future caller cannot reach them by accident. Registering an api_id
+            # you do not intend to send is how it gets sent eventually.
+            client = _G1Client(
+                g1_protocol.MOTION_SWITCHER_SERVICE,
+                (g1_protocol.API_ID_MS_CHECK_MODE,),
+                timeout_s=SPORT_TIMEOUT_S,
+            )
+            client._SetApiVerson(g1_protocol.MOTION_SWITCHER_API_VERSION)
+            client.Init()
+            _motion_switcher_client = client
     return _motion_switcher_client
 
 

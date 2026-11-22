@@ -991,3 +991,167 @@ async def test_a_page_closing_the_event_stream_does_not_disarm_the_voice_loop(mo
     await loop_next
     await voice_loop.aclose()
     assert lis._on_stop is None
+
+
+# --- transcription runs beside the stop detector, never in front of it -------
+#
+# Local Whisper takes 3.5-6.6 s per utterance and the GPU call may block for up to
+# 30 s. It used to run on the mic thread, so every frame that arrived meanwhile,
+# PARAR included, waited for it before the stop detector saw it.
+
+
+class SlowWhisper:
+    """Blocks in transcribe() until released: a long Whisper call in flight."""
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls: list[int] = []
+
+    def transcribe(self, pcm: bytes) -> str:
+        self.calls.append(len(pcm))
+        self.started.set()
+        # A ceiling, not a wait: the test releases it. Old code held the stop here.
+        self.release.wait(10)
+        return f"whisper text ({len(pcm)}B)"
+
+
+def make_slow(source, whis, **kw):
+    import bridge.skills.listen as mod
+
+    mod.WHISPER_MIN_SECONDS = 0.0
+    kw.setdefault("playback_active", lambda: False)
+    return MicListener(
+        source=source, build=lambda: (FakeDetector(), FakeTranscriber(), whis), **kw
+    )
+
+
+def test_the_stop_phrase_fires_while_a_transcription_is_still_running():
+    whis = SlowWhisper()
+
+    def frames():
+        yield b"long utterance"
+        yield b"."
+        # PARAR is spoken only once Whisper is busy with the utterance above.
+        assert whis.started.wait(5)
+        yield b"\xff"
+
+    stops: list[str] = []
+    lis = make_slow(frames, whis)
+    lis.start(on_stop=stops.append)
+    try:
+        assert _until(lambda: stops, timeout=2.0), "the stop waited behind the transcription"
+        assert not whis.release.is_set()
+    finally:
+        whis.release.set()
+    items = drain(lis)
+    assert stops == ["emergencia"]
+    # The utterance was finished before PARAR, but its text came back after it:
+    # a turn must not start while PARAR stands.
+    assert [i["kind"] for i in items] == ["stop"], items
+
+
+def test_queued_utterances_are_dropped_by_a_stop_and_never_transcribed():
+    whis = SlowWhisper()
+
+    def frames():
+        yield b"first"
+        yield b"."
+        assert whis.started.wait(5)
+        yield b"second"
+        yield b"."
+        yield b"\xff"
+
+    stops: list[str] = []
+    lis = make_slow(frames, whis)
+    lis.start(on_stop=stops.append)
+    try:
+        assert _until(lambda: stops, timeout=2.0)
+    finally:
+        whis.release.set()
+    items = drain(lis)
+    assert [i["kind"] for i in items] == ["stop"]
+    assert len(whis.calls) == 1, "an utterance queued before the stop was still transcribed"
+
+
+def test_speech_after_a_stop_is_transcribed_while_a_stale_one_finishes():
+    whis = SlowWhisper()
+
+    def frames():
+        yield b"before"
+        yield b"."
+        assert whis.started.wait(5)
+        yield b"\xff"
+        yield b"after"
+        yield b"."
+
+    lis = make_slow(frames, whis)
+    lis.start()
+    assert _until(lambda: lis.recent(60), timeout=2.0)
+    whis.release.set()
+    items = drain(lis)
+    assert [(i["kind"], i["text"]) for i in items] == [
+        ("stop", "emergencia"),
+        ("speech", "whisper text (6B)"),
+    ]
+
+
+def test_transcripts_keep_the_order_they_were_spoken_in():
+    """A short utterance skips Whisper; it must not overtake a long one still in it."""
+    import bridge.skills.listen as mod
+
+    whis = SlowWhisper()
+    mod.WHISPER_MIN_SECONDS = 1.0
+    long_one = b"a" * (mod.TARGET_BYTES_PER_S + 2)
+    lis = MicListener(
+        source=lambda: iter([long_one, b".", b"bb", b"."]),
+        build=lambda: (FakeDetector(), FakeTranscriber(), whis),
+        playback_active=lambda: False,
+    )
+    lis.start()
+    assert whis.started.wait(5)
+    whis.release.set()
+    items = drain(lis)
+    assert [i["text"] for i in items] == [f"whisper text ({len(long_one) + 1}B)", "vosk text"]
+
+
+def test_a_raising_transcriber_keeps_the_segmenter_text_and_the_worker_alive():
+    class Boom:
+        def transcribe(self, pcm: bytes) -> str:
+            raise RuntimeError("ctranslate2 fell over")
+
+    import bridge.skills.listen as mod
+
+    mod.WHISPER_MIN_SECONDS = 0.0
+    lis = MicListener(
+        source=lambda: iter([b"aa", b".", b"bb", b"."]),
+        build=lambda: (FakeDetector(), FakeTranscriber(), Boom()),
+        playback_active=lambda: False,
+    )
+    lis.start()
+    assert [i["text"] for i in drain(lis)] == ["vosk text", "vosk text"]
+
+
+def test_a_backed_up_whisper_keeps_the_utterance_with_the_segmenter_text(monkeypatch):
+    import bridge.skills.listen as mod
+
+    monkeypatch.setattr(mod, "STT_MAX_QUEUED", 1)
+    whis = SlowWhisper()
+
+    def frames():
+        yield b"first"
+        yield b"."
+        assert whis.started.wait(5)
+        yield b"second"
+        yield b"."
+        yield b"third"
+        yield b"."
+
+    lis = make_slow(frames, whis)
+    lis.start()
+    # The mic thread got through all three without waiting on Whisper.
+    assert _until(lambda: lis.diagnostics()["frames"] == 6, timeout=2.0)
+    whis.release.set()
+    texts = [i["text"] for i in drain(lis)]
+    assert texts == ["whisper text (6B)", "whisper text (7B)", "vosk text"]
+    assert len(whis.calls) == 2

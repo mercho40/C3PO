@@ -59,10 +59,40 @@ export class BridgeToolError extends Error {
 
 let clientPromise: Promise<Client> | null = null;
 
+/**
+ * The ceiling for establishing a session. Without one the SDK's 60 s initialize
+ * default applied, and a bridge that accepts TCP but never answers (a stalled
+ * tunnel, a wedged process) held every call for that long — they all await the
+ * one pending session, PARAR included. Under the stop's own 8 s wait
+ * (bridge/stop.ts), so a dead connect reads as `bridge_unavailable`.
+ */
+const CONNECT_TIMEOUT_MS = 5000;
+
 async function connect(): Promise<Client> {
   const client = new Client({ name: "c3po-back", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(bridgeUrl()));
-  await client.connect(transport);
+  // The SDK's timeout covers the initialize request; the race covers the
+  // rest of the handshake (the `initialized` notification has none).
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      client.connect(transport, { timeout: CONNECT_TIMEOUT_MS }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(`connect timed out after ${CONNECT_TIMEOUT_MS} ms`),
+            ),
+          CONNECT_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } catch (err) {
+    discard(client); // a half-open session must not keep its socket — see `discard`
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   return client;
 }
 
