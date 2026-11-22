@@ -5,7 +5,8 @@
  * browser -> apps/back -> bridge, and each hop names the path itself:
  *
  *   apps/web     `endpoint(base, "status")`, `endpoint(base, "stream.mjpg")`
- *                with base = PUBLIC_ROBOT_CAM_URL (`http://localhost:3000/camera`)
+ *                with base = PUBLIC_ROBOT_CAM_URL (`http://localhost:3000/camera`,
+ *                or the bridge's `:8001/camera` under dev:robot)
  *   apps/back    `.get("/camera/…")` exposed, `bridgeSiblingUrl("/camera/…")` asked
  *   apps/bridge  `@mcp.custom_route("/camera/…")`
  *
@@ -103,6 +104,26 @@ describe("camera route contract", () => {
   test("every path the browser asks for is exposed by back", () => {
     for (const leaf of asked)
       expect(exposed).toContain(`${camBasePath}/${leaf}`);
+  });
+
+  test("dev:robot's camera default serves every leaf the browser asks for", () => {
+    // `bun run dev:robot` overrides .env.example with its own default, the
+    // bridge's 8001 (aa05697). Same /camera path, so the same leaves — and the
+    // server it names has to answer them, whichever of the two it is.
+    const pkg = JSON.parse(read("web", "package.json")) as {
+      scripts: Record<string, string>;
+    };
+    const m = /PUBLIC_ROBOT_CAM_URL=\$\{PUBLIC_ROBOT_CAM_URL:-([^}]+)\}/.exec(
+      pkg.scripts["dev:robot"] ?? "",
+    );
+    expect(m).not.toBeNull();
+    const url = new URL(m![1]!);
+    expect(url.hostname).toBe("localhost");
+    expect(url.pathname.replace(/\/+$/, "")).toBe(camBasePath);
+    const answers = url.port === "8001" ? served : exposed;
+    expect(["3000", "8001"]).toContain(url.port);
+    for (const leaf of asked)
+      expect(answers).toContain(`${camBasePath}/${leaf}`);
   });
 
   test("the documented camera URL points at back, not the bridge", () => {
