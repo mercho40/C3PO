@@ -14,15 +14,15 @@
     "start": "turbo run start"
   },
   "devDependencies": {
-    "prettier": "^3.9.10",
-    "prettier-plugin-svelte": "^4.1.1",
+    "prettier": "^3.10.1",
+    "prettier-plugin-svelte": "^4.2.0",
     "prettier-plugin-tailwindcss": "^0.8.1",
-    "turbo": "^2.11.8"
+    "turbo": "^2.11.13"
   },
   "engines": {
     "node": ">=22.17"
   },
-  "packageManager": "bun@1.4.3",
+  "packageManager": "bun@1.4.5",
   "workspaces": [
     "apps/*",
     "packages/*"
