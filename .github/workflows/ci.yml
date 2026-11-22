@@ -288,8 +288,7 @@ jobs:
       - name: ruff
         working-directory: apps/bridge
         run: >
-          uv run ruff check src tests scripts
-          ../../scripts/robot_internet.py ../../scripts/robot/lidar_service.py
+          uv run ruff check src tests scripts ../../scripts/robot_internet.py
 
       # `scripts` too, for the same reason ruff covers it: those are the files
       # somebody runs standing next to a humanoid with an e-stop in their hand.
@@ -297,13 +296,12 @@ jobs:
       # it ran — a driver variable holding two incompatible types on what
       # looked like one path, in the script that MOVES THE ARMS.
       #
-      # The two root robot scripts too: robot_internet.py runs on the Mac and
-      # lidar_service.py on the robot with this venv, and neither had a check.
+      # robot_internet.py too: it runs on the Mac and had no check. (The lidar
+      # script runs on this venv, so it lives in `scripts` now.)
       - name: mypy
         working-directory: apps/bridge
         run: >
-          uv run mypy src scripts
-          ../../scripts/robot_internet.py ../../scripts/robot/lidar_service.py
+          uv run mypy src scripts ../../scripts/robot_internet.py
 
       - name: pytest
         working-directory: apps/bridge

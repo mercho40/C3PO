@@ -1432,7 +1432,7 @@ the returned `status` is documented `0 = on, 1 = off` — **inverted**. Our Pyth
 accepts either and will not catch a mis-read; code on top of it must not assume the two
 fields share a convention. **[web]**
 
-The only 1001 caller in the repo is `scripts/robot/lidar_service.py`. It handles
+The only 1001 caller in the repo is `apps/bridge/scripts/lidar_service.py`. It handles
 `lidar_driver` only and refuses any other name. It ran on 2026-11-03, and the lidar
 republish stayed empty because the control board's SDK does not know the Mid-360S
 (ROBOT-HARDWARE §4.6). Switching off `bashrunner` (BACKLOG 1.7) needs its own guarded
