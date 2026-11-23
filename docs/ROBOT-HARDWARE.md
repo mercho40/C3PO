@@ -1449,7 +1449,7 @@ stuck playback"_ is second-hand evidence that `PlayStream` genuinely drives this
 speaker. **[src]** For anything non-Chinese/English: external synthesis → PCM16 @16 kHz →
 `PlayStream`.
 
-The bridge's `say` tool implements this path (see `apps/bridge/src/bridge/mcp_server.py`
+The bridge's `say` tool implements this path (see `apps/bridge/src/bridge/tools/speech.py`
 and the voice client in `apps/bridge/src/bridge/sdk/g1_rpc.py`); the api-level details and
 vendor defects to code around are in `docs/ROBOT-API.md` §7. Verified 2026-08-15:
 `GET_VOLUME` answered `{"volume":100}` — the service is alive on this unit and the volume

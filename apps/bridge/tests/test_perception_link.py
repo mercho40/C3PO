@@ -481,7 +481,7 @@ def test_diagnostics_carries_the_keys_the_gate_route_reads():
 
     assert "gate" in diag, (
         "diagnostics() no longer embeds the gate — /telemetry/gate in "
-        "mcp_server.py builds its whole body from this key"
+        "routes/telemetry.py builds its whole body from this key"
     )
     for key in ("started", "domain_id", "reports_received"):
         assert key in diag, f"/telemetry/gate reports link.{key}"

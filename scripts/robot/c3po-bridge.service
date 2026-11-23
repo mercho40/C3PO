@@ -24,7 +24,7 @@ WorkingDirectory=/home/unitree/c3po/apps/bridge
 # It was not. docs/OPERATIONS.md says the opposite in as many words — "the
 # bridge can command the legs and has no authentication of its own, so it must
 # never bind to the school LAN" — and `apps/bridge/.env.example`, the code
-# default in `mcp_server.py`, `run_c3po` and `apps/back/src/routes/telemetry.ts`
+# default in `bridge/config.py`, `run_c3po` and `apps/back/src/routes/telemetry.ts`
 # all say loopback too. Five places agreed and the one that actually ran did
 # not, which made `http://10.10.32.19:8001/mcp` — the tool surface that can
 # WALK THE ROBOT, unauthenticated — reachable from anywhere on the school
