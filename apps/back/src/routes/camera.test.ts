@@ -8,6 +8,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
+import { createBridgeHttp } from "../bridge/http";
 import { cameraRoutes } from "./camera";
 
 let bridge: ReturnType<typeof Bun.serve>;
@@ -58,15 +59,29 @@ beforeAll(() => {
       return new Response("not found", { status: 404 });
     },
   });
-  process.env.BRIDGE_URL = `http://127.0.0.1:${bridge.port}/mcp`;
+  live = cameraRoutes({
+    http: createBridgeHttp({
+      mcpUrl: `http://127.0.0.1:${bridge.port}/mcp`,
+      confirmSecret: null,
+    }),
+  });
+  dead = cameraRoutes({
+    http: createBridgeHttp({
+      mcpUrl: `http://127.0.0.1:${deadPort}/mcp`,
+      confirmSecret: null,
+    }),
+  });
 });
 
 afterAll(() => {
   bridge.stop(true);
 });
 
-const get = (path: string, init?: RequestInit) =>
-  cameraRoutes.handle(new Request(`http://back${path}`, init));
+let live: ReturnType<typeof cameraRoutes>;
+/** The same routes over a bridge address nobody listens on. */
+let dead: ReturnType<typeof cameraRoutes>;
+const get = (path: string, init?: RequestInit, routes = live) =>
+  routes.handle(new Request(`http://back${path}`, init));
 
 describe("/camera/status", () => {
   test("relays the bridge's JSON, uncached", async () => {
@@ -92,15 +107,9 @@ describe("/camera/status", () => {
   });
 
   test("a dead bridge is bridge_unavailable, not a hang", async () => {
-    const saved = process.env.BRIDGE_URL;
-    process.env.BRIDGE_URL = `http://127.0.0.1:${deadPort}/mcp`;
-    try {
-      const res = await get("/camera/status");
-      expect(res.status).toBe(502);
-      expect(await res.json()).toEqual({ error: "bridge_unavailable" });
-    } finally {
-      process.env.BRIDGE_URL = saved;
-    }
+    const res = await get("/camera/status", undefined, dead);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "bridge_unavailable" });
   });
 });
 
@@ -154,13 +163,7 @@ describe("/camera/stream.mjpg", () => {
   });
 
   test("a dead bridge is a 502, not a hang", async () => {
-    const saved = process.env.BRIDGE_URL;
-    process.env.BRIDGE_URL = `http://127.0.0.1:${deadPort}/mcp`;
-    try {
-      const res = await get("/camera/stream.mjpg");
-      expect(res.status).toBe(502);
-    } finally {
-      process.env.BRIDGE_URL = saved;
-    }
+    const res = await get("/camera/stream.mjpg", undefined, dead);
+    expect(res.status).toBe(502);
   });
 });

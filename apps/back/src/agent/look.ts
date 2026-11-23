@@ -28,7 +28,7 @@
  * call, because what the agent was shown is part of why it acted.
  */
 
-import { bridgeSiblingUrl } from "#back/bridge/url.js";
+import { rethrowCause, type BridgeHttp } from "#back/bridge/http.js";
 
 export const LOOK_TOOL = {
   name: "look",
@@ -185,34 +185,41 @@ export async function look(
   }
 }
 
-/** The bridge half of `LookDeps`, against BRIDGE_URL's host. */
-export const bridgeCamera: Pick<LookDeps, "cameraStatus" | "cameraFrame"> = {
-  async cameraStatus() {
-    const res = await fetch(bridgeSiblingUrl("/camera/status"), {
-      cache: "no-store",
-      signal: AbortSignal.timeout(5_000),
-    });
-    const body = (await res.json().catch(() => ({}))) as CameraStatus;
-    return { ok: res.ok, status: res.status, body };
-  },
-  async cameraFrame() {
-    // Never /camera/frame.jpg: this frame goes to a cloud model.
-    const res = await fetch(bridgeSiblingUrl("/camera/cloud_frame.jpg"), {
-      cache: "no-store",
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as {
-        detail?: string;
-        error?: string;
-      };
-      throw new Error(
-        body.detail ?? body.error ?? `camera frame HTTP ${res.status}`,
-      );
-    }
-    return new Uint8Array(await res.arrayBuffer());
-  },
-};
+/** The bridge half of `LookDeps`. */
+export function bridgeCamera(
+  http: Pick<BridgeHttp, "request">,
+): Pick<LookDeps, "cameraStatus" | "cameraFrame"> {
+  return {
+    async cameraStatus() {
+      const res = await http.request("/camera/status", {
+        cache: "no-store",
+        timeoutMs: 5_000,
+      });
+      const body = (await res.json().catch(() => ({}))) as CameraStatus;
+      return { ok: res.ok, status: res.status, body };
+    },
+    async cameraFrame() {
+      // Never /camera/frame.jpg: this frame goes to a cloud model.
+      const res = await http
+        .request("/camera/cloud_frame.jpg", {
+          cache: "no-store",
+          timeoutMs: 5_000,
+        })
+        // The reason `look` reports is fetch's own ("timed out"), as before.
+        .catch(rethrowCause);
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as {
+          detail?: string;
+          error?: string;
+        };
+        throw new Error(
+          body.detail ?? body.error ?? `camera frame HTTP ${res.status}`,
+        );
+      }
+      return new Uint8Array(await res.arrayBuffer());
+    },
+  };
+}
 
 /**
  * `verify` — a yes/no check on the newest frame, through the same camera and

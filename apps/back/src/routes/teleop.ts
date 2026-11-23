@@ -11,8 +11,9 @@
  */
 import { createHmac, randomBytes } from "node:crypto";
 import { Elysia } from "elysia";
-import { betterAuth } from "#back/lib/auth-plugin.js";
-import { bridgeSiblingUrl } from "../bridge/url";
+
+import type { BridgeHttp } from "#back/bridge/http.js";
+import type { AuthPlugin } from "#back/lib/auth-plugin.js";
 
 //: Only has to outlive the handshake; each connect asks for a fresh one, since
 //: the bridge accepts a token once.
@@ -25,18 +26,11 @@ export const TELEOP_TOKEN_TTL_S = 60;
  * off and every token born expired. Ours (the old behaviour) only if the
  * bridge does not answer.
  */
-export async function bridgeNowMs(): Promise<number> {
-  try {
-    const res = await fetch(bridgeSiblingUrl("/safety/status"), {
-      signal: AbortSignal.timeout(2000),
-    });
-    void res.body?.cancel();
-    const date = Date.parse(res.headers.get("date") ?? "");
-    if (Number.isFinite(date)) return date;
-  } catch {
-    // unreachable: fall through to our clock
-  }
-  return Date.now();
+export async function bridgeNowMs(
+  http: Pick<BridgeHttp, "robotDateMs">,
+): Promise<number> {
+  // unreachable, or no Date header: fall through to our clock
+  return (await http.robotDateMs(2000)) ?? Date.now();
 }
 
 /** `<exp>.<nonce>.<hex HMAC-SHA256(secret, "teleop:<exp>.<nonce>")>`; mirrors `token_valid`. */
@@ -53,25 +47,33 @@ export function mintTeleopToken(
   return `${body}.${sig}`;
 }
 
-export const teleopRoutes = new Elysia({ prefix: "/teleop" })
-  .use(betterAuth)
-  .guard({ auth: true }, (app) =>
-    app.get(
-      "/token",
-      async ({ status, user }) => {
-        if (user.role !== "admin") {
-          return status(403, { error: "admin_required" });
-        }
-        const secret = process.env.TELEOP_SECRET;
-        return {
-          token: secret ? mintTeleopToken(secret, await bridgeNowMs()) : null,
-        };
-      },
-      {
-        detail: {
-          summary: "A short-lived token for the teleop socket. Admin-only.",
-          tags: ["teleop"],
+export const teleopRoutes = (deps: {
+  authPlugin: AuthPlugin;
+  http: Pick<BridgeHttp, "robotDateMs">;
+  /** TELEOP_SECRET (`config.teleopSecret`). */
+  secret: string | null;
+}) =>
+  new Elysia({ prefix: "/teleop" })
+    .use(deps.authPlugin)
+    .guard({ auth: true }, (app) =>
+      app.get(
+        "/token",
+        async ({ status, user }) => {
+          if (user.role !== "admin") {
+            return status(403, { error: "admin_required" });
+          }
+          const secret = deps.secret;
+          return {
+            token: secret
+              ? mintTeleopToken(secret, await bridgeNowMs(deps.http))
+              : null,
+          };
         },
-      },
-    ),
-  );
+        {
+          detail: {
+            summary: "A short-lived token for the teleop socket. Admin-only.",
+            tags: ["teleop"],
+          },
+        },
+      ),
+    );

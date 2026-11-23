@@ -30,7 +30,7 @@
 
 import { Elysia } from "elysia";
 
-import { bridgeSiblingUrl } from "../bridge/url";
+import type { BridgeHttp } from "../bridge/http";
 
 /** Placement metadata the bridge attaches, so the console can georeference the image. */
 const FORWARDED_HEADERS = [
@@ -44,59 +44,49 @@ const FORWARDED_HEADERS = [
   "X-C3PO-Stale",
 ] as const;
 
-export const mapRoutes = new Elysia().get(
-  "/map/costmap.png",
-  async ({ status }) => {
-    let upstream: Response;
-    try {
-      upstream = await fetch(bridgeSiblingUrl("/telemetry/costmap.png"), {
-        // Short: at 1 Hz a slow map is a stale map, and the console would
-        // rather be told "no map" than block a poll cycle waiting for one.
-        signal: AbortSignal.timeout(3000),
+export const mapRoutes = (deps: { http: Pick<BridgeHttp, "relay"> }) =>
+  new Elysia().get(
+    "/map/costmap.png",
+    async ({ status }) => {
+      // Short: at 1 Hz a slow map is a stale map, and the console would rather
+      // be told "no map" than block a poll cycle waiting for one.
+      //
+      // 503 from the bridge means "no costmap has arrived", which is a real and
+      // useful answer — it happens whenever no nav2 stage is up. Passed through
+      // with its body intact rather than flattened into a generic error, so the
+      // console can say WHY there is no map instead of just that there isn't.
+      const r = await deps.http.relay("/telemetry/costmap.png", {
+        timeoutMs: 3000,
+        unavailableBody: { error: "no_costmap" },
       });
-    } catch {
-      return status(502, { error: "bridge_unavailable" });
-    }
+      if (!r.ok) return status(r.status, r.body);
+      const upstream = r.upstream;
 
-    // 503 from the bridge means "no costmap has arrived", which is a real and
-    // useful answer — it happens whenever no nav2 stage is up. Pass it through
-    // with its body intact rather than flattening it into a generic error, so
-    // the console can say WHY there is no map instead of just that there isn't.
-    if (upstream.status === 503) {
-      return status(
-        503,
-        await upstream.json().catch(() => ({ error: "no_costmap" })),
+      const headers = new Headers({
+        "Content-Type": "image/png",
+        // Never cache. At 1 Hz a cached map is a lie within a second, and a map
+        // that is quietly a minute old is exactly the failure the age header
+        // exists to prevent.
+        "Cache-Control": "no-store",
+      });
+      for (const name of FORWARDED_HEADERS) {
+        const value = upstream.headers.get(name);
+        if (value !== null) headers.set(name, value);
+      }
+      // Let the browser read the placement metadata; without this it can fetch
+      // the image but not position it, and the map silently lands at the origin.
+      headers.set(
+        "Access-Control-Expose-Headers",
+        FORWARDED_HEADERS.join(", "),
       );
-    }
-    if (!upstream.ok) return status(502, { error: "bridge_error" });
 
-    const headers = new Headers({
-      "Content-Type": "image/png",
-      // Never cache. At 1 Hz a cached map is a lie within a second, and a map
-      // that is quietly a minute old is exactly the failure the age header
-      // exists to prevent.
-      "Cache-Control": "no-store",
-    });
-    for (const name of FORWARDED_HEADERS) {
-      const value = upstream.headers.get(name);
-      if (value !== null) headers.set(name, value);
-    }
-    // Let the browser read the placement metadata; without this it can fetch
-    // the image but not position it, and the map silently lands at the origin.
-    headers.set("Access-Control-Expose-Headers", FORWARDED_HEADERS.join(", "));
-
-    // The timeout covers reading the BODY too: headers that arrive just before
-    // it leave `arrayBuffer()` to throw, which escaped as a 500 — a server
-    // bug, to the console — instead of the bridge being slow.
-    const body = await upstream.arrayBuffer().catch(() => null);
-    if (body === null) return status(502, { error: "bridge_unavailable" });
-    return new Response(body, { headers });
-  },
-  {
-    detail: {
-      summary:
-        "Nav2's global costmap as a PNG, with placement metadata on X-C3PO-* headers.",
-      tags: ["map"],
+      return new Response(r.body, { headers });
     },
-  },
-);
+    {
+      detail: {
+        summary:
+          "Nav2's global costmap as a PNG, with placement metadata on X-C3PO-* headers.",
+        tags: ["map"],
+      },
+    },
+  );

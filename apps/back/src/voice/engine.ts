@@ -2,8 +2,8 @@
  * Which voice engine a session runs on — chosen by the operator per session,
  * with `VOICE_ENGINE` only supplying the default.
  *
- * Plain functions over plain inputs, so the rules are testable without booting
- * the route (which pulls in the database, the bridge client and the agent).
+ * Plain functions over plain inputs. `loadConfig` (config.ts) calls the first
+ * two with the environment; voice/service.ts calls `chooseEngine` per start.
  *
  * ONE ENGINE AT A TIME. Both engines share the robot's one microphone and one
  * speaker. A start naming a different engine than the running one is refused,
@@ -16,7 +16,7 @@ export type VoiceEngine = "legacy" | "openai-realtime";
 type Env = Record<string, string | undefined>;
 
 /** The deployment's default. `VOICE_ENGINE=realtime` predates per-session choice. */
-export function defaultEngine(env: Env = process.env): VoiceEngine {
+export function defaultEngine(env: Env): VoiceEngine {
   return env.VOICE_ENGINE === "realtime" ? "openai-realtime" : "legacy";
 }
 
@@ -25,7 +25,7 @@ export function defaultEngine(env: Env = process.env): VoiceEngine {
  * after a chat row had been created and deleted again; saying so up front lets
  * the console grey the option out with the reason instead.
  */
-export function availableEngines(env: Env = process.env): VoiceEngine[] {
+export function availableEngines(env: Env): VoiceEngine[] {
   return env.OPENAI_API_KEY ? ["legacy", "openai-realtime"] : ["legacy"];
 }
 

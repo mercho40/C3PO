@@ -146,9 +146,13 @@ async function readPassword(): Promise<string> {
 }
 
 async function run(command: Command): Promise<string> {
-  // Imported here, not at the top: auth.ts validates the environment and opens
-  // the database, which the tests of the helpers above must not need.
-  const { auth } = await import("#back/lib/auth.js");
+  // Built here, not at the top: loadConfig validates the environment, which
+  // the tests of the helpers above must not need.
+  const { loadConfig } = await import("#back/config.js");
+  const { createDb } = await import("#back/db/drizzle.js");
+  const { createAuth } = await import("#back/lib/auth.js");
+  const config = loadConfig();
+  const auth = createAuth(config, createDb(config.databaseUrl));
   const ctx = await auth.$context;
   const found = await ctx.internalAdapter.findUserByEmail(command.email);
 

@@ -14,7 +14,7 @@
  * not just the caller's. Non-admins get 403 `admin_required` — the same body
  * /skills/:name/invoke uses, so the console has one way to say it.
  *
- * Mounted beside index.ts's outer guard, not inside it, for the reason
+ * Mounted beside app.ts's outer guard, not inside it, for the reason
  * skills.ts documents: this module reads a typed `user` through its own guard,
  * and nesting would resolve the session twice per request.
  *
@@ -30,16 +30,9 @@
  */
 
 import { Elysia, t } from "elysia";
-import { and, desc, eq, lt, sql, type SQL } from "drizzle-orm";
-
-import { db } from "#back/db/drizzle.js";
-import {
-  chat,
-  toolCallLog,
-  user as userTable,
-  type ToolCallSource,
-} from "#back/db/schema.js";
-import { betterAuth } from "#back/lib/auth-plugin.js";
+import type { AuditReader } from "#back/db/audit.js";
+import type { ToolCallSource } from "#back/db/schema.js";
+import type { AuthPlugin } from "#back/lib/auth-plugin.js";
 
 export const AUDIT_DEFAULT_LIMIT = 50;
 export const AUDIT_MAX_LIMIT = 200;
@@ -182,112 +175,60 @@ export function auditPage(
   };
 }
 
-/** Read one page from the database. */
-async function readAudit(q: AuditQuery): Promise<AuditDbRow[]> {
-  const where: SQL[] = [];
-  if (q.skill) where.push(eq(toolCallLog.skillName, q.skill));
-  if (q.status) where.push(eq(toolCallLog.status, q.status));
-  if (q.source) where.push(eq(toolCallLog.source, q.source));
-  if (q.before?.kind === "time") {
-    // `lt`, not raw SQL, so the column maps the Date to its driver value.
-    where.push(lt(toolCallLog.createdAt, q.before.at));
-  } else if (q.before?.kind === "id") {
-    // Row-value comparison against the cursor row itself, in SQL: the
-    // timestamp never round-trips through a JS Date (millisecond precision
-    // against Postgres's microseconds), so a page boundary cannot skip rows
-    // that share the cursor's millisecond.
-    where.push(
-      sql`(${toolCallLog.createdAt}, ${toolCallLog.id}) < (select "cursor"."created_at", "cursor"."id" from "tool_call_log" as "cursor" where "cursor"."id" = ${q.before.id})`,
-    );
-  }
+export const auditRoutes = (deps: {
+  authPlugin: AuthPlugin;
+  audit: AuditReader;
+}) =>
+  new Elysia({ prefix: "/audit" })
+    .use(deps.authPlugin)
+    .guard({ auth: true }, (app) =>
+      app.get(
+        "/",
+        async ({ user, query, status }) => {
+          if (user.role !== "admin") {
+            return status(403, {
+              error: "admin_required" as const,
+              message: "The command log is restricted to admins.",
+            });
+          }
 
-  // Attribution: the row's own user_id, or — for rows written before that
-  // column existed — the owner of the chat that dispatched them. `ensureChat`
-  // has always refused to let anyone write into a chat that is not theirs, so
-  // the chat's owner IS who ran that turn.
-  const owner = sql`coalesce(${toolCallLog.userId}, ${chat.userId})`;
+          const parsed = parseAuditQuery(query);
+          if (!parsed.ok) {
+            return status(422, {
+              error: "invalid_query" as const,
+              message: parsed.message,
+            });
+          }
+          const q = parsed.value;
 
-  return db
-    .select({
-      id: toolCallLog.id,
-      createdAt: toolCallLog.createdAt,
-      skillName: toolCallLog.skillName,
-      params: toolCallLog.params,
-      result: toolCallLog.result,
-      status: toolCallLog.status,
-      error: toolCallLog.error,
-      durationMs: toolCallLog.durationMs,
-      chatId: toolCallLog.chatId,
-      source: toolCallLog.source,
-      userId: userTable.id,
-      userName: userTable.name,
-      userEmail: userTable.email,
-    })
-    .from(toolCallLog)
-    .leftJoin(chat, eq(chat.id, toolCallLog.chatId))
-    .leftJoin(userTable, eq(userTable.id, owner))
-    .where(where.length ? and(...where) : undefined)
-    .orderBy(desc(toolCallLog.createdAt), desc(toolCallLog.id))
-    .limit(q.limit + 1) as Promise<AuditDbRow[]>;
-}
+          if (
+            q.before?.kind === "id" &&
+            !(await deps.audit.cursorExists(q.before.id))
+          ) {
+            return status(400, {
+              error: "invalid_cursor" as const,
+              message: "before does not name a row in the log",
+            });
+          }
 
-/** Whether a cursor id names a row. An unknown cursor is a 400, not an empty page that reads as "no more". */
-async function cursorExists(id: string): Promise<boolean> {
-  const rows = await db
-    .select({ id: toolCallLog.id })
-    .from(toolCallLog)
-    .where(eq(toolCallLog.id, id))
-    .limit(1);
-  return rows.length > 0;
-}
-
-export const auditRoutes = new Elysia({ prefix: "/audit" })
-  .use(betterAuth)
-  .guard({ auth: true }, (app) =>
-    app.get(
-      "/",
-      async ({ user, query, status }) => {
-        if (user.role !== "admin") {
-          return status(403, {
-            error: "admin_required" as const,
-            message: "The command log is restricted to admins.",
-          });
-        }
-
-        const parsed = parseAuditQuery(query);
-        if (!parsed.ok) {
-          return status(422, {
-            error: "invalid_query" as const,
-            message: parsed.message,
-          });
-        }
-        const q = parsed.value;
-
-        if (q.before?.kind === "id" && !(await cursorExists(q.before.id))) {
-          return status(400, {
-            error: "invalid_cursor" as const,
-            message: "before does not name a row in the log",
-          });
-        }
-
-        return auditPage(await readAudit(q), q.limit);
-      },
-      {
-        // All optional strings so Elysia's validation (which runs before the
-        // auth resolver) can never answer an anonymous caller first; the
-        // semantics are checked in `parseAuditQuery`.
-        query: t.Object({
-          skill: t.Optional(t.String()),
-          status: t.Optional(t.String()),
-          source: t.Optional(t.String()),
-          before: t.Optional(t.String()),
-          limit: t.Optional(t.String()),
-        }),
-        detail: {
-          summary:
-            "Read the command log (every skill dispatched to the robot), newest first. Admin-only.",
-          tags: ["audit"],
+          return auditPage(await deps.audit.read(q), q.limit);
         },
-      },
-    ),
-  );
+        {
+          // All optional strings so Elysia's validation (which runs before the
+          // auth resolver) can never answer an anonymous caller first; the
+          // semantics are checked in `parseAuditQuery`.
+          query: t.Object({
+            skill: t.Optional(t.String()),
+            status: t.Optional(t.String()),
+            source: t.Optional(t.String()),
+            before: t.Optional(t.String()),
+            limit: t.Optional(t.String()),
+          }),
+          detail: {
+            summary:
+              "Read the command log (every skill dispatched to the robot), newest first. Admin-only.",
+            tags: ["audit"],
+          },
+        },
+      ),
+    );

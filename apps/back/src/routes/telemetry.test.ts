@@ -35,7 +35,9 @@ const MCP_SERVER_PY = join(
 /** The upstream paths `telemetry.ts` asks the bridge for. */
 function proxiedPaths(): string[] {
   const src = readFileSync(TELEMETRY_TS, "utf8");
-  return [...src.matchAll(/proxyJson\(\s*"([^"]+)"/g)].map((m) => m[1]!);
+  return [...src.matchAll(/proxyJson\(\s*deps\.http,\s*"([^"]+)"/g)].map(
+    (m) => m[1]!,
+  );
 }
 
 /** The paths this app exposes to the browser. */

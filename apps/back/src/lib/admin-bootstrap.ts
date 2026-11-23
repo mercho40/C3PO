@@ -42,15 +42,8 @@
  */
 
 import { eq, inArray, sql } from "drizzle-orm";
-import { db } from "#back/db/drizzle.js";
+import type { Db } from "#back/db/drizzle.js";
 import { user } from "#back/db/schema.js";
-import { env } from "#back/lib/env.js";
-
-export function adminEmails(): string[] {
-  return env.ADMIN_EMAILS.split(",")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean);
-}
 
 type AccountRow = {
   id: string;
@@ -79,11 +72,14 @@ export function planAdminGrants(
   return { promote, unverified, missing };
 }
 
-export async function reconcileAdmins(): Promise<string[]> {
-  const emails = adminEmails();
+/** `emails` is `config.adminEmails`: trimmed, lowercased, empty entries dropped. */
+export async function reconcileAdmins(
+  db: Db,
+  emails: readonly string[],
+): Promise<string[]> {
   if (emails.length === 0) return [];
 
-  // Compared case-insensitively on BOTH sides. `adminEmails()` lowercases the
+  // Compared case-insensitively on BOTH sides. `loadConfig` lowercases the
   // allowlist, but `user.email` is whatever was typed at sign-up — so an
   // account created as "Operador@Gmail.com" would never match a lowercased
   // list, and the only symptom would be the "no account yet" warning about an
@@ -97,7 +93,7 @@ export async function reconcileAdmins(): Promise<string[]> {
       emailVerified: user.emailVerified,
     })
     .from(user)
-    .where(inArray(sql`lower(${user.email})`, emails));
+    .where(inArray(sql`lower(${user.email})`, [...emails]));
 
   const { promote, unverified, missing } = planAdminGrants(emails, rows);
   const promoted: string[] = [];

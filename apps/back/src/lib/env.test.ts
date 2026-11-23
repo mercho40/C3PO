@@ -8,19 +8,18 @@
  * ever sees. As of 2026-08-27 CI seeds its `.env` directly from it (see
  * `.github/workflows/ci.yml`) — a deliberate choice, because a list of
  * variables written into the workflow would be a third place that has to agree
- * with `env.ts` and `.env.example`, and the last time two places had to agree
+ * with `config.ts` and `.env.example`, and the last time two places had to agree
  * about configuration in this project one of them moved and the headset lost
  * its camera for a day.
  *
  * That choice puts weight on `.env.example` being complete. A required
- * variable added to `env.ts` and not documented there does not fail with
- * "you forgot to document a variable" — it fails as `bun test` refusing to
- * load any suite that transitively imports this module, which is what CI's
- * apps/back step looked like for its entire life before it was fixed.
+ * variable added to `config.ts` and not documented there does not fail with
+ * "you forgot to document a variable" — it fails as a server that will not
+ * boot from the `.env` CI seeds.
  *
- * Parsed as TEXT, never imported: importing `env.ts` executes its `throw`, so
- * a test that imported it could only ever run in an environment that already
- * satisfies the thing being tested.
+ * Parsed as TEXT: `config.ts` is the one module that reads the environment
+ * (`loadConfig(env)`), and this holds the code to that, so the list of what it
+ * reads is the list of `env.X` reads in that file.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -32,7 +31,7 @@ import { fileURLToPath } from "node:url";
 // with spaces in its name, which a URL percent-encodes and `readFileSync`
 // then cannot open.
 const BACK = fileURLToPath(new URL("../..", import.meta.url));
-const ENV_TS = join(BACK, "src/lib/env.ts");
+const CONFIG_TS = join(BACK, "src/config.ts");
 const EXAMPLE = join(BACK, ".env.example");
 
 function sourceFiles(dir: string, found: string[] = []): string[] {
@@ -59,7 +58,7 @@ function declaredKeys(path: string): Set<string> {
 /**
  * Source with comments removed.
  *
- * `env.ts`'s own docstring talks ABOUT `process.env.X`, in prose, explaining
+ * `config.ts`'s own docstring talks ABOUT `process.env.X`, in prose, explaining
  * the bug this whole module exists to prevent. Scanning raw text finds that
  * and reports a variable called `X` — a test failing on the documentation of
  * the thing it is checking.
@@ -75,17 +74,13 @@ function stripComments(text: string): string {
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
 
-/** Every `process.env.NAME` read anywhere under src/, with its file. */
+/** Every variable `loadConfig` reads: `env.NAME` in config.ts. */
 function envReads(): Map<string, string[]> {
   const out = new Map<string, string[]>();
-  for (const file of sourceFiles(join(BACK, "src"))) {
-    const text = stripComments(readFileSync(file, "utf8"));
-    for (const match of text.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) {
-      const name = match[1];
-      const where = out.get(name) ?? [];
-      where.push(file.slice(BACK.length));
-      out.set(name, where);
-    }
+  const text = stripComments(readFileSync(CONFIG_TS, "utf8"));
+  for (const match of text.matchAll(/\benv\.([A-Z][A-Z0-9_]*)/g)) {
+    const name = match[1];
+    out.set(name, [CONFIG_TS.slice(BACK.length)]);
   }
   return out;
 }
@@ -113,7 +108,7 @@ describe("apps/back environment contract", () => {
     // These are the ones whose absence THROWS at import. If one is missing
     // from `.env.example`, CI seeds an `.env` that cannot boot the service and
     // the error names the variable but not the reason it was never there.
-    const source = readFileSync(ENV_TS, "utf8");
+    const source = readFileSync(CONFIG_TS, "utf8");
     const block = /const REQUIRED = \[([\s\S]*?)\]/.exec(source);
     expect(block).not.toBeNull();
     const required = [...block![1].matchAll(/"([A-Z][A-Z0-9_]*)"/g)].map(
@@ -123,6 +118,19 @@ describe("apps/back environment contract", () => {
 
     const documented = declaredKeys(EXAMPLE);
     expect(required.filter((name) => !documented.has(name))).toEqual([]);
+  });
+
+  test("config.ts is the only module under src/ that reads process.env", () => {
+    // Read at import, a value froze at whenever the module was first loaded,
+    // and read per call it changed under a running test; either way the
+    // environment reached modules behind the composition root's back.
+    const readers = sourceFiles(join(BACK, "src"))
+      .filter((file) => file !== CONFIG_TS)
+      .filter((file) =>
+        /process\.env\b/.test(stripComments(readFileSync(file, "utf8"))),
+      )
+      .map((file) => file.slice(BACK.length));
+    expect(readers).toEqual([]);
   });
 
   test("nothing asserts a raw process.env value is present", () => {
@@ -135,7 +143,7 @@ describe("apps/back environment contract", () => {
     // stated fallback is a decision, not an accident.
     const offenders: string[] = [];
     for (const file of sourceFiles(join(BACK, "src"))) {
-      if (file === ENV_TS) continue; // where the checking happens
+      if (file === CONFIG_TS) continue; // where the checking happens
       const text = stripComments(readFileSync(file, "utf8"));
       for (const match of text.matchAll(
         /process\.env\.([A-Z][A-Z0-9_]*)\s*(!|as\s+string)/g,
@@ -157,7 +165,9 @@ describe("apps/back environment contract", () => {
         ),
       ].map((m) => m[1]),
     );
-    expect(defaults.length).toBeGreaterThanOrEqual(4);
+    // config.ts (the agent and transcription share it), smoke-agent.ts and
+    // smoke-vision.ts.
+    expect(defaults.length).toBeGreaterThanOrEqual(3);
     for (const url of defaults) expect(url).toStartWith("https://");
   });
 });

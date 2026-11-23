@@ -11,94 +11,92 @@
  *                      authorises it stays on this server.
  */
 import { Elysia } from "elysia";
-import { bridgeSiblingUrl } from "../bridge/url";
-import { bridgeProof } from "../bridge/proof";
-import { betterAuth } from "#back/lib/auth-plugin.js";
-import { logToolCall } from "#back/db/chats.js";
-import { clearPending } from "#back/agent/confirmations.js";
 
-export const safetyRoutes = new Elysia({ prefix: "/safety" })
-  .use(betterAuth)
-  .guard({ auth: true }, (app) =>
-    app
-      .get(
-        "/status",
-        async ({ status }) => {
-          try {
-            const upstream = await fetch(bridgeSiblingUrl("/safety/status"), {
-              signal: AbortSignal.timeout(3000),
-            });
-            const body = await upstream.json();
-            return upstream.ok ? body : status(upstream.status, body);
-          } catch {
-            return status(502, { error: "bridge_unavailable" });
-          }
-        },
-        {
-          detail: {
-            summary:
-              "The bridge's safety governor status, PARAR latch included.",
-            tags: ["safety"],
+import type { Confirmations } from "#back/agent/confirmations.js";
+import type { BridgeHttp } from "#back/bridge/http.js";
+import type { LogToolCall } from "#back/db/chats.js";
+import type { AuthPlugin } from "#back/lib/auth-plugin.js";
+
+export const safetyRoutes = (deps: {
+  authPlugin: AuthPlugin;
+  http: Pick<BridgeHttp, "safetyStatus" | "safetyAck" | "canProve">;
+  confirmations: Pick<Confirmations, "clear">;
+  logToolCall: LogToolCall;
+}) =>
+  new Elysia({ prefix: "/safety" })
+    .use(deps.authPlugin)
+    .guard({ auth: true }, (app) =>
+      app
+        .get(
+          "/status",
+          async ({ status }) => {
+            try {
+              const upstream = await deps.http.safetyStatus(3000);
+              // Not JSON (or too slow to read) is no answer at all.
+              if (upstream.body === undefined)
+                return status(502, { error: "bridge_unavailable" });
+              return upstream.ok
+                ? upstream.body
+                : status(upstream.status, upstream.body);
+            } catch {
+              return status(502, { error: "bridge_unavailable" });
+            }
           },
-        },
-      )
-      .post(
-        "/ack",
-        async ({ status, user, body: request }) => {
-          if (user.role !== "admin") {
-            return status(403, { error: "admin_required" });
-          }
-          // A card asked before the stop is not confirmable after it, including
-          // one noted while the stop stood or after a PARAR back never saw.
-          clearPending();
-          const proof = bridgeProof();
-          if (!proof) {
-            return status(503, { error: "confirmation_not_configured" });
-          }
-          const startedAt = Date.now();
-          let upstream: Response;
-          try {
-            upstream = await fetch(bridgeSiblingUrl("/safety/ack"), {
-              method: "POST",
-              headers: { "content-type": "application/json", ...proof },
+          {
+            detail: {
+              summary:
+                "The bridge's safety governor status, PARAR latch included.",
+              tags: ["safety"],
+            },
+          },
+        )
+        .post(
+          "/ack",
+          async ({ status, user, body: request }) => {
+            if (user.role !== "admin") {
+              return status(403, { error: "admin_required" });
+            }
+            // A card asked before the stop is not confirmable after it, including
+            // one noted while the stop stood or after a PARAR back never saw.
+            deps.confirmations.clear();
+            if (!deps.http.canProve()) {
+              return status(503, { error: "confirmation_not_configured" });
+            }
+            const startedAt = Date.now();
+            let upstream: Awaited<ReturnType<BridgeHttp["safetyAck"]>>;
+            try {
               // The stamp the operator saw; the bridge refuses (409) a newer stop.
-              body: JSON.stringify({
-                stopped_at:
-                  typeof (request as { stopped_at?: unknown } | null)
-                    ?.stopped_at === "number"
-                    ? (request as { stopped_at: number }).stopped_at
-                    : null,
-              }),
-              signal: AbortSignal.timeout(5000),
+              upstream = await deps.http.safetyAck(
+                typeof (request as { stopped_at?: unknown } | null)
+                  ?.stopped_at === "number"
+                  ? (request as { stopped_at: number }).stopped_at
+                  : null,
+              );
+            } catch {
+              return status(502, { error: "bridge_unavailable" });
+            }
+            const body = upstream.body ?? {};
+            // Who resumed the robot after a stop is the row worth having.
+            void deps.logToolCall({
+              userId: user.id,
+              source: "direct",
+              skillName: "safety_ack",
+              params: {},
+              result: body,
+              status: upstream.ok ? "ok" : "error",
+              ...(upstream.ok
+                ? {}
+                : { error: String(body.error ?? upstream.status) }),
+              durationMs: Date.now() - startedAt,
+              startedAt,
             });
-          } catch {
-            return status(502, { error: "bridge_unavailable" });
-          }
-          const body = (await upstream.json().catch(() => ({}))) as Record<
-            string,
-            unknown
-          >;
-          // Who resumed the robot after a stop is the row worth having.
-          void logToolCall({
-            userId: user.id,
-            source: "direct",
-            skillName: "safety_ack",
-            params: {},
-            result: body,
-            status: upstream.ok ? "ok" : "error",
-            ...(upstream.ok
-              ? {}
-              : { error: String(body.error ?? upstream.status) }),
-            durationMs: Date.now() - startedAt,
-            startedAt,
-          });
-          return upstream.ok ? body : status(upstream.status, body);
-        },
-        {
-          detail: {
-            summary: "Resume after PARAR («Reanudar»). Admin-only.",
-            tags: ["safety"],
+            return upstream.ok ? body : status(upstream.status, body);
           },
-        },
-      ),
-  );
+          {
+            detail: {
+              summary: "Resume after PARAR («Reanudar»). Admin-only.",
+              tags: ["safety"],
+            },
+          },
+        ),
+    );

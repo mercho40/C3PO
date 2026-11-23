@@ -197,7 +197,7 @@ fails when a consumer names something they do not contain. Data files, not a
 package: nothing imports a runtime value from them.
 
 **Console ↔ control plane typing** needs no shared package: `apps/back`
-exports its Elysia router type (`App`) from `src/index.ts`, and `apps/web`
+exports its Elysia router type (`App`, built by `createApp` in `src/app.ts`) from `src/index.ts`, and `apps/web`
 imports it from the `@repo/back` workspace package for full end-to-end
 inference via Eden Treaty. The rejected `packages/shared` design is a closed
 decision — `docs/DECISIONS.md`.

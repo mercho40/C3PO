@@ -1,23 +1,38 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { testConfig } from "../testing/fakes";
 import {
   MAX_AUDIO_BYTES,
   TranscribeError,
-  resetTranscribeFailover,
-  transcribe,
+  createTranscriber,
   transcribeTimeoutMs,
 } from "./transcribe";
 
-process.env.AGENT_API_KEY = "k";
-const FALLBACK_ENV = [
-  "AGENT_FALLBACK_BASE_URL",
-  "AGENT_FALLBACK_MODEL",
-  "AGENT_FALLBACK_API_KEY",
-];
-// bun loads apps/back/.env, which may hold a real fallback: every test states its own.
+// Each test states its own config, never the process's: a fresh transcriber
+// (and its failover state) per call to `transcriber`.
+let fallback = false;
 beforeEach(() => {
-  for (const k of FALLBACK_ENV) delete process.env[k];
-  resetTranscribeFailover();
+  fallback = false;
 });
+function transcriber(fetchImpl: typeof fetch, now?: () => number) {
+  const config = testConfig({
+    AGENT_API_KEY: "k",
+    ...(fallback
+      ? {
+          AGENT_FALLBACK_BASE_URL: "https://fb.test/v1",
+          AGENT_FALLBACK_MODEL: "gemini-x",
+          AGENT_FALLBACK_API_KEY: "fk",
+        }
+      : {}),
+  }).transcribe;
+  return createTranscriber(config, { fetch: fetchImpl, now });
+}
+/** One call on a fresh transcriber, as the old module function was called. */
+const transcribe = (
+  audio: ArrayBuffer,
+  contentType: string,
+  fetchImpl: typeof fetch,
+  timeoutMs?: number,
+) => transcriber(fetchImpl)(audio, contentType, timeoutMs);
 
 describe("transcribe", () => {
   test("forwards the audio as multipart and returns the trimmed text", async () => {
@@ -68,9 +83,7 @@ describe("transcribeTimeoutMs", () => {
 
 describe("transcribe failover", () => {
   function withFallback() {
-    process.env.AGENT_FALLBACK_BASE_URL = "https://fb.test/v1";
-    process.env.AGENT_FALLBACK_MODEL = "gemini-x";
-    process.env.AGENT_FALLBACK_API_KEY = "fk";
+    fallback = true;
   }
   function gateway(primaryStatus: number, calls: string[]) {
     return (async (url: string, init: RequestInit) => {
@@ -104,32 +117,15 @@ describe("transcribe failover", () => {
     withFallback();
     let t = 1_000;
     const calls: string[] = [];
-    await transcribe(
-      new ArrayBuffer(8),
-      "audio/wav",
-      gateway(503, calls),
-      5_000,
-      () => t,
-    );
+    const one = transcriber(gateway(503, calls), () => t);
+    await one(new ArrayBuffer(8), "audio/wav", 5_000);
     calls.length = 0;
     t += 1_000;
-    await transcribe(
-      new ArrayBuffer(8),
-      "audio/wav",
-      gateway(503, calls),
-      5_000,
-      () => t,
-    );
+    await one(new ArrayBuffer(8), "audio/wav", 5_000);
     expect(calls).toEqual(["https://fb.test/v1/chat/completions"]);
     t += 400_000;
     calls.length = 0;
-    await transcribe(
-      new ArrayBuffer(8),
-      "audio/wav",
-      gateway(503, calls),
-      5_000,
-      () => t,
-    );
+    await one(new ArrayBuffer(8), "audio/wav", 5_000);
     expect(calls[0]).toEndWith("/audio/transcriptions");
   });
 

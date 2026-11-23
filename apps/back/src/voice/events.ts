@@ -1,4 +1,4 @@
-import { bridgeSiblingUrl } from "#back/bridge/url.js";
+import { rethrowCause, type BridgeHttp } from "#back/bridge/http.js";
 
 export type VoiceStatus = {
   mic_ever_open?: boolean;
@@ -67,44 +67,51 @@ export async function* parseVoiceEvents(
   }
 }
 
-export async function bridgeVoiceStatus(
-  signal: AbortSignal,
-): Promise<VoiceStatus> {
-  const response = await fetch(bridgeSiblingUrl("/telemetry/voice"), {
-    headers: { Accept: "application/json" },
-    cache: "no-store",
-    signal,
-  });
-  if (!response.ok)
-    throw new Error(`voice status unavailable (${response.status})`);
-  return (await response.json()) as VoiceStatus;
-}
+/** The bridge's voice routes, as the legacy loop reads them. */
+export function bridgeVoice(http: Pick<BridgeHttp, "request">) {
+  return {
+    async status(signal: AbortSignal): Promise<VoiceStatus> {
+      const response = await http
+        .request("/telemetry/voice", {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          signal,
+        })
+        .catch(rethrowCause);
+      if (!response.ok)
+        throw new Error(`voice status unavailable (${response.status})`);
+      return (await response.json()) as VoiceStatus;
+    },
 
-/** Connect directly from the trusted backend to the bridge's event stream. */
-export async function* bridgeVoiceEvents(
-  signal: AbortSignal,
-): AsyncGenerator<VoiceEvent> {
-  const response = await fetch(bridgeSiblingUrl("/telemetry/voice/events"), {
-    headers: { Accept: "text/event-stream" },
-    cache: "no-store",
-    signal,
-  });
-  if (!response.ok || !response.body) {
-    throw new Error(`voice event stream unavailable (${response.status})`);
-  }
-  yield* parseVoiceEvents(response.body);
-}
+    /** Connect directly from the trusted backend to the bridge's event stream. */
+    async *events(signal: AbortSignal): AsyncGenerator<VoiceEvent> {
+      const response = await http
+        .request("/telemetry/voice/events", {
+          headers: { Accept: "text/event-stream" },
+          cache: "no-store",
+          signal,
+        })
+        .catch(rethrowCause);
+      if (!response.ok || !response.body) {
+        throw new Error(`voice event stream unavailable (${response.status})`);
+      }
+      yield* parseVoiceEvents(response.body);
+    },
 
-/** One finished utterance's WAV, kept briefly by the bridge for this fetch. */
-export async function bridgeUtteranceAudio(
-  audioId: string,
-  signal: AbortSignal,
-): Promise<ArrayBuffer> {
-  const response = await fetch(
-    bridgeSiblingUrl(`/telemetry/voice/utterance/${audioId}.wav`),
-    { cache: "no-store", signal },
-  );
-  if (!response.ok)
-    throw new Error(`utterance audio unavailable (${response.status})`);
-  return await response.arrayBuffer();
+    /** One finished utterance's WAV, kept briefly by the bridge for this fetch. */
+    async utteranceAudio(
+      audioId: string,
+      signal: AbortSignal,
+    ): Promise<ArrayBuffer> {
+      const response = await http
+        .request(`/telemetry/voice/utterance/${audioId}.wav`, {
+          cache: "no-store",
+          signal,
+        })
+        .catch(rethrowCause);
+      if (!response.ok)
+        throw new Error(`utterance audio unavailable (${response.status})`);
+      return await response.arrayBuffer();
+    },
+  };
 }
