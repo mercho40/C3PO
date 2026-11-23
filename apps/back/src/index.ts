@@ -43,3 +43,20 @@ console.log(
 
 export type { App } from "./app";
 export type { RobotState } from "#back/routes/state.js";
+export type { VoiceStatus } from "#back/voice/service.js";
+// The bridge payloads back relays, as its routes declare them (`response:`).
+export type {
+  FacePerson,
+  FaceRole,
+  FaceSettings,
+  FacesView,
+  GateStatus,
+  HeardItem,
+  ScanRingBody,
+  SeenObject,
+  SourceStatus,
+  Surroundings,
+  VoiceTelemetry,
+  StopAckBody,
+} from "#back/bridge/payloads.js";
+export type { SafetyStatusBody as SafetyStatus } from "../../../contracts/bridge-payloads";

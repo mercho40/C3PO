@@ -23,6 +23,7 @@ import { treaty } from "@elysiajs/eden";
 
 import { createAuthPlugin } from "./lib/auth-plugin";
 import { fakeSessions, testApp, testConfig } from "./testing/fakes";
+import { STATE } from "./testing/payloads";
 
 const ROUTES_DIR = join(import.meta.dir, "routes");
 
@@ -107,8 +108,7 @@ describe("through Eden, in process", () => {
 
   test("a signed-in operator reads the robot's state from the bridge", async () => {
     const h = testApp({
-      callTool: async (name) =>
-        name === "get_state" ? { posture: "stand", env: "stub" } : {},
+      callTool: async (name) => (name === "get_state" ? STATE : {}),
     });
     h.signIn({ id: "u1", role: null });
     const { data, status } = await treaty(h.app).state.get();

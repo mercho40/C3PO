@@ -7,6 +7,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import { testApp, type TestApp } from "../testing/fakes";
+import { FACES } from "../testing/payloads";
 
 let h: TestApp;
 const seen = () => h.fetched;
@@ -37,6 +38,7 @@ function bridge(url: string) {
     return new Response(JPEG, {
       headers: { "content-type": "image/jpeg" },
     });
+  if (String(url).endsWith("/face/people")) return Response.json(FACES);
   return Response.json({ ok: true, settings: { greet: true } });
 }
 
