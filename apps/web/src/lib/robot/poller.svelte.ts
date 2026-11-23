@@ -17,6 +17,17 @@
  *  - a 401 is a SESSION problem, never a robot problem: the console goes to the
  *    login page and comes back to where it was;
  *  - optionally pause while the tab is hidden, and refresh on return.
+ *
+ * Every poller of back's routes extends this (`extends Poller` finds them
+ * all, the headset radar's `ScanFeed` included). Three loops poll without it,
+ * each on purpose, and each says why in its own header:
+ *  - the robot camera's /status (`mjpeg-camera.ts`) and the face boxes
+ *    (`face-seen.ts`): reads of the camera's origin, which may be the bridge
+ *    with no session at all, each with its own backoff (the camera's also
+ *    driven by the stream it reopens), in plain modules their tests drive
+ *    with a fake clock;
+ *  - /vr-control's USB link probe (`vr-link-watch.svelte.ts`): a static file,
+ *    where any HTTP status at all means "the cable is fine".
  */
 
 import { browser } from "$app/env";

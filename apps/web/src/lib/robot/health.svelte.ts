@@ -22,6 +22,18 @@
  * list on every call (there is no TTL cache in back), and a diagnostics page
  * left open should not become a load source for the thing it diagnoses.
  *
+ * NOT A SECOND COPY OF `Awareness` OR `Costmap`, although it reads the same
+ * three routes (/telemetry/surroundings, /telemetry/voice, /map/costmap.png).
+ * Nothing is fetched twice at run time: /health mounts neither of them (they
+ * live on /dashboard, /voice and /live-map), so these are the only requests
+ * to those routes while this page is open. Reading through them instead would
+ * start two more pollers here, at their 1 s cadence (and the costmap's
+ * backoff) instead of this page's 5 s, and would lose what this page is for:
+ * the raw outcome of each read — HTTP status, body, latency, a timeout told
+ * apart from a refusal — which `health.ts`'s classifiers take as a `Read<T>`.
+ * Those two digest a response into Spanish reasons for their panels; this one
+ * keeps the evidence.
+ *
  * Decision logic lives in `health.ts`; this file only fetches.
  */
 

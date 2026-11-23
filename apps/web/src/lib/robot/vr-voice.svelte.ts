@@ -12,9 +12,10 @@
  * Capture runs on an AudioWorklet (mic-capture.worklet.js).
  */
 import { Chat } from "@ai-sdk/svelte";
-import { DefaultChatTransport, type UIMessage } from "ai";
+import type { UIMessage } from "ai";
 import { untrack } from "svelte";
 import { PUBLIC_API_URL } from "$app/env/public";
+import { agentTransport } from "#lib/chat/agent-transport.js";
 import { ADMIN_REQUIRED_HINT } from "#lib/chat/chat-error.js";
 import { decideCall, watchFace } from "#lib/chat/confirm.js";
 import { newId } from "#lib/chat/ids.js";
@@ -79,17 +80,8 @@ export class VrVoice {
     this.#latch = latch;
     this.#chat = new Chat({
       id: newId(),
-      transport: new DefaultChatTransport({
-        api: `${PUBLIC_API_URL}/agent`,
-        credentials: "include",
-        // Spoken, so voice mode: the voice exclusions (damp, high danger) apply.
-        body: { mode: "voice" },
-        fetch: async (input, init) => {
-          const res = await fetch(input, init);
-          if (res.status === 401) redirectToLogin("expired");
-          return res;
-        },
-      }),
+      // Spoken, so voice mode: the voice exclusions (damp, high danger) apply.
+      transport: agentTransport({ mode: "voice" }),
     });
     // PARAR drops the utterance in flight: nothing said before the stop reaches
     // the agent after it, and the panel is free again at once.

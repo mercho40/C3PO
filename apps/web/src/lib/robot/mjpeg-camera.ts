@@ -43,6 +43,27 @@
 //   "timeout"      no answer within STATUS_TIMEOUT_MS
 //   "HTTP 503"     a non-OK answer, optionally followed by ": <the bridge's own
 //                  words>" (its `hint`, else its `error`), verbatim
+//
+// WHY THE STATUS POLL IS NOT A `Poller`
+// -------------------------------------
+// It keeps the console's polling rules — never two status reads in flight,
+// a timeout on every read (STATUS_TIMEOUT_MS) — but not `poller.svelte.ts`'s
+// class, on purpose:
+//  - A 401 here is a camera answer, not always a session: pointed at the
+//    bridge (`dev:robot`) there is no session at all, and the camera view
+//    renders "HTTP 401" for what it is. `Poller` would stop and go to login.
+//    An expired console session is caught by the layout's own pollers anyway.
+//  - The poll is driven by the stream, not only by the clock: every (re)open
+//    reads /status at once, PAST the backoff (`poll(true)`), and a stalled
+//    frame counter reopens from inside a poll. `Poller.tick` has neither.
+//  - Telling CORS from "nobody answered" needs the thrown error itself (a
+//    TypeError gets the no-cors probe), and `Poller` folds every throw into
+//    one "error".
+//  - It is a plain module, so `bun test` drives it with a fake fetch and
+//    clock (mjpeg-camera.test.ts); `Poller` is a rune class behind
+//    `$app/env` and `$app/navigation`.
+// `face-seen.ts`'s poll, next to it on the same camera origin, is plain for
+// the first and last of these reasons.
 
 import { sameOrigin } from "./health";
 

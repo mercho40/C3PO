@@ -425,7 +425,7 @@ export function stopInFlight(phase: EstopPhase): boolean {
  * walk_velocity(0, vyaw) every 900 ms for as long as the head stayed turned,
  * and a held walk button kept stepping if a tick fired before the cancelled
  * answer came back. So every press halts the page, latched (see
- * `VrControl.#haltForEstop`).
+ * `VrStop`, vr-stop.svelte.ts).
  *
  * - every press passes through `sending`, so that is the trigger;
  * - a phase that leaves `idle` without passing through it is a stop this page
