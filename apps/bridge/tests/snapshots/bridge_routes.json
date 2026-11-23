@@ -1,0 +1,192 @@
+[
+  {
+    "handler": "camera_cloud_frame",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/camera/cloud_frame.jpg"
+  },
+  {
+    "handler": "camera_frame",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/camera/frame.jpg"
+  },
+  {
+    "handler": "camera_status",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/camera/status"
+  },
+  {
+    "handler": "camera_stream",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/camera/stream.mjpg"
+  },
+  {
+    "handler": "face_confirm_check",
+    "methods": [
+      "POST"
+    ],
+    "path": "/face/confirm_check"
+  },
+  {
+    "handler": "face_enroll",
+    "methods": [
+      "POST"
+    ],
+    "path": "/face/enroll"
+  },
+  {
+    "handler": "face_people",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/face/people"
+  },
+  {
+    "handler": "face_delete",
+    "methods": [
+      "DELETE"
+    ],
+    "path": "/face/people/{pid}"
+  },
+  {
+    "handler": "face_set_role",
+    "methods": [
+      "PATCH"
+    ],
+    "path": "/face/people/{pid}"
+  },
+  {
+    "handler": "face_photo",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/face/people/{pid}/photo.jpg"
+  },
+  {
+    "handler": "face_seen",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/face/seen"
+  },
+  {
+    "handler": "face_settings",
+    "methods": [
+      "POST"
+    ],
+    "path": "/face/settings"
+  },
+  {
+    "handler": "StreamableHTTPASGIApp",
+    "methods": [],
+    "path": "/mcp"
+  },
+  {
+    "handler": "safety_ack",
+    "methods": [
+      "POST"
+    ],
+    "path": "/safety/ack"
+  },
+  {
+    "handler": "safety_confirm",
+    "methods": [
+      "POST"
+    ],
+    "path": "/safety/confirm"
+  },
+  {
+    "handler": "safety_status",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/safety/status"
+  },
+  {
+    "handler": "costmap_png",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/telemetry/costmap.png"
+  },
+  {
+    "handler": "gate_status",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/telemetry/gate"
+  },
+  {
+    "handler": "scan_json",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/telemetry/scan"
+  },
+  {
+    "handler": "surroundings_json",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/telemetry/surroundings"
+  },
+  {
+    "handler": "voice_json",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/telemetry/voice"
+  },
+  {
+    "handler": "voice_audio_input",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/telemetry/voice/audio/input"
+  },
+  {
+    "handler": "voice_audio_output",
+    "methods": [
+      "DELETE",
+      "POST"
+    ],
+    "path": "/telemetry/voice/audio/output"
+  },
+  {
+    "handler": "voice_events",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/telemetry/voice/events"
+  },
+  {
+    "handler": "voice_utterance_audio",
+    "methods": [
+      "GET",
+      "HEAD"
+    ],
+    "path": "/telemetry/voice/utterance/{audio_id}.wav"
+  }
+]
