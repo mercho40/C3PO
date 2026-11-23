@@ -13,7 +13,7 @@ fails while that file is stale, and their own suites check every name they
 call against it. Renaming a tool here is caught there, in the same CI run.
 
 Importing this module is safe only because `SIM_MODE=stub` short-circuits the
-DDS init at import time (`mcp_server.py`, the `if SIM_MODE != "stub"` guard).
+DDS init at import time (`server.py`, the `if config.SIM_MODE != "stub"` guard).
 The fixture sets it before the first import for that reason — under any other
 mode, importing would open DDS sockets.
 """
@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from bridge import config
 
 os.environ.setdefault("SIM_MODE", "stub")
 
@@ -208,7 +209,7 @@ def test_stub_get_state_declares_its_env(tools):
     A caller that cannot tell stub data from robot data will eventually treat
     one as the other. Both `env` and `stub` are part of that contract.
     """
-    from bridge.mcp_server import get_state
+    from bridge.tools.state import get_state
 
     payload = get_state()
     assert payload["env"] == "stub"
@@ -228,7 +229,7 @@ def test_stub_get_state_shape_drift_is_recorded():
     than as a side effect of a test. If you do fix it, this test should fail and
     be deleted.
     """
-    from bridge.mcp_server import get_state
+    from bridge.tools.state import get_state
 
     payload = get_state()
     assert "z_meters_world" not in payload["pose"], "stub pose gained z — update the contract note"
@@ -242,10 +243,10 @@ async def test_say_is_no_longer_a_stub_on_real(monkeypatch):
     It was a logging stub for a long time while its description promised TTS —
     the kind of gap an agent cannot detect, because a stub returns success.
     """
-    import bridge.mcp_server as server
+    from bridge.tools import speech
     from bridge.sdk import g1_protocol, g1_rpc
 
-    monkeypatch.setattr(server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     seen: dict = {}
 
     def fake_speak(text: str, speaker_id: int):
@@ -255,7 +256,7 @@ async def test_say_is_no_longer_a_stub_on_real(monkeypatch):
 
     monkeypatch.setattr(g1_rpc, "speak", fake_speak)
 
-    result = await server.say(text="hello", language="chinese")
+    result = await speech.say(text="hello", language="chinese")
 
     assert seen["text"] == "hello"
     assert seen["speaker_id"] == g1_protocol.Speaker.CHINESE

@@ -6,6 +6,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from bridge import mcp_server, motion_announce
+from bridge import server as bridge_server
 
 T1 = {"c3po": {"tier": "T1", "danger_level": "low", "classification": "gesture"}}
 
@@ -25,12 +26,12 @@ def events(monkeypatch):
         seen.append(f"speak:{text}")
         return {"status": "ok"}
 
-    monkeypatch.setattr(mcp_server, "_announce_speak", speak)
+    monkeypatch.setattr(bridge_server, "_announce_speak", speak)
     return seen
 
 
-def _server(seen: list[str]) -> mcp_server.GovernedMCP:
-    server = mcp_server.GovernedMCP(name="t")
+def _server(seen: list[str]) -> bridge_server.GovernedMCP:
+    server = bridge_server.GovernedMCP(name="t")
 
     @server.tool(name="wave", meta=T1)
     async def wave() -> dict:
@@ -55,7 +56,7 @@ async def test_a_stop_during_the_warning_means_no_motion(events, monkeypatch):
         spoke.append(text)  # a PARAR lands while the warning plays
         return {"status": "ok"}
 
-    monkeypatch.setattr(mcp_server, "_announce_speak", speak_then_parar)
+    monkeypatch.setattr(bridge_server, "_announce_speak", speak_then_parar)
     monkeypatch.setattr(motion_announce.estop, "last_stop_at", lambda: 5.0 if spoke else 0.0)
     with pytest.raises(ToolError, match="nothing moved"):
         await _server(events).call_tool("wave", {})
@@ -111,14 +112,14 @@ async def test_a_broken_speaker_does_not_block_the_motion(events, monkeypatch):
     async def broken(text: str) -> dict:
         raise RuntimeError("no speaker")
 
-    monkeypatch.setattr(mcp_server, "_announce_speak", broken)
+    monkeypatch.setattr(bridge_server, "_announce_speak", broken)
     await _server(events).call_tool("wave", {})
     assert events == ["moved"]
 
 
-def _planner(seen: list[str]) -> mcp_server.GovernedMCP:
+def _planner(seen: list[str]) -> bridge_server.GovernedMCP:
     """A SELF tool (named pick) that plans, then announces itself at its first motion."""
-    server = mcp_server.GovernedMCP(name="t")
+    server = bridge_server.GovernedMCP(name="t")
 
     @server.tool(name="pick", meta=T1)
     async def pick(label: str) -> dict:
@@ -194,7 +195,7 @@ async def test_a_soft_stop_during_the_warning_means_no_motion(events, monkeypatc
         await stop_everything.soft_stop()  # «no, frená» while the warning plays
         return {"status": "ok"}
 
-    monkeypatch.setattr(mcp_server, "_announce_speak", speak_then_frena)
+    monkeypatch.setattr(bridge_server, "_announce_speak", speak_then_frena)
     with pytest.raises(ToolError, match="nothing moved"):
         await _server(events).call_tool("wave", {})
     assert "moved" not in events

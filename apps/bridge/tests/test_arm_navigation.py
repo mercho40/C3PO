@@ -142,7 +142,7 @@ def test_disarming_mid_motion_stops_forwarding():
 def test_the_arm_tool_requires_a_reason():
     """The log after an incident is only useful if it says who armed it and why,
     so `reason` is required rather than defaulted."""
-    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "mcp_server.py"
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "tools" / "navigation.py"
     tool = src.read_text().split("def arm_navigation(", 1)[-1].split(") -> dict:", 1)[0]
     assert "reason:" in tool
     assert "] = " not in tool.split("reason:", 1)[1].split("seconds:", 1)[0], (

@@ -684,7 +684,7 @@ section says what shipped and where; it does not say why.
 - **The headset's push-to-talk** sends its WAV from `back` to TIC AI's `tic-transcript`
   (`voice/transcribe.ts`), not to the robot.
 - **The spoken stop stays on the robot.** While either engine's stream from the bridge is
-  connected, the bridge acts on the stop phrase itself (`mcp_server.py` `_local_stop`).
+  connected, the bridge acts on the stop phrase itself (`routes/voice.py` `_local_stop`).
   No network and no model sit between the phrase and the stop. D6.3's warning still holds:
   it is a convenience, not the safety story.
 - **Vision uses a cloud model.** The bridge's `look`, `find_object` and `verify` call

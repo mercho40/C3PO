@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from bridge import face_gate
+from bridge import config, face_gate, server
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -490,7 +490,7 @@ async def test_the_confirmation_gate_still_comes_first(scene, monkeypatch):
 def _confirm(tool: str, args: dict) -> str:
     from bridge import mcp_server, safety
 
-    key = mcp_server._canonical_args(mcp_server.mcp._tool_manager.get_tool(tool), args)
+    key = server.canonical_args(mcp_server.mcp._tool_manager.get_tool(tool), args)
     safety.grant_confirmation(tool, key, via="console")
     return key
 
@@ -784,13 +784,15 @@ class _Req:
 
 @pytest.fixture
 def routes(scene, monkeypatch):
-    from bridge import mcp_server, safety
+    """The face routes, with the console's proof configured."""
+    from bridge import safety
+    from bridge.routes import face as face_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
     monkeypatch.setattr(face_gate, "ENROLL_INTERVAL_S", 0.0)
     monkeypatch.setattr(face_gate, "_stored", None)
     monkeypatch.setattr(face_gate, "warm", lambda: None)
-    return mcp_server
+    return face_routes
 
 
 async def test_face_routes_refuse_without_the_consoles_proof(routes, monkeypatch):
@@ -906,8 +908,10 @@ async def test_face_seen_has_boxes_names_for_people_and_nothing_for_strangers(
 
 
 async def test_safety_status_carries_the_face_settings(routes):
+    from bridge.routes import safety as safety_routes
+
     face_gate.update_settings({"greet_unknown": True})
-    body = json.loads((await routes.safety_status(None)).body)
+    body = json.loads((await safety_routes.safety_status(None)).body)
     assert body["face_greet"]["settings"]["greet_unknown"] is True
     assert "last_greeted_name" not in body["face_greet"]  # open route: no names
 
@@ -933,6 +937,8 @@ async def test_no_switch_enrollment_or_greeter_tick_is_the_first_to_import_cv2(
     the models, and without them nothing imports it, so a PARAR never waits on one."""
     from structlog.testing import capture_logs
 
+    from bridge import mcp_server
+
     monkeypatch.setattr(face_gate, "models", REAL_MODELS)
     monkeypatch.setattr(face_gate, "_models", None)
     monkeypatch.setattr(face_gate, "warm", REAL_WARM)
@@ -953,11 +959,11 @@ async def test_no_switch_enrollment_or_greeter_tick_is_the_first_to_import_cv2(
     monkeypatch.setattr(face_gate, "warm", lambda: warmed_at_boot.append(True))
     monkeypatch.setattr(face_gate, "models_installed", lambda: True)
     face_gate.update_settings({"gate": False, "greet": False, "greet_unknown": False})
-    monkeypatch.setattr(routes, "SIM_MODE", "stub")
-    routes._warm_face()
+    monkeypatch.setattr(config, "SIM_MODE", "stub")
+    mcp_server._warm_face()
     assert warmed_at_boot == []
-    monkeypatch.setattr(routes, "SIM_MODE", "real")
-    routes._warm_face()  # every switch off: still loaded before serving
+    monkeypatch.setattr(config, "SIM_MODE", "real")
+    mcp_server._warm_face()  # every switch off: still loaded before serving
     assert warmed_at_boot == [True]
 
 

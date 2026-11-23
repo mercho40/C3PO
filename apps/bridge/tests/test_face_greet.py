@@ -206,9 +206,9 @@ async def test_status_reports_age_and_settings_and_no_name_nor_biometrics(greete
 async def test_safety_status_carries_the_greeter(greeter):
     import json
 
-    from bridge import mcp_server
+    from bridge.routes import safety as safety_routes
 
-    body = json.loads((await mcp_server.safety_status(None)).body)
+    body = json.loads((await safety_routes.safety_status(None)).body)
     assert body["face_greet"] == {
         "on": False,
         "settings": {"gate": False, "greet": True, "greet_unknown": False, "listen_after_greet": False},
@@ -257,8 +257,8 @@ async def test_no_greeting_while_a_reply_is_still_being_spoken(greeter):
 async def test_face_seen_carries_the_last_greeting(greeter):
     import json
 
-    from bridge import mcp_server
+    from bridge.routes import face as face_routes
 
     await greeter(SEEN)
-    body = json.loads((await mcp_server.face_seen(None)).body)
+    body = json.loads((await face_routes.face_seen(None)).body)
     assert body["greet"]["seq"] == 1 and body["greet"]["name"] == "Oliver"

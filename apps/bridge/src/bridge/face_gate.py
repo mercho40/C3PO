@@ -1,6 +1,6 @@
 """The operator face gate: chosen skills run only with the enrolled operator's live face in view.
 
-AN EXTRA GATE, NEVER A REPLACEMENT. `mcp_server.GovernedMCP.call_tool` runs it only after
+AN EXTRA GATE, NEVER A REPLACEMENT. `server.GovernedMCP.call_tool` runs it only after
 `safety.tool_refusal` let the call through (PARAR, battery, person rule, the operator's
 one-shot confirmation, checked but not yet spent), then runs that again to spend the
 grant, so a face refusal leaves the confirmation for one retry within its TTL. That method

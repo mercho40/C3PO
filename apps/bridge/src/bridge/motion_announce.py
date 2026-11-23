@@ -1,7 +1,7 @@
 """Say what the robot is about to do before it moves: «Atención, todos los humanos
 córranse: voy a agarrar la botella».
 
-Called from `mcp_server.GovernedMCP.call_tool`, after every gate passed and the arguments
+Called from `server.GovernedMCP.call_tool`, after every gate passed and the arguments
 validated (a refused call says nothing), and before the tool runs. The tools in SELF plan
 or check a lot before they move: for them call_tool only `defer`s, and the skill calls
 `before_motion()` right before its first motion command, so a plan that fails says nothing.

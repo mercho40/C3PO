@@ -39,3 +39,7 @@ apps/back/migrations
 contracts/bridge-tools.json
 contracts/bridge-payloads.schema.json
 contracts/bridge-payloads.ts
+
+# Written by apps/bridge/tests/test_bridge_surface.py (C3PO_UPDATE_SNAPSHOTS=1), byte
+# for byte, and compared the same way: a reformat would read as a changed surface.
+apps/bridge/tests/snapshots/*.json

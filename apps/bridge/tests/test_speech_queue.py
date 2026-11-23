@@ -8,9 +8,10 @@ import threading
 
 import pytest
 
-from bridge import mcp_server
+from bridge import config
 from bridge.sdk import audio_msg, g1_rpc
 from bridge.skills import tts
+from bridge.tools import speech
 
 
 class _Link:
@@ -30,7 +31,7 @@ class _Link:
 def robot(monkeypatch):
     played: list[str] = []
     link = _Link()
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(tts, "available", lambda: (True, ""))
     monkeypatch.setattr(tts, "synthesize", lambda text: text.encode())
     monkeypatch.setattr(tts, "duration_s", lambda pcm: 5.0)
@@ -56,9 +57,9 @@ async def _until(cond, timeout_s: float = 2.0) -> None:
 
 async def test_a_second_say_waits_for_the_first_to_finish_playing(robot):
     played, link = robot
-    first = asyncio.create_task(mcp_server.say("uno", wait_for_completion=True))
+    first = asyncio.create_task(speech.say("uno", wait_for_completion=True))
     await _until(lambda: played == ["uno"])
-    second = asyncio.create_task(mcp_server.say("dos", wait_for_completion=True))
+    second = asyncio.create_task(speech.say("dos", wait_for_completion=True))
     await asyncio.sleep(0.3)
     assert played == ["uno"]  # «uno» still plays: «dos» waits its turn, no barge-in
     link.end.set()
@@ -70,8 +71,8 @@ async def test_a_second_say_waits_for_the_first_to_finish_playing(robot):
 
 async def test_a_say_that_does_not_wait_still_holds_the_queue_until_it_ends(robot):
     played, link = robot
-    assert (await mcp_server.say("Confirmado: ejecuté pick."))["status"] == "ok"  # returns at once
-    nxt = asyncio.create_task(mcp_server.say("¿Algo más?", wait_for_completion=True))
+    assert (await speech.say("Confirmado: ejecuté pick."))["status"] == "ok"  # returns at once
+    nxt = asyncio.create_task(speech.say("¿Algo más?", wait_for_completion=True))
     await asyncio.sleep(0.3)
     assert played == ["Confirmado: ejecuté pick."]
     link.end.set()
@@ -82,9 +83,9 @@ async def test_a_say_that_does_not_wait_still_holds_the_queue_until_it_ends(robo
 
 async def test_a_stop_cuts_the_speech_and_drops_what_is_queued(robot):
     played, link = robot
-    first = asyncio.create_task(mcp_server.say("uno", wait_for_completion=True))
+    first = asyncio.create_task(speech.say("uno", wait_for_completion=True))
     await _until(lambda: played == ["uno"])
-    queued = asyncio.create_task(mcp_server.say("dos", wait_for_completion=True))
+    queued = asyncio.create_task(speech.say("dos", wait_for_completion=True))
     await asyncio.sleep(0.05)
     g1_rpc._play_generation += 1  # PARAR: stop_play
     assert (await first)["status"] == "stopped"  # cut: not heard in full
@@ -95,7 +96,7 @@ async def test_a_stop_cuts_the_speech_and_drops_what_is_queued(robot):
 async def test_the_last_utterances_end_does_not_end_the_wait_for_this_one(robot):
     played, link = robot
     link.end.set()  # still set from the previous utterance
-    said = asyncio.create_task(mcp_server.say("uno", wait_for_completion=True))
+    said = asyncio.create_task(speech.say("uno", wait_for_completion=True))
     await _until(lambda: played == ["uno"])
     await asyncio.sleep(0.3)
     assert not said.done()  # still playing
@@ -105,9 +106,9 @@ async def test_the_last_utterances_end_does_not_end_the_wait_for_this_one(robot)
 
 async def test_the_queue_counts_as_busy_while_speech_waits_or_just_ended(robot):
     played, link = robot
-    said = asyncio.create_task(mcp_server.say("uno", wait_for_completion=True))
+    said = asyncio.create_task(speech.say("uno", wait_for_completion=True))
     await _until(lambda: played == ["uno"])
-    assert mcp_server._speech_busy()
+    assert speech.speech_busy()
     link.end.set()
     await said
-    assert mcp_server._speech_busy()  # the gap before a reply's next sentence
+    assert speech.speech_busy()  # the gap before a reply's next sentence

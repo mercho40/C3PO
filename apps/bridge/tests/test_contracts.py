@@ -124,7 +124,7 @@ def _sampled(*, data: bool) -> state.StateSampler:
 
 
 def test_stub_get_state_is_a_robot_state():
-    from bridge.mcp_server import get_state
+    from bridge.tools.state import get_state
 
     _conforms(state.RobotState, get_state())
 
@@ -152,10 +152,10 @@ def _body(resp: Any) -> Any:
 
 @pytest.mark.asyncio
 async def test_the_safety_status_route_answers_a_safety_status_body():
-    from bridge import mcp_server
+    from bridge.routes import safety as safety_routes
 
     _conforms(safety.SafetyStatus, safety.status())
-    _conforms(safety.SafetyStatusBody, _body(await mcp_server.safety_status(FakeRequest(None))))
+    _conforms(safety.SafetyStatusBody, _body(await safety_routes.safety_status(FakeRequest(None))))
 
 
 @pytest.mark.asyncio
@@ -165,7 +165,8 @@ async def test_every_safety_route_error_is_declared(monkeypatch, tmp_path):
     And the converse: every declared code is reachable, so the list the
     console is held to is neither short nor padded.
     """
-    from bridge import estop, mcp_server
+    from bridge import estop, mcp_server  # noqa: F401 - registers every tool
+    from bridge.routes import safety as safety_routes
 
     seen: dict[str, Any] = {}
 
@@ -174,18 +175,18 @@ async def test_every_safety_route_error_is_declared(monkeypatch, tmp_path):
         seen[body["error"]] = body
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "")
-    note(await mcp_server.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="")))
+    note(await safety_routes.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="")))
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
-    note(await mcp_server.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="nope")))
-    note(await mcp_server.safety_confirm(FakeRequest({"tool": "walk_to"}, secret="s3cret")))
+    note(await safety_routes.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="nope")))
+    note(await safety_routes.safety_confirm(FakeRequest({"tool": "walk_to"}, secret="s3cret")))
     bad_args = {"tool": "set_hand", "args": {"closure": "abc"}}
-    note(await mcp_server.safety_confirm(FakeRequest(bad_args, secret="s3cret")))
+    note(await safety_routes.safety_confirm(FakeRequest(bad_args, secret="s3cret")))
 
     estop.signal_stop()
     shown = estop.last_stop_at()
     time.sleep(0.01)
     estop.signal_stop()
-    stale = await mcp_server.safety_ack(FakeRequest({"stopped_at": shown}, secret="s3cret"))
+    stale = await safety_routes.safety_ack(FakeRequest({"stopped_at": shown}, secret="s3cret"))
     assert stale.status_code == 409
     note(stale)
     _conforms(safety.StopAckRefused, _body(stale))
@@ -193,13 +194,13 @@ async def test_every_safety_route_error_is_declared(monkeypatch, tmp_path):
     (tmp_path / "nope").write_text("not a directory")
     writable = estop.DEFAULT_RUN_DIR
     monkeypatch.setattr(estop, "DEFAULT_RUN_DIR", tmp_path / "nope" / "nested")
-    failed = await mcp_server.safety_ack(FakeRequest({}, secret="s3cret"))
+    failed = await safety_routes.safety_ack(FakeRequest({}, secret="s3cret"))
     assert failed.status_code == 500
     note(failed)
     _conforms(safety.StopAckRefused, _body(failed))
 
     monkeypatch.setattr(estop, "DEFAULT_RUN_DIR", writable)
-    ok = await mcp_server.safety_ack(FakeRequest({}, secret="s3cret"))
+    ok = await safety_routes.safety_ack(FakeRequest({}, secret="s3cret"))
     assert ok.status_code == 200
     _conforms(safety.StopAcknowledged, _body(ok))
 

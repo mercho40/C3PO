@@ -41,7 +41,7 @@ def _client():
     from bridge.sdk.connection import init_dds
     from bridge.sdk.g1_rpc import _G1Client
 
-    # The bridge's own settings, read the way mcp_server.py reads them (source .env first).
+    # The bridge's own settings, read the way bridge/config.py reads them (source .env first).
     init_dds(
         robot_host=os.environ.get("ROBOT_HOST", "127.0.0.1"),
         interface=os.environ.get("DDS_INTERFACE", "").strip() or None,

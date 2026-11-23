@@ -213,12 +213,16 @@ sets `C3PO_SIM_REQUIRED=1`, which turns that skip into a failure.
 
 ```
 src/bridge/
-  mcp_server.py         FastMCP server — the skill catalogue as MCP tools; stdio or http transport
+  mcp_server.py         entry point: what runs before serving, and the stdio / http transports
+  config.py             the .env and the bridge's settings (SIM_MODE, DDS, BRIDGE_*), imported first
+  server.py             the FastMCP instance and its gate (GovernedMCP); starts DDS outside stub
+  tools/                the skill catalogue as MCP tools, one module per domain (tools/__init__.py)
+  routes/               plain-HTTP routes on the same port: telemetry, safety, face, camera, voice
   skill_meta.py         safety/capability metadata attached to every tool (MCP _meta)
   watchdog.py           operator-link watchdog — safe the robot when the link drops
   estop.py              the PARAR sentinel and ack files under ~/.c3po/run (the latch)
   safety.py             governor, tier gate, T2 grants, the latch check; the
-                        /safety/{status,confirm,ack} routes are in mcp_server.py
+                        /safety/{status,confirm,ack} routes are in routes/safety.py
   kinematics.py         FK/IK over the G1 URDF (pure Python)
   world_model.py        world-model contract: what perception hands the agent
   sdk/

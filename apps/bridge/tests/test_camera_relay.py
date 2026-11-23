@@ -8,6 +8,7 @@ which this project has twice mistaken for broken hardware.
 
 from __future__ import annotations
 
+from bridge import config
 from bridge.sdk import camera_relay
 from bridge.sdk.camera_relay import _Monotonic, _Probe, choose_source, merged_status
 
@@ -279,7 +280,7 @@ class TestTheCorsHeaderAndItsBoundary:
         assert {"GET /camera/status", "GET /face/seen"} <= set(granted), granted
 
     async def test_the_voice_streams_are_not_readable_cross_origin(self, monkeypatch):
-        from bridge import mcp_server
+        from bridge.routes import voice as voice_routes
         from bridge.skills import listen as listen_mod
 
         class Req:
@@ -290,7 +291,7 @@ class TestTheCorsHeaderAndItsBoundary:
 
         monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: listen_mod.MicListener(
             source=lambda: iter(()), build=lambda: (None, None, None)))
-        for route in (mcp_server.voice_events, mcp_server.voice_audio_input):
+        for route in (voice_routes.voice_events, voice_routes.voice_audio_input):
             response = await route(Req())
             await response.body_iterator.aclose()
             assert "access-control-allow-origin" not in response.headers, route.__name__
@@ -321,13 +322,13 @@ def test_a_viewer_leaving_releases_the_vision_slot(monkeypatch):
     """Four abandoned relays fill the vision server (max 4) and it 503s everyone."""
     import asyncio
 
-    from bridge import mcp_server
+    from bridge.routes import camera as camera_routes
 
     upstream = _EndlessUpstream()
 
     async def drain() -> int:
         n = 0
-        async for _ in mcp_server._relay_stream(upstream, _ViewerLeavesAfter(2)):
+        async for _ in camera_routes._relay_stream(upstream, _ViewerLeavesAfter(2)):
             n += 1
         return n
 
@@ -341,7 +342,7 @@ def test_a_full_vision_server_is_a_503_not_an_empty_200(monkeypatch):
     import asyncio
     import urllib.request
 
-    from bridge import mcp_server
+    from bridge.routes import camera as camera_routes
     from bridge.sdk import camera_relay, videohub
 
     class _DarkCamera:
@@ -351,7 +352,7 @@ def test_a_full_vision_server_is_a_503_not_an_empty_200(monkeypatch):
     def full(*_a, **_k):
         raise OSError("HTTP Error 503: too many stream clients (max 4)")
 
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(videohub, "get_camera", lambda: _DarkCamera())
     monkeypatch.setattr(camera_relay, "upstream_status", lambda now=None: LIVE_VISION)
     monkeypatch.setattr(urllib.request, "urlopen", full)
@@ -359,7 +360,7 @@ def test_a_full_vision_server_is_a_503_not_an_empty_200(monkeypatch):
     class _Request:
         headers: dict = {}
 
-    response = asyncio.run(mcp_server.camera_stream(_Request()))
+    response = asyncio.run(camera_routes.camera_stream(_Request()))
     assert response.status_code == 503
     assert response.headers["retry-after"] == "2"
 
@@ -369,7 +370,7 @@ def test_a_slow_vision_probe_does_not_stall_the_event_loop(monkeypatch):
     import asyncio
     import time
 
-    from bridge import mcp_server
+    from bridge.routes import camera as camera_routes
     from bridge.sdk import camera_relay, videohub
 
     class _Camera:
@@ -380,7 +381,7 @@ def test_a_slow_vision_probe_does_not_stall_the_event_loop(monkeypatch):
         time.sleep(0.5)
         return None
 
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(camera_relay, "upstream_status", slow_probe)
     monkeypatch.setattr(videohub, "get_camera", lambda: _Camera())
 
@@ -388,7 +389,7 @@ def test_a_slow_vision_probe_does_not_stall_the_event_loop(monkeypatch):
         headers: dict = {}
 
     async def race() -> float:
-        route = asyncio.ensure_future(mcp_server.camera_status(_Request()))
+        route = asyncio.ensure_future(camera_routes.camera_status(_Request()))
         started = time.monotonic()
         await asyncio.sleep(0.05)  # a PARAR arriving while the probe runs
         waited = time.monotonic() - started

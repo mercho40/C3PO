@@ -986,7 +986,7 @@ has not been observed end to end, and the yaw sign is still unsettled.
 🔧 **The camera port is read from `PUBLIC_ROBOT_CAM_URL`, not hardcoded — since
 2026-08-27.** The forward list said 8081, which is `apps/perception`'s vision
 container. The feed had already moved to **8001**, the bridge's own port (see
-"WHY NOT PORT 8081" in `mcp_server.py`: 8081 belongs to the process that is dead
+"WHY NOT PORT 8081" in `routes/camera.py`: 8081 belongs to the process that is dead
 in exactly the case the relay exists for). `PUBLIC_ROBOT_CAM_URL` was updated;
 the forward list was not, so the headset asked _its own_ `127.0.0.1:8001`, where
 nothing listens.
@@ -1092,7 +1092,7 @@ The bridge now reads it, applied to `/camera/*` only.
 ✅ **The header plumbing is verified ON THE ROBOT** (2026-08-28), without
 disturbing the running stack: this branch was checked out into a throwaway
 worktree and started in `SIM_MODE=stub` on loopback:8009, which creates no DDS
-participant (`mcp_server.py`'s `if SIM_MODE != "stub"` guard), claims no
+participant (`server.py`'s `if config.SIM_MODE != "stub"` guard), claims no
 sensor and commands nothing. Results:
 
 | request                         | response                                                              |
