@@ -11,16 +11,19 @@
  * — the dead-man, `onSample` → walk_velocity — on a page the operator had
  * already left, with no PARAR button on screen to stop it.
  *
- * The controller (`$lib/robot/vr-control.svelte.ts`) holds the session in
- * `#pendingVr` for that window, `destroy()` stops it, and nothing is adopted
- * into `#vr` until the session is known to be live on a page that still
- * exists. These tests pin those three orderings.
+ * The controller's XR binding (`$lib/robot/vr-xr.svelte.ts`) holds the session
+ * in `#pendingVr` for that window, `abandon()` — which `VrControl.destroy()`
+ * calls — stops it, and nothing is adopted into `#vr` until the session is
+ * known to be live on a page that still exists. These tests pin those three
+ * orderings.
  *
- * ASSERTED ON SOURCE, and it has to be: `start()` needs `navigator.xr`, a WebGL
- * context and a real consent prompt, none of which exist in this harness.
+ * ASSERTED ON SOURCE: the real `start()` needs `navigator.xr`, a WebGL context
+ * and a real consent prompt, none of which exist in this harness.
  * `env-contract.test.ts` reads source in the same way and for the same kind of
  * reason. What is pinned here is an ORDERING, which is exactly what source can
- * show and a mock would only re-state.
+ * show. Since the session factory became injectable, the same window is also
+ * pinned by behaviour, with a fake session, in vr-control-runtime.test.ts
+ * ("the consent prompt window").
  */
 
 import { describe, expect, test } from "bun:test";
@@ -30,6 +33,10 @@ import { fileURLToPath } from "node:url";
 // `fileURLToPath`, not `.pathname` — this repository lives under a directory
 // with spaces in its name, which `.pathname` returns percent-encoded and
 // `readFileSync` then cannot open. Same note as env-contract.test.ts.
+const binding = readFileSync(
+  fileURLToPath(new URL("../src/lib/robot/vr-xr.svelte.ts", import.meta.url)),
+  "utf8",
+);
 const controller = readFileSync(
   fileURLToPath(
     new URL("../src/lib/robot/vr-control.svelte.ts", import.meta.url),
@@ -47,11 +54,11 @@ const statement = (source: string, pattern: string, from = 0): number => {
   return i < 0 ? -1 : from + i;
 };
 
-const awaited = statement(controller, String.raw`await session\.start\(`);
+const awaited = statement(binding, String.raw`await session\.start\(`);
 
 describe("the VR session handle during the consent prompt", () => {
-  test("the controller holds the session BEFORE awaiting start()", () => {
-    const held = statement(controller, String.raw`this\.#pendingVr = session;`);
+  test("the binding holds the session BEFORE awaiting start()", () => {
+    const held = statement(binding, String.raw`this\.#pendingVr = session;`);
     expect(held).toBeGreaterThan(-1);
     expect(awaited).toBeGreaterThan(-1);
     expect(held).toBeLessThan(awaited);
@@ -60,12 +67,17 @@ describe("the VR session handle during the consent prompt", () => {
   test("destroy() stops a session that is still on the consent prompt", () => {
     const destroy = statement(controller, String.raw`destroy\(\): void \{`);
     expect(destroy).toBeGreaterThan(-1);
+    expect(
+      statement(controller, String.raw`this\.#xr\.abandon\(\);`, destroy),
+    ).toBeGreaterThan(destroy);
+    const abandon = statement(binding, String.raw`abandon\(\): void \{`);
+    expect(abandon).toBeGreaterThan(-1);
     const stop = statement(
-      controller,
+      binding,
       String.raw`this\.#pendingVr\?\.stop\(\);`,
-      destroy,
+      abandon,
     );
-    expect(stop).toBeGreaterThan(destroy);
+    expect(stop).toBeGreaterThan(abandon);
   });
 
   test("an abandoned or failed start is never adopted", () => {
@@ -73,20 +85,20 @@ describe("the VR session handle during the consent prompt", () => {
     // a start stopped mid-flight resolves looking like a success. The gate
     // must sit between the await and the adoption, and must return.
     const gate = statement(
-      controller,
-      String.raw`if \(this\.#destroyed \|\| !session\.active\) \{`,
+      binding,
+      String.raw`if \(this\.#host\.destroyed\(\) \|\| !session\.active\) \{`,
       awaited,
     );
-    const adopted = statement(controller, String.raw`this\.#vr = session;`);
+    const adopted = statement(binding, String.raw`this\.#vr = session;`);
     expect(gate).toBeGreaterThan(awaited);
     expect(adopted).toBeGreaterThan(gate);
-    expect(controller.slice(gate, adopted)).toContain("return;");
+    expect(binding.slice(gate, adopted)).toContain("return false;");
 
     // A start that THROWS returns from its catch, before the adoption too.
-    const catchIndex = controller.indexOf("} catch (err) {", awaited);
+    const catchIndex = binding.indexOf("} catch (err) {", awaited);
     expect(catchIndex).toBeGreaterThan(awaited);
     expect(catchIndex).toBeLessThan(adopted);
-    expect(controller.slice(catchIndex, gate)).toContain("return;");
+    expect(binding.slice(catchIndex, gate)).toContain("return false;");
   });
 });
 

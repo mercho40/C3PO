@@ -7,10 +7,12 @@
    * reachable in-session, and the whole page doubles as a WebXR `dom-overlay`
    * root so the controls stay usable while a VR session is active.
    *
-   * The state and the dispatch live in `#lib/robot/vr-control.svelte.ts` (the
-   * safety rules and their history came with them); the decisions that can be
-   * tested without a browser live in `#lib/robot/vr-logic.ts`; the panels are
-   * `#lib/components/vr/*`. This file wires them to the shared robot state.
+   * The state and the dispatch live behind `VrControl`
+   * (`#lib/robot/vr-control.svelte.ts`, a facade over the `vr-*.svelte.ts`
+   * units it lists; the safety rules and their history came with them); the
+   * decisions that can be tested without a browser live in
+   * `#lib/robot/vr-logic.ts`; the panels are `#lib/components/vr/*`. This file
+   * wires them to the shared robot state.
    *
    * `/invoke` is admin-only for every non-safety skill (`apps/back/src/
    * routes/skills.ts`), so whoever logs in here needs `role: "admin"` — except
