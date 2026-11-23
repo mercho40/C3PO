@@ -83,14 +83,8 @@ describe("bridge URL configuration", () => {
     );
   });
 
-  test("falls back to the default when the environment is unset", () => {
-    const saved = process.env.BRIDGE_URL;
-    delete process.env.BRIDGE_URL;
-    try {
-      expect(bridgeUrl()).toBe(DEFAULT_BRIDGE_URL);
-    } finally {
-      if (saved !== undefined) process.env.BRIDGE_URL = saved;
-    }
+  test("falls back to the default when BRIDGE_URL is unset", () => {
+    expect(bridgeUrl(undefined)).toBe(DEFAULT_BRIDGE_URL);
   });
 
   test("derives sibling routes without carrying MCP query state", () => {

@@ -16,7 +16,7 @@
 
 import { and, desc, eq, sql } from "drizzle-orm";
 
-import { db } from "./drizzle";
+import type { Db } from "./drizzle";
 import { chat, chatMessage, toolCallLog, type ToolCallSource } from "./schema";
 
 /** Longest chat title we derive from the opening message. */
@@ -38,119 +38,6 @@ export function titleFromParts(parts: unknown[]): string | null {
     .trim();
   if (!text) return null;
   return text.length > TITLE_MAX ? `${text.slice(0, TITLE_MAX - 1)}…` : text;
-}
-
-/**
- * Return the caller's chat, or create it with the given id.
- *
- * The client generates the chat id so the first streamed turn and the row it
- * persists to agree without a round-trip. Ownership is re-checked on every
- * call: a caller passing someone else's id must not silently start writing
- * into their conversation, so we scope by `userId` and create only when the id
- * is genuinely unused.
- */
-export async function ensureChat(opts: {
-  id: string;
-  userId: string;
-  organizationId?: string | null;
-  title?: string | null;
-  channel?: "text" | "voice";
-}): Promise<{
-  id: string;
-  created: boolean;
-  channel: "text" | "voice";
-} | null> {
-  const existing = await db.query.chat.findFirst({
-    where: eq(chat.id, opts.id),
-    columns: { id: true, userId: true, channel: true },
-  });
-
-  if (existing) {
-    // Someone else's chat (or an id collision) — refuse rather than write into it.
-    return existing.userId === opts.userId
-      ? { id: existing.id, created: false, channel: existing.channel }
-      : null;
-  }
-
-  await db.insert(chat).values({
-    id: opts.id,
-    userId: opts.userId,
-    organizationId: opts.organizationId ?? null,
-    title: opts.title ?? null,
-    channel: opts.channel ?? "text",
-  });
-  return { id: opts.id, created: true, channel: opts.channel ?? "text" };
-}
-
-/**
- * Append a message, assigning the next sequence number for the chat.
- *
- * Ordering uses `seq` rather than `created_at` because a turn's user and
- * assistant rows can land on the same timestamp, which would render history
- * out of order. Upserts on the message id so a retried stream doesn't
- * duplicate a turn.
- *
- * The upsert only ever rewrites a row belonging to *this* chat. It used to
- * rewrite any row with a matching id, which is how a caller passing a blank or
- * borrowed id could silently redirect a reply into someone else's
- * conversation — the message vanished from the chat that produced it and
- * corrupted the one that didn't. A conflict outside this chat falls through to
- * a fresh id instead, so the worst case is a duplicate rather than a loss.
- */
-export async function appendMessage(opts: {
-  id?: string;
-  chatId: string;
-  role: "user" | "assistant" | "system";
-  parts: unknown[];
-}): Promise<string> {
-  // `||`, not `??`: an empty string is a missing id, not an id. The AI SDK
-  // hands one out for the response message unless the stream is given a
-  // `generateMessageId` (see routes/agent.ts).
-  const id = opts.id || crypto.randomUUID();
-
-  const write = (tx: Pick<typeof db, "insert">, messageId: string) =>
-    tx
-      .insert(chatMessage)
-      .values({
-        id: messageId,
-        chatId: opts.chatId,
-        role: opts.role,
-        parts: opts.parts,
-        // Read under the chat row's lock (below), so two appends never share
-        // a max; the unique (chat_id, seq) index is the backstop.
-        seq: sql`(select coalesce(max(${chatMessage.seq}), 0) + 1 from ${chatMessage} where ${chatMessage.chatId} = ${opts.chatId})`,
-      })
-      .onConflictDoUpdate({
-        target: chatMessage.id,
-        set: { parts: opts.parts },
-        // Same chat AND same role: a retry's `replaceMessageId` (or a
-        // replayed user message id) must never rewrite a row of the other role
-        // — that would leave assistant parts under a "user" row.
-        setWhere: and(
-          eq(chatMessage.chatId, opts.chatId),
-          eq(chatMessage.role, opts.role),
-        ),
-      })
-      .returning({ id: chatMessage.id });
-
-  // The chat row's lock first, held to commit: a concurrent append to the same
-  // chat waits, then its max(seq) sees this row. Without it both read the same
-  // max, and all but one failed on the (chat_id, seq) index.
-  return db.transaction(async (tx) => {
-    await tx
-      .update(chat)
-      .set({ updatedAt: new Date() })
-      .where(eq(chat.id, opts.chatId));
-
-    // No row back means the id exists but belongs to another chat, so `setWhere`
-    // held the update back. Keep the message; give it an id of our own.
-    let finalId = id;
-    if ((await write(tx, id)).length === 0) {
-      finalId = crypto.randomUUID();
-      await write(tx, finalId);
-    }
-    return finalId;
-  });
 }
 
 /**
@@ -198,19 +85,8 @@ export function resultFailure(result: unknown): string | null {
   return null;
 }
 
-/**
- * Record one dispatched skill. Never throws — auditing must not break a turn.
- *
- * `status` is the TRANSPORT outcome the caller saw; an `ok` whose body reports
- * a failure is recorded as `error` with the body's own code (`resultFailure`).
- *
- * `userId` omitted (undefined, not null) on a chat-backed call means "the
- * chat's owner": resolved inside the INSERT, so attribution costs no extra
- * round trip and cannot disagree with `ensureChat`, which already refuses to
- * let anyone write into a chat that is not theirs. Pass null to record "nobody
- * we know" explicitly.
- */
-export async function logToolCall(opts: {
+/** One row of `tool_call_log`, as `logToolCall` takes it. */
+export type ToolCallRow = {
   chatId?: string | null;
   messageId?: string | null;
   userId?: string | null;
@@ -228,116 +104,266 @@ export async function logToolCall(opts: {
    * same millisecond, which on 2026-10-15 read as duplicate commands.
    */
   startedAt?: number;
-}): Promise<void> {
-  const bodyFailure = opts.status === "ok" ? resultFailure(opts.result) : null;
-  const chatId = opts.chatId ?? null;
-  const userId =
-    opts.userId !== undefined
-      ? opts.userId
-      : chatId
-        ? sql`(select ${chat.userId} from ${chat} where ${chat.id} = ${chatId})`
-        : null;
-  try {
-    await db.insert(toolCallLog).values({
-      chatId,
-      messageId: opts.messageId ?? null,
-      userId,
-      source: opts.source ?? null,
-      skillName: opts.skillName,
-      params: opts.params ?? null,
-      result: (opts.result ?? null) as never,
-      status: bodyFailure ? "error" : opts.status,
-      error: opts.error ?? bodyFailure,
-      durationMs: opts.durationMs ?? null,
-      // Always from JS: the column has no time zone, a Date is written as UTC
-      // and the default now() as the DB's local time, so mixing them skewed
-      // agent rows 3 h from the confirms they caused.
-      createdAt: new Date(opts.startedAt ?? Date.now()),
+};
+
+/** Writes one audit row and never throws (see `createChatStore`). */
+export type LogToolCall = (row: ToolCallRow) => Promise<void>;
+
+/**
+ * The chat and audit queries over one database handle. Built once by the
+ * composition root; routes and services get it (or the one function they
+ * need) as a dependency, and tests hand them an in-memory fake.
+ */
+export function createChatStore(db: Db) {
+  /**
+   * Return the caller's chat, or create it with the given id.
+   *
+   * The client generates the chat id so the first streamed turn and the row it
+   * persists to agree without a round-trip. Ownership is re-checked on every
+   * call: a caller passing someone else's id must not silently start writing
+   * into their conversation, so we scope by `userId` and create only when the id
+   * is genuinely unused.
+   */
+  async function ensureChat(opts: {
+    id: string;
+    userId: string;
+    organizationId?: string | null;
+    title?: string | null;
+    channel?: "text" | "voice";
+  }): Promise<{
+    id: string;
+    created: boolean;
+    channel: "text" | "voice";
+  } | null> {
+    const existing = await db.query.chat.findFirst({
+      where: eq(chat.id, opts.id),
+      columns: { id: true, userId: true, channel: true },
     });
-  } catch (err) {
-    // A failed audit write must not abort a robot command that already ran.
-    console.error("tool_call_log insert failed", err);
+
+    if (existing) {
+      // Someone else's chat (or an id collision) — refuse rather than write into it.
+      return existing.userId === opts.userId
+        ? { id: existing.id, created: false, channel: existing.channel }
+        : null;
+    }
+
+    await db.insert(chat).values({
+      id: opts.id,
+      userId: opts.userId,
+      organizationId: opts.organizationId ?? null,
+      title: opts.title ?? null,
+      channel: opts.channel ?? "text",
+    });
+    return { id: opts.id, created: true, channel: opts.channel ?? "text" };
   }
+
+  /**
+   * Append a message, assigning the next sequence number for the chat.
+   *
+   * Ordering uses `seq` rather than `created_at` because a turn's user and
+   * assistant rows can land on the same timestamp, which would render history
+   * out of order. Upserts on the message id so a retried stream doesn't
+   * duplicate a turn.
+   *
+   * The upsert only ever rewrites a row belonging to *this* chat. It used to
+   * rewrite any row with a matching id, which is how a caller passing a blank or
+   * borrowed id could silently redirect a reply into someone else's
+   * conversation — the message vanished from the chat that produced it and
+   * corrupted the one that didn't. A conflict outside this chat falls through to
+   * a fresh id instead, so the worst case is a duplicate rather than a loss.
+   */
+  async function appendMessage(opts: {
+    id?: string;
+    chatId: string;
+    role: "user" | "assistant" | "system";
+    parts: unknown[];
+  }): Promise<string> {
+    // `||`, not `??`: an empty string is a missing id, not an id. The AI SDK
+    // hands one out for the response message unless the stream is given a
+    // `generateMessageId` (see routes/agent.ts).
+    const id = opts.id || crypto.randomUUID();
+
+    const write = (tx: Pick<Db, "insert">, messageId: string) =>
+      tx
+        .insert(chatMessage)
+        .values({
+          id: messageId,
+          chatId: opts.chatId,
+          role: opts.role,
+          parts: opts.parts,
+          // Read under the chat row's lock (below), so two appends never share
+          // a max; the unique (chat_id, seq) index is the backstop.
+          seq: sql`(select coalesce(max(${chatMessage.seq}), 0) + 1 from ${chatMessage} where ${chatMessage.chatId} = ${opts.chatId})`,
+        })
+        .onConflictDoUpdate({
+          target: chatMessage.id,
+          set: { parts: opts.parts },
+          // Same chat AND same role: a retry's `replaceMessageId` (or a
+          // replayed user message id) must never rewrite a row of the other role
+          // — that would leave assistant parts under a "user" row.
+          setWhere: and(
+            eq(chatMessage.chatId, opts.chatId),
+            eq(chatMessage.role, opts.role),
+          ),
+        })
+        .returning({ id: chatMessage.id });
+
+    // The chat row's lock first, held to commit: a concurrent append to the same
+    // chat waits, then its max(seq) sees this row. Without it both read the same
+    // max, and all but one failed on the (chat_id, seq) index.
+    return db.transaction(async (tx) => {
+      await tx
+        .update(chat)
+        .set({ updatedAt: new Date() })
+        .where(eq(chat.id, opts.chatId));
+
+      // No row back means the id exists but belongs to another chat, so `setWhere`
+      // held the update back. Keep the message; give it an id of our own.
+      let finalId = id;
+      if ((await write(tx, id)).length === 0) {
+        finalId = crypto.randomUUID();
+        await write(tx, finalId);
+      }
+      return finalId;
+    });
+  }
+
+  /**
+   * Record one dispatched skill. Never throws — auditing must not break a turn.
+   *
+   * `status` is the TRANSPORT outcome the caller saw; an `ok` whose body reports
+   * a failure is recorded as `error` with the body's own code (`resultFailure`).
+   *
+   * `userId` omitted (undefined, not null) on a chat-backed call means "the
+   * chat's owner": resolved inside the INSERT, so attribution costs no extra
+   * round trip and cannot disagree with `ensureChat`, which already refuses to
+   * let anyone write into a chat that is not theirs. Pass null to record "nobody
+   * we know" explicitly.
+   */
+  async function logToolCall(opts: ToolCallRow): Promise<void> {
+    const bodyFailure =
+      opts.status === "ok" ? resultFailure(opts.result) : null;
+    const chatId = opts.chatId ?? null;
+    const userId =
+      opts.userId !== undefined
+        ? opts.userId
+        : chatId
+          ? sql`(select ${chat.userId} from ${chat} where ${chat.id} = ${chatId})`
+          : null;
+    try {
+      await db.insert(toolCallLog).values({
+        chatId,
+        messageId: opts.messageId ?? null,
+        userId,
+        source: opts.source ?? null,
+        skillName: opts.skillName,
+        params: opts.params ?? null,
+        result: (opts.result ?? null) as never,
+        status: bodyFailure ? "error" : opts.status,
+        error: opts.error ?? bodyFailure,
+        durationMs: opts.durationMs ?? null,
+        // Always from JS: the column has no time zone, a Date is written as UTC
+        // and the default now() as the DB's local time, so mixing them skewed
+        // agent rows 3 h from the confirms they caused.
+        createdAt: new Date(opts.startedAt ?? Date.now()),
+      });
+    } catch (err) {
+      // A failed audit write must not abort a robot command that already ran.
+      console.error("tool_call_log insert failed", err);
+    }
+  }
+
+  /** The caller's chats, most recently updated first — optionally one channel. */
+  async function listChats(
+    userId: string,
+    limit = 50,
+    channel?: "text" | "voice",
+  ) {
+    return db
+      .select({
+        id: chat.id,
+        title: chat.title,
+        channel: chat.channel,
+        createdAt: chat.createdAt,
+        updatedAt: chat.updatedAt,
+      })
+      .from(chat)
+      .where(
+        channel
+          ? and(eq(chat.userId, userId), eq(chat.channel, channel))
+          : eq(chat.userId, userId),
+      )
+      .orderBy(desc(chat.updatedAt))
+      .limit(limit);
+  }
+
+  /** One chat with its messages in order, or null if it isn't the caller's. */
+  async function getChatWithMessages(id: string, userId: string) {
+    const row = await db.query.chat.findFirst({
+      where: and(eq(chat.id, id), eq(chat.userId, userId)),
+      columns: {
+        id: true,
+        title: true,
+        channel: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    if (!row) return null;
+
+    const messages = await db
+      .select({
+        id: chatMessage.id,
+        role: chatMessage.role,
+        parts: chatMessage.parts,
+        createdAt: chatMessage.createdAt,
+      })
+      .from(chatMessage)
+      .where(eq(chatMessage.chatId, id))
+      .orderBy(chatMessage.seq);
+
+    return { ...row, messages };
+  }
+
+  /**
+   * Delete a chat the caller owns. Messages cascade; `tool_call_log` rows survive
+   * with `chat_id` set null — the audit trail outlives the conversation.
+   */
+  async function deleteChat(id: string, userId: string): Promise<boolean> {
+    const deleted = await db
+      .delete(chat)
+      .where(and(eq(chat.id, id), eq(chat.userId, userId)))
+      .returning({ id: chat.id });
+    return deleted.length > 0;
+  }
+
+  /**
+   * Rename a chat. Scoped to the owner in the WHERE clause, like `deleteChat`, so
+   * someone else's id is indistinguishable from a missing one. Returns the new
+   * row, or null.
+   */
+  async function renameChat(
+    id: string,
+    userId: string,
+    title: string,
+  ): Promise<{ id: string; title: string | null } | null> {
+    const [row] = await db
+      .update(chat)
+      .set({ title, updatedAt: new Date() })
+      .where(and(eq(chat.id, id), eq(chat.userId, userId)))
+      .returning({ id: chat.id, title: chat.title });
+    return row ?? null;
+  }
+
+  return {
+    ensureChat,
+    appendMessage,
+    logToolCall,
+    listChats,
+    getChatWithMessages,
+    deleteChat,
+    renameChat,
+  };
 }
 
-/** The caller's chats, most recently updated first — optionally one channel. */
-export async function listChats(
-  userId: string,
-  limit = 50,
-  channel?: "text" | "voice",
-) {
-  return db
-    .select({
-      id: chat.id,
-      title: chat.title,
-      channel: chat.channel,
-      createdAt: chat.createdAt,
-      updatedAt: chat.updatedAt,
-    })
-    .from(chat)
-    .where(
-      channel
-        ? and(eq(chat.userId, userId), eq(chat.channel, channel))
-        : eq(chat.userId, userId),
-    )
-    .orderBy(desc(chat.updatedAt))
-    .limit(limit);
-}
-
-/** One chat with its messages in order, or null if it isn't the caller's. */
-export async function getChatWithMessages(id: string, userId: string) {
-  const row = await db.query.chat.findFirst({
-    where: and(eq(chat.id, id), eq(chat.userId, userId)),
-    columns: {
-      id: true,
-      title: true,
-      channel: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-  });
-  if (!row) return null;
-
-  const messages = await db
-    .select({
-      id: chatMessage.id,
-      role: chatMessage.role,
-      parts: chatMessage.parts,
-      createdAt: chatMessage.createdAt,
-    })
-    .from(chatMessage)
-    .where(eq(chatMessage.chatId, id))
-    .orderBy(chatMessage.seq);
-
-  return { ...row, messages };
-}
-
-/**
- * Delete a chat the caller owns. Messages cascade; `tool_call_log` rows survive
- * with `chat_id` set null — the audit trail outlives the conversation.
- */
-export async function deleteChat(id: string, userId: string): Promise<boolean> {
-  const deleted = await db
-    .delete(chat)
-    .where(and(eq(chat.id, id), eq(chat.userId, userId)))
-    .returning({ id: chat.id });
-  return deleted.length > 0;
-}
-
-/**
- * Rename a chat. Scoped to the owner in the WHERE clause, like `deleteChat`, so
- * someone else's id is indistinguishable from a missing one. Returns the new
- * row, or null.
- */
-export async function renameChat(
-  id: string,
-  userId: string,
-  title: string,
-): Promise<{ id: string; title: string | null } | null> {
-  const [row] = await db
-    .update(chat)
-    .set({ title, updatedAt: new Date() })
-    .where(and(eq(chat.id, id), eq(chat.userId, userId)))
-    .returning({ id: chat.id, title: chat.title });
-  return row ?? null;
-}
+export type ChatStore = ReturnType<typeof createChatStore>;

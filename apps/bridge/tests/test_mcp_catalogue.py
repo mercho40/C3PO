@@ -326,7 +326,7 @@ def test_apps_back_does_not_reintroduce_a_second_catalogue():
 def test_exactly_one_tool_is_classified_safety(tools):
     """`classification="safety"` BYPASSES THE ADMIN GATE IN apps/back.
 
-    `apps/back/src/routes/skills.ts` decides who may invoke a skill directly:
+    `apps/back/src/skills/invoke.ts` decides who may invoke a skill directly:
 
         const isSafety = skill ? skill.classification === "safety" : knownSafety;
         if (!isSafety && user.role !== "admin") return 403;

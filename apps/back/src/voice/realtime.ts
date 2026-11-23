@@ -1,23 +1,19 @@
 import WebSocket, { type RawData } from "ws";
 import { createIdGenerator } from "ai";
 
-import { BridgeToolError, callTool } from "#back/bridge/client.js";
-import { bridgeSiblingUrl } from "#back/bridge/url.js";
-import { appendMessage, logToolCall } from "#back/db/chats.js";
-import {
-  NEEDS_CONFIRMATION,
-  buildSystemPrompt,
-  BACK_TOOLS,
-  offeredInMode,
-} from "#back/agent/runtime.js";
-import { notePending } from "#back/agent/confirmations.js";
-import { listSkills } from "#back/skills/index.js";
+import type { Confirmations } from "#back/agent/confirmations.js";
+import type { AgentMode, OfferedSkill } from "#back/agent/policy.js";
+import type { AgentRuntime } from "#back/agent/runtime.js";
+import type { BackTool } from "#back/agent/tools.js";
+import { rethrowCause, type BridgeHttp } from "#back/bridge/http.js";
+import type { Config } from "#back/config.js";
+import type { ChatStore, LogToolCall } from "#back/db/chats.js";
+import type { Dispatcher } from "#back/skills/dispatch.js";
+import type { Catalogue, SkillCatalogueEntry } from "#back/skills/index.js";
 import { validateArgs } from "#back/skills/validate.js";
 import { concatBytes, Pcm16Resampler } from "./pcm";
 
 const messageId = createIdGenerator({ prefix: "msg", size: 16 });
-const MODEL = process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1";
-const VOICE = process.env.OPENAI_REALTIME_VOICE ?? "marin";
 const OUTPUT_BATCH_BYTES = 6_400; // 200 ms at the robot's 16 kHz PCM16 format.
 
 export type RealtimeVoiceState = {
@@ -72,11 +68,16 @@ export function isRecoverableRealtimeError(
   return error?.code !== undefined && RECOVERABLE_ERROR_CODES.has(error.code);
 }
 
-type RealtimeSkill = Awaited<ReturnType<typeof listSkills>>[number];
+type RealtimeSkill = SkillCatalogueEntry;
 
-export function realtimeTools(skills: RealtimeSkill[]) {
+/** What the session declares: the skills voice is offered, and back's own tools. */
+export function realtimeTools(
+  skills: readonly RealtimeSkill[],
+  offered: (skill: OfferedSkill, mode: AgentMode) => boolean,
+  backTools: readonly Pick<BackTool, "def">[],
+) {
   const bridgeTools = skills
-    .filter((skill) => offeredInMode(skill, "voice"))
+    .filter((skill) => offered(skill, "voice"))
     .map((skill) => ({
       type: "function" as const,
       name: skill.name,
@@ -87,7 +88,7 @@ export function realtimeTools(skills: RealtimeSkill[]) {
   // The frame goes to the agent's vision model, never into the Realtime session.
   return [
     ...bridgeTools,
-    ...BACK_TOOLS.map(({ def }) => ({
+    ...backTools.map(({ def }) => ({
       type: "function" as const,
       name: def.name,
       description: def.description,
@@ -131,13 +132,14 @@ export function argumentProblem(
 
 export function realtimeSessionUpdate(
   instructions: string,
-  skills: RealtimeSkill[],
+  tools: ReturnType<typeof realtimeTools>,
+  options: { model: string; voice: string },
 ) {
   return {
     type: "session.update" as const,
     session: {
       type: "realtime" as const,
-      model: MODEL,
+      model: options.model,
       output_modalities: ["audio"],
       instructions: `${instructions}\n\nRealtime voice safety: high-danger tools are intentionally unavailable. Ask the operator to use the authenticated console for those actions.`,
       audio: {
@@ -151,15 +153,20 @@ export function realtimeSessionUpdate(
             interrupt_response: true,
           },
         },
-        output: { format: { type: "audio/pcm", rate: 24_000 }, voice: VOICE },
+        output: {
+          format: { type: "audio/pcm", rate: 24_000 },
+          voice: options.voice,
+        },
       },
-      tools: realtimeTools(skills),
+      tools,
       tool_choice: "auto",
     },
   };
 }
 
 class RobotAudioSink {
+  constructor(private readonly http: Pick<BridgeHttp, "request">) {}
+
   private resampler = new Pcm16Resampler(24_000, 16_000);
   private pending: Uint8Array<ArrayBufferLike> = new Uint8Array();
   private tail: Promise<void> = Promise.resolve();
@@ -196,9 +203,9 @@ class RobotAudioSink {
     this.tail = this.tail
       .catch(() => {})
       .then(async () => {
-        await fetch(bridgeSiblingUrl("/telemetry/voice/audio/output"), {
-          method: "DELETE",
-        }).catch(() => {});
+        await this.http
+          .request("/telemetry/voice/audio/output", { method: "DELETE" })
+          .catch(() => {});
       });
     return this.tail;
   }
@@ -207,13 +214,14 @@ class RobotAudioSink {
     const streamId = this.streamId;
     this.tail = this.tail.then(async () => {
       if (epoch !== this.epoch) return;
-      const url = new URL(bridgeSiblingUrl("/telemetry/voice/audio/output"));
-      url.searchParams.set("stream_id", streamId);
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: Buffer.from(chunk),
-      });
+      const response = await this.http
+        .request("/telemetry/voice/audio/output", {
+          method: "POST",
+          query: { stream_id: streamId },
+          headers: { "Content-Type": "application/octet-stream" },
+          body: Buffer.from(chunk),
+        })
+        .catch(rethrowCause);
       if (!response.ok)
         throw new Error(`robot audio output failed (${response.status})`);
       const result = (await response.json()) as {
@@ -232,11 +240,22 @@ class RobotAudioSink {
   }
 }
 
+export type RealtimeDeps = {
+  config: Config["realtime"];
+  catalogue: Pick<Catalogue, "listSkills">;
+  agent: Pick<AgentRuntime, "systemPrompt" | "policy" | "backTools">;
+  dispatch: Pick<Dispatcher, "dispatchSkill">;
+  chats: Pick<ChatStore, "appendMessage">;
+  logToolCall: LogToolCall;
+  confirmations: Pick<Confirmations, "note">;
+  http: Pick<BridgeHttp, "request">;
+};
+
 /** One operator-owned speech-to-speech session. Typed `/agent` is untouched. */
 export class RealtimeVoiceSession {
   private socket: WebSocket | null = null;
   private inputAbort: AbortController | null = null;
-  private audio = new RobotAudioSink();
+  private audio: RobotAudioSink;
   private toolsRunning = 0;
   /**
    * The tool names this session DECLARED to the model. A function call naming
@@ -260,6 +279,10 @@ export class RealtimeVoiceSession {
     toolCalls: 0,
   };
 
+  constructor(private readonly deps: RealtimeDeps) {
+    this.audio = new RobotAudioSink(deps.http);
+  }
+
   snapshot(): RealtimeVoiceState {
     return { ...this.state };
   }
@@ -270,7 +293,7 @@ export class RealtimeVoiceSession {
         throw new Error("voice session is owned by another operator");
       return;
     }
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = this.deps.config.apiKey;
     if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
 
     this.state = {
@@ -287,20 +310,20 @@ export class RealtimeVoiceSession {
       toolCalls: 0,
     };
     this.eventTail = Promise.resolve();
-    this.audio = new RobotAudioSink();
+    this.audio = new RobotAudioSink(this.deps.http);
 
     try {
       // One catalogue for both, so the prompt describes the tools declared.
-      const skills = await listSkills();
+      const skills = await this.deps.catalogue.listSkills();
       // Empty means the bridge was unreachable with nothing cached: the session
       // would hear everything and could move nothing, not even stop.
       if (!skills.length)
         throw new Error(
           "robot tool catalogue unavailable (bridge unreachable): not starting voice",
         );
-      const instructions = await buildSystemPrompt("voice", skills);
+      const instructions = await this.deps.agent.systemPrompt("voice", skills);
       const url = new URL("wss://api.openai.com/v1/realtime");
-      url.searchParams.set("model", MODEL);
+      url.searchParams.set("model", this.deps.config.model);
       const socket = new WebSocket(url, {
         headers: {
           Authorization: `Bearer ${apiKey}`,
@@ -316,10 +339,18 @@ export class RealtimeVoiceSession {
           this.fail(new Error("OpenAI Realtime connection closed"));
       });
 
-      this.declaredTools = new Map(
-        realtimeTools(skills).map((t) => [t.name, t.parameters]),
+      const tools = realtimeTools(
+        skills,
+        this.deps.agent.policy.offered,
+        this.deps.agent.backTools,
       );
-      this.send(realtimeSessionUpdate(instructions, skills));
+      this.declaredTools = new Map(tools.map((t) => [t.name, t.parameters]));
+      this.send(
+        realtimeSessionUpdate(instructions, tools, {
+          model: this.deps.config.model,
+          voice: this.deps.config.voice,
+        }),
+      );
       console.log(
         `[voice/realtime] declared tools: ${[...this.declaredTools.keys()].join(", ")}`,
       );
@@ -363,12 +394,13 @@ export class RealtimeVoiceSession {
     // In the transcript too, so the voice chat shows what the operator decided.
     // Through eventTail, so it lands in order with the turn it answers.
     this.eventTail = this.eventTail.then(() =>
-      appendMessage({
-        id: messageId(),
-        chatId,
-        role: "system",
-        parts: [{ type: "text", text: message }],
-      })
+      this.deps.chats
+        .appendMessage({
+          id: messageId(),
+          chatId,
+          role: "system",
+          parts: [{ type: "text", text: message }],
+        })
         .then(() => undefined)
         .catch((error) =>
           console.error("[voice/realtime] outcome persistence failed", error),
@@ -383,14 +415,13 @@ export class RealtimeVoiceSession {
 
   private async pumpRobotAudio(signal: AbortSignal): Promise<void> {
     try {
-      const response = await fetch(
-        bridgeSiblingUrl("/telemetry/voice/audio/input"),
-        {
+      const response = await this.deps.http
+        .request("/telemetry/voice/audio/input", {
           headers: { Accept: "audio/pcm" },
           cache: "no-store",
           signal,
-        },
-      );
+        })
+        .catch(rethrowCause);
       if (!response.ok || !response.body)
         throw new Error(`robot audio input failed (${response.status})`);
       const reader = response.body.getReader();
@@ -502,14 +533,16 @@ export class RealtimeVoiceSession {
       this.state.lastReply = text;
       this.state.agentRuns += 1;
     }
-    await appendMessage({
-      id: messageId(),
-      chatId,
-      role,
-      parts: [{ type: "text", text }],
-    }).catch((error) =>
-      console.error("[voice/realtime] transcript persistence failed", error),
-    );
+    await this.deps.chats
+      .appendMessage({
+        id: messageId(),
+        chatId,
+        role,
+        parts: [{ type: "text", text }],
+      })
+      .catch((error) =>
+        console.error("[voice/realtime] transcript persistence failed", error),
+      );
   }
 
   private async executeTool(event: RealtimeEvent): Promise<void> {
@@ -532,6 +565,7 @@ export class RealtimeVoiceSession {
     let result: unknown;
     let status: "ok" | "error" = "ok";
     let error: string | null = null;
+    let dispatched = false;
     // Either refusal sends the robot nothing, so neither counts as running.
     const refused = this.declaredTools.has(name)
       ? argumentProblem(name, this.declaredTools.get(name), args)
@@ -545,7 +579,7 @@ export class RealtimeVoiceSession {
       // below cannot leave barge-in sparing the robot's speech for good.
       this.toolsRunning += 1;
       try {
-        const back = BACK_TOOLS.find((t) => t.def.name === name);
+        const back = this.deps.agent.backTools.find((t) => t.def.name === name);
         if (back) {
           result = await back.run(args);
           if ((result as { status?: string }).status === "error") {
@@ -553,71 +587,84 @@ export class RealtimeVoiceSession {
             error = (result as { error?: string }).error ?? `${name} failed`;
           }
         } else {
-          result = await callTool(name, args);
+          dispatched = true;
+          const ownerId = this.state.ownerId;
+          const r = await this.deps.dispatch.dispatchSkill(name, args, {
+            // Explicit rather than resolved from the chat: the session owner
+            // is who started the microphone, and is known right here.
+            who: { chatId, userId: ownerId, source: "voice" },
+            // Noted for the transcript's Confirmar; the realtime model cannot confirm.
+            onRefused: () => {
+              if (ownerId)
+                this.deps.confirmations.note({
+                  id: callId,
+                  tool: name,
+                  args,
+                  ownerId,
+                  chatId,
+                  loop: false,
+                });
+            },
+          });
+          if (r.ok) result = r.result;
+          else {
+            status = "error";
+            // The robot's own reason, not just "tool_error": it is what the
+            // model needs to say what went wrong.
+            const f = r.failure;
+            error =
+              f.error === "tool_error"
+                ? `tool_error: ${name}: ${f.detail}`
+                : f.error;
+            result = { error };
+          }
         }
       } catch (cause) {
         status = "error";
-        // The robot's own reason, not just "tool_error: <name>": it is what
-        // the audit row and the model both need to say what went wrong.
-        error =
-          cause instanceof BridgeToolError
-            ? `${cause.message}: ${cause.detail}`
-            : cause instanceof Error
-              ? cause.message
-              : String(cause);
+        error = cause instanceof Error ? cause.message : String(cause);
         result = { error };
-        // Noted for the transcript's Confirmar; the realtime model cannot confirm.
-        if (
-          cause instanceof BridgeToolError &&
-          cause.detail.includes(NEEDS_CONFIRMATION) &&
-          this.state.ownerId
-        )
-          notePending({
-            id: callId,
-            tool: name,
-            args,
-            ownerId: this.state.ownerId,
-            chatId,
-            loop: false,
-          });
       } finally {
         this.toolsRunning -= 1;
       }
     }
     this.state.toolCalls += 1;
-    // Fire-and-forget, like the agent's: `logToolCall` never throws, and
-    // awaiting it made the model wait on a database write before it could hear
-    // the tool's result and answer the person standing at the robot.
-    void logToolCall({
-      chatId,
-      // Explicit rather than resolved from the chat: the session owner is who
-      // started the microphone, and is known right here.
-      userId: this.state.ownerId,
-      source: "voice",
-      skillName: name,
-      params: args,
-      result,
-      status,
-      error,
-      durationMs: Math.round(performance.now() - started),
-    });
-    await appendMessage({
-      id: messageId(),
-      chatId,
-      role: "assistant",
-      parts: [
-        {
-          type: "dynamic-tool",
-          toolName: name,
-          toolCallId: callId,
-          state: "output-available",
-          input: args,
-          output: result,
-        },
-      ],
-    }).catch((cause) =>
-      console.error("[voice/realtime] tool persistence failed", cause),
-    );
+    // A bridge skill's row is `dispatchSkill`'s. Back's own tools and the
+    // refusals above are logged here, fire-and-forget like the agent's:
+    // `logToolCall` never throws, and awaiting it made the model wait on a
+    // database write before it could hear the tool's result and answer the
+    // person standing at the robot.
+    if (!dispatched)
+      void this.deps.logToolCall({
+        chatId,
+        userId: this.state.ownerId,
+        source: "voice",
+        skillName: name,
+        params: args,
+        result,
+        status,
+        error,
+        durationMs: Math.round(performance.now() - started),
+      });
+
+    await this.deps.chats
+      .appendMessage({
+        id: messageId(),
+        chatId,
+        role: "assistant",
+        parts: [
+          {
+            type: "dynamic-tool",
+            toolName: name,
+            toolCallId: callId,
+            state: "output-available",
+            input: args,
+            output: result,
+          },
+        ],
+      })
+      .catch((cause) =>
+        console.error("[voice/realtime] tool persistence failed", cause),
+      );
     this.send({
       type: "conversation.item.create",
       item: {

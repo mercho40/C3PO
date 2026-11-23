@@ -7,7 +7,8 @@
  *   apps/web     `endpoint(base, "status")`, `endpoint(base, "stream.mjpg")`
  *                with base = PUBLIC_ROBOT_CAM_URL (`http://localhost:3000/camera`,
  *                or the bridge's `:8001/camera` under dev:robot)
- *   apps/back    `.get("/camera/…")` exposed, `bridgeSiblingUrl("/camera/…")` asked
+ *   apps/back    `.get("/camera/…")` exposed, `proxyOnce(…, "/camera/…")` /
+ *                `http.request("/camera/…")` asked
  *   apps/bridge  `@mcp.custom_route("/camera/…")`
  *
  * When any two drift the headset is black and every symptom points at the
@@ -50,8 +51,8 @@ const all = (src: string, re: RegExp) =>
 
 /** What back asks the bridge for. */
 const proxied = [
-  ...all(CAMERA_TS, /bridgeSiblingUrl\(\s*"([^"]+)"/g),
-  ...all(CAMERA_TS, /proxyOnce\(\s*"([^"]+)"/g),
+  ...all(CAMERA_TS, /\.request\(\s*"([^"]+)"/g),
+  ...all(CAMERA_TS, /proxyOnce\(\s*deps\.http,\s*"([^"]+)"/g),
 ];
 /** What back exposes to the browser. */
 const exposed = all(CAMERA_TS, /\.get\(\s*"(\/camera\/[^"]+)"/g);
@@ -88,7 +89,7 @@ describe("camera route contract", () => {
   });
 
   test("look uploads only the face-blurred frame, and the bridge serves it", () => {
-    const fetched = all(LOOK_TS, /bridgeSiblingUrl\(\s*"([^"]+)"/g);
+    const fetched = all(LOOK_TS, /\.request\(\s*"([^"]+)"/g);
     expect(fetched).toContain("/camera/cloud_frame.jpg");
     expect(fetched).not.toContain("/camera/frame.jpg");
     for (const p of fetched) expect(served).toContain(p);

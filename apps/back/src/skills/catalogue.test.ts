@@ -10,51 +10,28 @@
  * Adding a tool (or a rolling restart with version skew) is enough to trigger
  * it, which is exactly when you least want the stop button gone.
  */
-import {
-  describe,
-  expect,
-  test,
-  mock,
-  beforeEach,
-  afterEach,
-  spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+
+import type { BridgeTool } from "#back/bridge/client.js";
+import { createCatalogue } from "./catalogue";
 
 let toolsToReturn: unknown[] = [];
 let listCalls = 0;
 /** When set, `listTools` waits for it — a bridge that is slow to answer. */
 let gate: Promise<void> | null = null;
 
-// bun shares one module registry across test files, so whichever file loads
-// first decides what client.test.ts imports. Keep the real module and replace
-// only the two calls this file needs: client.test.ts still gets the real
-// failure / sessionLost / error classes, whatever the run order.
-const realClient = await import("#back/bridge/client.js");
-// The LAST mock.module of a path wins for every importer, live bindings
-// included: routes/skills.test.ts mocks the same client with an empty
-// listTools, and under --randomize it could register after this file and
-// serve the catalogue nothing. Reinstalling before each test makes ours win.
-function installClientMock(): void {
-  mock.module("#back/bridge/client.js", () => ({
-    ...realClient,
+/** A fresh catalogue (its own cache) over a fake bridge `tools/list`. */
+let cat = createCatalogue({ listTools: async () => [] });
+const catalogue = async () => cat;
+function newCatalogue() {
+  cat = createCatalogue({
     listTools: async () => {
       listCalls++;
       if (gate) await gate;
-      return toolsToReturn;
+      return toolsToReturn as BridgeTool[];
     },
-    callTool: async () => ({}),
-  }));
+  });
 }
-installClientMock();
-
-// Our own instance of the catalogue. skills/index.ts re-exports from
-// ./catalogue, and bun applies another file's mock.module of skills/index to
-// those re-exported bindings too: routes/skills.test.ts and runtime.test.ts
-// fake getCatalogue/getSkill, and under --randomize this file then tested the
-// fake. The query string makes a separate module entry no other file mocks.
-const CATALOGUE = "./catalogue.ts?catalogue-test";
-const catalogue = () =>
-  import(CATALOGUE) as Promise<typeof import("./catalogue")>;
 
 const goodMeta = (name: string, classification = "gesture") => ({
   name,
@@ -75,12 +52,11 @@ const goodMeta = (name: string, classification = "gesture") => ({
 });
 
 describe("catalogue resilience", () => {
-  beforeEach(async () => {
-    installClientMock();
+  beforeEach(() => {
     toolsToReturn = [];
     // The catalogue reuses a fresh answer for a few seconds; each test asks
-    // the (mocked) bridge for its own tool list.
-    (await catalogue()).invalidateCatalogue();
+    // its own (fake) bridge for its own tool list.
+    newCatalogue();
   });
 
   test("a tool with malformed _meta is dropped, not fatal", async () => {
@@ -146,13 +122,13 @@ describe("invokes do not wait on a stale catalogue", () => {
   let now = 1_000_000;
   let release: () => void = () => {};
 
+  let clock: ReturnType<typeof spyOn>;
   beforeEach(async () => {
-    installClientMock();
-    spyOn(Date, "now").mockImplementation(() => now);
+    clock = spyOn(Date, "now").mockImplementation(() => now);
     gate = null;
     toolsToReturn = [goodMeta("walk_velocity", "locomotion")];
-    const { invalidateCatalogue, getSkill } = await catalogue();
-    invalidateCatalogue();
+    newCatalogue();
+    const { getSkill } = await catalogue();
     await getSkill("walk_velocity"); // a fresh answer, cached
     listCalls = 0;
     now += 10_000; // ...and now stale
@@ -162,7 +138,7 @@ describe("invokes do not wait on a stale catalogue", () => {
   afterEach(() => {
     release();
     gate = null;
-    mock.restore();
+    clock.mockRestore();
   });
 
   test("a stale answer is served at once, refreshed behind it", async () => {

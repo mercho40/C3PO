@@ -91,7 +91,7 @@ def tools_manifest() -> dict[str, Any]:
         "$comment": f"GENERATED from the bridge's MCP catalogue. Do not edit: {REGENERATE}",
         "tools": tools,
         # classification "safety" bypasses the admin gate in apps/back
-        # (routes/skills.ts SAFETY_SKILLS), so the set is part of the contract.
+        # (skills/invoke.ts SAFETY_SKILLS), so the set is part of the contract.
         "safety_tools": sorted(n for n, t in tools.items() if t["classification"] == "safety"),
         # What the `gesture` tool's `name` accepts (skills/gesture.py, from g1_protocol.Gesture).
         "gestures": gesture.available_gestures(),

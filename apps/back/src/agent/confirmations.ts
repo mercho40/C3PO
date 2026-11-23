@@ -6,12 +6,16 @@
  * realtime voice session). It is never confirmed from here: only the admin
  * routes `POST /skills/:name/confirm` (a button) and `POST /voice/transcribe`
  * (the admin's own push-to-talk) take one, and they then grant AND run that
- * exact call themselves (routes/skills.ts `confirmPending`). So the model never
- * retries after a confirmation, it is told the result.
+ * exact call themselves (agent/confirm-service.ts `confirmPending`). So the
+ * model never retries after a confirmation, it is told the result.
  *
  * In memory on purpose: a back restart forgets every pending call, and the
  * operator asks again. Nothing here can grant anything; the bridge's own
  * argument-bound 30 s grant is still the gate.
+ *
+ * One store per process (`createConfirmations`, built by createApp): the
+ * agent's tools, the realtime session, the confirm service, «Caras», PARAR
+ * (turns.ts) and «Reanudar» all hold the same instance.
  */
 
 export type PendingConfirmation = {
@@ -31,15 +35,6 @@ export type PendingConfirmation = {
 /** How long a refusal stays confirmable. Older, the world has moved on: ask again. */
 export const PENDING_TTL_MS = 120_000;
 
-// Keyed by owner AND call id: the id is the model's, and two admins' turns can
-// mint the same one; keyed by id alone, the second card replaced the first.
-const pending = new Map<string, PendingConfirmation>();
-const keyOf = (ownerId: string, id: string) => JSON.stringify([ownerId, id]);
-// Bumped by every clearPending; a taken card remembers the epoch it was taken
-// in, so a grant that fails after a PARAR cannot put it back.
-let stopEpoch = 0;
-const takenIn = new WeakMap<PendingConfirmation, number>();
-
 /** Key order independent, so the bound-arguments check compares values. */
 export function canonicalArgs(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonicalArgs).join(",")}]`;
@@ -54,96 +49,134 @@ export function canonicalArgs(v: unknown): string {
   return JSON.stringify(v ?? null);
 }
 
-const fresh = (p: PendingConfirmation, now: number) =>
-  now - p.at < PENDING_TTL_MS;
+/**
+ * Where an outcome is fed: `loop` to the legacy voice loop (its next turn
+ * reads `message`, the robot says `spoken`), `chat` to whatever listens for
+ * that chat (the realtime session).
+ */
+export type ConfirmationOutcome =
+  | { kind: "loop"; message: string; spoken: string }
+  | { kind: "chat"; chatId: string; message: string };
 
-export function notePending(
-  p: Omit<PendingConfirmation, "at">,
-  now = Date.now(),
-): void {
-  const key = canonicalArgs(p.args);
-  for (const [k, q] of pending) {
-    // The same call asked again replaces the older card instead of stacking.
-    const same =
-      q.ownerId === p.ownerId &&
-      q.chatId === p.chatId &&
-      q.tool === p.tool &&
-      canonicalArgs(q.args) === key;
-    if (same || !fresh(q, now)) pending.delete(k);
+export function createConfirmations() {
+  // Keyed by owner AND call id: the id is the model's, and two admins' turns can
+  // mint the same one; keyed by id alone, the second card replaced the first.
+  const pending = new Map<string, PendingConfirmation>();
+  const keyOf = (ownerId: string, id: string) => JSON.stringify([ownerId, id]);
+  // Bumped by every clear(); a taken card remembers the epoch it was taken
+  // in, so a grant that fails after a PARAR cannot put it back.
+  let stopEpoch = 0;
+  const takenIn = new WeakMap<PendingConfirmation, number>();
+
+  const fresh = (p: PendingConfirmation, now: number) =>
+    now - p.at < PENDING_TTL_MS;
+
+  function note(p: Omit<PendingConfirmation, "at">, now = Date.now()): void {
+    const key = canonicalArgs(p.args);
+    for (const [k, q] of pending) {
+      // The same call asked again replaces the older card instead of stacking.
+      const same =
+        q.ownerId === p.ownerId &&
+        q.chatId === p.chatId &&
+        q.tool === p.tool &&
+        canonicalArgs(q.args) === key;
+      if (same || !fresh(q, now)) pending.delete(k);
+    }
+    pending.set(keyOf(p.ownerId, p.id), { ...p, at: now });
   }
-  pending.set(keyOf(p.ownerId, p.id), { ...p, at: now });
+
+  function list(
+    ownerId: string,
+    chatId: string | null,
+    now = Date.now(),
+  ): PendingConfirmation[] {
+    return [...pending.values()].filter(
+      (p) => p.ownerId === ownerId && p.chatId === chatId && fresh(p, now),
+    );
+  }
+
+  /**
+   * Remove and return the pending call, only if it is this owner's, fresh, and
+   * exactly the tool and arguments the operator was shown. Synchronous, so two
+   * presses racing cannot both get it.
+   */
+  function take(
+    id: string,
+    ownerId: string,
+    tool: string,
+    args: unknown,
+    now = Date.now(),
+  ): PendingConfirmation | "not_pending" | "args_mismatch" {
+    const p = peek(id, ownerId, tool, args, now);
+    if (typeof p === "string") return p;
+    pending.delete(keyOf(ownerId, id));
+    takenIn.set(p, stopEpoch);
+    return p;
+  }
+
+  /** `take`'s checks without taking it: the face check runs before the call is taken. */
+  function peek(
+    id: string,
+    ownerId: string,
+    tool: string,
+    args: unknown,
+    now = Date.now(),
+  ): PendingConfirmation | "not_pending" | "args_mismatch" {
+    const p = pending.get(keyOf(ownerId, id));
+    if (!p || !fresh(p, now)) return "not_pending";
+    if (p.tool !== tool || canonicalArgs(p.args) !== canonicalArgs(args))
+      return "args_mismatch";
+    return p;
+  }
+
+  /** The operator's Cancelar: remove it if it is this owner's call of `tool`. */
+  function drop(
+    id: string,
+    ownerId: string,
+    tool: string,
+  ): PendingConfirmation | null {
+    const p = pending.get(keyOf(ownerId, id));
+    if (!p || p.tool !== tool) return null;
+    pending.delete(keyOf(ownerId, id));
+    return p;
+  }
+
+  /**
+   * Back on the list: the grant failed, so nothing ran. Unless a PARAR cleared
+   * the cards while it was in flight: the stop wins, the card stays gone.
+   */
+  function restore(p: PendingConfirmation): void {
+    if ((takenIn.get(p) ?? stopEpoch) !== stopEpoch) return;
+    pending.set(keyOf(p.ownerId, p.id), p);
+  }
+
+  /** Every card, everyone's: PARAR and «Reanudar» (turns.ts, routes/safety.ts). */
+  function clear(): void {
+    stopEpoch++;
+    pending.clear();
+  }
+
+  // Where a confirmed or cancelled call's outcome goes besides the client
+  // that pressed the button: the legacy voice loop that asked it (it has no
+  // client to relay the message) and the realtime session of its chat. A Set,
+  // not a slot: each voice engine subscribes for itself, and a test that
+  // subscribes does not replace the service's own listener.
+  const listeners = new Set<(outcome: ConfirmationOutcome) => void>();
+
+  /** Hear every outcome. Returns the unsubscribe. */
+  function subscribe(fn: (outcome: ConfirmationOutcome) => void): () => void {
+    listeners.add(fn);
+    return () => void listeners.delete(fn);
+  }
+
+  function publish(outcome: ConfirmationOutcome): void {
+    for (const fn of listeners) fn(outcome);
+  }
+
+  return { note, list, take, peek, drop, restore, clear, subscribe, publish };
 }
 
-export function listPending(
-  ownerId: string,
-  chatId: string | null,
-  now = Date.now(),
-): PendingConfirmation[] {
-  return [...pending.values()].filter(
-    (p) => p.ownerId === ownerId && p.chatId === chatId && fresh(p, now),
-  );
-}
-
-/**
- * Remove and return the pending call, only if it is this owner's, fresh, and
- * exactly the tool and arguments the operator was shown. Synchronous, so two
- * presses racing cannot both get it.
- */
-export function takePending(
-  id: string,
-  ownerId: string,
-  tool: string,
-  args: unknown,
-  now = Date.now(),
-): PendingConfirmation | "not_pending" | "args_mismatch" {
-  const p = peekPending(id, ownerId, tool, args, now);
-  if (typeof p === "string") return p;
-  pending.delete(keyOf(ownerId, id));
-  takenIn.set(p, stopEpoch);
-  return p;
-}
-
-/** `takePending`'s checks without taking it: the face check runs before the call is taken. */
-export function peekPending(
-  id: string,
-  ownerId: string,
-  tool: string,
-  args: unknown,
-  now = Date.now(),
-): PendingConfirmation | "not_pending" | "args_mismatch" {
-  const p = pending.get(keyOf(ownerId, id));
-  if (!p || !fresh(p, now)) return "not_pending";
-  if (p.tool !== tool || canonicalArgs(p.args) !== canonicalArgs(args))
-    return "args_mismatch";
-  return p;
-}
-
-/** The operator's Cancelar: remove it if it is this owner's call of `tool`. */
-export function dropPending(
-  id: string,
-  ownerId: string,
-  tool: string,
-): PendingConfirmation | null {
-  const p = pending.get(keyOf(ownerId, id));
-  if (!p || p.tool !== tool) return null;
-  pending.delete(keyOf(ownerId, id));
-  return p;
-}
-
-/**
- * Back on the list: the grant failed, so nothing ran. Unless a PARAR cleared
- * the cards while it was in flight: the stop wins, the card stays gone.
- */
-export function restorePending(p: PendingConfirmation): void {
-  if ((takenIn.get(p) ?? stopEpoch) !== stopEpoch) return;
-  pending.set(keyOf(p.ownerId, p.id), p);
-}
-
-/** Every card, everyone's: PARAR and «Reanudar» (turns.ts, routes/safety.ts). */
-export function clearPending(): void {
-  stopEpoch++;
-  pending.clear();
-}
+export type Confirmations = ReturnType<typeof createConfirmations>;
 
 /**
  * SAFETY DECISION: these whole utterances, and nothing else, confirm or cancel
@@ -209,33 +242,3 @@ export function outcomeMessage(
 
 export const cancelMessage = (tool: string) =>
   `El operador canceló ${tool}: no se ejecutó. No lo vuelvas a llamar salvo que te lo pidan de nuevo.`;
-
-/**
- * Where a legacy-voice-loop outcome goes (routes/voice.ts sets it): that
- * conversation has no client to relay the message. Returns the handler it
- * replaces, so a caller that swaps it in briefly can put the old one back.
- */
-type LoopFeedback = (message: string, spoken: string) => void;
-let loopFeedback: LoopFeedback | null = null;
-export function onLoopOutcome(fn: LoopFeedback | null): LoopFeedback | null {
-  const previous = loopFeedback;
-  loopFeedback = fn;
-  return previous;
-}
-export function feedLoop(message: string, spoken: string): void {
-  loopFeedback?.(message, spoken);
-}
-
-/**
- * Where a chat call's outcome goes besides the client that pressed the button
- * (routes/voice.ts sets it): the realtime voice session of that chat hears it.
- */
-let chatFeedback: ((chatId: string, message: string) => void) | null = null;
-export function onChatOutcome(
-  fn: ((chatId: string, message: string) => void) | null,
-): void {
-  chatFeedback = fn;
-}
-export function feedChat(chatId: string, message: string): void {
-  chatFeedback?.(chatId, message);
-}

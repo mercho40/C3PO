@@ -119,18 +119,6 @@ function splitForSpeech(text: string): string[] {
   return chunks;
 }
 
-type Env = Record<string, string | undefined>;
-
-/**
- * Whether the robot says the headset's agent replies out loud. Off unless
- * `HEADSET_SPEAK_REPLY=1`: the speaker is shared with gemm, and a robot that
- * starts talking after every push-to-talk is a change an operator should opt
- * into, not find out about at a demo.
- */
-export function headsetSpeaksReplies(env: Env = process.env): boolean {
-  return env.HEADSET_SPEAK_REPLY === "1";
-}
-
 /**
  * Only a voice turn the model finished. `isAborted` is not enough: a headset
  * that disconnects mid-turn ends as `unknown`, and a turn that failed half-way

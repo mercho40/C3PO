@@ -15,17 +15,17 @@
 
 import WebSocket from "ws";
 
-// db and auth modules load transitively; the probe never touches them.
-for (const k of [
-  "DATABASE_URL",
-  "WEB_URL",
-  "BETTER_AUTH_URL",
-  "BETTER_AUTH_SECRET",
-])
-  process.env[k] ??= "http://unused.invalid";
-const { realtimeSessionUpdate } = await import("../src/voice/realtime");
-const { buildSystemPrompt } = await import("../src/agent/runtime");
-const { toEntry } = await import("../src/skills/catalogue");
+import { createToolPolicy } from "../src/agent/policy";
+import { buildSystemPrompt } from "../src/agent/prompt";
+import {
+  LOOK_PROMPT_LINE,
+  LOOK_TOOL,
+  VERIFY_PROMPT_LINE,
+  VERIFY_TOOL,
+} from "../src/agent/look";
+import { parseToolAllowlist } from "../src/config";
+import { toEntry } from "../src/skills/catalogue";
+import { realtimeSessionUpdate, realtimeTools } from "../src/voice/realtime";
 
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {
@@ -38,9 +38,24 @@ const tools = JSON.parse(
   ).text(),
 );
 const skills = tools.map(toEntry);
+// The engine's own policy and back tools, without building the agent.
+const policy = createToolPolicy(parseToolAllowlist(process.env.AGENT_TOOLS));
+const backTools = [
+  { def: LOOK_TOOL, promptLine: LOOK_PROMPT_LINE },
+  { def: VERIFY_TOOL, promptLine: VERIFY_PROMPT_LINE },
+];
 const update = realtimeSessionUpdate(
-  await buildSystemPrompt("voice", skills),
-  skills,
+  buildSystemPrompt(
+    "voice",
+    skills,
+    policy,
+    backTools.map((t) => t.promptLine),
+  ),
+  realtimeTools(skills, policy.offered, backTools),
+  {
+    model: process.env.OPENAI_REALTIME_MODEL ?? "gpt-realtime-2.1",
+    voice: process.env.OPENAI_REALTIME_VOICE ?? "marin",
+  },
 );
 const phrases = process.argv.slice(2);
 if (!phrases.length) phrases.push("saludá a la gente");

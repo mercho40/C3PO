@@ -27,25 +27,19 @@
  * BRIDGE_URL; the robot — the case that matters when something is wrong — works
  * without configuration.
  *
- * NOT IN `lib/env.ts`, DELIBERATELY, FOR TWO REASONS.
- *
- * That module is for config that is REQUIRED and validated at startup — it
- * throws on missing values, and its own docstring notes that optional settings
- * are intentionally kept out. `BRIDGE_URL` is optional with a working default.
- *
- * And reading through `env.ts` would freeze the value at whenever THAT module
- * first got imported by anything in the suite — which is not something a test
- * should have to reason about. `client.ts` learned that lesson the hard way: it
- * used to capture this address once at module load, which made its behaviour
- * depend on import order and failed in CI while passing locally. It now
- * resolves per connect.
+ * READ ONCE, BY `loadConfig` (config.ts), AND PASSED IN. `client.ts` used to
+ * capture this address at module load, which made its behaviour depend on
+ * import order and failed in CI while passing locally; it then read it per
+ * connect. Now nothing here reads the environment: the composition root hands
+ * `config.bridge.mcpUrl` to the MCP client and the HTTP client, and a test
+ * hands them an address of its own.
  */
 
 /** The bridge's MCP endpoint as deployed — the robot, over the tunnel. */
 export const DEFAULT_BRIDGE_URL = "http://127.0.0.1:8001/mcp";
 
-/** Resolve the MCP endpoint without duplicating its deployment default. */
-export function bridgeUrl(configured = process.env.BRIDGE_URL): string {
+/** Resolve BRIDGE_URL (`loadConfig`) without duplicating its deployment default. */
+export function bridgeUrl(configured: string | undefined): string {
   return configured || DEFAULT_BRIDGE_URL;
 }
 
@@ -58,10 +52,7 @@ export function bridgeUrl(configured = process.env.BRIDGE_URL): string {
  * dropped because these are proxied endpoints and any caller's parameters
  * belong to the proxy, not to the upstream.
  */
-export function bridgeSiblingUrl(
-  path: string,
-  configured = process.env.BRIDGE_URL,
-): string {
+export function bridgeSiblingUrl(path: string, configured: string): string {
   const url = new URL(bridgeUrl(configured));
   url.pathname = path;
   url.search = "";
@@ -89,7 +80,7 @@ const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
  * cannot act on it. It goes to the server log, where the person who can start
  * a tunnel is looking.
  */
-export function unreachableHint(url: string = bridgeUrl()): string | null {
+export function unreachableHint(url: string): string | null {
   let host: string;
   let port: string;
   try {

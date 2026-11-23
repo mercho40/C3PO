@@ -22,11 +22,15 @@
  * should never get *more* friction than usual, not less accessible than a
  * skill that can actually put the robot in motion.
  *
+ * The dispatch itself (`invokeSkill`, the bridge grant, SAFETY_SKILLS) is in
+ * ../skills/invoke.ts, and the Confirmar / Cancelar workflow in
+ * ../agent/confirm-service.ts: this file is the HTTP surface over them.
+ *
  * Auth: this plugin guards ALL of its own routes with a single local
- * `.guard({ auth: true }, ...)` below, and `index.ts` mounts it *outside*
+ * `.guard({ auth: true }, ...)` below, and `app.ts` mounts it *outside*
  * its own outer guard. Reason: `/invoke` needs `user` typed, which requires
  * the `auth` macro's resolver to run within this plugin's own scope — if
- * this plugin were also nested inside index.ts's outer guard (like tasks/
+ * this plugin were also nested inside app.ts's outer guard (like tasks/
  * state/agent are), the session would resolve twice per request. Re-verified
  * 2026-10-01 against Elysia 1.4.28: nested, one /invoke ran the macro's
  * resolver twice; mounted beside the guard, once. index.ts had drifted back
@@ -46,578 +50,208 @@
 
 import { Elysia, t } from "elysia";
 
-import { getCatalogue, getSkill } from "../skills";
+import type { ConfirmService } from "#back/agent/confirm-service.js";
+import type { AuthPlugin } from "#back/lib/auth-plugin.js";
+import type { Catalogue } from "../skills";
+import type { SkillInvoker } from "../skills/invoke";
 import { validateArgs } from "../skills/validate";
-import { callTool } from "../bridge/client";
-import { dispatchDirect, STOP_TIMEOUT, stopRobot } from "../bridge/stop";
-import { bridgeSiblingUrl } from "../bridge/url";
-import { bridgeProof } from "../bridge/proof";
-import { betterAuth } from "#back/lib/auth-plugin.js";
-import { logToolCall, resultFailure } from "#back/db/chats.js";
-import {
-  cancelMessage,
-  dropPending,
-  feedChat,
-  feedLoop,
-  outcomeMessage,
-  peekPending,
-  restorePending,
-  takePending,
-} from "#back/agent/confirmations.js";
 
-/** How the operator confirmed a refused call: a click, a spoken «confirmo», or their face. */
-type Via = "button" | "voice" | "face";
+export const skillsRoutes = (deps: {
+  authPlugin: AuthPlugin;
+  catalogue: Pick<Catalogue, "getCatalogue" | "getSkill">;
+  invoker: Pick<SkillInvoker, "invokeSkill">;
+  confirm: ConfirmService;
+}) =>
+  new Elysia({ prefix: "/skills" })
+    .use(deps.authPlugin)
+    .guard({ auth: true }, (app) =>
+      app
+        .get(
+          "/",
+          async () => {
+            // `source` and `age_seconds` ride the envelope so a consumer can
+            // tell a live catalogue from a cached one. The bridge is on
+            // Wi-Fi, on DHCP, and gets power-cycled; pretending otherwise
+            // would just move the surprise.
+            const snap = await deps.catalogue.getCatalogue();
+            return {
+              count: snap.skills.length,
+              source: snap.source,
+              age_seconds: snap.ageSeconds,
+              ...(snap.error ? { bridge_error: snap.error } : {}),
+              // Tools the bridge offered whose `_meta` could not be read. They
+              // are excluded rather than served with a guessed danger level —
+              // but excluded silently, a tool just vanished from the console.
+              // Forwarded so /health can name them.
+              ...(snap.rejected?.length ? { rejected: snap.rejected } : {}),
+              skills: snap.skills,
+            };
+          },
+          {
+            detail: {
+              summary: "List the full skill catalogue.",
+              tags: ["skills"],
+            },
+          },
+        )
+        .get(
+          "/:name",
+          async ({ params: { name }, status }) => {
+            const skill = await deps.catalogue.getSkill(name);
+            if (!skill) return status(404, { error: "skill_not_found", name });
+            return skill;
+          },
+          {
+            params: t.Object({ name: t.String() }),
+            detail: {
+              summary: "Get a single skill definition.",
+              tags: ["skills"],
+            },
+          },
+        )
+        .post(
+          "/:name/invoke",
+          async ({ params: { name }, body, status, user, server, request }) => {
+            // A skill can run for tens of seconds; Bun drops a request that sends
+            // nothing for 10 s. The MCP call's own timeout still bounds it.
+            server?.timeout(request, 0);
+            const r = await deps.invoker.invokeSkill(name, body, user);
+            return r.status === 200 ? r.body : status(r.status, r.body);
+          },
+          {
+            params: t.Object({ name: t.String() }),
+            body: t.Record(t.String(), t.Any()),
+            detail: {
+              summary:
+                "Invoke a skill on the bridge (typed, validated dispatch). Admin-only.",
+              tags: ["skills"],
+            },
+          },
+        )
+        .post(
+          "/:name/confirm",
+          async ({ params: { name }, body, status, user, server, request }) => {
+            // The operator's Confirmar for ONE refused call of a gated skill (T2,
+            // or high-danger T1): back grants it on the bridge (30 s, exactly
+            // these arguments, bridge/safety.py) and runs it right here. It is a
+            // route and not a tool so that no model can reach it, and it lives
+            // here so the bridge's secret stays on this server, never in a
+            // browser. `callId` names the refused call; `args` must be the ones
+            // the operator was shown.
+            if (user.role !== "admin") {
+              return status(403, { error: "admin_required" });
+            }
+            // A pick runs for tens of seconds; Bun drops a silent request after
+            // 10 s and the outcome would never reach the card. The MCP call's
+            // own timeout still bounds it.
+            server?.timeout(request, 0);
+            const r = await deps.confirm.confirmPending(
+              name,
+              body.callId,
+              body.args ?? {},
+              user,
+              "button",
+            );
+            return r.status === 200 ? r.body : status(r.status, r.body);
+          },
+          {
+            params: t.Object({ name: t.String() }),
+            body: t.Object({
+              callId: t.String({ maxLength: 128 }),
+              args: t.Optional(t.Record(t.String(), t.Any())),
+            }),
+            detail: {
+              summary:
+                "Confirm AND run one refused call of a T2 or high-danger T1 skill, with its exact arguments. Admin-only.",
+              tags: ["skills"],
+            },
+          },
+        )
+        .post(
+          "/:name/confirm-face",
+          async ({ params: { name }, body, status, user, server, request }) => {
+            // Same rules as /confirm, the click replaced by an enrolled live face
+            // in front of the robot (agent/confirm-service.ts confirmPendingByFace).
+            if (user.role !== "admin") {
+              return status(403, { error: "admin_required" });
+            }
+            server?.timeout(request, 0);
+            const r = await deps.confirm.confirmPendingByFace(
+              name,
+              body.callId,
+              body.args ?? {},
+              user,
+            );
+            return r.status === 200 ? r.body : status(r.status, r.body);
+          },
+          {
+            params: t.Object({ name: t.String() }),
+            body: t.Object({
+              callId: t.String({ maxLength: 128 }),
+              args: t.Optional(t.Record(t.String(), t.Any())),
+            }),
+            detail: {
+              summary:
+                "Confirm AND run one refused high-danger T1 call when an enrolled person's live face is at the robot. Admin-only.",
+              tags: ["skills"],
+            },
+          },
+        )
+        .post(
+          "/:name/cancel",
+          ({ params: { name }, body, status, user }) => {
+            if (user.role !== "admin") {
+              return status(403, { error: "admin_required" });
+            }
+            const r = deps.confirm.cancelPending(name, body.callId, user);
+            return r.status === 200 ? r.body : status(r.status, r.body);
+          },
+          {
+            params: t.Object({ name: t.String() }),
+            body: t.Object({ callId: t.String({ maxLength: 128 }) }),
+            detail: {
+              summary:
+                "Drop one refused call waiting for confirmation; nothing runs. Admin-only.",
+              tags: ["skills"],
+            },
+          },
+        )
+        .post(
+          "/:name/dry-run",
+          async ({ params: { name }, body, status }) => {
+            const skill = await deps.catalogue.getSkill(name);
+            if (!skill) return status(404, { error: "skill_not_found", name });
 
-//: Skills that must dispatch even when the catalogue cannot be read.
-//:
-//: Deliberately a hardcoded name and not a heuristic: this list exists to keep
-//: the e-stop working when the thing that normally answers "is this a safety
-//: skill?" is exactly what has failed. It is checked against the catalogue's
-//: own classification whenever the catalogue IS available, so the two cannot
-//: drift silently — see the test.
-export const SAFETY_SKILLS = new Set(["stop_everything", "soft_stop"]);
+            const {
+              ok,
+              value: args,
+              issues,
+            } = validateArgs(skill.parameters, body as Record<string, unknown>);
+            if (!ok) {
+              return status(422, { error: "invalid_params", name, issues });
+            }
 
-/**
- * Ask the bridge to grant ONE call of `name` with exactly `args`, and audit
- * who asked. Arguments are not validated here: the bridge canonicalises them
- * against the tool's own schema and refuses what does not fit.
- */
-async function grantOnBridge(
-  name: string,
-  args: Record<string, unknown>,
-  userId: string,
-  /** Set when the operator's Confirmar of a refused call asked: button, voice or face. */
-  via?: Via,
-): Promise<{ status: number; body: Record<string, unknown> }> {
-  const proof = bridgeProof();
-  if (!proof) {
-    return { status: 503, body: { error: "confirmation_not_configured" } };
-  }
-  const startedAt = Date.now();
-  let upstream: Response;
-  try {
-    upstream = await fetch(bridgeSiblingUrl("/safety/confirm"), {
-      method: "POST",
-      headers: { "content-type": "application/json", ...proof },
-      // `via` only labels the bridge's log line; the secret is the proof.
-      body: JSON.stringify({
-        tool: name,
-        args,
-        ...(via === "face" ? { via } : {}),
-      }),
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {
-    return { status: 502, body: { error: "bridge_unavailable", name } };
-  }
-  const body = (await upstream.json().catch(() => ({}))) as Record<
-    string,
-    unknown
-  >;
-  // Who authorised which arm motion is the row worth having after the fact.
-  void logToolCall({
-    userId,
-    source: "direct",
-    skillName: "safety_confirm",
-    params: { tool: name, args, ...(via ? { via } : {}) },
-    result: body,
-    status: upstream.ok ? "ok" : "error",
-    ...(upstream.ok ? {} : { error: String(body.error ?? upstream.status) }),
-    durationMs: Date.now() - startedAt,
-    startedAt,
-  });
-  return { status: upstream.status, body };
-}
-
-/**
- * The /invoke dispatch, shared with the operator's Confirmar. `dispatched`
- * says the call left for the bridge (so a failure may still have moved it).
- */
-async function invokeSkill(
-  name: string,
-  body: unknown,
-  user: { id: string; role?: string | null },
-  opts: { confirmed?: Via } = {},
-): Promise<{ status: number; body: unknown; dispatched?: boolean }> {
-  const knownSafety = SAFETY_SKILLS.has(name);
-  // The stop never waits on the catalogue. `getSkill` asks the bridge
-  // for its tool list first, and a bridge that accepts connections but
-  // never answers held PARAR behind that list for the MCP default
-  // timeout — the stop was not even attempted until it expired. A
-  // known safety skill needs no schema (no arguments) and no admin
-  // check, so it skips the lookup and is dispatched immediately.
-  const skill = knownSafety ? undefined : await getSkill(name);
-
-  // A missing catalogue entry is a 404 for everything EXCEPT a skill
-  // we already know is a stop.
-  //
-  // `getSkill` reads the catalogue, which is fetched from the bridge
-  // and cached. On a cold start with the bridge unreachable there is
-  // nothing cached, so the catalogue is empty and every lookup misses
-  // — including `stop_everything`. The dashboard's PARAR button then
-  // answered `skill_not_found`, which reads as a bug in the button
-  // rather than as "the bridge is unreachable", and is the single
-  // worst moment to hand somebody a misleading error.
-  //
-  // The stop does not need the catalogue. It needs to be dispatched.
-  // So a known safety skill skips the lookup and goes straight to the
-  // bridge, where it either works or fails with a transport error that
-  // says what is actually wrong.
-  if (!skill && !knownSafety) {
-    return { status: 404, body: { error: "skill_not_found", name } };
-  }
-
-  // Admin-only, except safety-classified skills (see file docstring)
-  // — this bypasses the agent's reasoning loop entirely and
-  // dispatches straight to the bridge. `knownSafety` covers the
-  // catalogue being unavailable: an e-stop must not become
-  // admin-gated because a fetch failed.
-  const isSafety = knownSafety || skill?.classification === "safety";
-  if (!isSafety && user.role !== "admin") {
-    return {
-      status: 403,
-      body: {
-        error: "admin_required",
-        message:
-          "Direct skill invocation is restricted to admins. Use /agent to drive the robot through the reasoning agent instead.",
-      },
-    };
-  }
-
-  // Schema validation (SCRUM-57, layer 1): fill the bridge's
-  // declared defaults, then check the body before dispatch. The schema
-  // is plain JSON Schema from the bridge now, so this goes through Ajv
-  // — TypeBox throws on a schema that lacks its own [Kind] symbol.
-  // No catalogue entry means no schema to validate against. That only
-  // happens on the known-safety path above, where the arguments are
-  // empty and the right answer is to dispatch rather than to refuse.
-  let args: Record<string, unknown> = {};
-  if (skill) {
-    const validated = validateArgs(
-      skill.parameters,
-      body as Record<string, unknown>,
+            // Simulated preview — never dispatches to the bridge.
+            return {
+              dry_run: true,
+              skill: name,
+              would_invoke: { name, params: args },
+              danger_level: skill.dangerLevel,
+              expected_duration_seconds: skill.expectedDurationSeconds,
+              cancellable: skill.cancellable,
+              preconditions: skill.preconditions ?? [],
+              works: skill.works,
+              note: `Simulated. POST /skills/${name}/invoke to execute.`,
+            };
+          },
+          {
+            params: t.Object({ name: t.String() }),
+            body: t.Record(t.String(), t.Any()),
+            detail: {
+              summary:
+                "Dry-run a skill — validated preview, no bridge dispatch.",
+              tags: ["skills"],
+            },
+          },
+        ),
     );
-    if (!validated.ok) {
-      return {
-        status: 422,
-        body: {
-          error: "invalid_params",
-          name,
-          // What the operator reads; the confirm path forwards only `detail`.
-          detail: validated.issues
-            .map((i) => `${i.path} ${i.message}`)
-            .join("; "),
-          issues: validated.issues,
-        },
-      };
-    }
-    args = validated.value;
-  }
-
-  // The bridge gates a high-danger T1 (start_walking_waist,
-  // arm_navigation, zero_torque) for every MCP caller. An admin's /invoke IS the
-  // confirmation, so the console and headset bring-up grant this exact
-  // call first. Only here: a grant in the agent's tool execute would
-  // let every agent turn confirm itself. A T2 is granted only when
-  // `confirmed` (the operator's Confirmar of that refused call, see
-  // `confirmPending`), and `tier === "T1"` fails closed on a catalogue
-  // without tiers.
-  const highT1 = skill?.tier === "T1" && skill.dangerLevel === "high";
-  if (highT1 || (opts.confirmed && skill?.tier === "T2")) {
-    const granted = await grantOnBridge(name, args, user.id, opts.confirmed);
-    if (granted.status >= 300) return granted;
-  }
-
-  // Audited when it settles, never awaited (bridge/stop.ts). A stop goes
-  // through `stopRobot`, the one stop path the /tasks estop shares: it ends
-  // every agent turn first, and answers 504 after 8 s while the stop keeps
-  // running. Other skills keep no bound — gestures and walks legitimately
-  // run for tens of seconds — except one the catalogue classifies as safety.
-  const who = { userId: user.id, source: "direct" as const };
-  const r = SAFETY_SKILLS.has(name)
-    ? await stopRobot(name, who)
-    : await dispatchDirect(
-        name,
-        args,
-        who,
-        isSafety ? STOP_TIMEOUT.ms : undefined,
-      );
-  return { ...r, dispatched: true };
-}
-
-// `detail` is for the operator; `message` is reserved for what the agent reads.
-const NOT_PENDING = {
-  error: "not_pending",
-  detail:
-    "Esa confirmación ya no está pendiente (ya se ejecutó, se canceló o pasaron más de 2 min): pedíselo de nuevo al agente.",
-};
-
-/**
- * The operator's Confirmar: grant AND run the exact call the bridge refused,
- * once, and say what happened in words for the model. The pending record is
- * taken before any await, so a second press (or a voice "confirmo" racing a
- * click) finds nothing and runs nothing. Callers are admin routes only; no
- * agent tool reaches this.
- */
-export async function confirmPending(
-  name: string,
-  callId: string,
-  args: unknown,
-  user: { id: string; role?: string | null },
-  via: Via,
-): Promise<{ status: number; body: Record<string, unknown> }> {
-  const p = takePending(callId, user.id, name, args);
-  if (p === "not_pending") return { status: 409, body: NOT_PENDING };
-  if (p === "args_mismatch")
-    return {
-      status: 409,
-      body: {
-        error: "args_mismatch",
-        detail:
-          "Los argumentos no son los de la llamada rechazada: no se envió nada.",
-      },
-    };
-  console.log(
-    `[confirm] ${name} confirmed by ${user.id} via ${via}`,
-    JSON.stringify(p.args),
-  );
-  const r = await invokeSkill(name, p.args, user, { confirmed: via });
-  // Nothing left for the bridge (the grant failed): the card stays usable.
-  if (!r.dispatched) restorePending(p);
-  const ok = r.status === 200;
-  // A refused or failed task is still a 200 (the bridge never raises): the
-  // card reads that body, but the model and the room must hear it failed.
-  // A stop during the bridge's spoken warning (or PARAR mid-task) ends it
-  // "cancelled": a warning to the console, but nothing the room may hear as done.
-  const cancelled =
-    ok && (r.body as { status?: unknown } | undefined)?.status === "cancelled";
-  const bodyFailure = ok
-    ? (resultFailure(r.body) ?? (cancelled ? "cancelled" : null))
-    : null;
-  const ran = ok && !bodyFailure;
-  const failure = r.body as
-    | { error?: string; detail?: string; result?: { note?: unknown } }
-    | undefined;
-  const message = outcomeMessage(
-    name,
-    ran
-      ? { ok: true, result: r.body }
-      : {
-          ok: false,
-          error: bodyFailure
-            ? `${bodyFailure}: ${JSON.stringify(r.body)}`
-            : [failure?.error, failure?.detail].filter(Boolean).join(": "),
-        },
-  );
-  // pick's planner leaves a short Spanish hint («Acercate ~0.14 m…») here.
-  const note = failure?.result?.note;
-  if (p.loop && r.dispatched)
-    feedLoop(
-      message,
-      ran
-        ? `Confirmado: ejecuté ${name}.`
-        : cancelled
-          ? `Confirmado, pero ${name} se canceló.`
-          : `Confirmado, pero ${name} falló${typeof note === "string" && note ? `: ${note}` : "."}`,
-    );
-  if (p.chatId && r.dispatched) feedChat(p.chatId, message);
-  return ok
-    ? { status: 200, body: { tool: name, result: r.body, message } }
-    : {
-        status: r.status,
-        body: {
-          error: failure?.error ?? "error",
-          ...(failure?.detail ? { detail: failure.detail } : {}),
-          // Only what ran is the agent's business; a failed grant ran nothing.
-          ...(r.dispatched ? { message } : {}),
-        },
-      };
-}
-
-/** A face-confirmed arm/hand call waits this long for everyone to step out of reach. */
-export const FACE_STEP_BACK = { timeoutMs: 20_000, everyMs: 500 };
-
-/** True once the bridge sees nobody closer than `reach` (none seen counts), false at the deadline. */
-async function outOfReach(reach: number): Promise<boolean> {
-  const deadline = Date.now() + FACE_STEP_BACK.timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await fetch(bridgeSiblingUrl("/safety/status"), {
-        signal: AbortSignal.timeout(2000),
-      });
-      const s = (await r.json()) as { nearest_person_m?: number | null };
-      if (r.ok && (s.nearest_person_m == null || s.nearest_person_m >= reach))
-        return true;
-    } catch {
-      // A missed poll is not "out of reach": try again until the deadline.
-    }
-    await Bun.sleep(FACE_STEP_BACK.everyMs);
-  }
-  return false;
-}
-
-/**
- * The face instead of Confirmar: while the console shows a refused call, it
- * asks here every few seconds. The bridge looks for an enrolled person's live
- * face (/face/confirm_check, which grants nothing); on a pass this is
- * `confirmPending` with via "face", so the call is taken once, granted and run
- * exactly as a click would. `passed: false` means keep waiting. An arm/hand
- * call (`reach_m`) first waits for that person to step back out of reach, the
- * robot saying so: the face had to be inside it. A PARAR meanwhile clears the
- * card, so nothing runs after it.
- */
-export async function confirmPendingByFace(
-  name: string,
-  callId: string,
-  args: unknown,
-  user: { id: string; role?: string | null },
-): Promise<{ status: number; body: Record<string, unknown> }> {
-  const p = peekPending(callId, user.id, name, args);
-  if (p === "not_pending") return { status: 409, body: NOT_PENDING };
-  if (p === "args_mismatch")
-    return { status: 409, body: { error: "args_mismatch" } };
-  const proof = bridgeProof();
-  if (!proof)
-    return { status: 503, body: { error: "confirmation_not_configured" } };
-  let upstream: Response;
-  try {
-    upstream = await fetch(bridgeSiblingUrl("/face/confirm_check"), {
-      method: "POST",
-      headers: { "content-type": "application/json", ...proof },
-      body: JSON.stringify({ tool: name }),
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {
-    return { status: 502, body: { error: "bridge_unavailable", name } };
-  }
-  const check = (await upstream.json().catch(() => ({}))) as {
-    passed?: boolean;
-    person?: { name?: string | null };
-    reach_m?: number | null;
-    [k: string]: unknown;
-  };
-  if (!upstream.ok) return { status: upstream.status, body: check };
-  if (check.passed !== true)
-    return { status: 200, body: { passed: false, reason: check.reason } };
-  if (typeof check.reach_m === "number") {
-    void callTool("say", {
-      // Not «Confirmado»: that word is kept for a call that ran and succeeded.
-      text: `Te reconocí. Alejate un poco y ${name === "set_hand" ? "muevo la mano" : "lo hago"}.`,
-    }).catch(() => {});
-    if (!(await outOfReach(check.reach_m)))
-      return { status: 200, body: { passed: false, reason: "still_in_reach" } };
-  }
-  const r = await confirmPending(name, callId, args, user, "face");
-  return {
-    status: r.status,
-    body: { ...r.body, passed: true, person: check.person?.name ?? null },
-  };
-}
-
-/** The operator's Cancelar: the refused call is dropped, and nothing runs. */
-export function cancelPending(
-  name: string,
-  callId: string,
-  user: { id: string },
-): { status: number; body: Record<string, unknown> } {
-  const p = dropPending(callId, user.id, name);
-  if (!p) return { status: 409, body: NOT_PENDING };
-  console.log(`[confirm] ${name} cancelled by ${user.id}`);
-  const message = cancelMessage(name);
-  if (p.loop) feedLoop(message, `Cancelado: no ejecuto ${name}.`);
-  if (p.chatId) feedChat(p.chatId, message);
-  return { status: 200, body: { tool: name, cancelled: true, message } };
-}
-
-export const skillsRoutes = new Elysia({ prefix: "/skills" })
-  .use(betterAuth)
-  .guard({ auth: true }, (app) =>
-    app
-      .get(
-        "/",
-        async () => {
-          // `source` and `age_seconds` ride the envelope so a consumer can
-          // tell a live catalogue from a cached one. The bridge is on
-          // Wi-Fi, on DHCP, and gets power-cycled; pretending otherwise
-          // would just move the surprise.
-          const snap = await getCatalogue();
-          return {
-            count: snap.skills.length,
-            source: snap.source,
-            age_seconds: snap.ageSeconds,
-            ...(snap.error ? { bridge_error: snap.error } : {}),
-            // Tools the bridge offered whose `_meta` could not be read. They
-            // are excluded rather than served with a guessed danger level —
-            // but excluded silently, a tool just vanished from the console.
-            // Forwarded so /health can name them.
-            ...(snap.rejected?.length ? { rejected: snap.rejected } : {}),
-            skills: snap.skills,
-          };
-        },
-        {
-          detail: {
-            summary: "List the full skill catalogue.",
-            tags: ["skills"],
-          },
-        },
-      )
-      .get(
-        "/:name",
-        async ({ params: { name }, status }) => {
-          const skill = await getSkill(name);
-          if (!skill) return status(404, { error: "skill_not_found", name });
-          return skill;
-        },
-        {
-          params: t.Object({ name: t.String() }),
-          detail: {
-            summary: "Get a single skill definition.",
-            tags: ["skills"],
-          },
-        },
-      )
-      .post(
-        "/:name/invoke",
-        async ({ params: { name }, body, status, user, server, request }) => {
-          // A skill can run for tens of seconds; Bun drops a request that sends
-          // nothing for 10 s. The MCP call's own timeout still bounds it.
-          server?.timeout(request, 0);
-          const r = await invokeSkill(name, body, user);
-          return r.status === 200 ? r.body : status(r.status, r.body);
-        },
-        {
-          params: t.Object({ name: t.String() }),
-          body: t.Record(t.String(), t.Any()),
-          detail: {
-            summary:
-              "Invoke a skill on the bridge (typed, validated dispatch). Admin-only.",
-            tags: ["skills"],
-          },
-        },
-      )
-      .post(
-        "/:name/confirm",
-        async ({ params: { name }, body, status, user, server, request }) => {
-          // The operator's Confirmar for ONE refused call of a gated skill (T2,
-          // or high-danger T1): back grants it on the bridge (30 s, exactly
-          // these arguments, bridge/safety.py) and runs it right here. It is a
-          // route and not a tool so that no model can reach it, and it lives
-          // here so the bridge's secret stays on this server, never in a
-          // browser. `callId` names the refused call; `args` must be the ones
-          // the operator was shown.
-          if (user.role !== "admin") {
-            return status(403, { error: "admin_required" });
-          }
-          // A pick runs for tens of seconds; Bun drops a silent request after
-          // 10 s and the outcome would never reach the card. The MCP call's
-          // own timeout still bounds it.
-          server?.timeout(request, 0);
-          const r = await confirmPending(
-            name,
-            body.callId,
-            body.args ?? {},
-            user,
-            "button",
-          );
-          return r.status === 200 ? r.body : status(r.status, r.body);
-        },
-        {
-          params: t.Object({ name: t.String() }),
-          body: t.Object({
-            callId: t.String({ maxLength: 128 }),
-            args: t.Optional(t.Record(t.String(), t.Any())),
-          }),
-          detail: {
-            summary:
-              "Confirm AND run one refused call of a T2 or high-danger T1 skill, with its exact arguments. Admin-only.",
-            tags: ["skills"],
-          },
-        },
-      )
-      .post(
-        "/:name/confirm-face",
-        async ({ params: { name }, body, status, user, server, request }) => {
-          // Same rules as /confirm, the click replaced by an enrolled live face
-          // in front of the robot (confirmPendingByFace).
-          if (user.role !== "admin") {
-            return status(403, { error: "admin_required" });
-          }
-          server?.timeout(request, 0);
-          const r = await confirmPendingByFace(
-            name,
-            body.callId,
-            body.args ?? {},
-            user,
-          );
-          return r.status === 200 ? r.body : status(r.status, r.body);
-        },
-        {
-          params: t.Object({ name: t.String() }),
-          body: t.Object({
-            callId: t.String({ maxLength: 128 }),
-            args: t.Optional(t.Record(t.String(), t.Any())),
-          }),
-          detail: {
-            summary:
-              "Confirm AND run one refused high-danger T1 call when an enrolled person's live face is at the robot. Admin-only.",
-            tags: ["skills"],
-          },
-        },
-      )
-      .post(
-        "/:name/cancel",
-        ({ params: { name }, body, status, user }) => {
-          if (user.role !== "admin") {
-            return status(403, { error: "admin_required" });
-          }
-          const r = cancelPending(name, body.callId, user);
-          return r.status === 200 ? r.body : status(r.status, r.body);
-        },
-        {
-          params: t.Object({ name: t.String() }),
-          body: t.Object({ callId: t.String({ maxLength: 128 }) }),
-          detail: {
-            summary:
-              "Drop one refused call waiting for confirmation; nothing runs. Admin-only.",
-            tags: ["skills"],
-          },
-        },
-      )
-      .post(
-        "/:name/dry-run",
-        async ({ params: { name }, body, status }) => {
-          const skill = await getSkill(name);
-          if (!skill) return status(404, { error: "skill_not_found", name });
-
-          const {
-            ok,
-            value: args,
-            issues,
-          } = validateArgs(skill.parameters, body as Record<string, unknown>);
-          if (!ok) {
-            return status(422, { error: "invalid_params", name, issues });
-          }
-
-          // Simulated preview — never dispatches to the bridge.
-          return {
-            dry_run: true,
-            skill: name,
-            would_invoke: { name, params: args },
-            danger_level: skill.dangerLevel,
-            expected_duration_seconds: skill.expectedDurationSeconds,
-            cancellable: skill.cancellable,
-            preconditions: skill.preconditions ?? [],
-            works: skill.works,
-            note: `Simulated. POST /skills/${name}/invoke to execute.`,
-          };
-        },
-        {
-          params: t.Object({ name: t.String() }),
-          body: t.Record(t.String(), t.Any()),
-          detail: {
-            summary: "Dry-run a skill — validated preview, no bridge dispatch.",
-            tags: ["skills"],
-          },
-        },
-      ),
-  );

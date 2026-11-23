@@ -82,7 +82,7 @@ if (!trials.length) {
 }
 
 // Same .env loading as smoke-agent.ts: Bun only reads .env from the cwd, and
-// it must be in process.env BEFORE runtime.ts (and env.ts) are imported.
+// it must be in process.env BEFORE loadConfig reads it.
 if (!dryRun) {
   const envFile = Bun.file(`${import.meta.dir}/../.env`);
   if (await envFile.exists()) {
@@ -107,9 +107,15 @@ if (dryRun) {
     return { ...trace, steps: trace.calls.length + 1 };
   };
 } else {
-  const { runAgentChat } = await import("../src/agent/runtime");
-  const { listSkills } = await import("../src/skills/index");
-  const { callTool } = await import("../src/bridge/client");
+  const { loadConfig } = await import("../src/config");
+  const { createRealDeps } = await import("../src/deps");
+  const { createServices } = await import("../src/app");
+  const config = loadConfig();
+  const deps = createRealDeps(config);
+  const services = createServices(deps);
+  const { runAgentChat } = services.agent;
+  const listSkills = services.catalogue.listSkills;
+  const callTool = deps.bridge.callTool;
   if (opts["expect-env"]) {
     // Before the first trial, so a wrong BRIDGE_URL never reaches the robot.
     const wrong = envMismatch(opts["expect-env"], await callTool("get_state"));
@@ -127,7 +133,7 @@ if (dryRun) {
     process.exit(1);
   }
   catalogue = new Set(skills.map((s) => s.name));
-  model = process.env.AGENT_MODEL ?? "tic-chat";
+  model = config.agent.model;
   run = async (_task, phrase) => {
     let error: string | undefined;
     const result = await runAgentChat(

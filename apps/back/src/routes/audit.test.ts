@@ -8,72 +8,23 @@
  * silently ignored, and pagination never invents a "next page" that is not
  * there.
  *
- * No database: `#back/db/drizzle` is replaced with a chain that records what
- * the route asked for and answers from a queue. `bun test` shares one module
- * registry across files, so this mock's surface (`db`) is complete — see the
- * note in skills.test.ts.
+ * No database: the app's audit reader runs over a fake drizzle chain that
+ * records what the route asked for and answers from a queue (`fakeDb`).
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
-let sessionUser: { id: string; role: string | null } | null = null;
+import { fakeDb, testApp, type TestApp } from "../testing/fakes";
+import { AUDIT_MAX_LIMIT, auditPage, parseAuditQuery } from "./audit";
 
-mock.module("#back/lib/auth.js", () => ({
-  auth: {
-    handler: async () => new Response("not mocked", { status: 404 }),
-    api: {
-      getSession: async () => {
-        if (!sessionUser) return null;
-        return { user: sessionUser, session: { id: "sess_1" } };
-      },
-    },
-  },
-}));
-
+let h: TestApp;
+let db: ReturnType<typeof fakeDb>["state"];
 /** Every select() the route made, with the chain of calls on it. */
 let selects: { calls: [string, unknown[]][] }[] = [];
-/** What each successive select() resolves to. */
+/** What each successive select() resolves to (the fake db's queue). */
 let selectResults: unknown[][] = [];
 
-function chain(record: { calls: [string, unknown[]][] }, result: unknown[]) {
-  const target = {
-    then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
-      Promise.resolve(result).then(resolve, reject),
-  };
-  const proxy: unknown = new Proxy(target, {
-    get(obj, prop) {
-      if (prop === "then") return obj.then;
-      return (...args: unknown[]) => {
-        record.calls.push([String(prop), args]);
-        return proxy;
-      };
-    },
-  });
-  return proxy;
-}
-
-mock.module("#back/db/drizzle.js", () => ({
-  db: {
-    select: (...args: unknown[]) => {
-      const record = { calls: [["select", args]] as [string, unknown[]][] };
-      selects.push(record);
-      return chain(record, selectResults.shift() ?? []);
-    },
-    // Writes are not this route's business, but other modules share this
-    // mock through the registry; they must not throw on import or call.
-    insert: () => chain({ calls: [] }, []),
-    update: () => chain({ calls: [] }, []),
-    delete: () => chain({ calls: [] }, []),
-    query: { chat: { findFirst: async () => undefined } },
-  },
-}));
-
-const { auditRoutes, parseAuditQuery, auditPage, AUDIT_MAX_LIMIT } =
-  await import("./audit");
-
 function get(query = "") {
-  return auditRoutes.handle(
-    new Request(`http://localhost/audit${query ? `?${query}` : ""}`),
-  );
+  return h.request(`/audit${query ? `?${query}` : ""}`);
 }
 
 function dbRow(id: string, overrides: Record<string, unknown> = {}) {
@@ -96,9 +47,10 @@ function dbRow(id: string, overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  sessionUser = null;
-  selects = [];
-  selectResults = [];
+  h = testApp();
+  db = h.db.state;
+  selects = db.selects;
+  selectResults = db.selectResults;
 });
 
 describe("GET /audit — the gate", () => {
@@ -114,7 +66,7 @@ describe("GET /audit — the gate", () => {
   });
 
   test("403 admin_required for a non-admin, and the log is never read", async () => {
-    sessionUser = { id: "u2", role: null };
+    h.signIn({ id: "u2", role: null });
     const res = await get();
     expect(res.status).toBe(403);
     const json = (await res.json()) as { error: string };
@@ -123,7 +75,7 @@ describe("GET /audit — the gate", () => {
   });
 
   test("403 for a non-admin even with a malformed query", async () => {
-    sessionUser = { id: "u2", role: "user" };
+    h.signIn({ id: "u2", role: "user" });
     const res = await get("status=bogus");
     expect(res.status).toBe(403);
   });
@@ -131,18 +83,16 @@ describe("GET /audit — the gate", () => {
 
 describe("GET /audit — the shape", () => {
   test("an admin gets rows newest first with the user folded in, and no next page when the read came back short", async () => {
-    sessionUser = { id: "u1", role: "admin" };
-    selectResults = [
-      [
-        dbRow("b"),
-        dbRow("a", {
-          userId: null,
-          userName: null,
-          userEmail: null,
-          source: null,
-        }),
-      ],
-    ];
+    h.signIn({ id: "u1", role: "admin" });
+    selectResults.push([
+      dbRow("b"),
+      dbRow("a", {
+        userId: null,
+        userName: null,
+        userEmail: null,
+        source: null,
+      }),
+    ]);
     const res = await get();
     expect(res.status).toBe(200);
     const json = (await res.json()) as {
@@ -169,7 +119,7 @@ describe("GET /audit — the shape", () => {
   });
 
   test("asks the database for one row more than the page, and orders newest first", async () => {
-    sessionUser = { id: "u1", role: "admin" };
+    h.signIn({ id: "u1", role: "admin" });
     await get("limit=10");
     const calls = selects[0]!.calls;
     const limit = calls.find(([name]) => name === "limit");
@@ -178,14 +128,14 @@ describe("GET /audit — the shape", () => {
   });
 
   test("the limit is clamped to the maximum", async () => {
-    sessionUser = { id: "u1", role: "admin" };
+    h.signIn({ id: "u1", role: "admin" });
     await get("limit=100000");
     const limit = selects[0]!.calls.find(([name]) => name === "limit");
     expect(limit?.[1][0]).toBe(AUDIT_MAX_LIMIT + 1);
   });
 
   test("422 for a filter value it does not understand, rather than ignoring it", async () => {
-    sessionUser = { id: "u1", role: "admin" };
+    h.signIn({ id: "u1", role: "admin" });
     const res = await get("source=telepathy");
     expect(res.status).toBe(422);
     const json = (await res.json()) as { error: string };
@@ -193,8 +143,8 @@ describe("GET /audit — the shape", () => {
   });
 
   test("400 for a cursor id that names no row — not an empty page that reads as 'no more'", async () => {
-    sessionUser = { id: "u1", role: "admin" };
-    selectResults = [[]]; // the existence check finds nothing
+    h.signIn({ id: "u1", role: "admin" });
+    selectResults.push([]); // the existence check finds nothing
     const res = await get("before=not-a-row");
     expect(res.status).toBe(400);
     const json = (await res.json()) as { error: string };
@@ -202,8 +152,8 @@ describe("GET /audit — the shape", () => {
   });
 
   test("a known cursor id pages on", async () => {
-    sessionUser = { id: "u1", role: "admin" };
-    selectResults = [[{ id: "c" }], [dbRow("b")]];
+    h.signIn({ id: "u1", role: "admin" });
+    selectResults.push([{ id: "c" }], [dbRow("b")]);
     const res = await get("before=c");
     expect(res.status).toBe(200);
     expect(selects.length).toBe(2);

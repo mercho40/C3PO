@@ -75,17 +75,17 @@ const CALLS: Record<string, RegExp> = {
 
 /** Lists of tool names, by where they live. */
 const LISTS: Record<string, [file: string, block: RegExp]> = {
-  SAFETY_SKILLS: ["routes/skills.ts", /SAFETY_SKILLS = new Set\(\[([^\]]*)\]/],
+  SAFETY_SKILLS: ["skills/invoke.ts", /SAFETY_SKILLS = new Set\(\[([^\]]*)\]/],
   "agentToolExclusions (always)": [
-    "agent/runtime.ts",
+    "agent/policy.ts",
     /const always = \[([^\]]*)\]/,
   ],
   "agentToolExclusions (voice)": [
-    "agent/runtime.ts",
+    "agent/policy.ts",
     /\[\.\.\.always,([^\]]*)\]/,
   ],
   ALWAYS_OFFERED: [
-    "agent/runtime.ts",
+    "agent/policy.ts",
     /ALWAYS_OFFERED[^=]*= new Set\(\[([^\]]*)\]/,
   ],
 };
@@ -112,7 +112,7 @@ describe("every bridge tool back names is in the manifest", () => {
 
 test("SAFETY_SKILLS is the bridge's safety set", () => {
   // classification "safety" is what lets a non-admin invoke a skill directly
-  // (routes/skills.ts), and SAFETY_SKILLS is what keeps the e-stop invocable
+  // (skills/invoke.ts), and SAFETY_SKILLS is what keeps the e-stop invocable
   // when the catalogue cannot be read. They must be the same tools.
   const [file, block] = LISTS.SAFETY_SKILLS!;
   expect(listed(file, block).sort()).toEqual([...MANIFEST.safety_tools].sort());
