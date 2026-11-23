@@ -6,9 +6,8 @@
  *   C3PO_DB_TEST=1 DATABASE_URL=postgres://…@localhost:5432/<scratch db> \
  *     bun test src/db/chats.db.test.ts
  *
- * Skipped without C3PO_DB_TEST=1. Run it alone: five suites mock
- * #back/db/drizzle.js process-wide, so inside the full run it could be handed
- * their stub. It refuses any DATABASE_URL host but localhost or 127.0.0.1
+ * Skipped without C3PO_DB_TEST=1. It refuses any DATABASE_URL host but
+ * localhost or 127.0.0.1
  * before connecting, because bun loads apps/back/.env, which can name the
  * shared cloud database. Give it a scratch database: it applies the
  * migrations, writes only rows with this run's ids, and deletes them after.
@@ -19,8 +18,8 @@ import { join } from "node:path";
 const enabled = process.env.C3PO_DB_TEST === "1";
 
 describe.skipIf(!enabled)("chats.ts on Postgres", () => {
-  let chats: typeof import("./chats");
-  let db: (typeof import("./drizzle"))["db"];
+  let chats: import("./chats").ChatStore;
+  let db: import("./drizzle").Db;
   let schema: typeof import("./schema");
   let orm: typeof import("drizzle-orm");
 
@@ -36,8 +35,8 @@ describe.skipIf(!enabled)("chats.ts on Postgres", () => {
         `C3PO_DB_TEST refuses DATABASE_URL host "${host}": localhost or 127.0.0.1 only`,
       );
     }
-    ({ db } = await import("./drizzle"));
-    chats = await import("./chats");
+    db = (await import("./drizzle")).createDb(process.env.DATABASE_URL ?? "");
+    chats = (await import("./chats")).createChatStore(db);
     schema = await import("./schema");
     orm = await import("drizzle-orm");
     const { migrate } = await import("drizzle-orm/bun-sql/migrator");

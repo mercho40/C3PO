@@ -1,76 +1,41 @@
 /**
  * Tests for the bridge MCP client's reconnect-on-failure logic
- * (`getClient`/`callTool` in ./client) -- had zero coverage despite being
- * the sole channel to the robot, including the panic-button stop_everything
- * call.
+ * (`getClient`/`callTool` in ./client) -- the sole channel to the robot,
+ * including the panic-button stop_everything call.
  *
- * THE REAL-CONNECT TESTS RUN IN A CHILD PROCESS, AND THEY HAVE TO.
- *
- * `bun test` shares ONE module registry across every file in the run, and
- * `routes/skills.test.ts` calls `mock.module("../bridge/client", ...)` — whose
- * `callTool` resolves. Same resolved file, so whichever file loads later gets
- * the other's version. In CI that mock won, and this file's "the bridge is
- * unreachable" test received a promise that RESOLVED: it was asserting against
- * a stub written for a different file's purposes. Locally the order differed
- * and it passed, which is why it survived.
- *
- * `skills.test.ts` already documents that the registry is shared. The
- * conclusion it did not draw is that a test needing the REAL module cannot get
- * it from inside the same process, at any point in the file, by any ordering.
- * So these two spawn `bun` and assert on its exit code.
- *
- * The value of the original is preserved: the child aims at a port nothing
- * listens on, so the failure is a genuine refused TCP connect rather than a
- * mock of one.
+ * In process, against real sockets: each test makes its own client
+ * (`createBridgeClient(url)`) aimed at a port nothing listens on, a socket
+ * that never answers, or a fake bridge. These used to run in child processes,
+ * because the client was a module singleton other test files replaced with
+ * `mock.module`; an instance per test needs neither.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-// A private instance, for the pure helpers below: other files mock.module the
-// client without every export, and under --randomize a static import could get
-// that mock ("Export named 'failure' not found"). The query string makes a
-// separate module entry no other file mocks.
-const CLIENT_INSTANCE = "./client.ts?client-test";
-const { BridgeToolError, BridgeUnavailableError, failure, sessionLost } =
-  await (import(CLIENT_INSTANCE) as Promise<typeof import("./client")>);
 
-// fileURLToPath, not `.pathname` — this repo lives under a directory with
-// spaces in its name, which `.pathname` hands back percent-encoded.
-const CLIENT_TS = fileURLToPath(new URL("./client.ts", import.meta.url));
-const DEAD_PORT = "http://127.0.0.1:39217/mcp";
+import {
+  BridgeToolError,
+  BridgeUnavailableError,
+  createBridgeClient,
+  failure,
+  sessionLost,
+} from "./client";
 
-/**
- * Run one assertion about the real client in a fresh process.
- *
- * Exit codes rather than stdout parsing: 0 is the expectation met, and every
- * other value is a distinct way of being wrong, so a failure says which.
- */
-async function inFreshProcess(body: string): Promise<number> {
-  const script = `
-    process.env.BRIDGE_URL = ${JSON.stringify(DEAD_PORT)};
-    const { callTool, BridgeUnavailableError } = await import(${JSON.stringify(CLIENT_TS)});
-    ${body}
-  `;
-  const proc = Bun.spawn(["bun", "-e", script], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, BRIDGE_URL: DEAD_PORT },
-  });
-  return await proc.exited;
+/** A loopback port nothing listens on: a genuine refused TCP connect. */
+function deadUrl(): string {
+  const probe = Bun.serve({ port: 0, fetch: () => new Response() });
+  const port = probe.port;
+  probe.stop(true);
+  return `http://127.0.0.1:${port}/mcp`;
 }
 
 describe("callTool", () => {
   test("throws BridgeUnavailableError when the bridge is unreachable", async () => {
-    const code = await inFreshProcess(`
-      try {
-        await callTool("get_state", {});
-        process.exit(2);                       // resolved: no refusal happened
-      } catch (err) {
-        process.exit(err instanceof BridgeUnavailableError ? 0 : 3);
-      }
-    `);
-    expect(code).toBe(0); // 2 = resolved, 3 = wrong error type
+    const { callTool } = createBridgeClient(deadUrl());
+    await expect(callTool("get_state", {})).rejects.toBeInstanceOf(
+      BridgeUnavailableError,
+    );
   }, 30_000);
 
   test("a failed connection doesn't wedge the client -- the next call retries rather than hanging on a cached rejection", async () => {
@@ -79,16 +44,13 @@ describe("callTool", () => {
     // connect. Both still reject here — nothing is listening either way — so
     // what this proves is that the second one gets there promptly and by its
     // own route.
-    const code = await inFreshProcess(`
-      let first = false;
-      try { await callTool("get_state", {}); } catch { first = true; }
-      let second = false;
-      try { await callTool("get_state", {}); } catch (err) {
-        second = err instanceof BridgeUnavailableError;
-      }
-      process.exit(first && second ? 0 : 4);
-    `);
-    expect(code).toBe(0); // 4 = one of the two calls did not reject as expected
+    const { callTool } = createBridgeClient(deadUrl());
+    await expect(callTool("get_state", {})).rejects.toBeInstanceOf(
+      BridgeUnavailableError,
+    );
+    await expect(callTool("get_state", {})).rejects.toBeInstanceOf(
+      BridgeUnavailableError,
+    );
   }, 30_000);
 });
 
@@ -97,25 +59,25 @@ describe("connecting", () => {
     // A stalled tunnel or a wedged bridge: TCP connects, nothing comes back.
     // The connect had no bound of its own, so the SDK's 60 s initialize
     // default applied, and every call meanwhile, PARAR included, waited on
-    // that same pending session. The watchdog turns "still hanging" into 5.
-    const code = await inFreshProcess(`
-      setTimeout(() => process.exit(5), 15_000);
-      const silent = Bun.listen({
-        hostname: "127.0.0.1",
-        port: 0,
-        socket: { data() {}, open() {} },
-      });
-      process.env.BRIDGE_URL = "http://127.0.0.1:" + silent.port + "/mcp";
+    // that same pending session.
+    const silent = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { data() {}, open() {} },
+    });
+    try {
+      const { callTool } = createBridgeClient(
+        `http://127.0.0.1:${silent.port}/mcp`,
+      );
       const t0 = Date.now();
-      try {
-        await callTool("stop_everything", {});
-        process.exit(2);
-      } catch (err) {
-        if (!(err instanceof BridgeUnavailableError)) process.exit(3);
-        process.exit(Date.now() - t0 < 8_000 ? 0 : 4);
-      }
-    `);
-    expect(code).toBe(0); // 5 = still hanging, 4 = slower than PARAR's 8 s
+      await expect(callTool("stop_everything", {})).rejects.toBeInstanceOf(
+        BridgeUnavailableError,
+      );
+      // Under PARAR's own 8 s wait (bridge/stop.ts).
+      expect(Date.now() - t0).toBeLessThan(8_000);
+    } finally {
+      silent.stop(true);
+    }
   }, 30_000);
 });
 
@@ -166,7 +128,7 @@ describe("a discarded session is actually closed", () => {
     // `abandon` closes what it gives up on, and clears the shared slot only
     // if it still holds THIS session (a late failure must not drop a newer one).
     const abandonBody = src.slice(src.indexOf("function abandon"));
-    const end = abandonBody.indexOf("\n}\n");
+    const end = abandonBody.indexOf("\n  }\n");
     expect(abandonBody.slice(0, end)).toContain(
       "if (clientPromise === pending) clientPromise = null;",
     );
@@ -176,7 +138,7 @@ describe("a discarded session is actually closed", () => {
   test("our own abort is told apart before the session is judged lost", () => {
     // The SDK rejects an aborted call with the signal's reason, a plain Error,
     // which sessionLost reads as a dead transport: PARAR in flight would go too.
-    const body = src.slice(src.indexOf("export async function callTool"));
+    const body = src.slice(src.indexOf("async function callTool"));
     const guard = body.indexOf("if (signal?.aborted) throw");
     expect(guard).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(body.indexOf("if (sessionLost(err))"));
@@ -237,92 +199,103 @@ describe("a bridge that forgot our session", () => {
   /**
    * After `c3po restart` the bridge answers the old session id with 404
    * before running anything. The first call after it, PARAR included, used to
-   * fail as "bridge_unavailable". A fake bridge in a fresh process (the real
-   * client, see the top of this file) forgets every session on demand.
+   * fail as "bridge_unavailable". A fake bridge, in process, forgets every
+   * session on demand.
    */
-  async function againstFakeBridge(body: string): Promise<unknown> {
-    const script = `
-      const live = new Set();
-      let sessions = 0;
-      let always404 = false;
-      const ran = [];
-      let refused = 0;
-      const server = Bun.serve({ port: 0, async fetch(req) {
+  /** A fake bridge that forgets every session on demand, and a client of it. */
+  function fakeBridge() {
+    const live = new Set<string>();
+    const state = { sessions: 0, always404: false, refused: 0 };
+    const ran: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
         if (req.method !== "POST") return new Response(null, { status: 405 });
-        const msg = await req.json();
+        const msg = (await req.json()) as {
+          id?: number;
+          method: string;
+          params?: { name?: string; protocolVersion?: string };
+        };
         if (msg.method === "initialize") {
-          const sid = "s" + ++sessions;
+          const sid = `s${++state.sessions}`;
           live.add(sid);
-          return Response.json({ jsonrpc: "2.0", id: msg.id, result: {
-            protocolVersion: msg.params.protocolVersion,
-            capabilities: { tools: {} },
-            serverInfo: { name: "fake-bridge", version: "0" },
-          } }, { headers: { "mcp-session-id": sid } });
+          return Response.json(
+            {
+              jsonrpc: "2.0",
+              id: msg.id,
+              result: {
+                protocolVersion: msg.params?.protocolVersion,
+                capabilities: { tools: {} },
+                serverInfo: { name: "fake-bridge", version: "0" },
+              },
+            },
+            { headers: { "mcp-session-id": sid } },
+          );
         }
-        const sid = req.headers.get("mcp-session-id");
-        if (!live.has(sid) || (always404 && msg.id !== undefined)) {
-          refused++;
-          return Response.json({ jsonrpc: "2.0", id: "server-error",
-            error: { code: -32600, message: "Session not found" } }, { status: 404 });
+        const sid = req.headers.get("mcp-session-id") ?? "";
+        if (!live.has(sid) || (state.always404 && msg.id !== undefined)) {
+          state.refused++;
+          return Response.json(
+            {
+              jsonrpc: "2.0",
+              id: "server-error",
+              error: { code: -32600, message: "Session not found" },
+            },
+            { status: 404 },
+          );
         }
         if (msg.id === undefined) return new Response(null, { status: 202 });
         ran.push(msg.params?.name ?? msg.method);
-        const result = msg.method === "tools/list"
-          ? { tools: [] }
-          : { content: [], structuredContent: { ran: msg.params.name } };
+        const result =
+          msg.method === "tools/list"
+            ? { tools: [] }
+            : { content: [], structuredContent: { ran: msg.params?.name } };
         return Response.json({ jsonrpc: "2.0", id: msg.id, result });
-      } });
-      process.env.BRIDGE_URL = "http://127.0.0.1:" + server.port + "/mcp";
-      const { callTool, listTools, BridgeUnavailableError } = await import(${JSON.stringify(CLIENT_TS)});
-      const out = {};
-      ${body}
-      console.log(JSON.stringify({ ...out, ran, refused, sessions }));
-      process.exit(0);
-    `;
-    const proc = Bun.spawn(["bun", "-e", script], {
-      stdout: "pipe",
-      stderr: "pipe",
+      },
     });
-    const [code, stdout] = await Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-    ]);
-    expect(code).toBe(0);
-    return JSON.parse(stdout.trim().split("\n").pop() ?? "null");
+    const client = createBridgeClient(`http://127.0.0.1:${server.port}/mcp`);
+    return { ...client, live, state, ran, stop: () => server.stop(true) };
   }
 
   test("the first call after a restart, PARAR, goes out on a fresh session, once", async () => {
-    const r = await againstFakeBridge(`
-      await callTool("get_state", {});
-      live.clear(); // c3po restart
-      out.stop = await callTool("stop_everything", {});
-      live.clear();
-      out.tools = await listTools();
-    `);
-    expect(r).toEqual({
-      stop: { ran: "stop_everything" },
-      tools: [],
-      ran: ["get_state", "stop_everything", "tools/list"],
-      refused: 2,
-      sessions: 3,
-    });
+    const b = fakeBridge();
+    try {
+      await b.callTool("get_state", {});
+      b.live.clear(); // c3po restart
+      const stop = await b.callTool("stop_everything", {});
+      b.live.clear();
+      const tools = await b.listTools();
+      expect({ stop, tools, ran: b.ran, ...b.state }).toEqual({
+        stop: { ran: "stop_everything" },
+        tools: [],
+        ran: ["get_state", "stop_everything", "tools/list"],
+        refused: 2,
+        sessions: 3,
+        always404: false,
+      });
+    } finally {
+      b.stop();
+    }
   }, 30_000);
 
   test("a bridge that keeps answering 404 is retried once, not forever", async () => {
-    const r = await againstFakeBridge(`
-      always404 = true;
-      try {
-        await callTool("stop_everything", {});
-        out.error = "resolved";
-      } catch (err) {
-        out.error = err instanceof BridgeUnavailableError ? "bridge_unavailable" : String(err);
-      }
-    `);
-    expect(r).toEqual({
-      error: "bridge_unavailable",
-      ran: [],
-      refused: 2,
-      sessions: 2,
-    });
+    const b = fakeBridge();
+    try {
+      b.state.always404 = true;
+      await expect(b.callTool("stop_everything", {})).rejects.toBeInstanceOf(
+        BridgeUnavailableError,
+      );
+      expect({
+        ran: b.ran,
+        refused: b.state.refused,
+        sessions: b.state.sessions,
+      }).toEqual({
+        ran: [],
+        refused: 2,
+        sessions: 2,
+      });
+    } finally {
+      b.stop();
+    }
   }, 30_000);
 });

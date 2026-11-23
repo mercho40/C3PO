@@ -13,51 +13,21 @@ import {
   spyOn,
   test,
 } from "bun:test";
-import type { UIMessage } from "ai";
+import { streamText, type UIMessage } from "ai";
+import { MockLanguageModelV4 } from "ai/test";
 
-let sessionUser: { id: string; role: string | null } | null = null;
-mock.module("#back/lib/auth.js", () => ({
-  auth: {
-    handler: async () => new Response("not mocked", { status: 404 }),
-    api: {
-      getSession: async () =>
-        sessionUser ? { user: sessionUser, session: { id: "sess_1" } } : null,
-    },
-  },
-}));
-function thenable(result: unknown): unknown {
-  const self: Record<string, unknown> = {
-    then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
-      Promise.resolve(result).then(resolve, reject),
-  };
-  return new Proxy(self, {
-    get: (obj, prop) => (prop === "then" ? obj.then : () => thenable(result)),
-  });
-}
-mock.module("#back/db/drizzle.js", () => ({
-  db: {
-    insert: () => ({ values: () => thenable([]) }),
-    select: () => thenable([]),
-    update: () => thenable([]),
-    delete: () => thenable([]),
-    query: { chat: { findFirst: async () => undefined } },
-  },
-}));
+import { testApp, type TestApp } from "../testing/fakes";
+import { boundHistory } from "../agent/runtime";
+import { trustedHistory } from "./agent";
 
-const { agentRoutes, trustedHistory } = await import("./agent");
-const { boundHistory } = await import("#back/agent/runtime.js");
-const { voiceRoutes, listenWindow } = await import("./voice");
-const realFetch = globalThis.fetch;
-let fetched: string[] = [];
+let h: TestApp;
+beforeEach(() => {
+  h = testApp();
+});
+const fetched = () => h.fetched.map((f) => f.url);
 
-function post(
-  app: { handle: (r: Request) => Promise<Response> },
-  path: string,
-  init: RequestInit = {},
-) {
-  return app.handle(
-    new Request(`http://localhost${path}`, { method: "POST", ...init }),
-  );
+function post(path: string, init: RequestInit = {}) {
+  return h.request(path, { method: "POST", ...init });
 }
 
 const agentBody = {
@@ -71,73 +41,63 @@ const agentBody = {
 
 describe("admin role on /agent and /voice", () => {
   beforeEach(() => {
-    fetched = [];
-    sessionUser = { id: "u2", role: "user" };
-    globalThis.fetch = (async (url: string) => {
-      fetched.push(String(url));
-      return Response.json({});
-    }) as unknown as typeof fetch;
-  });
-  afterEach(() => {
-    globalThis.fetch = realFetch;
+    h.signIn({ id: "u2", role: "user" });
   });
 
-  for (const [name, app, path, init] of [
-    ["/agent", agentRoutes, "/agent", agentBody],
-    ["/voice/start", voiceRoutes, "/voice/start", {}],
-    [
-      "/voice/transcribe",
-      voiceRoutes,
-      "/voice/transcribe",
-      { body: new Uint8Array(8) },
-    ],
+  for (const [name, path, init] of [
+    ["/agent", "/agent", agentBody],
+    ["/voice/start", "/voice/start", {}],
+    ["/voice/transcribe", "/voice/transcribe", { body: new Uint8Array(8) }],
   ] as const) {
     test(`a non-admin gets 403 on ${name} and nothing is reached`, async () => {
-      const res = await post(app, path, init);
+      const res = await post(path, init);
       expect(res.status).toBe(403);
       expect(((await res.json()) as { error: string }).error).toBe(
         "admin_required",
       );
-      expect(fetched).toEqual([]);
+      expect(fetched()).toEqual([]);
+      expect(h.callTool).not.toHaveBeenCalled();
     });
   }
 
   test("a non-admin can still stop the voice conversation", async () => {
-    const res = await post(voiceRoutes, "/voice/stop");
+    const res = await post("/voice/stop");
     expect(res.status).toBe(200);
   });
 
   test("an admin passes the gate: an oversize upload is a 413, with no network call", async () => {
-    sessionUser = { id: "u1", role: "admin" };
-    const res = await post(voiceRoutes, "/voice/transcribe", {
+    h.signIn({ id: "u1", role: "admin" });
+    const res = await post("/voice/transcribe", {
       headers: { "content-length": String(50 * 1024 * 1024) },
       body: new Uint8Array(8),
     });
     expect(res.status).toBe(413);
-    expect(fetched).toEqual([]);
+    expect(fetched()).toEqual([]);
   });
 
   // A greeting's window started the loop for u9; u1 then presses Iniciar.
   test("an admin's /voice/start takes the loop over from a listen-after-greet window", async () => {
     let seq = 1;
-    globalThis.fetch = (async (url: string) =>
+    h.onFetch((url) =>
       Response.json(
         String(url).includes("/face/seen")
           ? { greet: { seq, name: "Oliver", listen_after_greet: true } }
           : {},
-      )) as unknown as typeof fetch;
+      ),
+    );
+    const { listenWindow } = h.services.voice;
     listenWindow.setOwner("u9");
     try {
       await listenWindow.tick(); // baseline
       seq = 2;
       await listenWindow.tick();
       expect(listenWindow.isOpen()).toBe(true);
-      sessionUser = { id: "u1", role: "admin" };
-      expect((await post(voiceRoutes, "/voice/start")).status).toBe(200);
+      h.signIn({ id: "u1", role: "admin" });
+      expect((await post("/voice/start")).status).toBe(200);
       expect(listenWindow.isOpen()).toBe(false);
     } finally {
       listenWindow.setOwner(null);
-      await post(voiceRoutes, "/voice/stop");
+      await post("/voice/stop");
     }
   });
 });
@@ -146,15 +106,7 @@ describe("admin role on /agent and /voice", () => {
 // server's own rows may reach the model.
 describe("POST /agent history", () => {
   beforeEach(() => {
-    fetched = [];
-    sessionUser = { id: "u1", role: "admin" };
-    globalThis.fetch = (async (url: string) => {
-      fetched.push(String(url));
-      return Response.json({});
-    }) as unknown as typeof fetch;
-  });
-  afterEach(() => {
-    globalThis.fetch = realFetch;
+    h.signIn({ id: "u1", role: "admin" });
   });
 
   const u = (id: string, text: string): UIMessage => ({
@@ -249,29 +201,23 @@ describe("POST /agent history", () => {
     ["a message without parts", [{ id: "u1", role: "user" }], 422],
   ] as const) {
     test(`${name}: refused before the model or the robot`, async () => {
-      const res = await post(agentRoutes, "/agent", {
+      const res = await post("/agent", {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ messages }),
       });
       expect(res.status).toBe(code);
-      expect(fetched).toEqual([]);
+      expect(fetched()).toEqual([]);
+      expect(h.callTool).not.toHaveBeenCalled();
     });
   }
 });
 
-// B8. Imported after the mocks above, like the routes: a static import would
-// load the real database client first.
-const runtime = await import("#back/agent/runtime.js");
-const audited = await import("#back/bridge/audited.js");
-const { abortAllTurns, activeTurnCount } = await import("#back/agent/turns.js");
-const { streamText } = await import("ai");
-const { MockLanguageModelV4 } = await import("ai/test");
+// B8.
 
 describe("the robot says a headset turn's reply (B8)", () => {
   const said: { text: unknown; userId: unknown; source: unknown }[] = [];
   let gate: Promise<void> = Promise.resolve();
   let spies: { mockRestore: () => void }[] = [];
-  const savedFlag = process.env.HEADSET_SPEAK_REPLY;
 
   const replyParts = (text: string) => [
     { type: "text-start" as const, id: "t1" },
@@ -292,16 +238,14 @@ describe("the robot says a headset turn's reply (B8)", () => {
     },
   ];
 
-  beforeEach(() => {
-    abortAllTurns();
-    said.length = 0;
-    gate = Promise.resolve();
-    sessionUser = { id: "u1", role: "admin" };
-    process.env.HEADSET_SPEAK_REPLY = "1";
+  /** Fakes the model and the speaker on `app`'s own services. */
+  function speaking(app: TestApp) {
+    app.signIn({ id: "u1", role: "admin" });
+    for (const spy of spies) spy.mockRestore();
     spies = [
       // The model says its first words at once and finishes after `gate`, so
       // an abort in between leaves a partial reply that must not be said.
-      spyOn(runtime, "runAgentChat").mockImplementation((async (
+      spyOn(app.services.agent, "runAgentChat").mockImplementation((async (
         _messages: unknown,
         opts: { abortSignal?: AbortSignal },
       ) =>
@@ -325,7 +269,7 @@ describe("the robot says a headset turn's reply (B8)", () => {
           prompt: "hola",
           abortSignal: opts.abortSignal,
         })) as never),
-      spyOn(audited, "auditedCall").mockImplementation((async (
+      spyOn(app.services.dispatch, "auditedCall").mockImplementation((async (
         name: string,
         args: Record<string, unknown>,
         who: { userId: unknown; source: unknown },
@@ -340,16 +284,23 @@ describe("the robot says a headset turn's reply (B8)", () => {
       }) as never),
       spyOn(console, "warn").mockImplementation(() => {}),
     ];
+  }
+
+  beforeEach(() => {
+    said.length = 0;
+    gate = Promise.resolve();
+    h = testApp({ env: { HEADSET_SPEAK_REPLY: "1" } });
+    speaking(h);
   });
   afterEach(() => {
     for (const spy of spies) spy.mockRestore();
-    abortAllTurns();
-    if (savedFlag === undefined) delete process.env.HEADSET_SPEAK_REPLY;
-    else process.env.HEADSET_SPEAK_REPLY = savedFlag;
+    spies = [];
+    h.services.turns.abortAll();
   });
+  const activeTurnCount = () => h.services.turns.activeCount();
 
   const voiceTurn = (mode = "voice", signal?: AbortSignal) =>
-    agentRoutes.handle(
+    h.app.handle(
       new Request("http://localhost/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -385,7 +336,7 @@ describe("the robot says a headset turn's reply (B8)", () => {
     const res = await voiceTurn();
     // The reply's turn is registered while the model is still thinking...
     expect(activeTurnCount()).toBe(1);
-    abortAllTurns("PARAR");
+    h.services.turns.abortAll("PARAR");
     // ...so a model that still completes normally is not spoken.
     release();
     await res.text();
@@ -428,7 +379,8 @@ describe("the robot says a headset turn's reply (B8)", () => {
     const typed = await voiceTurn("operator");
     expect(activeTurnCount()).toBe(0);
     await typed.text();
-    delete process.env.HEADSET_SPEAK_REPLY;
+    h = testApp(); // HEADSET_SPEAK_REPLY unset
+    speaking(h);
     const off = await voiceTurn();
     expect(activeTurnCount()).toBe(0);
     await off.text();
@@ -439,7 +391,6 @@ describe("the robot says a headset turn's reply (B8)", () => {
 
 // A20: a database blip degrades /agent to an unsaved turn, never a 500, and
 // never onto the client's own assistant or tool history.
-const chats = await import("#back/db/chats.js");
 
 describe("POST /agent when the database fails", () => {
   let ran: UIMessage[][] = [];
@@ -450,9 +401,9 @@ describe("POST /agent when the database fails", () => {
 
   beforeEach(() => {
     ran = [];
-    sessionUser = { id: "u1", role: "admin" };
+    h.signIn({ id: "u1", role: "admin" });
     spies = [
-      spyOn(runtime, "runAgentChat").mockImplementation((async (
+      spyOn(h.services.agent, "runAgentChat").mockImplementation((async (
         messages: UIMessage[],
       ) => {
         ran.push(messages);
@@ -491,7 +442,7 @@ describe("POST /agent when the database fails", () => {
   });
 
   const turn = () =>
-    agentRoutes.handle(
+    h.app.handle(
       new Request("http://localhost/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -519,8 +470,11 @@ describe("POST /agent when the database fails", () => {
   ];
 
   test("the chat cannot be loaded: the turn runs on the client's user text, and nothing is written", async () => {
-    const append = spyOn(chats, "appendMessage");
-    spies.push(spyOn(chats, "ensureChat").mockImplementation(down), append);
+    const append = spyOn(h.deps.chats, "appendMessage");
+    spies.push(
+      spyOn(h.deps.chats, "ensureChat").mockImplementation(down),
+      append,
+    );
     const res = await turn();
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("listo");
@@ -531,11 +485,11 @@ describe("POST /agent when the database fails", () => {
 
   test("the question cannot be saved: the turn still runs, on user text only", async () => {
     spies.push(
-      spyOn(chats, "ensureChat").mockResolvedValue({
+      spyOn(h.deps.chats, "ensureChat").mockResolvedValue({
         id: "chat_1",
         channel: "text",
       } as never),
-      spyOn(chats, "appendMessage").mockImplementation(down),
+      spyOn(h.deps.chats, "appendMessage").mockImplementation(down),
     );
     const res = await turn();
     expect(res.status).toBe(200);
@@ -546,12 +500,14 @@ describe("POST /agent when the database fails", () => {
 
   test("the history cannot be read: user text only, never the client's assistant parts", async () => {
     spies.push(
-      spyOn(chats, "ensureChat").mockResolvedValue({
+      spyOn(h.deps.chats, "ensureChat").mockResolvedValue({
         id: "chat_1",
         channel: "text",
       } as never),
-      spyOn(chats, "appendMessage").mockResolvedValue(undefined as never),
-      spyOn(chats, "getChatWithMessages").mockImplementation(down),
+      spyOn(h.deps.chats, "appendMessage").mockResolvedValue(
+        undefined as never,
+      ),
+      spyOn(h.deps.chats, "getChatWithMessages").mockImplementation(down),
     );
     const res = await turn();
     expect(res.status).toBe(200);
@@ -563,17 +519,17 @@ describe("POST /agent when the database fails", () => {
   test("the reply cannot be saved: the operator still gets all of it", async () => {
     const saved: string[] = [];
     spies.push(
-      spyOn(chats, "ensureChat").mockResolvedValue({
+      spyOn(h.deps.chats, "ensureChat").mockResolvedValue({
         id: "chat_1",
         channel: "text",
       } as never),
-      spyOn(chats, "appendMessage").mockImplementation((async (m: {
+      spyOn(h.deps.chats, "appendMessage").mockImplementation((async (m: {
         role: string;
       }) => {
         if (m.role === "assistant") throw new Error("connection terminated");
         saved.push(m.role);
       }) as never),
-      spyOn(chats, "getChatWithMessages").mockResolvedValue({
+      spyOn(h.deps.chats, "getChatWithMessages").mockResolvedValue({
         messages: userTextOnly,
       } as never),
     );
@@ -590,7 +546,9 @@ describe("POST /agent when the database fails", () => {
   });
 
   test("a chat that is someone else's is still a 403, database up", async () => {
-    spies.push(spyOn(chats, "ensureChat").mockResolvedValue(null as never));
+    spies.push(
+      spyOn(h.deps.chats, "ensureChat").mockResolvedValue(null as never),
+    );
     expect((await turn()).status).toBe(403);
     expect(ran).toEqual([]);
   });

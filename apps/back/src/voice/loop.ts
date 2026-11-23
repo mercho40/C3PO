@@ -21,7 +21,7 @@
  */
 
 /** One thing the robot heard, as `listen` reports it. */
-import { abortAllTurns, beginTurn, voiceLoopHeld } from "../agent/turns";
+import type { Turns } from "../agent/turns";
 
 export type Heard = { text: string; age_s: number };
 
@@ -45,6 +45,8 @@ export type VoiceInputEvent = {
 };
 
 export type VoiceLoopDeps = {
+  /** The process's agent turns: PARAR aborts them, an operator turn holds the loop. */
+  turns: Pick<Turns, "abortAll" | "beginTurn" | "voiceLoopHeld">;
   /** Calls a bridge tool. Injected so the loop is testable with no robot. */
   callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   /** Runs the agent over an utterance. Injected so tests need no model.
@@ -105,7 +107,7 @@ const DEFAULT_STALE_AUDIO_MS = 6000;
 
 export class VoiceLoop {
   private readonly deps: Required<
-    Pick<VoiceLoopDeps, "callTool" | "runAgent">
+    Pick<VoiceLoopDeps, "turns" | "callTool" | "runAgent">
   > &
     VoiceLoopDeps;
   private readonly pollMs: number;
@@ -230,7 +232,7 @@ export class VoiceLoop {
     // something the person has since called off.
     this.pending = [];
     // Aborts this loop's turn too: it is registered through beginTurn.
-    abortAllTurns("PARAR (voice)");
+    this.deps.turns.abortAll("PARAR (voice)");
     try {
       await this.deps.callTool("stop_everything", {});
     } catch (e) {
@@ -306,12 +308,12 @@ export class VoiceLoop {
     // Joined like the polling path: Vosk splits one sentence on a breath.
     const utterance = this.pending.splice(0).join(" ");
     // Dropped, not queued: answered after the operator's turn it is stale.
-    if (voiceLoopHeld()) {
+    if (this.deps.turns.voiceLoopHeld()) {
       this.log("voice.dropped_operator_turn", { text: utterance });
       return;
     }
     const local = new AbortController();
-    const { signal, done } = beginTurn(local.signal);
+    const { signal, done } = this.deps.turns.beginTurn(local.signal);
     this.turnAbort = local;
     this.state.agentRuns += 1;
     this.state.lastError = null;
@@ -345,7 +347,7 @@ export class VoiceLoop {
     if (result?.stop_heard && this.actOnStopPhrase) {
       this.state.stopsTriggered += 1;
       this.log("voice.stop_phrase", { phrase: result.stop_heard });
-      abortAllTurns("PARAR (voice)");
+      this.deps.turns.abortAll("PARAR (voice)");
       await this.deps.callTool("stop_everything", {});
     }
 
@@ -360,7 +362,7 @@ export class VoiceLoop {
     // answer the other half without the first half's context.
     const utterance = utterances.join(" ").trim();
     this.state.lastHeard = utterance;
-    if (voiceLoopHeld()) {
+    if (this.deps.turns.voiceLoopHeld()) {
       this.log("voice.dropped_operator_turn", { text: utterance });
       return;
     }

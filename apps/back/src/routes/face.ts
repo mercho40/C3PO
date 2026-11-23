@@ -11,7 +11,7 @@
  * POST   /face/settings?confirmation= {greet?, greet_unknown?, gate?,
  *                                     listen_after_greet?}: whoever turns
  *                                     the last one on owns the windows it
- *                                     opens (routes/voice.ts).
+ *                                     opens (voice/service.ts).
  * DELETE /face/people/:id?confirmation=
  * POST   /face/enroll?confirmation=   {name, role, replace}; the bridge takes
  *                                     5–10 s, 20 s at most. A name that
@@ -25,21 +25,19 @@
  * view needs a card noted here (agent/confirmations.ts, the same store as the
  * arm/hand cards), taken once, by its owner, fresh, for the same action and
  * arguments. PARAR voids it with every other card. The bridge then gets the
- * same proof /safety/confirm does (bridge/proof.ts). Each relayed call is
+ * same proof /safety/confirm does (bridge/http.ts). Each relayed call is
  * audited (who, action, person); a photo's bytes never are.
  */
 import { Elysia } from "elysia";
-import { bridgeSiblingUrl } from "../bridge/url";
-import { bridgeProof } from "../bridge/proof";
-import { betterAuth } from "#back/lib/auth-plugin.js";
-import { logToolCall } from "#back/db/chats.js";
+
 import {
   PENDING_TTL_MS,
-  dropPending,
-  notePending,
-  takePending,
+  type Confirmations,
 } from "#back/agent/confirmations.js";
-import { listenWindow } from "#back/routes/voice.js";
+import type { BridgeHttp } from "#back/bridge/http.js";
+import type { LogToolCall } from "#back/db/chats.js";
+import type { AuthPlugin } from "#back/lib/auth-plugin.js";
+import type { ListenWindow } from "#back/voice/listen-window.js";
 
 export const FACE_ACTIONS = [
   "settings",
@@ -98,6 +96,7 @@ const json = (status: number, body: unknown) => Response.json(body, { status });
  * A card is single-use: a failure after it was taken means asking again.
  */
 async function confirmedRelay(
+  deps: FaceDeps,
   userId: string,
   action: FaceAction,
   raw: unknown,
@@ -108,11 +107,11 @@ async function confirmedRelay(
 ): Promise<Response> {
   const args = faceArgs(action, raw);
   if (!args) return json(422, { error: "invalid_args" });
-  const proof = bridgeProof();
   // Before the card is taken: a misconfigured server does not burn it.
-  if (!proof) return json(503, { error: "confirmation_not_configured" });
+  if (!deps.http.canProve())
+    return json(503, { error: "confirmation_not_configured" });
   const taken = confirmation
-    ? takePending(confirmation, userId, toolOf(action), args)
+    ? deps.confirmations.take(confirmation, userId, toolOf(action), args)
     : "not_pending";
   if (taken === "not_pending")
     return json(428, { error: "confirmation_required" });
@@ -124,14 +123,12 @@ async function confirmedRelay(
   const startedAt = Date.now();
   let upstream: Response | null = null;
   try {
-    upstream = await fetch(bridgeSiblingUrl(path), {
+    upstream = await deps.http.faceRelay(
       method,
-      headers: sendsBody
-        ? { "content-type": "application/json", ...proof }
-        : proof,
-      body: sendsBody ? JSON.stringify(args) : undefined,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+      path,
+      sendsBody ? args : undefined,
+      timeoutMs,
+    );
   } catch {
     // Falls through to the audit row and the 502 below.
   }
@@ -144,7 +141,7 @@ async function confirmedRelay(
       >);
   const ok = upstream?.ok === true;
   // Who looked at or changed whose face. Never the photo itself.
-  void logToolCall({
+  void deps.logToolCall({
     userId,
     source: "direct",
     skillName: toolOf(action),
@@ -174,149 +171,164 @@ async function confirmedRelay(
   return json(upstream.status, body);
 }
 
-export const faceRoutes = new Elysia({ prefix: "/face" })
-  .use(betterAuth)
-  .guard({ auth: true }, (app) =>
-    // Any signed-in user: the boxes go over a picture they already see. The
-    // bridge serves it without proof only because it listens on loopback.
-    app.get(
-      "/seen",
-      async () => {
-        try {
-          const upstream = await fetch(bridgeSiblingUrl("/face/seen"), {
-            signal: AbortSignal.timeout(1500),
-          });
-          return Response.json(await upstream.json(), {
-            status: upstream.status,
-            headers: { "Cache-Control": "no-store" },
-          });
-        } catch {
-          return json(502, { error: "bridge_unavailable" });
-        }
-      },
-      {
-        detail: { summary: "Faces in the camera picture.", tags: ["face"] },
-      },
-    ),
-  )
-  .guard({ auth: true }, (app) =>
-    app
-      .onBeforeHandle(({ user, status }) => {
-        if (user.role !== "admin")
-          return status(403, { error: "admin_required" });
-      })
-      .get(
-        "/people",
-        async ({ status }) => {
-          // Names and roles of everyone enrolled: the bridge wants the proof.
-          const proof = bridgeProof();
-          if (!proof)
-            return status(503, { error: "confirmation_not_configured" });
+type FaceDeps = {
+  authPlugin: AuthPlugin;
+  http: Pick<BridgeHttp, "canProve" | "faceRelay" | "faceSeen" | "facePeople">;
+  confirmations: Pick<Confirmations, "note" | "take" | "drop">;
+  logToolCall: LogToolCall;
+  /** «Escuchar después de saludar» (voice/service.ts): the settings switch sets its owner. */
+  listenWindow: Pick<ListenWindow, "setOwner">;
+};
+
+export const faceRoutes = (deps: FaceDeps) =>
+  new Elysia({ prefix: "/face" })
+    .use(deps.authPlugin)
+    .guard({ auth: true }, (app) =>
+      // Any signed-in user: the boxes go over a picture they already see. The
+      // bridge serves it without proof only because it listens on loopback.
+      app.get(
+        "/seen",
+        async () => {
           try {
-            const upstream = await fetch(bridgeSiblingUrl("/face/people"), {
-              headers: proof,
-              signal: AbortSignal.timeout(3000),
+            const upstream = await deps.http.faceSeen(1500);
+            if (upstream.body === undefined)
+              return json(502, { error: "bridge_unavailable" });
+            return Response.json(upstream.body, {
+              status: upstream.status,
+              headers: { "Cache-Control": "no-store" },
             });
-            const body = await upstream.json();
-            return upstream.ok ? body : status(upstream.status, body);
           } catch {
-            return status(502, { error: "bridge_unavailable" });
+            return json(502, { error: "bridge_unavailable" });
           }
         },
-        { detail: { summary: "Enrolled faces and switches.", tags: ["face"] } },
-      )
-      .post(
-        "/confirmations",
-        ({ user, body, status }) => {
-          const { action, args: raw } = (body ?? {}) as {
-            action?: unknown;
-            args?: unknown;
-          };
-          const known = FACE_ACTIONS.find((a) => a === action);
-          const args = known ? faceArgs(known, raw) : null;
-          if (!known || !args) return status(422, { error: "invalid_args" });
-          const id = crypto.randomUUID();
-          notePending({
-            id,
-            tool: toolOf(known),
-            args,
-            ownerId: user.id,
-            chatId: FACE_CARDS,
-            loop: false,
-          });
-          return { id, action: known, args, ttl_ms: PENDING_TTL_MS };
-        },
         {
-          detail: {
-            summary: "Open a Confirmar card for one face action.",
-            tags: ["face"],
-          },
+          detail: { summary: "Faces in the camera picture.", tags: ["face"] },
         },
-      )
-      .delete("/confirmations/:id", ({ user, params }) => {
-        for (const a of FACE_ACTIONS)
-          if (dropPending(params.id, user.id, toolOf(a))) break;
-        return { cancelled: true };
-      })
-      .post("/settings", async ({ user, body, query }) => {
-        const res = await confirmedRelay(
-          user.id,
-          "settings",
-          body,
-          query.confirmation,
-          "/face/settings",
-          "POST",
-          5000,
-        );
-        const listen = faceArgs("settings", body)?.listen_after_greet;
-        if (res.ok && typeof listen === "boolean")
-          listenWindow.setOwner(listen ? user.id : null);
-        return res;
-      })
-      .delete("/people/:id", ({ user, params, query }) =>
-        confirmedRelay(
-          user.id,
-          "delete",
-          { id: params.id },
-          query.confirmation,
-          `/face/people/${encodeURIComponent(params.id)}`,
-          "DELETE",
-          5000,
-        ),
-      )
-      // The person stands in front of the head camera while the bridge samples;
-      // the bridge gives up after 20 s (ENROLL_DEADLINE_S), well inside this.
-      .post("/enroll", ({ user, body, query }) =>
-        confirmedRelay(
-          user.id,
-          "enroll",
-          body,
-          query.confirmation,
-          "/face/enroll",
-          "POST",
-          30_000,
-        ),
-      )
-      .patch("/people/:id", ({ user, params, body, query }) =>
-        confirmedRelay(
-          user.id,
-          "role",
-          { id: params.id, role: (body as { role?: unknown } | null)?.role },
-          query.confirmation,
-          `/face/people/${encodeURIComponent(params.id)}`,
-          "PATCH",
-          5000,
-        ),
-      )
-      .get("/people/:id/photo.jpg", ({ user, params, query }) =>
-        confirmedRelay(
-          user.id,
-          "photo",
-          { id: params.id },
-          query.confirmation,
-          `/face/people/${encodeURIComponent(params.id)}/photo.jpg`,
-          "GET",
-          5000,
-        ),
       ),
-  );
+    )
+    .guard({ auth: true }, (app) =>
+      app
+        .onBeforeHandle(({ user, status }) => {
+          if (user.role !== "admin")
+            return status(403, { error: "admin_required" });
+        })
+        .get(
+          "/people",
+          async ({ status }) => {
+            // Names and roles of everyone enrolled: the bridge wants the proof.
+            if (!deps.http.canProve())
+              return status(503, { error: "confirmation_not_configured" });
+            try {
+              const upstream = await deps.http.facePeople();
+              const body = upstream.body;
+              if (body === undefined)
+                return status(502, { error: "bridge_unavailable" });
+              return upstream.ok ? body : status(upstream.status, body);
+            } catch {
+              return status(502, { error: "bridge_unavailable" });
+            }
+          },
+          {
+            detail: { summary: "Enrolled faces and switches.", tags: ["face"] },
+          },
+        )
+        .post(
+          "/confirmations",
+          ({ user, body, status }) => {
+            const { action, args: raw } = (body ?? {}) as {
+              action?: unknown;
+              args?: unknown;
+            };
+            const known = FACE_ACTIONS.find((a) => a === action);
+            const args = known ? faceArgs(known, raw) : null;
+            if (!known || !args) return status(422, { error: "invalid_args" });
+            const id = crypto.randomUUID();
+            deps.confirmations.note({
+              id,
+              tool: toolOf(known),
+              args,
+              ownerId: user.id,
+              chatId: FACE_CARDS,
+              loop: false,
+            });
+            return { id, action: known, args, ttl_ms: PENDING_TTL_MS };
+          },
+          {
+            detail: {
+              summary: "Open a Confirmar card for one face action.",
+              tags: ["face"],
+            },
+          },
+        )
+        .delete("/confirmations/:id", ({ user, params }) => {
+          for (const a of FACE_ACTIONS)
+            if (deps.confirmations.drop(params.id, user.id, toolOf(a))) break;
+          return { cancelled: true };
+        })
+        .post("/settings", async ({ user, body, query }) => {
+          const res = await confirmedRelay(
+            deps,
+            user.id,
+            "settings",
+            body,
+            query.confirmation,
+            "/face/settings",
+            "POST",
+            5000,
+          );
+          const listen = faceArgs("settings", body)?.listen_after_greet;
+          if (res.ok && typeof listen === "boolean")
+            deps.listenWindow.setOwner(listen ? user.id : null);
+          return res;
+        })
+        .delete("/people/:id", ({ user, params, query }) =>
+          confirmedRelay(
+            deps,
+            user.id,
+            "delete",
+            { id: params.id },
+            query.confirmation,
+            `/face/people/${encodeURIComponent(params.id)}`,
+            "DELETE",
+            5000,
+          ),
+        )
+        // The person stands in front of the head camera while the bridge samples;
+        // the bridge gives up after 20 s (ENROLL_DEADLINE_S), well inside this.
+        .post("/enroll", ({ user, body, query }) =>
+          confirmedRelay(
+            deps,
+            user.id,
+            "enroll",
+            body,
+            query.confirmation,
+            "/face/enroll",
+            "POST",
+            30_000,
+          ),
+        )
+        .patch("/people/:id", ({ user, params, body, query }) =>
+          confirmedRelay(
+            deps,
+            user.id,
+            "role",
+            { id: params.id, role: (body as { role?: unknown } | null)?.role },
+            query.confirmation,
+            `/face/people/${encodeURIComponent(params.id)}`,
+            "PATCH",
+            5000,
+          ),
+        )
+        .get("/people/:id/photo.jpg", ({ user, params, query }) =>
+          confirmedRelay(
+            deps,
+            user.id,
+            "photo",
+            { id: params.id },
+            query.confirmation,
+            `/face/people/${encodeURIComponent(params.id)}/photo.jpg`,
+            "GET",
+            5000,
+          ),
+        ),
+    );

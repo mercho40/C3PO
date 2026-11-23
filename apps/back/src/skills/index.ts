@@ -22,9 +22,8 @@
  */
 
 export {
-  getCatalogue,
-  getSkill,
-  listSkills,
+  createCatalogue,
+  type Catalogue,
   type CatalogueSnapshot,
 } from "./catalogue";
 

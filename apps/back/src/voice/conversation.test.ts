@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import {
-  VoiceConversation,
-  headsetSpeaksReplies,
-  shouldSpeak,
-  speakReply,
-} from "./conversation";
+import { testConfig } from "../testing/fakes";
+import { VoiceConversation, shouldSpeak, speakReply } from "./conversation";
 
 function textOf(message: {
   parts?: Array<{ type: string; text?: string }>;
@@ -388,9 +384,11 @@ describe("shouldSpeak", () => {
   });
 
   test("the flag is off unless HEADSET_SPEAK_REPLY=1", () => {
-    expect(headsetSpeaksReplies({})).toBe(false);
-    expect(headsetSpeaksReplies({ HEADSET_SPEAK_REPLY: "0" })).toBe(false);
-    expect(headsetSpeaksReplies({ HEADSET_SPEAK_REPLY: "true" })).toBe(false);
-    expect(headsetSpeaksReplies({ HEADSET_SPEAK_REPLY: "1" })).toBe(true);
+    const flag = (HEADSET_SPEAK_REPLY?: string) =>
+      testConfig({ HEADSET_SPEAK_REPLY }).voice.headsetSpeaksReplies;
+    expect(flag()).toBe(false);
+    expect(flag("0")).toBe(false);
+    expect(flag("true")).toBe(false);
+    expect(flag("1")).toBe(true);
   });
 });

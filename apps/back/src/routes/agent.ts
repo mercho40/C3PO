@@ -21,7 +21,7 @@
  * This is the backend taking over as the conversation host (docs/ARCHITECTURE.md §3) — the
  * same skill registry the external MCP path uses, now driven server-side.
  *
- * Guarded by `{ auth: true }` at the composition root (src/index.ts). Chats are
+ * Guarded by `{ auth: true }` at the composition root (src/app.ts). Chats are
  * scoped to the authenticated user: `ensureChat` refuses an id owned by someone
  * else rather than writing into their conversation.
  */
@@ -29,21 +29,12 @@
 import { Elysia, t } from "elysia";
 import { createIdGenerator, type UIMessage } from "ai";
 
-import { runAgentChat } from "#back/agent/runtime.js";
-import { beginTurn } from "#back/agent/turns.js";
-import { auditedCall } from "#back/bridge/audited.js";
-import {
-  appendMessage,
-  ensureChat,
-  getChatWithMessages,
-  titleFromParts,
-} from "#back/db/chats.js";
-import { betterAuth } from "#back/lib/auth-plugin.js";
-import {
-  headsetSpeaksReplies,
-  shouldSpeak,
-  speakReply,
-} from "#back/voice/conversation.js";
+import type { AgentRuntime } from "#back/agent/runtime.js";
+import type { Turns } from "#back/agent/turns.js";
+import { titleFromParts, type ChatStore } from "#back/db/chats.js";
+import type { AuthPlugin } from "#back/lib/auth-plugin.js";
+import type { Dispatcher } from "#back/skills/dispatch.js";
+import { shouldSpeak, speakReply } from "#back/voice/conversation.js";
 
 /**
  * Ids for the assistant messages we persist.
@@ -122,9 +113,19 @@ export function trustedHistory(
 /** Longest a headset turn plus its spoken reply may stay registered. */
 const SPEECH_TURN_MAX_MS = 10 * 60_000;
 
-export const agentRoutes = new Elysia({ prefix: "/agent" })
-  .use(betterAuth)
-  .post(
+export const agentRoutes = (deps: {
+  authPlugin: AuthPlugin;
+  agent: Pick<AgentRuntime, "runAgentChat">;
+  turns: Pick<Turns, "beginTurn">;
+  chats: Pick<
+    ChatStore,
+    "ensureChat" | "appendMessage" | "getChatWithMessages"
+  >;
+  dispatch: Pick<Dispatcher, "auditedCall">;
+  /** HEADSET_SPEAK_REPLY=1 (`config.voice.headsetSpeaksReplies`). */
+  headsetSpeaksReplies: boolean;
+}) =>
+  new Elysia({ prefix: "/agent" }).use(deps.authPlugin).post(
     "/",
     async ({ body, user, session, status, request }) => {
       // 1.4: driving the robot through a model is an admin's job, like /invoke.
@@ -144,7 +145,7 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
       let stored: Incoming[] | null = null;
       if (body.id) {
         try {
-          const owned = await ensureChat({
+          const owned = await deps.chats.ensureChat({
             id: body.id,
             userId: user.id,
             // Better Auth's organization plugin tracks the active org on the
@@ -158,14 +159,16 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
           if (owned.channel !== "text") return status(409);
           chatId = owned.id;
 
-          await appendMessage({
+          await deps.chats.appendMessage({
             id: latest.id,
             chatId,
             role: "user",
             parts: latest.parts,
           });
           // Read after the append, so it ends in the message just saved.
-          stored = (await getChatWithMessages(chatId, user.id))?.messages ?? [];
+          stored =
+            (await deps.chats.getChatWithMessages(chatId, user.id))?.messages ??
+            [];
         } catch (err) {
           console.warn("[agent] chat not saved, turn runs on user text", err);
         }
@@ -177,21 +180,22 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
       );
 
       const mode = body.mode === "voice" ? "voice" : "operator";
-      const speakReplies = headsetSpeaksReplies();
+      const speakReplies = deps.headsetSpeaksReplies;
       // The spoken reply's own turn, registered now rather than when speech
       // starts: a PARAR between the model's last token and the first `say`
       // still aborts it, and stop-watch keeps one baseline across both, so a
       // stop latched on the bridge in that gap is not read as the new normal.
-      const speech = mode === "voice" && speakReplies ? beginTurn() : null;
+      const speech =
+        mode === "voice" && speakReplies ? deps.turns.beginTurn() : null;
       // Backstop: `onEnd` releases it, but a stream nobody reads might never
       // end, and a turn left registered keeps stop-watch polling for good.
       if (speech) setTimeout(speech.done, SPEECH_TURN_MAX_MS).unref?.();
 
       // `userId` attributes the audit rows even when the chat is not persisted
       // (no chat id to look the owner up from).
-      let result: Awaited<ReturnType<typeof runAgentChat>>;
+      let result: Awaited<ReturnType<AgentRuntime["runAgentChat"]>>;
       try {
-        result = await runAgentChat(messages, {
+        result = await deps.agent.runAgentChat(messages, {
           chatId,
           userId: user.id,
           mode,
@@ -222,7 +226,7 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
               void speakReply(
                 responseMessage.parts ?? [],
                 (text) =>
-                  auditedCall(
+                  deps.dispatch.auditedCall(
                     "say",
                     { text, language: "spanish", wait_for_completion: true },
                     { userId: user.id, source: "voice" },
@@ -236,14 +240,16 @@ export const agentRoutes = new Elysia({ prefix: "/agent" })
           // An aborted turn still persists what was generated — a half-finished
           // sequence of tool calls is exactly the history an operator needs.
           if (!chatId) return;
-          await appendMessage({
-            id: responseMessage.id,
-            chatId,
-            role: "assistant",
-            parts: responseMessage.parts ?? [],
-          }).catch((err) =>
-            console.warn("[agent] reply not saved", { chatId }, err),
-          );
+          await deps.chats
+            .appendMessage({
+              id: responseMessage.id,
+              chatId,
+              role: "assistant",
+              parts: responseMessage.parts ?? [],
+            })
+            .catch((err) =>
+              console.warn("[agent] reply not saved", { chatId }, err),
+            );
           if (isAborted) console.warn("agent turn aborted", { chatId });
         },
         // Surface the real cause (e.g. missing AGENT_API_KEY, an unreachable

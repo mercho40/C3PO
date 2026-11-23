@@ -14,16 +14,16 @@
 import { Elysia, t } from "elysia";
 
 import {
-  callTool,
   BridgeUnavailableError,
   BridgeToolError,
+  type BridgeMcp,
 } from "../bridge/client";
-import { auditedCall } from "../bridge/audited";
-import { stopRobot } from "../bridge/stop";
+import type { Stop } from "../bridge/stop";
+import type { Dispatcher } from "../skills/dispatch";
 
 /**
  * The signed-in user, from the auth guard this module is mounted inside
- * (index.ts). Present at runtime but untyped here, because this module does
+ * (app.ts). Present at runtime but untyped here, because this module does
  * not `.use(betterAuth)` itself — doing so nests the macro and doubles the
  * session lookup (see index.ts). Absent reads as "unknown" in the audit row.
  */
@@ -32,93 +32,103 @@ function userIdOf(ctx: unknown): string | null {
   return typeof user?.id === "string" ? user.id : null;
 }
 
-export const tasksRoutes = new Elysia({ prefix: "/tasks" })
-  .post(
-    "/:task_id/cancel",
-    async (ctx) => {
-      const {
-        params: { task_id },
-        body,
-        status,
-      } = ctx;
-      const mode = body?.mode ?? "graceful";
-      const who = { userId: userIdOf(ctx), source: "direct" as const };
-      if (mode === "estop") {
-        // The same stop as /skills PARAR (bridge/stop.ts): agent turns end
-        // first, and a bridge that does not answer is a 504 after 8 s while
-        // the stop keeps running, not a request held for the MCP default.
-        const r = await stopRobot("stop_everything", who);
-        if (r.status !== 200) {
-          // This route's own error shapes: `task_id` where /skills says `name`.
-          const { name: _name, ...failure } = r.body;
-          return r.status === 504
-            ? status(504, { ...failure, task_id })
-            : status(502, { ...failure, task_id });
+export const tasksRoutes = (deps: {
+  bridge: Pick<BridgeMcp, "callTool">;
+  dispatch: Pick<Dispatcher, "auditedCall">;
+  stop: Pick<Stop, "stopRobot">;
+}) =>
+  new Elysia({ prefix: "/tasks" })
+    .post(
+      "/:task_id/cancel",
+      async (ctx) => {
+        const {
+          params: { task_id },
+          body,
+          status,
+        } = ctx;
+        const mode = body?.mode ?? "graceful";
+        const who = { userId: userIdOf(ctx), source: "direct" as const };
+        if (mode === "estop") {
+          // The same stop as /skills PARAR (bridge/stop.ts): agent turns end
+          // first, and a bridge that does not answer is a 504 after 8 s while
+          // the stop keeps running, not a request held for the MCP default.
+          const r = await deps.stop.stopRobot("stop_everything", who);
+          if (r.status !== 200) {
+            // This route's own error shapes: `task_id` where /skills says `name`.
+            const { name: _name, ...failure } = r.body;
+            return r.status === 504
+              ? status(504, { ...failure, task_id })
+              : status(502, { ...failure, task_id });
+          }
+          // Bridge tools always return a dict today, but nothing at the
+          // type level guarantees it -- spreading a non-object (e.g. a bare
+          // string) into a response object silently produces garbage
+          // indexed keys instead of erroring, so guard explicitly.
+          const raw = r.body;
+          const result =
+            raw !== null && typeof raw === "object" && !Array.isArray(raw)
+              ? (raw as Record<string, unknown>)
+              : { raw };
+          return { mode, task_id, ...result };
         }
-        // Bridge tools always return a dict today, but nothing at the
-        // type level guarantees it -- spreading a non-object (e.g. a bare
-        // string) into a response object silently produces garbage
-        // indexed keys instead of erroring, so guard explicitly.
-        const raw = r.body;
-        const result =
-          raw !== null && typeof raw === "object" && !Array.isArray(raw)
-            ? (raw as Record<string, unknown>)
-            : { raw };
-        return { mode, task_id, ...result };
-      }
-      try {
-        return await auditedCall("cancel_task", { task_id }, who);
-      } catch (err) {
-        if (err instanceof BridgeUnavailableError)
-          return status(502, { error: "bridge_unavailable", task_id });
-        if (err instanceof BridgeToolError)
-          return status(502, {
-            error: "tool_error",
-            task_id,
-            detail: err.detail,
+        try {
+          return await deps.dispatch.auditedCall(
+            "cancel_task",
+            { task_id },
+            who,
+          );
+        } catch (err) {
+          if (err instanceof BridgeUnavailableError)
+            return status(502, { error: "bridge_unavailable", task_id });
+          if (err instanceof BridgeToolError)
+            return status(502, {
+              error: "tool_error",
+              task_id,
+              detail: err.detail,
+            });
+          return status(502, { error: "bridge_error", task_id });
+        }
+      },
+      {
+        params: t.Object({ task_id: t.String() }),
+        body: t.Optional(
+          t.Object({
+            mode: t.Optional(
+              t.Union([t.Literal("graceful"), t.Literal("estop")], {
+                default: "graceful",
+              }),
+            ),
+          }),
+        ),
+        detail: {
+          summary: "Request graceful cancellation of an in-flight task.",
+          tags: ["tasks"],
+        },
+      },
+    )
+    .get(
+      "/",
+      async ({ query, status }) => {
+        try {
+          return await deps.bridge.callTool("list_active_tasks", {
+            include_recent: query?.include_recent === "true",
           });
-        return status(502, { error: "bridge_error", task_id });
-      }
-    },
-    {
-      params: t.Object({ task_id: t.String() }),
-      body: t.Optional(
-        t.Object({
-          mode: t.Optional(
-            t.Union([t.Literal("graceful"), t.Literal("estop")], {
-              default: "graceful",
-            }),
+        } catch (err) {
+          if (err instanceof BridgeUnavailableError)
+            return status(502, { error: "bridge_unavailable" });
+          return status(502, { error: "bridge_error" });
+        }
+      },
+      {
+        query: t.Object({
+          include_recent: t.Optional(
+            t.String({ enum: ["true", "false"], default: "false" }),
           ),
         }),
-      ),
-      detail: {
-        summary: "Request graceful cancellation of an in-flight task.",
-        tags: ["tasks"],
+        detail: {
+          summary:
+            "List active tasks (and optionally recently-completed ones).",
+          tags: ["tasks"],
+        },
       },
-    },
-  )
-  .get(
-    "/",
-    async ({ query, status }) => {
-      try {
-        return await callTool("list_active_tasks", {
-          include_recent: query?.include_recent === "true",
-        });
-      } catch (err) {
-        if (err instanceof BridgeUnavailableError)
-          return status(502, { error: "bridge_unavailable" });
-        return status(502, { error: "bridge_error" });
-      }
-    },
-    {
-      query: t.Object({
-        include_recent: t.Optional(
-          t.String({ enum: ["true", "false"], default: "false" }),
-        ),
-      }),
-      detail: {
-        summary: "List active tasks (and optionally recently-completed ones).",
-        tags: ["tasks"],
-      },
-    },
-  );
+    );

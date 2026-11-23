@@ -20,7 +20,7 @@
 
 import { Elysia } from "elysia";
 
-import { bridgeSiblingUrl } from "../bridge/url";
+import type { BridgeHttp } from "../bridge/http";
 
 /**
  * Proxy one JSON telemetry route.
@@ -32,35 +32,19 @@ import { bridgeSiblingUrl } from "../bridge/url";
  * and one nobody looked at.
  */
 async function proxyJson(
+  http: Pick<BridgeHttp, "relay">,
   path: string,
   status: (code: number, body: unknown) => unknown,
 ): Promise<unknown> {
-  let upstream: Response;
-  try {
-    upstream = await fetch(bridgeSiblingUrl(path), {
-      // Short on purpose: this is polled, and a slow answer is a stale answer.
-      // The console would rather be told nothing arrived than block a cycle.
-      signal: AbortSignal.timeout(3000),
-    });
-  } catch {
-    return status(502, { error: "bridge_unavailable" });
-  }
+  // Short on purpose: this is polled, and a slow answer is a stale answer.
+  // The console would rather be told nothing arrived than block a cycle.
+  const r = await http.relay(path, {
+    timeoutMs: 3000,
+    unavailableBody: { error: "unavailable" },
+  });
+  if (!r.ok) return status(r.status, r.body);
 
-  if (upstream.status === 503) {
-    return status(
-      503,
-      await upstream.json().catch(() => ({ error: "unavailable" })),
-    );
-  }
-  if (!upstream.ok) return status(502, { error: "bridge_error" });
-
-  // The timeout covers reading the BODY too: headers that arrive just before
-  // it leave `arrayBuffer()` to throw, which escaped as a 500 — a server bug,
-  // to the console — instead of the bridge being slow.
-  const body = await upstream.arrayBuffer().catch(() => null);
-  if (body === null) return status(502, { error: "bridge_unavailable" });
-
-  return new Response(body, {
+  return new Response(r.body, {
     headers: {
       "Content-Type": "application/json",
       // Never cache. A cached scene or transcript is indistinguishable from a
@@ -70,48 +54,49 @@ async function proxyJson(
   });
 }
 
-export const telemetryRoutes = new Elysia()
-  .get(
-    "/telemetry/surroundings",
-    ({ status }) => proxyJson("/telemetry/surroundings", status),
-    {
-      detail: {
-        summary:
-          "The D7 world-model snapshot — the same one the agent is given, never a parallel view.",
-        tags: ["telemetry"],
+export const telemetryRoutes = (deps: { http: Pick<BridgeHttp, "relay"> }) =>
+  new Elysia()
+    .get(
+      "/telemetry/surroundings",
+      ({ status }) => proxyJson(deps.http, "/telemetry/surroundings", status),
+      {
+        detail: {
+          summary:
+            "The D7 world-model snapshot — the same one the agent is given, never a parallel view.",
+          tags: ["telemetry"],
+        },
       },
-    },
-  )
-  .get(
-    "/telemetry/scan",
-    ({ status }) => proxyJson("/telemetry/scan", status),
-    {
-      detail: {
-        summary:
-          "The lidar ring — ~120 bearings of centimetres, with its age and a stale flag.",
-        tags: ["telemetry"],
+    )
+    .get(
+      "/telemetry/scan",
+      ({ status }) => proxyJson(deps.http, "/telemetry/scan", status),
+      {
+        detail: {
+          summary:
+            "The lidar ring — ~120 bearings of centimetres, with its age and a stale flag.",
+          tags: ["telemetry"],
+        },
       },
-    },
-  )
-  .get(
-    "/telemetry/voice",
-    ({ status }) => proxyJson("/telemetry/voice", status),
-    {
-      detail: {
-        summary:
-          "Recent speech heard by the robot, plus whether it can hear at all. Non-consuming.",
-        tags: ["telemetry"],
+    )
+    .get(
+      "/telemetry/voice",
+      ({ status }) => proxyJson(deps.http, "/telemetry/voice", status),
+      {
+        detail: {
+          summary:
+            "Recent speech heard by the robot, plus whether it can hear at all. Non-consuming.",
+          tags: ["telemetry"],
+        },
       },
-    },
-  )
-  .get(
-    "/telemetry/gate",
-    ({ status }) => proxyJson("/telemetry/gate", status),
-    {
-      detail: {
-        summary:
-          "The Nav2 cmd_vel gate: whether autonomous driving is armed, for how long, and what it last sent.",
-        tags: ["telemetry"],
+    )
+    .get(
+      "/telemetry/gate",
+      ({ status }) => proxyJson(deps.http, "/telemetry/gate", status),
+      {
+        detail: {
+          summary:
+            "The Nav2 cmd_vel gate: whether autonomous driving is armed, for how long, and what it last sent.",
+          tags: ["telemetry"],
+        },
       },
-    },
-  );
+    );

@@ -8,7 +8,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { abortAllTurns, beginTurn, holdVoiceLoop } from "../agent/turns";
+import { createConfirmations } from "../agent/confirmations";
+import { createTurns } from "../agent/turns";
 import { VoiceConversation } from "./conversation";
 import {
   VoiceLoop,
@@ -17,6 +18,12 @@ import {
   type VoiceLoopDeps,
 } from "./loop";
 
+// The process's agent turns, as the voice service hands them to its loop.
+const turns = createTurns(createConfirmations());
+const abortAllTurns = (reason?: string) => turns.abortAll(reason);
+const beginTurn = () => turns.beginTurn();
+const holdVoiceLoop = () => turns.holdVoiceLoop();
+
 function harness(results: ListenResult[], opts = {}) {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
   const agentRuns: string[] = [];
@@ -24,6 +31,7 @@ function harness(results: ListenResult[], opts = {}) {
 
   const loop = new VoiceLoop(
     {
+      turns,
       callTool: async (name, args) => {
         calls.push({ name, args });
         if (name !== "listen") return { status: "ok" };
@@ -117,6 +125,7 @@ describe("VoiceLoop", () => {
     // still reports the loop as running.
     let n = 0;
     const loop = new VoiceLoop({
+      turns,
       callTool: async () => {
         if (n++ === 0) throw new Error("bridge went away");
         return said("hola");
@@ -151,6 +160,7 @@ describe("VoiceLoop", () => {
     const calls: string[] = [];
     const heard: string[] = [];
     const loop = new VoiceLoop({
+      turns,
       callTool: async (name) => {
         calls.push(name);
         return { status: "ok" };
@@ -182,6 +192,7 @@ describe("VoiceLoop", () => {
     const calls: string[] = [];
     const heard: string[] = [];
     const loop = new VoiceLoop({
+      turns,
       callTool: async (name) => {
         calls.push(name);
         return { status: "ok" };
@@ -210,6 +221,7 @@ describe("VoiceLoop", () => {
     let active = 0;
     let maxActive = 0;
     const loop = new VoiceLoop({
+      turns,
       callTool: async () => said("hola"),
       runAgent: async () => {
         active += 1;
@@ -260,6 +272,7 @@ function eventHarness(
 
   const loop = new VoiceLoop(
     {
+      turns,
       callTool: async (name) => {
         calls.push(name);
         if (name === "stop_everything" && opts.stopFails)

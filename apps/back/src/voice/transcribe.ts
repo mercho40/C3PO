@@ -6,10 +6,13 @@
  * OpenAI-compatible gateway the agent uses (TIC AI's `tic-transcript`), and
  * the text then goes through the ordinary agent turn and every bridge gate.
  * The gateway key stays on this server.
+ *
+ * One transcriber per process (`createTranscriber`, built by createApp from
+ * `config.transcribe`): the headset's push-to-talk and the robot mic's
+ * utterances share its failover state.
  */
-const BASE_URL =
-  process.env.AGENT_BASE_URL ?? "https://proyectos-tic.ort.edu.ar/c3po/api/v1";
-const MODEL = process.env.AGENT_TRANSCRIBE_MODEL ?? "tic-transcript";
+import type { TranscribeConfig } from "#back/config.js";
+
 /** ~60 s of 16 kHz mono 16-bit WAV; a push-to-talk utterance is far shorter. */
 export const MAX_AUDIO_BYTES = 2_000_000;
 
@@ -29,72 +32,76 @@ export class TranscribeError extends Error {
   }
 }
 
-/** After the primary fails, later clips go straight to the fallback for this long. */
-const STICKY_MS = Number(process.env.AGENT_FALLBACK_STICKY_S ?? 300) * 1000;
-let fallbackUntil = 0;
+type Fallback = { baseUrl: string; model: string; key: string };
+type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
-/** Test hook: forget an earlier failover. */
-export function resetTranscribeFailover(): void {
-  fallbackUntil = 0;
-}
-
-export async function transcribe(
+export type Transcribe = (
   audio: ArrayBuffer,
   contentType: string,
-  fetchImpl: typeof fetch = fetch,
-  timeoutMs = 30_000,
-  now: () => number = Date.now,
-): Promise<string> {
-  const key = process.env.AGENT_API_KEY;
-  if (!key) throw new TranscribeError(503, "AGENT_API_KEY is not set");
-  if (audio.byteLength === 0) throw new TranscribeError(400, "empty_audio");
-  if (audio.byteLength > MAX_AUDIO_BYTES)
-    throw new TranscribeError(413, "audio_too_long");
-  // ia-tic down took transcription with it (2026-11-11): the agent already fails over
-  // (agent/failover.ts), so the robot mic and the headset follow it to the same fallback.
-  const fallback = fallbackConfig(contentType);
-  if (fallback && now() < fallbackUntil)
-    return transcribeFallback(audio, fallback, fetchImpl, timeoutMs);
-  try {
-    return await transcribePrimary(
-      audio,
-      contentType,
-      key,
-      fetchImpl,
-      timeoutMs,
-    );
-  } catch (err) {
-    // Only an unreachable or overloaded gateway; a 4xx is our request and fails there too.
-    const down =
-      err instanceof TranscribeError &&
-      (err.message === "transcription_unavailable" ||
-        /^transcription_failed_(5\d\d|429)$/.test(err.message));
-    if (!fallback || !down) throw err;
-    fallbackUntil = now() + STICKY_MS;
-    console.log(
-      "[voice] transcribe.provider_failover",
-      JSON.stringify({ reason: err.message }),
-    );
-    return transcribeFallback(audio, fallback, fetchImpl, timeoutMs);
+  timeoutMs?: number,
+) => Promise<string>;
+
+export function createTranscriber(
+  config: TranscribeConfig,
+  opts: {
+    fetch?: FetchLike;
+    now?: () => number;
+  } = {},
+): Transcribe {
+  const fetchImpl: FetchLike =
+    opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const now = opts.now ?? Date.now;
+  /** After the primary fails, later clips go straight to the fallback for this long. */
+  let fallbackUntil = 0;
+
+  function fallbackConfig(contentType: string): Fallback | null {
+    // shortcut: the chat endpoint's input_audio takes wav/mp3, not the headset's webm; webm keeps ia-tic only.
+    if (!config.fallback || contentType.includes("webm")) return null;
+    return config.fallback;
   }
-}
 
-type Fallback = { baseUrl: string; model: string; key: string };
-
-function fallbackConfig(contentType: string): Fallback | null {
-  const baseUrl = process.env.AGENT_FALLBACK_BASE_URL;
-  const model = process.env.AGENT_FALLBACK_MODEL;
-  const key = process.env.AGENT_FALLBACK_API_KEY;
-  // shortcut: the chat endpoint's input_audio takes wav/mp3, not the headset's webm; webm keeps ia-tic only.
-  if (!baseUrl || !model || !key || contentType.includes("webm")) return null;
-  return { baseUrl, model, key };
+  return async function transcribe(audio, contentType, timeoutMs = 30_000) {
+    const key = config.apiKey;
+    if (!key) throw new TranscribeError(503, "AGENT_API_KEY is not set");
+    if (audio.byteLength === 0) throw new TranscribeError(400, "empty_audio");
+    if (audio.byteLength > MAX_AUDIO_BYTES)
+      throw new TranscribeError(413, "audio_too_long");
+    // ia-tic down took transcription with it (2026-11-11): the agent already fails over
+    // (agent/failover.ts), so the robot mic and the headset follow it to the same fallback.
+    const fallback = fallbackConfig(contentType);
+    if (fallback && now() < fallbackUntil)
+      return transcribeFallback(audio, fallback, fetchImpl, timeoutMs);
+    try {
+      return await transcribePrimary(
+        config,
+        audio,
+        contentType,
+        key,
+        fetchImpl,
+        timeoutMs,
+      );
+    } catch (err) {
+      // Only an unreachable or overloaded gateway; a 4xx is our request and fails there too.
+      const down =
+        err instanceof TranscribeError &&
+        (err.message === "transcription_unavailable" ||
+          /^transcription_failed_(5\d\d|429)$/.test(err.message));
+      if (!fallback || !down) throw err;
+      fallbackUntil = now() + config.stickyMs;
+      console.log(
+        "[voice] transcribe.provider_failover",
+        JSON.stringify({ reason: err.message }),
+      );
+      return transcribeFallback(audio, fallback, fetchImpl, timeoutMs);
+    }
+  };
 }
 
 /** A model fallback has no /audio/transcriptions: send the WAV as chat input_audio. */
 async function transcribeFallback(
   audio: ArrayBuffer,
   fb: Fallback,
-  fetchImpl: typeof fetch,
+  fetchImpl: FetchLike,
   timeoutMs: number,
 ): Promise<string> {
   let res: Response;
@@ -141,14 +148,15 @@ async function transcribeFallback(
 }
 
 async function transcribePrimary(
+  config: TranscribeConfig,
   audio: ArrayBuffer,
   contentType: string,
   key: string,
-  fetchImpl: typeof fetch,
+  fetchImpl: FetchLike,
   timeoutMs: number,
 ): Promise<string> {
   const form = new FormData();
-  form.append("model", MODEL);
+  form.append("model", config.model);
   form.append("language", "es");
   const ext = contentType.includes("webm") ? "webm" : "wav";
   form.append(
@@ -158,7 +166,7 @@ async function transcribePrimary(
   );
   let res: Response;
   try {
-    res = await fetchImpl(`${BASE_URL}/audio/transcriptions`, {
+    res = await fetchImpl(`${config.baseUrl}/audio/transcriptions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}` },
       body: form,

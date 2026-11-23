@@ -12,6 +12,12 @@
  * The session is established lazily on first use and reused. If the bridge is
  * down or the connection drops, the session is discarded so the next call
  * reconnects from scratch.
+ *
+ * One `createBridgeClient` per process, built by the composition root
+ * (index.ts) from `config.bridge.mcpUrl`; everything that calls a tool gets it
+ * as a dependency. The session lives in that instance, not in this module, so
+ * a test makes its own client against its own server, and no test has to
+ * import this file in a child process to get a fresh one.
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -20,22 +26,7 @@ import {
   StreamableHTTPError,
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { bridgeUrl, unreachableHint } from "./url";
-
-// RESOLVED PER CONNECT, NOT ONCE AT MODULE LOAD.
-//
-// It used to be a module-level `const`, and that made this file's behaviour
-// depend on WHEN it was first imported. `client.test.ts` sets BRIDGE_URL to a
-// dead port and then dynamically imports this module — which only works if it
-// is the first importer. It is not: `catalogue.test.ts` and `skills.test.ts`
-// both pull `client.ts` in transitively, and bun ran them first in CI, so the
-// module was already loaded with the address from the seeded `.env` and the
-// test's override arrived too late. Locally the file order differed and it
-// passed, which is the worst version of this bug.
-//
-// Reading it per connect is also just better: the value costs nothing to look
-// up, `connect()` already runs on every reconnect, and changing BRIDGE_URL no
-// longer needs a process restart to take effect.
+import { unreachableHint } from "./url";
 
 /** The bridge could not be reached / the session could not be established. */
 export class BridgeUnavailableError extends Error {
@@ -57,8 +48,6 @@ export class BridgeToolError extends Error {
   }
 }
 
-let clientPromise: Promise<Client> | null = null;
-
 /**
  * The ceiling for establishing a session. Without one the SDK's 60 s initialize
  * default applied, and a bridge that accepts TCP but never answers (a stalled
@@ -68,9 +57,9 @@ let clientPromise: Promise<Client> | null = null;
  */
 const CONNECT_TIMEOUT_MS = 5000;
 
-async function connect(): Promise<Client> {
+async function connect(url: string): Promise<Client> {
   const client = new Client({ name: "c3po-back", version: "1.0.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(bridgeUrl()));
+  const transport = new StreamableHTTPClientTransport(new URL(url));
   // The SDK's timeout covers the initialize request; the race covers the
   // rest of the handshake (the `initialized` notification has none).
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -95,11 +84,6 @@ async function connect(): Promise<Client> {
   }
   return client;
 }
-
-// The tunnel hint is printed ONCE per process, not per failed call. A console
-// polling telemetry against a down bridge would otherwise write this line
-// several times a second and bury everything else in the log.
-let hintPrinted = false;
 
 /**
  * Drop a session we are done with, without letting the teardown throw.
@@ -156,16 +140,6 @@ export function sessionGone(err: unknown): boolean {
   return err instanceof StreamableHTTPError && err.code === 404;
 }
 
-/**
- * Give up on a session after `sessionLost`. Clears the shared slot only if it
- * still holds THIS session: a failure that lands after a reconnect must not
- * drop — and leak — the newer one.
- */
-function abandon(pending: Promise<Client>, client: Client): void {
-  if (clientPromise === pending) clientPromise = null;
-  discard(client); // ...and actually close it — see `discard`
-}
-
 /** One failed request, as the callers' two error types. */
 export function failure(name: string, err: unknown): Error {
   // The bridge answered and refused the request itself (bad arguments, an
@@ -178,23 +152,6 @@ export function failure(name: string, err: unknown): Error {
     return new BridgeToolError(name, err.message);
   }
   return new BridgeUnavailableError(err);
-}
-
-function getClient(): Promise<Client> {
-  if (!clientPromise) {
-    clientPromise = connect().catch((err) => {
-      clientPromise = null; // let the next call retry a fresh connection
-      if (!hintPrinted) {
-        const hint = unreachableHint(bridgeUrl());
-        if (hint) {
-          hintPrinted = true;
-          console.error(`[bridge] ${hint}`);
-        }
-      }
-      throw new BridgeUnavailableError(err);
-    });
-  }
-  return clientPromise;
 }
 
 function textOf(content: unknown): string | undefined {
@@ -216,111 +173,167 @@ function textOf(content: unknown): string | undefined {
  */
 const CALL_TIMEOUT_MS = 15 * 60_000;
 
-/**
- * Invoke a bridge tool by name and return its decoded result.
- *
- * FastMCP returns the tool's dict as `structuredContent`; we fall back to
- * parsing the text content otherwise. Throws {@link BridgeUnavailableError} if
- * the bridge is unreachable, or {@link BridgeToolError} if the tool fails.
- */
-export async function callTool(
-  name: string,
-  args: Record<string, unknown> = {},
-  // Aborting it cancels the call on the bridge, on purpose: an agent turn
-  // nobody follows any more must not keep a walk going. Never for a stop.
-  signal?: AbortSignal,
-  /** Internal: this is the one retry after `sessionGone`. */
-  retried = false,
-): Promise<unknown> {
-  // A timeout CANCELS the call on the bridge (`notifications/cancelled`),
-  // which for a skill halfway through moving the robot — or stopping it — is
-  // the wrong thing to do. Callers that need to stop waiting race the promise
-  // instead (see routes/skills.ts) and let the call finish.
-  //
-  // So the timeout is set, explicitly, beyond any skill: leaving it out does
-  // NOT mean "none" — the SDK then applies its 60 s default
-  // (DEFAULT_REQUEST_TIMEOUT_MSEC, shared/protocol.js), and a 2-minute walk_to
-  // was cancelled on the robot at 60 s while the console reported the bridge
-  // as unreachable.
-  const pending = getClient();
-  const client = await pending;
-
-  let result: Awaited<ReturnType<Client["callTool"]>>;
-  try {
-    result = await client.callTool({ name, arguments: args }, undefined, {
-      timeout: CALL_TIMEOUT_MS,
-      ...(signal ? { signal } : {}),
-    });
-  } catch (err) {
-    // The SDK rejects with the signal's own reason: our abort, not a lost
-    // session, and closing the session would take PARAR in flight with it.
-    if (signal?.aborted) throw new BridgeToolError(name, "aborted");
-    if (sessionLost(err)) abandon(pending, client);
-    if (sessionGone(err) && !retried) return callTool(name, args, signal, true);
-    throw failure(name, err);
-  }
-
-  if (result.isError) {
-    throw new BridgeToolError(name, textOf(result.content) ?? "unknown error");
-  }
-
-  if (result.structuredContent !== undefined) return result.structuredContent;
-
-  const text = textOf(result.content);
-  if (text !== undefined) {
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  }
-  return result.content ?? null;
-}
-
-/**
- * List the bridge's tools, with their JSON Schema and `_meta`.
- *
- * This is now how `apps/back` learns what the robot can do. It used to be a
- * hand-written TypeScript catalogue that duplicated the bridge's — and the two
- * drifted, repeatedly and silently, in ways that reached the LLM: a `voice`
- * parameter the bridge did not accept, defaulted parameters marked required so
- * the model had to invent timeouts, and a description telling the agent speech
- * was a stub after it had been implemented.
- */
 const LIST_TOOLS_TIMEOUT_MS = 3000;
 
-export async function listTools(
-  /** Internal: this is the one retry after `sessionGone`. */
-  retried = false,
-): Promise<
-  Array<{
-    name: string;
-    description?: string;
-    inputSchema: unknown;
-    _meta?: unknown;
-  }>
-> {
-  const pending = getClient();
-  const client = await pending;
-  try {
-    // Bounded, unlike callTool: listing tools moves nothing, and every
-    // non-safety /invoke and the catalogue wait on it. A bridge that accepts
-    // connections but never answers must fall through to the cached catalogue
-    // in seconds, not after the SDK's 60 s default.
-    const result = await client.listTools(undefined, {
-      timeout: LIST_TOOLS_TIMEOUT_MS,
-    });
-    return result.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-      _meta: (t as { _meta?: unknown })._meta,
-    }));
-  } catch (err) {
-    // A slow catalogue refresh is a timeout, and the session is still carrying
-    // whatever else is in flight — so only a lost session is torn down.
-    if (sessionLost(err)) abandon(pending, client);
-    if (sessionGone(err) && !retried) return listTools(true);
-    throw new BridgeUnavailableError(err);
+/** One tool of the bridge's `tools/list`, with its JSON Schema and `_meta`. */
+export type BridgeTool = {
+  name: string;
+  description?: string;
+  inputSchema: unknown;
+  _meta?: unknown;
+};
+
+/** What the rest of back calls the bridge's tools through. */
+export type BridgeMcp = {
+  callTool: (
+    name: string,
+    args?: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => Promise<unknown>;
+  listTools: () => Promise<BridgeTool[]>;
+};
+
+/** The one MCP session to the bridge at `url`, opened on first use. */
+export function createBridgeClient(url: string): BridgeMcp {
+  let clientPromise: Promise<Client> | null = null;
+  // The tunnel hint is printed ONCE per process, not per failed call. A
+  // console polling telemetry against a down bridge would otherwise write
+  // this line several times a second and bury everything else in the log.
+  let hintPrinted = false;
+
+  /**
+   * Give up on a session after `sessionLost`. Clears the shared slot only if it
+   * still holds THIS session: a failure that lands after a reconnect must not
+   * drop — and leak — the newer one.
+   */
+  function abandon(pending: Promise<Client>, client: Client): void {
+    if (clientPromise === pending) clientPromise = null;
+    discard(client); // ...and actually close it — see `discard`
   }
+
+  function getClient(): Promise<Client> {
+    if (!clientPromise) {
+      clientPromise = connect(url).catch((err) => {
+        clientPromise = null; // let the next call retry a fresh connection
+        if (!hintPrinted) {
+          const hint = unreachableHint(url);
+          if (hint) {
+            hintPrinted = true;
+            console.error(`[bridge] ${hint}`);
+          }
+        }
+        throw new BridgeUnavailableError(err);
+      });
+    }
+    return clientPromise;
+  }
+
+  /**
+   * Invoke a bridge tool by name and return its decoded result.
+   *
+   * FastMCP returns the tool's dict as `structuredContent`; we fall back to
+   * parsing the text content otherwise. Throws {@link BridgeUnavailableError} if
+   * the bridge is unreachable, or {@link BridgeToolError} if the tool fails.
+   */
+  async function callTool(
+    name: string,
+    args: Record<string, unknown> = {},
+    // Aborting it cancels the call on the bridge, on purpose: an agent turn
+    // nobody follows any more must not keep a walk going. Never for a stop.
+    signal?: AbortSignal,
+    /** Internal: this is the one retry after `sessionGone`. */
+    retried = false,
+  ): Promise<unknown> {
+    // A timeout CANCELS the call on the bridge (`notifications/cancelled`),
+    // which for a skill halfway through moving the robot — or stopping it — is
+    // the wrong thing to do. Callers that need to stop waiting race the promise
+    // instead (see bridge/stop.ts) and let the call finish.
+    //
+    // So the timeout is set, explicitly, beyond any skill: leaving it out does
+    // NOT mean "none" — the SDK then applies its 60 s default
+    // (DEFAULT_REQUEST_TIMEOUT_MSEC, shared/protocol.js), and a 2-minute walk_to
+    // was cancelled on the robot at 60 s while the console reported the bridge
+    // as unreachable.
+    const pending = getClient();
+    const client = await pending;
+
+    let result: Awaited<ReturnType<Client["callTool"]>>;
+    try {
+      result = await client.callTool({ name, arguments: args }, undefined, {
+        timeout: CALL_TIMEOUT_MS,
+        ...(signal ? { signal } : {}),
+      });
+    } catch (err) {
+      // The SDK rejects with the signal's own reason: our abort, not a lost
+      // session, and closing the session would take PARAR in flight with it.
+      if (signal?.aborted) throw new BridgeToolError(name, "aborted");
+      if (sessionLost(err)) abandon(pending, client);
+      if (sessionGone(err) && !retried)
+        return callTool(name, args, signal, true);
+      throw failure(name, err);
+    }
+
+    if (result.isError) {
+      throw new BridgeToolError(
+        name,
+        textOf(result.content) ?? "unknown error",
+      );
+    }
+
+    if (result.structuredContent !== undefined) return result.structuredContent;
+
+    const text = textOf(result.content);
+    if (text !== undefined) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
+    }
+    return result.content ?? null;
+  }
+
+  /**
+   * List the bridge's tools, with their JSON Schema and `_meta`.
+   *
+   * This is now how `apps/back` learns what the robot can do. It used to be a
+   * hand-written TypeScript catalogue that duplicated the bridge's — and the two
+   * drifted, repeatedly and silently, in ways that reached the LLM: a `voice`
+   * parameter the bridge did not accept, defaulted parameters marked required so
+   * the model had to invent timeouts, and a description telling the agent speech
+   * was a stub after it had been implemented.
+   */
+  async function listTools(
+    /** Internal: this is the one retry after `sessionGone`. */
+    retried = false,
+  ): Promise<BridgeTool[]> {
+    const pending = getClient();
+    const client = await pending;
+    try {
+      // Bounded, unlike callTool: listing tools moves nothing, and every
+      // non-safety /invoke and the catalogue wait on it. A bridge that accepts
+      // connections but never answers must fall through to the cached catalogue
+      // in seconds, not after the SDK's 60 s default.
+      const result = await client.listTools(undefined, {
+        timeout: LIST_TOOLS_TIMEOUT_MS,
+      });
+      return result.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+        _meta: (t as { _meta?: unknown })._meta,
+      }));
+    } catch (err) {
+      // A slow catalogue refresh is a timeout, and the session is still carrying
+      // whatever else is in flight — so only a lost session is torn down.
+      if (sessionLost(err)) abandon(pending, client);
+      if (sessionGone(err) && !retried) return listTools(true);
+      throw new BridgeUnavailableError(err);
+    }
+  }
+
+  return {
+    callTool: (name, args, signal) => callTool(name, args, signal),
+    listTools: () => listTools(),
+  };
 }

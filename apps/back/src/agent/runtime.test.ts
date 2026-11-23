@@ -21,12 +21,32 @@ import {
   mock,
   spyOn,
 } from "bun:test";
-import type { UIMessage } from "ai";
+import type { LanguageModel, UIMessage } from "ai";
 import { MockLanguageModelV4, convertArrayToReadableStream } from "ai/test";
 import type { SkillCatalogueEntry } from "#back/skills/index.js";
-import * as bridgeClient from "#back/bridge/client.js";
-import * as chats from "#back/db/chats.js";
-import { abortAllTurns, activeTurnCount, voiceLoopHeld } from "./turns";
+import {
+  BridgeToolError,
+  BridgeUnavailableError,
+} from "#back/bridge/client.js";
+import type { ToolCallRow } from "#back/db/chats.js";
+import { parseToolAllowlist } from "#back/config.js";
+import { createDispatcher } from "#back/skills/dispatch.js";
+import { fakeModels } from "#back/testing/fakes.js";
+import { createConfirmations } from "./confirmations";
+import {
+  agentToolExclusions,
+  createToolPolicy,
+  offeredInMode as offeredUnder,
+  type AgentMode,
+  type OfferedSkill,
+  worldSummary,
+  boundHistory,
+  createAgentRuntime,
+  turnSummary,
+  confirmRefusal,
+  toldNoEffect,
+} from "./runtime";
+import { createTurns } from "./turns";
 
 const FIXTURE_SKILLS: SkillCatalogueEntry[] = [
   {
@@ -68,38 +88,64 @@ FIXTURE_SKILLS.push({
 
 const listSkills = mock(async () => FIXTURE_SKILLS);
 
-mock.module("#back/skills/index.js", () => ({
-  listSkills,
-  // `bun test` shares one module registry across every test file in the
-  // run, and `#back/skills` resolves to the same file other test files
-  // import via relative (`../skills`) or self (`./index`) paths -- whichever
-  // file's mock.module call "wins" serves every consumer, so a mock missing
-  // an export the real module has throws at import time for whoever loses
-  // the race. Keep this mock's surface complete even though runtime.ts only
-  // uses listSkills.
-  getSkill: mock(async (name: string) =>
-    FIXTURE_SKILLS.find((s) => s.name === name),
-  ),
-  getCatalogue: mock(async () => ({
-    skills: FIXTURE_SKILLS,
-    source: "bridge",
-    ageSeconds: 0,
-  })),
-}));
+/**
+ * The runtime's edges, late-bound so a test can `spyOn` them: the bridge
+ * (dead unless a test says otherwise: worldSummary then reports it
+ * unavailable) and the audit write.
+ */
+const fakeBridge = {
+  callTool: async (
+    _name: string,
+    _args?: Record<string, unknown>,
+    _signal?: AbortSignal,
+  ): Promise<unknown> => {
+    throw new BridgeUnavailableError();
+  },
+};
+const fakeChats = {
+  logToolCall: async (_row: ToolCallRow): Promise<void> => {},
+};
+const confirmations = createConfirmations();
+const turns = createTurns(confirmations);
+const abortAllTurns = (reason?: string) => turns.abortAll(reason);
+const activeTurnCount = () => turns.activeCount();
+const voiceLoopHeld = () => turns.voiceLoopHeld();
 
-const {
-  agentToolAllowlist,
-  agentToolExclusions,
-  warnUnknownAgentTools,
-  boundHistory,
-  buildSystemPrompt,
-  offeredInMode,
-  runAgentChat,
-  turnSummary,
-  worldSummary,
-  confirmRefusal,
-  toldNoEffect,
-} = await import("./runtime");
+function runtime(model?: LanguageModel) {
+  const bridge = {
+    callTool: (
+      name: string,
+      args?: Record<string, unknown>,
+      signal?: AbortSignal,
+    ) => fakeBridge.callTool(name, args, signal),
+  };
+  const logToolCall = (row: ToolCallRow) => fakeChats.logToolCall(row);
+  return createAgentRuntime({
+    config: { maxSteps: 40, turnBudgetMs: 240_000, tools: null },
+    models: fakeModels(model ?? new MockLanguageModelV4({})),
+    catalogue: { listSkills },
+    bridge,
+    camera: {
+      cameraStatus: async () => ({ ok: false, status: 503, body: {} }),
+      cameraFrame: async () => null,
+    },
+    dispatch: createDispatcher({ bridge, logToolCall }),
+    logToolCall,
+    confirmations,
+    turns,
+  });
+}
+
+type RunOptions = Parameters<ReturnType<typeof runtime>["runAgentChat"]>[1] & {
+  model?: LanguageModel;
+};
+const runAgentChat = (messages: UIMessage[], opts: RunOptions = {}) => {
+  const { model, ...rest } = opts;
+  return runtime(model).runAgentChat(messages, rest);
+};
+const buildSystemPrompt = (mode?: AgentMode) => runtime().systemPrompt(mode);
+const offeredInMode = (skill: OfferedSkill, mode: AgentMode) =>
+  offeredUnder(skill, mode);
 
 describe("buildSystemPrompt", () => {
   test("does not hardcode a specific sim/real environment", async () => {
@@ -392,17 +438,6 @@ describe("runAgentChat releases its turn on every outcome", () => {
     return parts;
   };
 
-  // worldSummary dials the bridge: keep it off whatever .env points at, which
-  // can be a tunnel to the robot.
-  const savedBridgeUrl = process.env.BRIDGE_URL;
-  beforeAll(() => {
-    process.env.BRIDGE_URL = "http://127.0.0.1:39217/mcp";
-  });
-  afterAll(() => {
-    if (savedBridgeUrl === undefined) delete process.env.BRIDGE_URL;
-    else process.env.BRIDGE_URL = savedBridgeUrl;
-  });
-  // The registry is module-global and shared with every test file in the run.
   beforeEach(() => void abortAllTurns());
 
   test("a one-step reply is registered while it runs and released at the end", async () => {
@@ -526,10 +561,12 @@ describe("runAgentChat toolsSettled", () => {
     for await (const _ of stream);
   };
   const bridge = (walkTo: () => Promise<unknown>) => {
-    const call = spyOn(bridgeClient, "callTool").mockImplementation(
+    const call = spyOn(fakeBridge, "callTool").mockImplementation(
       async (name) => (name === "walk_to" ? walkTo() : {}),
     );
-    const log = spyOn(chats, "logToolCall").mockImplementation(async () => {});
+    const log = spyOn(fakeChats, "logToolCall").mockImplementation(
+      async () => {},
+    );
     return () => {
       call.mockRestore();
       log.mockRestore();
@@ -638,7 +675,7 @@ describe("runAgentChat toolsSettled", () => {
     let signal: AbortSignal | undefined;
     let sent!: () => void;
     const walkSent = new Promise<void>((r) => (sent = r));
-    const call = spyOn(bridgeClient, "callTool").mockImplementation(
+    const call = spyOn(fakeBridge, "callTool").mockImplementation(
       async (name, _args, s) => {
         if (name !== toolName) return {};
         signal = s;
@@ -646,7 +683,9 @@ describe("runAgentChat toolsSettled", () => {
         return { status: "ok" };
       },
     );
-    const log = spyOn(chats, "logToolCall").mockImplementation(async () => {});
+    const log = spyOn(fakeChats, "logToolCall").mockImplementation(
+      async () => {},
+    );
     try {
       const stop = new AbortController();
       const model = new MockLanguageModelV4({
@@ -679,10 +718,12 @@ describe("runAgentChat toolsSettled", () => {
   });
 
   test("an agent's audit row is stamped when the call was sent, like the direct path's", async () => {
-    const call = spyOn(bridgeClient, "callTool").mockImplementation(
-      async () => ({ status: "ok" }),
+    const call = spyOn(fakeBridge, "callTool").mockImplementation(async () => ({
+      status: "ok",
+    }));
+    const log = spyOn(fakeChats, "logToolCall").mockImplementation(
+      async () => {},
     );
-    const log = spyOn(chats, "logToolCall").mockImplementation(async () => {});
     try {
       const before = Date.now();
       const model = new MockLanguageModelV4({
@@ -820,7 +861,12 @@ describe("boundHistory", () => {
 
 // G7: one stdout line per turn, with no text from the prompt, camera or speech.
 describe("turn telemetry", () => {
-  const turn = { mode: "operator" as const, chatId: "chat-1", startedAt: 0 };
+  const turn = {
+    mode: "operator" as const,
+    chatId: "chat-1",
+    startedAt: 0,
+    model: "tic-chat",
+  };
 
   test("turnSummary counts steps, tokens and tools, and carries no text", () => {
     const event = {
@@ -842,7 +888,7 @@ describe("turn telemetry", () => {
       outputTokens: 5,
       tools: ["walk_to"],
     });
-    expect(typeof s.model).toBe("string");
+    expect(s.model).toBe("tic-chat");
     expect(JSON.stringify(s)).not.toContain("silla");
   });
 
@@ -857,10 +903,9 @@ describe("turn telemetry", () => {
  * The confirmation invariant, behaviourally: whatever the model does, an agent
  * turn can only NOTE a refused gated call. It is offered no tool that confirms,
  * reaches no /safety/confirm, never re-dispatches the call, and is told not to
- * retry (the operator's Confirmar runs it, routes/skills.ts confirmPending).
+ * retry (the operator's Confirmar runs it, agent/confirm-service.ts).
  */
 describe("the model cannot confirm a gated call", () => {
-  const confirmations = () => import("./confirmations");
   const pickSkill: SkillCatalogueEntry = {
     ...FIXTURE_SKILLS[0],
     name: "pick",
@@ -922,24 +967,26 @@ describe("the model cannot confirm a gated call", () => {
     "refused: pick is a T2 tool and needs an operator's confirmation first. You cannot give it: a human operator presses «Confirmar» for these exact arguments in the console chat, then you retry once with exactly the same arguments within 30 s.";
 
   test("a refused pick is only noted; nothing grants or re-runs it", async () => {
-    const { clearPending, listPending } = await confirmations();
-    clearPending();
+    confirmations.clear();
     listSkills.mockImplementation(async () => [...FIXTURE_SKILLS, pickSkill]);
-    const realFetch = globalThis.fetch;
+    // The runtime holds no HTTP client at all: the grant is not reachable.
     const fetched: string[] = [];
+    const realFetch = globalThis.fetch;
     globalThis.fetch = (async (url: string) => {
       fetched.push(String(url));
       return Response.json({ granted: true });
     }) as unknown as typeof fetch;
     const dispatched: string[] = [];
-    const call = spyOn(bridgeClient, "callTool").mockImplementation(
+    const call = spyOn(fakeBridge, "callTool").mockImplementation(
       async (name) => {
         if (name !== "pick") return {};
         dispatched.push(name);
-        throw new bridgeClient.BridgeToolError("pick", refusal);
+        throw new BridgeToolError("pick", refusal);
       },
     );
-    const log = spyOn(chats, "logToolCall").mockImplementation(async () => {});
+    const log = spyOn(fakeChats, "logToolCall").mockImplementation(
+      async () => {},
+    );
     const offered: string[][] = [];
     const prompts: string[] = [];
     let step = 0;
@@ -974,7 +1021,7 @@ describe("the model cannot confirm a gated call", () => {
       expect(seen).toContain("do not call pick again");
       expect(seen).not.toContain("retry once");
       // Still waiting for a human: one card (the repeat replaced the first).
-      const waiting = listPending("u1", "chat_1");
+      const waiting = confirmations.list("u1", "chat_1");
       expect(waiting.map((p) => [p.id, p.tool, p.args])).toEqual([
         ["c2", "pick", args],
       ]);
@@ -983,7 +1030,7 @@ describe("the model cannot confirm a gated call", () => {
       call.mockRestore();
       log.mockRestore();
       listSkills.mockImplementation(async () => FIXTURE_SKILLS);
-      clearPending();
+      confirmations.clear();
     }
   });
 
@@ -995,6 +1042,8 @@ describe("the model cannot confirm a gated call", () => {
       "takePending",
       "/safety/confirm",
       "routes/skills",
+      "confirm-service",
+      "skills/invoke",
     ])
       expect(src).not.toContain(forbidden);
   });
@@ -1016,26 +1065,23 @@ describe("AGENT_TOOLS allowlist (the stand)", () => {
     tier,
     works,
   });
-  afterEach(() => {
-    delete process.env.AGENT_TOOLS;
-  });
-
   test("unset offers everything, as before", () => {
-    expect(agentToolAllowlist()).toBeNull();
-    expect(offeredInMode(skill("dance"), "operator")).toBe(true);
+    expect(parseToolAllowlist(undefined)).toBeNull();
+    expect(parseToolAllowlist("")).toBeNull();
+    expect(offeredUnder(skill("dance"), "operator", null)).toBe(true);
   });
 
   test("set, it offers only the named tools, in every mode", () => {
-    process.env.AGENT_TOOLS = " wave , set_hand,run_sequence ";
+    const allow = parseToolAllowlist(" wave , set_hand,run_sequence ");
     for (const mode of ["operator", "voice"] as const) {
-      expect(offeredInMode(skill("wave"), mode)).toBe(true);
-      expect(offeredInMode(skill("set_hand", "T2"), mode)).toBe(true);
-      expect(offeredInMode(skill("dance"), mode)).toBe(false);
+      expect(offeredUnder(skill("wave"), mode, allow)).toBe(true);
+      expect(offeredUnder(skill("set_hand", "T2"), mode, allow)).toBe(true);
+      expect(offeredUnder(skill("dance"), mode, allow)).toBe(false);
     }
   });
 
   test("the stops are never trimmed away, whatever the list says", () => {
-    process.env.AGENT_TOOLS = "wave";
+    const allow = parseToolAllowlist("wave");
     for (const mode of ["operator", "voice"] as const)
       for (const name of [
         "stop_everything",
@@ -1043,17 +1089,25 @@ describe("AGENT_TOOLS allowlist (the stand)", () => {
         "cancel_task",
         "cancel_navigation",
       ])
-        expect(offeredInMode(skill(name, "T0"), mode)).toBe(true);
+        expect(offeredUnder(skill(name, "T0"), mode, allow)).toBe(true);
   });
 
   test("it never re-adds what the other rules drop", () => {
-    process.env.AGENT_TOOLS = "damp,zero_torque";
-    expect(offeredInMode(skill("damp"), "operator")).toBe(false);
-    expect(offeredInMode(skill("zero_torque"), "operator")).toBe(false);
+    const allow = parseToolAllowlist("damp,zero_torque");
+    expect(offeredUnder(skill("damp"), "operator", allow)).toBe(false);
+    expect(offeredUnder(skill("zero_torque"), "operator", allow)).toBe(false);
   });
 
   test("a name the bridge does not have is reported", () => {
-    process.env.AGENT_TOOLS = "wave,wavee";
-    expect(warnUnknownAgentTools([{ name: "wave" }])).toEqual(["wavee"]);
+    const policy = createToolPolicy(parseToolAllowlist("wave,wavee"));
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(policy.warnUnknown([{ name: "wave" }])).toEqual(["wavee"]);
+      // Said once per process, not on every turn's prompt.
+      policy.warnUnknown([{ name: "wave" }]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -33,12 +33,13 @@
 
 import { Elysia } from "elysia";
 
-import { bridgeSiblingUrl } from "#back/bridge/url.js";
+import type { BridgeHttp } from "#back/bridge/http.js";
 
 /** How long to wait for the bridge to START answering. Not a stream limit. */
 export const CONNECT_TIMEOUT_MS = 3000;
 
 type StatusFn = (code: number, body: unknown) => unknown;
+type Http = Pick<BridgeHttp, "relay" | "request">;
 
 /**
  * 503 is the bridge saying "no feed, and here is why" — pass it through with
@@ -65,39 +66,27 @@ async function upstreamFailure(
  * snapshot, and a 503 carries why there is none.
  */
 async function proxyOnce(
+  http: Http,
   path: string,
   contentType: string,
   status: StatusFn,
 ): Promise<unknown> {
-  let upstream: Response;
-  try {
-    upstream = await fetch(bridgeSiblingUrl(path), {
-      signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS),
-    });
-  } catch {
-    return status(502, { error: "bridge_unavailable" });
-  }
-  const failed = await upstreamFailure(upstream, status);
-  if (failed !== null) return failed;
+  const r = await http.relay(path, {
+    timeoutMs: CONNECT_TIMEOUT_MS,
+    unavailableBody: { error: "no_camera" },
+  });
+  if (!r.ok) return status(r.status, r.body);
 
-  // The timeout covers reading the BODY too: headers that arrive just before
-  // it leave `arrayBuffer()` to throw, which escaped as a 500 — a server bug,
-  // to the console — instead of the bridge being slow.
-  const body = await upstream.arrayBuffer().catch(() => null);
-  if (body === null) return status(502, { error: "bridge_unavailable" });
-
-  return new Response(body, {
+  return new Response(r.body, {
     headers: {
-      "Content-Type": upstream.headers.get("Content-Type") ?? contentType,
+      "Content-Type": r.upstream.headers.get("Content-Type") ?? contentType,
       "Cache-Control": "no-store",
     },
   });
 }
 
-const proxyStatus = (status: StatusFn) =>
-  proxyOnce("/camera/status", "application/json", status);
-
 async function proxyStream(
+  http: Http,
   request: Request,
   status: StatusFn,
 ): Promise<unknown> {
@@ -112,7 +101,7 @@ async function proxyStream(
   );
   let upstream: Response;
   try {
-    upstream = await fetch(bridgeSiblingUrl("/camera/stream.mjpg"), {
+    upstream = await http.request("/camera/stream.mjpg", {
       signal: upstreamAbort.signal,
     });
   } catch {
@@ -145,36 +134,43 @@ async function proxyStream(
   });
 }
 
-export const cameraRoutes = new Elysia()
-  .get("/camera/status", ({ status }) => proxyStatus(status), {
-    detail: {
-      summary:
-        "Whether the robot camera is live, which source is serving, and why not.",
-      tags: ["camera"],
-    },
-  })
-  // /live-camera's "Captura": the newest frame from the source itself, not a
-  // screenshot of a possibly stale <img>. It asked for this path through
-  // PUBLIC_ROBOT_CAM_URL from the day the camera moved behind back, and back
-  // did not relay it — the button failed with a 404 nobody had pressed.
-  .get(
-    "/camera/frame.jpg",
-    ({ status }) => proxyOnce("/camera/frame.jpg", "image/jpeg", status),
-    {
-      detail: {
-        summary: "The newest camera frame as one JPEG, or 503 and why not.",
-        tags: ["camera"],
+export const cameraRoutes = (deps: { http: Http }) =>
+  new Elysia()
+    .get(
+      "/camera/status",
+      ({ status }) =>
+        proxyOnce(deps.http, "/camera/status", "application/json", status),
+      {
+        detail: {
+          summary:
+            "Whether the robot camera is live, which source is serving, and why not.",
+          tags: ["camera"],
+        },
       },
-    },
-  )
-  .get(
-    "/camera/stream.mjpg",
-    ({ request, status }) => proxyStream(request, status),
-    {
-      detail: {
-        summary:
-          "The robot camera as MJPEG. Closing the request closes the upstream stream.",
-        tags: ["camera"],
+    )
+    // /live-camera's "Captura": the newest frame from the source itself, not a
+    // screenshot of a possibly stale <img>. It asked for this path through
+    // PUBLIC_ROBOT_CAM_URL from the day the camera moved behind back, and back
+    // did not relay it — the button failed with a 404 nobody had pressed.
+    .get(
+      "/camera/frame.jpg",
+      ({ status }) =>
+        proxyOnce(deps.http, "/camera/frame.jpg", "image/jpeg", status),
+      {
+        detail: {
+          summary: "The newest camera frame as one JPEG, or 503 and why not.",
+          tags: ["camera"],
+        },
       },
-    },
-  );
+    )
+    .get(
+      "/camera/stream.mjpg",
+      ({ request, status }) => proxyStream(deps.http, request, status),
+      {
+        detail: {
+          summary:
+            "The robot camera as MJPEG. Closing the request closes the upstream stream.",
+          tags: ["camera"],
+        },
+      },
+    );

@@ -4,7 +4,7 @@
  * The "internal agent" driver (docs/ARCHITECTURE.md §3): instead of an external MCP client (Claude
  * Code over stdio) deciding which skills to call, `apps/back` hosts the
  * conversation. We expose the skill registry as tools to the model; each tool
- * call is dispatched to the Python bridge over MCP/HTTP via `callTool`, the
+ * call is dispatched to the Python bridge over MCP/HTTP (`dispatchSkill`), the
  * result is fed back, and the loop continues until the model stops calling
  * tools.
  *
@@ -58,175 +58,228 @@ import {
   type UIMessage,
 } from "ai";
 
-import { listSkills } from "#back/skills/index.js";
-import { logToolCall } from "#back/db/chats.js";
-import type { ToolCallSource } from "#back/db/schema.js";
+import type { AgentConfig } from "#back/config.js";
+import type { BridgeMcp } from "#back/bridge/client.js";
+import type { LogToolCall } from "#back/db/chats.js";
+import type { Catalogue, SkillCatalogueEntry } from "#back/skills/index.js";
 import {
-  callTool,
-  BridgeToolError,
-  BridgeUnavailableError,
-} from "#back/bridge/client.js";
-import { beginTurn, holdVoiceLoop } from "./turns";
-import { notePending } from "./confirmations";
+  auditError,
+  NEEDS_CONFIRMATION,
+  type AuditWho,
+  type Dispatcher,
+} from "#back/skills/dispatch.js";
+import type { Confirmations } from "./confirmations";
+import { createFailover, type ProviderName } from "./failover";
 import {
   LOOK_PROMPT_LINE,
   LOOK_TOOL,
   VERIFY_PROMPT_LINE,
   VERIFY_TOOL,
   VISION_SYSTEM,
-  bridgeCamera,
   look,
   verify,
   type LookDeps,
   type LookResult,
   type VerifyResult,
 } from "./look";
-import { createFailover } from "./failover";
+import type { Turns } from "./turns";
 
-const BASE_URL =
-  process.env.AGENT_BASE_URL ?? "https://proyectos-tic.ort.edu.ar/c3po/api/v1";
-/** `tic-chat` is the gateway's tool-calling chat model. Its site advertises
- *  `tic-code` and `tic-embed` too, but on 2026-08-18 `GET /models` returned only
- *  `tic-chat` and `tic-test` — trust the endpoint, not the brochure. */
-const MODEL = process.env.AGENT_MODEL ?? "tic-chat";
-// `stepCountIs` compares with `===`, so a cap of 0 or NaN is never reached and
-// silently means "no cap at all" — an unbounded tool loop on a machine that can
-// walk into people. `?? "12"` does not catch it: an empty AGENT_MAX_STEPS= in a
-// systemd EnvironmentFile parses to 0, and a trailing comment to NaN.
-const parsedMaxSteps = Number(process.env.AGENT_MAX_STEPS);
-// 40, not 12: plan -> act -> verify -> replan spends ~3 steps per action, so 12
-// ran out on a two-object errand. The wall clock below is the real bound.
-const MAX_STEPS =
-  Number.isInteger(parsedMaxSteps) && parsedMaxSteps > 0 ? parsedMaxSteps : 40;
-/** Wall-clock budget for one turn, seconds. Same 0/NaN guard as above. */
-const parsedBudget = Number(process.env.AGENT_TURN_BUDGET_S);
-const TURN_BUDGET_MS =
-  (Number.isFinite(parsedBudget) && parsedBudget > 0 ? parsedBudget : 240) *
-  1000;
-/** How long the turn waits for the world snapshot before going without it. */
-const WORLD_TIMEOUT_MS = 1500;
+export { NEEDS_CONFIRMATION };
 
-// Read once, so the provider and the guard in `runAgentChat` can never
-// disagree about whether there is a key.
-const API_KEY = process.env.AGENT_API_KEY;
+// ---- The models: the gateway, its fallback, the vision model ----
 
-/**
- * Built once at module load — cheap and stateless. Deliberately NOT validated
- * here: a missing key should fail the /agent turn that needs it, not take the
- * whole backend down at boot alongside /health, auth and /state. The check
- * lives in `runAgentChat` instead, and it has to: `createOpenAICompatible`
- * accepts `apiKey: undefined` silently, so without it the operator would get a
- * bare gateway 401 rather than the name of the variable to set.
- */
-const provider = createOpenAICompatible({
-  name: "tic-ai",
-  baseURL: BASE_URL,
-  apiKey: API_KEY, // sent as `Authorization: Bearer <key>`
-});
-
-/**
- * Optional second OpenAI-compatible provider (e.g. Gemini's
- * `.../v1beta/openai`) for when ia-tic is down. All three unset: no failover,
- * exactly as before. See `failover.ts` for what fails over and what doesn't.
- */
-const FALLBACK_BASE_URL = process.env.AGENT_FALLBACK_BASE_URL;
-const FALLBACK_MODEL = process.env.AGENT_FALLBACK_MODEL;
-const FALLBACK_KEY = process.env.AGENT_FALLBACK_API_KEY;
-const parsedSticky = Number(process.env.AGENT_FALLBACK_STICKY_S);
-const failover = createFailover({
-  stickyMs:
-    (Number.isFinite(parsedSticky) && parsedSticky >= 0 ? parsedSticky : 300) *
-    1000,
-});
-const fallbackProvider =
-  FALLBACK_BASE_URL && FALLBACK_MODEL && FALLBACK_KEY
-    ? createOpenAICompatible({
-        name: "agent-fallback",
-        baseURL: FALLBACK_BASE_URL,
-        apiKey: FALLBACK_KEY,
-      })
-    : null;
-if (!fallbackProvider && (FALLBACK_BASE_URL || FALLBACK_MODEL || FALLBACK_KEY))
-  console.warn(
-    "[agent] AGENT_FALLBACK_BASE_URL, AGENT_FALLBACK_MODEL and AGENT_FALLBACK_API_KEY must all be set; failover is off",
-  );
-
-/** The agent's model `id` on the primary, failing over when one is set. */
-export function chatModel(id: string) {
-  const primary = provider.chatModel(id);
-  return fallbackProvider && FALLBACK_MODEL
-    ? failover.wrap(primary, fallbackProvider.chatModel(FALLBACK_MODEL))
-    : primary;
-}
-
-/** For /health: where the agent's next model call goes first. */
-export const agentProvider = () =>
-  fallbackProvider ? failover.active() : "primary";
-
-/**
- * The model `look` sends camera frames to. Defaults to the agent's own model:
- * `tic-chat` read a robot frame correctly on 2026-10-27
- * (`scripts/smoke-vision.ts`), so no second provider is needed. Same gateway
- * and key — a vision model elsewhere would be a provider change, not env.
- */
-const VISION_MODEL = process.env.VISION_MODEL || MODEL;
-
-/**
- * Look through the robot's camera and answer `question`. Shared by the typed
- * agent, the legacy voice loop (both via `buildTools`) and the Realtime session,
- * so every engine sees through the same path.
- */
-const NO_KEY = `AGENT_API_KEY is not set — ${BASE_URL} rejects unauthenticated requests.`;
-
-/** The robot's camera and the vision model, as `look` and `verify` use them. */
-const robotVision: LookDeps = {
-  ...bridgeCamera,
-  model: VISION_MODEL,
-  describe: async (question, jpeg) => {
-    const { text } = await generateText({
-      model: chatModel(VISION_MODEL),
-      system: VISION_SYSTEM,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: question },
-            { type: "file", data: jpeg, mediaType: "image/jpeg" },
-          ],
-        },
-      ],
-      // One retry covers a gateway blip; the agent loop is waiting on this.
-      maxRetries: 1,
-      abortSignal: AbortSignal.timeout(20_000),
-    });
-    return text;
-  },
+export type AgentModels = {
+  /** The agent's model `id`, failing over when a fallback is configured. */
+  chatModel: (id: string) => LanguageModel;
+  /** The agent's own model id (AGENT_MODEL). */
+  model: string;
+  /** The model `look` sends camera frames to. */
+  visionModel: string;
+  /** Null when there is a key; else what the operator is told to set. */
+  missingKey: string | null;
+  /** For /health: where the agent's next model call goes first. */
+  activeProvider: () => ProviderName;
 };
 
-export function lookAtRobot(args: { question?: unknown }): Promise<LookResult> {
-  if (!API_KEY) return Promise.resolve({ status: "error", error: NO_KEY });
-  return look(args, robotVision);
-}
+/**
+ * Built once — cheap and stateless. Deliberately NOT validated here: a
+ * missing key should fail the /agent turn that needs it, not take the whole
+ * backend down at boot alongside /health, auth and /state. The check lives in
+ * `runAgentChat` instead, and it has to: `createOpenAICompatible` accepts
+ * `apiKey: undefined` silently, so without it the operator would get a bare
+ * gateway 401 rather than the name of the variable to set.
+ */
+export function createAgentModels(config: AgentConfig): AgentModels {
+  const provider = createOpenAICompatible({
+    name: "tic-ai",
+    baseURL: config.baseUrl,
+    apiKey: config.apiKey ?? undefined, // sent as `Authorization: Bearer <key>`
+  });
 
-/** A yes/no check on the camera view: `look`'s path, read as a verdict. */
-export function verifyOnRobot(args: {
-  question?: unknown;
-}): Promise<VerifyResult> {
-  if (!API_KEY) return Promise.resolve({ status: "error", error: NO_KEY });
-  return verify(args, robotVision);
+  // Optional second OpenAI-compatible provider (e.g. Gemini's
+  // `.../v1beta/openai`) for when ia-tic is down. All three unset: no
+  // failover, exactly as before. See `failover.ts` for what fails over.
+  const failover = createFailover({ stickyMs: config.fallbackStickyMs });
+  const fallback = config.fallback;
+  const fallbackProvider = fallback
+    ? createOpenAICompatible({
+        name: "agent-fallback",
+        baseURL: fallback.baseUrl,
+        apiKey: fallback.apiKey,
+      })
+    : null;
+  if (config.fallbackIncomplete)
+    console.warn(
+      "[agent] AGENT_FALLBACK_BASE_URL, AGENT_FALLBACK_MODEL and AGENT_FALLBACK_API_KEY must all be set; failover is off",
+    );
+
+  return {
+    chatModel(id) {
+      const primary = provider.chatModel(id);
+      return fallbackProvider && fallback
+        ? failover.wrap(primary, fallbackProvider.chatModel(fallback.model))
+        : primary;
+    },
+    model: config.model,
+    // Defaults to the agent's own model: `tic-chat` read a robot frame
+    // correctly on 2026-10-27 (`scripts/smoke-vision.ts`), so no second
+    // provider is needed. Same gateway and key — a vision model elsewhere
+    // would be a provider change, not env.
+    visionModel: config.visionModel,
+    missingKey: config.apiKey
+      ? null
+      : `AGENT_API_KEY is not set — ${config.baseUrl} rejects unauthenticated requests.`,
+    activeProvider: () => (fallbackProvider ? failover.active() : "primary"),
+  };
 }
 
 /**
- * Tools that run here in back, not on the bridge. Each takes its name from the
- * bridge's same-named Gemini tool, which is then not offered (offeredInMode).
+ * Which skills a model is offered, by mode. ONE rule for the typed agent and
+ * both voice engines (`voice/realtime.ts` uses it too).
  */
-export const BACK_TOOLS = [
-  { def: LOOK_TOOL, run: lookAtRobot, promptLine: LOOK_PROMPT_LINE },
-  { def: VERIFY_TOOL, run: verifyOnRobot, promptLine: VERIFY_PROMPT_LINE },
-] as const;
-const BACK_TOOL_NAMES: ReadonlySet<string> = new Set(
-  BACK_TOOLS.map((t) => t.def.name),
-);
+export type AgentMode = "operator" | "voice";
+
+/**
+ * Tools that run here in back, not on the bridge (agent/tools.ts). Each takes
+ * its name from the bridge's same-named Gemini tool, which is then not offered.
+ */
+export const BACK_TOOL_NAMES: ReadonlySet<string> = new Set([
+  LOOK_TOOL.name,
+  VERIFY_TOOL.name,
+]);
+
+export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
+  // zero_torque and damp go limp: a standing robot falls. No sentence a model
+  // can be given makes that the right next step (a "make it safe" after PARAR,
+  // a misheard "relajate"); the operator keeps both on the console, the
+  // headset bring-up and the remote. Never offered.
+  const always = ["zero_torque", "damp"];
+  // The voice host owns both ends of the audio channel. Giving these tools to
+  // the model permits duplicate speech and competing reads from one buffer.
+  // ask_user speaks too, so it is the host's as well.
+  return new Set(
+    mode === "voice" ? [...always, "listen", "say", "ask_user"] : always,
+  );
+}
+
+/** Stops are never trimmed away: a model asked to stop must always have the tool. */
+const ALWAYS_OFFERED: ReadonlySet<string> = new Set([
+  "stop_everything",
+  "soft_stop",
+  "cancel_task",
+  "cancel_navigation",
+]);
+
+export type OfferedSkill = {
+  name: string;
+  dangerLevel?: string;
+  tier?: string;
+  works: { sim: boolean; real: boolean };
+};
+
+/**
+ * Whether a skill is offered to the model in this mode.
+ *
+ * `allow` is AGENT_TOOLS (`config.agent.tools`): only those bridge tools, plus
+ * the stops. null: everything. The whole catalogue went into every turn
+ * (17k–70k input tokens on 2026-11-13), which ran the free fallback key into
+ * 429 after ~12 turns at the stand.
+ *
+ * Voice drops high-danger skills as well as the host's own two. A spoken turn
+ * comes from whatever the microphone overheard — anybody standing near the
+ * robot, a video playing in the room — and the legacy engine (the default)
+ * offered it everything: `arm_navigation`, `start_walking_waist`, `move_arm`.
+ * The realtime engine already filtered them; the two now cannot disagree.
+ *
+ * T2 (arm/hand) IS offered, whatever its danger level: the bridge refuses
+ * every T2 call until an operator presses "Confirmar" on the console, so that
+ * gate — not this list — decides whether an overheard request moves an arm.
+ * `high` stays for T1 until Nav2 has driven the robot under the governor: it
+ * is what keeps `arm_navigation` off voice.
+ *
+ * Voice also drops a skill nobody has watched work on either target: on 'real'
+ * the bridge dispatches it live all the same, and squat, sit_g1, dance and
+ * lie_up are T1, so no confirmation stands between a misheard word and the
+ * posture. T0 never moves, T2 waits for «Confirmar», and cancel_navigation
+ * only ends motion, so those stay. No tier (an older bridge) is not T0.
+ */
+export function offeredInMode(
+  skill: OfferedSkill,
+  mode: AgentMode,
+  allow: ReadonlySet<string> | null = null,
+): boolean {
+  if (agentToolExclusions(mode).has(skill.name)) return false;
+  // back's own look/verify (agent/look.ts) take the names; the bridge's Gemini ones are not offered.
+  if (BACK_TOOL_NAMES.has(skill.name)) return false;
+  if (allow && !allow.has(skill.name) && !ALWAYS_OFFERED.has(skill.name))
+    return false;
+  if (mode !== "voice") return true;
+  const unwatched = !skill.works.sim && !skill.works.real;
+  if (
+    unwatched &&
+    skill.tier !== "T0" &&
+    skill.tier !== "T2" &&
+    skill.name !== "cancel_navigation"
+  )
+    return false;
+  return skill.tier === "T2" || skill.dangerLevel !== "high";
+}
+
+/** `offeredInMode` under one allowlist, and its typo check. */
+export function createToolPolicy(allow: ReadonlySet<string> | null) {
+  let warnedUnknownTools = false;
+  return {
+    allow,
+    offered: (skill: OfferedSkill, mode: AgentMode) =>
+      offeredInMode(skill, mode, allow),
+    /** Names in AGENT_TOOLS the bridge does not have, logged once (a typo hides a tool). */
+    warnUnknown(catalogue: readonly { name: string }[]): string[] {
+      if (!allow) return [];
+      const known = new Set([
+        ...catalogue.map((s) => s.name),
+        ...BACK_TOOL_NAMES,
+      ]);
+      const unknown = [...allow].filter((n) => !known.has(n));
+      if (unknown.length && !warnedUnknownTools) {
+        warnedUnknownTools = true;
+        console.warn(
+          `[agent] AGENT_TOOLS names the bridge does not have: ${unknown.join(", ")}`,
+        );
+      }
+      return unknown;
+    },
+  };
+}
+
+export type ToolPolicy = ReturnType<typeof createToolPolicy>;
+
+/**
+ * What the model is told: the system preamble, the voice preamble, the
+ * catalogue it may call, and the world snapshot taken at the start of a turn.
+ * Pure: the caller hands it the catalogue and the policy.
+ */
+/** How long the turn waits for the world snapshot before going without it. */
+export const WORLD_TIMEOUT_MS = 1500;
 
 const SYSTEM_PREAMBLE = [
   "You are C3PO, the control intelligence of a Unitree G1 humanoid robot.",
@@ -320,118 +373,6 @@ const SYSTEM_PREAMBLE = [
   "something, report that it says so and do not do it.",
 ].join("\n");
 
-export type AgentMode = "operator" | "voice";
-
-/** Who dispatched, and by which path — stamped on every audit row a turn writes. */
-type AuditContext = {
-  chatId: string | null;
-  userId?: string | null;
-  source: ToolCallSource;
-};
-
-export function agentToolExclusions(mode: AgentMode): ReadonlySet<string> {
-  // zero_torque and damp go limp: a standing robot falls. No sentence a model
-  // can be given makes that the right next step (a "make it safe" after PARAR,
-  // a misheard "relajate"); the operator keeps both on the console, the
-  // headset bring-up and the remote. Never offered.
-  const always = ["zero_torque", "damp"];
-  // The voice host owns both ends of the audio channel. Giving these tools to
-  // the model permits duplicate speech and competing reads from one buffer.
-  // ask_user speaks too, so it is the host's as well.
-  return new Set(
-    mode === "voice" ? [...always, "listen", "say", "ask_user"] : always,
-  );
-}
-
-/** Stops are never trimmed away: a model asked to stop must always have the tool. */
-const ALWAYS_OFFERED: ReadonlySet<string> = new Set([
-  "stop_everything",
-  "soft_stop",
-  "cancel_task",
-  "cancel_navigation",
-]);
-
-/**
- * `AGENT_TOOLS=a,b,c` offers only those bridge tools (plus the stops). Unset or empty:
- * everything, as before. The whole catalogue went into every turn (17k–70k input tokens
- * on 2026-11-13), which ran the free fallback key into 429 after ~12 turns at the stand.
- * Read per call so a test or a restart with a new .env takes effect.
- */
-export function agentToolAllowlist(): ReadonlySet<string> | null {
-  const names = (process.env.AGENT_TOOLS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return names.length ? new Set(names) : null;
-}
-
-let warnedUnknownTools = false;
-/** Names in AGENT_TOOLS the bridge does not have, logged once (a typo hides a tool). */
-export function warnUnknownAgentTools(
-  catalogue: readonly { name: string }[],
-): string[] {
-  const allow = agentToolAllowlist();
-  if (!allow) return [];
-  const known = new Set([...catalogue.map((s) => s.name), ...BACK_TOOL_NAMES]);
-  const unknown = [...allow].filter((n) => !known.has(n));
-  if (unknown.length && !warnedUnknownTools) {
-    warnedUnknownTools = true;
-    console.warn(
-      `[agent] AGENT_TOOLS names the bridge does not have: ${unknown.join(", ")}`,
-    );
-  }
-  return unknown;
-}
-
-/**
- * Whether a skill is offered to the model in this mode. ONE rule for both
- * voice engines (`voice/realtime.ts` uses it too).
- *
- * Voice drops high-danger skills as well as the host's own two. A spoken turn
- * comes from whatever the microphone overheard — anybody standing near the
- * robot, a video playing in the room — and the legacy engine (the default)
- * offered it everything: `arm_navigation`, `start_walking_waist`, `move_arm`.
- * The realtime engine already filtered them; the two now cannot disagree.
- *
- * T2 (arm/hand) IS offered, whatever its danger level: the bridge refuses
- * every T2 call until an operator presses "Confirmar" on the console, so that
- * gate — not this list — decides whether an overheard request moves an arm.
- * `high` stays for T1 until Nav2 has driven the robot under the governor: it
- * is what keeps `arm_navigation` off voice.
- *
- * Voice also drops a skill nobody has watched work on either target: on 'real'
- * the bridge dispatches it live all the same, and squat, sit_g1, dance and
- * lie_up are T1, so no confirmation stands between a misheard word and the
- * posture. T0 never moves, T2 waits for «Confirmar», and cancel_navigation
- * only ends motion, so those stay. No tier (an older bridge) is not T0.
- */
-export function offeredInMode(
-  skill: {
-    name: string;
-    dangerLevel?: string;
-    tier?: string;
-    works: { sim: boolean; real: boolean };
-  },
-  mode: AgentMode,
-): boolean {
-  if (agentToolExclusions(mode).has(skill.name)) return false;
-  // back's own look/verify (agent/look.ts) take the names; the bridge's Gemini ones are not offered.
-  if (BACK_TOOL_NAMES.has(skill.name)) return false;
-  const allow = agentToolAllowlist();
-  if (allow && !allow.has(skill.name) && !ALWAYS_OFFERED.has(skill.name))
-    return false;
-  if (mode !== "voice") return true;
-  const unwatched = !skill.works.sim && !skill.works.real;
-  if (
-    unwatched &&
-    skill.tier !== "T0" &&
-    skill.tier !== "T2" &&
-    skill.name !== "cancel_navigation"
-  )
-    return false;
-  return skill.tier === "T2" || skill.dangerLevel !== "high";
-}
-
 const VOICE_PREAMBLE = [
   "Voice session: you are having a spoken conversation, not interpreting every",
   "utterance as a robot command. Respond naturally in concise conversational",
@@ -456,18 +397,20 @@ const VOICE_PREAMBLE = [
   "exactly once. Do not describe tool-call mechanics to the speaker.",
 ].join("\n");
 
-/** A compact catalogue appended to the system prompt so the model knows scope.
- * Exported for testing — pure string generation once the catalogue is in hand. */
-export async function buildSystemPrompt(
-  mode: AgentMode = "operator",
-  // scripts/probe-realtime.ts passes a fixture: it must not reach the bridge.
-  given?: Awaited<ReturnType<typeof listSkills>>,
-): Promise<string> {
-  // Only what this mode may call: describing a tool the model is not given
-  // invites it to try, and to tell the speaker it did.
-  const catalogue = given ?? (await listSkills());
-  warnUnknownAgentTools(catalogue);
-  const offered = catalogue.filter((s) => offeredInMode(s, mode));
+/**
+ * The system prompt for `mode`: the preamble, then a compact catalogue of
+ * only what this mode may call — describing a tool the model is not given
+ * invites it to try, and to tell the speaker it did. `backToolLines` are the
+ * catalogue lines of back's own tools (agent/tools.ts).
+ */
+export function buildSystemPrompt(
+  mode: AgentMode,
+  catalogue: readonly SkillCatalogueEntry[],
+  policy: Pick<ToolPolicy, "offered" | "warnUnknown">,
+  backToolLines: readonly string[],
+): string {
+  policy.warnUnknown(catalogue);
+  const offered = catalogue.filter((s) => policy.offered(s, mode));
   const lines = offered.map((s) => {
     const where =
       s.works.sim && s.works.real
@@ -484,7 +427,7 @@ export async function buildSystemPrompt(
     return `- ${s.name} [${s.classification}/${s.status}/${where}/danger:${s.dangerLevel}${tier}] — ${s.description}`;
   });
   const modePrompt = mode === "voice" ? `\n\n${VOICE_PREAMBLE}` : "";
-  lines.push(...BACK_TOOLS.map((t) => t.promptLine));
+  lines.push(...backToolLines);
   return `${SYSTEM_PREAMBLE}${modePrompt}\n\nAvailable skills:\n${lines.join("\n")}`;
 }
 
@@ -495,8 +438,7 @@ export async function buildSystemPrompt(
  * read as "nothing there".
  */
 export async function worldSummary(
-  fetchSnapshot: () => Promise<unknown> = () =>
-    callTool("describe_surroundings", {}),
+  fetchSnapshot: () => Promise<unknown>,
   timeoutMs = WORLD_TIMEOUT_MS,
 ): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -517,126 +459,71 @@ export async function worldSummary(
 }
 
 /**
- * Build AI SDK tools from the bridge's skill catalogue, each dispatching back
- * to the bridge and writing an audit row.
- *
- * Auditing happens here rather than by scraping tool parts off the finished
- * message for two reasons: this is the only place with a real duration, and it
- * still records the call if the stream is aborted mid-turn — which is exactly
- * when you most want to know what the robot was told to do.
- *
- * `audit` says who and which path. `userId` undefined lets `logToolCall`
- * resolve the chat's owner; a chat-less voice turn has no chat to resolve
- * from, so its caller must pass the session owner explicitly.
+ * The tools a turn's model can call: the bridge's skills (dispatched through
+ * `dispatchSkill`, skills/dispatch.ts) and back's own `look` / `verify`.
  */
-async function buildTools(
-  audit: AuditContext,
-  mode: AgentMode,
-  inFlight: Set<Promise<unknown>>,
-  deadline: number,
-): Promise<ToolSet> {
-  const tools: ToolSet = {};
-  for (const skill of await listSkills()) {
-    if (!offeredInMode(skill, mode)) continue;
-    tools[skill.name] = tool({
-      description: skill.description,
-      // Already plain JSON Schema off the bridge — nothing to convert.
-      inputSchema: jsonSchema(
-        skill.parameters as Parameters<typeof jsonSchema>[0],
-      ),
-      execute: async (args, { abortSignal, toolCallId }) => {
-        // ai 7.0.140 can still start a tool after the turn is aborted, once
-        // `toolsSettled` has already been read: send the robot nothing then.
-        if (abortSignal?.aborted) return { error: "aborted" };
-        const params = args as Record<string, unknown>;
-        const startedAt = Date.now();
-        // A turn that ends (PARAR, the budget, the client gone) cancels its
-        // call: a 300 s walk_to outlived the 240 s budget. A stop runs out.
-        const signal =
-          skill.classification === "safety"
-            ? undefined
-            : AbortSignal.any([
-                ...(abortSignal ? [abortSignal] : []),
-                AbortSignal.timeout(Math.max(0, deadline - Date.now())),
-              ]);
-        try {
-          const call = callTool(skill.name, params, signal);
-          inFlight.add(call);
-          const result = await call;
-          void logToolCall({
-            ...audit,
-            skillName: skill.name,
-            params,
-            result,
-            status: "ok",
-            durationMs: Date.now() - startedAt,
-            startedAt,
-          });
-          return toldNoEffect(result);
-        } catch (err) {
-          // Return the failure to the model as a normal tool result so the
-          // agent can recover or report it, rather than aborting the stream.
-          const detail =
-            err instanceof BridgeToolError
-              ? `tool_error: ${err.detail}`
-              : err instanceof BridgeUnavailableError
-                ? "bridge_unavailable"
-                : String(err);
-          // Noted, never granted: only an admin's Confirmar (a route) runs it.
-          const gated =
-            err instanceof BridgeToolError &&
-            err.detail.includes(NEEDS_CONFIRMATION);
-          if (gated && audit.userId)
-            notePending({
-              id: toolCallId,
-              tool: skill.name,
-              args: params,
-              ownerId: audit.userId,
-              chatId: audit.chatId,
-              loop: mode === "voice" && audit.chatId === null,
-            });
-          void logToolCall({
-            ...audit,
-            skillName: skill.name,
-            params,
-            status: "error",
-            error: detail,
-            durationMs: Date.now() - startedAt,
-            startedAt,
-          });
-          // The bridge's text says "retry once"; here the console runs it.
-          return gated
-            ? { error: confirmRefusal(skill.name) }
-            : { error: detail };
-        }
-      },
-    });
-  }
-  for (const back of BACK_TOOLS) {
-    if (agentToolExclusions(mode).has(back.def.name)) continue;
-    tools[back.def.name] = tool({
-      description: back.def.description,
-      inputSchema: jsonSchema(back.def.parameters),
-      execute: async (args) => {
-        const params = args as Record<string, unknown>;
-        const startedAt = Date.now();
-        const result = await back.run(params);
-        void logToolCall({
-          ...audit,
-          skillName: back.def.name,
-          params,
-          result,
-          status: result.status === "error" ? "error" : "ok",
-          error: result.status === "error" ? result.error : null,
-          durationMs: Date.now() - startedAt,
-          startedAt,
-        });
-        return result;
-      },
-    });
-  }
+export type BackTool = {
+  def: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+  run: (args: { question?: unknown }) => Promise<LookResult | VerifyResult>;
+  promptLine: string;
+};
 
-  return tools;
+/**
+ * Tools that run here in back, not on the bridge: look through the robot's
+ * camera and answer `question`, or check a yes/no fact. Shared by the typed
+ * agent, the legacy voice loop (both via `buildTools`) and the Realtime
+ * session, so every engine sees through the same path.
+ */
+export function createBackTools(deps: {
+  models: Pick<AgentModels, "chatModel" | "visionModel" | "missingKey">;
+  camera: Pick<LookDeps, "cameraStatus" | "cameraFrame">;
+}): readonly BackTool[] {
+  const { models } = deps;
+  /** The robot's camera and the vision model, as `look` and `verify` use them. */
+  const robotVision: LookDeps = {
+    ...deps.camera,
+    model: models.visionModel,
+    describe: async (question, jpeg) => {
+      const { text } = await generateText({
+        model: models.chatModel(models.visionModel),
+        system: VISION_SYSTEM,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: question },
+              { type: "file", data: jpeg, mediaType: "image/jpeg" },
+            ],
+          },
+        ],
+        // One retry covers a gateway blip; the agent loop is waiting on this.
+        maxRetries: 1,
+        abortSignal: AbortSignal.timeout(20_000),
+      });
+      return text;
+    },
+  };
+  const noKey = <T>(): Promise<T> =>
+    Promise.resolve({ status: "error", error: models.missingKey } as T);
+  return [
+    {
+      def: LOOK_TOOL,
+      run: (args) =>
+        models.missingKey ? noKey<LookResult>() : look(args, robotVision),
+      promptLine: LOOK_PROMPT_LINE,
+    },
+    {
+      // A yes/no check on the camera view: `look`'s path, read as a verdict.
+      def: VERIFY_TOOL,
+      run: (args) =>
+        models.missingKey ? noKey<VerifyResult>() : verify(args, robotVision),
+      promptLine: VERIFY_PROMPT_LINE,
+    },
+  ];
 }
 
 /**
@@ -655,13 +542,118 @@ export function toldNoEffect(result: unknown): unknown {
     : result;
 }
 
-/** bridge/safety.py tool_refusal's wording; apps/web needsConfirmation reads it too. */
-export const NEEDS_CONFIRMATION = "needs an operator's confirmation";
-
 /** What the model is told instead of the bridge's "retry once" instruction. */
 // shortcut: always offers the face, even with C3PO_FACE_CONFIRM=0 on the bridge (then the card shows no face line).
 export const confirmRefusal = (tool: string) =>
   `refused: ${tool} ${NEEDS_CONFIRMATION} first. You cannot give it. The operator's «Confirmar», or an enrolled operator's face shown to the robot's head camera, runs this exact call and you will then get its result as a message: do not call ${tool} again, tell the operator in one sentence that you are waiting for their «Confirmar» on the screen or an operator's face at the camera and what will happen then (do not say you are doing it), say «Confirmá la acción o mostrale la cara de un operador a la cámara para confirmar», and wait.`;
+
+export type ToolDeps = {
+  catalogue: Pick<Catalogue, "listSkills">;
+  policy: Pick<ToolPolicy, "offered">;
+  backTools: readonly BackTool[];
+  dispatch: Pick<Dispatcher, "dispatchSkill">;
+  logToolCall: LogToolCall;
+  confirmations: Pick<Confirmations, "note">;
+};
+
+/**
+ * Build AI SDK tools from the bridge's skill catalogue, each dispatching back
+ * to the bridge and writing an audit row.
+ *
+ * Auditing happens at dispatch rather than by scraping tool parts off the
+ * finished message for two reasons: this is the only place with a real
+ * duration, and it still records the call if the stream is aborted mid-turn —
+ * which is exactly when you most want to know what the robot was told to do.
+ *
+ * `audit` says who and which path. `userId` undefined lets `logToolCall`
+ * resolve the chat's owner; a chat-less voice turn has no chat to resolve
+ * from, so its caller must pass the session owner explicitly.
+ */
+export async function buildTools(
+  deps: ToolDeps,
+  audit: AuditWho & { chatId: string | null },
+  mode: AgentMode,
+  inFlight: Set<Promise<unknown>>,
+  deadline: number,
+): Promise<ToolSet> {
+  const tools: ToolSet = {};
+  for (const skill of await deps.catalogue.listSkills()) {
+    if (!deps.policy.offered(skill, mode)) continue;
+    tools[skill.name] = tool({
+      description: skill.description,
+      // Already plain JSON Schema off the bridge — nothing to convert.
+      inputSchema: jsonSchema(
+        skill.parameters as Parameters<typeof jsonSchema>[0],
+      ),
+      execute: async (args, { abortSignal, toolCallId }) => {
+        // ai 7.0.140 can still start a tool after the turn is aborted, once
+        // `toolsSettled` has already been read: send the robot nothing then.
+        if (abortSignal?.aborted) return { error: "aborted" };
+        const params = args as Record<string, unknown>;
+        // A turn that ends (PARAR, the budget, the client gone) cancels its
+        // call: a 300 s walk_to outlived the 240 s budget. A stop runs out.
+        const signal =
+          skill.classification === "safety"
+            ? undefined
+            : AbortSignal.any([
+                ...(abortSignal ? [abortSignal] : []),
+                AbortSignal.timeout(Math.max(0, deadline - Date.now())),
+              ]);
+        let gated = false;
+        const r = await deps.dispatch.dispatchSkill(skill.name, params, {
+          who: audit,
+          signal,
+          track: (settled) => void inFlight.add(settled),
+          // Noted, never granted: only an admin's Confirmar (a route) runs it.
+          onRefused: () => {
+            gated = true;
+            if (audit.userId)
+              deps.confirmations.note({
+                id: toolCallId,
+                tool: skill.name,
+                args: params,
+                ownerId: audit.userId,
+                chatId: audit.chatId,
+                loop: mode === "voice" && audit.chatId === null,
+              });
+          },
+        });
+        if (r.ok) return toldNoEffect(r.result);
+        // The failure goes back to the model as a normal tool result so the
+        // agent can recover or report it, rather than aborting the stream.
+        // The bridge's text says "retry once"; here the console runs it.
+        return gated
+          ? { error: confirmRefusal(skill.name) }
+          : { error: auditError(r.failure) };
+      },
+    });
+  }
+  for (const back of deps.backTools) {
+    if (agentToolExclusions(mode).has(back.def.name)) continue;
+    tools[back.def.name] = tool({
+      description: back.def.description,
+      inputSchema: jsonSchema(back.def.parameters),
+      execute: async (args) => {
+        const params = args as Record<string, unknown>;
+        const startedAt = Date.now();
+        const result = await back.run(params);
+        void deps.logToolCall({
+          ...audit,
+          skillName: back.def.name,
+          params,
+          result,
+          status: result.status === "error" ? "error" : "ok",
+          error: result.status === "error" ? result.error : null,
+          durationMs: Date.now() - startedAt,
+          startedAt,
+        });
+        return result;
+      },
+    });
+  }
+
+  return tools;
+}
 
 /**
  * The model's view of a chat: the last 40 UI messages, with tool calls and
@@ -702,12 +694,17 @@ export function turnSummary(
     finishReason: string;
     usage?: { inputTokens?: number; outputTokens?: number };
   },
-  turn: { mode: AgentMode; chatId: string | null; startedAt: number },
+  turn: {
+    mode: AgentMode;
+    chatId: string | null;
+    startedAt: number;
+    model: string;
+  },
 ) {
   return {
     mode: turn.mode,
     chatId: turn.chatId,
-    model: MODEL,
+    model: turn.model,
     steps: event.steps.length,
     finishReason: event.finishReason,
     // The gateway may send no usage at all.
@@ -718,130 +715,188 @@ export function turnSummary(
   };
 }
 
-/**
- * Run an operator chat turn as a streaming result. `messages` is the UIMessage
- * history from the chat client. The caller returns
- * `result.toUIMessageStreamResponse()` from the Elysia route; Elysia streams it
- * to the client and `@ai-sdk/svelte`'s Chat renders tokens + tool calls live.
- *
- * Note there is no thinking/reasoning knob here any more. It used to pass
- * `providerOptions.anthropic.thinking = "adaptive"`, which is an Anthropic API
- * feature with no equivalent on a generic OpenAI-compatible gateway; a server
- * that emits `reasoning_content` still reaches the console as reasoning parts
- * without being asked.
- */
-export async function runAgentChat(
-  messages: UIMessage[],
-  opts: {
-    chatId?: string | null;
-    mode?: AgentMode;
-    /** Who this turn runs for, for the audit trail. See `buildTools`. */
-    userId?: string | null;
-    /**
-     * Ends the agent loop when the operator stops the reply (or leaves the
-     * page). Without it, "Detener respuesta" only closed the stream to the
-     * browser: the loop kept running server-side and could go on dispatching
-     * robot skills nobody was watching. A skill already in flight still
-     * finishes — this stops the NEXT step, not the robot.
-     */
-    abortSignal?: AbortSignal;
-    /** An operator's turn (the /agent route): the voice loop answers no
-     *  overheard speech until it and its robot calls settle. See turns.ts. */
-    holdVoiceLoop?: boolean;
-    /** Tests only: the API key and provider are fixed at module load. Never
-     *  set it from a route. */
-    model?: LanguageModel;
-  } = {},
-) {
-  if (!opts.model && !API_KEY) {
-    throw new Error(
-      `AGENT_API_KEY is not set — ${BASE_URL} rejects unauthenticated requests.`,
-    );
-  }
+export type AgentRuntimeDeps = {
+  config: Pick<AgentConfig, "maxSteps" | "turnBudgetMs" | "tools">;
+  models: AgentModels;
+  catalogue: Pick<Catalogue, "listSkills">;
+  bridge: Pick<BridgeMcp, "callTool">;
+  /** The robot camera, for `look` and `verify` (agent/look.ts `bridgeCamera`). */
+  camera: Pick<LookDeps, "cameraStatus" | "cameraFrame">;
+  dispatch: Pick<Dispatcher, "dispatchSkill">;
+  logToolCall: LogToolCall;
+  confirmations: Pick<Confirmations, "note">;
+  turns: Pick<Turns, "beginTurn" | "holdVoiceLoop">;
+};
 
-  // Both hit the bridge for the catalogue, so fetch them together rather than
-  // paying two sequential round-trips before the first token.
-  const mode = opts.mode ?? "operator";
-  // Registered before the prompt build, so a PARAR during it still ends the turn.
-  const { signal: abortSignal, done } = beginTurn(opts.abortSignal);
-  const releaseVoice = opts.holdVoiceLoop ? holdVoiceLoop() : () => {};
-  const inFlight = new Set<Promise<unknown>>();
-  const turn = { mode, chatId: opts.chatId ?? null, startedAt: Date.now() };
-  // onEnd never sees these turns, so they get their own line.
-  const failed = (err: unknown) => {
-    done();
-    console.log(
-      "[agent] turn",
-      JSON.stringify({
-        mode,
-        chatId: turn.chatId,
-        ms: Date.now() - turn.startedAt,
-        error: String(err),
-      }),
-    );
+/** The agent, over its dependencies. One per process (createApp). */
+export function createAgentRuntime(deps: AgentRuntimeDeps) {
+  const { config, models } = deps;
+  const policy = createToolPolicy(config.tools);
+  const backTools = createBackTools({ models, camera: deps.camera });
+  const toolDeps: ToolDeps = {
+    catalogue: deps.catalogue,
+    policy,
+    backTools,
+    dispatch: deps.dispatch,
+    logToolCall: deps.logToolCall,
+    confirmations: deps.confirmations,
   };
-  const deadline = turn.startedAt + TURN_BUDGET_MS;
-  try {
-    const [basePrompt, world, tools] = await Promise.all([
-      buildSystemPrompt(mode),
-      worldSummary(),
-      buildTools(
-        {
-          chatId: opts.chatId ?? null,
-          // Spread only when given: undefined must stay undefined so
-          // `logToolCall` falls back to the chat's owner.
-          ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
-          source: mode === "voice" ? "voice" : "agent",
-        },
-        mode,
-        inFlight,
-        deadline,
-      ),
-    ]);
-    const system = `${basePrompt}\n\n${world}`;
-    // `steps` rejects with a generic NoOutputGeneratedError; the gateway's
-    // own error reaches only onError.
-    let streamError: unknown;
 
-    const result = streamText({
-      model: opts.model ?? chatModel(MODEL),
-      system,
-      messages: await boundHistory(messages),
-      tools,
-      // Whichever comes first: a step cap (never unbounded) or the wall clock.
-      stopWhen: [stepCountIs(MAX_STEPS), () => Date.now() > deadline],
-      abortSignal,
-      onEnd: (e) => {
-        done();
-        console.log("[agent] turn", JSON.stringify(turnSummary(e, turn)));
-      },
-      onAbort: done,
-      onError: ({ error }) => {
-        streamError = error;
-        console.error(error); // the SDK's default, kept
-      },
-    });
-    // ai 7.0.140 skips onEnd when the first step fails, so a gateway error
-    // leaked the turn; `steps` settles on success, abort and error alike.
-    // Trade-off: reading it drains a tee'd branch, so a client that stops
-    // reading no longer pauses the loop; request.signal and PARAR still end it.
-    void result.steps.then(done, (err) => failed(streamError ?? err));
-    // After the steps, not with them: an aborted turn's robot call settles later.
-    void Promise.resolve(result.steps)
-      .catch(() => {})
-      .then(() => Promise.allSettled(inFlight))
-      .finally(releaseVoice);
-    // Backstop: a stream nobody ends must not leave the voice loop deaf. Its
-    // robot calls are cut at the deadline anyway.
-    setTimeout(releaseVoice, TURN_BUDGET_MS + 30_000).unref?.();
-    // An abort ends the text stream at once while a walk_to the turn already
-    // sent keeps driving; the voice turn waits on this before it ends.
-    return Object.assign(result, {
-      toolsSettled: () => Promise.allSettled(inFlight),
-    });
-  } catch (err) {
-    failed(err);
-    releaseVoice();
-    throw err;
+  /**
+   * The system prompt for `mode`, over the live catalogue or `given` (one
+   * catalogue for the realtime session's prompt and its declared tools).
+   */
+  async function systemPrompt(
+    mode: AgentMode = "operator",
+    given?: readonly SkillCatalogueEntry[],
+  ): Promise<string> {
+    return buildSystemPrompt(
+      mode,
+      given ?? (await deps.catalogue.listSkills()),
+      policy,
+      backTools.map((t) => t.promptLine),
+    );
   }
+
+  /**
+   * Run an operator chat turn as a streaming result. `messages` is the UIMessage
+   * history from the chat client. The caller returns
+   * `result.toUIMessageStreamResponse()` from the Elysia route; Elysia streams it
+   * to the client and `@ai-sdk/svelte`'s Chat renders tokens + tool calls live.
+   *
+   * Note there is no thinking/reasoning knob here any more. It used to pass
+   * `providerOptions.anthropic.thinking = "adaptive"`, which is an Anthropic API
+   * feature with no equivalent on a generic OpenAI-compatible gateway; a server
+   * that emits `reasoning_content` still reaches the console as reasoning parts
+   * without being asked.
+   */
+  async function runAgentChat(
+    messages: UIMessage[],
+    opts: {
+      chatId?: string | null;
+      mode?: AgentMode;
+      /** Who this turn runs for, for the audit trail. See `buildTools`. */
+      userId?: string | null;
+      /**
+       * Ends the agent loop when the operator stops the reply (or leaves the
+       * page). Without it, "Detener respuesta" only closed the stream to the
+       * browser: the loop kept running server-side and could go on dispatching
+       * robot skills nobody was watching. A skill already in flight still
+       * finishes — this stops the NEXT step, not the robot.
+       */
+      abortSignal?: AbortSignal;
+      /** An operator's turn (the /agent route): the voice loop answers no
+       *  overheard speech until it and its robot calls settle. See turns.ts. */
+      holdVoiceLoop?: boolean;
+    } = {},
+  ) {
+    if (models.missingKey) throw new Error(models.missingKey);
+
+    // Both hit the bridge for the catalogue, so fetch them together rather than
+    // paying two sequential round-trips before the first token.
+    const mode = opts.mode ?? "operator";
+    // Registered before the prompt build, so a PARAR during it still ends the turn.
+    const { signal: abortSignal, done } = deps.turns.beginTurn(
+      opts.abortSignal,
+    );
+    const releaseVoice = opts.holdVoiceLoop
+      ? deps.turns.holdVoiceLoop()
+      : () => {};
+    const inFlight = new Set<Promise<unknown>>();
+    const turn = {
+      mode,
+      chatId: opts.chatId ?? null,
+      startedAt: Date.now(),
+      model: models.model,
+    };
+    // onEnd never sees these turns, so they get their own line.
+    const failed = (err: unknown) => {
+      done();
+      console.log(
+        "[agent] turn",
+        JSON.stringify({
+          mode,
+          chatId: turn.chatId,
+          ms: Date.now() - turn.startedAt,
+          error: String(err),
+        }),
+      );
+    };
+    const deadline = turn.startedAt + config.turnBudgetMs;
+    try {
+      const [basePrompt, world, tools] = await Promise.all([
+        systemPrompt(mode),
+        worldSummary(() => deps.bridge.callTool("describe_surroundings", {})),
+        buildTools(
+          toolDeps,
+          {
+            chatId: opts.chatId ?? null,
+            // Spread only when given: undefined must stay undefined so
+            // `logToolCall` falls back to the chat's owner.
+            ...(opts.userId !== undefined ? { userId: opts.userId } : {}),
+            source: mode === "voice" ? "voice" : "agent",
+          },
+          mode,
+          inFlight,
+          deadline,
+        ),
+      ]);
+      const system = `${basePrompt}\n\n${world}`;
+      // `steps` rejects with a generic NoOutputGeneratedError; the gateway's
+      // own error reaches only onError.
+      let streamError: unknown;
+
+      const result = streamText({
+        model: models.chatModel(models.model),
+        system,
+        messages: await boundHistory(messages),
+        tools,
+        // Whichever comes first: a step cap (never unbounded) or the wall clock.
+        stopWhen: [stepCountIs(config.maxSteps), () => Date.now() > deadline],
+        abortSignal,
+        onEnd: (e) => {
+          done();
+          console.log("[agent] turn", JSON.stringify(turnSummary(e, turn)));
+        },
+        onAbort: done,
+        onError: ({ error }) => {
+          streamError = error;
+          console.error(error); // the SDK's default, kept
+        },
+      });
+      // ai 7.0.140 skips onEnd when the first step fails, so a gateway error
+      // leaked the turn; `steps` settles on success, abort and error alike.
+      // Trade-off: reading it drains a tee'd branch, so a client that stops
+      // reading no longer pauses the loop; request.signal and PARAR still end it.
+      void result.steps.then(done, (err) => failed(streamError ?? err));
+      // After the steps, not with them: an aborted turn's robot call settles later.
+      void Promise.resolve(result.steps)
+        .catch(() => {})
+        .then(() => Promise.allSettled(inFlight))
+        .finally(releaseVoice);
+      // Backstop: a stream nobody ends must not leave the voice loop deaf. Its
+      // robot calls are cut at the deadline anyway.
+      setTimeout(releaseVoice, config.turnBudgetMs + 30_000).unref?.();
+      // An abort ends the text stream at once while a walk_to the turn already
+      // sent keeps driving; the voice turn waits on this before it ends.
+      return Object.assign(result, {
+        toolsSettled: () => Promise.allSettled(inFlight),
+      });
+    } catch (err) {
+      failed(err);
+      releaseVoice();
+      throw err;
+    }
+  }
+
+  return {
+    runAgentChat,
+    systemPrompt,
+    policy,
+    backTools,
+    /** For /health: where the agent's next model call goes first. */
+    activeProvider: models.activeProvider,
+  };
 }
+
+export type AgentRuntime = ReturnType<typeof createAgentRuntime>;

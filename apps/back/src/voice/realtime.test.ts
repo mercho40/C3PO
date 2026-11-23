@@ -1,16 +1,78 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import * as chats from "#back/db/chats.js";
-import * as client from "#back/bridge/client.js";
-import * as confirmations from "#back/agent/confirmations.js";
-import * as skills from "#back/skills/index.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+
+import { LOOK_TOOL, VERIFY_TOOL } from "#back/agent/look.js";
+import {
+  createToolPolicy,
+  offeredInMode,
+  type BackTool,
+} from "#back/agent/runtime.js";
+import { BridgeToolError } from "#back/bridge/client.js";
+import { createBridgeHttp } from "#back/bridge/http.js";
+import type { ToolCallRow } from "#back/db/chats.js";
+import { createDispatcher } from "#back/skills/dispatch.js";
+import type { SkillCatalogueEntry } from "#back/skills/index.js";
 import {
   RealtimeVoiceSession,
   isRecoverableRealtimeError,
   realtimeSessionUpdate,
   realtimeTools,
+  type RealtimeDeps,
 } from "./realtime";
+
+/** The session's edges, late-bound so a test can `spyOn` them. */
+const fake = {
+  listSkills: async (): Promise<SkillCatalogueEntry[]> => [],
+  callTool: async (
+    _name: string,
+    _args?: Record<string, unknown>,
+  ): Promise<unknown> => ({}),
+  appendMessage: async (_m: {
+    chatId: string;
+    role: string;
+    parts: unknown[];
+  }): Promise<string> => "msg",
+  logToolCall: async (_row: unknown): Promise<void> => {},
+  note: (_p: unknown): void => {},
+  fetch: async (_url: string, _init: RequestInit): Promise<Response> =>
+    new Response(null, { status: 204 }),
+};
+
+const BACK: BackTool[] = [LOOK_TOOL, VERIFY_TOOL].map((def) => ({
+  def,
+  run: async () => ({ status: "error" as const, error: "no camera in tests" }),
+  promptLine: `- ${def.name}`,
+}));
+
+function deps(apiKey: string | null = "test-key"): RealtimeDeps {
+  const bridge = {
+    callTool: (name: string, args?: Record<string, unknown>) =>
+      fake.callTool(name, args),
+  };
+  const logToolCall = (row: ToolCallRow) => fake.logToolCall(row);
+  return {
+    config: { apiKey, model: "gpt-realtime-test", voice: "marin" },
+    catalogue: { listSkills: () => fake.listSkills() },
+    agent: {
+      systemPrompt: async () => "instructions",
+      policy: createToolPolicy(null),
+      backTools: BACK,
+    },
+    dispatch: createDispatcher({ bridge, logToolCall }),
+    chats: { appendMessage: (m) => fake.appendMessage(m) },
+    logToolCall,
+    confirmations: { note: (p) => fake.note(p) },
+    http: createBridgeHttp({
+      mcpUrl: "http://127.0.0.1:1/mcp",
+      confirmSecret: null,
+      fetch: (url, init) => fake.fetch(url, init),
+    }),
+  };
+}
+
+const tools = (skills: SkillCatalogueEntry[]) =>
+  realtimeTools(skills, (s, m) => offeredInMode(s, m), BACK);
 
 const skill = (name: string, dangerLevel: "low" | "medium" | "high") =>
   ({
@@ -23,14 +85,14 @@ const skill = (name: string, dangerLevel: "low" | "medium" | "high") =>
 
 describe("OpenAI Realtime session contract", () => {
   test("keeps audio ownership and high-danger actions outside model tools", () => {
-    const tools = realtimeTools([
+    const declared = tools([
       skill("listen", "low"),
       skill("say", "low"),
       skill("walk_to", "medium"),
       skill("dangerous_posture", "high"),
     ]);
     // `look` and `verify` are back's own tools, appended after the bridge's.
-    expect(tools.map((tool) => tool.name)).toEqual([
+    expect(declared.map((tool) => tool.name)).toEqual([
       "walk_to",
       "look",
       "verify",
@@ -38,61 +100,44 @@ describe("OpenAI Realtime session contract", () => {
   });
 
   test("the bridge's own look and verify are not offered next to back's: one name, one tool", () => {
-    const tools = realtimeTools([
+    const declared = tools([
       skill("look", "low"),
       skill("verify", "low"),
       skill("walk_to", "medium"),
     ]);
-    expect(tools.map((tool) => tool.name)).toEqual([
+    expect(declared.map((tool) => tool.name)).toEqual([
       "walk_to",
       "look",
       "verify",
     ]);
-    for (const t of tools.slice(1))
+    for (const t of declared.slice(1))
       expect(t.description).not.toBe(`${t.name} description`);
   });
 
   test("refuses to start without putting a missing API key on another machine", async () => {
-    const previous = process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    try {
-      await expect(
-        new RealtimeVoiceSession().start({
-          chatId: "chat",
-          ownerId: "operator",
-        }),
-      ).rejects.toThrow("OPENAI_API_KEY");
-    } finally {
-      if (previous === undefined) delete process.env.OPENAI_API_KEY;
-      else process.env.OPENAI_API_KEY = previous;
-    }
+    await expect(
+      new RealtimeVoiceSession(deps(null)).start({
+        chatId: "chat",
+        ownerId: "operator",
+      }),
+    ).rejects.toThrow("OPENAI_API_KEY");
   });
 
   test("refuses to start with no robot tools: the bridge was unreachable", async () => {
-    const previous = process.env.OPENAI_API_KEY;
-    process.env.OPENAI_API_KEY = "test-key";
-    const spies = [
-      spyOn(skills, "listSkills").mockImplementation(async () => []),
-      spyOn(globalThis, "fetch").mockImplementation(
-        (async () => new Response(null, { status: 204 })) as never,
-      ),
-    ];
-    try {
-      await expect(
-        new RealtimeVoiceSession().start({
-          chatId: "chat",
-          ownerId: "operator",
-        }),
-      ).rejects.toThrow("robot tool catalogue unavailable");
-    } finally {
-      for (const s of spies) s.mockRestore();
-      if (previous === undefined) delete process.env.OPENAI_API_KEY;
-      else process.env.OPENAI_API_KEY = previous;
-    }
+    await expect(
+      new RealtimeVoiceSession(deps()).start({
+        chatId: "chat",
+        ownerId: "operator",
+      }),
+    ).rejects.toThrow("robot tool catalogue unavailable");
   });
 
   test("uses PCM, Spanish transcription, semantic VAD and interruption", () => {
-    const event = realtimeSessionUpdate("instructions", [skill("wave", "low")]);
+    const event = realtimeSessionUpdate(
+      "instructions",
+      tools([skill("wave", "low")]),
+      { model: "gpt-realtime-test", voice: "marin" },
+    );
     expect(event.type).toBe("session.update");
     expect(event.session.output_modalities).toEqual(["audio"]);
     expect(event.session.audio.input.format).toEqual({
@@ -120,15 +165,18 @@ describe("a function call the session never declared", () => {
 
   test("the declared names are recorded from the same list sent to OpenAI", () => {
     expect(src).toContain(
-      "realtimeTools(skills).map((t) => [t.name, t.parameters]),",
+      "this.declaredTools = new Map(tools.map((t) => [t.name, t.parameters]));",
     );
+    expect(src).toContain("realtimeSessionUpdate(instructions, tools, {");
   });
 
-  test("an undeclared name is refused before callTool", () => {
+  test("an undeclared name is refused before it is dispatched", () => {
     const body = src.slice(src.indexOf("private async executeTool"));
     const guard = body.indexOf("this.declaredTools.has(name)");
     expect(guard).toBeGreaterThan(-1);
-    expect(guard).toBeLessThan(body.indexOf("await callTool(name, args)"));
+    expect(guard).toBeLessThan(
+      body.indexOf("dispatch.dispatchSkill(name, args"),
+    );
   });
 });
 
@@ -139,7 +187,7 @@ describe("an operator's decision on a call this session asked for", () => {
   const written: { chatId: string; role: string; parts: unknown[] }[] = [];
   let append: ReturnType<typeof spyOn> | null = null;
   beforeEach(() => {
-    append = spyOn(chats, "appendMessage").mockImplementation(async (m) => {
+    append = spyOn(fake, "appendMessage").mockImplementation(async (m) => {
       written.push(m);
       return "msg";
     });
@@ -152,7 +200,7 @@ describe("an operator's decision on a call this session asked for", () => {
   // open socket stands in for it.
   function session(running: boolean) {
     const sent: unknown[] = [];
-    const s = new RealtimeVoiceSession();
+    const s = new RealtimeVoiceSession(deps());
     const inner = s as unknown as {
       socket: unknown;
       state: { running: boolean; chatId: string | null };
@@ -223,8 +271,8 @@ describe("a Realtime error event", () => {
   let warnSpy: ReturnType<typeof spyOn> | null = null;
   let errorSpy: ReturnType<typeof spyOn> | null = null;
   beforeEach(() => {
-    fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
-      (async () => new Response(null, { status: 204 })) as never,
+    fetchSpy = spyOn(fake, "fetch").mockImplementation(
+      async () => new Response(null, { status: 204 }),
     );
     warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     errorSpy = spyOn(console, "error").mockImplementation(() => {});
@@ -236,7 +284,7 @@ describe("a Realtime error event", () => {
   });
 
   function running() {
-    const s = new RealtimeVoiceSession();
+    const s = new RealtimeVoiceSession(deps());
     const inner = s as unknown as {
       socket: unknown;
       state: { running: boolean; phase: string };
@@ -326,16 +374,13 @@ describe("barge-in while a tool call is in flight", () => {
         release = () => r({ status: "ok" });
       });
     spies.push(
-      spyOn(globalThis, "fetch").mockImplementation((async (
-        url: string | URL,
-        init?: RequestInit,
-      ) => {
+      spyOn(fake, "fetch").mockImplementation(async (url, init) => {
         if (init?.method === "DELETE") deletes.push(String(url));
         return new Response(null, { status: 204 });
-      }) as never),
-      spyOn(client, "callTool").mockImplementation((() => toolCall()) as never),
-      spyOn(chats, "appendMessage").mockImplementation(async () => "msg"),
-      spyOn(chats, "logToolCall").mockImplementation(async () => {}),
+      }),
+      spyOn(fake, "callTool").mockImplementation(() => toolCall()),
+      spyOn(fake, "appendMessage").mockImplementation(async () => "msg"),
+      spyOn(fake, "logToolCall").mockImplementation(async () => {}),
       spyOn(console, "error").mockImplementation(() => {}),
     );
   });
@@ -344,7 +389,7 @@ describe("barge-in while a tool call is in flight", () => {
   });
 
   function running() {
-    const s = new RealtimeVoiceSession();
+    const s = new RealtimeVoiceSession(deps());
     const inner = s as unknown as {
       socket: unknown;
       state: {
@@ -415,25 +460,32 @@ describe("barge-in while a tool call is in flight", () => {
     expect(deletes).toHaveLength(1);
   });
 
-  test("a tool path that throws does not leave the counter up", async () => {
-    // notePending throwing inside the catch used to skip the decrement, and
-    // every later barge-in spared the robot's speech.
+  test("a tool path that throws does not leave the counter up, and is still audited", async () => {
+    // A throwing note used to skip the decrement, and every later barge-in
+    // spared the robot's speech.
     toolCall = async () => {
-      throw new client.BridgeToolError(
+      throw new BridgeToolError(
         "wave",
         "wave needs an operator's confirmation",
       );
     };
+    const audited = spyOn(fake, "logToolCall");
     spies.push(
-      spyOn(confirmations, "notePending").mockImplementation(() => {
+      audited,
+      spyOn(fake, "note").mockImplementation(() => {
         throw new Error("boom");
       }),
     );
     const { inner, callWave } = running();
     callWave();
+    await until(() => audited.mock.calls.length > 0);
     await inner.eventTail.catch(() => {});
-    await until(() => inner.state.running === false);
     expect(inner.toolsRunning).toBe(0);
+    expect(audited.mock.calls[0]?.[0]).toMatchObject({
+      skillName: "wave",
+      status: "error",
+      error: "tool_error: wave needs an operator's confirmation",
+    });
   });
 });
 
@@ -456,14 +508,12 @@ describe("arguments that do not fit the declared schema", () => {
     calls.length = 0;
     sent.length = 0;
     spies.push(
-      spyOn(client, "callTool").mockImplementation((async (
-        ...args: unknown[]
-      ) => {
+      spyOn(fake, "callTool").mockImplementation(async (...args) => {
         calls.push(args);
         return { status: "ok" };
-      }) as never),
-      spyOn(chats, "appendMessage").mockImplementation(async () => "msg"),
-      spyOn(chats, "logToolCall").mockImplementation(async () => {}),
+      }),
+      spyOn(fake, "appendMessage").mockImplementation(async () => "msg"),
+      spyOn(fake, "logToolCall").mockImplementation(async () => {}),
     );
   });
   afterEach(() => {
@@ -471,7 +521,7 @@ describe("arguments that do not fit the declared schema", () => {
   });
 
   async function call(args: Record<string, unknown>) {
-    const s = new RealtimeVoiceSession();
+    const s = new RealtimeVoiceSession(deps());
     const inner = s as unknown as {
       socket: unknown;
       state: { running: boolean; chatId: string | null };

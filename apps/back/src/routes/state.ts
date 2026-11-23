@@ -7,7 +7,7 @@
 
 import { Elysia } from "elysia";
 
-import { callTool, BridgeUnavailableError } from "../bridge/client";
+import { BridgeUnavailableError, type BridgeMcp } from "../bridge/client";
 
 /**
  * Diagnostic detail behind the headline fields — `bridge/sdk/state.py`'s `raw`
@@ -51,21 +51,22 @@ export type RobotState = {
   raw?: RobotStateRaw;
 };
 
-export const stateRoutes = new Elysia().get(
-  "/state",
-  async ({ status }) => {
-    try {
-      return (await callTool("get_state")) as RobotState;
-    } catch (err) {
-      if (err instanceof BridgeUnavailableError)
-        return status(502, { error: "bridge_unavailable" });
-      return status(502, { error: "bridge_error" });
-    }
-  },
-  {
-    detail: {
-      summary: "Current robot state (pose, battery, posture, faults).",
-      tags: ["state"],
+export const stateRoutes = (deps: { bridge: Pick<BridgeMcp, "callTool"> }) =>
+  new Elysia().get(
+    "/state",
+    async ({ status }) => {
+      try {
+        return (await deps.bridge.callTool("get_state")) as RobotState;
+      } catch (err) {
+        if (err instanceof BridgeUnavailableError)
+          return status(502, { error: "bridge_unavailable" });
+        return status(502, { error: "bridge_error" });
+      }
     },
-  },
-);
+    {
+      detail: {
+        summary: "Current robot state (pose, battery, posture, faults).",
+        tags: ["state"],
+      },
+    },
+  );
