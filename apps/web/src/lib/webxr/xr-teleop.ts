@@ -36,7 +36,47 @@ import {
   type VoiceLine,
 } from "./menu-layer";
 import { ScanLayer, type ScanRing } from "./scan-layer";
-import { eyeOffset, type EyePose } from "./stereo";
+import {
+  BUTTON_GRIP,
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  BUTTON_TRIGGER,
+  buttonPressed,
+  controllerGamepad,
+  measureGrip,
+  normalizeAngle,
+  quaternionYaw,
+  walkAxisFrom,
+} from "./xr-input";
+import {
+  drawPerEye,
+  restoreOverlayBackground,
+  stripOverlayBackground,
+  type OverlayStyle,
+} from "./xr-render";
+
+// The pure helpers live in xr-input.ts and xr-render.ts; re-exported so the
+// session stays the one import for callers and tests.
+export {
+  WALK_STICK_DEADZONE,
+  angleBetween,
+  buttonPressed,
+  controllerGamepad,
+  fingerCurl,
+  normalizeAngle,
+  quaternionYaw,
+  subtract,
+  walkAxisFrom,
+  type Vec3,
+} from "./xr-input";
+export {
+  drawPerEye,
+  restoreOverlayBackground,
+  stripOverlayBackground,
+  type LayerFailures,
+  type OverlayStyle,
+  type XrLayer,
+} from "./xr-render";
 
 export type HandSample = {
   /** Wrist position in the reference space, metres. */
@@ -94,78 +134,6 @@ export type XrButtons = {
   grips: number;
 };
 
-/** Index in the `xr-standard` gamepad mapping. */
-const BUTTON_TRIGGER = 0;
-const BUTTON_GRIP = 1;
-const BUTTON_PRIMARY = 4; // A on the right controller, X on the left
-const BUTTON_SECONDARY = 5; // B on the right controller, Y on the left
-
-/**
- * The gamepad of a Touch controller, or null for anything else.
- *
- * A TRACKED HAND CAN HAVE A GAMEPAD TOO. Quest Browser exposes hand input
- * sources with a gamepad whose button 0 is the PINCH — the same index as the
- * controller trigger. Reading it as one meant an operator closing their hand
- * (to grip, or just mirroring the arms) fired whichever preset was selected,
- * and a hand's axes could in principle steer the walk. Presets and walking are
- * controller gestures; hands only ever drive the arm mirror, through
- * `#sampleHands`, which reads joints and not this.
- */
-export function controllerGamepad(source: {
-  hand?: unknown;
-  gamepad?: Gamepad | null;
-}): Gamepad | null {
-  if (source.hand) return null;
-  return source.gamepad ?? null;
-}
-
-/**
- * Whether a gamepad button is pressed, tolerating every shape a runtime
- * might hand back.
- *
- * `pressed` is the field to read — `value` is analogue and a trigger resting
- * at 0.02 is not a press. A missing button reads as not pressed, because the
- * alternative in a headset is a preset firing because a runtime reported one
- * fewer button than expected.
- */
-export function buttonPressed(
-  gamepad: { buttons?: readonly { pressed?: boolean }[] } | null | undefined,
-  index: number,
-): boolean {
-  return gamepad?.buttons?.[index]?.pressed === true;
-}
-
-/**
- * Thumbstick Y to a walk intent. Pure, so the thresholds are testable.
- *
- * WebXR's standard mapping puts the primary thumbstick on axes[2]/axes[3],
- * with axes[0]/axes[1] the touchpad — but not every runtime populates four
- * axes, so this falls back to [0]/[1] when the pair is absent rather than
- * reading undefined and deciding the operator is not asking for anything.
- *
- * Y is NEGATIVE when a stick is pushed away from the operator, per the
- * gamepad spec. Forward is therefore -y, and getting that backwards would
- * mean the robot walks toward someone who pulled back to stop — so it is
- * stated here once and tested, rather than inferred at the call site.
- *
- * The deadzone is deliberately large. This is not a game: a resting thumb, a
- * stick that does not quite centre, or a knock while reaching for something
- * must all read as "not walking", and the cost of a high threshold is only
- * that the operator pushes further.
- */
-export const WALK_STICK_DEADZONE = 0.6;
-
-export function walkAxisFrom(
-  axes: readonly number[] | null | undefined,
-): -1 | 0 | 1 {
-  if (!axes) return 0;
-  const y = axes.length >= 4 ? axes[3] : axes[1];
-  if (typeof y !== "number" || !Number.isFinite(y)) return 0;
-  if (y <= -WALK_STICK_DEADZONE) return 1; // pushed away = forward
-  if (y >= WALK_STICK_DEADZONE) return -1; // pulled back = backward
-  return 0;
-}
-
 export type XrTeleopOptions = {
   /**
    * Whether to draw a camera layer at all. The URL and its liveness arrive
@@ -199,62 +167,6 @@ export type XrTeleopSupport = {
   handTracking: boolean;
 };
 
-/**
- * The operator's heading: which way they are facing, ignoring pitch and roll.
- *
- * Not an Euler extraction. The obvious
- * `atan2(2(wy + xz), 1 - 2(y² + z²))` is a Y-X-Z decomposition, and its "yaw"
- * shrinks as pitch grows — measured, for a 40 degree turn:
- *
- *     look down  0 deg -> reads 40.0     30 deg -> reads 36.0
- *               15 deg -> reads 39.0     60 deg -> reads 22.8
- *
- * So an operator glancing down at the robot — which is the natural thing to do
- * while driving it — quietly loses up to half their steering authority. The
- * sign stays right, so it never turns the wrong way; it just stops turning
- * properly at exactly the moment someone is watching their feet.
- *
- * Projecting the gaze direction onto the horizontal plane answers the question
- * we actually mean, and is pitch-independent by construction. For a pure yaw
- * rotation it agrees with the Euler form exactly, which matters: that is the
- * convention verified on hardware (positive = left, three measured turns).
- *
- * Straight up or straight down leaves no horizontal component to project, so
- * that case falls back to the head's own up-vector — the standard trick, and
- * the difference between a defined heading and NaN in a motor command.
- */
-export function quaternionYaw(o: {
-  x: number;
-  y: number;
-  z: number;
-  w: number;
-}): number {
-  const { x, y, z, w } = o;
-  // Forward is -Z in WebXR: the third column of the rotation matrix, negated.
-  const fx = -2 * (x * z + w * y);
-  const fz = -(1 - 2 * (x * x + y * y));
-
-  if (Math.hypot(fx, fz) < 1e-4) {
-    // Looking straight up or down. Gaze says nothing about heading, so use
-    // where the top of the head points instead.
-    const ux = 2 * (x * y - w * z);
-    const uz = 2 * (y * z + w * x);
-    const fy = -2 * (y * z - w * x);
-    // Looking down flips the up-vector's horizontal sense relative to gaze.
-    const sign = fy > 0 ? -1 : 1;
-    return Math.atan2(-sign * ux, -sign * uz);
-  }
-  return Math.atan2(-fx, -fz);
-}
-
-/** Wrap an angle to (-pi, pi]. Exported for tests. */
-export function normalizeAngle(a: number): number {
-  let x = a % (2 * Math.PI);
-  if (x > Math.PI) x -= 2 * Math.PI;
-  if (x <= -Math.PI) x += 2 * Math.PI;
-  return x;
-}
-
 export async function checkXrSupport(): Promise<XrTeleopSupport> {
   if (typeof navigator === "undefined" || !navigator.xr) {
     return { immersiveAr: false, immersiveVr: false, handTracking: false };
@@ -275,291 +187,6 @@ export async function checkXrSupport(): Promise<XrTeleopSupport> {
     immersiveVr,
     handTracking: typeof XRHand !== "undefined",
   };
-}
-
-// --- finger closure ---------------------------------------------------------
-//
-// Measured as *curl* — the angle between each finger's proximal and distal
-// segments — rather than as fingertip-to-palm distance. Curl is scale-free, so
-// a small hand and a large hand both read 0 when open and 1 when closed with
-// no per-operator calibration step. Distance-based measures need one, and an
-// uncalibrated distance measure reads a small hand as permanently clenched.
-const CURL_FINGERS = [
-  [
-    "index-finger-phalanx-proximal",
-    "index-finger-phalanx-intermediate",
-    "index-finger-tip",
-  ],
-  [
-    "middle-finger-phalanx-proximal",
-    "middle-finger-phalanx-intermediate",
-    "middle-finger-tip",
-  ],
-  [
-    "ring-finger-phalanx-proximal",
-    "ring-finger-phalanx-intermediate",
-    "ring-finger-tip",
-  ],
-  [
-    "pinky-finger-phalanx-proximal",
-    "pinky-finger-phalanx-intermediate",
-    "pinky-finger-tip",
-  ],
-] as const satisfies readonly (readonly [
-  XRHandJoint,
-  XRHandJoint,
-  XRHandJoint,
-])[];
-
-/** Curl angle at which a finger reads as fully closed. ~2 rad is a firm fist. */
-const FULL_CURL_RAD = 2.0;
-
-export type Vec3 = [number, number, number];
-
-export function subtract(a: Vec3, b: Vec3): Vec3 {
-  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-}
-
-/** Angle between two vectors, radians. Exported for tests. */
-export function angleBetween(a: Vec3, b: Vec3): number {
-  const na = Math.hypot(a[0], a[1], a[2]);
-  const nb = Math.hypot(b[0], b[1], b[2]);
-  if (na < 1e-6 || nb < 1e-6) return 0;
-  const cos = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (na * nb);
-  return Math.acos(Math.min(1, Math.max(-1, cos)));
-}
-
-function jointPosition(
-  frame: XRFrame,
-  hand: XRHand,
-  space: XRSpace,
-  joint: XRHandJoint,
-): Vec3 | null {
-  const jointSpace = hand.get(joint);
-  if (!jointSpace) return null;
-  const pose = frame.getJointPose?.(jointSpace, space);
-  if (!pose) return null;
-  const p = pose.transform.position;
-  return [p.x, p.y, p.z];
-}
-
-/**
- * Reduce three joint positions to a curl fraction, 0 open to 1 closed.
- *
- * Exported so the scale-free claim can actually be tested: the same physical
- * gesture on a small hand and a large one must give the same number, which is
- * the whole reason curl was chosen over fingertip-to-palm distance.
- */
-export function fingerCurl(
-  proximal: Vec3,
-  intermediate: Vec3,
-  tip: Vec3,
-): number {
-  const angle = angleBetween(
-    subtract(intermediate, proximal),
-    subtract(tip, intermediate),
-  );
-  return Math.min(1, Math.max(0, angle / FULL_CURL_RAD));
-}
-
-function measureGrip(frame: XRFrame, hand: XRHand, space: XRSpace): number {
-  let total = 0;
-  let counted = 0;
-  for (const [proximal, intermediate, tip] of CURL_FINGERS) {
-    const a = jointPosition(frame, hand, space, proximal);
-    const b = jointPosition(frame, hand, space, intermediate);
-    const c = jointPosition(frame, hand, space, tip);
-    if (!a || !b || !c) continue;
-    total += angleBetween(subtract(b, a), subtract(c, b));
-    counted += 1;
-  }
-  // No joints resolved this frame — report open rather than guessing. An
-  // unknown grip must not read as "closed", which on a fitted hand is a
-  // command to clench around whatever is in front of it.
-  if (counted === 0) return 0;
-  return Math.min(1, Math.max(0, total / counted / FULL_CURL_RAD));
-}
-
-/**
- * Draw the camera once per eye, into each eye's own viewport.
- *
- * ONE VIEWPORT PER EYE, AND THIS IS WHY THE CAMERA WAS INVISIBLE.
- *
- * The canvas backing the XR context is created detached and never sized, so
- * its drawing buffer is the HTML default 300x150 — and GL seeds the viewport
- * from the drawing buffer at context creation. Nothing in the app ever called
- * `gl.viewport`. The XR layer's framebuffer is nothing like that shape: on a
- * Quest 3 it is roughly 2064x2208 PER EYE, both eyes side by side in one
- * buffer.
- *
- * `gl.clear` is scissor-bounded, so the transparent clear covered everything
- * and the view looked correct-but-empty. `drawArrays` is VIEWPORT-bounded, so
- * a full clip-space quad landed in a 300x150 patch in the corner of one eye.
- * In passthrough that reads as "the room, with a smear"; in VR as "black, with
- * a postage stamp". Both were reported as "no camera", and both sent us
- * looking at the perception stack and the SSH tunnel.
- *
- * The per-view loop WebXR requires was also absent entirely, and the draw ran
- * BEFORE `getViewerPose` — so the views did not exist yet and it could not
- * have been correct even with the viewport set. Hence the argument order here:
- * a pose is required to get one at all.
- *
- * Returns the error if drawing threw, so the caller can drop the camera
- * without losing the head pose it is in the middle of sampling.
- */
-export type XrLayer = {
-  draw(eye?: EyePose | null): void;
-};
-
-/**
- * Which layers threw this frame. `null` per layer means it drew.
- *
- * ONE OBJECT INSTEAD OF ONE ERROR, because the layers must fail
- * independently. See `drawPerEye`.
- */
-export type LayerFailures = {
-  camera: unknown | null;
-  menu: unknown | null;
-  scan: unknown | null;
-};
-
-export function drawPerEye(
-  gl: WebGLRenderingContext,
-  layer: XRWebGLLayer,
-  pose: XRViewerPose,
-  /**
-   * Null when no camera is configured at all. The panels still draw — see the
-   * failure-isolation note below; a headset with no picture is exactly when
-   * an operator most needs to be told why.
-   */
-  camera: {
-    draw(opaque: boolean, eye?: EyePose | null): void;
-  } | null,
-  opaque: boolean,
-  /**
-   * Drawn after the camera, into the same viewport, so it sits over the
-   * picture rather than under it. Optional: sessions without a menu pass
-   * nothing and this is a no-op.
-   */
-  menu?: XrLayer | null,
-  /**
-   * The lidar radar, drawn in the opposite corner from the menu. Optional for
-   * the same reason: a session without perception passes nothing.
-   */
-  scan?: XrLayer | null,
-): LayerFailures {
-  // EACH LAYER GETS ITS OWN try, AND THIS IS THE POINT.
-  //
-  // One try around all three meant a camera shader failure took the menu and
-  // the radar with it — and the caller, which nulls `#camera` on a failure,
-  // then stopped calling this at all because the whole block was gated on the
-  // camera existing. So the single most likely GL failure silently removed
-  // the readiness banner that says why the robot will not move and the radar
-  // that says what is behind it, at the exact moment the operator lost the
-  // picture and needed both. Three layers, three failures, three decisions.
-  const failures: LayerFailures = { camera: null, menu: null, scan: null };
-
-  const attempt = (
-    key: keyof LayerFailures,
-    draw: () => void,
-    what: string,
-  ): void => {
-    // Already broken this frame: do not call it again for the second eye.
-    if (failures[key]) return;
-    try {
-      draw();
-    } catch (err) {
-      failures[key] = err ?? new Error(`${what} draw failed`);
-    }
-  };
-
-  // The head's own frame, needed to express each eye's position RELATIVE TO
-  // THE HEAD rather than to the room. Read once per frame, not once per eye:
-  // it is the same head both times.
-  const viewerFromRef = pose.transform?.inverse?.matrix;
-
-  for (const view of pose.views) {
-    const vp = layer.getViewport(view);
-    if (!vp) continue;
-    gl.viewport(vp.x, vp.y, vp.width, vp.height);
-
-    // WHICH EYE THIS IS, not just how big it is.
-    //
-    // The layers used to get `vp.width`/`vp.height` and nothing else, which is
-    // enough to know the SHAPE of the render target and not enough to know
-    // where in the world the eye looking at it is. So every layer drew itself
-    // at the same clip-space coordinate in both eyes, and the operator saw two
-    // of each on 2026-08-27. The projection matrix carries the frustum's
-    // asymmetry and the eye transform carries the parallax; together they are
-    // what turns two images into one object. See `stereo.ts`.
-    //
-    // Null rather than a guess when the runtime gives us no matrix: `placeQuad`
-    // falls back to the old monoscopic placement, which does not fuse but does
-    // draw, and a HUD that does not fuse beats a HUD that is not there.
-    const projection = view.projectionMatrix;
-    const position = view.transform?.position;
-    const eye: EyePose | null =
-      projection && viewerFromRef && position
-        ? { projection, offset: eyeOffset(viewerFromRef, position) }
-        : null;
-
-    if (camera) {
-      // The camera IS the view in VR; in passthrough it is a heads-up layer
-      // over the room, so it does not paint over what the operator can see.
-      attempt("camera", () => camera.draw(opaque, eye), "camera");
-    }
-    if (menu) attempt("menu", () => menu.draw(eye), "menu");
-    if (scan) attempt("scan", () => scan.draw(eye), "scan");
-  }
-  return failures;
-}
-
-/** What an overlay root looked like before the session took it over. */
-export type OverlayStyle = { background: string; display: string };
-
-/**
- * Strip the overlay root's opaque background for the life of the session.
- *
- * THE DOM OVERLAY COMPOSITES ON TOP OF THE WEBGL LAYER. Everything the
- * renderer draws — the camera quad, and under passthrough the room itself — is
- * *behind* this element. The page styles it `bg-background`, which resolves to
- * `#06090f`: fully opaque, edge to edge, because the UA promotes the overlay
- * root to `position: fixed; inset: 0`.
- *
- * So the camera was being drawn correctly and then painted over. That is a
- * second, independent cause of the same "no camera" symptom the viewport bug
- * produced — and it is worse in `immersive-ar`, the mode this now prefers,
- * because AR is exactly where the overlay composites. Fixing the viewport
- * alone would have shown the operator the same black field and sent them
- * looking at the renderer a third time.
- *
- * Done in script rather than CSS because it has to be tied to the session
- * lifetime and undone afterwards — a console left with a transparent body
- * shows the browser's background, not the app's. The panels inside keep their
- * own backgrounds, so the controls stay readable against the room, which is
- * what a heads-up overlay should look like.
- *
- * Returns the previous inline values so they can be put back exactly.
- */
-export function stripOverlayBackground(root: HTMLElement): OverlayStyle {
-  const previous: OverlayStyle = {
-    background: root.style.background,
-    display: root.style.display,
-  };
-  root.style.background = "transparent";
-  // The UA also forces `display: block` on `:xr-overlay`, which collapses the
-  // root's flex column. Asking for flex back is harmless where the UA wins.
-  root.style.display = "flex";
-  return previous;
-}
-
-/** Undo `stripOverlayBackground`, restoring exactly what was there before. */
-export function restoreOverlayBackground(
-  root: HTMLElement,
-  previous: OverlayStyle,
-): void {
-  root.style.background = previous.background;
-  root.style.display = previous.display;
 }
 
 export class XrTeleopSession {
