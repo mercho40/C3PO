@@ -27,13 +27,13 @@ const read = (...parts: string[]) => readFileSync(join(APPS, ...parts), "utf8");
 
 const CAMERA_TS = read("back", "src", "routes", "camera.ts");
 const LOOK_TS = read("back", "src", "agent", "look.ts");
-/** Where the bridge declares its HTTP routes: its entry point and bridge/routes/. */
-const BRIDGE_ROUTES_PY = [
-  read("bridge", "src", "bridge", "mcp_server.py"),
-  ...readdirSync(join(APPS, "bridge", "src", "bridge", "routes"))
-    .filter((f) => f.endsWith(".py"))
-    .map((f) => read("bridge", "src", "bridge", "routes", f)),
-].join("\n");
+/** Where the bridge declares its HTTP routes: one module per concern in bridge/routes/. */
+const BRIDGE_ROUTES_PY = readdirSync(
+  join(APPS, "bridge", "src", "bridge", "routes"),
+)
+  .filter((f) => f.endsWith(".py"))
+  .map((f) => read("bridge", "src", "bridge", "routes", f))
+  .join("\n");
 const MJPEG_TS = read("web", "src", "lib", "robot", "mjpeg-camera.ts");
 const LIVE_CAMERA = read(
   "web",

@@ -13,8 +13,9 @@ import pathlib
 
 import pytest
 
-from bridge import config, estop, object_memory as om
-import bridge.mcp_server as server
+from bridge import config, estop, mcp_server, object_memory as om
+from bridge.tools import locomotion
+from bridge.tools import memory as memory_tools
 from bridge.sdk import perception_link as pl
 
 ORIGIN = {"x_m": 0.0, "y_m": 0.0, "yaw_deg": 0.0}
@@ -24,7 +25,7 @@ ORIGIN = {"x_m": 0.0, "y_m": 0.0, "yaw_deg": 0.0}
 def mem(monkeypatch):
     memory = om.ObjectMemory()
     monkeypatch.setattr(om, "_memory_singleton", memory)
-    monkeypatch.setattr(server, "_memory_pose", lambda: (ORIGIN, "odom"))
+    monkeypatch.setattr(memory_tools, "memory_pose", lambda: (ORIGIN, "odom"))
     return memory
 
 
@@ -35,7 +36,7 @@ def see(memory: om.ObjectMemory, label: str, rng: float, bearing: float, times: 
 
 def test_recall_object_answers_a_spanish_query_with_distance_and_bearing(mem):
     see(mem, "wallet", 2.0, 90.0)
-    out = server.recall_object(query="billetera")
+    out = memory_tools.recall_object(query="billetera")
     assert out["status"] == "ok"
     [obj] = out["objects"]
     assert obj["label"] == "wallet"
@@ -45,14 +46,14 @@ def test_recall_object_answers_a_spanish_query_with_distance_and_bearing(mem):
 
 def test_recall_object_not_found_lists_what_memory_has(mem):
     see(mem, "tv", 3.0, 0.0)
-    out = server.recall_object(query="paraguas")
+    out = memory_tools.recall_object(query="paraguas")
     assert out == {"status": "not_found", "query": "paraguas", "known_labels": ["tv"]}
 
 
 def test_recall_object_without_a_pose_says_so(mem, monkeypatch):
     see(mem, "tv", 3.0, 0.0)
-    monkeypatch.setattr(server, "_memory_pose", lambda: (None, None))
-    out = server.recall_object(query="tele")
+    monkeypatch.setattr(memory_tools, "memory_pose", lambda: (None, None))
+    out = memory_tools.recall_object(query="tele")
     assert "distance_m" not in out["objects"][0]
     assert "unavailable" in out["note"]
 
@@ -60,29 +61,29 @@ def test_recall_object_without_a_pose_says_so(mem, monkeypatch):
 def test_list_and_forget_object(mem):
     see(mem, "cup", 1.0, 0.0)
     see(mem, "tv", 3.0, 45.0)
-    listed = server.list_objects()
+    listed = memory_tools.list_objects()
     assert listed["count"] == 2
     cup = next(o for o in listed["objects"] if o["label"] == "cup")
-    assert server.forget_object(object_id=cup["id"])["status"] == "ok"
-    assert server.forget_object(object_id=cup["id"])["status"] == "not_found"
-    assert server.forget_object(object_id="all")["removed"] == 1
+    assert memory_tools.forget_object(object_id=cup["id"])["status"] == "ok"
+    assert memory_tools.forget_object(object_id=cup["id"])["status"] == "not_found"
+    assert memory_tools.forget_object(object_id="all")["removed"] == 1
 
 
 def test_describe_surroundings_carries_a_short_memory_summary(mem, monkeypatch):
     see(mem, "tv", 3.0, 0.0, times=3)
     see(mem, "cup", 1.0, 60.0, times=1)  # seen once: maybe a false positive
-    snapshot = server.describe_surroundings()
+    snapshot = memory_tools.describe_surroundings()
     assert snapshot["sources"]["detector"] == "offline", "D7 contract untouched"
     assert [o["label"] for o in snapshot["memory"]["objects"]] == ["tv"]
     assert snapshot["memory"]["objects"][0]["distance_m"] == 3.0
 
-    monkeypatch.setattr(server, "MEMORY_SUMMARY_MAX", 1)
+    monkeypatch.setattr(memory_tools, "MEMORY_SUMMARY_MAX", 1)
     see(mem, "chair", 2.0, -60.0, times=2)
-    assert server.describe_surroundings()["memory"]["omitted"] == 1
+    assert memory_tools.describe_surroundings()["memory"]["omitted"] == 1
 
 
 def test_describe_surroundings_with_empty_memory_adds_nothing(mem):
-    assert "memory" not in server.describe_surroundings()
+    assert "memory" not in memory_tools.describe_surroundings()
 
 
 # -- look_around ---------------------------------------------------------------
@@ -102,10 +103,10 @@ class FakeTurn:
 
 @pytest.mark.asyncio
 async def test_look_around_refuses_without_perception(monkeypatch, mem):
-    monkeypatch.setattr(server, "_memory_pose", lambda: (None, None))
+    monkeypatch.setattr(memory_tools, "memory_pose", lambda: (None, None))
     fake = FakeTurn()
-    monkeypatch.setattr(server, "turn", fake)
-    out = await server.look_around(None, total_degrees=360)
+    monkeypatch.setattr(locomotion, "turn", fake)
+    out = await memory_tools.look_around(None, total_degrees=360)
     assert out["error"] == "perception_offline"
     assert fake.calls == [], "turning blind updates nothing; it must not move"
 
@@ -114,9 +115,9 @@ async def test_look_around_refuses_without_perception(monkeypatch, mem):
 async def test_look_around_sweeps_in_steps_and_reports_what_is_new(monkeypatch, mem):
     see(mem, "tv", 3.0, 0.0)
     fake = FakeTurn(on_call=lambda n: see(mem, "bottle", 2.0, 0.0) if n == 3 else None)
-    monkeypatch.setattr(server, "turn", fake)
+    monkeypatch.setattr(locomotion, "turn", fake)
 
-    out = await server.look_around(None, total_degrees=360)
+    out = await memory_tools.look_around(None, total_degrees=360)
 
     assert out["status"] == "ok"
     assert len(fake.calls) == 6 and all(c == pytest.approx(1.0472, abs=1e-3) for c in fake.calls)
@@ -128,8 +129,8 @@ async def test_look_around_sweeps_in_steps_and_reports_what_is_new(monkeypatch, 
 @pytest.mark.asyncio
 async def test_look_around_stops_when_stop_everything_is_pressed(monkeypatch, mem):
     fake = FakeTurn(on_call=lambda n: estop.signal_stop())
-    monkeypatch.setattr(server, "turn", fake)
-    out = await server.look_around(None, total_degrees=360)
+    monkeypatch.setattr(locomotion, "turn", fake)
+    out = await memory_tools.look_around(None, total_degrees=360)
     assert len(fake.calls) == 1
     assert out["status"] == "stopped"
     assert out["stopped_reason"] == "stop_everything"
@@ -138,8 +139,8 @@ async def test_look_around_stops_when_stop_everything_is_pressed(monkeypatch, me
 @pytest.mark.asyncio
 async def test_look_around_stops_at_the_first_failed_turn(monkeypatch, mem):
     fake = FakeTurn(status="failed")
-    monkeypatch.setattr(server, "turn", fake)
-    out = await server.look_around(None, total_degrees=180)
+    monkeypatch.setattr(locomotion, "turn", fake)
+    out = await memory_tools.look_around(None, total_degrees=180)
     assert len(fake.calls) == 1
     assert out["status"] == "stopped"
     assert out["turned_degrees"] == 0.0
@@ -159,11 +160,11 @@ async def test_a_cancel_during_a_dwell_ends_the_sweep_at_once(monkeypatch, mem):
     from bridge.skills.task_runtime import get_registry
 
     monkeypatch.setattr(config, "SIM_MODE", "real")  # real dwells
-    monkeypatch.setattr(server, "LOOK_DWELL_S", 5.0)
+    monkeypatch.setattr(memory_tools, "LOOK_DWELL_S", 5.0)
     fake = FakeTurn()
-    monkeypatch.setattr(server, "turn", fake)
+    monkeypatch.setattr(locomotion, "turn", fake)
 
-    sweep = asyncio.ensure_future(server.look_around(None, total_degrees=360))
+    sweep = asyncio.ensure_future(memory_tools.look_around(None, total_degrees=360))
     await asyncio.sleep(0.05)  # inside the first dwell
     [task] = _look_around_tasks()
     get_registry().cancel(task.task_id)
@@ -193,8 +194,8 @@ async def test_a_cancel_mid_turn_stops_the_turn(monkeypatch, mem):
             t.status = "completed"
         return {"status": t.status, "phase": t.status, "error": None}
 
-    monkeypatch.setattr(server, "turn", slow_turn)
-    sweep = asyncio.ensure_future(server.look_around(None, total_degrees=360))
+    monkeypatch.setattr(locomotion, "turn", slow_turn)
+    sweep = asyncio.ensure_future(memory_tools.look_around(None, total_degrees=360))
     await asyncio.sleep(0.05)  # inside the first turn
     [task] = _look_around_tasks()
     get_registry().cancel(task.task_id)
@@ -206,8 +207,8 @@ async def test_a_cancel_mid_turn_stops_the_turn(monkeypatch, mem):
 
 @pytest.mark.asyncio
 async def test_a_finished_sweep_leaves_no_running_task(monkeypatch, mem):
-    monkeypatch.setattr(server, "turn", FakeTurn())
-    out = await server.look_around(None, total_degrees=120)
+    monkeypatch.setattr(locomotion, "turn", FakeTurn())
+    out = await memory_tools.look_around(None, total_degrees=120)
     assert out["status"] == "ok"
     assert _look_around_tasks() == []
 
@@ -218,7 +219,7 @@ async def test_a_finished_sweep_leaves_no_running_task(monkeypatch, mem):
 def test_main_feeds_the_memory_from_the_perception_link():
     """A tested memory nothing feeds reports "never seen" forever — see
     test_singletons_are_started.py for the five times that shape bit."""
-    src = (pathlib.Path(server.__file__)).read_text()
+    src = (pathlib.Path(mcp_server.__file__)).read_text()
     main = src[src.index("def main() -> None:") :]
     assert "get_link().on_report = get_object_memory().observe_report" in main
 
@@ -257,10 +258,10 @@ async def test_look_around_is_refused_while_a_walk_runs(monkeypatch, mem):
     from bridge.skills.task_runtime import get_registry
 
     fake = FakeTurn()
-    monkeypatch.setattr(server, "turn", fake)
+    monkeypatch.setattr(locomotion, "turn", fake)
     walking = get_registry().create("walk_to")
     try:
-        out = await server.look_around(None, total_degrees=360)
+        out = await memory_tools.look_around(None, total_degrees=360)
     finally:
         walking.status = "completed"
     assert (out["status"], out["error"]) == ("failed", "walk_task_active")
@@ -285,7 +286,7 @@ def test_recall_measures_from_the_vendor_odometry_when_the_lidar_pose_is_missing
 
     memory.observe(ORIGIN, [{"label": "tv", "range_m": 1.0, "bearing_deg": 0.0}], frame=om.VENDOR_FRAME)
     memory.observe(ORIGIN, [{"label": "tv", "range_m": 3.0, "bearing_deg": 0.0}], frame="vendor_odom@1")
-    out = server.recall_object(query="tele")
+    out = memory_tools.recall_object(query="tele")
     by_frame = {o["frame"]: o for o in out["objects"]}
     assert "note" not in out
     assert by_frame[om.VENDOR_FRAME]["distance_m"] == 1.0

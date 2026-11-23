@@ -10,7 +10,6 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/contracts/**",
-        "$TURBO_ROOT$/apps/bridge/src/bridge/mcp_server.py",
         "$TURBO_ROOT$/apps/bridge/src/bridge/routes/**",
         "$TURBO_ROOT$/apps/web/src/**",
         "$TURBO_ROOT$/apps/web/.env.example",

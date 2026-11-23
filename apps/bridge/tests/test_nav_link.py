@@ -66,7 +66,7 @@ def goal_rec(goal_id, state, dist=None):
 @pytest.fixture
 def rig(monkeypatch):
     """Real-mode server with a list for a DDS writer and a gate we control."""
-    import bridge.mcp_server as server
+    from bridge.tools import navigation as server
 
     sent: list[dict] = []
     clock = Clock()

@@ -148,16 +148,12 @@ class TestItCallsToolsThatActuallyExist:
 
     @staticmethod
     def _declared_params(tool: str):
-        """The parameter names of an `async def <tool>(...)` in mcp_server."""
+        """The parameter names of the tool `def <tool>(...)` in the bridge's tool modules."""
         import ast
 
-        src = (
-            Path(__file__).resolve().parents[1]
-            / "src"
-            / "bridge"
-            / "mcp_server.py"
-        ).read_text()
-        for node in ast.walk(ast.parse(src)):
+        root = Path(__file__).resolve().parents[1] / "src" / "bridge"
+        files = [root / "mcp_server.py", *sorted((root / "tools").glob("*.py"))]
+        for node in (n for f in files for n in ast.walk(ast.parse(f.read_text()))):
             if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)) and node.name == tool:
                 a = node.args
                 return {
@@ -176,7 +172,7 @@ class TestItCallsToolsThatActuallyExist:
     def test_every_tool_it_calls_exists_on_the_server(self):
         for name, _ in self._tool_calls():
             assert self._declared_params(name) is not None, (
-                "measure_turn calls the tool {!r}, which mcp_server does not "
+                "measure_turn calls the tool {!r}, which the bridge does not "
                 "define. This fails at the moment the operator has already "
                 "confirmed and is watching the robot.".format(name)
             )

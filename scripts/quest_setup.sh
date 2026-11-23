@@ -77,7 +77,7 @@ port_owner_cmd() { ps -o command= -p "$1" 2>/dev/null | cut -c1-90; }
 # It was hardcoded to 8081, and on 2026-08-27 an operator wearing the headset
 # reported "i cannot see the camara" while everything else worked. Nothing was
 # broken. The feed had MOVED: `apps/bridge` now serves it on 8001 (see the
-# "WHY NOT PORT 8081" note in `mcp_server.py` — 8081 belongs to the vision
+# "WHY NOT PORT 8081" note in `apps/bridge/src/bridge/routes/camera.py` — 8081 belongs to the vision
 # container, which is dead in exactly the case this feed exists for), and
 # `PUBLIC_ROBOT_CAM_URL` was updated to match. This list was not.
 #

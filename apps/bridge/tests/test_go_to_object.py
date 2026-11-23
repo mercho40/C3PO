@@ -69,21 +69,21 @@ def test_memory_from_another_frame_is_not_a_target():
     )
 
 
-# --- the tool body (mcp_server.go_to_object), no GovernedMCP gate ------------
+# --- the tool body (tools.navigation.go_to_object), no GovernedMCP gate ----
 
 PERCEPTION_POSE = ({"x_m": 10.0, "y_m": 10.0, "yaw_deg": 0.0}, "odom")
 
 
 @pytest.fixture
 def tool(monkeypatch):
-    """The real server with its inputs replaced. The tool imports get_object_memory,
+    """The real tool with its inputs replaced. The tool imports get_object_memory,
     get_sampler and walk_to.run inside its body, so the module attributes are patched.
     The Nav2 relay and the gate are the real links with no DDS behind them (as in
     test_nav_link): silent relay by default, so the camera walk is taken."""
     import json
     import time
 
-    import bridge.mcp_server as server
+    from bridge.tools import navigation
     from bridge import object_memory
     from bridge.sdk import nav_link, perception_link, state
     from bridge.skills import walk_to
@@ -94,7 +94,7 @@ def tool(monkeypatch):
         return (p["x_meters_world"], p["y_meters_world"], p["yaw_radians_world"])
 
     t = SimpleNamespace(
-        server=server,
+        navigation=navigation,
         objects=[],
         detector_online=True,
         report_age=0.1,
@@ -120,8 +120,8 @@ def tool(monkeypatch):
         return t.walk_result
 
     monkeypatch.setattr(config, "SIM_MODE", "real")
-    monkeypatch.setattr(server, "NAV_POLL_S", 0.01)
-    monkeypatch.setattr(server, "_memory_pose", lambda: t.mem_pose)
+    monkeypatch.setattr(navigation, "NAV_POLL_S", 0.01)
+    monkeypatch.setattr(navigation, "memory_pose", lambda: t.mem_pose)
     monkeypatch.setattr(nav_link, "_nav_singleton", t.nav)
     monkeypatch.setattr(perception_link, "_link_singleton", t.gate)
     monkeypatch.setattr(
@@ -144,7 +144,7 @@ def chair(range_m):
 
 async def test_a_live_object_is_aimed_from_the_vendor_pose(tool):
     tool.objects = [chair(2.0)]
-    out = await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
     assert len(tool.walks) == 1
     walk = tool.walks[0]
     # Facing +x from (1, 1), 2 m to the LEFT is (1, 3).
@@ -165,7 +165,7 @@ async def test_memory_is_relative_from_perception_then_steered_on_vendor_odometr
     tool.state = {
         "pose": {"x_meters_world": 0.0, "y_meters_world": 0.0, "yaw_radians_world": math.pi / 2}
     }
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     walk = tool.walks[0]
     assert (walk["target_x"], walk["target_y"]) == pytest.approx((0.0, 2.0), abs=1e-9)
     assert out["target"]["source"] == "memory"
@@ -175,14 +175,14 @@ async def test_memory_from_another_frame_does_not_walk(tool):
     tool.memory = [
         SimpleNamespace(label="chair", x_m=12.0, y_m=10.0, last_seen=tool.now, frame="odom_old")
     ]
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert out["error"] == "not_found"
     assert tool.walks == []
 
 
 async def test_a_far_object_is_refused_with_its_target(tool):
     tool.objects = [chair(5.0)]
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert out["error"] == "too_far"
     assert out["target"]["range_m"] == 5.0
     assert tool.walks == []
@@ -191,7 +191,7 @@ async def test_a_far_object_is_refused_with_its_target(tool):
 async def test_no_odometry_pose_does_not_walk(tool):
     tool.objects = [chair(2.0)]
     tool.state = {}
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert out["error"] == "no_pose"
     assert tool.walks == []
 
@@ -199,7 +199,7 @@ async def test_no_odometry_pose_does_not_walk(tool):
 async def test_stub_mode_is_not_applicable(tool, monkeypatch):
     monkeypatch.setattr(config, "SIM_MODE", "stub")
     tool.objects = [chair(2.0)]
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert out["error"] == "not_applicable"
     assert tool.walks == []
 
@@ -243,7 +243,7 @@ async def test_the_bearing_is_applied_to_the_pose_at_capture(tool, monkeypatch):
     }
     asked = []
     tool.pose_at = lambda when: asked.append(when) or (1.0, 1.0, 0.0)
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     walk = tool.walks[0]
     assert (walk["target_x"], walk["target_y"]) == pytest.approx((1.0, 3.0), abs=1e-9)
     assert out["target"]["age_s"] == pytest.approx(0.4)  # 0.3 object + 0.1 report
@@ -253,14 +253,14 @@ async def test_the_bearing_is_applied_to_the_pose_at_capture(tool, monkeypatch):
 async def test_a_detection_older_than_the_pose_history_is_stale(tool):
     tool.objects = [aged(0.3)]
     tool.pose_at = lambda when: None
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert out["error"] == "stale_detection"
     assert tool.walks == []
 
 
 async def test_an_old_detection_is_refused(tool):
     tool.objects = [aged(1.2)]
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert out["error"] == "stale_detection"
     assert tool.walks == []
 
@@ -268,7 +268,7 @@ async def test_an_old_detection_is_refused(tool):
 async def test_objects_from_an_offline_detector_are_not_targets(tool):
     tool.objects = [chair(2.0)]
     tool.detector_online = False
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert out["error"] == "not_found"
 
 
@@ -329,7 +329,7 @@ async def test_the_walk_re_aims_at_the_moved_object_and_gives_up_when_it_is_gone
         asked.append(when) or ((1.0, 1.0, 0.0) if when < 100.0 else (1.15, 1.0, 0.0))
     )
     tool.objects = [aged(0.2, bearing_deg=0.0)]  # (3, 1) from (1, 1) facing +x
-    await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
+    await tool.navigation.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
     assert tool.walks[0]["target_x"] == pytest.approx(3.0)
     retarget = tool.walks[0]["retarget"]
     asked.clear()
@@ -369,7 +369,7 @@ async def test_nav2_gets_the_stop_short_goal_in_its_own_frame(tool, monkeypatch)
     tool.gate.enable(reason="operator", ttl_s=60)
     # 2 m dead ahead on vendor odometry; Nav2 has the robot at (5, 5) facing +y.
     tool.objects = [{**chair(2.0), "bearing_deg": 0.0}]
-    out = await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
 
     assert (out["status"], out["via"]) == ("started", "nav2")
     goal = tool.sent[-1]
@@ -400,7 +400,7 @@ async def test_without_nav2_it_walks_and_says_why(tool, status, arm, reason):
     if arm:
         tool.gate.enable(reason="operator", ttl_s=60)
     tool.objects = [chair(2.0)]
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert (out["via"], out["nav2_refused"]) == ("walk_to", reason)
     assert len(tool.walks) == 1
     assert tool.sent == []
@@ -411,7 +411,7 @@ async def test_already_within_the_stop_distance_sends_no_goal(tool):
     tool.nav._ingest_status(nav_status())
     tool.gate.enable(reason="operator", ttl_s=60)
     tool.objects = [chair(0.5)]
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert tool.sent == [] and tool.walks == []
     assert out["via"] == "none" and out["phase"] == "already_within_stop_distance"
 
@@ -421,7 +421,7 @@ async def test_nav2_is_not_used_while_the_headset_drives(tool, monkeypatch):
     tool.nav._ingest_status(nav_status())
     tool.gate.enable(reason="operator", ttl_s=60)
     tool.objects = [chair(2.0)]
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert out["nav2_refused"] == "teleop_active"
     assert tool.sent == []  # walk_to itself then refuses with teleop_active
 
@@ -434,7 +434,7 @@ async def test_nav2_is_not_used_while_a_walk_is_running(tool):
     tool.gate.enable(reason="operator", ttl_s=60)
     tool.objects = [chair(2.0)]
     try:
-        out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+        out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     finally:
         walking.status = "completed"  # no skill is looping on it to end it
     assert out["nav2_refused"] == "walk_task_active"
@@ -450,7 +450,7 @@ async def test_a_running_goal_is_replaced_not_refused(tool):
     tool.gate.enable(reason="operator", ttl_s=60)
     tool.objects = [chair(2.0)]
     try:
-        out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+        out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     finally:
         old.status = "cancelled"  # no monitor is looping on it to end it
     assert (out["status"], out["via"]) == ("started", "nav2")
@@ -470,7 +470,7 @@ def chair_near(range_m, near_m, bearing_deg=90.0):
 async def test_a_near_face_walk_aims_at_the_face_and_stops_the_pelvis_body_front_further_back(tool):
     tool.objects = [chair_near(2.0, 1.7)]
     tool.walk_result = {"status": "completed", "result": {"final_distance_m": 0.85}}
-    out = await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
     walk = tool.walks[0]
     # From (1, 1) facing +x, the near face 1.7 m to the LEFT is (1, 2.7).
     assert (walk["target_x"], walk["target_y"]) == pytest.approx((1.0, 2.7), abs=1e-9)
@@ -483,7 +483,7 @@ async def test_a_near_face_walk_aims_at_the_face_and_stops_the_pelvis_body_front
 
 async def test_a_near_face_target_further_than_the_cap_by_its_centre_is_not_too_far(tool):
     tool.objects = [chair_near(4.2, 3.9)]
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert "error" not in out and len(tool.walks) == 1
 
 
@@ -501,7 +501,7 @@ async def test_the_near_face_walk_re_aims_only_at_near_face_sightings(tool, monk
     monkeypatch.setattr(time, "monotonic", lambda: 100.0)
     tool.pose_at = lambda when: (1.0, 1.0, 0.0)
     tool.objects = [{**chair_near(2.0, 1.8, bearing_deg=0.0), "age_s": 0.2}]
-    await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
+    await tool.navigation.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
     assert tool.walks[0]["target_x"] == pytest.approx(2.8)
     retarget = tool.walks[0]["retarget"]
     tool.objects = [{**chair_near(2.0, 1.5, bearing_deg=10.0), "age_s": 0.2}]
@@ -515,7 +515,7 @@ async def test_nav2_gets_the_near_face_goal_with_the_body_front(tool):
     tool.nav._ingest_status(nav_status())
     tool.gate.enable(reason="operator", ttl_s=60)
     tool.objects = [chair_near(2.0, 1.6, bearing_deg=0.0)]
-    out = await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="silla", stop_distance_m=0.7)
     assert out["via"] == "nav2"
     goal = tool.sent[-1]
     # Face 1.6 m ahead; pelvis stops 0.7 + BODY_FRONT_M short of it. Nav2 at (5, 5) facing +y.
@@ -532,7 +532,7 @@ async def test_already_at_the_face_sends_no_nav2_goal(tool):
     tool.nav._ingest_status(nav_status())
     tool.gate.enable(reason="operator", ttl_s=60)
     tool.objects = [chair_near(1.2, 0.8)]  # 0.8 m <= 0.7 + BODY_FRONT_M
-    out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
+    out = await tool.navigation.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert tool.sent == [] and tool.walks == [] and out["via"] == "none"
 
 
@@ -593,7 +593,7 @@ def test_memory_targets_honour_choose():
 
 async def test_a_single_chair_inside_the_stop_does_not_walk(tool):
     tool.objects = [FOUR_CHAIRS[0]]
-    out = await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=1.0)
+    out = await tool.navigation.go_to_object(ctx=None, query="silla", stop_distance_m=1.0)
     assert tool.walks == []
     assert (out["status"], out["phase"]) == ("completed", "already_within_stop_distance")
     assert out["clearance_m"] == pytest.approx(0.78 - g.BODY_FRONT_M)
@@ -603,7 +603,7 @@ async def test_a_single_chair_inside_the_stop_does_not_walk(tool):
 async def test_the_tool_walks_to_the_chosen_chair_and_says_so(tool):
     tool.objects = [{**c, "age_s": 0.0} for c in FOUR_CHAIRS]
     tool.report_age = 0.0
-    out = await tool.server.go_to_object(
+    out = await tool.navigation.go_to_object(
         ctx=None, query="silla", stop_distance_m=1.0, choose="farthest"
     )
     walk = tool.walks[0]
@@ -632,7 +632,7 @@ async def test_the_walk_is_locked_on_the_chosen_chair(tool, monkeypatch):
     tool.pose_at = lambda when: (1.0, 1.0, 0.0)
     tool.objects = [{**c, "age_s": 0.0} for c in FOUR_CHAIRS]
     tool.report_age = 0.0
-    await tool.server.go_to_object(ctx=None, query="silla", stop_distance_m=1.0)
+    await tool.navigation.go_to_object(ctx=None, query="silla", stop_distance_m=1.0)
     chosen = g.world_target(1.0, 1.0, 0.0, 1.90, -8.0)
     assert (tool.walks[0]["target_x"], tool.walks[0]["target_y"]) == pytest.approx(chosen)
     retarget = tool.walks[0]["retarget"]

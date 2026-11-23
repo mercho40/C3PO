@@ -220,7 +220,7 @@ def test_stop_play_is_scoped_by_app_name_not_stream_id(fake_voice):
 async def test_a_stop_while_piper_synthesizes_plays_nothing(fake_voice, monkeypatch):
     """The greeter checks for a PARAR, then Piper takes hundreds of ms: a stop in between
     must cancel the speech too, not only chunks still to send once it has started."""
-    from bridge import mcp_server
+    from bridge.tools import speech
     from bridge.sdk import g1_rpc
 
     def synthesize(text: str) -> bytes:
@@ -230,10 +230,10 @@ async def test_a_stop_while_piper_synthesizes_plays_nothing(fake_voice, monkeypa
     monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(tts, "available", lambda: (True, ""))
     monkeypatch.setattr(tts, "synthesize", synthesize)
-    result = await mcp_server.say("Hola Ana")
+    result = await speech.say("Hola Ana")
     assert fake_voice.calls == []
     assert result["rpc_data"] == "stopped"
 
     monkeypatch.setattr(tts, "synthesize", lambda text: b"\x00" * 100)
-    await mcp_server.say("Hola Ana")  # the next utterance, after the stop, still plays
+    await speech.say("Hola Ana")  # the next utterance, after the stop, still plays
     assert len(fake_voice.calls) == 1

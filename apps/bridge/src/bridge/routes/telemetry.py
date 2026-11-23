@@ -6,6 +6,7 @@ import structlog
 
 from bridge.routes.common import no_store
 from bridge.server import mcp
+from bridge.tools.memory import surroundings_snapshot
 
 log = structlog.get_logger(__name__)
 
@@ -178,3 +179,27 @@ async def scan_json(request):  # noqa: ANN001, ANN201 - starlette types
     body["age_s"] = None if age is None else round(age, 3)
     body["stale"] = bool(age is not None and age > SCAN_STALE_AFTER_S)
     return no_store(body)
+
+
+@mcp.custom_route("/telemetry/surroundings", methods=["GET"])
+async def surroundings_json(request):  # noqa: ANN001, ANN201 - starlette types
+    """The D7 snapshot the agent sees, for the operator console.
+
+    Deliberately the SAME `surroundings_snapshot()` the `describe_surroundings`
+    tool returns, not a parallel implementation. If the console built its own
+    view of the scene, an operator and the agent could be looking at subtly
+    different worlds while debugging the same incident — which is the exact
+    failure D7's "one contract, interpreted once" exists to prevent.
+
+    Read-only and structurally so, like the costmap and gate routes: it composes
+    a snapshot from data already received and can actuate nothing.
+    """
+    from starlette.responses import JSONResponse
+
+    try:
+        return JSONResponse(surroundings_snapshot(), headers={"Cache-Control": "no-store"})
+    except Exception:
+        log.exception("telemetry.surroundings_failed")
+        # 503 rather than a partial scene: an operator must never be shown an
+        # empty world that is actually a broken endpoint.
+        return JSONResponse({"error": "could not build a snapshot"}, status_code=503)

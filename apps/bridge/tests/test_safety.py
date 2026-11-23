@@ -456,7 +456,6 @@ class FakeRequest:
 
 @pytest.mark.asyncio
 async def test_confirm_route_fails_closed_without_a_secret(monkeypatch):
-    from bridge import mcp_server  # noqa: F401 - registers every tool
     from bridge.routes import safety as safety_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "")
@@ -467,7 +466,6 @@ async def test_confirm_route_fails_closed_without_a_secret(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_confirm_route_checks_secret_and_tier(monkeypatch):
-    from bridge import mcp_server  # noqa: F401 - registers every tool
     from bridge.routes import safety as safety_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
@@ -483,7 +481,6 @@ async def test_confirm_route_checks_secret_and_tier(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("args", ["x", {"closure": "abc"}, None])
 async def test_confirm_route_refuses_arguments_the_tool_would_refuse(monkeypatch, args):
-    from bridge import mcp_server  # noqa: F401 - registers every tool
     from bridge.routes import safety as safety_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
@@ -998,10 +995,10 @@ def test_a_broken_radius_falls_back_to_the_default_never_off(monkeypatch, raw):
 
 
 def test_arm_navigation_and_status_report_the_fence(link, odom):
-    from bridge import mcp_server
+    from bridge.tools import navigation
 
     odom.pose = (2.0, -1.0, 0.05)
-    out = mcp_server.arm_navigation(reason="test arm", seconds=5)
+    out = navigation.arm_navigation(reason="test arm", seconds=5)
     assert out["geofence"] == {
         "radius_m": safety.GEOFENCE_M, "anchor": [2.0, -1.0], "distance_m": 0.0, "inside": True,
     }  # fmt: skip

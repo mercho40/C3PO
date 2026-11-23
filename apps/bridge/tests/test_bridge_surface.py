@@ -114,7 +114,7 @@ async def test_a_gated_tool_is_still_refused_in_that_state(standing_parar_and_fa
 
 async def test_a_spoken_stop_reaches_the_stop_skill(monkeypatch):
     """The detector thread's callback lands on skills.stop_everything.run, on the bridge's loop."""
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
     from bridge.skills import stop_everything as stop_skill
 
     reached = asyncio.Event()
@@ -126,13 +126,14 @@ async def test_a_spoken_stop_reaches_the_stop_skill(monkeypatch):
     monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(stop_skill, "run", run)
     loop = asyncio.get_running_loop()
-    await asyncio.to_thread(mcp_server._local_stop, loop, "parar")
+    await asyncio.to_thread(voice_routes._local_stop, loop, "parar")
     await asyncio.wait_for(reached.wait(), 2.0)
 
 
 async def test_the_motion_warning_speaks_through_say_and_waits(monkeypatch):
     """server.py cannot import `say` (a cycle), so it is injected; this is that wiring."""
-    from bridge import mcp_server, server
+    from bridge import mcp_server, server  # noqa: F401 - registers every tool
+    from bridge.tools import speech
 
     said = []
 
@@ -140,6 +141,19 @@ async def test_the_motion_warning_speaks_through_say_and_waits(monkeypatch):
         said.append((text, kwargs))
         return {"status": "ok"}
 
-    monkeypatch.setattr(mcp_server, "say", say)
+    monkeypatch.setattr(speech, "say", say)
     await server._announce_speak("Atención")
     assert said == [("Atención", {"wait_for_completion": True})]
+
+
+def test_the_spoken_stop_and_the_stop_tool_are_one_function():
+    """_local_stop looks stop_everything up in tools/stop.py at call time: the function
+    the MCP tool runs, so a fix to one cannot miss the other."""
+    import inspect
+
+    from bridge.mcp_server import mcp
+    from bridge.routes import voice
+    from bridge.tools import stop
+
+    assert mcp._tool_manager.get_tool("stop_everything").fn is stop.stop_everything
+    assert "stop.stop_everything()" in inspect.getsource(voice._local_stop)
