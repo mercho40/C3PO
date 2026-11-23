@@ -3,11 +3,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { LOOK_TOOL, VERIFY_TOOL } from "#back/agent/look.js";
-import {
-  createToolPolicy,
-  offeredInMode,
-  type BackTool,
-} from "#back/agent/runtime.js";
+import { createToolPolicy, offeredInMode } from "#back/agent/policy.js";
+import type { BackTool } from "#back/agent/tools.js";
 import { BridgeToolError } from "#back/bridge/client.js";
 import { createBridgeHttp } from "#back/bridge/http.js";
 import type { ToolCallRow } from "#back/db/chats.js";

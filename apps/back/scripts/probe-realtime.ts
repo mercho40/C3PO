@@ -15,7 +15,8 @@
 
 import WebSocket from "ws";
 
-import { createToolPolicy, buildSystemPrompt } from "../src/agent/runtime";
+import { createToolPolicy } from "../src/agent/policy";
+import { buildSystemPrompt } from "../src/agent/prompt";
 import {
   LOOK_PROMPT_LINE,
   LOOK_TOOL,

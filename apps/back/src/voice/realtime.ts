@@ -2,12 +2,9 @@ import WebSocket, { type RawData } from "ws";
 import { createIdGenerator } from "ai";
 
 import type { Confirmations } from "#back/agent/confirmations.js";
-import {
-  type AgentMode,
-  type OfferedSkill,
-  type AgentRuntime,
-  type BackTool,
-} from "#back/agent/runtime.js";
+import type { AgentMode, OfferedSkill } from "#back/agent/policy.js";
+import type { AgentRuntime } from "#back/agent/runtime.js";
+import type { BackTool } from "#back/agent/tools.js";
 import { rethrowCause, type BridgeHttp } from "#back/bridge/http.js";
 import type { Config } from "#back/config.js";
 import type { ChatStore, LogToolCall } from "#back/db/chats.js";

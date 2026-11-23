@@ -7,7 +7,7 @@
 import { expect, spyOn, test } from "bun:test";
 
 import { testConfig } from "#back/testing/fakes.js";
-import { createAgentModels } from "./runtime";
+import { createAgentModels } from "./models";
 
 function models(env: Record<string, string> = {}) {
   const m = createAgentModels(testConfig(env).agent);

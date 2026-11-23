@@ -39,13 +39,10 @@ import {
   offeredInMode as offeredUnder,
   type AgentMode,
   type OfferedSkill,
-  worldSummary,
-  boundHistory,
-  createAgentRuntime,
-  turnSummary,
-  confirmRefusal,
-  toldNoEffect,
-} from "./runtime";
+} from "./policy";
+import { worldSummary } from "./prompt";
+import { boundHistory, createAgentRuntime, turnSummary } from "./runtime";
+import { confirmRefusal, toldNoEffect } from "./tools";
 import { createTurns } from "./turns";
 
 const FIXTURE_SKILLS: SkillCatalogueEntry[] = [
@@ -1035,7 +1032,13 @@ describe("the model cannot confirm a gated call", () => {
   });
 
   test("the agent runtime has no path to the grant or the confirm route", async () => {
-    const src = await Bun.file(new URL("./runtime.ts", import.meta.url)).text();
+    const src = (
+      await Promise.all(
+        ["./runtime.ts", "./tools.ts", "./prompt.ts", "./policy.ts"].map((f) =>
+          Bun.file(new URL(f, import.meta.url)).text(),
+        ),
+      )
+    ).join("\n");
     for (const forbidden of [
       "grantOnBridge",
       "confirmPending",

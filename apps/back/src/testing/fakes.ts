@@ -17,7 +17,7 @@ import { mock } from "bun:test";
 import type { LanguageModel } from "ai";
 
 import { createApp, createServices, type AppDeps } from "#back/app.js";
-import type { AgentModels } from "#back/agent/runtime.js";
+import type { AgentModels } from "#back/agent/models.js";
 import type { BridgeTool } from "#back/bridge/client.js";
 import { createBridgeHttp } from "#back/bridge/http.js";
 import { loadConfig, type Config } from "#back/config.js";

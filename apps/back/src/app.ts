@@ -31,7 +31,7 @@
  *   agent/confirm-service.ts  Confirmar / Cancelar / the face confirm
  *   agent/turns.ts            agent turns in flight; PARAR aborts them
  *   agent/stop-watch.ts       a stop latched on the bridge aborts them too
- *   agent/runtime.ts          the agent
+ *   agent/models|prompt|policy|tools|runtime.ts   the agent
  *   voice/service.ts          the legacy loop, realtime, listen-after-greet
  *   routes/*.ts               HTTP surfaces: factories over the services above
  */
@@ -42,11 +42,8 @@ import { Elysia } from "elysia";
 import { createConfirmService } from "./agent/confirm-service";
 import { createConfirmations } from "./agent/confirmations";
 import { bridgeCamera } from "./agent/look";
-import {
-  createAgentModels,
-  createAgentRuntime,
-  type AgentModels,
-} from "./agent/runtime";
+import { createAgentModels, type AgentModels } from "./agent/models";
+import { createAgentRuntime } from "./agent/runtime";
 import { createTurns } from "./agent/turns";
 import type { BridgeMcp } from "./bridge/client";
 import type { BridgeHttp } from "./bridge/http";

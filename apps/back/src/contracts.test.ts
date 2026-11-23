@@ -77,15 +77,15 @@ const CALLS: Record<string, RegExp> = {
 const LISTS: Record<string, [file: string, block: RegExp]> = {
   SAFETY_SKILLS: ["skills/invoke.ts", /SAFETY_SKILLS = new Set\(\[([^\]]*)\]/],
   "agentToolExclusions (always)": [
-    "agent/runtime.ts",
+    "agent/policy.ts",
     /const always = \[([^\]]*)\]/,
   ],
   "agentToolExclusions (voice)": [
-    "agent/runtime.ts",
+    "agent/policy.ts",
     /\[\.\.\.always,([^\]]*)\]/,
   ],
   ALWAYS_OFFERED: [
-    "agent/runtime.ts",
+    "agent/policy.ts",
     /ALWAYS_OFFERED[^=]*= new Set\(\[([^\]]*)\]/,
   ],
 };
