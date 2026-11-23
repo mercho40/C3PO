@@ -8,6 +8,11 @@
  * publishing, with the bridge's hint), a transport failure (unreachable), and
  * a ring that arrived but cannot be drawn. And the last good ring is KEPT on
  * a 503 — an empty dial reads as "nothing around you".
+ *
+ * Since it moved onto the shared `Poller`: a 401 is a session problem (the
+ * operator goes to log in; it used to read "lidar no disponible (401)"), a
+ * request that never answers times out as unreachable, and a stop drops the
+ * answer still in flight.
  */
 
 import { describe, expect, mock, test } from "bun:test";
@@ -71,9 +76,12 @@ async function harness() {
     urls.push(String(input));
     // A request the feed has given up on must not land.
     const signal = init?.signal;
-    const res = await answer();
-    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
-    return res;
+    return new Promise<Response>((resolve, reject) => {
+      signal?.addEventListener("abort", () =>
+        reject(new DOMException("aborted", "AbortError")),
+      );
+      Promise.resolve(answer()).then(resolve, reject);
+    });
   };
   g.setInterval = (fn: () => void, ms: number) => {
     periods.push(ms);
@@ -216,6 +224,51 @@ describe("ScanFeed", () => {
       await Bun.sleep(5);
       expect(h.urls.length).toBe(2);
       expect(h.periods).toEqual([250, 250]);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("a 401 is the session, not the lidar: no reason, and polling stops", async () => {
+    const h = await harness();
+    try {
+      h.answer(() => new Response("", { status: 401 }));
+      h.feed.start();
+      await Bun.sleep(5);
+      expect(h.feed.unauthorized).toBe(true);
+      expect(h.feed.reason).toBeNull();
+      await h.tick();
+      expect(h.urls.length).toBe(1);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("a request that never answers times out as unreachable", async () => {
+    const h = await harness();
+    try {
+      h.answer(() => new Promise<Response>(() => {}));
+      h.feed.start();
+      await Bun.sleep(3100); // Poller's 3 s timeout
+      expect(h.feed.reason).toBe("no se puede alcanzar la API de la consola");
+      expect(h.feed.unreachable).toBe(true);
+    } finally {
+      h.restore();
+    }
+  });
+
+  test("stop drops the answer still in flight", async () => {
+    const h = await harness();
+    try {
+      let land!: (r: Response) => void;
+      h.answer(() => new Promise<Response>((r) => (land = r)));
+      h.feed.start();
+      await Bun.sleep(5);
+      h.feed.stop();
+      land(Response.json({ hint: "late" }, { status: 503 }));
+      await Bun.sleep(5);
+      expect(h.feed.reason).toBeNull();
+      expect(h.feed.unreachable).toBe(false);
     } finally {
       h.restore();
     }
