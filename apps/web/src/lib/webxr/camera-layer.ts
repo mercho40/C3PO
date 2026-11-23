@@ -59,6 +59,7 @@ import {
   type FaceSeen,
 } from "#lib/robot/face-seen.js";
 import { fovAspect, placeQuad, type EyePose } from "./stereo";
+import { cameraFrame, FILL } from "./hud-layout";
 
 const VERT = `
 attribute vec2 a_pos;
@@ -99,8 +100,20 @@ void main() {
  * 0.72 was chosen to leave a visible black margin on all sides at the Quest 3's
  * aspect without shrinking the frame to a postage stamp. Reported from the
  * first session that could see anything at all, 2026-08-21.
+ *
+ * Defined in hud-layout.ts now, because the status bar and the radar dock to
+ * the picture's edges and have to agree on where they are.
  */
-export const FILL = 0.72;
+export { FILL };
+
+/**
+ * How bright the picture stays while the gestures panel is open over it.
+ *
+ * Dimmed, not hidden: the operator is still driving by this picture, and a
+ * panel that blacked it out would be the old layout's problem made worse. Low
+ * enough that the panel's text wins against a bright scene.
+ */
+export const MENU_DIM = 0.45;
 
 /**
  * What to tell the operator when there is no picture.
@@ -263,6 +276,7 @@ export class CameraLayer {
   #uploaded = 0;
   #url = "";
   #live = true;
+  #dimmed = false;
   #reason: CameraReason = null;
   #card: HTMLCanvasElement | null = null;
   #cardCtx: CanvasRenderingContext2D | null = null;
@@ -373,6 +387,11 @@ export class CameraLayer {
    */
   setLive(live: boolean): void {
     this.#live = live;
+  }
+
+  /** Dim the picture while a panel is open over it — see `MENU_DIM`. */
+  setDimmed(dimmed: boolean): void {
+    this.#dimmed = dimmed;
   }
 
   /**
@@ -610,9 +629,11 @@ export class CameraLayer {
     // mid-motion is worse than seeing an obviously-old one. The placeholder is
     // never dimmed and never blended down — it is the thing being read, and it
     // only appears when there is nothing else to look at.
-    const alpha = havePicture
-      ? (opaque ? 1.0 : 0.85) * (this.#live ? 1.0 : 0.45)
-      : 1.0;
+    const alpha =
+      (havePicture ? (opaque ? 1.0 : 0.85) * (this.#live ? 1.0 : 0.45) : 1.0) *
+      // Under an open panel even the placeholder steps back: the panel is
+      // what is being read then, and it closes by itself.
+      (this.#dimmed ? MENU_DIM : 1.0);
     gl.uniform1f(this.#alphaLoc, alpha);
 
     // Fit the frame inside the FILL box without distorting it. Shrink one axis
@@ -634,14 +655,9 @@ export class CameraLayer {
     // Half-height over half-width, as an angle ratio. 1 keeps the square
     // fallback rather than a division by a zero-sized image.
     const aspect = iw > 0 && ih > 0 ? ih / iw : 1;
-    const k = fovAspect(eye);
-    let sx = FILL;
-    // What that width implies for the height, in the same units. Over the box
-    // means the picture is the taller shape, so height is the binding
-    // constraint and width gives way — bars left and right instead of top and
-    // bottom.
-    const impliedSy = FILL * k * aspect;
-    if (impliedSy > FILL) sx = FILL * (FILL / impliedSy);
+    // The fit itself (shrink one axis, never grow) is `cameraFrame`, shared
+    // with the panels docked to the picture's edges.
+    const { sx } = cameraFrame(fovAspect(eye), aspect);
     const p = placeQuad(eye, { ox: 0, oy: 0, sx, aspect });
     gl.uniform2f(this.#scaleLoc, p.sx, p.sy);
     gl.uniform2f(this.#offsetLoc, p.ox, p.oy);

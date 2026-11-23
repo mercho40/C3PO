@@ -41,6 +41,7 @@ import {
   type VoiceLine,
   type Readiness,
 } from "#lib/webxr/menu-layer.js";
+import { MENU_IDLE_CLOSE_MS } from "#lib/webxr/hud-layout.js";
 import { ScanFeed } from "./scan.svelte";
 import { VrStop } from "./vr-stop.svelte";
 import {
@@ -169,6 +170,9 @@ export class VrControl {
     secondary: false,
     grips: 0,
   };
+  //: When the headset panel was last opened or moved (Date.now() ms). It folds
+  //: itself after MENU_IDLE_CLOSE_MS untouched — see hud-layout.ts.
+  #menuTouchedAt = 0;
   #voice: VrControlOptions["voice"];
   #battery: () => "warn" | "alert" | null;
   // Head position and both wrists, at XR frame rate. Plain for the same reason
@@ -587,20 +591,37 @@ export class VrControl {
   }
 
   /**
-   * The in-headset preset menu: A cycles, trigger fires.
+   * The in-headset preset menu: A opens it, then cycles; trigger fires.
    *
    * Fires on the PRESS edge, not the release. A gesture is a one-shot with no
    * hold semantics, and waiting for release means an operator who presses and
    * keeps holding gets nothing and presses harder. Dispatches through
    * `runSkill`, so the headset obeys the same lock and outcome rules as the
    * tiles on the page.
+   *
+   * The panel folds after a gesture is fired and after MENU_IDLE_CLOSE_MS with
+   * nothing pressed, so it is never left covering the picture. The trigger
+   * fires nothing while it is folded: `menuSelection` is null then.
    */
   #applyMenuButtons(b: XrButtons): void {
+    const now = Date.now();
     const prev = this.#prevButtons;
     this.#prevButtons = { ...b };
-    // Observers cycle the highlight — reading the list is not commanding — but
-    // the trigger does nothing.
-    if (b.primary && !prev.primary) this.#xr.session?.advanceMenu();
+    const session = this.#xr.session;
+    // Observers open and cycle the panel — reading the list is not
+    // commanding — but the trigger does nothing.
+    if (b.primary && !prev.primary) {
+      session?.advanceMenu();
+      this.#menuTouchedAt = now;
+    }
+    if (
+      session?.menuExpanded &&
+      now - this.#menuTouchedAt > MENU_IDLE_CLOSE_MS
+    ) {
+      // Folds the gestures only: the voice panel forces itself open, since a
+      // reply into a folded panel is a reply nobody reads.
+      session.closeMenu();
+    }
     if (this.viewOnly) return;
     // Push-to-talk on B/Y: an utterance commands the robot, so observers get
     // none (the guard above).
@@ -610,10 +631,14 @@ export class VrControl {
     // dispatch untested motion even if the highlight somehow sat on it.
     const item = this.#xr.session?.menuSelection;
     if (!item) return;
+    this.#menuTouchedAt = now;
     if (item.name.startsWith("voice:")) {
       this.#voice?.onItem(item.name);
       return;
     }
+    // Fold first: the outcome lands in the status bar, over an unobstructed
+    // picture of the robot doing what was asked.
+    session?.closeMenu();
     void this.runSkill(item.name, item.label, item.name);
   }
 

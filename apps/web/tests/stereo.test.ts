@@ -28,6 +28,7 @@ import {
   transformPoint,
   type EyePose,
 } from "../src/lib/webxr/stereo";
+import { MENU_PLACEMENT, scanPlacement } from "../src/lib/webxr/hud-layout";
 
 const DEG = Math.PI / 180;
 /** Half the interpupillary distance: eyes about 64 mm apart. */
@@ -102,8 +103,11 @@ function sightAt(eye: EyePose, ndc: { ox: number; oy: number }, d: number) {
   return { x: eye.offset[0] + g.tanX * d, y: eye.offset[1] + g.tanY * d };
 }
 
-const PANEL = { ox: 0, oy: 0.32, sx: 0.44, aspect: 430 / 640 };
-const RADAR = { ox: -0.42, oy: -0.44, sx: 0.2, aspect: 1 };
+// The live placements, not copies: a copy here kept passing after the layout
+// moved (option A, 2026-11-23) and would have kept testing a panel that no
+// longer exists.
+const PANEL = MENU_PLACEMENT;
+const RADAR = scanPlacement(1);
 
 describe("the doubling: what the old constant-clip-space placement did", () => {
   test("both eyes drew at the same spot, and that spot DIVERGES", () => {

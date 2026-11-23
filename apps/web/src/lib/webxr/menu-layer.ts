@@ -36,6 +36,7 @@
  */
 
 import { placeQuad, type EyePose } from "./stereo";
+import { MENU_H, MENU_PLACEMENT, MENU_W } from "./hud-layout";
 import { VOICE_CLOSE, VOICE_OPEN } from "#lib/robot/voice-panel.js";
 
 export type MenuItem = {
@@ -191,8 +192,8 @@ export function readinessFor(
 // Bigger than it started. The first session could read it but called the
 // gestures hard to see, and a panel drawn at a comfortable angular size is
 // cheaper to read than one the operator leans toward.
-const W = 640;
-const H = 430;
+const W = MENU_W;
+const H = MENU_H;
 
 const VERT = `
 attribute vec2 a_pos;
@@ -460,14 +461,16 @@ export class MenuLayer {
   #ctx: CanvasRenderingContext2D | null = null;
   #dirty = true;
   #visible = false;
+  // FOLDED BY DEFAULT (option A, 2026-11-23). The panel used to sit over the
+  // top half of the picture for the whole session. It now opens on A and
+  // folds after a gesture fires or after MENU_IDLE_CLOSE_MS untouched; the
+  // things that must always be seen moved to the status bar.
+  #open = false;
 
   #items: readonly MenuItem[] = [];
   #selected = 0;
   #armed = true;
-  #status: MenuStatus = null;
   #busy: string | null = null;
-  #readiness: Readiness | null = null;
-  #alert: MenuAlert = null;
   #voice: readonly VoiceLine[] | null = null;
   #controllers = true;
 
@@ -479,8 +482,24 @@ export class MenuLayer {
     return this.#visible;
   }
 
-  /** What the trigger would fire: null while disarmed after a list swap. */
+  /**
+   * Whether the panel is actually on screen.
+   *
+   * The voice panel forces it open: it is a conversation that answers
+   * push-to-talk on B/Y, and a reply arriving into a folded panel is a reply
+   * the operator never sees — along with any "Confirmar" it asks for.
+   */
+  get expanded(): boolean {
+    return this.#visible && (this.#open || this.#voice !== null);
+  }
+
+  /**
+   * What the trigger would fire: null while disarmed after a list swap, AND
+   * null while folded. A trigger pulled at a panel the operator cannot see
+   * must not run whatever the highlight was last left on.
+   */
   get selectedItem(): MenuItem | null {
+    if (!this.expanded) return null;
     return this.#armed ? (this.#items[this.#selected] ?? null) : null;
   }
 
@@ -489,6 +508,16 @@ export class MenuLayer {
       this.#visible = v;
       this.#dirty = true;
     }
+  }
+
+  /** Unfold. The highlight stays where it was: A again moves it. */
+  open(): void {
+    this.#open = true;
+  }
+
+  /** Fold away. Has no effect on the voice panel, which forces itself open. */
+  close(): void {
+    this.#open = false;
   }
 
   setItems(items: readonly MenuItem[]): void {
@@ -502,33 +531,15 @@ export class MenuLayer {
     this.#dirty = true;
   }
 
-  setStatus(status: MenuStatus): void {
-    this.#status = status;
-    this.#dirty = true;
-  }
-
   setBusy(name: string | null): void {
     this.#busy = name;
     this.#dirty = true;
   }
 
-  setAlert(alert: MenuAlert): void {
-    const prev = this.#alert;
-    if (prev?.text === alert?.text && prev?.hint === alert?.hint) return;
-    this.#alert = alert;
-    this.#dirty = true;
-  }
-
-  setReadiness(readiness: Readiness | null): void {
-    // Guarded: this is pushed from a reactive effect on live state that ticks
-    // a few times a second, and repainting the canvas plus re-uploading the
-    // texture for an unchanged string is the one cost this panel was designed
-    // to avoid.
-    const prev = this.#readiness;
-    if (prev?.text === readiness?.text && prev?.ok === readiness?.ok) return;
-    this.#readiness = readiness;
-    this.#dirty = true;
-  }
+  // Readiness, the latch alert and the last outcome are no longer drawn here:
+  // they must be visible with the panel folded, so they live in the status bar
+  // (status-layer.ts). `paintMenu` still accepts them, for anything that
+  // wants the old all-in-one panel.
 
   /** The conversation panel; null is the gestures menu. */
   setVoice(lines: readonly VoiceLine[] | null): void {
@@ -616,7 +627,7 @@ export class MenuLayer {
    * only so a caller outside an XR frame still gets a picture.
    */
   draw(eye?: EyePose | null): void {
-    if (!this.#visible) return;
+    if (!this.expanded) return;
     this.#ensureCanvas();
     const ctx = this.#ctx;
     const canvas = this.#canvas;
@@ -630,10 +641,10 @@ export class MenuLayer {
         ctx,
         this.#items,
         this.#selected,
-        this.#status,
+        null,
         this.#busy,
-        this.#readiness,
-        this.#alert,
+        null,
+        null,
         this.#voice,
         this.#controllers,
       );
@@ -656,9 +667,12 @@ export class MenuLayer {
     gl.enableVertexAttribArray(this.#posLoc);
     gl.vertexAttribPointer(this.#posLoc, 2, gl.FLOAT, false, 0, 0);
 
-    // CENTRED HORIZONTALLY, a little above the middle.
+    // CENTRED HORIZONTALLY, a little above the middle — and now only while
+    // open (option A, 2026-11-23). Placement in hud-layout.ts; the lift came
+    // down from 0.32 to 0.06 because the status bar took the top edge and the
+    // panel no longer has to stay clear of the lower field all session.
     //
-    // It has now been in three places. Bottom-centre competed with the view of
+    // It has now been in four places. Bottom-centre competed with the view of
     // where the robot was walking. Top-right annexed unused space and was
     // asked for directly — and then, worn, turned out to be unreadable: a
     // Quest renders well past its comfortable viewing cone, so a panel pinned
@@ -678,7 +692,7 @@ export class MenuLayer {
     // 2026-08-27; the aspect correction that used to live here moved there too,
     // where it can use the eye's real field of view instead of guessing it
     // from the viewport's pixel shape.
-    const p = placeQuad(eye, { ox: 0, oy: 0.32, sx: 0.44, aspect: H / W });
+    const p = placeQuad(eye, MENU_PLACEMENT);
     gl.uniform2f(this.#scaleLoc, p.sx, p.sy);
     gl.uniform2f(this.#offsetLoc, p.ox, p.oy);
     gl.uniform1f(this.#alphaLoc, 1.0);

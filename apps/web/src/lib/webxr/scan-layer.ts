@@ -37,7 +37,8 @@
  */
 
 /** The payload from `/telemetry/scan`, as the bridge passes it through. */
-import { placeQuad, type EyePose } from "./stereo";
+import { fovAspect, placeQuad, type EyePose } from "./stereo";
+import { scanPlacement } from "./hud-layout";
 
 export type ScanRing = {
   /** Centimetres per bearing; `null` means nothing was seen that way. */
@@ -410,7 +411,7 @@ export class ScanLayer {
   }
 
   /**
-   * Lower-left of the field — the part the menu does not use.
+   * Inside the camera picture's bottom-left corner.
    *
    * `eye` is the eye being drawn; see `MenuLayer.draw` and `stereo.ts`.
    */
@@ -445,8 +446,14 @@ export class ScanLayer {
     gl.enableVertexAttribArray(this.#posLoc);
     gl.vertexAttribPointer(this.#posLoc, 2, gl.FLOAT, false, 0, 0);
 
-    // LOWER-LEFT OF CENTRE, not the bottom-left corner. Smaller than the
-    // menu: it is glanced at, not read.
+    // DOCKED INSIDE THE PICTURE'S BOTTOM-LEFT CORNER (option A, 2026-11-23).
+    // The placement below this note put it half on the picture and half off
+    // it, lined up with nothing. It now sits on the picture, inset from its
+    // corner — see `scanPlacement` in hud-layout.ts. Its outer edge is the
+    // picture's edge, no further out than the operator can already see.
+    //
+    // History — LOWER-LEFT OF CENTRE, not the bottom-left corner. Smaller
+    // than the menu: it is glanced at, not read.
     //
     // The corner placement was invisible in the headset — reported
     // 2026-08-27, "I cannot see the radar and the points". Nothing was broken:
@@ -461,7 +468,7 @@ export class ScanLayer {
     // documents. The canvas is square, and `aspect` plus the eye's own field
     // of view is what keeps it square in the headset; the old
     // viewport-pixel-shape approximation is gone.
-    const p = placeQuad(eye, { ox: -0.42, oy: -0.44, sx: 0.2, aspect: H / W });
+    const p = placeQuad(eye, scanPlacement(fovAspect(eye)));
     gl.uniform2f(this.#scaleLoc, p.sx, p.sy);
     gl.uniform2f(this.#offsetLoc, p.ox, p.oy);
     gl.uniform1f(this.#alphaLoc, 1.0);

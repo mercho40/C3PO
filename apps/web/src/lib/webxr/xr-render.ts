@@ -50,6 +50,7 @@ export type LayerFailures = {
   camera: unknown | null;
   menu: unknown | null;
   scan: unknown | null;
+  status: unknown | null;
 };
 
 export function drawPerEye(
@@ -76,6 +77,11 @@ export function drawPerEye(
    * the same reason: a session without perception passes nothing.
    */
   scan?: XrLayer | null,
+  /**
+   * The status bar on the picture's top edge: readiness, the latch alert, the
+   * last outcome. Drawn last, so nothing ever covers the alert.
+   */
+  status?: XrLayer | null,
 ): LayerFailures {
   // EACH LAYER GETS ITS OWN try, AND THIS IS THE POINT.
   //
@@ -86,7 +92,12 @@ export function drawPerEye(
   // the readiness banner that says why the robot will not move and the radar
   // that says what is behind it, at the exact moment the operator lost the
   // picture and needed both. Three layers, three failures, three decisions.
-  const failures: LayerFailures = { camera: null, menu: null, scan: null };
+  const failures: LayerFailures = {
+    camera: null,
+    menu: null,
+    scan: null,
+    status: null,
+  };
 
   const attempt = (
     key: keyof LayerFailures,
@@ -137,8 +148,11 @@ export function drawPerEye(
       // over the room, so it does not paint over what the operator can see.
       attempt("camera", () => camera.draw(opaque, eye), "camera");
     }
-    if (menu) attempt("menu", () => menu.draw(eye), "menu");
+    // Radar before menu: the radar sits on the picture, and an opened menu
+    // covers both while it is up.
     if (scan) attempt("scan", () => scan.draw(eye), "scan");
+    if (menu) attempt("menu", () => menu.draw(eye), "menu");
+    if (status) attempt("status", () => status.draw(eye), "status");
   }
   return failures;
 }

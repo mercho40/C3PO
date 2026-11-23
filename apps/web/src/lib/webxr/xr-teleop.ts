@@ -29,6 +29,7 @@ import type { FaceSeen } from "#lib/robot/face-seen.js";
 import { CameraLayer, type CameraReason } from "./camera-layer";
 import {
   MenuLayer,
+  NO_CONTROLLER_STOP_HINT,
   type MenuItem,
   type MenuAlert,
   type MenuStatus,
@@ -36,6 +37,25 @@ import {
   type VoiceLine,
 } from "./menu-layer";
 import { ScanLayer, type ScanRing } from "./scan-layer";
+import { StatusLayer } from "./status-layer";
+
+/**
+ * What the status bar says about the controls.
+ *
+ * Folded, it is the only place the operator can learn that A opens the
+ * gestures — so it says so. Open, the panel's own footer has the full list,
+ * and repeating it here would put the same words twice in one glance; only
+ * the stop chord stays, because a stop must be findable from anywhere.
+ */
+export function statusHint(
+  menuExpanded: boolean,
+  controllers: boolean,
+): string {
+  if (!controllers) return NO_CONTROLLER_STOP_HINT;
+  return menuExpanded
+    ? "2 grips PARAR"
+    : "A gestos · B/Y hablar · 2 grips PARAR";
+}
 import {
   BUTTON_GRIP,
   BUTTON_PRIMARY,
@@ -201,6 +221,8 @@ export class XrTeleopSession {
   #camera: CameraLayer | null = null;
   #menu: MenuLayer | null = null;
   #scan: ScanLayer | null = null;
+  #status: StatusLayer | null = null;
+  #controllers = true;
   #pendingStreamUrl = "";
   #pendingStreamCreds = true;
   #pendingFaces: [FaceSeen | null, number] = [null, 0];
@@ -291,8 +313,13 @@ export class XrTeleopSession {
     this.#menu?.setVisible(visible);
   }
 
+  // Readiness, the alert and the outcome keep their `setMenu*` names — callers
+  // have always pushed them "to the headset menu" — but they are drawn in the
+  // status bar now, which stays up while the panel is folded.
+
+  /** The result of the last thing fired, in the status bar. */
   setMenuStatus(status: MenuStatus): void {
-    this.#menu?.setStatus(status);
+    this.#status?.setStatus(status);
   }
 
   setMenuBusy(name: string | null): void {
@@ -301,12 +328,12 @@ export class XrTeleopSession {
 
   /** Why the robot can or cannot act — drawn where the operator is looking. */
   setMenuReadiness(readiness: Readiness | null): void {
-    this.#menu?.setReadiness(readiness);
+    this.#status?.setReadiness(readiness);
   }
 
   /** A latch currently stopping motion, and the gesture that clears it. */
   setMenuAlert(alert: MenuAlert): void {
-    this.#menu?.setAlert(alert);
+    this.#status?.setAlert(alert);
   }
 
   /** "Hablar con el robot": the conversation lines, or null for gestures. */
@@ -331,9 +358,29 @@ export class XrTeleopSession {
     this.#scan?.setVisible(visible);
   }
 
-  /** Move the highlight to the next VERIFIED item. */
+  /**
+   * A: open the folded panel, or — once open — move the highlight to the
+   * next VERIFIED item.
+   *
+   * The first press only opens. Moving the highlight as well would mean the
+   * operator never sees where it was, and the item the trigger fires is
+   * chosen by looking, not by counting presses.
+   */
   advanceMenu(): void {
-    this.#menu?.advance();
+    const menu = this.#menu;
+    if (!menu) return;
+    if (menu.expanded) menu.advance();
+    else menu.open();
+  }
+
+  /** Fold the panel away: after a gesture fires, or when left untouched. */
+  closeMenu(): void {
+    this.#menu?.close();
+  }
+
+  /** Whether the gestures / voice panel is on screen right now. */
+  get menuExpanded(): boolean {
+    return this.#menu?.expanded ?? false;
   }
 
   /** What firing the trigger would run, or null. Never an unverified skill. */
@@ -486,6 +533,7 @@ export class XrTeleopSession {
       // is the thing that might be absent; the reasons it is absent are not.
       this.#menu = new MenuLayer(gl);
       this.#scan = new ScanLayer(gl);
+      this.#status = new StatusLayer(gl);
       if (this.#options.camera) {
         this.#camera = new CameraLayer(gl);
         // The URL arrives via setCameraStream(), possibly before this point —
@@ -582,7 +630,13 @@ export class XrTeleopSession {
         // staleness timeout (not this module) decides when that should stop
         // the robot; a single missed frame at 72-120Hz isn't it.
 
-        if (this.#camera || this.#menu || this.#scan) {
+        // The open panel dims the picture behind it, and the bar's hint follows
+        // whether the panel is open. Both setters are no-ops when unchanged.
+        const expanded = this.#menu?.expanded ?? false;
+        this.#camera?.setDimmed(expanded);
+        this.#status?.setHint(statusHint(expanded, this.#controllers));
+
+        if (this.#camera || this.#menu || this.#scan || this.#status) {
           const failed = drawPerEye(
             gl,
             layer,
@@ -591,6 +645,7 @@ export class XrTeleopSession {
             this.#mode !== "immersive-ar",
             this.#menu,
             this.#scan,
+            this.#status,
           );
           // Shader compile or link failure throws out of draw(), and this
           // callback is what samples head pose. Letting it escape kills
@@ -617,6 +672,13 @@ export class XrTeleopSession {
             console.error(
               "[xr] scan layer disabled after draw failure",
               failed.scan,
+            );
+          }
+          if (failed.status) {
+            this.#status = null;
+            console.error(
+              "[xr] status layer disabled after draw failure",
+              failed.status,
             );
           }
         }
@@ -684,6 +746,8 @@ export class XrTeleopSession {
     this.#menu = null;
     this.#scan?.dispose();
     this.#scan = null;
+    this.#status?.dispose();
+    this.#status = null;
   }
 
   #sampleHands(
@@ -773,8 +837,9 @@ export class XrTeleopSession {
       if (buttonPressed(gp, BUTTON_SECONDARY)) secondary = true;
       if (buttonPressed(gp, BUTTON_GRIP)) grips += 1;
     }
-    // Hand tracking: no gamepad, so no grip chord; the panel says so.
-    this.#menu?.setControllers(controllers > 0);
+    // Hand tracking: no gamepad, so no grip chord; the panel and bar say so.
+    this.#controllers = controllers > 0;
+    this.#menu?.setControllers(this.#controllers);
     return { trigger, primary, secondary, grips };
   }
 
