@@ -2,8 +2,9 @@
  * apps/web against the bridge's contract, `contracts/` at the repo root.
  *
  * The console dispatches bridge tools by name — `.skills({ name: "say" })`,
- * the headset's preset and bring-up lists, the gesture fallback — and restates
- * `/safety/status` as `SafetyStatus`. A tool renamed on the bridge turned a
+ * the headset's preset and bring-up lists, the gesture fallback. (It used to
+ * restate `/safety/status` too; `SafetyStatus` is now the contract's, through
+ * back's response schema.) A tool renamed on the bridge turned a
  * button in a headset into a silent 404, found while wearing it; a gesture
  * fallback that drifted from `g1_protocol.Gesture` offered a tile the robot
  * refuses.
@@ -16,7 +17,7 @@
  *   - GESTURE_CATALOGUE_FALLBACK is the manifest's gesture list, exactly
  *   - the danger-level fallback agrees with the catalogue's danger levels
  *   - the /safety/ack codes the console matches are codes something sends
- *   - `SafetyStatus` matches the bridge's body (at compile time, below)
+ *   - `SafetyStatus` is still the bridge's body (at compile time, below)
  */
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -146,10 +147,10 @@ test("every /safety/ack code the console matches is one something sends", () => 
   expect(matched.filter((c) => !sent.has(c))).toEqual([]);
 });
 
-// `SafetyStatus` (stop-latch.ts) against GET /safety/status, which back relays
-// unchanged. Checked by svelte-check (bun run check-types), not by `bun test`.
-// One direction of UnknownKeys only: the console reads the latch fields and
-// deliberately declares no more.
+// `SafetyStatus` (stop-latch.ts) against GET /safety/status. It is the
+// contract's type now (imported from @repo/back, which derives its response
+// schema from contracts/), so this holds by construction — and fails the day
+// someone restates it by hand again. Checked by svelte-check, not `bun test`.
 export type SafetyStatusFits = Fits<SafetyStatus, SafetyStatusBody>;
 export type SafetyStatusNamesNothingExtra = NoUnknownKeys<
   UnknownKeys<SafetyStatus, SafetyStatusBody>

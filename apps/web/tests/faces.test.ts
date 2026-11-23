@@ -8,8 +8,10 @@ import { describe, expect, test } from "bun:test";
 import {
   askFace,
   enrollCard,
+  cancelFace,
   enrolledText,
   faceErrorText,
+  loadFaces,
   runFace,
   SWITCHES,
 } from "../src/lib/admin/faces";
@@ -176,6 +178,49 @@ describe("faces", () => {
       enrolledText(Date.parse("2026-11-10T12:00:00Z") / 1000),
     );
     expect(enrolledText(null)).toBe("—");
+    // Eden hands ISO text over as a Date (api-client.ts).
+    expect(enrolledText(new Date("2026-11-10T12:00:00Z"))).toBe(
+      enrolledText("2026-11-10T12:00:00Z"),
+    );
+  });
+
+  test("the list is read no-store, with the session, and refusals read in Spanish", async () => {
+    const view = {
+      settings: {
+        greet: true,
+        greet_unknown: false,
+        gate: false,
+        listen_after_greet: false,
+      },
+      people: [],
+      unknown_seen: { count: 0, last_age_s: null },
+      models: true,
+    };
+    const b = back(200, view);
+    expect(await loadFaces("http://back", b.impl)).toEqual({ ok: true, view });
+    expect(b.sent[0]?.url).toBe("http://back/face/people");
+    expect(b.sent[0]?.init.cache).toBe("no-store");
+    expect(b.sent[0]?.init.credentials).toBe("include");
+
+    const bad = back(502, { error: "bridge_bad_payload", path: "/people" });
+    expect(await loadFaces("http://back", bad.impl)).toEqual({
+      ok: false,
+      text: "No se pudo contactar al robot.",
+    });
+    const down = (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    expect(await loadFaces("http://back", down)).toEqual({
+      ok: false,
+      text: "No se pudo contactar al backend.",
+    });
+  });
+
+  test("«Cancelar» voids the card on back, by its id", async () => {
+    const b = back(200, { cancelled: true });
+    await cancelFace("http://back", "c 1", b.impl);
+    expect(b.sent[0]?.init.method).toBe("DELETE");
+    expect(b.sent[0]?.url).toBe("http://back/face/confirmations/c%201");
   });
 
   test("«Escuchar después de saludar» is a switch like the others, sent as listen_after_greet", async () => {

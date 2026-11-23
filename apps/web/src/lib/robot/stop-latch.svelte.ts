@@ -1,7 +1,13 @@
 /**
  * Polls the PARAR latch for the shell's «Reanudar» chip. See stop-latch.ts.
+ *
+ * Eden on both: /safety/status is typed by back's contract-derived schema, and
+ * /safety/ack by the contract's StopAcknowledged | StopAckRefused (unchecked
+ * on back, it is on the stop path). The e-stop's PRESS is not here: that is
+ * estop.svelte.ts, untouched.
  */
-import { PUBLIC_API_URL } from "$app/env/public";
+import { createApi } from "#lib/api.js";
+import { httpStatus, unreached } from "#lib/api-client.js";
 import { Poller, type PollResult } from "./poller.svelte";
 import { resumeError, stopStanding, type SafetyStatus } from "./stop-latch";
 
@@ -19,18 +25,15 @@ export class StopLatch extends Poller {
   }
 
   protected async poll(signal: AbortSignal): Promise<PollResult> {
-    try {
-      const res = await fetch(`${PUBLIC_API_URL}/safety/status`, {
-        credentials: "include",
-        signal,
-      });
-      if (res.status === 401) return "unauthorized";
-      if (!res.ok) return "error"; // keep the last reading: a latch we cannot read is not cleared
-      this.status = (await res.json()) as SafetyStatus;
-      return "ok";
-    } catch {
-      return "error";
-    }
+    const { data, error } = await createApi(fetch).safety.status.get({
+      fetch: { signal },
+    });
+    if (httpStatus(error) === 401) return "unauthorized";
+    // Keep the last reading: a latch we cannot read is not cleared. That
+    // includes back's 502 `bridge_bad_payload`, a status it could not vouch for.
+    if (error || !data) return "error";
+    this.status = data;
+    return "ok";
   }
 
   async resume(): Promise<void> {
@@ -39,14 +42,13 @@ export class StopLatch extends Poller {
     this.error = null;
     try {
       // The stop we showed: the bridge refuses (409) if a newer one landed since.
-      const res = await fetch(`${PUBLIC_API_URL}/safety/ack`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stopped_at: this.status?.stopped_at ?? null }),
+      const { error } = await createApi(fetch).safety.ack.post({
+        stopped_at: this.status?.stopped_at ?? null,
       });
-      const body = await res.json().catch(() => null);
-      if (!res.ok) this.error = resumeError(res.status, body);
+      if (error)
+        this.error = unreached(error)
+          ? resumeError(502, null)
+          : resumeError(error.status, error.value);
       await this.tick();
     } catch {
       this.error = resumeError(502, null);

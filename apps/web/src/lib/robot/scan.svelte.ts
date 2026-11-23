@@ -22,7 +22,8 @@
  * it is; the layer dims it and labels it rather than dropping it.
  */
 
-import { PUBLIC_API_URL } from "$app/env/public";
+import { createApi } from "#lib/api.js";
+import { httpStatus, unreached } from "#lib/api-client.js";
 import { parseRing, type ScanRing } from "#lib/webxr/scan-layer.js";
 import { Poller, type PollResult } from "./poller.svelte";
 
@@ -52,50 +53,58 @@ export class ScanFeed extends Poller {
   #polling = false;
 
   protected async poll(signal: AbortSignal): Promise<PollResult> {
+    let res: Awaited<
+      ReturnType<ReturnType<typeof createApi>["telemetry"]["scan"]["get"]>
+    >;
     try {
-      const res = await fetch(`${PUBLIC_API_URL}/telemetry/scan`, {
-        credentials: "include",
-        signal,
-      });
-
-      if (res.status === 401) return "unauthorized";
-      if (res.status === 503) {
-        const body = (await res.json().catch(() => null)) as {
-          hint?: string;
-        } | null;
-        this.reason = body?.hint ?? "no llega /scan";
-        this.unreachable = false;
-        return "ok";
-      }
-      if (!res.ok) {
-        this.reason = `lidar no disponible (${res.status})`;
-        this.unreachable = true;
-        return "error";
-      }
-
-      const parsed = parseRing(await res.json().catch(() => null));
-      if (!parsed) {
-        // Kept separate from 503 on purpose: "the ring arrived and I cannot
-        // draw it" is a bug in this stack, not a robot that is switched off.
-        this.reason = "el anillo llegó con un formato que no se puede dibujar";
-        this.unreachable = false;
-        return "error";
-      }
-
-      this.ring = parsed;
-      this.ageS = parsed.age_s ?? null;
-      this.stale = parsed.stale === true;
-      this.reason = null;
-      this.unreachable = false;
-      return "ok";
+      res = await createApi(fetch).telemetry.scan.get({ fetch: { signal } });
     } catch (err) {
+      // Eden throws only for a body it could not parse: a ring that arrived
+      // and cannot be drawn (below), unless the session that asked is gone.
+      if (!this.#polling) throw err;
+      this.reason = "el anillo llegó con un formato que no se puede dibujar";
+      this.unreachable = false;
+      return "error";
+    }
+    const { data, error } = res;
+    if (unreached(error)) {
       // Stopped mid-request: the session that drew this ring is gone, and
       // `Poller` drops the result. A timeout is "no answer", like a refusal.
-      if (!this.#polling) throw err;
+      if (!this.#polling) throw error!.value;
       this.reason = "no se puede alcanzar la API de la consola";
       this.unreachable = true;
       return "error";
     }
+    if (httpStatus(error) === 401) return "unauthorized";
+    if (error?.status === 503) {
+      const body = error.value as { hint?: string } | null;
+      this.reason = body?.hint ?? "no llega /scan";
+      this.unreachable = false;
+      return "ok";
+    }
+    if (error) {
+      this.reason = `lidar no disponible (${error.status})`;
+      this.unreachable = true;
+      return "error";
+    }
+
+    // back checked the types (bridge/payloads.ts); parseRing still refuses
+    // what is typed right and cannot be drawn (a non-positive max_cm).
+    const parsed = parseRing(data);
+    if (!parsed) {
+      // Kept separate from 503 on purpose: "the ring arrived and I cannot
+      // draw it" is a bug in this stack, not a robot that is switched off.
+      this.reason = "el anillo llegó con un formato que no se puede dibujar";
+      this.unreachable = false;
+      return "error";
+    }
+
+    this.ring = parsed;
+    this.ageS = parsed.age_s ?? null;
+    this.stale = parsed.stale === true;
+    this.reason = null;
+    this.unreachable = false;
+    return "ok";
   }
 
   start(intervalMs = DEFAULT_POLL_MS): void {

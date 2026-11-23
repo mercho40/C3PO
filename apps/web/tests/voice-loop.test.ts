@@ -14,6 +14,7 @@ import {
   isRunning,
   voiceCommand,
   voiceStatus,
+  type VoiceLoopState,
 } from "../src/lib/robot/voice-loop";
 
 type Reply = { status: number; body: unknown };
@@ -40,8 +41,15 @@ function serve(replies: { status?: Reply; start?: Reply; stop?: Reply }) {
   return { server, calls, url: `http://127.0.0.1:${server.port}` };
 }
 
-const STOPPED = {
+const STOPPED: VoiceLoopState = {
   running: false,
+  engine: "legacy",
+  defaultEngine: "legacy",
+  availableEngines: ["legacy"],
+  chatId: null,
+  ownedByYou: null,
+  confirmations: [],
+  conversation: { phase: "idle", lastTurn: null },
   utterancesHeard: 0,
   agentRuns: 0,
   stopsTriggered: 0,

@@ -105,6 +105,9 @@ src/
   bridge/client.ts     createBridgeClient: MCP callTool / listTools, one session
   bridge/http.ts       createBridgeHttp: the bridge's HTTP routes — one timeout
                        policy, one error mapping, the proof header built once
+  bridge/payloads.ts   the bridge's JSON payloads as TypeBox, for `response:`:
+                       derived from contracts/ where it describes them, hand-
+                       written for telemetry and «Caras»; extra fields pass
   bridge/stop.ts       stopRobot / dispatchDirect: THE stop path (PARAR, soft_stop,
                        the /tasks estop)
   bridge/url.ts        BRIDGE_URL's default and its sibling HTTP routes
@@ -157,6 +160,30 @@ src/
                        POST /voice/transcribe — headset push-to-talk STT
   testing/fakes.ts     testApp and its fakes (tests only)
 ```
+
+## Response schemas
+
+The JSON routes that relay the bridge declare Elysia `response:` schemas
+(`bridge/payloads.ts`), so `apps/web` gets their types through Eden instead of
+restating them. Each checks the bridge's body itself and answers what it
+could not vouch for as **502 `bridge_bad_payload`** with the first field that
+did not match (`{error, path, message}`, logged once per change), never
+Elysia's own 422, which reads as the caller's mistake:
+
+| Route                                           | Schema                             | Bridge answer that fails                                                                            |
+| ----------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `GET /state`                                    | contracts `RobotState`             | 502 `bridge_bad_payload`                                                                            |
+| `GET /safety/status`                            | contracts `SafetyStatusBody`       | 502 `bridge_bad_payload`; a non-200 is 502 `bridge_error`                                           |
+| `GET /telemetry/{surroundings,scan,voice,gate}` | hand-written (bridge routes named) | 502 `bridge_bad_payload` (also for a 200 that is not JSON); the bridge's 503 passes with its reason |
+| `GET /face/people`                              | hand-written `FacesView`           | 502 `bridge_bad_payload`; the bridge refusing back's proof is 502 `bridge_error`                    |
+
+Every object allows extra properties: a field the bridge adds neither fails a
+route nor is stripped. **The stop path declares no schema** — PARAR
+(`stop_everything`), `soft_stop`, the `/tasks` estop and `POST /safety/ack`
+(«Reanudar», typed as the contract's `StopAcknowledged | StopAckRefused` but
+never checked): a stop must not be answered 502 because the bridge described
+its success in a new way. Binary routes (camera, costmap PNG, the face photo)
+stay raw `Response`s, and so do the «Caras» mutations and `/face/seen`.
 
 ## Auth
 

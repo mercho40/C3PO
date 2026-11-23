@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import { testApp, type TestApp } from "../testing/fakes";
+import { SAFETY_STATUS } from "../testing/payloads";
 
 let h: TestApp;
 
@@ -13,8 +14,10 @@ function call(method: "GET" | "POST", path: string) {
   return h.request(`/safety${path}`, { method });
 }
 
-const answer = () =>
-  Response.json({ acknowledged: true, stop_standing: false });
+const answer = (url: string) =>
+  url.endsWith("/safety/status")
+    ? Response.json(SAFETY_STATUS)
+    : Response.json({ acknowledged: true, stop_standing: false });
 
 describe("/safety", () => {
   beforeEach(() => {

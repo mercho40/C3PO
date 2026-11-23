@@ -3,7 +3,9 @@
  * /face/seen, which any signed-in user's camera overlay polls.
  *
  * GET    /face/seen                   the boxes over the picture (signed in).
- * GET    /face/people                 the bridge's list, switches and counter.
+ * GET    /face/people                 the bridge's list, switches and counter;
+ *                                     checked (bridge/payloads.ts FacesView), a
+ *                                     body that is not is 502 `bridge_bad_payload`.
  * POST   /face/confirmations          {action, args}: the operator opened a
  *                                     Confirmar card for exactly this action
  *                                     and person; answers its id.
@@ -35,6 +37,12 @@ import {
   type Confirmations,
 } from "#back/agent/confirmations.js";
 import type { BridgeHttp } from "#back/bridge/http.js";
+import {
+  BridgeFailureBody,
+  FacesViewSchema,
+  badPayload,
+  payloadCheck,
+} from "#back/bridge/payloads.js";
 import type { LogToolCall } from "#back/db/chats.js";
 import type { AuthPlugin } from "#back/lib/auth-plugin.js";
 import type { ListenWindow } from "#back/voice/listen-window.js";
@@ -88,6 +96,8 @@ export function faceArgs(
   }
   return null;
 }
+
+const checkPeople = payloadCheck(FacesViewSchema);
 
 const json = (status: number, body: unknown) => Response.json(body, { status });
 
@@ -223,12 +233,27 @@ export const faceRoutes = (deps: FaceDeps) =>
               const body = upstream.body;
               if (body === undefined)
                 return status(502, { error: "bridge_unavailable" });
-              return upstream.ok ? body : status(upstream.status, body);
+              // A refusal here is the bridge rejecting back's proof — a
+              // misconfigured server, not this operator's session or rights.
+              if (!upstream.ok)
+                return status(502, {
+                  error: "bridge_error",
+                  message: `HTTP ${upstream.status}`,
+                });
+              const checked = checkPeople(body);
+              return checked.ok
+                ? checked.value
+                : status(502, badPayload("/face/people", checked));
             } catch {
               return status(502, { error: "bridge_unavailable" });
             }
           },
           {
+            response: {
+              200: FacesViewSchema,
+              502: BridgeFailureBody,
+              503: BridgeFailureBody,
+            },
             detail: { summary: "Enrolled faces and switches.", tags: ["face"] },
           },
         )

@@ -74,9 +74,23 @@ which owns one instance each of `RobotLive` (`/state`), `VoiceLoopControl`
   a bridge that stalled instead of refusing kept the topbar on "En línea" for
   the MCP SDK's 60 s default. Any new poller extends `Poller`; the three that
   do not (the robot camera's /status, the face boxes, `/vr-control`'s USB
-  link probe) say why in their headers and in `Poller`'s. Eden Treaty
-  never throws on a failed fetch — it returns `{status: 503, value: Error}` —
-  so an `Error` value means "could not reach back", not a bridge 503.
+  link probe) say why in their headers and in `Poller`'s. Pollers call back
+  through Eden inside `poll(signal)` (`{ fetch: { signal } }`), so the
+  timeout and the 401 policy stay the Poller's. Eden Treaty never throws on a
+  failed fetch — it returns `{status: 503, value: Error}`, `unreached()` in
+  `#lib/api-client.ts` — so an `Error` value means "could not reach back", not
+  a bridge 503; it does throw on a JSON body it cannot parse.
+- **No hand-written fetch for back's JSON, no restated payload types.** The
+  bridge payloads (state, safety status, telemetry, «Caras») are typed by
+  back's `response:` schemas and imported from `@repo/back`; a bridge
+  answering an unexpected shape arrives as 502 `bridge_bad_payload`, read as
+  "no current reading". Plain modules that `bun test` loads take back's
+  address and use `apiAt(base, fetch)`. What stays a plain `fetch`, on
+  purpose: the e-stop's press is Eden already and is not to be touched; binary
+  responses (camera, costmap, the face photo — Eden reads an image as text);
+  the camera origin's reads (`mjpeg-camera.ts`, `face-seen.ts`), which may be
+  the bridge itself; `/health`'s board, which times each endpoint; the agent
+  chat's streaming transport and the headset's audio upload.
 - **One vocabulary for a missing link** (`#lib/robot/link-copy.ts`): "Sin
   conexión" (no answer), "Sin puente" (back says the bridge is down), "Sin
   acceso a la API", "Sesión vencida". "En vivo"/"Sin señal" are media words and

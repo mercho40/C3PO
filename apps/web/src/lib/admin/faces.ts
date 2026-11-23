@@ -10,28 +10,12 @@
  * Plain module, no runes, so `bun test` can load it.
  */
 
+import type { FacePerson, FaceRole, FaceSettings, FacesView } from "@repo/back";
+import { apiAt, unreached } from "#lib/api-client.js";
+
 export type FaceAction = "settings" | "delete" | "enroll" | "photo" | "role";
-export type FaceRole = "superadmin" | "operator";
-export type FaceSettings = {
-  greet: boolean;
-  greet_unknown: boolean;
-  gate: boolean;
-  /** Robot mic on after greeting an enrolled person; read by apps/back. */
-  listen_after_greet: boolean;
-};
-export type FacePerson = {
-  id: string;
-  name: string;
-  role: FaceRole;
-  enrolled_at: string | number | null;
-  has_photo: boolean;
-};
-export type FacesView = {
-  settings: FaceSettings;
-  people: FacePerson[];
-  unknown_seen: { count: number; last_age_s: number | null };
-  models: boolean;
-};
+// The bridge's /face/people payload, typed by back's schema (bridge/payloads.ts).
+export type { FacePerson, FaceRole, FaceSettings, FacesView };
 
 export type Failed = { ok: false; text: string };
 
@@ -134,40 +118,45 @@ export function enrollCard(
 
 const day = new Intl.DateTimeFormat("es-AR", { dateStyle: "medium" });
 
-/** The enrolled date; the bridge may send ISO text or epoch seconds. */
-export function enrolledText(at: string | number | null | undefined): string {
+/**
+ * The enrolled date; the bridge may send ISO text or epoch seconds, and Eden
+ * hands ISO text over as a `Date` (api-client.ts).
+ */
+export function enrolledText(
+  at: string | number | Date | null | undefined,
+): string {
   if (at == null || at === "") return "—";
   const d = new Date(typeof at === "number" && at < 1e12 ? at * 1000 : at);
   return Number.isNaN(d.getTime()) ? "—" : day.format(d);
 }
 
-async function send(
-  f: typeof fetch,
-  url: string,
-  init: RequestInit = {},
-): Promise<Response | null> {
-  try {
-    return await f(url, { credentials: "include", ...init });
-  } catch {
-    return null;
-  }
+/** An Eden answer, as these calls read it: no answer at all is `status: null`. */
+type Reply = {
+  data: unknown;
+  error: { status: unknown; value: unknown } | null;
+};
+
+function failed(r: Reply | null): Failed {
+  if (!r || unreached(r.error))
+    return { ok: false, text: faceErrorText(null, null) };
+  return {
+    ok: false,
+    text: faceErrorText(r.error?.status as number, r.error?.value),
+  };
 }
 
-const postJson = (body: unknown): RequestInit => ({
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(body),
-});
+/** Eden throws only for a JSON body it could not parse: no answer worth the name. */
+const settle = <R extends Reply>(p: Promise<R>): Promise<R | null> =>
+  p.catch(() => null);
 
 export async function loadFaces(
   base: string,
   f: typeof fetch = fetch,
 ): Promise<{ ok: true; view: FacesView } | Failed> {
-  const res = await send(f, `${base}/face/people`, { cache: "no-store" });
-  const body = await res?.json().catch(() => null);
-  return res?.ok
-    ? { ok: true, view: body as FacesView }
-    : { ok: false, text: faceErrorText(res?.status ?? null, body) };
+  const r = await settle(
+    apiAt(base, f).face.people.get({ fetch: { cache: "no-store" } }),
+  );
+  return r && !r.error && r.data ? { ok: true, view: r.data } : failed(r);
 }
 
 /** Open the Confirmar card for exactly this action and arguments. */
@@ -177,15 +166,10 @@ export async function askFace(
   args: Record<string, unknown>,
   f: typeof fetch = fetch,
 ): Promise<{ ok: true; id: string } | Failed> {
-  const res = await send(
-    f,
-    `${base}/face/confirmations`,
-    postJson({ action, args }),
+  const r = await settle(
+    apiAt(base, f).face.confirmations.post({ action, args }),
   );
-  const body = (await res?.json().catch(() => null)) as { id?: string } | null;
-  return res?.ok && body?.id
-    ? { ok: true, id: body.id }
-    : { ok: false, text: faceErrorText(res?.status ?? null, body) };
+  return r && !r.error && r.data?.id ? { ok: true, id: r.data.id } : failed(r);
 }
 
 /** «Cancelar»: the card is voided on back too. Best effort: it expires anyway. */
@@ -194,14 +178,17 @@ export async function cancelFace(
   id: string,
   f: typeof fetch = fetch,
 ): Promise<void> {
-  await send(f, `${base}/face/confirmations/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
+  await settle(
+    apiAt(base, f)
+      .face.confirmations({ id: encodeURIComponent(id) })
+      .delete(),
+  );
 }
 
 /**
  * «Confirmar»: the call itself, carrying the card. A photo comes back as a
- * Blob, fetched with `no-store` so no cache keeps a copy of the face.
+ * Blob, fetched with `no-store` so no cache keeps a copy of the face — a plain
+ * `fetch`, because Eden reads an image as text.
  */
 export async function runFace(
   base: string,
@@ -210,31 +197,36 @@ export async function runFace(
   confirmation: string,
   f: typeof fetch = fetch,
 ): Promise<{ ok: true; body: unknown; photo: Blob | null } | Failed> {
-  const c = `confirmation=${encodeURIComponent(confirmation)}`;
   const person = encodeURIComponent(String(args.id ?? ""));
-  const res =
-    action === "settings"
-      ? await send(f, `${base}/face/settings?${c}`, postJson(args))
-      : action === "enroll"
-        ? await send(f, `${base}/face/enroll?${c}`, postJson(args))
-        : action === "delete"
-          ? await send(f, `${base}/face/people/${person}?${c}`, {
-              method: "DELETE",
-            })
-          : action === "role"
-            ? await send(f, `${base}/face/people/${person}?${c}`, {
-                ...postJson({ role: args.role }),
-                method: "PATCH",
-              })
-            : await send(f, `${base}/face/people/${person}/photo.jpg?${c}`, {
-                cache: "no-store",
-              });
-  if (res?.ok && action === "photo")
-    return { ok: true, body: null, photo: await res.blob() };
-  const body = await res?.json().catch(() => null);
-  // An enroll the bridge refused can still be a 200 carrying `reason`.
-  const reason = (body as { reason?: unknown } | null)?.reason;
-  if (!res?.ok || typeof reason === "string")
+  if (action === "photo") {
+    let res: Response | null = null;
+    try {
+      res = await f(
+        `${base}/face/people/${person}/photo.jpg?confirmation=${encodeURIComponent(confirmation)}`,
+        { credentials: "include", cache: "no-store" },
+      );
+    } catch {
+      // handled below
+    }
+    if (res?.ok) return { ok: true, body: null, photo: await res.blob() };
+    const body = await res?.json().catch(() => null);
     return { ok: false, text: faceErrorText(res?.status ?? null, body) };
-  return { ok: true, body, photo: null };
+  }
+  const face = apiAt(base, f).face;
+  const query = { query: { confirmation } };
+  const r = await settle<Reply>(
+    action === "settings"
+      ? face.settings.post(args, query)
+      : action === "enroll"
+        ? face.enroll.post(args, query)
+        : action === "delete"
+          ? face.people({ id: person }).delete(undefined, query)
+          : face.people({ id: person }).patch({ role: args.role }, query),
+  );
+  if (!r || r.error) return failed(r);
+  // An enroll the bridge refused can still be a 200 carrying `reason`.
+  const reason = (r.data as { reason?: unknown } | null)?.reason;
+  if (typeof reason === "string")
+    return { ok: false, text: faceErrorText(200, r.data) };
+  return { ok: true, body: r.data, photo: null };
 }

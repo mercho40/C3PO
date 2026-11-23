@@ -39,12 +39,16 @@ import type { Config } from "#back/config.js";
 import type { ChatStore } from "#back/db/chats.js";
 import type { Dispatcher } from "#back/skills/dispatch.js";
 import type { InvokeUser } from "#back/skills/invoke.js";
-import { VoiceConversation } from "./conversation";
+import { VoiceConversation, type VoiceConversationState } from "./conversation";
 import { chooseEngine, type VoiceEngine } from "./engine";
 import { bridgeVoice } from "./events";
 import { ListenWindow } from "./listen-window";
 import { VoiceLoop } from "./loop";
-import { RealtimeVoiceSession, type RealtimeDeps } from "./realtime";
+import {
+  RealtimeVoiceSession,
+  type RealtimeDeps,
+  type RealtimeVoiceState,
+} from "./realtime";
 import { transcribeTimeoutMs, type Transcribe } from "./transcribe";
 
 const newId = createIdGenerator();
@@ -56,6 +60,47 @@ const publicPending = (p: PendingConfirmation) => ({
   args: p.args,
   askedAt: new Date(p.at).toISOString(),
 });
+
+/**
+ * What GET /voice/status answers (and a start or stop, when it succeeds):
+ * either engine, one shape, so the console reads one type. The console's
+ * VoiceLoopState is this, imported (apps/web voice-loop.ts).
+ */
+export type VoiceStatus = {
+  running: boolean;
+  /** The running session's engine, or the last one that ran. */
+  engine: VoiceEngine;
+  /** What a start without an engine runs on (`VOICE_ENGINE`). */
+  defaultEngine: VoiceEngine;
+  /** What a start can succeed on: realtime needs `OPENAI_API_KEY`. */
+  availableEngines: VoiceEngine[];
+  /** Realtime only. */
+  phase?: RealtimeVoiceState["phase"];
+  /** The realtime session's chat, for its owner only. */
+  chatId: string | null;
+  lastReply?: string | null;
+  toolCalls?: number;
+  /**
+   * Realtime only: whether the signed-in operator owns the running session.
+   * Null when nothing is running, or for the unowned legacy loop.
+   */
+  ownedByYou: boolean | null;
+  /**
+   * Calls the bridge refused until this operator confirms them (T2 or
+   * high-danger T1), with the exact arguments a Confirmar would run.
+   */
+  confirmations: ReturnType<typeof publicPending>[];
+  utterancesHeard: number;
+  agentRuns: number;
+  /** Null under the realtime engine, which does not act on spoken stops. */
+  stopsTriggered: number | null;
+  micEverOpen: boolean;
+  /** Null under the realtime engine. */
+  alwaysListening: boolean | null;
+  lastError: string | null;
+  lastHeard: string | null;
+  conversation: VoiceConversationState;
+};
 
 export type VoiceServiceDeps = {
   config: Config["voice"];
@@ -186,7 +231,7 @@ export function createVoiceService(deps: VoiceServiceDeps) {
    * an End button that can only 409, or a transcript link to a chat that is
    * not theirs.
    */
-  function status(userId?: string) {
+  function status(userId?: string): VoiceStatus {
     if ((runningEngine() ?? lastEngine) === "openai-realtime") {
       const state = realtime.snapshot();
       const { ownerId, chatId, ...publicState } = state;
