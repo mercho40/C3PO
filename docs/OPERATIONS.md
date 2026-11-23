@@ -119,7 +119,7 @@ chat would do nothing. Off campus, the TIC AI gateway does not answer.
 
 **Open the console as `http://localhost:3001`, never `http://127.0.0.1:3001`.** Vite
 listens on `127.0.0.1` (`apps/web/package.json` `dev`), but the browser must use the name:
-`WEB_URL=http://localhost:3001` is `back`'s only CORS origin (`apps/back/src/index.ts`) and
+`WEB_URL=http://localhost:3001` is `back`'s only CORS origin (`apps/back/src/app.ts`) and
 Better Auth's only trusted origin (`apps/back/src/lib/auth.ts`).
 
 **The cable, and keeping the internet.** `c3po-wire` is the Mac's alias for the cabled

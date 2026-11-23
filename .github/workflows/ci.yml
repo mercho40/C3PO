@@ -40,21 +40,22 @@ jobs:
       #     from the environment. With no `.env`, `PUBLIC_API_URL` and friends
       #     are not declared and svelte-check reports 106 errors across 9
       #     files. With one: 0 errors across 6401 files.
-      #   * apps/back — `src/lib/env.ts` THROWS at import time when
+      #   * apps/back — `loadConfig()` (`src/config.ts`) THROWS when
       #     DATABASE_URL / WEB_URL / BETTER_AUTH_URL / BETTER_AUTH_SECRET are
-      #     missing, so the suite could not even load. With one: 54 pass.
+      #     missing, so the server cannot boot (the tests build their own
+      #     config and need none of it).
       #
       # Derived from `.env.example` rather than written out here, deliberately.
       # A hardcoded list in this file is a third place that has to agree with
       # the other two, and the last time two places had to agree about
       # configuration one of them moved and the headset lost its camera. This
-      # way, adding a required variable to `env.ts` without documenting it in
+      # way, adding a required variable to `config.ts` without documenting it in
       # `.env.example` fails CI — which is exactly the check you want.
       #
       # Values are the example's own placeholders and are NOT secrets: nothing
       # here reaches a network. BETTER_AUTH_SECRET is appended because the
       # example ships it blank (it is a "generate your own" field) and
-      # `env.ts` requires it to be non-empty.
+      # `config.ts` requires it to be non-empty.
       - name: Seed .env from .env.example (CI has no secrets, and needs none)
         run: |
           cp apps/web/.env.example apps/web/.env

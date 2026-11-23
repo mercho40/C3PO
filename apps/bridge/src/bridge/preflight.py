@@ -162,7 +162,7 @@ def is_back_health(body: str) -> bool:
     project's Next dev server held 3000 — up for 17 hours, from another folder —
     and this check reported "the API answers /health": curl exits 0 on a 404,
     and a 404 page is an answer. The demo console would have talked to a travel
-    site. So the body has to be apps/back's own shape (`src/index.ts`): an `ok`
+    site. So the body has to be apps/back's own shape (`src/app.ts`): an `ok`
     status AND the `auth.providers` block nothing else on a dev machine sends.
     """
     data = _parse_json(body)

@@ -81,22 +81,62 @@ level (needs the bridge running in HTTP mode; no DB/auth/port boot).
 
 ## Source layout
 
+Nothing runs at import. `index.ts` is the composition root: `loadConfig()`
+(every setting, read once), the real edges (`deps.ts`: Postgres, Better Auth,
+the bridge's MCP and HTTP clients), `createServices` / `createApp` (`app.ts`),
+the background loops, `listen`. Every module gets what it needs as an
+argument, so a test builds the same app over fakes (`src/testing/fakes.ts`
+`testApp`) and drives it in process with `app.handle()` or Eden's
+`treaty(app)` — no database, bridge, port or `mock.module`.
+
 ```
 src/
-  index.ts             Elysia app — /health open, everything else behind {auth: true}
-  lib/env.ts           startup-validated env (fails fast, naming what is missing)
-  lib/auth.ts          Better Auth config (Drizzle adapter, admin + organization plugins)
-  lib/auth-plugin.ts   Elysia plugin defining the `auth: true` macro (see Auth below)
+  index.ts             composition root: config, real deps, loops, listen
+  app.ts               createServices(deps) + createApp(deps): every route mounted;
+                       /health open, everything else behind {auth: true}
+  config.ts            loadConfig(): the only reader of process.env; fails fast,
+                       naming the required variables that are missing
+  deps.ts              the real edges, lazy (nothing connects until used)
+  lib/auth.ts          createAuth: Better Auth (Drizzle adapter, admin + organization)
+  lib/auth-plugin.ts   createAuthPlugin: the `auth: true` macro (see Auth below)
   lib/admin-bootstrap.ts  grants role "admin" to ADMIN_EMAILS at boot
-  db/                  Drizzle schema + client + chat persistence queries (chats.ts)
-  bridge/audited.ts    callTool + audit row, for paths outside /skills and the agent
-  bridge/client.ts     MCP client — calls the bridge's tools over BRIDGE_URL
-  bridge/url.ts        BRIDGE_URL and its sibling HTTP routes, in one place
-  routes/
+  db/                  createDb, the chat store (chats.ts, incl. logToolCall),
+                       the command-log reader (audit.ts)
+  bridge/client.ts     createBridgeClient: MCP callTool / listTools, one session
+  bridge/http.ts       createBridgeHttp: the bridge's HTTP routes — one timeout
+                       policy, one error mapping, the proof header built once
+  bridge/stop.ts       stopRobot / dispatchDirect: THE stop path (PARAR, soft_stop,
+                       the /tasks estop)
+  bridge/url.ts        BRIDGE_URL's default and its sibling HTTP routes
+  skills/dispatch.ts   dispatchSkill: send a skill and audit it — the one dispatch
+                       the agent, realtime voice, /invoke and the stop share
+  skills/invoke.ts     /invoke's gate, validation and bridge grant; SAFETY_SKILLS
+  skills/catalogue.ts  createCatalogue: derived from the bridge at runtime
+                       (listTools + cache), not hand-mirrored; metadata like
+                       danger level and preconditions rides in the tools' _meta
+  agent/confirmations.ts  pending «Confirmar» cards; outcome subscribers
+  agent/confirm-service.ts  Confirmar / Cancelar / the face confirm: grant AND run
+  agent/turns.ts       agent turns in flight; PARAR aborts them and drops the cards
+  agent/stop-watch.ts  a stop latched on the bridge directly aborts them too
+  agent/models.ts      the gateway, its fallback, the vision model
+  agent/prompt.ts      system prompt, voice preamble, world snapshot
+  agent/policy.ts      which skills each mode is offered
+  agent/tools.ts       the AI SDK tools: bridge skills, back's look / verify
+  agent/runtime.ts     createAgentRuntime: one Vercel AI SDK turn
+  voice/service.ts     createVoiceService: legacy loop, realtime session,
+                       listen-after-greet, one engine at a time
+  voice/loop.ts        legacy transcript → text-agent → Piper fallback; with the
+                       bridge on C3PO_STT=back it fetches each robot-mic WAV and
+                       transcribes it with tic-transcript (AGENT_TRANSCRIBE_MODEL)
+  voice/realtime.ts    PCM ↔ OpenAI WebSocket, tool dispatch, durable transcript
+                       (design: docs/ARCHITECTURE.md §4.1)
+  voice/conversation.ts, events.ts, pcm.ts, transcribe.ts, engine.ts
+                       turn assembly, the bridge's voice events, PCM resampling,
+                       speech to text, the engine choice
+  routes/              HTTP surfaces only — each a factory over the services
     state.ts           GET /state — proxies get_state
     skills.ts          GET /skills, GET /skills/:name,
-                       POST /skills/:name/{invoke,dry-run,confirm,cancel} — confirm
-                       (admin) grants AND runs the refused call once
+                       POST /skills/:name/{invoke,dry-run,confirm,confirm-face,cancel}
     safety.ts          GET /safety/status, POST /safety/ack (admin, «Reanudar»)
     tasks.ts           GET /tasks, POST /tasks/:task_id/cancel
     agent.ts           POST /agent — streaming internal-agent chat (needs AGENT_API_KEY)
@@ -111,28 +151,20 @@ src/
     face.ts            /face — the «Caras» page (admins): people, switches, enroll,
                        delete, photo, each behind a Confirmar card; GET /face/seen,
                        the camera's face boxes, for any signed-in user
+    teleop.ts          GET /teleop/token — the teleop socket's token (admins)
     voice.ts           POST /voice/{start,stop}, GET /voice/status — explicit
                        operator-owned legacy or OpenAI Realtime voice session;
                        POST /voice/transcribe — headset push-to-talk STT
-  voice/loop.ts        legacy transcript → text-agent → Piper fallback; with the
-                       bridge on C3PO_STT=back it fetches each robot-mic WAV and
-                       transcribes it with tic-transcript (AGENT_TRANSCRIBE_MODEL)
-  voice/realtime.ts    PCM ↔ OpenAI WebSocket, tool dispatch, durable transcript
-                       (design: docs/ARCHITECTURE.md §4.1)
-  voice/conversation.ts, events.ts, pcm.ts
-                       turn assembly, the bridge's voice events, PCM resampling
-  skills/              catalogue derived from the bridge at runtime (listTools +
-                       cache — see catalogue.ts), not hand-mirrored; metadata like
-                       danger level and preconditions rides in the tools' _meta
-  agent/runtime.ts     Vercel AI SDK agent loop over the skill registry
+  testing/fakes.ts     testApp and its fakes (tests only)
 ```
 
 ## Auth
 
 Every route except `/health` is guarded by session auth — the
-`.guard({ auth: true }, ...)` in `index.ts`. The `betterAuth` plugin in
-`src/lib/auth-plugin.ts` defines that macro; a route module that actually
-reads `user` must `.use(betterAuth)` itself to get it _typed_ — the
+`.guard({ auth: true }, ...)` in `app.ts`. The auth plugin
+(`createAuthPlugin`, `src/lib/auth-plugin.ts`) defines that macro and is
+handed to every route factory as `authPlugin`; a route module that actually
+reads `user` must `.use(deps.authPlugin)` itself to get it _typed_ — the
 composition-root guard enforces auth at runtime but leaves `user` untyped
 inside the module. Pulling the plugin in from several modules is free
 (Elysia deduplicates by plugin name).
@@ -141,7 +173,9 @@ Two modules are mounted **beside** that guard rather than inside it:
 `skillsRoutes` and `auditRoutes` carry their own `{ auth: true }` guard, and
 nesting them inside the outer one resolved the session twice per request
 (measured on Elysia 1.4.28) — which matters for `/skills/:name/invoke`, behind
-PARAR and the ~1 Hz VR walk loop. `mounted.test.ts` pins both mounts.
+PARAR and the ~1 Hz VR walk loop. `app.test.ts` boots the app and counts one
+session lookup per request on both, and checks every route of every module is
+mounted.
 `POST /skills/stop_everything/invoke` never waits on the catalogue (no
 schema, no admin check) and is raced against an 8 s timer rather than given an
 SDK timeout — the SDK's timeout cancels the call on the bridge, mid-stop. On the
@@ -151,13 +185,13 @@ about once a second) and whose `tools/list` is bounded at 3 s. `POST /agent`
 passes the request's abort signal to the agent loop, so a stopped reply (or a
 closed tab) ends its next steps instead of leaving it dispatching skills
 unseen. PARAR (the `stop_everything` invoke), `soft_stop`, the `/tasks` estop and
-the spoken stop abort every running agent turn (`agent/turns.ts` `abortAllTurns`).
+the spoken stop abort every running agent turn (`agent/turns.ts` `abortAll`).
 A stop latched on the bridge directly, such as the headset's, does too:
 `agent/stop-watch.ts` polls `/safety/status` while a turn runs.
 An ended turn (abort or the 240 s budget) cancels the bridge call it is waiting on,
 except a stop; the latch itself is the
 bridge's (`docs/OPERATIONS.md` §4). `damp` and `zero_torque` are never offered to
-a model (`agent/runtime.ts` `agentToolExclusions`). Unexpected errors are answered with a generic `internal_error` body;
+a model (`agent/policy.ts` `agentToolExclusions`). Unexpected errors are answered with a generic `internal_error` body;
 the real one goes to the log (a drizzle error's message is its SQL).
 `GET /audit` (the command log) is admin-only; `GET /health` is public and also
 reports which social sign-in providers are configured (`auth.providers`), so
