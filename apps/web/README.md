@@ -72,7 +72,9 @@ which owns one instance each of `RobotLive` (`/state`), `VoiceLoopControl`
   requests in flight, every request carries a timeout, a 401 goes to login,
   and optional pause while the tab is hidden. `/state` had no timeout once, and
   a bridge that stalled instead of refusing kept the topbar on "En línea" for
-  the MCP SDK's 60 s default. Any new poller extends `Poller`. Eden Treaty
+  the MCP SDK's 60 s default. Any new poller extends `Poller`; the three that
+  do not (the robot camera's /status, the face boxes, `/vr-control`'s USB
+  link probe) say why in their headers and in `Poller`'s. Eden Treaty
   never throws on a failed fetch — it returns `{status: 503, value: Error}` —
   so an `Error` value means "could not reach back", not a bridge 503.
 - **One vocabulary for a missing link** (`#lib/robot/link-copy.ts`): "Sin

@@ -178,6 +178,13 @@ export type FacePollDeps = {
  * Poll `url` about once a second, handing each answer (or null on failure) to
  * `onSeen` together with when it arrived. No request is made while `hidden()`
  * says so, and failures back off up to FACE_BACKOFF_MAX_MS. Returns `stop`.
+ *
+ * Not a `Poller` (`poller.svelte.ts`), for the camera's reasons
+ * (`mjpeg-camera.ts`): it goes to the camera's origin, which may be the bridge
+ * with no session, so a 401 is a missing box rather than a trip to the login
+ * page; and it stays a plain module with an injectable clock, so
+ * face-seen.test.ts drives it. Its rules match: a self-scheduled loop never
+ * has two requests in flight, and each one has a timeout.
  */
 export function pollFaceSeen(
   url: string,
