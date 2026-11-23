@@ -16,60 +16,23 @@
  * loop as running because a button was pressed. `back`'s reply is the state.
  */
 
+import type { VoiceStatus } from "@repo/back";
+import { apiAt, unreached } from "#lib/api-client.js";
 import { ADMIN_REQUIRED_HINT } from "#lib/chat/chat-error.js";
-/** Engine names as `back` speaks them. The console's own are in `voice-view.ts`. */
-export type WireEngine = "legacy" | "openai-realtime";
 
-/** The loop's own snapshot. Mirrors `VoiceLoopState` in apps/back. */
-export type VoiceLoopState = {
-  running: boolean;
-  /** The running session's engine, or the last one that ran. */
-  engine?: WireEngine;
-  /** What a start without an engine runs on (`VOICE_ENGINE`). */
-  defaultEngine?: WireEngine;
-  /** What a start can succeed on: realtime needs `OPENAI_API_KEY` in back. */
-  availableEngines?: WireEngine[];
-  phase?: "idle" | "connecting" | "listening" | "speaking" | "error";
-  chatId?: string | null;
-  lastReply?: string | null;
-  toolCalls?: number;
-  /**
-   * Realtime only: whether the signed-in operator owns the running session.
-   * Null when nothing is running, or for the unowned legacy loop.
-   */
-  ownedByYou?: boolean | null;
-  /**
-   * Calls the bridge refused until this operator confirms them (T2 or
-   * high-danger T1), with the exact arguments a Confirmar would run.
-   */
-  confirmations?: {
-    id: string;
-    tool: string;
-    args: Record<string, unknown>;
-    askedAt: string;
-  }[];
-  utterancesHeard: number;
-  agentRuns: number;
-  /** Null under the realtime engine, which does not act on spoken stops. */
-  stopsTriggered: number | null;
-  micEverOpen: boolean;
-  /** Null under the realtime engine. */
-  alwaysListening: boolean | null;
-  lastError: string | null;
-  lastHeard: string | null;
-  conversation?: {
-    phase: "idle" | "streaming" | "speaking";
-    lastTurn: {
-      modelFirstDeltaMs: number | null;
-      firstSentenceMs: number | null;
-      firstSpeechMs: number | null;
-      completionMs: number;
-      totalMs: number;
-      speechCalls: number;
-      characters: number;
-    } | null;
-  };
-};
+/**
+ * The loop's own snapshot: back's `VoiceStatus` (voice/service.ts), not a
+ * copy — but for the engine choice, optional here because a back that
+ * predates it sends neither field, and voice-view.ts falls back on `engine`.
+ */
+export type VoiceLoopState = Omit<
+  VoiceStatus,
+  "defaultEngine" | "availableEngines"
+> &
+  Partial<Pick<VoiceStatus, "defaultEngine" | "availableEngines">>;
+
+/** Engine names as `back` speaks them. The console's own are in `voice-view.ts`. */
+export type WireEngine = VoiceStatus["engine"];
 
 /**
  * Either the loop's state, or why there isn't one.
@@ -95,14 +58,32 @@ function looksLikeState(body: unknown): body is VoiceLoopState {
   );
 }
 
-async function ask(url: string, init: RequestInit): Promise<VoiceResult> {
-  let res: Response;
+/** What every Eden call answers, as far as `ask` reads it. */
+type Reply = {
+  data: unknown;
+  error: { status: unknown; value: unknown } | null;
+  status: number;
+};
+
+async function ask(
+  call: () => Promise<Reply>,
+  signal: AbortSignal | undefined,
+): Promise<VoiceResult> {
+  let res: Reply;
   try {
-    res = await fetch(url, { credentials: "include", ...init });
+    res = await call();
   } catch {
+    // Eden throws only for a JSON body it could not parse.
+    return {
+      ok: false,
+      status: null,
+      reason: "El servidor respondió algo que no es un estado de voz.",
+    };
+  }
+  if (unreached(res.error)) {
     // A dead `back` and a refusing `back` are different problems with different
     // fixes, and the operator should not have to guess which they have.
-    if (init.signal?.aborted) {
+    if (signal?.aborted) {
       return {
         ok: false,
         status: null,
@@ -116,16 +97,9 @@ async function ask(url: string, init: RequestInit): Promise<VoiceResult> {
       reason: "No se pudo contactar al servidor (apps/back).",
     };
   }
-  let body: unknown = null;
-  let parsed = false;
-  try {
-    body = await res.json();
-    parsed = true;
-  } catch {
-    // handled below
-  }
-  if (res.ok) {
-    if (parsed && looksLikeState(body)) return { ok: true, state: body };
+  const body: unknown = res.error ? res.error.value : res.data;
+  if (!res.error) {
+    if (looksLikeState(body)) return { ok: true, state: body };
     return {
       ok: false,
       status: res.status,
@@ -172,7 +146,7 @@ export function voiceStatus(
   base: string,
   signal?: AbortSignal,
 ): Promise<VoiceResult> {
-  return ask(`${base}/voice/status`, { signal });
+  return ask(() => apiAt(base).voice.status.get({ fetch: { signal } }), signal);
 }
 
 /**
@@ -191,17 +165,19 @@ export function voiceCommand(
   which: "start" | "stop",
   opts: { engine?: WireEngine; timeoutMs?: number } = {},
 ): Promise<VoiceResult> {
-  const engine = which === "start" ? opts.engine : undefined;
-  return ask(`${base}/voice/${which}`, {
-    method: "POST",
-    ...(engine
-      ? {
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ engine }),
-        }
-      : {}),
-    signal: AbortSignal.timeout(opts.timeoutMs ?? VOICE_COMMAND_TIMEOUT_MS),
-  });
+  const signal = AbortSignal.timeout(
+    opts.timeoutMs ?? VOICE_COMMAND_TIMEOUT_MS,
+  );
+  const voice = apiAt(base).voice;
+  return ask(
+    () =>
+      which === "start"
+        ? voice.start.post(opts.engine ? { engine: opts.engine } : undefined, {
+            fetch: { signal },
+          })
+        : voice.stop.post(undefined, { fetch: { signal } }),
+    signal,
+  );
 }
 
 /**

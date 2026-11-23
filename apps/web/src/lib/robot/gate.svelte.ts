@@ -14,29 +14,14 @@
  * "Unknown" is a first-class answer. A gate we cannot read is NOT a closed gate.
  */
 
-import { PUBLIC_API_URL } from "$app/env/public";
+import type { GateStatus } from "@repo/back";
+import { createApi } from "#lib/api.js";
+import { httpStatus, unreached } from "#lib/api-client.js";
 import { linkFromError, LINK_DETAIL } from "./link-copy";
 import { Poller, type PollResult } from "./poller.svelte";
 
-export type GateStatus = {
-  enabled: boolean;
-  disabled_reason: string | null;
-  arm_expires_in_s: number | null;
-  cmd_vel_received: number;
-  dropped_while_disabled: number;
-  clamped: number;
-  /** [vx, vy, wz] of the last command forwarded to the robot. */
-  last_sent: number[] | null;
-  last_sent_age_s: number | null;
-  /** Null means no planner is publishing at all. */
-  cmd_vel_age_s: number | null;
-  clamps?: Record<string, number[]>;
-  link?: {
-    started?: boolean | null;
-    domain_id?: number | null;
-    reports_received?: number | null;
-  };
-};
+/** The gate's own account (perception_link `status()`), typed by back's schema. */
+export type { GateStatus };
 
 export class Gate extends Poller {
   status = $state<GateStatus | null>(null);
@@ -65,13 +50,20 @@ export class Gate extends Poller {
   }
 
   protected async poll(signal: AbortSignal): Promise<PollResult> {
-    let res: Response;
+    let res: Awaited<
+      ReturnType<ReturnType<typeof createApi>["telemetry"]["gate"]["get"]>
+    >;
     try {
-      res = await fetch(`${PUBLIC_API_URL}/telemetry/gate`, {
-        credentials: "include",
-        signal,
-      });
+      res = await createApi(fetch).telemetry.gate.get({ fetch: { signal } });
     } catch {
+      // An aborted or garbled body is no reading — keep the last one
+      // flagged as unconfirmed, like any other failed read.
+      this.reason = "El servidor devolvió una lectura ilegible.";
+      this.reasonFromBridge = false;
+      return "error";
+    }
+    const { data, error } = res;
+    if (unreached(error)) {
       // Keep the last reading (see `armed`), but say why it is no longer
       // current — a thrown read used to leave `reason` empty.
       this.reason = signal.aborted
@@ -80,35 +72,25 @@ export class Gate extends Poller {
       this.reasonFromBridge = false;
       return "error";
     }
-    if (res.status === 401) return "unauthorized";
-    if (res.ok) {
-      try {
-        this.status = (await res.json()) as GateStatus;
-      } catch {
-        // An aborted or garbled body is no reading — keep the last one
-        // flagged as unconfirmed, like any other failed read.
-        this.reason = "El servidor devolvió una lectura ilegible.";
-        this.reasonFromBridge = false;
-        return "error";
-      }
+    if (httpStatus(error) === 401) return "unauthorized";
+    if (!error) {
+      this.status = data;
       this.reason = null;
       this.reasonFromBridge = false;
       return "ok";
     }
-    const body = await res.json().catch(() => null);
     // A 503 is the bridge answering that there is no gate to read — a
     // definitive answer, so the last reading goes. Anything else (bridge
-    // unreachable, back down) leaves it as an unconfirmed last reading.
-    if (res.status === 503) this.status = null;
-    const bridgeError =
-      res.status === 503
-        ? (body as { error?: string } | null)?.error
-        : undefined;
+    // unreachable, a reading back could not vouch for, back down) leaves it
+    // as an unconfirmed last reading.
+    const body = error.value as { error?: string } | null;
+    if (error.status === 503) this.status = null;
+    const bridgeError = error.status === 503 ? body?.error : undefined;
     this.reason =
       bridgeError ??
-      (res.status === 503
+      (error.status === 503
         ? "El puente no expone el estado de la navegación."
-        : LINK_DETAIL[linkFromError(res.status, body)]);
+        : LINK_DETAIL[linkFromError(error.status, body)]);
     this.reasonFromBridge = bridgeError !== undefined;
     return "error";
   }

@@ -1,6 +1,5 @@
-import { treaty } from "@elysiajs/eden";
-import type { App } from "@repo/back";
 import { PUBLIC_API_URL } from "$app/env/public";
+import { apiAt } from "./api-client";
 
 /**
  * Eden Treaty client — end-to-end typed against the backend's `App` type.
@@ -13,6 +12,9 @@ import { PUBLIC_API_URL } from "$app/env/public";
  * `cookie` header: SvelteKit's server-side `fetch` does not forward cookies
  * cross-origin to the API (web :3001 → back :3000), so Better Auth wouldn't see
  * the session otherwise.
+ *
+ * Plain modules that `bun test` loads take back's address instead and use
+ * `apiAt(base, fetch)` (api-client.ts) — the same client.
  *
  * @example Universal / browser load
  *   const api = createApi(fetch);
@@ -28,9 +30,4 @@ import { PUBLIC_API_URL } from "$app/env/public";
 export const createApi = (
   fetch: typeof globalThis.fetch,
   cookie?: string | null,
-) =>
-  treaty<App>(PUBLIC_API_URL, {
-    fetcher: fetch,
-    fetch: { credentials: "include" },
-    headers: cookie ? { cookie } : undefined,
-  });
+) => apiAt(PUBLIC_API_URL, fetch, cookie);

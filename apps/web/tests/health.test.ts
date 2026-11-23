@@ -77,6 +77,7 @@ function link(
       posture: "run",
       faults: [],
       env: "real",
+      stub: false,
       raw: { ...RAW, ...raw } as NonNullable<
         NonNullable<LinkInput["state"]>["raw"]
       >,

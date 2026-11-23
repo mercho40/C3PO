@@ -28,6 +28,9 @@ function state(overrides: Partial<VoiceLoopState> = {}): VoiceLoopState {
   return {
     running: true,
     engine: "legacy",
+    chatId: null,
+    ownedByYou: null,
+    confirmations: [],
     utterancesHeard: 3,
     agentRuns: 2,
     stopsTriggered: 1,

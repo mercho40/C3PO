@@ -188,18 +188,26 @@ from the bridge's `listTools` and caches the last good answer with its age
 attached rather than ever inventing a default.
 
 What TypeScript still has to name at build time — tools called by literal
-name, the safety set, the gesture fallback, and the HTTP payloads
-(`/safety/status`, `get_state`) restated as TS types — is checked against
-`contracts/` at the repo root. Those files are generated from the running
-bridge (`apps/bridge/scripts/export_contracts.py`); the bridge's pytest fails
-while they are stale, and `contracts.test.ts` in `apps/back` and `apps/web`
-fails when a consumer names something they do not contain. Data files, not a
-package: nothing imports a runtime value from them.
+name, the safety set, the gesture fallback — is checked against `contracts/`
+at the repo root. Those files are generated from the running bridge
+(`apps/bridge/scripts/export_contracts.py`); the bridge's pytest fails while
+they are stale, and `contracts.test.ts` in `apps/back` and `apps/web` fails
+when a consumer names something they do not contain. The HTTP payloads it
+describes (`get_state`, `/safety/status`, the `/safety/ack` bodies) are no
+longer restated: `apps/back/src/bridge/payloads.ts` derives TypeBox schemas
+from `bridge-payloads.schema.json` (bundled into the binary; the only runtime
+reader), the routes that relay them declare those as Elysia `response:`
+schemas, and the console gets the types through Eden. Data files, not a
+package.
 
 **Console ↔ control plane typing** needs no shared package: `apps/back`
 exports its Elysia router type (`App`, built by `createApp` in `src/app.ts`) from `src/index.ts`, and `apps/web`
 imports it from the `@repo/back` workspace package for full end-to-end
-inference via Eden Treaty. The rejected `packages/shared` design is a closed
+inference via Eden Treaty. The bridge payloads back relays (state, safety
+status, telemetry, «Caras») carry `response:` schemas, so they are typed in
+the console too, and a bridge answering an unexpected shape is a 502
+`bridge_bad_payload` at back rather than a panel reading `undefined`; the stop
+path (PARAR, `soft_stop`, the /tasks estop, «Reanudar») declares none. The rejected `packages/shared` design is a closed
 decision — `docs/DECISIONS.md`.
 
 **Operational schema — mostly planned, not built.** Of the designed

@@ -8,6 +8,7 @@
  *
  * Plain module, no runes, so `bun test` can load it.
  */
+import { apiAt, unreached } from "#lib/api-client.js";
 import {
   classifyHttpError,
   classifySkillResult,
@@ -28,6 +29,17 @@ export type DecisionResult = {
   final: boolean;
 };
 
+/** An Eden answer, as these calls read it. */
+type Reply = {
+  data: unknown;
+  error: { status: unknown; value: unknown } | null;
+  status: number;
+};
+
+/** Eden throws only for a JSON body it could not parse: treated as no answer. */
+const settle = (p: Promise<Reply>): Promise<Reply | null> =>
+  p.catch(() => null);
+
 export async function decideCall(
   base: string,
   tool: string,
@@ -36,20 +48,18 @@ export async function decideCall(
   decision: Decision,
   fetchImpl: typeof fetch = fetch,
 ): Promise<DecisionResult> {
-  let res: Response;
-  try {
-    res = await fetchImpl(
-      `${base}/skills/${encodeURIComponent(tool)}/${decision}`,
-      {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          decision === "confirm" ? { callId, args: args ?? {} } : { callId },
-        ),
-      },
-    );
-  } catch {
+  const skill = apiAt(base, fetchImpl).skills({
+    name: encodeURIComponent(tool),
+  });
+  const res = await settle(
+    decision === "confirm"
+      ? skill.confirm.post({
+          callId,
+          args: (args ?? {}) as Record<string, unknown>,
+        })
+      : skill.cancel.post({ callId }),
+  );
+  if (!res || unreached(res.error)) {
     // It may have run: back stopped answering, not necessarily the robot.
     return {
       outcome: classifyHttpError(null, null),
@@ -57,14 +67,14 @@ export async function decideCall(
       final: false,
     };
   }
-  const body = (await res.json().catch(() => null)) as {
+  const body = (res.error ? res.error.value : res.data) as {
     result?: unknown;
     message?: unknown;
   } | null;
   const message = typeof body?.message === "string" ? body.message : null;
   // Back restores the call whenever nothing ran, and then has no `message`; a
   // 409 says it is no longer pending.
-  if (!res.ok)
+  if (res.error)
     return {
       outcome: classifyHttpError(res.status, body),
       message,
@@ -119,27 +129,23 @@ export function watchFace(
     if (!stopped) timer = setTimeout(tick, everyMs);
   };
   async function tick(): Promise<void> {
-    let res: Response;
-    try {
-      res = await fetchImpl(
-        `${base}/skills/${encodeURIComponent(tool)}/confirm-face`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ callId, args: args ?? {} }),
-        },
-      );
-    } catch {
-      return next();
-    }
+    const res = await settle(
+      apiAt(base, fetchImpl)
+        .skills({ name: encodeURIComponent(tool) })
+        ["confirm-face"].post({
+          callId,
+          args: (args ?? {}) as Record<string, unknown>,
+        }),
+    );
+    if (!res || unreached(res.error)) return next();
     if (stopped) return;
-    const body = (await res.json().catch(() => null)) as {
+    const ok = !res.error;
+    const body = (res.error ? res.error.value : res.data) as {
       passed?: boolean;
       result?: unknown;
       message?: unknown;
     } | null;
-    if (res.ok && body?.passed === false) {
+    if (ok && body?.passed === false) {
       on.state("waiting");
       return next();
     }
@@ -147,7 +153,7 @@ export function watchFace(
     if (body?.passed === true) {
       stopped = true;
       on.done(
-        res.ok
+        ok
           ? { outcome: classifySkillResult(body.result), message, final: true }
           : {
               outcome: classifyHttpError(res.status, body),

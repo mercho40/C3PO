@@ -20,51 +20,27 @@
  * rendered as a reassuring empty state.
  */
 
-import { PUBLIC_API_URL } from "$app/env/public";
+import type {
+  HeardItem,
+  SeenObject,
+  SourceStatus,
+  Surroundings,
+  VoiceTelemetry,
+} from "@repo/back";
+import { createApi } from "#lib/api.js";
+import { httpStatus, unreached } from "#lib/api-client.js";
 import { LINK_DETAIL, linkFromError } from "./link-copy";
 import { Poller, type PollResult } from "./poller.svelte";
 
-/** One thing perception reports, egocentric: 0° ahead, POSITIVE LEFT. */
-export type SeenObject = {
-  label: string;
-  range_m: number;
-  bearing_deg: number;
-  confidence?: number;
-  age_s?: number;
-};
+// The bridge's payloads, typed by back's schemas (apps/back bridge/payloads.ts).
+export type { HeardItem, SeenObject, SourceStatus, Surroundings };
+export type Voice = VoiceTelemetry;
 
-/** Per-source health. "offline" is a first-class answer, never absence. */
-export type SourceStatus = "ok" | "stale" | "offline";
-
-export type Surroundings = {
-  version: number;
-  sources: Record<string, SourceStatus>;
-  objects?: SeenObject[];
-  objects_omitted?: number;
-  free_space?: Record<string, number>;
-  landmarks?: SeenObject[];
-  notes?: string[];
-  pose?: Record<string, number>;
-  report_age_s?: number;
-};
-
-export type HeardItem = {
-  text: string;
-  kind: "speech" | "stop";
-  age_s: number;
-};
-
-export type Voice = {
-  running: boolean;
-  error: string | null;
-  /** False means push-to-talk: silence usually means nobody held the button. */
-  always_listening: boolean;
-  audio_source: string;
-  mic_ever_open: boolean;
-  seconds_since_audio: number | null;
-  utterances: number;
-  recent: HeardItem[];
-};
+type Api = ReturnType<typeof createApi>;
+type SceneReply = Awaited<ReturnType<Api["telemetry"]["surroundings"]["get"]>>;
+type VoiceReply = Awaited<ReturnType<Api["telemetry"]["voice"]["get"]>>;
+/** Eden throws only for a body it could not parse. */
+const UNPARSED = "unparsed" as const;
 
 const DEFAULT_POLL_MS = 1000;
 
@@ -132,24 +108,21 @@ export class Awareness extends Poller {
   protected async poll(signal: AbortSignal): Promise<PollResult> {
     const wantScene = this.mode !== "hears";
     const wantVoice = this.mode !== "sees";
-    let scene: Response | null;
-    let voice: Response | null;
-    try {
-      [scene, voice] = await Promise.all([
-        wantScene
-          ? fetch(`${PUBLIC_API_URL}/telemetry/surroundings`, {
-              credentials: "include",
-              signal,
-            })
-          : null,
-        wantVoice
-          ? fetch(`${PUBLIC_API_URL}/telemetry/voice`, {
-              credentials: "include",
-              signal,
-            })
-          : null,
-      ]);
-    } catch {
+    const api = createApi(fetch);
+    const [scene, voice] = await Promise.all([
+      wantScene
+        ? api.telemetry.surroundings
+            .get({ fetch: { signal } })
+            .catch(() => UNPARSED)
+        : null,
+      wantVoice
+        ? api.telemetry.voice.get({ fetch: { signal } }).catch(() => UNPARSED)
+        : null,
+    ]);
+
+    const noAnswer = (r: SceneReply | VoiceReply | typeof UNPARSED | null) =>
+      r !== null && r !== UNPARSED && unreached(r.error);
+    if (noAnswer(scene) || noAnswer(voice)) {
       const why = signal.aborted
         ? "El servidor tardó demasiado en responder."
         : LINK_DETAIL.noApi;
@@ -166,10 +139,12 @@ export class Awareness extends Poller {
       return "error";
     }
 
-    if (scene?.status === 401 || voice?.status === 401) return "unauthorized";
+    const status = (r: SceneReply | VoiceReply | typeof UNPARSED | null) =>
+      r && r !== UNPARSED ? httpStatus(r.error) : null;
+    if (status(scene) === 401 || status(voice) === 401) return "unauthorized";
 
-    const sceneOk = scene ? await this.#readScene(scene, signal) : true;
-    const voiceOk = voice ? await this.#readVoice(voice, signal) : true;
+    const sceneOk = scene ? this.#readScene(scene, signal) : true;
+    const voiceOk = voice ? this.#readVoice(voice, signal) : true;
 
     // The poll's verdict follows the scene when there is one (the voice half
     // is secondary there, as it always was); a voice-only instance has
@@ -178,43 +153,45 @@ export class Awareness extends Poller {
   }
 
   /** Apply a scene answer. False when there is no scene AND no honest 503. */
-  async #readScene(scene: Response, signal: AbortSignal): Promise<boolean> {
-    if (scene.ok) {
-      // Read inside a try: a body that fails mid-read used to throw past the
-      // poll into Poller's catch, which only counts a failure — so `reason`
-      // stayed null and the OLD scene kept reading as current.
-      let body: Surroundings;
-      try {
-        body = (await scene.json()) as Surroundings;
-      } catch {
-        this.reason = signal.aborted
-          ? "El servidor tardó demasiado en responder."
-          : UNREADABLE;
-        this.bridgeReason = null;
-        this.unreachable = true;
-        this.degraded = false;
-        return false;
-      }
-      this.surroundings = body;
+  #readScene(
+    scene: SceneReply | typeof UNPARSED,
+    signal: AbortSignal,
+  ): boolean {
+    if (scene === UNPARSED) {
+      // A body that fails mid-read used to throw past the poll into Poller's
+      // catch, which only counts a failure — so `reason` stayed null and the
+      // OLD scene kept reading as current.
+      this.reason = signal.aborted
+        ? "El servidor tardó demasiado en responder."
+        : UNREADABLE;
+      this.bridgeReason = null;
+      this.unreachable = true;
+      this.degraded = false;
+      return false;
+    }
+    const { data, error } = scene;
+    if (!error) {
+      this.surroundings = data;
       this.reason = null;
       this.bridgeReason = null;
       this.unreachable = false;
       this.degraded = false;
       return true;
     }
-    if (scene.status === 503) {
+    if (error.status === 503) {
       // A real answer: the bridge is up and has nothing to report. The last
       // scene is kept so the operator can still see it — but flagged, so the
       // panel can label it as history instead of the current world.
-      const body = await scene.json().catch(() => ({}));
       this.reason = "El puente no pudo armar una escena nueva.";
-      this.bridgeReason = (body as { error?: string }).error ?? null;
+      this.bridgeReason =
+        (error.value as { error?: string } | null)?.error ?? null;
       this.unreachable = false;
       this.degraded = true;
       return true;
     }
-    const body = await scene.json().catch(() => null);
-    this.reason = LINK_DETAIL[linkFromError(scene.status, body)];
+    // Includes back's 502 `bridge_bad_payload`: a scene it could not vouch
+    // for is no scene, never an empty one.
+    this.reason = LINK_DETAIL[linkFromError(error.status, error.value)];
     this.bridgeReason = null;
     this.unreachable = true;
     this.degraded = false;
@@ -222,32 +199,34 @@ export class Awareness extends Poller {
   }
 
   /** Apply a voice answer. False when there is no answer worth the name. */
-  async #readVoice(voice: Response, signal: AbortSignal): Promise<boolean> {
-    if (voice.ok) {
-      try {
-        this.voice = (await voice.json()) as Voice;
-        this.voiceReason = null;
-        this.voiceBridgeReason = null;
-        return true;
-      } catch {
-        // Same rule as the scene: an unreadable answer is not the last one.
-        this.voice = null;
-        this.voiceReason = signal.aborted
-          ? "El servidor tardó demasiado en responder."
-          : UNREADABLE;
-        this.voiceBridgeReason = null;
-        return false;
-      }
+  #readVoice(
+    voice: VoiceReply | typeof UNPARSED,
+    signal: AbortSignal,
+  ): boolean {
+    if (voice === UNPARSED) {
+      // Same rule as the scene: an unreadable answer is not the last one.
+      this.voice = null;
+      this.voiceReason = signal.aborted
+        ? "El servidor tardó demasiado en responder."
+        : UNREADABLE;
+      this.voiceBridgeReason = null;
+      return false;
     }
-    const body = await voice.json().catch(() => null);
-    this.voice = null;
-    if (voice.status === 503) {
-      this.voiceReason = "El puente no tiene telemetría de voz.";
-      this.voiceBridgeReason =
-        (body as { error?: string } | null)?.error ?? null;
+    const { data, error } = voice;
+    if (!error) {
+      this.voice = data;
+      this.voiceReason = null;
+      this.voiceBridgeReason = null;
       return true;
     }
-    this.voiceReason = LINK_DETAIL[linkFromError(voice.status, body)];
+    this.voice = null;
+    if (error.status === 503) {
+      this.voiceReason = "El puente no tiene telemetría de voz.";
+      this.voiceBridgeReason =
+        (error.value as { error?: string } | null)?.error ?? null;
+      return true;
+    }
+    this.voiceReason = LINK_DETAIL[linkFromError(error.status, error.value)];
     this.voiceBridgeReason = null;
     return false;
   }

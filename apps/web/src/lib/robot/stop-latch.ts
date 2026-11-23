@@ -10,22 +10,21 @@
  * it means, so it can be tested without a browser.
  */
 
-export type SafetyStatus = {
-  stop_standing?: boolean | null;
-  stopped_at?: number | null;
-  acknowledged_at?: number | null;
-};
+import type { SafetyStatus } from "@repo/back";
+
+/** The bridge's `/safety/status` body: contracts/ SafetyStatusBody, via back. */
+export type { SafetyStatus };
+
+/** What these helpers read; a partial status is still a status to them. */
+type Latch = Pick<Partial<SafetyStatus>, "stop_standing" | "stopped_at">;
 
 /** Standing only when the bridge says so. Never inferred, never from a failed read. */
-export function stopStanding(status: SafetyStatus | null): boolean {
+export function stopStanding(status: Latch | null): boolean {
   return status?.stop_standing === true;
 }
 
 /** "hace 12 s" / "hace 3 min", from the bridge's unix stamp. Null when unknown. */
-export function stoppedAgo(
-  status: SafetyStatus | null,
-  nowMs: number,
-): string | null {
+export function stoppedAgo(status: Latch | null, nowMs: number): string | null {
   const at = status?.stopped_at;
   if (typeof at !== "number" || at <= 0) return null;
   const s = Math.max(0, Math.round(nowMs / 1000 - at));
