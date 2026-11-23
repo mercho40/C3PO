@@ -59,13 +59,10 @@ _PICK_META = {
     "typical_failure_modes": [*_ARM_META["typical_failure_modes"], "pick_disabled_until_gantry_test"],
 }
 
-
 _SideAuto = Annotated[
     Literal["auto", "left", "right"],
     Field(description="Which arm. auto = the arm on the object's side whose hand is configured."),
 ]
-
-
 _Side = Annotated[Literal["left", "right"], Field(description="Which arm.")]
 
 

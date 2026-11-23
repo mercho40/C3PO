@@ -13,7 +13,7 @@ fails while that file is stale, and their own suites check every name they
 call against it. Renaming a tool here is caught there, in the same CI run.
 
 Importing this module is safe only because `SIM_MODE=stub` short-circuits the
-DDS init at import time (`mcp_server.py`, the `if SIM_MODE != "stub"` guard).
+DDS init at import time (`server.py`, the `if config.SIM_MODE != "stub"` guard).
 The fixture sets it before the first import for that reason — under any other
 mode, importing would open DDS sockets.
 """

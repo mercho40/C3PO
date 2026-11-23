@@ -468,7 +468,7 @@ class StateSampler:
     def get_state(self) -> dict[str, Any]:
         """Return the current state in the shape the MCP `get_state` tool exposes.
 
-        Typed loosely because its callers (walk_to, turn, mcp_server) index it
+        Typed loosely because its callers (walk_to, turn, the MCP tools) index it
         loosely; `sample()` is the same value, typed, so mypy holds the keys
         built there to the contract.
         """

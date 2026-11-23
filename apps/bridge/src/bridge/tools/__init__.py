@@ -5,6 +5,7 @@ this package registers all of them. `bridge.mcp_server` does, and is the only
 thing that should: it is the catalogue a client sees.
 
 - `state`        get_state
+- `stop`         stop_everything, soft_stop
 - `locomotion`   walk_to, turn, walk_velocity
 - `posture`      the firmware's posture and gesture skills (damp, prepare, wave, …)
 - `arm`          gesture, move_arm, release_arm_control, set_hand, open_hands
@@ -32,6 +33,7 @@ from bridge.tools import (  # noqa: F401 - they register on import
     sequence,
     speech,
     state,
+    stop,
     tasks,
     vision,
 )

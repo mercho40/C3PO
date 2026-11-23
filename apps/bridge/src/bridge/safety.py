@@ -69,7 +69,7 @@ log = structlog.get_logger(__name__)
 
 # -- the HTTP contract ----------------------------------------------------------
 #
-# What GET /safety/status and the /safety/* POSTs (mcp_server.py) answer, typed
+# What GET /safety/status and the /safety/* POSTs (routes/safety.py) answer, typed
 # here, next to the functions that build it, because apps/back and apps/web read
 # these bodies from TypeScript. `scripts/export_contracts.py` writes them out
 # as JSON Schema under contracts/ at the repo root, and the TS tests hold the
@@ -232,7 +232,7 @@ T2_CONFIRM = _env_on("SAFETY_T2_CONFIRM")
 # can be issued, so T2 is refused outright: fail closed, never open.
 CONFIRM_SECRET = os.environ.get("SAFETY_CONFIRM_SECRET", "")
 CONFIRM_TTL_S = 30.0
-# An enrolled live face stands in for «Confirmar» (mcp_server /face/confirm_check; a T2 then
+# An enrolled live face stands in for «Confirmar» (routes/face.py /face/confirm_check; a T2 then
 # waits for that person to step out of reach). 0 = the click only.
 FACE_CONFIRM = os.environ.get("C3PO_FACE_CONFIRM", "1") != "0"
 # T2 skills that exist to be near a person (skills/manipulation.py).

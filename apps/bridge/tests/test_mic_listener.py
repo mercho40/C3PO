@@ -185,7 +185,7 @@ def test_a_lagging_waiter_resumes_at_the_oldest_retained_sequence():
 
 
 async def test_voice_pcm_body_streams_raw_audio_and_stops_on_disconnect():
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
 
     class Request:
         disconnected = False
@@ -195,7 +195,7 @@ async def test_voice_pcm_body_streams_raw_audio_and_stops_on_disconnect():
 
     lis, *_ = make([])
     request = Request()
-    body = mcp_server._voice_pcm_body(request, lis)
+    body = voice_routes._voice_pcm_body(request, lis)
     next_chunk = asyncio.create_task(anext(body))
     # The worker thread registers the subscriber; a frame published before then is lost.
     assert await asyncio.to_thread(_until, lambda: lis._audio_subscribers)
@@ -207,14 +207,14 @@ async def test_voice_pcm_body_streams_raw_audio_and_stops_on_disconnect():
 
 
 async def test_voice_pcm_cancellation_does_not_close_a_generator_running_in_a_worker():
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
 
     class Request:
         async def is_disconnected(self):
             return False
 
     lis, *_ = make([])
-    body = mcp_server._voice_pcm_body(Request(), lis)
+    body = voice_routes._voice_pcm_body(Request(), lis)
     pending = asyncio.create_task(anext(body))
     # Cancel only once the worker is inside next(): that is the case under test.
     assert await asyncio.to_thread(_until, lambda: lis._audio_subscribers)
@@ -228,7 +228,7 @@ async def test_voice_pcm_cancellation_does_not_close_a_generator_running_in_a_wo
 
 
 async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeypatch):
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
     from bridge.skills import listen as listen_mod
 
     class Request:
@@ -240,7 +240,7 @@ async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeyp
     lis, *_ = make([])
     request = Request()
     monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
-    response = await mcp_server.voice_events(request)
+    response = await voice_routes.voice_events(request)
     assert response.media_type == "text/event-stream"
     assert response.headers["x-accel-buffering"] == "no"
     body = response.body_iterator
@@ -253,13 +253,13 @@ async def test_voice_sse_emits_events_keepalives_and_stops_on_disconnect(monkeyp
     assert lis.poll()[0]["text"] == "spoken"
     await body.aclose()
 
-    monkeypatch.setattr(mcp_server, "_VOICE_KEEPALIVE_S", 0.0)
-    keepalive_body = mcp_server._voice_event_body(request, lis)
+    monkeypatch.setattr(voice_routes, "_VOICE_KEEPALIVE_S", 0.0)
+    keepalive_body = voice_routes._voice_event_body(request, lis)
     assert await anext(keepalive_body) == b": keepalive\n\n"
     await keepalive_body.aclose()
 
     request.disconnected = True
-    disconnected_body = mcp_server._voice_event_body(request, lis)
+    disconnected_body = voice_routes._voice_event_body(request, lis)
     try:
         await anext(disconnected_body)
     except StopAsyncIteration:
@@ -275,7 +275,8 @@ class _Client:
 
 async def test_the_legacy_event_stream_stops_the_robot_inside_the_bridge(monkeypatch):
     """apps/back's legacy loop holds this stream open; the stop must not need it."""
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
+    from bridge.tools import stop as stop_tools
     from bridge.skills import listen as listen_mod
 
     stopped = asyncio.Event()
@@ -284,11 +285,11 @@ async def test_the_legacy_event_stream_stops_the_robot_inside_the_bridge(monkeyp
         stopped.set()
         return {}
 
-    monkeypatch.setattr(mcp_server, "stop_everything", fake_stop_everything)
+    monkeypatch.setattr(stop_tools, "stop_everything", fake_stop_everything)
     lis, *_ = make([b"\xff"])
     monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
 
-    response = await mcp_server.voice_events(_Client())
+    response = await voice_routes.voice_events(_Client())
     assert lis._on_stop is None, "armed before the body ran: a never-started body never disarms"
     body = response.body_iterator
     next_chunk = asyncio.create_task(anext(body))
@@ -303,17 +304,17 @@ async def test_the_legacy_event_stream_stops_the_robot_inside_the_bridge(monkeyp
 
 
 async def test_a_stale_disconnect_does_not_disarm_a_reconnected_subscriber(monkeypatch):
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
     from bridge.skills import listen as listen_mod
 
     lis, *_ = make([])
     monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
-    old = (await mcp_server.voice_events(_Client())).body_iterator
+    old = (await voice_routes.voice_events(_Client())).body_iterator
     old_next = asyncio.create_task(anext(old))
     assert await asyncio.to_thread(_until, lambda: lis._on_stop is not None)
     armed_by_old = lis._on_stop
 
-    new = (await mcp_server.voice_events(_Client())).body_iterator
+    new = (await voice_routes.voice_events(_Client())).body_iterator
     new_next = asyncio.create_task(anext(new))
     assert await asyncio.to_thread(_until, lambda: lis._on_stop is not armed_by_old)
     armed_by_new = lis._on_stop
@@ -330,14 +331,14 @@ async def test_a_stale_disconnect_does_not_disarm_a_reconnected_subscriber(monke
 
 
 async def test_the_realtime_audio_stream_arms_only_while_its_body_runs(monkeypatch):
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
     from bridge.skills import listen as listen_mod
 
     lis, *_ = make([])
     monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
 
     async def streaming_body():
-        response = await mcp_server.voice_audio_input(_Client())
+        response = await voice_routes.voice_audio_input(_Client())
         assert lis._on_stop is None, "armed before the body ran: a never-started body never disarms"
         body = response.body_iterator
         next_chunk = asyncio.create_task(anext(body))
@@ -769,7 +770,7 @@ def test_the_listener_upgrades_without_anyone_speaking(monkeypatch):
 async def test_the_voice_route_and_listen_look_up_audio_devices_off_the_event_loop(monkeypatch):
     # describe_audio_source runs `arecord -l` (5 s timeout); on the loop it stalls the 50 Hz
     # arm hold and the stop.
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
     from bridge.tools import listen as listen_tools
     from bridge.skills import listen as listen_mod
 
@@ -786,7 +787,7 @@ async def test_the_voice_route_and_listen_look_up_audio_devices_off_the_event_lo
     monkeypatch.setattr(listen_mod, "available", lambda: (True, ""))
     monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(lis, "start", lambda: None)
-    response = await mcp_server.voice_json(None)
+    response = await voice_routes.voice_json(None)
     assert response.status_code == 200
     await listen_tools.listen(wait_s=0)
     assert len(threads) == 2 and loop_thread not in threads
@@ -835,7 +836,7 @@ def test_the_utterance_ring_is_bounded_and_ids_expire(monkeypatch):
 
 
 async def test_the_utterance_route_serves_the_wav_then_404s(monkeypatch):
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
     from bridge.skills import listen as listen_mod
 
     lis, *_ = make([b"aa", b"."], stt_mode="back")
@@ -846,11 +847,11 @@ async def test_the_utterance_route_serves_the_wav_then_404s(monkeypatch):
     class Req:
         path_params = {"audio_id": item["audio_id"]}
 
-    ok = await mcp_server.voice_utterance_audio(Req())
+    ok = await voice_routes.voice_utterance_audio(Req())
     assert ok.status_code == 200 and ok.media_type == "audio/wav"
     assert ok.body.startswith(b"RIFF")
     Req.path_params = {"audio_id": "gone"}
-    assert (await mcp_server.voice_utterance_audio(Req())).status_code == 404
+    assert (await voice_routes.voice_utterance_audio(Req())).status_code == 404
 
 
 # --- what reaches apps/back must be speech, and never the stop's own segment --
@@ -962,7 +963,8 @@ def test_speech_after_the_stop_segment_is_still_heard():
 async def test_a_page_closing_the_event_stream_does_not_disarm_the_voice_loop(monkeypatch):
     """One slot used to mean: any page that opened and closed the stream left the
     voice loop's open connection disarmed, and the spoken stop stopped nothing."""
-    from bridge import mcp_server
+    from bridge.routes import voice as voice_routes
+    from bridge.tools import stop as stop_tools
     from bridge.skills import listen as listen_mod
 
     stopped = asyncio.Event()
@@ -971,16 +973,16 @@ async def test_a_page_closing_the_event_stream_does_not_disarm_the_voice_loop(mo
         stopped.set()
         return {}
 
-    monkeypatch.setattr(mcp_server, "stop_everything", fake_stop_everything)
+    monkeypatch.setattr(stop_tools, "stop_everything", fake_stop_everything)
     lis, *_ = make([b"\xff"])
     monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
 
-    voice_loop = (await mcp_server.voice_events(_Client())).body_iterator
+    voice_loop = (await voice_routes.voice_events(_Client())).body_iterator
     loop_next = asyncio.create_task(anext(voice_loop))
     assert await asyncio.to_thread(_until, lambda: lis._on_stop is not None)
     armed_by_loop = lis._on_stop
 
-    page = (await mcp_server.voice_events(_Client())).body_iterator
+    page = (await voice_routes.voice_events(_Client())).body_iterator
     page_next = asyncio.create_task(anext(page))
     assert await asyncio.to_thread(_until, lambda: lis._on_stop is not armed_by_loop)
     page_next.cancel()

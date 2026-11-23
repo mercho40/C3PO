@@ -30,13 +30,10 @@ const BRIDGE_SRC = join(
   "src",
   "bridge",
 );
-/** Where the bridge declares its HTTP routes: its entry point and bridge/routes/. */
-const BRIDGE_ROUTE_FILES = [
-  join(BRIDGE_SRC, "mcp_server.py"),
-  ...readdirSync(join(BRIDGE_SRC, "routes"))
-    .filter((f) => f.endsWith(".py"))
-    .map((f) => join(BRIDGE_SRC, "routes", f)),
-];
+/** Where the bridge declares its HTTP routes: one module per concern in bridge/routes/. */
+const BRIDGE_ROUTE_FILES = readdirSync(join(BRIDGE_SRC, "routes"))
+  .filter((f) => f.endsWith(".py"))
+  .map((f) => join(BRIDGE_SRC, "routes", f));
 
 /** The upstream paths `telemetry.ts` asks the bridge for. */
 function proxiedPaths(): string[] {

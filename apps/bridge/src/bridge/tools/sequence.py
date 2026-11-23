@@ -35,11 +35,7 @@ SEQUENCE_TOOLS = (
     "gesture",
     "say",
 )
-
-
 SEQUENCE_MAX = 8
-
-
 _SEQUENCE_SCHEMA = {
     "type": "array",
     "minItems": 1,
@@ -64,8 +60,6 @@ _SEQUENCE_SCHEMA = {
 
 #: A with_previous step: the hand, alongside an arm move or a gesture (never speech or a release).
 _SEQUENCE_PARTNERS = ("set_hand", "open_hands")
-
-
 _SEQUENCE_LEADERS = tuple(
     t for t in SEQUENCE_TOOLS if t not in (*_SEQUENCE_PARTNERS, "say", "release_arm_control", "release_arm")
 )

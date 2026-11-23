@@ -448,14 +448,11 @@ NAV_POLL_S = 0.25
 # The relay answers a goal within one heartbeat (0.5 s). Three seconds of
 # silence about OUR goal id means it never arrived.
 NAV_ACK_TIMEOUT_S = 3.0
-
-
 NAV_MAX_DURATION_S = 300.0
 
 
 # The asyncio tasks, held so the loop cannot garbage-collect a running monitor.
 _nav_monitors: set[asyncio.Task] = set()
-
 
 _NAV_FIX = {
     "nav_relay_offline": (

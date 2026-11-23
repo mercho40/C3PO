@@ -32,8 +32,6 @@ log = structlog.get_logger(__name__)
 # after each turn gives the 4 Hz reports time to land while the body is still
 # (object_memory ignores frames taken mid-turn).
 LOOK_STEP_DEG = 60.0
-
-
 LOOK_DWELL_S = 2.0
 
 

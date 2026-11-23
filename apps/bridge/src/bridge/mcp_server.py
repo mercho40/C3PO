@@ -1,7 +1,16 @@
-"""C3PO bridge — stdio MCP server.
+"""C3PO bridge — the MCP server's entry point.
 
-Exposes the robot's skills as MCP tools so Claude Code (or any MCP client)
-can drive the bridge directly.
+Exposes the robot's skills as MCP tools so Claude Code (or any MCP client, and
+apps/back) can drive the bridge directly. This module assembles the server and
+runs it; the pieces live in:
+
+- `bridge.config` — the `.env` and the bridge's settings, read once at import
+- `bridge.server` — the `mcp` instance and its gate (GovernedMCP); DDS starts there
+- `bridge.tools.*` — the MCP tools, one module per domain (the skill catalogue)
+- `bridge.routes.*` — plain-HTTP routes on the same port (telemetry, safety,
+  face, camera, voice)
+- this module — what runs before serving (`main`) and the two transports, both
+  inside the foreign-stop watcher and the greeter
 
 Modes:
 - `SIM_MODE=stub`: tools log and return fake data — for wiring validation.
@@ -28,14 +37,11 @@ LAN HTTP on port 8001 — i.e. the REAL robot.
 from __future__ import annotations
 
 import asyncio
-import functools
-import json
-import time
 
 import structlog
 
-# Config first: bridge.config loads the bridge's `.env`, which SIM_MODE below and the
-# modules imported after it read at import time.
+# Config first: bridge.config loads the bridge's `.env`, which every module below
+# reads at import time, and which decides whether bridge.server starts DDS.
 from bridge import config
 
 # These must follow the config import above; ruff's E402 is silenced per import
@@ -43,329 +49,11 @@ from bridge import config
 from bridge import face_gate, face_greet, watchdog  # noqa: E402
 from bridge.server import mcp  # noqa: E402
 from bridge import tools  # noqa: E402, F401 - registers the tools in bridge/tools/
-from bridge.tools.speech import speak_and_wait, speech_busy  # noqa: E402
 from bridge import routes  # noqa: E402, F401 - registers the HTTP routes in bridge/routes/
-from bridge.skill_meta import meta as skill_meta  # noqa: E402
+from bridge.tools.speech import speak_and_wait, speech_busy  # noqa: E402
 from bridge.watchdog import get_watchdog  # noqa: E402
 
 log = structlog.get_logger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Tool: stop_everything
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool(
-    meta=skill_meta(
-        classification="safety",
-        danger_level="low",
-        status="real",
-        cancellable=False,
-        expected_duration_s=0.5,
-        works_sim=True,
-        works_real=True,
-        typical_failure_modes=["bridge_disconnected"],
-    )
-)
-async def stop_everything() -> dict:
-    """Halt all motion immediately and cancel any in-flight tasks.
-
-    Safety-critical: cancels every running task in the registry (each skill
-    observes the cancel signal between iterations and ramps down velocity)
-    AND independently sends a zero-velocity burst to the run-command channel
-    for ~0.4 s in case the policy is still in motion.
-
-    Cancellation is signalled synchronously; only the blocking DDS calls are
-    awaited off-thread, so a slow or degraded link cannot wedge the event loop
-    and leave a second stop press unanswered (see the skill's own docstring).
-
-    Stub mode is a no-op aside from logging.
-    """
-    log.warning("stop_everything.called", sim_mode=config.SIM_MODE)
-
-    if config.SIM_MODE == "stub":
-        return {
-            "cancelled_task_ids": [],
-            "cancelled_count": 0,
-            "stop_burst_duration_s": 0.0,
-            "env": config.SIM_MODE,
-            "stub": True,
-        }
-
-    from bridge.skills.stop_everything import run as run_stop
-
-    result = await run_stop()
-    return {**result, "env": config.SIM_MODE}
-
-
-@mcp.tool(
-    meta=skill_meta(
-        classification="safety",
-        danger_level="low",
-        status="real",
-        cancellable=False,
-        expected_duration_s=0.5,
-        works_sim=True,
-        works_real=False,  # The burst is stop_everything's, observed on the
-        # robot; this tool as a whole has not been run there yet.
-        typical_failure_modes=["burst_unacknowledged", "bridge_disconnected"],
-    )
-)
-async def soft_stop() -> dict:
-    """Stop walking and stay standing — zero velocity, never goes limp.
-
-    Closes the Nav2 gate, cancels the Nav2 goal and running tasks, and sends a
-    ~0.4 s zero-velocity burst. Unlike stop_everything it does not latch the e-stop, does not let go
-    of the arms or hands, and never damps — so it cannot drop the robot. Use it
-    to end a walk. If the result says `heard: false`, the robot did not
-    acknowledge the stop: call stop_everything.
-    """
-    log.warning("soft_stop.called", sim_mode=config.SIM_MODE)
-    if config.SIM_MODE == "stub":
-        return {"cancelled_task_ids": [], "cancelled_count": 0, "env": config.SIM_MODE, "stub": True}
-
-    from bridge.skills.stop_everything import soft_stop as run_soft_stop
-
-    return {**await run_soft_stop(), "env": config.SIM_MODE}
-
-
-_VOICE_KEEPALIVE_S = 15.0
-_VOICE_DISCONNECT_POLL_S = 0.5
-
-
-def _local_stop(event_loop: asyncio.AbstractEventLoop, _phrase: str) -> None:
-    """A voice session's spoken-stop action: halt inside the bridge.
-
-    The detector runs in its own thread. Schedule onto the bridge's event loop;
-    no network or model round-trip sits between the phrase and the stop. Bind it
-    per subscriber with functools.partial, so each has its own identity for
-    MicListener.clear_on_stop.
-    """
-    asyncio.run_coroutine_threadsafe(stop_everything(), event_loop)
-
-
-async def _voice_event_body(request, listener, on_stop=None):  # noqa: ANN001, ANN201 - starlette types
-    """Yield non-consuming voice events until the HTTP client disconnects."""
-
-    sequence = listener.sequence()
-    keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
-    try:
-        # Armed here, not in the route: a body Starlette never starts never runs
-        # its finally either, so arm and disarm stay paired.
-        if on_stop is not None:
-            listener.set_on_stop(on_stop)
-        while True:
-            if await request.is_disconnected():
-                return
-
-            wait_s = min(
-                _VOICE_DISCONNECT_POLL_S,
-                max(0.0, keepalive_at - time.monotonic()),
-            )
-            item = await asyncio.to_thread(listener.wait_for_next, sequence, wait_s)
-
-            # Starlette cancels the generator on most disconnects, but checking
-            # explicitly also handles ASGI servers that only expose the state via
-            # receive(), and avoids writing one last event to a closed socket.
-            if await request.is_disconnected():
-                return
-            if item is not None:
-                sequence = item["seq"]
-                yield f"data: {json.dumps(item, separators=(',', ':'))}\n\n".encode()
-                keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
-            elif time.monotonic() >= keepalive_at:
-                yield b": keepalive\n\n"
-                keepalive_at = time.monotonic() + _VOICE_KEEPALIVE_S
-    except asyncio.CancelledError:
-        # Client disconnects normally cancel StreamingResponse's producer task.
-        # There is no upstream resource to close; ending the generator is enough.
-        return
-    finally:
-        listener.clear_on_stop(on_stop)
-
-
-@mcp.custom_route("/telemetry/voice/events", methods=["GET"])
-async def voice_events(request):  # noqa: ANN001, ANN201 - starlette types
-    """Live speech/stop items as SSE without consuming the agent's poll queue.
-
-    Its subscriber is apps/back's legacy voice loop, so while it is connected the
-    bridge acts on the stop phrase itself, as it does for realtime: the stop
-    must not depend on apps/back being alive.
-    """
-    from starlette.responses import StreamingResponse
-
-    from bridge.skills.listen import get_mic_listener
-
-    return StreamingResponse(
-        _voice_event_body(
-            request,
-            get_mic_listener(),
-            on_stop=functools.partial(_local_stop, asyncio.get_running_loop()),
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-store",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-async def _voice_pcm_body(request, listener, on_stop=None):  # noqa: ANN001, ANN201 - starlette types
-    """Stream the listener's live 16 kHz PCM without blocking the MCP event loop."""
-    import threading
-
-    stop = threading.Event()
-    frames = listener.audio_frames(stop)
-    waiting_for_frame = False
-    try:
-        # Armed inside the body for the same pairing as _voice_event_body.
-        if on_stop is not None:
-            listener.set_on_stop(on_stop)
-        while not await request.is_disconnected():
-            try:
-                waiting_for_frame = True
-                frame = await asyncio.to_thread(next, frames)
-                waiting_for_frame = False
-            except StopIteration:
-                return
-            if await request.is_disconnected():
-                return
-            yield frame
-    except asyncio.CancelledError:
-        return
-    finally:
-        stop.set()
-        # `to_thread` cancellation does not stop its worker. Closing a generator
-        # while that worker is inside `next()` raises "generator already executing";
-        # the stop event lets it unwind itself on the next 500 ms queue timeout.
-        if not waiting_for_frame:
-            frames.close()
-        # Disarm this session's auto-stop (not a newer session's) while leaving
-        # the always-on detector and transcript listener running.
-        listener.clear_on_stop(on_stop)
-
-
-@mcp.custom_route("/telemetry/voice/audio/input", methods=["GET"])
-async def voice_audio_input(request):  # noqa: ANN001, ANN201 - starlette types
-    """Live 16 kHz mono PCM for the trusted backend's OpenAI Realtime socket."""
-    from starlette.responses import StreamingResponse
-
-    from bridge.skills.listen import get_mic_listener
-
-    listener = get_mic_listener()
-    listener.start()
-    return StreamingResponse(
-        _voice_pcm_body(
-            request,
-            listener,
-            on_stop=functools.partial(_local_stop, asyncio.get_running_loop()),
-        ),
-        media_type="audio/pcm;rate=16000;channels=1",
-        headers={
-            "Cache-Control": "no-cache, no-store",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@mcp.custom_route("/telemetry/voice/utterance/{audio_id}.wav", methods=["GET"])
-async def voice_utterance_audio(request):  # noqa: ANN001, ANN201 - starlette types
-    """One finished utterance's WAV, announced by a `kind: "audio"` voice event.
-
-    Only with `C3PO_STT=back`: apps/back fetches it and transcribes it with
-    ia-tic. Kept in a small ring for a few seconds, then 404.
-    """
-    from starlette.responses import JSONResponse, Response
-
-    from bridge.skills.listen import get_mic_listener
-
-    wav = get_mic_listener().utterance_wav(request.path_params["audio_id"])
-    if wav is None:
-        return JSONResponse({"error": "utterance_gone"}, status_code=404)
-    return Response(wav, media_type="audio/wav", headers={"Cache-Control": "no-store"})
-
-
-@mcp.custom_route("/telemetry/voice/audio/output", methods=["POST", "DELETE"])
-async def voice_audio_output(request):  # noqa: ANN001, ANN201 - starlette types
-    """Play one 16 kHz PCM chunk, or stop C3PO-owned playback on DELETE."""
-    from starlette.responses import JSONResponse
-
-    if config.SIM_MODE != "real":
-        return JSONResponse({"status": "ok", "stub": True, "env": config.SIM_MODE})
-
-    from bridge.sdk import g1_rpc
-
-    if request.method == "DELETE":
-        code, data = await asyncio.to_thread(g1_rpc.stop_play)
-        return JSONResponse(
-            {"status": "ok" if code == 0 else "failed", "rpc_code": code, "rpc_data": data}
-        )
-
-    stream_id = request.query_params.get("stream_id", "").strip()
-    if not stream_id or len(stream_id) > 100:
-        return JSONResponse({"error": "invalid_stream_id"}, status_code=400)
-    pcm = await request.body()
-    if not pcm or len(pcm) > 512_000 or len(pcm) % 2:
-        return JSONResponse({"error": "invalid_pcm"}, status_code=400)
-
-    code, data = await asyncio.to_thread(g1_rpc.play_pcm, pcm, stream_id)
-    return JSONResponse(
-        {
-            "status": "ok" if code == 0 else "failed",
-            "rpc_code": code,
-            "rpc_data": data,
-            "bytes": len(pcm),
-        }
-    )
-
-
-@mcp.custom_route("/telemetry/voice", methods=["GET"])
-async def voice_json(request):  # noqa: ANN001, ANN201 - starlette types
-    """What the robot has heard recently, and whether it can hear at all.
-
-    Uses `recent()` rather than `poll()` — READING THIS MUST NOT CONSUME. The
-    agent's `listen` tool drains the buffer; if the console drained it too, an
-    operator leaving the page open would silently eat the utterances the agent
-    was supposed to act on. The two readers must not compete.
-    """
-    from starlette.responses import JSONResponse
-
-    try:
-        from bridge.skills import listen as listen_skill
-
-        listener = listen_skill.get_mic_listener()
-        diag = listener.diagnostics()
-        source = await asyncio.to_thread(listen_skill.describe_audio_source)  # runs `arecord -l`
-        items = listener.recent(120.0) if diag["running"] else []
-        return JSONResponse(
-            {
-                "running": diag["running"],
-                "error": diag["error"],
-                # The distinction an operator needs to read silence correctly:
-                # with a push-to-talk mic, nothing heard usually means nobody
-                # held the button — not a quiet room.
-                "always_listening": source["always_on"],
-                "audio_source": source["source"],
-                "mic_ever_open": diag["mic_ever_open"],
-                "seconds_since_audio": diag["seconds_since_audio"],
-                "utterances": diag["utterances"],
-                "recent": [
-                    {"text": i["text"], "kind": i["kind"], "age_s": i["age_s"]} for i in items
-                ],
-            },
-            headers={"Cache-Control": "no-store"},
-        )
-    except Exception:
-        log.exception("telemetry.voice_failed")
-        return JSONResponse({"error": "voice telemetry unavailable"}, status_code=503)
-
-
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
 
 
 def _http_app():  # noqa: ANN202 - starlette types
@@ -396,8 +84,6 @@ async def _run_streamable_http() -> None:
     )
     async with watching_foreign_stops(), face_greet.greeting_operator(speak_and_wait, speech_busy):
         await uvicorn.Server(served).serve()
-
-
 
 
 async def _run_stdio() -> None:
