@@ -3,9 +3,8 @@
   import { afterNavigate, goto, refreshAll } from "$app/navigation";
   import { createApi } from "#lib/api.js";
   import { Chat } from "@ai-sdk/svelte";
-  import { isToolUIPart, DefaultChatTransport, type UIMessage } from "ai";
+  import { isToolUIPart, type UIMessage } from "ai";
   import { resolve } from "$app/paths";
-  import { PUBLIC_API_URL } from "$app/env/public";
   import { MessagesSquare, Plus } from "@lucide/svelte";
   import { toast } from "svelte-sonner";
 
@@ -25,6 +24,7 @@
   import ChatTitle from "#lib/components/chat/chat-title.svelte";
   import ChatErrorBanner from "#lib/components/chat/chat-error-banner.svelte";
   import { redirectToLogin } from "#lib/robot/poller.svelte.js";
+  import { agentTransport } from "#lib/chat/agent-transport.js";
   import { LINK } from "#lib/robot/link-copy.js";
   import {
     awaitingModel,
@@ -60,26 +60,13 @@
    */
   let failedStatus = $state<number | null>(null);
 
-  // Talks to the backend internal agent (POST /agent), which streams the
-  // model's tokens + tool calls back as a UI message stream and persists both
-  // sides of the turn. A generic "Failed to fetch"-style error from the AI SDK
-  // doesn't tell an operator whether their session expired or the robot link is
-  // down -- intercept 401 specifically here (before the SDK's own error
-  // handling swallows the distinction into one opaque error) and send them to
-  // re-auth, back to this chat afterwards, instead of offering a retry that
-  // would just fail the same way again.
-  const transport = new DefaultChatTransport({
-    api: `${PUBLIC_API_URL}/agent`,
-    credentials: "include",
-    fetch: async (input, init) => {
-      failedStatus = null;
-      const res = await fetch(input, init);
-      if (!res.ok) failedStatus = res.status;
-      if (res.status === 401) {
-        sessionExpired = true;
-        redirectToLogin("expired");
-      }
-      return res;
+  // Talks to the backend internal agent (POST /agent); a 401 sends the
+  // operator to re-auth, back to this chat afterwards — see agentTransport.
+  const transport = agentTransport({
+    onStatus: (status) => {
+      failedStatus =
+        status !== null && (status < 200 || status > 299) ? status : null;
+      if (status === 401) sessionExpired = true;
     },
   });
 
