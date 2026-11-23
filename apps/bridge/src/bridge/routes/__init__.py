@@ -8,6 +8,7 @@ is in its module.
 - `safety`    — the governor's status, the operator's confirmation and «Reanudar»
 - `face`      — the face gate's people and settings, and enrollment
 - `camera`    — the head camera, relayed or served from the videohub buffer
+- `voice`     — the microphone and speaker for apps/back, and the spoken stop
 """
 
-from bridge.routes import camera, face, safety, telemetry  # noqa: F401 - they register on import
+from bridge.routes import camera, face, safety, telemetry, voice  # noqa: F401 - they register on import

@@ -280,7 +280,7 @@ class TestTheCorsHeaderAndItsBoundary:
         assert {"GET /camera/status", "GET /face/seen"} <= set(granted), granted
 
     async def test_the_voice_streams_are_not_readable_cross_origin(self, monkeypatch):
-        from bridge import mcp_server
+        from bridge.routes import voice as voice_routes
         from bridge.skills import listen as listen_mod
 
         class Req:
@@ -291,7 +291,7 @@ class TestTheCorsHeaderAndItsBoundary:
 
         monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: listen_mod.MicListener(
             source=lambda: iter(()), build=lambda: (None, None, None)))
-        for route in (mcp_server.voice_events, mcp_server.voice_audio_input):
+        for route in (voice_routes.voice_events, voice_routes.voice_audio_input):
             response = await route(Req())
             await response.body_iterator.aclose()
             assert "access-control-allow-origin" not in response.headers, route.__name__
