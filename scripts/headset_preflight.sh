@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Everything that has to be true before the headset goes on.
 #
-#   ./scripts/preflight.sh [--quick]
+#   ./scripts/headset_preflight.sh [--quick]
+#
+# Runs on the Mac. Not the robot's `c3po preflight` (scripts/robot/c3po_preflight),
+# which checks, on the robot, what must be true before Nav2 may drive it.
 #
 # A shim. The checks live in apps/bridge/src/bridge/preflight.py, with tests,
 # because the 344 lines this replaced read apps/web/.env with

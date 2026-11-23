@@ -463,7 +463,7 @@ significantly abnormal, contact sales for lidar repair."_ **[web]**
 - **Why the republish is always empty.** The control board's `lidar_driver` runs
   Livox-SDK2 < 1.3.1. That SDK does not know type 35 and drops the sensor, so
   `rt/utlidar/cloud_livox_mid360` exists but never publishes. Switching the service on
-  (`scripts/robot/lidar_service.py`) changes nothing. Route 1 is dead on this robot.
+  (`apps/bridge/scripts/lidar_service.py`) changes nothing. Route 1 is dead on this robot.
 - **Why our own driver got nothing (§4.5, 2026-08-21).** SDK2 1.3.1 (already in the nav
   image) configures only the device types its JSON has a section for. With `MID360` alone
   it discovered the sensor and never pointed it at us. The fix is to add a `"Mid360s"`

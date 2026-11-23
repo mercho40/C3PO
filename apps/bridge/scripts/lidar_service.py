@@ -3,7 +3,7 @@
 
 Run on the Jetson with the bridge's venv (it has unitree_sdk2py):
 
-    cd ~/c3po/apps/bridge && uv run python ../../scripts/robot/lidar_service.py [list|restart]
+    cd ~/c3po/apps/bridge && uv run python scripts/lidar_service.py [list|restart]
 
 Why this exists: Nav2 reads the LiDAR through the vendor republish
 (`rt/utlidar/cloud_livox_mid360`, ROBOT-HARDWARE.md §4.5 Route 1). That topic

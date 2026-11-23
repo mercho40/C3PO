@@ -139,7 +139,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
      http://localhost:3000/camera/status                     # back: 401 without a session is correct
 ```
 
-`./scripts/preflight.sh` checks the same two hops. The bridge's own CORS no
+`./scripts/headset_preflight.sh` checks the same two hops. The bridge's own CORS no
 longer matters for the normal setup.
 
 ```bash

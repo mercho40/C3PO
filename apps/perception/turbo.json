@@ -1,0 +1,12 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/bridge/src/**",
+        "$TURBO_ROOT$/scripts/robot/**"
+      ]
+    }
+  }
+}

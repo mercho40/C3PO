@@ -65,7 +65,7 @@ why `back` must not be is argued in `docs/ARCHITECTURE.md`.
 blocks sim-host→Mac UDP across VLANs, so a Mac-hosted bridge cannot receive state from
 the sim — drive it from a bridge running locally on that box. Connection values for the
 locally spawned sim server live in your local `.mcp.json` (`c3po-sim`) — gitignored, so
-each developer writes their own; `apps/bridge/README.md` lists the two entries it needs.
+each developer keeps their own, from `.mcp.json.example`; `apps/bridge/README.md` explains the two entries.
 
 ---
 
@@ -79,10 +79,9 @@ The port map, in one place:
 | `apps/web` dev             | dev machine             | 3001  | Vite; open `http://localhost:3001`, never `127.0.0.1:3001` (below)                                                                              |
 | `apps/bridge` MCP (daemon) | Jetson, **loopback**    | 8001  | streamable HTTP `/mcp` plus `/camera/*`; unauthenticated — tunnel to it                                                                         |
 | `apps/bridge` MCP (child)  | —                       | stdio | when an MCP client spawns it as a child process                                                                                                 |
-| `apps/bridge` WS           | Jetson                  | 7077  | **planned, not built** — token must be enforced once off-loopback                                                                               |
 | Vision MJPEG               | Jetson, **loopback**    | 8081  | `/live-camera` feed; up with `c3po perception up perception`/`nav2`                                                                             |
 | Head camera via videohub   | Jetson, **loopback**    | 8001  | `/camera/*` and `/face/seen` on the bridge; `dev:robot` reads them on 8001, `apps/back` on 3000 can relay them                                  |
-| VR teleop                  | Jetson, **LAN**         | 8767  | WebSocket setpoints while `c3po up teleop` is active; `TELEOP_ORIGINS` check, plus a one-use token from `apps/back` when `TELEOP_SECRET` is set |
+| VR teleop                  | Jetson, **loopback**    | 8767  | WebSocket setpoints while `c3po up teleop` runs; via the tunnel; `TELEOP_ORIGINS`, plus a one-use `apps/back` token when `TELEOP_SECRET` is set |
 | Internet proxy             | Mac, **loopback**       | 8899  | `scripts/robot_internet.py`; public :80/:443 only                                                                                               |
 | Internet proxy, robot end  | Jetson, **loopback**    | 18899 | the `ssh -R` of that proxy; alive only while the ssh session is                                                                                 |
 | Isaac Sim DDS              | Ubuntu sim host         | 7400+ | UDP (CycloneDDS)                                                                                                                                |
@@ -106,10 +105,10 @@ c3po-bridge.service` has the reasoning), so `apps/back` reaches it through the t
 `BRIDGE_URL=http://127.0.0.1:8001/mcp` — the default in `apps/back/.env.example` and in
 `bun run dev:robot`. Anything still dialling `g1-orin.local:8001` gets a refused connection;
 `apps/back` logs the tunnel line when that happens (`unreachableHint`).
-**Port 3000 taken on the Mac** (another local project): run back and web from their own
-folders with another port, since the root `bun run dev:robot` passes no such variables
-through turbo. `cd apps/back && PORT=3010 BETTER_AUTH_URL=http://localhost:3010 bun run dev:robot`,
-then `cd apps/web && PUBLIC_API_URL=http://localhost:3010 bun run dev:robot`. For the
+**Port 3000 taken on the Mac** (another local project): move back to another port from the
+root, `PORT=3010 BETTER_AUTH_URL=http://localhost:3010 PUBLIC_API_URL=http://localhost:3010
+PUBLIC_ROBOT_CAM_URL=http://localhost:3010/camera bun run dev:robot`. Turbo passes those
+through to both apps (`turbo.json`, `dev:robot`'s `passThroughEnv`), and `BRIDGE_URL` too. For the
 headset, `BACK_PORT=3010 bash scripts/quest_reverse.sh` (it reads `PORT` from
 `apps/back/.env` otherwise).
 `scripts/robot_session.sh [host]` does the whole Mac side in one command (tunnel, robot internet, `bun run dev:robot`, a status table, the robot-side `export`/`c3po up` lines); open the console at `http://localhost:3001`.
@@ -261,7 +260,7 @@ The granular commands below are retained for diagnostics and partial-stack work:
 and `stop_everything` with it, would be gone after the next reboot. `c3po install` enables
 it. `c3po preflight` warns, and does not block, when the person rule is off
 (`SAFETY_PERSON_RULE`), when the geofence is off (`SAFETY_GEOFENCE_M` ≤ 0), or when a PARAR
-still stands. On the Mac, `./scripts/preflight.sh` says whether the teleop socket wants a
+still stands. On the Mac, `./scripts/headset_preflight.sh` says whether the teleop socket wants a
 token (§6).
 
 Starting either stack stops the other. The systemd bridge boot path still starts no sensor;
@@ -671,7 +670,7 @@ Seen on 2026-11-11: every model answered `502 upstream_unreachable` while `GET /
 answered 200, so the agent, `look` and `tic-transcript` all failed. The fallback that
 worked was Gemini through its OpenAI-compatible endpoint. Start `apps/back` with these in
 its process environment only, never in a committed file. Run it from `apps/back`: the root
-`bun run dev:robot` goes through turbo, which passes on only `C3PO_ROBOT_HOST`.
+`bun run dev:robot` goes through turbo, which passes on only the few names in `turbo.json`.
 
 ```bash
 cd apps/back
@@ -813,12 +812,14 @@ patch before the service starts. Config remains in `apps/bridge/.env`.
 - **Transport trap.** The bridge defaults to stdio for child-process MCP use. The systemd
   unit pins daemon mode to HTTP on `127.0.0.1:8001`, the same loopback bind ad-hoc
   developer runs default to.
-- **8001 is loopback-only; 8767 is not.** Port 8001 has no transport authentication and
+- **8001 and 8767 are loopback-only.** Port 8001 has no transport authentication and
   can invoke robot tools, so since 2026-09-06 it is reached only through the SSH tunnel
   (§2) — `apps/back` and anything else off the robot dial `127.0.0.1:8001` on their own
-  end of `-L 8001:127.0.0.1:8001`. Port 8767 still accepts live teleop setpoints from the
-  LAN while `c3po up teleop` runs, and the robot has no active host firewall: use
-  `g1-orin.local`, never a stale DHCP address, and treat the school LAN as part of the
+  end of `-L 8001:127.0.0.1:8001`. Port 8767 (live teleop setpoints) has bound
+  `127.0.0.1` too since 2026-11-13 (`scripts/robot/run_teleop`) and rides the same tunnel
+  (`scripts/robot_tunnel.sh`). `TELEOP_HOST` can put it on the LAN, which `run_teleop`
+  refuses while `TELEOP_SECRET` is empty. Even then the robot has no active host firewall:
+  use `g1-orin.local`, never a stale DHCP address, and treat the school LAN as part of the
   robot's control boundary for as long as teleop is up.
 - **Non-interactive SSH PATH trap.** `~/.local/bin` comes from `~/.profile`; use
   `ssh c3po 'bash -lc "c3po status"'` or the script's absolute path. The unit has an
@@ -1237,21 +1238,21 @@ Jetson is already spoken for: **8000** `gemm-ai.service`, **8001** our bridge, *
 vision MJPEG, **8765** the colleague's `foxglove_bridge`, **55555/60000** teleimager
 itself (`docs/ROBOT-HARDWARE.md`).
 
-The onboard launcher binds it to the LAN and it **has no authentication at all** — less
-even than the MCP transport when reached through `apps/back`'s session guard — and it
-carries live setpoints for the arms. Desktop development reaches **the teleop
-stream** directly; the bridge stays behind the 8001 tunnel (§2) and the camera behind
-`apps/back`:
+The onboard launcher binds it to the robot's loopback (`run_teleop`, since 2026-11-13), and
+it carries live setpoints for the arms: its gates are `TELEOP_ORIGINS` and, with
+`TELEOP_SECRET` set, a one-use token from `apps/back`. Desktop development reaches **the
+teleop stream** directly, through the tunnel's 8767, not through `apps/back`; the bridge
+stays behind the 8001 tunnel (§2) and the camera behind `apps/back`:
 
 ```bash
 BRIDGE_URL=http://127.0.0.1:8001/mcp                # apps/back/.env, over the tunnel
 PUBLIC_ROBOT_CAM_URL=http://localhost:3000/camera   # apps/web/.env, via apps/back (dev:robot uses :8001)
-PUBLIC_TELEOP_HOST=g1-orin.local                    # apps/web/.env, direct on the LAN
+PUBLIC_TELEOP_HOST=localhost                        # apps/web/.env, over the tunnel's 8767
 ```
 
-The Quest remains different: WebXR requires a secure context, and an HTTPS page cannot
-open plain `ws://g1-orin.local:8767`. Until the robot serves TLS/WSS, keep the existing
-ADB-reverse/localhost path for the headset even though desktop use needs no forward for 8767.
+The Quest takes the same localhost path, through `adb reverse` on top of the Mac's tunnel.
+It could not dial the robot by name anyway: WebXR requires a secure context, and an HTTPS
+page cannot open plain `ws://g1-orin.local:8767` until the robot serves TLS/WSS.
 
 **One commander at a time, and the teleop server is one.** While a session is open it is
 the only writer of `SetVelocity` — `/vr-control` suspends its own `walk_velocity` loop and
@@ -1411,9 +1412,10 @@ vision tools only (`vlm.py`); BACKLOG §12 has the data terms.
 `TELEOP_SECRET` is the same value in `apps/back/.env` and the robot's `apps/bridge/.env`.
 With it, every connection to the teleop socket (8767) needs a one-use token that `back`
 mints, with its expiry read off the robot's clock (the bridge's HTTP `Date` header), so the
-Mac's clock does not matter. Empty on the robot: any LAN client can open 8767 and drive.
+Mac's clock does not matter. Empty on the robot: no token check, so anything that reaches
+8767 (the tunnel; `run_teleop` refuses a `TELEOP_HOST` off loopback without it) can drive.
 Set on the robot but not in `back`: every headset connect is refused with 401. After a
-change, restart `back` and `c3po up teleop`. `./scripts/preflight.sh` on the Mac reads
+change, restart `back` and `c3po up teleop`. `./scripts/headset_preflight.sh` on the Mac reads
 which it is: the socket answers a plain GET with 401 when it wants a token, 426 when it
 does not. It reports OK (401, and `back` has the secret), BAD (401, `back` has none) or
 WARN (426).
@@ -1516,7 +1518,7 @@ Plain facts, not a roadmap. Each stays here until fixed.
 
 - **Written and never run on hardware.** These are not suspected broken — they
   are untested, which is a different claim and a weaker one. Run them in the
-  fail-closed order in [`MONDAY-RUNBOOK.md`](MONDAY-RUNBOOK.md); the inventory is:
+  fail-closed order in [`archive/MONDAY-RUNBOOK.md`](archive/MONDAY-RUNBOOK.md); the inventory is:
 
   | What                                                    | How to check it                                                                              |
   | ------------------------------------------------------- | -------------------------------------------------------------------------------------------- |

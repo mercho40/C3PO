@@ -37,7 +37,7 @@
         Suele ser que falta <code>-L 8001</code> en el túnel, que
         <code>c3po-bridge.service</code> no está activo, o que
         <code>apps/bridge/.env</code> sigue en <code>stub</code>. Corré
-        <code>./scripts/preflight.sh</code>.
+        <code>./scripts/headset_preflight.sh</code>.
       </p>
     </DetailsNote>
   </Callout>

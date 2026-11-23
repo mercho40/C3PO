@@ -76,6 +76,42 @@ def test_an_empty_reply_on_a_fatal_port_fails_and_names_the_starter():
     assert "c3po up teleop" in " ".join(finding.notes)
 
 
+def test_a_loopback_teleop_that_is_unreachable_points_at_the_tunnel_not_the_lan():
+    notes = " ".join(
+        direct_service_finding(
+            "localhost", 8767, "teleop stream", True, "c3po up teleop", "nothing"
+        ).notes
+    )
+    assert "robot_tunnel.sh" in notes
+    assert "same LAN" not in notes
+    lan = direct_service_finding(
+        "192.168.123.164", 8767, "teleop stream", True, "c3po up teleop", "nothing"
+    )
+    assert "same LAN" in " ".join(lan.notes)
+
+
+def test_teleop_is_probed_through_the_tunnel_unless_a_robot_host_is_given(monkeypatch, tmp_path):
+    # run_teleop binds 127.0.0.1:8767 by default and robot_tunnel.sh forwards it;
+    # g1-orin.local:8767 refuses on such a robot, so it must not be the default.
+    from bridge import preflight
+
+    probed = []
+
+    def fake_probe(url, timeout=5):
+        probed.append(url)
+        return "nothing", ""
+
+    monkeypatch.setattr(preflight, "_probe", fake_probe)
+    monkeypatch.delenv("C3PO_ROBOT_HOST", raising=False)
+    preflight._robot_section(str(tmp_path))
+    assert "http://localhost:8767/" in probed
+
+    probed.clear()
+    monkeypatch.setenv("C3PO_ROBOT_HOST", "192.168.123.164")
+    preflight._robot_section(str(tmp_path))
+    assert "http://192.168.123.164:8767/" in probed
+
+
 def test_the_same_state_is_only_a_warning_on_a_non_fatal_port():
     finding = direct_service_finding(
         "g1-orin.local", 8081, "camera", False, "c3po up operator", "empty"

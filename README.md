@@ -58,9 +58,9 @@ bun run dev:robot
 
 The Python bridge needs its one-time CycloneDDS/`uv` setup before that command;
 [`apps/bridge/README.md`](apps/bridge/README.md) covers it. Claude Code sessions
-can also get the bridge through a `.mcp.json` — a local file, gitignored and not
-in the repo, so each developer writes their own; that README lists its two
-entries.
+can also get the bridge through a `.mcp.json` — a local file, gitignored, so each
+developer keeps their own, starting from `cp .mcp.json.example .mcp.json`; that
+README explains its two entries.
 
 ## Commands
 
@@ -72,6 +72,7 @@ entries.
 | `bun run start`            | Start production builds against the configured bridge                   |
 | `bun run build`            | Build the monorepo                                                      |
 | `bun run check-types`      | Type-check across the monorepo                                          |
+| `bun run lint`             | Lint the Python apps (ruff), with CI's paths                            |
 | `bun run test`             | Test across the monorepo                                                |
 | `bun run format`           | Format with Prettier                                                    |
 

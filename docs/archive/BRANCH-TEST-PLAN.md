@@ -6,7 +6,7 @@ list of what only the hardware can prove, with what "pass" looks like for each,
 so one session produces the evidence the merge decision needs.
 
 General procedure, safety rules and background live in
-[SESSION-CHECKLIST.md](SESSION-CHECKLIST.md) and
+[SESSION-CHECKLIST.md](../SESSION-CHECKLIST.md) and
 [MONDAY-RUNBOOK.md](MONDAY-RUNBOOK.md). This file only adds what is new in this
 branch. **Stop at the first failed gate** and write down what you saw — a
 refusal is a result, not an obstacle.
@@ -144,7 +144,7 @@ ssh session if you want to test it, otherwise skip §D3.
 ```bash
 ./scripts/robot_tunnel.sh c3po-wire   # terminal 1: 8001 + 8767, reconnects by itself, says if the bridge answers
 bun run dev                            # terminal 2, from ../c3po-integrate: back :3000 + web :3001
-./scripts/preflight.sh                 # terminal 3
+./scripts/headset_preflight.sh                 # terminal 3
 ./scripts/audit_watch.sh               # terminal 3 afterwards: every command the robot is sent, live
 ```
 
