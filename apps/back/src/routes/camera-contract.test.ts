@@ -19,7 +19,7 @@
  * or network.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const APPS = join(import.meta.dir, "..", "..", "..");
@@ -27,7 +27,13 @@ const read = (...parts: string[]) => readFileSync(join(APPS, ...parts), "utf8");
 
 const CAMERA_TS = read("back", "src", "routes", "camera.ts");
 const LOOK_TS = read("back", "src", "agent", "look.ts");
-const MCP_SERVER_PY = read("bridge", "src", "bridge", "mcp_server.py");
+/** Where the bridge declares its HTTP routes: its entry point and bridge/routes/. */
+const BRIDGE_ROUTES_PY = [
+  read("bridge", "src", "bridge", "mcp_server.py"),
+  ...readdirSync(join(APPS, "bridge", "src", "bridge", "routes"))
+    .filter((f) => f.endsWith(".py"))
+    .map((f) => read("bridge", "src", "bridge", "routes", f)),
+].join("\n");
 const MJPEG_TS = read("web", "src", "lib", "robot", "mjpeg-camera.ts");
 const LIVE_CAMERA = read(
   "web",
@@ -50,7 +56,7 @@ const proxied = [
 /** What back exposes to the browser. */
 const exposed = all(CAMERA_TS, /\.get\(\s*"(\/camera\/[^"]+)"/g);
 /** What the bridge serves. */
-const served = all(MCP_SERVER_PY, /@mcp\.custom_route\(\s*"([^"]+)"/g);
+const served = all(BRIDGE_ROUTES_PY, /@mcp\.custom_route\(\s*"([^"]+)"/g);
 /** The leaf names the browser appends to PUBLIC_ROBOT_CAM_URL. */
 const asked = [
   ...all(MJPEG_TS, /endpoint\(\s*baseUrl,\s*"([^"]+)"/g),

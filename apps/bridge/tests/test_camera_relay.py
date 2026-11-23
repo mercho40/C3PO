@@ -322,13 +322,13 @@ def test_a_viewer_leaving_releases_the_vision_slot(monkeypatch):
     """Four abandoned relays fill the vision server (max 4) and it 503s everyone."""
     import asyncio
 
-    from bridge import mcp_server
+    from bridge.routes import camera as camera_routes
 
     upstream = _EndlessUpstream()
 
     async def drain() -> int:
         n = 0
-        async for _ in mcp_server._relay_stream(upstream, _ViewerLeavesAfter(2)):
+        async for _ in camera_routes._relay_stream(upstream, _ViewerLeavesAfter(2)):
             n += 1
         return n
 
@@ -342,7 +342,7 @@ def test_a_full_vision_server_is_a_503_not_an_empty_200(monkeypatch):
     import asyncio
     import urllib.request
 
-    from bridge import mcp_server
+    from bridge.routes import camera as camera_routes
     from bridge.sdk import camera_relay, videohub
 
     class _DarkCamera:
@@ -360,7 +360,7 @@ def test_a_full_vision_server_is_a_503_not_an_empty_200(monkeypatch):
     class _Request:
         headers: dict = {}
 
-    response = asyncio.run(mcp_server.camera_stream(_Request()))
+    response = asyncio.run(camera_routes.camera_stream(_Request()))
     assert response.status_code == 503
     assert response.headers["retry-after"] == "2"
 
@@ -370,7 +370,7 @@ def test_a_slow_vision_probe_does_not_stall_the_event_loop(monkeypatch):
     import asyncio
     import time
 
-    from bridge import mcp_server
+    from bridge.routes import camera as camera_routes
     from bridge.sdk import camera_relay, videohub
 
     class _Camera:
@@ -389,7 +389,7 @@ def test_a_slow_vision_probe_does_not_stall_the_event_loop(monkeypatch):
         headers: dict = {}
 
     async def race() -> float:
-        route = asyncio.ensure_future(mcp_server.camera_status(_Request()))
+        route = asyncio.ensure_future(camera_routes.camera_status(_Request()))
         started = time.monotonic()
         await asyncio.sleep(0.05)  # a PARAR arriving while the probe runs
         waited = time.monotonic() - started

@@ -17,11 +17,11 @@
  * database and no network — same as the rest of this suite.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TELEMETRY_TS = join(import.meta.dir, "telemetry.ts");
-const MCP_SERVER_PY = join(
+const BRIDGE_SRC = join(
   import.meta.dir,
   "..",
   "..",
@@ -29,8 +29,14 @@ const MCP_SERVER_PY = join(
   "bridge",
   "src",
   "bridge",
-  "mcp_server.py",
 );
+/** Where the bridge declares its HTTP routes: its entry point and bridge/routes/. */
+const BRIDGE_ROUTE_FILES = [
+  join(BRIDGE_SRC, "mcp_server.py"),
+  ...readdirSync(join(BRIDGE_SRC, "routes"))
+    .filter((f) => f.endsWith(".py"))
+    .map((f) => join(BRIDGE_SRC, "routes", f)),
+];
 
 /** The upstream paths `telemetry.ts` asks the bridge for. */
 function proxiedPaths(): string[] {
@@ -48,9 +54,12 @@ function exposedPaths(): string[] {
 
 /** The GET routes the bridge actually serves. */
 function bridgeRoutes(): string[] {
-  const src = readFileSync(MCP_SERVER_PY, "utf8");
-  return [...src.matchAll(/@mcp\.custom_route\(\s*"([^"]+)"/g)].map(
-    (m) => m[1]!,
+  return BRIDGE_ROUTE_FILES.flatMap((file) =>
+    [
+      ...readFileSync(file, "utf8").matchAll(
+        /@mcp\.custom_route\(\s*"([^"]+)"/g,
+      ),
+    ].map((m) => m[1]!),
   );
 }
 

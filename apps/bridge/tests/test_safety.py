@@ -410,22 +410,36 @@ def test_the_http_app_serves_mcp_and_the_operator_routes(mcp):
     } <= paths  # fmt: skip
 
 
+def _surface_callers(callee: str) -> list[str]:
+    """The functions on the bridge's MCP and HTTP surface that call `callee`: the entry
+    point, the gate, every tool module and every route module, read as source."""
+    root = Path(safety.__file__).parent
+    files = [
+        root / "mcp_server.py",
+        root / "server.py",
+        *sorted((root / "tools").glob("*.py")),
+        *sorted((root / "routes").glob("*.py")),
+    ]
+    assert len(files) > 2, "the scan found no tool or route modules"
+    return sorted(
+        node.name
+        for path in files
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(c, ast.Call)
+            and getattr(c.func, "attr", getattr(c.func, "id", "")) == callee
+            for c in ast.walk(node)
+        )
+    )
+
+
 def test_nothing_on_the_tool_surface_can_grant_a_confirmation():
     """`grant_confirmation` is called from the console route and nowhere else.
 
     The model sees only tools. If a tool body ever grants, the model can
     confirm itself, and T2 is decoration."""
-    src = Path(safety.__file__).with_name("mcp_server.py").read_text()
-    callers = [
-        node.name
-        for node in ast.walk(ast.parse(src))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and any(
-            isinstance(c, ast.Call) and getattr(c.func, "attr", "") == "grant_confirmation"
-            for c in ast.walk(node)
-        )
-    ]
-    assert callers == ["safety_confirm"]
+    assert _surface_callers("grant_confirmation") == ["safety_confirm"]
 
 
 # -- the console route --------------------------------------------------------
@@ -442,24 +456,26 @@ class FakeRequest:
 
 @pytest.mark.asyncio
 async def test_confirm_route_fails_closed_without_a_secret(monkeypatch):
-    from bridge import mcp_server
+    from bridge import mcp_server  # noqa: F401 - registers every tool
+    from bridge.routes import safety as safety_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "")
-    resp = await mcp_server.safety_confirm(FakeRequest({"tool": "set_hand"}, secret=""))
+    resp = await safety_routes.safety_confirm(FakeRequest({"tool": "set_hand"}, secret=""))
     assert resp.status_code == 503
     assert safety.status()["pending_confirmations"] == []
 
 
 @pytest.mark.asyncio
 async def test_confirm_route_checks_secret_and_tier(monkeypatch):
-    from bridge import mcp_server
+    from bridge import mcp_server  # noqa: F401 - registers every tool
+    from bridge.routes import safety as safety_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
-    wrong = await mcp_server.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="nope"))
+    wrong = await safety_routes.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="nope"))
     assert wrong.status_code == 403
-    not_t2 = await mcp_server.safety_confirm(FakeRequest({"tool": "walk_to"}, secret="s3cret"))
+    not_t2 = await safety_routes.safety_confirm(FakeRequest({"tool": "walk_to"}, secret="s3cret"))
     assert not_t2.status_code == 400 and b"not_confirmable" in not_t2.body
-    ok = await mcp_server.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="s3cret"))
+    ok = await safety_routes.safety_confirm(FakeRequest({"tool": "set_hand"}, secret="s3cret"))
     assert ok.status_code == 200
     assert safety.status()["pending_confirmations"] == ["set_hand"]
 
@@ -467,23 +483,24 @@ async def test_confirm_route_checks_secret_and_tier(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("args", ["x", {"closure": "abc"}, None])
 async def test_confirm_route_refuses_arguments_the_tool_would_refuse(monkeypatch, args):
-    from bridge import mcp_server
+    from bridge import mcp_server  # noqa: F401 - registers every tool
+    from bridge.routes import safety as safety_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
     body = {"tool": "set_hand", "args": args}
-    resp = await mcp_server.safety_confirm(FakeRequest(body, secret="s3cret"))
+    resp = await safety_routes.safety_confirm(FakeRequest(body, secret="s3cret"))
     assert resp.status_code == 400 and b"invalid_arguments" in resp.body
     assert safety.status()["pending_confirmations"] == []
 
 
 @pytest.mark.asyncio
 async def test_the_console_grant_runs_the_call_it_was_made_for(mcp, link, monkeypatch):
-    from bridge import mcp_server
+    from bridge.routes import safety as safety_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
     for closure in ("0.5", 0.7):  # two grants for one tool: still one name in the list
         body = {"tool": "set_hand", "args": {"closure": closure}}
-        resp = await mcp_server.safety_confirm(FakeRequest(body, secret="s3cret"))
+        resp = await safety_routes.safety_confirm(FakeRequest(body, secret="s3cret"))
         assert resp.status_code == 200
     assert safety.status()["pending_confirmations"] == ["set_hand"]
     await mcp.call_tool("set_hand", {"side": "right", "closure": 0.5})
@@ -494,7 +511,8 @@ async def test_the_console_grant_runs_the_call_it_was_made_for(mcp, link, monkey
 
 @pytest.mark.asyncio
 async def test_a_face_check_stands_in_for_confirmar_but_grants_nothing(monkeypatch):
-    from bridge import face_gate, mcp_server
+    from bridge import face_gate, mcp_server  # noqa: F401 - registers every tool
+    from bridge.routes import face as face_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
     seen = {"code": face_gate.NO_FACE}
@@ -507,7 +525,7 @@ async def test_a_face_check_stands_in_for_confirmar_but_grants_nothing(monkeypat
     monkeypatch.setattr(
         face_gate, "person", lambda pid: {"id": pid, "name": "Oliver", "role": "superadmin"}
     )
-    check = mcp_server.face_confirm_check
+    check = face_routes.face_confirm_check
     assert (await check(FakeRequest({"tool": "arm_navigation"}, secret="nope"))).status_code == 403
     t0 = await check(FakeRequest({"tool": "get_state"}, secret="s3cret"))
     assert t0.status_code == 400 and b"not_confirmable" in t0.body
@@ -545,7 +563,8 @@ def test_the_refusal_offers_the_face_unless_it_is_off(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_standing_stop_refuses_motion_until_an_operator_resumes(mcp, link, monkeypatch):
-    from bridge import estop, mcp_server
+    from bridge import estop
+    from bridge.routes import safety as safety_routes
 
     estop.signal_stop()
     assert safety.status()["stop_standing"] is True
@@ -555,9 +574,9 @@ async def test_a_standing_stop_refuses_motion_until_an_operator_resumes(mcp, lin
     await mcp.call_tool("get_state", {})  # T0 still answers: the agent can see why
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
-    denied = await mcp_server.safety_ack(FakeRequest({}, secret="nope"))
+    denied = await safety_routes.safety_ack(FakeRequest({}, secret="nope"))
     assert denied.status_code == 403 and safety.status()["stop_standing"] is True
-    ok = await mcp_server.safety_ack(FakeRequest({}, secret="s3cret"))
+    ok = await safety_routes.safety_ack(FakeRequest({}, secret="s3cret"))
     assert ok.status_code == 200 and safety.status()["stop_standing"] is False
     await mcp.call_tool("walk_velocity", {"vx": 0.1})
 
@@ -581,18 +600,7 @@ def test_damp_is_allowed_while_stopped_and_a_new_stop_latches_again(monkeypatch)
 
 def test_nothing_on_the_tool_surface_can_clear_a_stop():
     """record_ack is reachable from the console route and the headset only."""
-    src = Path(safety.__file__).with_name("mcp_server.py").read_text()
-    callers = [
-        node.name
-        for node in ast.walk(ast.parse(src))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and any(
-            isinstance(c, ast.Call)
-            and getattr(c.func, "attr", getattr(c.func, "id", "")) == "record_ack"
-            for c in ast.walk(node)
-        )
-    ]
-    assert callers == ["safety_ack"]
+    assert _surface_callers("record_ack") == ["safety_ack"]
 
 
 # -- soft stop ----------------------------------------------------------------
@@ -670,7 +678,8 @@ async def test_a_stop_voids_pending_confirmations(sent, monkeypatch):
 async def test_resume_refuses_a_stop_newer_than_the_one_the_operator_saw(monkeypatch):
     import time
 
-    from bridge import estop, mcp_server
+    from bridge import estop
+    from bridge.routes import safety as safety_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
     estop.signal_stop()
@@ -678,9 +687,9 @@ async def test_resume_refuses_a_stop_newer_than_the_one_the_operator_saw(monkeyp
     time.sleep(0.01)
     estop.signal_stop()  # then someone else's
     later = estop.last_stop_at()
-    stale = await mcp_server.safety_ack(FakeRequest({"stopped_at": seen}, secret="s3cret"))
+    stale = await safety_routes.safety_ack(FakeRequest({"stopped_at": seen}, secret="s3cret"))
     assert stale.status_code == 409 and safety.status()["stop_standing"] is True
-    ok = await mcp_server.safety_ack(FakeRequest({"stopped_at": later}, secret="s3cret"))
+    ok = await safety_routes.safety_ack(FakeRequest({"stopped_at": later}, secret="s3cret"))
     assert ok.status_code == 200 and safety.status()["stop_standing"] is False
 
 
@@ -715,18 +724,19 @@ def test_a_stop_that_cannot_be_written_still_latches(sent, link, monkeypatch, tm
 
 @pytest.mark.asyncio
 async def test_resume_says_so_when_the_ack_could_not_be_recorded(monkeypatch, tmp_path):
-    from bridge import estop, mcp_server
+    from bridge import estop
+    from bridge.routes import safety as safety_routes
 
     monkeypatch.setattr(safety, "CONFIRM_SECRET", "s3cret")
     writable = estop.DEFAULT_RUN_DIR
     _unwritable_run_dir(monkeypatch, tmp_path)
     estop.signal_stop()
-    failed = await mcp_server.safety_ack(FakeRequest({}, secret="s3cret"))
+    failed = await safety_routes.safety_ack(FakeRequest({}, secret="s3cret"))
     assert failed.status_code == 500 and b"ack_not_recorded" in failed.body
     assert safety.status()["stop_standing"] is True
 
     monkeypatch.setattr(estop, "DEFAULT_RUN_DIR", writable)
-    ok = await mcp_server.safety_ack(FakeRequest({}, secret="s3cret"))
+    ok = await safety_routes.safety_ack(FakeRequest({}, secret="s3cret"))
     assert ok.status_code == 200 and safety.status()["stop_standing"] is False
 
 
