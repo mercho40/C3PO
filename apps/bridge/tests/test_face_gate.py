@@ -20,8 +20,7 @@ import numpy as np
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from bridge import config
-from bridge import face_gate
+from bridge import config, face_gate, server
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -491,7 +490,7 @@ async def test_the_confirmation_gate_still_comes_first(scene, monkeypatch):
 def _confirm(tool: str, args: dict) -> str:
     from bridge import mcp_server, safety
 
-    key = mcp_server._canonical_args(mcp_server.mcp._tool_manager.get_tool(tool), args)
+    key = server.canonical_args(mcp_server.mcp._tool_manager.get_tool(tool), args)
     safety.grant_confirmation(tool, key, via="console")
     return key
 

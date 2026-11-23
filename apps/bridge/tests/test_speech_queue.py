@@ -8,8 +8,7 @@ import threading
 
 import pytest
 
-from bridge import config
-from bridge import mcp_server
+from bridge import config, mcp_server
 from bridge.sdk import audio_msg, g1_rpc
 from bridge.skills import tts
 

@@ -37,8 +37,7 @@ import uuid
 from typing import Annotated, Any, Literal, cast
 
 import structlog
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.tools import Tool
+from mcp.server.fastmcp import Context
 from pydantic import Field, ValidationError, WithJsonSchema
 
 # Config first: bridge.config loads the bridge's `.env`, which SIM_MODE below and the
@@ -47,7 +46,8 @@ from bridge import config
 
 # These must follow the config import above; ruff's E402 is silenced per import
 # rather than for the file, so a genuinely misplaced import still fails.
-from bridge import face_gate, face_greet, motion_announce, safety, watchdog  # noqa: E402
+from bridge import face_gate, face_greet, motion_announce, safety, server, watchdog  # noqa: E402
+from bridge.server import mcp  # noqa: E402
 from bridge.skill_meta import meta as skill_meta  # noqa: E402
 from bridge.watchdog import get_watchdog  # noqa: E402
 
@@ -59,117 +59,6 @@ log = structlog.get_logger(__name__)
 # the firmware is a shared service that can simply not answer — so the wait is
 # bounded and a timeout is reported, never raised.
 PLAYBACK_WAIT_MARGIN_S = 2.0
-
-# Initialize DDS up-front when not in stub mode. We do this at import time so
-# the subscriber is alive and accumulating LowState messages before the first
-# tool call lands.
-if config.SIM_MODE != "stub":
-    from bridge.sdk.connection import init_dds
-    from bridge.sdk.state import get_sampler
-
-    # SIM_MODE is passed rather than left to init_dds's environment default:
-    # it decides whether the config asks for unicast-to-one-peer, which is a
-    # simulator workaround and a topic-hiding hazard onboard.
-    init_dds(
-        robot_host=config.ROBOT_HOST,
-        domain_id=config.DDS_DOMAIN_ID,
-        interface=config.DDS_INTERFACE,
-        sim_mode=config.SIM_MODE,
-    )
-    # Warm the subscriber singleton so messages start flowing immediately.
-    get_sampler()
-
-
-def _canonical_args(tool: Tool, arguments: dict[str, Any] | None) -> str:
-    """The call's arguments as FastMCP will validate them, as one canonical string.
-
-    Same model and pre-parse as FuncMetadata.call_fn_with_arg_validation, so
-    defaults are filled and "0.5", 0.5, 10 and 10.0 all land on what the tool
-    receives. A grant is bound to this string. Raises pydantic's ValidationError.
-    """
-    md = tool.fn_metadata
-    parsed = md.arg_model.model_validate(md.pre_parse_json(arguments or {}))
-    return json.dumps(parsed.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
-
-
-STOPPED_DURING_WARNING = "stopped: a stop came during the spoken warning; nothing moved"
-
-
-class GovernedMCP(FastMCP):
-    """FastMCP whose every tool call passes the risk-tier gate first.
-
-    Here and not in each tool so a T2 tool cannot be added without its gate:
-    the tier comes from the tool's own `_meta` (skill_meta.derive_tier), and
-    this is the method both transports dispatch through — apps/back over HTTP
-    and Claude Code over stdio alike. Direct Python calls into the tool
-    functions skip it; nothing that speaks MCP can.
-    """
-
-    async def call_tool(self, name, arguments):  # noqa: ANN001, ANN201 - FastMCP's signature
-        from mcp.server.fastmcp.exceptions import ToolError
-
-        from bridge import estop
-
-        tool = self._tool_manager.get_tool(name)
-        meta = tool.meta if tool else None
-        args_key = invalid = None
-        if tool is not None and safety.needs_confirmation(meta):
-            try:
-                args_key = _canonical_args(tool, arguments)
-            except ValidationError as exc:
-                invalid = f"invalid arguments for {name}: {exc}"
-        face = face_gate.gated(name, meta)
-        refusal = safety.tool_refusal(name, meta, args_key, spend=not face)
-        if invalid is not None and not estop.stop_is_standing():
-            # PARAR first; else not "get a confirmation", which /safety/confirm would refuse too.
-            refusal = invalid
-        if refusal is None and face:
-            # On top of every check above (a face never stands in for a confirmation), and
-            # before the grant is spent, so a face refusal leaves it for one retry.
-            refusal = await face_gate.refusal(name, meta)
-            if refusal is None:
-                # Again, spending the grant: a PARAR may have come during the check.
-                refusal = safety.tool_refusal(name, meta, args_key)
-        if refusal is not None:
-            raise ToolError(refusal)
-        token = None
-        if tool is not None and motion_announce.applies(name, meta):
-            md = tool.fn_metadata
-            try:
-                args = md.arg_model.model_validate(md.pre_parse_json(arguments or {})).model_dump()
-            except ValidationError:
-                args = None  # unannounced: super().call_tool raises FastMCP's own error
-            if args is not None and name in motion_announce.SELF:
-                # After its planning, at its first motion command: a failed plan says nothing.
-                token = motion_announce.defer(name, args, _announce_speak)
-            elif args is not None and not await motion_announce.announce(
-                name, args, _announce_speak
-            ):
-                raise ToolError(STOPPED_DURING_WARNING)
-        try:
-            return await super().call_tool(name, arguments)
-        finally:
-            if token is not None:
-                motion_announce.reset(token)
-
-
-mcp = GovernedMCP(
-    name="c3po-bridge",
-    instructions=(
-        "Tools for controlling a Unitree G1 humanoid robot (or its Isaac Sim "
-        "emulation). In stub mode, tools log and return fake data. In isaac/real "
-        "mode, get_state reads live DDS state and walk_to/turn actually drive "
-        "the robot. Long-running tools return a task_id; use cancel_task to "
-        "interrupt one task, stop_everything to halt all motion, and "
-        "list_active_tasks to see what's in flight."
-    ),
-    host=config.BRIDGE_HOST,
-    port=config.BRIDGE_PORT,
-    # No idle reaper (mcp>=1.30 defaults to 30 min): apps/back fails the first call on a
-    # reaped session, and that call can be PARAR. Loopback-only; max_sessions still bounds it.
-    session_idle_timeout=None,
-)
-
 
 # ---------------------------------------------------------------------------
 # Tool: get_state
@@ -526,7 +415,7 @@ async def go_to_object(
         )
         # The camera walk below announces in walk_to.run; Nav2's goal goes out here.
         if not await motion_announce.before_motion():
-            return {"error": "stopped", "detail": STOPPED_DURING_WARNING, "target": rounded}
+            return {"error": "stopped", "detail": server.STOPPED_DURING_WARNING, "target": rounded}
         started = await _start_navigation(
             gx,
             gy,
@@ -1972,7 +1861,7 @@ async def run_sequence(
                 "detail": "with_previous: only set_hand/open_hands, right after an arm move or a gesture",
             }
         try:
-            checked = json.loads(_canonical_args(tool, args))
+            checked = json.loads(server.canonical_args(tool, args))
         except ValidationError as exc:
             detail = str(exc)[:300]
             return {
@@ -1999,14 +1888,10 @@ async def run_sequence(
         for k in group:
             name, _args, checked, tool, _with = planned[k]
             end = {"step": k, "tool": name, "done": done, "env": config.SIM_MODE}
-            if refusal := safety.tool_refusal(name, tool.meta, confirmed=True):
+            # PARAR, battery, the person rule, then the spoken warning: call_tool's gate for a
+            # step the sequence's one confirmation already covers.
+            if refusal := await server.confirmed_step_refusal(name, tool.meta, checked):
                 return {"status": "refused", "reason": "step_refused", "detail": refusal, **end}
-            # Spoken here, as call_tool would: no chainable tool is in motion_announce.SELF, so
-            # nothing is deferred and the step's own before_motion() says nothing again.
-            if motion_announce.applies(name, tool.meta) and not await motion_announce.announce(
-                name, checked, _announce_speak
-            ):
-                return {"status": "refused", "reason": "step_refused", "detail": STOPPED_DURING_WARNING, **end}
         if len(group) == 1:
             results = [await call(i)]
         else:
@@ -4531,7 +4416,7 @@ async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
     so the console and headset bring-up are confirmed by the admin's own click.
 
     Body `{"tool": name, "args": {...}}`; args default to {} (the tool's defaults).
-    The grant is bound to the canonical form of those args (`_canonical_args`),
+    The grant is bound to the canonical form of those args (`server.canonical_args`),
     so a call with any other arguments is still refused.
 
     That is the whole point: a model only ever sees the tool list, and nothing
@@ -4558,7 +4443,7 @@ async def safety_confirm(request):  # noqa: ANN001, ANN201 - starlette types
         # Only gated tools take a grant; anything else is a typo or a probe.
         return JSONResponse({"error": "not_confirmable", "tool": tool}, status_code=400)
     try:
-        args_key = _canonical_args(listed, args) if isinstance(args, dict) else None
+        args_key = server.canonical_args(listed, args) if isinstance(args, dict) else None
     except ValidationError:
         args_key = None
     if args_key is None:
@@ -5440,26 +5325,27 @@ async def _run_streamable_http() -> None:
         # waited out the unit's TimeoutStopSec=20 and was SIGKILLed past its cleanup.
         timeout_graceful_shutdown=3,
     )
-    async with watching_foreign_stops(), face_greet.greeting_operator(_greet, _speech_busy):
+    async with watching_foreign_stops(), face_greet.greeting_operator(_speak_and_wait, _speech_busy):
         await uvicorn.Server(served).serve()
 
 
-async def _announce_speak(text: str) -> Any:
-    """The motion warning speaks through `say` and waits, like the greeter: PARAR cuts it."""
+async def _speak_and_wait(text: str) -> Any:
+    """`say`, returning at the end of playback: what the greeter and the motion warning speak
+    through, so PARAR's stop_play cuts them like any speech. The greeter waits because
+    apps/back's listen window opens on the greeting's record."""
     return await say(text, wait_for_completion=True)
 
 
-async def _greet(text: str) -> Any:
-    """The greeter speaks through `say` itself, so PARAR's stop_play cuts it like any speech.
-    Waits for the end of playback: apps/back's listen window opens on the greeting's record."""
-    return await say(text, wait_for_completion=True)
+# The motion warning in server.GovernedMCP.call_tool speaks through it too (injected:
+# server.py cannot import `say`, which registers on server.mcp).
+server.set_speaker(_speak_and_wait)
 
 
 async def _run_stdio() -> None:
     """FastMCP's stdio transport, with the same foreign-stop watcher as HTTP."""
     from bridge.skills.stop_everything import watching_foreign_stops
 
-    async with watching_foreign_stops(), face_greet.greeting_operator(_greet, _speech_busy):
+    async with watching_foreign_stops(), face_greet.greeting_operator(_speak_and_wait, _speech_busy):
         await mcp.run_stdio_async()
 
 

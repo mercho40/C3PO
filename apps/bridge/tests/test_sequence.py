@@ -7,7 +7,7 @@ import json
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from bridge import estop, mcp_server, safety
+from bridge import estop, mcp_server, safety, server
 from bridge.skills import manipulation
 
 STEPS = [
@@ -45,7 +45,7 @@ def ran(monkeypatch):
 
 def _grant(steps):
     listed = mcp_server.mcp._tool_manager.get_tool("run_sequence")
-    args = mcp_server._canonical_args(listed, {"steps": steps})
+    args = server.canonical_args(listed, {"steps": steps})
     safety.grant_confirmation("run_sequence", args, via="console")
 
 
@@ -177,7 +177,7 @@ async def test_a_raised_arm_comes_down_by_itself_after_the_sequence(ran, monkeyp
 async def test_keep_arm_up_or_an_explicit_release_skips_the_lowering(ran, monkeypatch):
     monkeypatch.setattr(mcp_server, "SEQUENCE_ARM_HOLD_S", 0.3)
     listed = mcp_server.mcp._tool_manager.get_tool("run_sequence")
-    args = mcp_server._canonical_args(listed, {"steps": STEPS, "keep_arm_up": True})
+    args = server.canonical_args(listed, {"steps": STEPS, "keep_arm_up": True})
     safety.grant_confirmation("run_sequence", args, via="console")
     out = await mcp_server.mcp.call_tool("run_sequence", {"steps": STEPS, "keep_arm_up": True})
     assert "release_arm_control" not in [name for name, _ in ran]

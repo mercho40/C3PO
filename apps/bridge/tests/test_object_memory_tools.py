@@ -13,10 +13,8 @@ import pathlib
 
 import pytest
 
-from bridge import config
+from bridge import config, estop, object_memory as om
 import bridge.mcp_server as server
-from bridge import estop
-from bridge import object_memory as om
 from bridge.sdk import perception_link as pl
 
 ORIGIN = {"x_m": 0.0, "y_m": 0.0, "yaw_deg": 0.0}

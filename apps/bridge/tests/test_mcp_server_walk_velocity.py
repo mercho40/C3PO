@@ -18,8 +18,7 @@ import typing
 
 import pytest
 
-from bridge import config
-from bridge import mcp_server
+from bridge import config, mcp_server
 from bridge.skills import walk_velocity as walk_velocity_skill
 
 

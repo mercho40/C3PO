@@ -580,7 +580,7 @@ def _grant_key(tool: str, args_key: str) -> tuple[str, str]:
 def grant_confirmation(tool: str, args_key: str, *, via: str) -> float:
     """Allow ONE call of `tool` with exactly these arguments within CONFIRM_TTL_S.
 
-    `args_key` is the canonical JSON of the arguments (mcp_server._canonical_args),
+    `args_key` is the canonical JSON of the arguments (server.canonical_args),
     so another caller cannot spend the operator's grant on different ones.
     Returns the expiry.
 

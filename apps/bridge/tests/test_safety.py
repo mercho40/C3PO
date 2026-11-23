@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from bridge import safety
+from bridge import safety, server
 from bridge.sdk import g1_rpc, perception_link
 from bridge.skills import _locomotion, stop_everything
 
@@ -254,7 +254,7 @@ def _grant(tool, args):
     from bridge import mcp_server
 
     listed = mcp_server.mcp._tool_manager.get_tool(tool)
-    return safety.grant_confirmation(tool, mcp_server._canonical_args(listed, args), via="console")
+    return safety.grant_confirmation(tool, server.canonical_args(listed, args), via="console")
 
 
 @pytest.mark.asyncio

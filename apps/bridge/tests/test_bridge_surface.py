@@ -128,3 +128,18 @@ async def test_a_spoken_stop_reaches_the_stop_skill(monkeypatch):
     loop = asyncio.get_running_loop()
     await asyncio.to_thread(mcp_server._local_stop, loop, "parar")
     await asyncio.wait_for(reached.wait(), 2.0)
+
+
+async def test_the_motion_warning_speaks_through_say_and_waits(monkeypatch):
+    """server.py cannot import `say` (a cycle), so it is injected; this is that wiring."""
+    from bridge import mcp_server, server
+
+    said = []
+
+    async def say(text: str, **kwargs: object) -> dict:
+        said.append((text, kwargs))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(mcp_server, "say", say)
+    await server._announce_speak("Atención")
+    assert said == [("Atención", {"wait_for_completion": True})]

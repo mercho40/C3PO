@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bridge import config
+from bridge import config, server
 from bridge.skills import hand
 from bridge.teleop import hands
 
@@ -257,9 +257,9 @@ def test_confirmation_is_bound_to_the_fingers():
     from bridge import mcp_server
 
     tool = mcp_server.mcp._tool_manager.get_tool("set_hand")
-    plain = mcp_server._canonical_args(tool, {"side": "right"})
-    index = mcp_server._canonical_args(tool, {"side": "right", "fingers": {"index": 1}})
-    pinky = mcp_server._canonical_args(tool, {"side": "right", "fingers": {"pinky": 1}})
+    plain = server.canonical_args(tool, {"side": "right"})
+    index = server.canonical_args(tool, {"side": "right", "fingers": {"index": 1}})
+    pinky = server.canonical_args(tool, {"side": "right", "fingers": {"pinky": 1}})
     assert len({plain, index, pinky}) == 3
 
 
@@ -271,7 +271,7 @@ def test_tool_schema_rejects_unknown_finger_and_range():
     tool = mcp_server.mcp._tool_manager.get_tool("set_hand")
     for bad in ({"indice": 1}, {"ring": 1.5}):
         with pytest.raises(pydantic.ValidationError):
-            mcp_server._canonical_args(tool, {"side": "right", "fingers": bad})
+            server.canonical_args(tool, {"side": "right", "fingers": bad})
 
 
 def test_v_sign_raises_index_and_middle_and_closes_the_rest():

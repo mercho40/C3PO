@@ -19,8 +19,7 @@ import time
 
 import pytest
 
-from bridge import config
-from bridge import estop
+from bridge import config, estop
 
 
 @pytest.fixture(autouse=True)
