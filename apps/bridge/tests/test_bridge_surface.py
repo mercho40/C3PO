@@ -132,7 +132,8 @@ async def test_a_spoken_stop_reaches_the_stop_skill(monkeypatch):
 
 async def test_the_motion_warning_speaks_through_say_and_waits(monkeypatch):
     """server.py cannot import `say` (a cycle), so it is injected; this is that wiring."""
-    from bridge import mcp_server, server
+    from bridge import mcp_server, server  # noqa: F401 - registers every tool
+    from bridge.tools import speech
 
     said = []
 
@@ -140,6 +141,6 @@ async def test_the_motion_warning_speaks_through_say_and_waits(monkeypatch):
         said.append((text, kwargs))
         return {"status": "ok"}
 
-    monkeypatch.setattr(mcp_server, "say", say)
+    monkeypatch.setattr(speech, "say", say)
     await server._announce_speak("Atención")
     assert said == [("Atención", {"wait_for_completion": True})]

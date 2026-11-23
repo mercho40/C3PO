@@ -10,6 +10,7 @@ import structlog
 from bridge import config
 from bridge.routes.common import origin_of
 from bridge.server import mcp
+from bridge.tools.vision import grab_frame
 
 log = structlog.get_logger(__name__)
 
@@ -291,3 +292,25 @@ async def camera_stream(request):  # noqa: ANN001, ANN201 - starlette types
         media_type="multipart/x-mixed-replace; boundary=" + boundary,
         headers=camera_relay.camera_headers(origin),
     )
+
+
+@mcp.custom_route("/camera/cloud_frame.jpg", methods=["GET"])
+async def camera_cloud_frame(request):  # noqa: ANN001, ANN201 - starlette types
+    """The newest frame with faces blurred, for a caller that uploads it to a cloud model.
+
+    apps/back's `look` and `verify` read this, never /camera/frame.jpg (the
+    operator's own view stays sharp). Blurred here because OpenCV is here.
+    Fails closed like `vlm.blur_faces`: 503 with the reason, never a raw frame.
+    """
+    from starlette.responses import JSONResponse, Response
+
+    from bridge import vlm
+
+    jpeg, _source, err = await grab_frame()
+    if err or jpeg is None:
+        return JSONResponse(err or {"error": "no_frame"}, status_code=503)
+    try:
+        jpeg = await asyncio.to_thread(vlm.blur_faces, jpeg)
+    except vlm.VlmError as exc:
+        return JSONResponse({"error": "face_blur_failed", "detail": str(exc)}, status_code=503)
+    return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})

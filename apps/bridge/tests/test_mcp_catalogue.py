@@ -243,7 +243,7 @@ async def test_say_is_no_longer_a_stub_on_real(monkeypatch):
     It was a logging stub for a long time while its description promised TTS —
     the kind of gap an agent cannot detect, because a stub returns success.
     """
-    import bridge.mcp_server as server
+    from bridge.tools import speech
     from bridge.sdk import g1_protocol, g1_rpc
 
     monkeypatch.setattr(config, "SIM_MODE", "real")
@@ -256,7 +256,7 @@ async def test_say_is_no_longer_a_stub_on_real(monkeypatch):
 
     monkeypatch.setattr(g1_rpc, "speak", fake_speak)
 
-    result = await server.say(text="hello", language="chinese")
+    result = await speech.say(text="hello", language="chinese")
 
     assert seen["text"] == "hello"
     assert seen["speaker_id"] == g1_protocol.Speaker.CHINESE

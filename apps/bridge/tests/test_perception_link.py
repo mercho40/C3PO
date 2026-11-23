@@ -565,7 +565,7 @@ def test_describe_surroundings_actually_consumes_the_perception_report():
     None of that fails a unit test, because every piece works in isolation. What
     catches it is asserting the CONNECTION exists.
     """
-    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "mcp_server.py"
+    src = pathlib.Path(__file__).resolve().parents[1] / "src" / "bridge" / "tools" / "memory.py"
     body = src.read_text()
     # The snapshot logic lives in surroundings_snapshot(), shared by the tool
     # and the read-only /telemetry/surroundings route so the console and the

@@ -7,7 +7,8 @@ import json
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from bridge import estop, mcp_server, safety, server
+from bridge import estop, mcp_server, motion_announce, safety, server
+from bridge.tools import sequence
 from bridge.skills import manipulation
 
 STEPS = [
@@ -21,8 +22,8 @@ STEPS = [
 def ran(monkeypatch):
     """The steps that reached their tool, in order; run_sequence itself runs for real."""
     monkeypatch.setattr(safety, "T2_CONFIRM", True)
-    monkeypatch.setattr(mcp_server.motion_announce, "applies", lambda name, meta: False)
-    monkeypatch.setattr(mcp_server, "SEQUENCE_ARM_HOLD_S", 0.0)  # tests of the lowering set it
+    monkeypatch.setattr(motion_announce, "applies", lambda name, meta: False)
+    monkeypatch.setattr(sequence, "SEQUENCE_ARM_HOLD_S", 0.0)  # tests of the lowering set it
     monkeypatch.setattr(manipulation, "CLOSE_SETTLE_S", 0.0)  # the hand-settle test sets it
     manager = mcp_server.mcp._tool_manager
     real = manager.call_tool
@@ -107,7 +108,7 @@ async def test_parar_still_stops_each_step(ran):
 
 
 def test_every_chainable_tool_exists_and_none_walks():
-    for name in mcp_server.SEQUENCE_TOOLS:
+    for name in sequence.SEQUENCE_TOOLS:
         tool = mcp_server.mcp._tool_manager.get_tool(name)
         assert tool is not None, name
         assert tool.meta["c3po"]["classification"] in ("gesture", "speech"), name
@@ -119,7 +120,7 @@ def test_no_chainable_tool_defers_its_warning():
     """run_sequence speaks each step's warning itself; a SELF tool would speak it twice."""
     from bridge import motion_announce
 
-    assert not set(mcp_server.SEQUENCE_TOOLS) & motion_announce.SELF
+    assert not set(sequence.SEQUENCE_TOOLS) & motion_announce.SELF
 
 
 @pytest.mark.asyncio
@@ -166,7 +167,7 @@ async def test_with_previous_is_only_a_hand_step_after_an_arm_move(ran, steps):
 
 @pytest.mark.asyncio
 async def test_a_raised_arm_comes_down_by_itself_after_the_sequence(ran, monkeypatch):
-    monkeypatch.setattr(mcp_server, "SEQUENCE_ARM_HOLD_S", 0.3)
+    monkeypatch.setattr(sequence, "SEQUENCE_ARM_HOLD_S", 0.3)
     _grant(STEPS)
     result = await _run(STEPS)
     assert [name for name, _ in ran] == ["move_arm", "set_hand", "say", "release_arm_control"]
@@ -175,7 +176,7 @@ async def test_a_raised_arm_comes_down_by_itself_after_the_sequence(ran, monkeyp
 
 @pytest.mark.asyncio
 async def test_keep_arm_up_or_an_explicit_release_skips_the_lowering(ran, monkeypatch):
-    monkeypatch.setattr(mcp_server, "SEQUENCE_ARM_HOLD_S", 0.3)
+    monkeypatch.setattr(sequence, "SEQUENCE_ARM_HOLD_S", 0.3)
     listed = mcp_server.mcp._tool_manager.get_tool("run_sequence")
     args = server.canonical_args(listed, {"steps": STEPS, "keep_arm_up": True})
     safety.grant_confirmation("run_sequence", args, via="console")

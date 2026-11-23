@@ -12,6 +12,12 @@ thing that should: it is the catalogue a client sees.
 - `landmarks`    remember / recall / list / forget_landmark
 - `tasks`        cancel_task, list_active_tasks
 - `manipulation` pick, place, handover, reach, arm_state
+- `sequence`     run_sequence
+- `speech`       say, ask_user (and the motion warning's speaker)
+- `navigation`   arm/disarm_navigation, navigate_to(_landmark), navigation_status,
+                 cancel_navigation, go_to_object
+- `memory`       recall/list/forget_object, look_around, describe_surroundings
+- `vision`       look, find_object, verify
 """
 
 from bridge.tools import (  # noqa: F401 - they register on import
@@ -20,7 +26,12 @@ from bridge.tools import (  # noqa: F401 - they register on import
     listen,
     locomotion,
     manipulation,
+    memory,
+    navigation,
     posture,
+    sequence,
+    speech,
     state,
     tasks,
+    vision,
 )
