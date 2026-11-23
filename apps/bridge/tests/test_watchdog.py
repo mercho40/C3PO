@@ -12,6 +12,7 @@ no DDS, no robot, and no real time.
 
 from __future__ import annotations
 
+from bridge import config
 from bridge.watchdog import LinkWatchdog
 
 
@@ -215,7 +216,7 @@ def test_poll_tools_record_operator_contact(monkeypatch):
             touched.append("touch")
 
     monkeypatch.setattr(mcp_server, "get_watchdog", lambda: FakeWatchdog())
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "stub")
+    monkeypatch.setattr(config, "SIM_MODE", "stub")
 
     mcp_server.get_state()
     assert touched, "get_state must record operator contact"

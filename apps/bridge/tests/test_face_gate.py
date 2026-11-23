@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
+from bridge import config
 from bridge import face_gate
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -953,10 +954,10 @@ async def test_no_switch_enrollment_or_greeter_tick_is_the_first_to_import_cv2(
     monkeypatch.setattr(face_gate, "warm", lambda: warmed_at_boot.append(True))
     monkeypatch.setattr(face_gate, "models_installed", lambda: True)
     face_gate.update_settings({"gate": False, "greet": False, "greet_unknown": False})
-    monkeypatch.setattr(routes, "SIM_MODE", "stub")
+    monkeypatch.setattr(config, "SIM_MODE", "stub")
     routes._warm_face()
     assert warmed_at_boot == []
-    monkeypatch.setattr(routes, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     routes._warm_face()  # every switch off: still loaded before serving
     assert warmed_at_boot == [True]
 

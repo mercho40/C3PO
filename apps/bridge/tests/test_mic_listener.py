@@ -23,6 +23,7 @@ import wave
 
 import pytest
 
+from bridge import config
 from bridge.skills.listen import ListenUnavailable, MicListener
 
 
@@ -782,7 +783,7 @@ async def test_the_voice_route_and_listen_look_up_audio_devices_off_the_event_lo
     monkeypatch.setattr(listen_mod, "get_mic_listener", lambda: lis)
     monkeypatch.setattr(listen_mod, "describe_audio_source", describe)
     monkeypatch.setattr(listen_mod, "available", lambda: (True, ""))
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(lis, "start", lambda: None)
     response = await mcp_server.voice_json(None)
     assert response.status_code == 200

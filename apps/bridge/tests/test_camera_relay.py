@@ -8,6 +8,7 @@ which this project has twice mistaken for broken hardware.
 
 from __future__ import annotations
 
+from bridge import config
 from bridge.sdk import camera_relay
 from bridge.sdk.camera_relay import _Monotonic, _Probe, choose_source, merged_status
 
@@ -351,7 +352,7 @@ def test_a_full_vision_server_is_a_503_not_an_empty_200(monkeypatch):
     def full(*_a, **_k):
         raise OSError("HTTP Error 503: too many stream clients (max 4)")
 
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(videohub, "get_camera", lambda: _DarkCamera())
     monkeypatch.setattr(camera_relay, "upstream_status", lambda now=None: LIVE_VISION)
     monkeypatch.setattr(urllib.request, "urlopen", full)
@@ -380,7 +381,7 @@ def test_a_slow_vision_probe_does_not_stall_the_event_loop(monkeypatch):
         time.sleep(0.5)
         return None
 
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(camera_relay, "upstream_status", slow_probe)
     monkeypatch.setattr(videohub, "get_camera", lambda: _Camera())
 

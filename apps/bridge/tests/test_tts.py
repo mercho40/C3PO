@@ -18,6 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from bridge import config
 from bridge.skills import tts
 
 IN_RATE = tts.PIPER_RATE
@@ -226,7 +227,7 @@ async def test_a_stop_while_piper_synthesizes_plays_nothing(fake_voice, monkeypa
         g1_rpc.stop_play()  # PARAR lands while Piper works
         return b"\x00" * (g1_rpc.PLAY_CHUNK_BYTES * 2)
 
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(tts, "available", lambda: (True, ""))
     monkeypatch.setattr(tts, "synthesize", synthesize)
     result = await mcp_server.say("Hola Ana")

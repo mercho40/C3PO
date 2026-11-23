@@ -22,6 +22,7 @@ import pytest
 
 os.environ.setdefault("SIM_MODE", "stub")
 
+from bridge import config
 from bridge.sdk import nav_link as nl  # noqa: E402
 from bridge.sdk import perception_link as pl  # noqa: E402
 from bridge.skills import landmarks as lm  # noqa: E402
@@ -73,7 +74,7 @@ def rig(monkeypatch):
     gate = pl.PerceptionLink(forward=lambda *v: None, clock=clock)
     monkeypatch.setattr(nl, "_nav_singleton", nav)
     monkeypatch.setattr(pl, "_link_singleton", gate)
-    monkeypatch.setattr(server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(server, "NAV_POLL_S", 0.01)
     for t in get_registry().list_active():
         get_registry().cancel(t.task_id)

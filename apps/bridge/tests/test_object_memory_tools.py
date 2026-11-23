@@ -13,6 +13,7 @@ import pathlib
 
 import pytest
 
+from bridge import config
 import bridge.mcp_server as server
 from bridge import estop
 from bridge import object_memory as om
@@ -159,7 +160,7 @@ async def test_a_cancel_during_a_dwell_ends_the_sweep_at_once(monkeypatch, mem):
 
     from bridge.skills.task_runtime import get_registry
 
-    monkeypatch.setattr(server, "SIM_MODE", "real")  # real dwells
+    monkeypatch.setattr(config, "SIM_MODE", "real")  # real dwells
     monkeypatch.setattr(server, "LOOK_DWELL_S", 5.0)
     fake = FakeTurn()
     monkeypatch.setattr(server, "turn", fake)

@@ -21,6 +21,7 @@ os.environ.setdefault("SIM_MODE", "stub")
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
+from bridge import config
 from bridge import vlm  # noqa: E402
 
 #: A real, faceless JPEG: the blur decodes every frame before it is uploaded.
@@ -34,7 +35,7 @@ def server(monkeypatch):
     import bridge.mcp_server as server
     from bridge.sdk import camera_relay
 
-    monkeypatch.setattr(server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(camera_relay, "latest_frame", lambda timeout=5.0: (JPEG, "videohub"))
     monkeypatch.setattr(
         server,
@@ -177,7 +178,7 @@ async def test_offline_verify_stays_an_error_but_shows_the_detector(server, offl
 
 
 async def test_off_the_robot_there_is_no_camera(server, monkeypatch):
-    monkeypatch.setattr(server, "SIM_MODE", "stub")
+    monkeypatch.setattr(config, "SIM_MODE", "stub")
     assert (await server.look())["error"] == "no_camera"
 
 

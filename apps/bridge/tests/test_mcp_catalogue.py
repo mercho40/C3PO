@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from bridge import config
 
 os.environ.setdefault("SIM_MODE", "stub")
 
@@ -245,7 +246,7 @@ async def test_say_is_no_longer_a_stub_on_real(monkeypatch):
     import bridge.mcp_server as server
     from bridge.sdk import g1_protocol, g1_rpc
 
-    monkeypatch.setattr(server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     seen: dict = {}
 
     def fake_speak(text: str, speaker_id: int):

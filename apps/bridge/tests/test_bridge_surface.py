@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
+from bridge import config
 
 SNAPSHOTS = Path(__file__).resolve().parent / "snapshots"
 UPDATE = os.environ.get("C3PO_UPDATE_SNAPSHOTS") == "1"
@@ -122,7 +123,7 @@ async def test_a_spoken_stop_reaches_the_stop_skill(monkeypatch):
         reached.set()
         return {"cancelled_task_ids": [], "cancelled_count": 0}
 
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(stop_skill, "run", run)
     loop = asyncio.get_running_loop()
     await asyncio.to_thread(mcp_server._local_stop, loop, "parar")

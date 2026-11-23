@@ -41,42 +41,17 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.tools import Tool
 from pydantic import Field, ValidationError, WithJsonSchema
 
-from bridge.env_file import load_env_file
+# Config first: bridge.config loads the bridge's `.env`, which SIM_MODE below and the
+# modules imported after it read at import time.
+from bridge import config
 
-# CONFIG BEFORE ANYTHING READS IT. This has to run above the `os.environ` reads
-# below, which is why it is here rather than in `main()` — SIM_MODE decides at
-# import time whether DDS is initialised at all.
-#
-# The bridge loads its own `.env` so that starting it does not require a shell
-# wrapper to `set -a; . ./.env` first. That wrapper was the main reason
-# `run_c3po` had to exist, and with it gone a unit file can name the interpreter
-# directly. Anything already in the environment wins — see `bridge/env_file.py`,
-# which also explains why systemd's own `EnvironmentFile=` cannot be used on
-# this file.
-load_env_file(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-
-# These must follow load_env_file above; ruff's E402 is silenced per import
+# These must follow the config import above; ruff's E402 is silenced per import
 # rather than for the file, so a genuinely misplaced import still fails.
 from bridge import face_gate, face_greet, motion_announce, safety, watchdog  # noqa: E402
 from bridge.skill_meta import meta as skill_meta  # noqa: E402
 from bridge.watchdog import get_watchdog  # noqa: E402
 
 log = structlog.get_logger(__name__)
-
-SIM_MODE = os.environ.get("SIM_MODE", "stub")
-ROBOT_HOST = os.environ.get("ROBOT_HOST", "127.0.0.1")
-DDS_DOMAIN_ID = int(os.environ.get("DDS_DOMAIN_ID", "0"))
-# Pin CycloneDDS to one NIC. Empty = autodetermine, correct on a dev machine.
-# Onboard the G1's Jetson this must be `eth0` — see `init_dds`.
-DDS_INTERFACE = os.environ.get("DDS_INTERFACE", "").strip() or None
-
-# Back↔bridge link: how this server is reached. Default is stdio (what Claude
-# Code's MCP client expects). Set BRIDGE_TRANSPORT=http to expose FastMCP's
-# streamable-http transport so `apps/back` can connect as an MCP client
-# (see apps/back/src/bridge/client.ts). stdio stays untouched either way.
-BRIDGE_TRANSPORT = os.environ.get("BRIDGE_TRANSPORT", "stdio")
-BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
-BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "8001"))
 
 # How much longer than the byte-derived estimate `say(wait_for_completion=True)`
 # will wait for `play_state` to drop. Playback runs slightly past the estimate
@@ -88,7 +63,7 @@ PLAYBACK_WAIT_MARGIN_S = 2.0
 # Initialize DDS up-front when not in stub mode. We do this at import time so
 # the subscriber is alive and accumulating LowState messages before the first
 # tool call lands.
-if SIM_MODE != "stub":
+if config.SIM_MODE != "stub":
     from bridge.sdk.connection import init_dds
     from bridge.sdk.state import get_sampler
 
@@ -96,10 +71,10 @@ if SIM_MODE != "stub":
     # it decides whether the config asks for unicast-to-one-peer, which is a
     # simulator workaround and a topic-hiding hazard onboard.
     init_dds(
-        robot_host=ROBOT_HOST,
-        domain_id=DDS_DOMAIN_ID,
-        interface=DDS_INTERFACE,
-        sim_mode=SIM_MODE,
+        robot_host=config.ROBOT_HOST,
+        domain_id=config.DDS_DOMAIN_ID,
+        interface=config.DDS_INTERFACE,
+        sim_mode=config.SIM_MODE,
     )
     # Warm the subscriber singleton so messages start flowing immediately.
     get_sampler()
@@ -188,8 +163,8 @@ mcp = GovernedMCP(
         "interrupt one task, stop_everything to halt all motion, and "
         "list_active_tasks to see what's in flight."
     ),
-    host=BRIDGE_HOST,
-    port=BRIDGE_PORT,
+    host=config.BRIDGE_HOST,
+    port=config.BRIDGE_PORT,
     # No idle reaper (mcp>=1.30 defaults to 30 min): apps/back fails the first call on a
     # reaped session, and that call can be PARAR. Loopback-only; max_sessions still bounds it.
     session_idle_timeout=None,
@@ -227,7 +202,7 @@ def get_state() -> dict:
     `motion_switcher` CheckMode before concluding the robot is broken
     (`docs/ROBOT-API.md` §3).
     """
-    log.info("get_state.called", sim_mode=SIM_MODE)
+    log.info("get_state.called", sim_mode=config.SIM_MODE)
     # Operator liveness. `get_state` is the poll an operator (or the console's
     # own 2s loop) runs while watching the robot, which is exactly the signal
     # watchdog.py's docstring nominates as meaningful. Without a call like
@@ -237,7 +212,7 @@ def get_state() -> dict:
     # LINK_TIMEOUT_S, then latch inert with nothing left to re-arm it.
     get_watchdog().touch()
 
-    if SIM_MODE == "stub":
+    if config.SIM_MODE == "stub":
         return {
             "pose": {
                 "x_meters_world": 0.0,
@@ -247,14 +222,14 @@ def get_state() -> dict:
             "battery_pct": 87.0,
             "posture": "standing",
             "faults": [],
-            "env": SIM_MODE,
+            "env": config.SIM_MODE,
             "stub": True,
         }
 
     from bridge.sdk.state import get_sampler
 
     state = get_sampler().get_state()
-    return {**state, "env": SIM_MODE, "stub": False}
+    return {**state, "env": config.SIM_MODE, "stub": False}
 
 
 # ---------------------------------------------------------------------------
@@ -324,10 +299,10 @@ async def walk_to(
         target=(target_x_meters_world_frame, target_y_meters_world_frame),
         stop_distance_m=stop_distance_m,
         timeout_s=timeout_s,
-        sim_mode=SIM_MODE,
+        sim_mode=config.SIM_MODE,
     )
 
-    if SIM_MODE == "stub":
+    if config.SIM_MODE == "stub":
         task_id = f"tsk_{uuid.uuid4().hex[:12]}"
         # `await`, not `time.sleep`: these handlers are async, and a blocking
         # sleep here freezes the whole MCP event loop — including the
@@ -342,7 +317,7 @@ async def walk_to(
                 f"{target_y_meters_world_frame:.2f}) and stop within "
                 f"{stop_distance_m:.2f} m. No motion executed."
             ),
-            "env": SIM_MODE,
+            "env": config.SIM_MODE,
             "stub": True,
         }
 
@@ -355,7 +330,7 @@ async def walk_to(
         timeout_s=timeout_s,
         ctx=ctx,
     )
-    return {**result, "env": SIM_MODE}
+    return {**result, "env": config.SIM_MODE}
 
 
 # ---------------------------------------------------------------------------
@@ -468,8 +443,8 @@ async def go_to_object(
     from bridge.sdk.state import get_sampler
     from bridge.skills import go_to_object as g
 
-    if SIM_MODE != "real":
-        return {"error": "not_applicable", "detail": f"real hardware only (SIM_MODE={SIM_MODE})"}
+    if config.SIM_MODE != "real":
+        return {"error": "not_applicable", "detail": f"real hardware only (SIM_MODE={config.SIM_MODE})"}
     objects, report_age = _live_detections()
     mem_pose, frame = _memory_pose()
     target = g.resolve(
@@ -501,7 +476,7 @@ async def go_to_object(
             "phase": "already_within_stop_distance",
             "result": {"arrived": True, "final_distance_m": aim_rng},
         }
-        return {**done, "via": "none", **g.report(done, target), "target": rounded, "env": SIM_MODE}
+        return {**done, "via": "none", **g.report(done, target), "target": rounded, "env": config.SIM_MODE}
     sampler = get_sampler()
     pose = (sampler.get_state() or {}).get("pose") or {}
     try:
@@ -608,7 +583,7 @@ async def go_to_object(
     via: dict[str, Any] = {"via": "walk_to"}
     if refusal is not None:
         via["nav2_refused"] = refusal["reason"]
-    return {**result, **via, **g.report(result, target), "target": rounded, "env": SIM_MODE}
+    return {**result, **via, **g.report(result, target), "target": rounded, "env": config.SIM_MODE}
 
 
 # ---------------------------------------------------------------------------
@@ -711,10 +686,10 @@ async def turn(
         delta_yaw_radians=delta_yaw_radians,
         timeout_s=timeout_s,
         tolerance_degrees=tolerance_degrees,
-        sim_mode=SIM_MODE,
+        sim_mode=config.SIM_MODE,
     )
 
-    if SIM_MODE == "stub":
+    if config.SIM_MODE == "stub":
         task_id = f"tsk_{uuid.uuid4().hex[:12]}"
         # `await`, not `time.sleep`: these handlers are async, and a blocking
         # sleep here freezes the whole MCP event loop — including the
@@ -728,7 +703,7 @@ async def turn(
                 f"[STUB] Would rotate by {delta_yaw_radians:+.4f} rad "
                 f"(~{delta_yaw_radians * 180 / 3.14159:.1f}°). No motion executed."
             ),
-            "env": SIM_MODE,
+            "env": config.SIM_MODE,
             "stub": True,
         }
 
@@ -740,7 +715,7 @@ async def turn(
         tolerance_radians=math.radians(tolerance_degrees),
         ctx=ctx,
     )
-    return {**result, "env": SIM_MODE}
+    return {**result, "env": config.SIM_MODE}
 
 
 # ---------------------------------------------------------------------------
@@ -825,10 +800,10 @@ async def walk_velocity(
         vy=vy,
         vyaw=vyaw,
         duration_s=duration_s,
-        sim_mode=SIM_MODE,
+        sim_mode=config.SIM_MODE,
     )
 
-    if SIM_MODE == "stub":
+    if config.SIM_MODE == "stub":
         task_id = f"tsk_{uuid.uuid4().hex[:12]}"
         # `await`, not `time.sleep`: these handlers are async, and a blocking
         # sleep here freezes the whole MCP event loop — including the
@@ -839,25 +814,25 @@ async def walk_velocity(
             "task_id": task_id,
             "status": "ok",
             "message": f"[STUB] Would command velocity ({vx}, {vy}, {vyaw}) for {duration_s}s.",
-            "env": SIM_MODE,
+            "env": config.SIM_MODE,
             "stub": True,
         }
 
-    if SIM_MODE != "real":
+    if config.SIM_MODE != "real":
         return {
             "status": "not_applicable",
             "message": (
-                f"walk_velocity is real-hardware-only (SIM_MODE={SIM_MODE}). "
+                f"walk_velocity is real-hardware-only (SIM_MODE={config.SIM_MODE}). "
                 "Use walk_to/turn in Isaac Sim — closed-loop pose control is "
                 "available there and is strictly better than this open-loop fallback."
             ),
-            "env": SIM_MODE,
+            "env": config.SIM_MODE,
         }
 
     from bridge.skills.walk_velocity import run as run_walk_velocity
 
     result = await run_walk_velocity(vx=vx, vy=vy, vyaw=vyaw, duration_s=duration_s, ctx=ctx)
-    return {**result, "env": SIM_MODE}
+    return {**result, "env": config.SIM_MODE}
 
 
 # ---------------------------------------------------------------------------
@@ -891,21 +866,21 @@ async def stop_everything() -> dict:
 
     Stub mode is a no-op aside from logging.
     """
-    log.warning("stop_everything.called", sim_mode=SIM_MODE)
+    log.warning("stop_everything.called", sim_mode=config.SIM_MODE)
 
-    if SIM_MODE == "stub":
+    if config.SIM_MODE == "stub":
         return {
             "cancelled_task_ids": [],
             "cancelled_count": 0,
             "stop_burst_duration_s": 0.0,
-            "env": SIM_MODE,
+            "env": config.SIM_MODE,
             "stub": True,
         }
 
     from bridge.skills.stop_everything import run as run_stop
 
     result = await run_stop()
-    return {**result, "env": SIM_MODE}
+    return {**result, "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -930,13 +905,13 @@ async def soft_stop() -> dict:
     to end a walk. If the result says `heard: false`, the robot did not
     acknowledge the stop: call stop_everything.
     """
-    log.warning("soft_stop.called", sim_mode=SIM_MODE)
-    if SIM_MODE == "stub":
-        return {"cancelled_task_ids": [], "cancelled_count": 0, "env": SIM_MODE, "stub": True}
+    log.warning("soft_stop.called", sim_mode=config.SIM_MODE)
+    if config.SIM_MODE == "stub":
+        return {"cancelled_task_ids": [], "cancelled_count": 0, "env": config.SIM_MODE, "stub": True}
 
     from bridge.skills.stop_everything import soft_stop as run_soft_stop
 
-    return {**await run_soft_stop(), "env": SIM_MODE}
+    return {**await run_soft_stop(), "env": config.SIM_MODE}
 
 
 # ---------------------------------------------------------------------------
@@ -984,7 +959,7 @@ async def damp(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("damp", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("damp", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1012,7 +987,7 @@ async def prepare(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("prepare", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("prepare", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1042,7 +1017,7 @@ async def wave(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("wave", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("wave", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1085,7 +1060,7 @@ async def point_at(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("point_at", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("point_at", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1113,7 +1088,7 @@ async def zero_torque(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("zero_torque", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("zero_torque", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1148,13 +1123,13 @@ async def check_motion_mode() -> dict:
     may be driving is an operator decision, not a tool call. See
     `docs/ROBOT-API.md` §3.
     """
-    log.info("check_motion_mode.called", sim_mode=SIM_MODE)
+    log.info("check_motion_mode.called", sim_mode=config.SIM_MODE)
 
-    if SIM_MODE != "real":
+    if config.SIM_MODE != "real":
         return {
             "mode_name": None,
-            "note": f"SIM_MODE={SIM_MODE} has no motion_switcher service.",
-            "env": SIM_MODE,
+            "note": f"SIM_MODE={config.SIM_MODE} has no motion_switcher service.",
+            "env": config.SIM_MODE,
         }
 
     import asyncio
@@ -1163,7 +1138,7 @@ async def check_motion_mode() -> dict:
 
     code, result = await asyncio.to_thread(g1_rpc.check_motion_mode)
     if result is None:
-        return {"mode_name": None, "rpc_code": code, "error": "no_answer", "env": SIM_MODE}
+        return {"mode_name": None, "rpc_code": code, "error": "no_answer", "env": config.SIM_MODE}
 
     name = result["name"]
     return {
@@ -1178,7 +1153,7 @@ async def check_motion_mode() -> dict:
             "service will still answer code 0. Needs SelectMode('ai'), which "
             "an operator must send."
         ),
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
     }
 
 
@@ -1217,7 +1192,7 @@ async def start_walking_waist(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("start_walking_waist", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("start_walking_waist", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1250,7 +1225,7 @@ async def balance_stand(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("balance_stand", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("balance_stand", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1277,7 +1252,7 @@ async def start_walking(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("start_walking", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("start_walking", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1304,7 +1279,7 @@ async def sit_g1(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("sit_g1", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("sit_g1", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1330,7 +1305,7 @@ async def lie_up(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("lie_up", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("lie_up", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1362,7 +1337,7 @@ async def squat(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("squat", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("squat", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1388,7 +1363,7 @@ async def shake_hand(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("shake_hand", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("shake_hand", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1415,7 +1390,7 @@ async def hug(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("hug", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("hug", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1441,7 +1416,7 @@ async def clap(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("clap", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("clap", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1467,7 +1442,7 @@ async def release_arm(ctx: Context) -> dict:
     """
     from bridge.skills._g1_request import run_g1_request
 
-    return {**await run_g1_request("release_arm", ctx), "env": SIM_MODE}
+    return {**await run_g1_request("release_arm", ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1505,7 +1480,7 @@ async def dance(ctx: Context) -> dict:
     """
     from bridge.skills.dance import run as run_dance
 
-    return {**await run_dance(ctx), "env": SIM_MODE}
+    return {**await run_dance(ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1584,7 +1559,7 @@ async def gesture(
 
     return {
         **await run_gesture(name, ctx, auto_release=auto_release, hold_s=hold_s),
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
     }
 
 
@@ -1716,7 +1691,7 @@ async def move_arm(
         }.items()
         if value is not None
     }
-    return {**await run_move_arm(side, joints_deg, hold=hold, ctx=ctx), "env": SIM_MODE}
+    return {**await run_move_arm(side, joints_deg, hold=hold, ctx=ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(
@@ -1742,7 +1717,7 @@ async def release_arm_control() -> dict:
     """
     from bridge.skills.arm_pose import release as run_release
 
-    return {**await run_release(), "env": SIM_MODE}
+    return {**await run_release(), "env": config.SIM_MODE}
 
 
 
@@ -1843,7 +1818,7 @@ async def set_hand(
     from bridge.skills.hand import run_set
 
     # dict keys are invariant: the Literal-keyed schema dict is a plain str-keyed one to run_set.
-    return {**await run_set(side, closure, shape=shape, fingers=cast("dict[str, float] | None", fingers)), "env": SIM_MODE}
+    return {**await run_set(side, closure, shape=shape, fingers=cast("dict[str, float] | None", fingers)), "env": config.SIM_MODE}
 
 
 #: What run_sequence may chain: the arm, the hand, the gestures and speech. Not walking,
@@ -2023,7 +1998,7 @@ async def run_sequence(
         group = [i] + ([i + 1] if i + 1 < len(planned) and planned[i + 1][4] else [])
         for k in group:
             name, _args, checked, tool, _with = planned[k]
-            end = {"step": k, "tool": name, "done": done, "env": SIM_MODE}
+            end = {"step": k, "tool": name, "done": done, "env": config.SIM_MODE}
             if refusal := safety.tool_refusal(name, tool.meta, confirmed=True):
                 return {"status": "refused", "reason": "step_refused", "detail": refusal, **end}
             # Spoken here, as call_tool would: no chainable tool is in motion_announce.SELF, so
@@ -2041,7 +2016,7 @@ async def run_sequence(
             results = [await lead, partner]
         for k, result in zip(group, results, strict=True):
             name = planned[k][0]
-            end = {"step": k, "tool": name, "done": done, "env": SIM_MODE}
+            end = {"step": k, "tool": name, "done": done, "env": config.SIM_MODE}
             if isinstance(result, dict) and result.pop("_raised", False):
                 return {"status": "failed", "reason": "step_failed", "detail": result["error"], **end}
             done.append({"tool": name, "result": result})
@@ -2054,7 +2029,7 @@ async def run_sequence(
             # set_hand only publishes a target: on 2026-11-16 a close then an open went out in
             # the same second and the fingers never visibly closed. with_previous is its group.
             await asyncio.sleep(CLOSE_SETTLE_S)
-    out: dict[str, Any] = {"status": "completed", "done": done, "env": SIM_MODE}
+    out: dict[str, Any] = {"status": "completed", "done": done, "env": config.SIM_MODE}
     if not keep_arm_up and SEQUENCE_ARM_HOLD_S > 0 and _leaves_arm_held(planned):
         from bridge import estop
 
@@ -2097,7 +2072,7 @@ async def open_hands() -> dict:
     """
     from bridge.skills.hand import run_open
 
-    return {**await run_open(), "env": SIM_MODE}
+    return {**await run_open(), "env": config.SIM_MODE}
 
 
 # ---------------------------------------------------------------------------
@@ -2256,15 +2231,15 @@ async def say(
     for anything that must be interruptible — `PlayStream` is, and its
     `stream_id` is the interrupt model (same id concatenates, new id barges in).
     """
-    log.info("say.called", text=text, language=language, sim_mode=SIM_MODE)
+    log.info("say.called", text=text, language=language, sim_mode=config.SIM_MODE)
 
-    if SIM_MODE != "real":
+    if config.SIM_MODE != "real":
         return {
             "status": "ok",
             "spoken": text,
             "language": language,
-            "note": f"SIM_MODE={SIM_MODE} has no speaker — logged, not spoken.",
-            "env": SIM_MODE,
+            "note": f"SIM_MODE={config.SIM_MODE} has no speaker — logged, not spoken.",
+            "env": config.SIM_MODE,
             "stub": True,
         }
 
@@ -2293,7 +2268,7 @@ async def say(
                     "unintelligibly while reporting success. Install Piper, or "
                     "call again with language='english' and English text."
                 ),
-                "env": SIM_MODE,
+                "env": config.SIM_MODE,
                 "stub": False,
             }
 
@@ -2310,7 +2285,7 @@ async def say(
                     "spoken": None,
                     "language": language,
                     "note": "A stop came while this waited its turn: not spoken.",
-                    "env": SIM_MODE,
+                    "env": config.SIM_MODE,
                     "stub": False,
                 }
             # One stream_id per utterance (a new id would barge in; the queue makes that
@@ -2345,7 +2320,7 @@ async def say(
                     "language": language,
                     "error": "spanish_tts_failed",
                     "detail": str(exc),
-                    "env": SIM_MODE,
+                    "env": config.SIM_MODE,
                     "stub": False,
                 }
 
@@ -2391,7 +2366,7 @@ async def say(
             "stream_id": stream_id,
             "via": "piper+playstream",
             "error": None if code == 0 else f"rpc_error_code_{code}",
-            "env": SIM_MODE,
+            "env": config.SIM_MODE,
             "stub": False,
         }
 
@@ -2411,7 +2386,7 @@ async def say(
         "rpc_data": data,
         "via": "firmware_tts",
         "error": None if code == 0 else f"rpc_error_code_{code}",
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
         "stub": False,
     }
 
@@ -2485,7 +2460,7 @@ def arm_navigation(
     `cmd_vel_age_s` tells you: `null` means nothing is planning, so arming was
     pointless rather than dangerous.
     """
-    log.warning("arm_navigation.called", seconds=seconds, reason=reason, sim_mode=SIM_MODE)
+    log.warning("arm_navigation.called", seconds=seconds, reason=reason, sim_mode=config.SIM_MODE)
 
     from bridge.sdk.perception_link import get_link
 
@@ -2519,7 +2494,7 @@ def arm_navigation(
             "with the e-stop in reach. The gate closes itself in "
             f"{seconds:g}s, or immediately on stop_everything."
         ),
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
     }
 
 
@@ -2549,7 +2524,7 @@ def disarm_navigation(
     already underway. `stop_everything` is what halts the robot, and it closes
     this gate as its first act.
     """
-    log.warning("disarm_navigation.called", reason=reason, sim_mode=SIM_MODE)
+    log.warning("disarm_navigation.called", reason=reason, sim_mode=config.SIM_MODE)
 
     from bridge.sdk.perception_link import get_link
 
@@ -2565,7 +2540,7 @@ def disarm_navigation(
             "all of it. This prevents motion — it does not arrest motion already "
             "in progress. Use stop_everything for that."
         ),
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
     }
 
 
@@ -2661,7 +2636,7 @@ def _nav_cancel_quiet(goal_id: str | None) -> None:
 
 def _current_nav_pose() -> dict | None:
     """The robot in Nav2's global frame, for remember_landmark. None if unknown."""
-    if SIM_MODE == "stub":
+    if config.SIM_MODE == "stub":
         return None
     try:
         from bridge.sdk.nav_link import get_nav_link
@@ -2759,7 +2734,7 @@ async def _start_navigation(
     refusal = _nav_refusal()
     if refusal is not None:
         log.warning("navigate_to.refused", reason=refusal["reason"], target=target)
-        return {**refusal, "target": target, "env": SIM_MODE}
+        return {**refusal, "target": target, "env": config.SIM_MODE}
 
     nav = get_nav_link()
     status, _ = nav.latest_status()
@@ -2790,7 +2765,7 @@ async def _start_navigation(
         "target": task.result["target"],
         "next": "Poll navigation_status() for progress; cancel_navigation() or "
         "stop_everything to stop.",
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
     }
 
 
@@ -2846,10 +2821,10 @@ async def navigate_to(
     the gate closes mid-walk (TTL, disarm, stop) the goal is cancelled.
     """
     target = {"kind": "pose"}
-    log.warning("navigate_to.called", x=x, y=y, yaw=yaw, frame=frame, sim_mode=SIM_MODE)
-    if SIM_MODE == "stub":
+    log.warning("navigate_to.called", x=x, y=y, yaw=yaw, frame=frame, sim_mode=config.SIM_MODE)
+    if config.SIM_MODE == "stub":
         return {"status": "stub", "message": f"[STUB] Would navigate to ({x:.2f}, {y:.2f}).",
-                "env": SIM_MODE, "stub": True}
+                "env": config.SIM_MODE, "stub": True}
     return await _start_navigation(x, y, yaw, frame, target)
 
 
@@ -2887,13 +2862,13 @@ async def navigate_to_landmark(
     from bridge.skills.landmarks import get_store as get_landmark_store
     from bridge.skills.landmarks import nav_target
 
-    log.warning("navigate_to_landmark.called", name=name, sim_mode=SIM_MODE)
+    log.warning("navigate_to_landmark.called", name=name, sim_mode=config.SIM_MODE)
     landmark = get_landmark_store().recall(name)
     if landmark is None:
-        return {"status": "not_found", "name": name, "env": SIM_MODE}
-    if SIM_MODE == "stub":
+        return {"status": "not_found", "name": name, "env": config.SIM_MODE}
+    if config.SIM_MODE == "stub":
         return {"status": "stub", "message": f"[STUB] Would navigate to landmark {name!r}.",
-                "env": SIM_MODE, "stub": True}
+                "env": config.SIM_MODE, "stub": True}
 
     from bridge.sdk.nav_link import get_nav_link
 
@@ -2904,7 +2879,7 @@ async def navigate_to_landmark(
             f"remember_landmark({name!r}) again."
         )
         return {"status": "refused", "reason": why, "name": name, "how_to_fix": fix,
-                "env": SIM_MODE}
+                "env": config.SIM_MODE}
     return await _start_navigation(
         pose["x"], pose["y"], pose["yaw"], pose["frame"], {"kind": "landmark", "name": name}
     )
@@ -2930,8 +2905,8 @@ def navigation_status() -> dict:
     succeeded / aborted / canceled / rejected), distance_remaining_m, eta_s and
     recoveries. `task` is the newest navigate_to task from the task registry.
     """
-    if SIM_MODE == "stub":
-        return {"relay_online": False, "env": SIM_MODE, "stub": True}
+    if config.SIM_MODE == "stub":
+        return {"relay_online": False, "env": config.SIM_MODE, "stub": True}
     from bridge.sdk.nav_link import get_nav_link
     from bridge.sdk.perception_link import get_link
     from bridge.skills.task_runtime import get_registry
@@ -2951,7 +2926,7 @@ def navigation_status() -> dict:
                  "arm_expires_in_s": gate["arm_expires_in_s"]},
         "task": nav_tasks[0].to_dict() if nav_tasks else None,
         "link": get_nav_link().diagnostics(),
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
     }
 
 
@@ -2977,15 +2952,15 @@ def cancel_navigation() -> dict:
     """
     from bridge.skills.task_runtime import get_registry
 
-    log.warning("cancel_navigation.called", sim_mode=SIM_MODE)
+    log.warning("cancel_navigation.called", sim_mode=config.SIM_MODE)
     registry = get_registry()
     cancelled = [
         t.task_id for t in registry.list_active()
         if t.skill_name == "navigate_to" and registry.cancel(t.task_id)
     ]
-    if SIM_MODE != "stub":
+    if config.SIM_MODE != "stub":
         _nav_cancel_quiet(None)
-    return {"status": "ok", "cancelled_task_ids": cancelled, "env": SIM_MODE}
+    return {"status": "ok", "cancelled_task_ids": cancelled, "env": config.SIM_MODE}
 
 
 # ===========================================================================
@@ -3062,15 +3037,15 @@ async def listen(
     remember that the whole bridge — including `stop_everything` — waits with
     you for that long.
     """
-    if SIM_MODE != "real":
+    if config.SIM_MODE != "real":
         return {
             "status": "ok",
             "heard": [],
             "transcript": "",
             "stop_heard": None,
             "mic_ever_open": False,
-            "note": f"SIM_MODE={SIM_MODE} has no microphone.",
-            "env": SIM_MODE,
+            "note": f"SIM_MODE={config.SIM_MODE} has no microphone.",
+            "env": config.SIM_MODE,
             "stub": True,
         }
 
@@ -3088,7 +3063,7 @@ async def listen(
                 "transcript": "",
                 "error": "stt_not_installed",
                 "detail": why,
-                "env": SIM_MODE,
+                "env": config.SIM_MODE,
                 "stub": False,
             }
         listener.start()
@@ -3138,7 +3113,7 @@ async def listen(
             "mean nothing was recorded — do not read it as a quiet room. Holding "
             "L1+L2 is the known way to open the feed."
         ),
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
         "stub": False,
     }
 
@@ -3205,7 +3180,7 @@ def _current_frame_tick() -> int | None:
     None when unknown (stub mode, or no lowstate yet) — callers must treat that
     as "cannot tell", never as "frame is fine".
     """
-    if SIM_MODE == "stub":
+    if config.SIM_MODE == "stub":
         return None
     try:
         from bridge.sdk.state import get_sampler
@@ -3599,20 +3574,20 @@ async def look_around(
             "status": "failed",
             "error": "perception_offline",
             "message": "No fresh perception report with a pose: nothing to look with.",
-            "env": SIM_MODE,
+            "env": config.SIM_MODE,
         }
     if (running := active_walk()) is not None:
         return {
             "status": "failed",
             "error": "walk_task_active",
             "message": f"walk task {running} is still running; cancel_task it or wait.",
-            "env": SIM_MODE,
+            "env": config.SIM_MODE,
         }
 
     memory = get_object_memory()
     before = {e.id: e.last_seen for e in memory.list_all()}
     started = time.time()
-    dwell = 0.0 if SIM_MODE == "stub" else LOOK_DWELL_S
+    dwell = 0.0 if config.SIM_MODE == "stub" else LOOK_DWELL_S
     steps = max(1, round(total_degrees / LOOK_STEP_DEG))
     step_rad = math.radians(total_degrees / steps)
 
@@ -3689,7 +3664,7 @@ async def look_around(
             if e.id in before and e.last_seen > before[e.id]
         ],
         "forgotten": sorted(set(before) - after_ids),
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
     }
 
 
@@ -3714,7 +3689,7 @@ def surroundings_snapshot() -> dict:
     from bridge import world_model
     from bridge.skills.landmarks import get_store
 
-    if SIM_MODE == "stub":
+    if config.SIM_MODE == "stub":
         return world_model.offline().to_dict()
 
     # Pose is the one source that exists today; perception plugs in beside it
@@ -3942,10 +3917,10 @@ def _map_xy(pose: dict, bearing_deg: float, range_m: float) -> list[float] | Non
 
 async def _grab_frame() -> tuple[bytes | None, str | None, dict | None]:
     """(jpeg, source, None), or (None, source, error payload)."""
-    if SIM_MODE != "real":
+    if config.SIM_MODE != "real":
         return None, None, {
             "error": "no_camera",
-            "detail": f"the head camera is real-hardware only (SIM_MODE={SIM_MODE})",
+            "detail": f"the head camera is real-hardware only (SIM_MODE={config.SIM_MODE})",
         }
     from bridge.sdk import camera_relay
 
@@ -4304,7 +4279,7 @@ async def pick(
     """
     from bridge.skills import manipulation
 
-    return {**await manipulation.pick(label, side, shape, track_id, ctx=ctx), "env": SIM_MODE}
+    return {**await manipulation.pick(label, side, shape, track_id, ctx=ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(meta=skill_meta(**{**_PICK_META, "expected_duration_s": 12.0}))
@@ -4323,7 +4298,7 @@ async def place(
     hand the arm back (it lowers beside the body)."""
     from bridge.skills import manipulation
 
-    return {**await manipulation.place(side, onto, drop_m, ctx=ctx), "env": SIM_MODE}
+    return {**await manipulation.place(side, onto, drop_m, ctx=ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 8.0}))
@@ -4336,7 +4311,7 @@ async def handover(ctx: Context, side: _Side = "right") -> dict:
     """
     from bridge.skills import manipulation
 
-    return {**await manipulation.handover(side, ctx=ctx), "env": SIM_MODE}
+    return {**await manipulation.handover(side, ctx=ctx), "env": config.SIM_MODE}
 
 
 @mcp.tool(meta=skill_meta(**{**_ARM_META, "expected_duration_s": 8.0}))
@@ -4362,7 +4337,7 @@ async def reach(
 
     return {
         **await manipulation.reach(side, (x_m, y_m, z_m), frame, fingers, hold, ctx=ctx),
-        "env": SIM_MODE,
+        "env": config.SIM_MODE,
     }
 
 
@@ -4381,7 +4356,7 @@ async def arm_state() -> dict:
     """Where each hand is (forward kinematics of the measured joints, torso frame). Moves nothing."""
     from bridge.skills import manipulation
 
-    return {**manipulation.arm_state(), "env": SIM_MODE}
+    return {**manipulation.arm_state(), "env": config.SIM_MODE}
 
 
 # ===========================================================================
@@ -5056,8 +5031,8 @@ async def voice_audio_output(request):  # noqa: ANN001, ANN201 - starlette types
     """Play one 16 kHz PCM chunk, or stop C3PO-owned playback on DELETE."""
     from starlette.responses import JSONResponse
 
-    if SIM_MODE != "real":
-        return JSONResponse({"status": "ok", "stub": True, "env": SIM_MODE})
+    if config.SIM_MODE != "real":
+        return JSONResponse({"status": "ok", "stub": True, "env": config.SIM_MODE})
 
     from bridge.sdk import g1_rpc
 
@@ -5180,11 +5155,11 @@ def _camera_unavailable(origin: str | None = None):  # noqa: ANN202 - starlette 
 
     from bridge.sdk.camera_relay import camera_headers
 
-    if SIM_MODE != "real":
+    if config.SIM_MODE != "real":
         return JSONResponse(
             {
                 "error": "the head camera is real-hardware only",
-                "sim_mode": SIM_MODE,
+                "sim_mode": config.SIM_MODE,
                 "hint": (
                     "this feed reads the G1's videohub RPC; the sim's cameras are "
                     "teleimager WebRTC servers on 60001-60003 (apps/web/README.md)"
@@ -5456,17 +5431,17 @@ async def _run_streamable_http() -> None:
 
     from bridge.skills.stop_everything import watching_foreign_stops
 
-    config = uvicorn.Config(
+    served = uvicorn.Config(
         _http_app(),
-        host=BRIDGE_HOST,
-        port=BRIDGE_PORT,
+        host=config.BRIDGE_HOST,
+        port=config.BRIDGE_PORT,
         log_level=mcp.settings.log_level.lower(),
         # MJPEG relays and SSE never end on their own: without a bound, every restart
         # waited out the unit's TimeoutStopSec=20 and was SIGKILLed past its cleanup.
         timeout_graceful_shutdown=3,
     )
     async with watching_foreign_stops(), face_greet.greeting_operator(_greet, _speech_busy):
-        await uvicorn.Server(config).serve()
+        await uvicorn.Server(served).serve()
 
 
 async def _announce_speak(text: str) -> Any:
@@ -5494,7 +5469,7 @@ def _warm_face() -> None:
     console switch, an enrollment or the greeter's first tick did it while serving, and
     would spend the first gated call's TIMEOUT_S."""
     face = face_gate.settings()
-    if face["gate"] or (SIM_MODE != "stub" and face_gate.models_installed()):
+    if face["gate"] or (config.SIM_MODE != "stub" and face_gate.models_installed()):
         face_gate.warm()
     if face["gate"]:
         log.warning("face_gate.on", tools=sorted(face_gate.gated_tools()), max_m=face_gate.MAX_M)
@@ -5511,7 +5486,7 @@ def _open_hands_at_boot() -> None:
     """Open the BrainCo hands once, on real hardware: they hold their last command and a
     restarted bridge cannot know a grip (shake_hand, a pick) was left closed. Same call as
     stop_everything's, on its own thread so a slow DDS write never delays serving."""
-    if SIM_MODE != "real":
+    if config.SIM_MODE != "real":
         return
     import threading
 
@@ -5545,9 +5520,9 @@ def main() -> None:
     # a dead link. Arming it now would cancel every walk_to mid-stride. It
     # becomes correct once long skills return a task_id immediately and the
     # operator's progress polls become a real liveness signal.
-    if SIM_MODE == "real" and watchdog.ENABLED:
+    if config.SIM_MODE == "real" and watchdog.ENABLED:
         get_watchdog().start()
-    elif SIM_MODE == "real":
+    elif config.SIM_MODE == "real":
         log.info("watchdog.disabled", reason="LINK_WATCHDOG not set")
 
     # JOIN DOMAIN 42. Nothing did this before, and the omission was invisible
@@ -5578,7 +5553,7 @@ def main() -> None:
     # one that cannot see its costmap — and this is the first thing that runs
     # after a reboot, where DDS is exactly what is flaky (see the eth0 boot
     # race in docs/OPERATIONS.md).
-    if SIM_MODE in ("real", "isaac"):
+    if config.SIM_MODE in ("real", "isaac"):
         # Local import for the same reason the routes use one: module scope must
         # stay free of CycloneDDS so the bridge imports on a laptop.
         from bridge.sdk.perception_link import get_link
@@ -5666,7 +5641,7 @@ def main() -> None:
         # Real only, not isaac: `videohub_pc4` is a service on the physical
         # robot's Jetson. In the sim the cameras are teleimager WebRTC servers
         # and a different page speaks to them.
-        if SIM_MODE == "real":
+        if config.SIM_MODE == "real":
             try:
                 from bridge.sdk.videohub import get_camera
 
@@ -5674,17 +5649,17 @@ def main() -> None:
             except Exception:
                 log.exception("videohub.camera.start_failed")
 
-    if BRIDGE_TRANSPORT in ("http", "streamable-http"):
+    if config.BRIDGE_TRANSPORT in ("http", "streamable-http"):
         log.info(
             "c3po-bridge.start",
-            sim_mode=SIM_MODE,
+            sim_mode=config.SIM_MODE,
             transport="streamable-http",
-            host=BRIDGE_HOST,
-            port=BRIDGE_PORT,
+            host=config.BRIDGE_HOST,
+            port=config.BRIDGE_PORT,
         )
         asyncio.run(_run_streamable_http())
     else:
-        log.info("c3po-bridge.start", sim_mode=SIM_MODE, transport="stdio")
+        log.info("c3po-bridge.start", sim_mode=config.SIM_MODE, transport="stdio")
         asyncio.run(_run_stdio())  # default transport is stdio
 
 

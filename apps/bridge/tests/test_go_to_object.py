@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from bridge import config
 from bridge.skills import go_to_object as g
 
 
@@ -118,7 +119,7 @@ def tool(monkeypatch):
         t.walks.append(kwargs)
         return t.walk_result
 
-    monkeypatch.setattr(server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(server, "NAV_POLL_S", 0.01)
     monkeypatch.setattr(server, "_memory_pose", lambda: t.mem_pose)
     monkeypatch.setattr(nav_link, "_nav_singleton", t.nav)
@@ -196,7 +197,7 @@ async def test_no_odometry_pose_does_not_walk(tool):
 
 
 async def test_stub_mode_is_not_applicable(tool, monkeypatch):
-    monkeypatch.setattr(tool.server, "SIM_MODE", "stub")
+    monkeypatch.setattr(config, "SIM_MODE", "stub")
     tool.objects = [chair(2.0)]
     out = await tool.server.go_to_object(ctx=None, query="chair", stop_distance_m=0.7)
     assert out["error"] == "not_applicable"

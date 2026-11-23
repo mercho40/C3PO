@@ -19,6 +19,7 @@ import time
 
 import pytest
 
+from bridge import config
 from bridge import estop
 
 
@@ -347,8 +348,8 @@ def test_main_serves_each_transport_through_its_watched_runner(monkeypatch, tran
     async def fake_runner():
         ran.append(runner)
 
-    monkeypatch.setattr(server, "SIM_MODE", "stub")
-    monkeypatch.setattr(server, "BRIDGE_TRANSPORT", transport)
+    monkeypatch.setattr(config, "SIM_MODE", "stub")
+    monkeypatch.setattr(config, "BRIDGE_TRANSPORT", transport)
     monkeypatch.setattr(server, runner, fake_runner)
 
     server.main()

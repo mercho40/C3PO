@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from bridge import config
 from bridge.skills import hand
 from bridge.teleop import hands
 
@@ -171,7 +172,7 @@ def test_a_restarted_bridge_opens_the_hands(monkeypatch):
     from bridge import mcp_server
 
     fake = FakeHandDriver(sides=("left", "right"))
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(hands, "get_driver", lambda: fake)
 
     mcp_server._open_hands_at_boot()

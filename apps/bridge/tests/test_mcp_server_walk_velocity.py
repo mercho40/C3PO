@@ -18,6 +18,7 @@ import typing
 
 import pytest
 
+from bridge import config
 from bridge import mcp_server
 from bridge.skills import walk_velocity as walk_velocity_skill
 
@@ -53,7 +54,7 @@ def test_mcp_tool_bounds_match_skill_duration_ceiling():
 
 @pytest.mark.asyncio
 async def test_stub_mode_returns_fake_result_without_dispatching(monkeypatch):
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "stub")
+    monkeypatch.setattr(config, "SIM_MODE", "stub")
     called = []
     monkeypatch.setattr(walk_velocity_skill, "run", lambda **kw: called.append(kw))
 
@@ -67,7 +68,7 @@ async def test_stub_mode_returns_fake_result_without_dispatching(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_isaac_mode_is_not_applicable_and_does_not_dispatch(monkeypatch):
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "isaac")
+    monkeypatch.setattr(config, "SIM_MODE", "isaac")
     called = []
     monkeypatch.setattr(walk_velocity_skill, "run", lambda **kw: called.append(kw))
 
@@ -80,7 +81,7 @@ async def test_isaac_mode_is_not_applicable_and_does_not_dispatch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_real_mode_dispatches_to_the_skill_and_tags_env(monkeypatch):
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
 
     async def fake_run(vx, vy, vyaw, duration_s, ctx=None):
         return {"status": "completed", "phase": "duration_elapsed"}

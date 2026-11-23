@@ -8,6 +8,7 @@ import threading
 
 import pytest
 
+from bridge import config
 from bridge import mcp_server
 from bridge.sdk import audio_msg, g1_rpc
 from bridge.skills import tts
@@ -30,7 +31,7 @@ class _Link:
 def robot(monkeypatch):
     played: list[str] = []
     link = _Link()
-    monkeypatch.setattr(mcp_server, "SIM_MODE", "real")
+    monkeypatch.setattr(config, "SIM_MODE", "real")
     monkeypatch.setattr(tts, "available", lambda: (True, ""))
     monkeypatch.setattr(tts, "synthesize", lambda text: text.encode())
     monkeypatch.setattr(tts, "duration_s", lambda pcm: 5.0)
