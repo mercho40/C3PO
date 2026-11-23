@@ -770,6 +770,7 @@ async def test_the_voice_route_and_listen_look_up_audio_devices_off_the_event_lo
     # describe_audio_source runs `arecord -l` (5 s timeout); on the loop it stalls the 50 Hz
     # arm hold and the stop.
     from bridge import mcp_server
+    from bridge.tools import listen as listen_tools
     from bridge.skills import listen as listen_mod
 
     loop_thread = threading.get_ident()
@@ -787,7 +788,7 @@ async def test_the_voice_route_and_listen_look_up_audio_devices_off_the_event_lo
     monkeypatch.setattr(lis, "start", lambda: None)
     response = await mcp_server.voice_json(None)
     assert response.status_code == 200
-    await mcp_server.listen(wait_s=0)
+    await listen_tools.listen(wait_s=0)
     assert len(threads) == 2 and loop_thread not in threads
 
 

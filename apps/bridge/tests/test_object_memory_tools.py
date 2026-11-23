@@ -13,6 +13,7 @@ import pathlib
 
 import pytest
 
+from bridge.tools import locomotion
 from bridge import config, estop, object_memory as om
 import bridge.mcp_server as server
 from bridge.sdk import perception_link as pl
@@ -104,7 +105,7 @@ class FakeTurn:
 async def test_look_around_refuses_without_perception(monkeypatch, mem):
     monkeypatch.setattr(server, "_memory_pose", lambda: (None, None))
     fake = FakeTurn()
-    monkeypatch.setattr(server, "turn", fake)
+    monkeypatch.setattr(locomotion, "turn", fake)
     out = await server.look_around(None, total_degrees=360)
     assert out["error"] == "perception_offline"
     assert fake.calls == [], "turning blind updates nothing; it must not move"
@@ -114,7 +115,7 @@ async def test_look_around_refuses_without_perception(monkeypatch, mem):
 async def test_look_around_sweeps_in_steps_and_reports_what_is_new(monkeypatch, mem):
     see(mem, "tv", 3.0, 0.0)
     fake = FakeTurn(on_call=lambda n: see(mem, "bottle", 2.0, 0.0) if n == 3 else None)
-    monkeypatch.setattr(server, "turn", fake)
+    monkeypatch.setattr(locomotion, "turn", fake)
 
     out = await server.look_around(None, total_degrees=360)
 
@@ -128,7 +129,7 @@ async def test_look_around_sweeps_in_steps_and_reports_what_is_new(monkeypatch, 
 @pytest.mark.asyncio
 async def test_look_around_stops_when_stop_everything_is_pressed(monkeypatch, mem):
     fake = FakeTurn(on_call=lambda n: estop.signal_stop())
-    monkeypatch.setattr(server, "turn", fake)
+    monkeypatch.setattr(locomotion, "turn", fake)
     out = await server.look_around(None, total_degrees=360)
     assert len(fake.calls) == 1
     assert out["status"] == "stopped"
@@ -138,7 +139,7 @@ async def test_look_around_stops_when_stop_everything_is_pressed(monkeypatch, me
 @pytest.mark.asyncio
 async def test_look_around_stops_at_the_first_failed_turn(monkeypatch, mem):
     fake = FakeTurn(status="failed")
-    monkeypatch.setattr(server, "turn", fake)
+    monkeypatch.setattr(locomotion, "turn", fake)
     out = await server.look_around(None, total_degrees=180)
     assert len(fake.calls) == 1
     assert out["status"] == "stopped"
@@ -161,7 +162,7 @@ async def test_a_cancel_during_a_dwell_ends_the_sweep_at_once(monkeypatch, mem):
     monkeypatch.setattr(config, "SIM_MODE", "real")  # real dwells
     monkeypatch.setattr(server, "LOOK_DWELL_S", 5.0)
     fake = FakeTurn()
-    monkeypatch.setattr(server, "turn", fake)
+    monkeypatch.setattr(locomotion, "turn", fake)
 
     sweep = asyncio.ensure_future(server.look_around(None, total_degrees=360))
     await asyncio.sleep(0.05)  # inside the first dwell
@@ -193,7 +194,7 @@ async def test_a_cancel_mid_turn_stops_the_turn(monkeypatch, mem):
             t.status = "completed"
         return {"status": t.status, "phase": t.status, "error": None}
 
-    monkeypatch.setattr(server, "turn", slow_turn)
+    monkeypatch.setattr(locomotion, "turn", slow_turn)
     sweep = asyncio.ensure_future(server.look_around(None, total_degrees=360))
     await asyncio.sleep(0.05)  # inside the first turn
     [task] = _look_around_tasks()
@@ -206,7 +207,7 @@ async def test_a_cancel_mid_turn_stops_the_turn(monkeypatch, mem):
 
 @pytest.mark.asyncio
 async def test_a_finished_sweep_leaves_no_running_task(monkeypatch, mem):
-    monkeypatch.setattr(server, "turn", FakeTurn())
+    monkeypatch.setattr(locomotion, "turn", FakeTurn())
     out = await server.look_around(None, total_degrees=120)
     assert out["status"] == "ok"
     assert _look_around_tasks() == []
@@ -257,7 +258,7 @@ async def test_look_around_is_refused_while_a_walk_runs(monkeypatch, mem):
     from bridge.skills.task_runtime import get_registry
 
     fake = FakeTurn()
-    monkeypatch.setattr(server, "turn", fake)
+    monkeypatch.setattr(locomotion, "turn", fake)
     walking = get_registry().create("walk_to")
     try:
         out = await server.look_around(None, total_degrees=360)

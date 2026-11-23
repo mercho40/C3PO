@@ -209,7 +209,7 @@ def test_stub_get_state_declares_its_env(tools):
     A caller that cannot tell stub data from robot data will eventually treat
     one as the other. Both `env` and `stub` are part of that contract.
     """
-    from bridge.mcp_server import get_state
+    from bridge.tools.state import get_state
 
     payload = get_state()
     assert payload["env"] == "stub"
@@ -229,7 +229,7 @@ def test_stub_get_state_shape_drift_is_recorded():
     than as a side effect of a test. If you do fix it, this test should fail and
     be deleted.
     """
-    from bridge.mcp_server import get_state
+    from bridge.tools.state import get_state
 
     payload = get_state()
     assert "z_meters_world" not in payload["pose"], "stub pose gained z — update the contract note"

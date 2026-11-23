@@ -124,7 +124,7 @@ def _sampled(*, data: bool) -> state.StateSampler:
 
 
 def test_stub_get_state_is_a_robot_state():
-    from bridge.mcp_server import get_state
+    from bridge.tools.state import get_state
 
     _conforms(state.RobotState, get_state())
 
