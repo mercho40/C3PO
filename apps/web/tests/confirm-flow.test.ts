@@ -185,6 +185,7 @@ describe("no surface asks the agent to retry", () => {
   for (const file of [
     "../src/lib/components/chat/tool-card.svelte",
     "../src/routes/(protected)/chat/+page.svelte",
+    "../src/routes/(protected)/chat/chat-session.svelte.ts",
     "../src/lib/chat/agent-transport.ts",
     "../src/lib/robot/vr-voice.svelte.ts",
   ])
