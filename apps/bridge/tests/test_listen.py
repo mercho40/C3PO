@@ -160,10 +160,40 @@ def test_unrelated_spanish_does_not_trigger_a_stop():
 
 
 # --- the loop (robot only) --------------------------------------------------
+#
+# These drive MicListener, the loop the bridge actually runs, with real models
+# and synthesised speech in place of the microphone. tests/test_mic_listener.py
+# covers the same thread with fakes everywhere; this is where the models meet it.
 
 
 def _frames(pcm: bytes, size: int = listen.FRAME_BYTES):
     return (pcm[i : i + size] for i in range(0, len(pcm), size))
+
+
+# A live mic never ends, so the loop has no end-of-stream flush: Vosk closes an
+# utterance when the speaker pauses. A finite clip needs that pause appended.
+_PAUSE = b"\x00\x00" * listen.MIC_SAMPLE_RATE * 2
+
+
+def _hear(clip: bytes, *, whisper: bool) -> tuple[list[str], list[str]]:
+    """Run the production listener over `clip`; return (speech texts, stop phrases)."""
+    import time
+
+    lis = listen.MicListener(
+        whisper=whisper,
+        source=lambda: _frames(clip + _PAUSE),
+        playback_active=lambda: False,
+        stt_mode="local",
+    )
+    stops: list[str] = []
+    lis.start(on_stop=stops.append)
+    deadline = time.monotonic() + 120
+    while lis.is_running() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not lis.is_running(), "listener still running after 120 s"
+    assert lis.diagnostics().get("error") is None, lis.diagnostics()
+    speech = [i["text"] for i in lis.poll() if i["kind"] == "speech"]
+    return speech, stops
 
 
 @needs_audio
@@ -176,9 +206,8 @@ def test_the_loop_transcribes_a_command_and_does_not_stop_on_it():
     """
     from bridge.skills import tts
 
-    heard, stops = [], []
     clip = tts.synthesize("Hola C3PO. Caminá hasta la puerta y buscá la caja azul.", deterministic=True)
-    listen.listen_loop(_frames(clip), on_text=heard.append, on_stop=stops.append)
+    heard, stops = _hear(clip, whisper=False)
 
     text = " ".join(heard)
     for word in ("puerta", "caja", "azul"):
@@ -187,33 +216,14 @@ def test_the_loop_transcribes_a_command_and_does_not_stop_on_it():
 
 
 @needs_audio
-def test_the_loop_fires_the_stop_and_still_transcribes_it():
+def test_the_loop_fires_the_stop_and_drops_the_utterance_that_held_it():
+    """The utterance holding the phrase must not start a turn while PARAR stands."""
     from bridge.skills import tts
 
-    heard, stops = [], []
-    clip = tts.synthesize("emergencia", deterministic=True)
-    listen.listen_loop(_frames(clip), on_text=heard.append, on_stop=stops.append)
+    heard, stops = _hear(tts.synthesize("emergencia", deterministic=True), whisper=False)
 
     assert stops, "the stop phrase did not fire"
-    assert "emergencia" in " ".join(heard)
-
-
-@needs_audio
-def test_a_clip_with_no_trailing_silence_is_not_swallowed():
-    """Regression: the loop once returned an empty transcript for a good clip.
-
-    Vosk only emits a final result at an utterance boundary, so a finite source
-    leaves its last — often only — utterance inside the decoder. Without the
-    flush this returns [] and reads as a broken recogniser. A live mic never
-    reaches the end of its stream, which is why this needed a test to catch.
-    """
-    from bridge.skills import tts
-
-    heard = []
-    clip = tts.synthesize("la caja azul", deterministic=True)
-    listen.listen_loop(_frames(clip), on_text=heard.append)
-    assert heard, "final utterance was swallowed — flush() is missing"
-
+    assert heard == [], f"the stop's own utterance reached the agent: {heard!r}"
 
 @needs_audio
 def test_transcribe_pcm_is_the_offline_entry_point():
@@ -282,10 +292,23 @@ def test_empty_audio_transcribes_to_nothing_not_a_hallucination():
 
 
 @needs_whisper
-def test_the_loop_uses_whisper_text_and_still_fires_the_stop():
+def test_the_loop_transcribes_through_whisper():
+    """Long enough to route to Whisper (WHISPER_MIN_SECONDS), on the worker thread."""
     from bridge.skills import tts
 
-    heard, stops = [], []
-    clip = tts.synthesize("emergencia, pará todo", deterministic=True)
-    listen.listen_loop(_frames(clip), on_text=heard.append, on_stop=stops.append, whisper=True)
+    clip = tts.synthesize("Buenos días. Caminá hasta la puerta y buscá la caja azul.", deterministic=True)
+    heard, stops = _hear(clip, whisper=True)
+
+    text = " ".join(heard).lower()
+    for word in ("puerta", "caja", "azul"):
+        assert word in text, f"{word!r} missing from {text!r}"
+    assert stops == []
+
+
+@needs_whisper
+def test_the_loop_fires_the_stop_with_whisper_running():
+    from bridge.skills import tts
+
+    heard, stops = _hear(tts.synthesize("emergencia, pará todo", deterministic=True), whisper=True)
     assert stops, "the stop must fire regardless of which transcriber is used"
+    assert heard == [], f"the stop's own utterance reached the agent: {heard!r}"
