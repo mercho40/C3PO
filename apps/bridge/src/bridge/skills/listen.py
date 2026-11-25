@@ -538,101 +538,6 @@ def upgrade_whisperer_if_possible(current: Any) -> Any:
     return RemoteWhisper()
 
 
-def listen_loop(
-    frames: Iterator[bytes],
-    on_text: Callable[[str], None] | None = None,
-    on_stop: Callable[[str], None] | None = None,
-    phrases: list[str] | None = None,
-    whisper: bool = True,
-) -> None:
-    """Run both recognisers over one stream of PCM frames.
-
-    `frames` is any iterator of 16 kHz mono 16-bit chunks — `iter_mic_frames()`
-    in production, a file or synthesised audio in tests. That indirection is the
-    point: the microphone is currently gated (ROBOT-HARDWARE.md §8.2), and
-    keeping the source abstract means everything downstream of it is finished
-    and exercised rather than waiting on hardware.
-
-    THE STOP DETECTOR IS FED FIRST, and if it fires, `on_stop` runs before
-    `on_text` is even considered for that frame. Transcription is best-effort;
-    stopping is not, and it must never queue behind a slower consumer. With
-    `whisper=True` that ordering stops being a formality — Whisper takes about a
-    second per utterance, and the stop must not wait behind it.
-
-    SEGMENTATION COMES FROM VOSK, FOR FREE. Whisper needs whole utterances and
-    Vosk already finds their boundaries: it returns a final result exactly when
-    speech stops. So the loop buffers audio, and when Vosk closes an utterance it
-    hands that buffer to Whisper. No Silero, no energy threshold, no extra
-    dependency, and one fewer thing to tune.
-
-    `whisper=False` falls back to Vosk's own text — useful when faster-whisper is
-    not installed, and noticeably worse: "buenos días" comes back as "guapa
-    días", because a 39 MB keyword spotter is being asked to transcribe.
-    """
-    detector = StopPhraseDetector(phrases=phrases)
-    transcriber = Transcriber()
-
-    whisperer = build_whisperer() if whisper else None
-
-    utterance = bytearray()
-
-    for frame in frames:
-        hit = detector.feed(frame)
-        if hit:
-            log.warning("listen.stop_phrase", phrase=hit)
-            detector.reset()
-            if on_stop is not None:
-                on_stop(hit)
-
-        if whisperer is not None:
-            utterance.extend(frame)
-
-        text = transcriber.feed(frame)
-        if text:
-            # Vosk closed an utterance: hand the buffered audio to Whisper and
-            # emit ITS text instead. Vosk's own result is discarded here — it was
-            # only ever the segmenter and the stop detector.
-            if whisperer is not None:
-                # Route by LENGTH. Below the threshold Whisper is both slower
-                # and less accurate than the segmenter that already produced
-                # `text`, so calling it would cost seconds to get a worse
-                # answer. See WHISPER_MIN_SECONDS.
-                if len(utterance) >= WHISPER_MIN_SECONDS * TARGET_BYTES_PER_S:
-                    text = whisperer.transcribe(bytes(utterance)) or text
-                utterance.clear()
-            if on_text is not None:
-                on_text(text)
-        elif whisperer is not None and len(utterance) > MAX_UTTERANCE_BYTES:
-            # Someone talking continuously never gives Vosk a boundary, so the
-            # buffer would grow without limit and the first transcript would
-            # arrive only when they stopped. Cut it, transcribe, carry on.
-            better = whisperer.transcribe(bytes(utterance))
-            utterance.clear()
-            if better and on_text is not None:
-                on_text(better)
-
-    # The stop first, as in the loop: an utterance cut off by the end of the
-    # stream may still be the stop.
-    hit = detector.flush()
-    if hit:
-        log.warning("listen.stop_phrase", phrase=hit)
-        if on_stop is not None:
-            on_stop(hit)
-
-    # FLUSH, and it is not an edge case. Vosk emits a final result only at an
-    # utterance boundary — i.e. trailing silence — so a finite source (a file, a
-    # synthesised clip, a mic stream that ends) leaves its LAST utterance, and
-    # often its only one, sitting in the decoder. Without this the loop returns
-    # an empty transcript for a perfectly good 2.5 s clip and looks like the
-    # recogniser is broken. A live mic never reaches here, which is exactly why
-    # this is easy to omit and hard to notice.
-    tail = transcriber.flush()
-    if whisperer is not None and utterance:
-        tail = whisperer.transcribe(bytes(utterance)) or tail
-    if tail and on_text is not None:
-        on_text(tail)
-
-
 # --- audio sources ----------------------------------------------------------
 #
 # ALWAYS-ON LISTENING IS A SOURCE PROBLEM, NOT A SOFTWARE ONE. The G1's built-in
@@ -978,6 +883,12 @@ class MicListener:
     ) -> None:
         utterance = bytearray()
         suppressing_playback = False
+        # Set by a stop, cleared at the next boundary. The detector fires on a
+        # PARTIAL, often mid-word, so the frames after the hit are still the
+        # segment that held the phrase: a fresh decoder turns the tail of
+        # "emergencia, pará todo" into "ciencias datos", a turn while PARAR
+        # stands. Speech run straight on with no pause is dropped with it.
+        in_stop_segment = False
         for frame in self._source():
             if self._stop_evt.is_set():
                 break
@@ -1003,12 +914,14 @@ class MicListener:
                         log.exception("mic_listener.on_stop_failed")
                 # The segment holding the phrase ("caminá a la puerta, para para")
                 # would close AFTER the stop and start a turn while PARAR stands,
-                # so its audio and its decode are thrown away, this frame included.
+                # so its audio and its decode are thrown away, this frame included,
+                # and so is the rest of it, up to the next boundary.
                 utterance.clear()
                 reset = getattr(transcriber, "reset", None)
                 if reset is not None:
                     reset()
                 stopped = True
+                in_stop_segment = True
 
             # The multicast mic hears the robot's own speaker. Feeding that back
             # to the voice loop creates a recursive conversation: answer -> hear
@@ -1024,6 +937,9 @@ class MicListener:
                         reset()
                     log.info("mic_listener.playback_suppressed")
                 suppressing_playback = True
+                # The reset below already discards the stop's segment, and the
+                # next final is speech that began after playback.
+                in_stop_segment = False
                 continue
             if suppressing_playback:
                 # Start the post-playback utterance with a clean decoder too; the
@@ -1042,6 +958,11 @@ class MicListener:
                 utterance.extend(frame)
 
             text = transcriber.feed(frame)
+            if in_stop_segment:
+                utterance.clear()
+                if text is not None:
+                    in_stop_segment = False
+                continue
             if self._stt_back:
                 # Only a segment Vosk heard words in goes to apps/back: its
                 # transcriber has no VAD and can invent text on silence. An empty

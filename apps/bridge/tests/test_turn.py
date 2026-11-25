@@ -12,7 +12,7 @@ import math
 import pytest
 
 from bridge.skills import turn
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 
 
 class _FakeSampler:

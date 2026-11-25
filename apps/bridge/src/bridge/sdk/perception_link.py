@@ -92,7 +92,7 @@ SCAN_STALE_AFTER_S = 1.5
 REPORT_OFFLINE_AFTER_S = 2.0  # perception publishes at 4 Hz; 8 missed ticks
 
 # Our own staleness deadman, and it sits ABOVE the firmware's 1 s SET_VELOCITY
-# one (VELOCITY_DURATION_S in skills/_locomotion.py). A wedged Nav2 therefore
+# one (VELOCITY_DURATION_S in locomotion.py). A wedged Nav2 therefore
 # gets zeros at ~0.3-0.4 s (this window plus one issue tick) instead of the
 # robot coasting the full second the firmware would allow. The firmware deadman
 # stays underneath as the floor: it is the only part of this that still works if
@@ -126,7 +126,7 @@ READER_POLL_HZ = 50.0
 ARM_TTL_S = 60.0
 
 # Ours, not Nav2's — the backstop for a mis-edited YAML. Deliberately below the
-# sim-fitted MAX_* in skills/_locomotion.py.
+# sim-fitted MAX_* in locomotion.py.
 #
 # !! UNMEASURED. These three tuples are reasoned defaults, not numbers anyone has
 # !! watched this robot walk at. apps/perception/README.md's decisions list
@@ -514,7 +514,7 @@ class PerceptionLink:
         try:
             self._forward(*setpoint)
         except Exception:
-            # Same reasoning as _locomotion.send_velocity's swallowed RPC error:
+            # Same reasoning as locomotion.send_velocity's swallowed RPC error:
             # this runs at 10 Hz and the next tick re-sends. Raising here would
             # kill the only thread that can still brake the robot.
             log.exception("perception.cmd_vel.forward_failed")
@@ -768,7 +768,7 @@ def _default_forward(vx: float, vy: float, vyaw: float) -> None:
     """The one place Nav2's opinion becomes leg motion.
 
     Imported lazily so this module can be imported (and tested) without DDS,
-    and routed through `_locomotion.send_velocity` so the SIM_MODE dispatch,
+    and routed through `locomotion.send_velocity` so the SIM_MODE dispatch,
     the SET_VELOCITY api_id and the 1 s firmware duration all stay in exactly
     one place. `height` is not ours to choose — Nav2 has no opinion about
     stand height and a Twist carries none.
@@ -777,7 +777,7 @@ def _default_forward(vx: float, vy: float, vyaw: float) -> None:
     (nobody is in this loop, so "no detector" must not read as "clear") and its
     blind rule (no fresh lidar, no costmap to steer on: zero).
     """
-    from bridge.skills._locomotion import DEFAULT_HEIGHT, send_velocity
+    from bridge.locomotion import DEFAULT_HEIGHT, send_velocity
 
     send_velocity(vx, vy, vyaw, DEFAULT_HEIGHT, autonomous=True, nav2=True)
 

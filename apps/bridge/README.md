@@ -129,7 +129,7 @@ verified what the documentation cannot tell us:
 
 With neither set, the stream still runs: head yaw turns the robot and the walk
 axis drives it, which is the part that rides on already-vetted machinery
-(`_locomotion.send_velocity_async`, the same hardware clamp `walk_to` uses).
+(`locomotion.send_velocity_async`, the same hardware clamp `walk_to` uses).
 
 ### Direct skill calls (no MCP)
 
@@ -224,6 +224,9 @@ src/bridge/
   safety.py             governor, tier gate, T2 grants, the latch check; the
                         /safety/{status,confirm,ack} routes are in routes/safety.py
   kinematics.py         FK/IK over the G1 URDF (pure Python)
+  locomotion.py         the sim/real velocity seam (run_command JSON vs SET_VELOCITY RPC);
+                        skills, teleop and Nav2 all send velocity through it
+  task_runtime.py       Task records + registry, cooperative cancellation
   world_model.py        world-model contract: what perception hands the agent
   sdk/
     connection.py       CycloneDDS init; generates unicast peer XML (macOS multicast workaround)
@@ -233,11 +236,9 @@ src/bridge/
     perception_link.py  domain-42 link: world summaries in, Nav2 cmd_vel out
     ros_idl.py          hand-written ROS 2 IDL types (fixed, frozen shapes only)
   skills/
-    _locomotion.py      the sim/real velocity seam (run_command JSON vs SET_VELOCITY RPC)
     _g1_request.py      posture/gesture dispatcher — stub / sim / real
     walk_to.py, turn.py cancellable locomotion tasks
     landmarks.py        remember/recall/list named poses
-    task_runtime.py     Task records + registry, cooperative cancellation
     stop_everything.py  cancel-all + arm/hand release + zero-velocity burst (+ damp on real if unacknowledged)
                         + latches PARAR until /safety/ack
     go_to_object.py     walk to a detected or remembered object, camera only

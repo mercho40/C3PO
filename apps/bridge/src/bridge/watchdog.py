@@ -38,7 +38,7 @@ time.
 It becomes correct once long skills are fire-and-forget: `walk_to` returns its
 `task_id` immediately, the operator polls or subscribes for progress, and those
 polls are a genuine liveness signal whose absence means something. That is
-already the plan for the HTTP transport (see `skills/task_runtime`), and this
+already the plan for the HTTP transport (see `task_runtime`), and this
 module is ready for it.
 
 Re-checked 2026-11-02 (autonomy PLAN 0.2, "arm the watchdog"): still true, so
@@ -188,15 +188,15 @@ class LinkWatchdog:
 
 
 def _default_list_active() -> list:
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     return get_registry().list_active()
 
 
 def _default_safe_stop() -> None:
     """Cancel running work and ramp velocity to zero. Deliberately no damp."""
-    from bridge.skills._locomotion import stop_motion_sync
-    from bridge.skills.task_runtime import get_registry
+    from bridge.locomotion import stop_motion_sync
+    from bridge.task_runtime import get_registry
 
     registry = get_registry()
     cancelled = [t.task_id for t in registry.list_active() if registry.cancel(t.task_id)]

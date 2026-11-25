@@ -76,7 +76,7 @@ async def test_a_refused_t2_call_says_nothing(events):
 
 
 def test_stops_releases_teleop_and_reads_are_never_announced():
-    meta = {t.name: t.meta for t in mcp_server.mcp._tool_manager.list_tools()}
+    meta = {t.name: t.meta for t in mcp_server.mcp.registered_tools()}
     for name in ("walk_velocity", "stop_everything", "soft_stop", "damp", "open_hands",
                  "release_arm_control", "get_state", "say", "describe_surroundings"):
         assert not motion_announce.applies(name, meta[name]), name

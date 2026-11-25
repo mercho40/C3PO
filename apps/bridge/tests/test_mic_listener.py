@@ -462,7 +462,7 @@ def test_decoder_starts_clean_after_robot_playback():
 
 def test_the_stop_callback_fires_and_a_raising_one_does_not_kill_the_thread():
     got: list[str] = []
-    lis, *_ = make([b"\xff", b"aa", b"."])
+    lis, *_ = make([b"\xff", b".", b"aa", b"."])
     lis.start(on_stop=got.append)
     items = drain(lis)
     assert got == ["emergencia"]
@@ -470,7 +470,7 @@ def test_the_stop_callback_fires_and_a_raising_one_does_not_kill_the_thread():
 
 
 def test_a_raising_stop_callback_is_survived():
-    lis, *_ = make([b"\xff", b"aa", b"."])
+    lis, *_ = make([b"\xff", b".", b"aa", b"."])
     lis.start(on_stop=lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
     assert any(i["kind"] == "speech" for i in drain(lis))
 
@@ -813,10 +813,11 @@ def test_back_mode_publishes_the_utterance_audio_and_never_calls_whisper():
 
 def test_the_stop_phrase_still_fires_on_the_robot_in_back_mode():
     heard: list[str] = []
-    lis, *_ = make([b"aa", b"\xff", b"."], stt_mode="back")
+    lis, *_ = make([b"aa", b"\xff", b".", b"bb", b"."], stt_mode="back")
     lis.start(on_stop=heard.append)
     items = drain(lis)
     assert heard == ["emergencia"]
+    # The stop's own segment ("aa", the hit) is dropped; the next one ships.
     assert [i["kind"] for i in items] == ["stop", "audio"]
 
 
@@ -940,6 +941,9 @@ STOP_SENTENCES = [
     [b"camina", b"a la puerta", b"para para", b"."],
     [b"detener", b"."],
     [b"es una", b"emergencia", b"."],
+    # The detector fires on a partial, so the segment goes on after the hit.
+    [b"emergencia", b"para todo", b"."],
+    [b"para para", b"~", b"camina a la puerta", b"."],
 ]
 
 
@@ -1086,6 +1090,7 @@ def test_speech_after_a_stop_is_transcribed_while_a_stale_one_finishes():
         yield b"."
         assert whis.started.wait(5)
         yield b"\xff"
+        yield b"."
         yield b"after"
         yield b"."
 

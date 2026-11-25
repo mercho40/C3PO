@@ -43,7 +43,7 @@ from typing import Any, Literal
 
 import structlog
 
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 from bridge.teleop import arm_sdk
 from bridge.teleop.retarget import JOINT_NAMES, JOINT_SIGNS, LIMITS, ArmAngles, clamp
 

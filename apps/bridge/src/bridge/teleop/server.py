@@ -16,7 +16,7 @@ foxglove bridge, 55555/60000 teleimager (`docs/ROBOT-HARDWARE.md`).
 What a session does, per frame
 ------------------------------
 1. **Head yaw -> rotation.** Yaw error past a deadzone becomes `vyaw`,
-   dispatched through `skills._locomotion.send_velocity_async` so the
+   dispatched through `locomotion.send_velocity_async` so the
    hardware-vetted velocity clamp and the firmware's own `duration` deadman
    apply exactly as they do to `walk_to`. Turning your head turns the robot.
 2. **Walk axis -> forward/back.** Rides in the same frame precisely so this
@@ -90,7 +90,7 @@ from bridge.estop import (
     signal_stop,
     stop_is_standing,
 )
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 from bridge.teleop import hands as hands_mod
 from bridge.teleop.arm_sdk import ArmSdkUnavailable, get_driver
 from bridge.teleop.protocol import FrameError, TeleopFrame, carries_estop, parse_frame
@@ -212,7 +212,7 @@ def authorize(connection: ServerConnection, request: Request) -> Response | None
 # which is exactly the measured shortfall, arrived at from the measurement
 # rather than fitted to it.
 #
-# 0.30 is a ceiling, not a target: `_locomotion.send_velocity` re-clamps to
+# 0.30 is a ceiling, not a target: `locomotion.send_velocity` re-clamps to
 # walk_velocity's MAX_YAW_VEL on real hardware, so this cannot exceed what that
 # path already allows however it is edited.
 YAW_DEADZONE_RAD = math.radians(6)
@@ -554,7 +554,7 @@ class TeleopSession:
         # the bridge-wide PARAR the agent gate reads: an idle connected headset
         # (dead-man released = resting) unlocked every tool ~1 s after any stop.
         # Resuming the robot is /safety/ack's alone (console or headset menu);
-        # until then _locomotion zeroes this session's velocity too.
+        # until then locomotion zeroes this session's velocity too.
         log.info("teleop.estop.cleared", task_id=self.task.task_id, scope="session")
         return False
 
@@ -662,7 +662,7 @@ class TeleopSession:
 
 async def _dispatch_once(session: TeleopSession, now: float) -> None:
     """One control tick: locomotion, then arms, then fingers."""
-    from bridge.skills._locomotion import send_velocity_async
+    from bridge.locomotion import send_velocity_async
 
     frame = session.frame
     # Before anything else: has the e-stop been pressed? `wants_motion` also
@@ -809,7 +809,7 @@ async def _dispatch_loop(session: TeleopSession, ws: ServerConnection) -> None:
 
 async def _safe_stop(session: TeleopSession) -> None:
     """Bring everything to rest. Runs on every exit path, including cancellation."""
-    from bridge.skills._locomotion import send_velocity_async
+    from bridge.locomotion import send_velocity_async
 
     # Shielded: this is the one command that must survive the cancellation that
     # brought us here. Without it, a client that disconnects mid-turn leaves the
@@ -1008,7 +1008,7 @@ async def _shutdown(reason: str) -> None:
         # No session, but the arms and hands can still be engaged: a session
         # that ended uncleanly, or a driver engaged by something else in this
         # process. Do the same work without one.
-        from bridge.skills._locomotion import send_velocity_async
+        from bridge.locomotion import send_velocity_async
 
         async def _rest() -> None:
             try:

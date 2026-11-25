@@ -104,7 +104,7 @@ def signal_stop() -> bool:
         return False
 
 
-def _file_stop_at() -> float:
+def file_stop_at() -> float:
     """The sentinel's mtime alone: what every *other* process sees."""
     try:
         return sentinel_path().stat().st_mtime
@@ -112,9 +112,15 @@ def _file_stop_at() -> float:
         return 0.0
 
 
+def own_stop_at() -> float:
+    """When this process last signalled a stop itself, or 0.0. Tells a stamp
+    this process wrote from one another process wrote."""
+    return _signalled_at
+
+
 def last_stop_at() -> float:
     """When the last stop was signalled, or 0.0 if there has never been one."""
-    return max(_file_stop_at(), _signalled_at)
+    return max(file_stop_at(), _signalled_at)
 
 
 ACK_NAME = "stop_acknowledged"

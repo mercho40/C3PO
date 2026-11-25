@@ -300,7 +300,7 @@ again. So an arm move, a `walk_to` or a Nav2 goal already running there stops ev
 While the stop stands, nothing moves:
 
 - the bridge refuses every non-T0 tool except `damp` (`safety.tool_refusal`);
-- `_locomotion` zeroes every velocity;
+- `locomotion` zeroes every velocity;
 - `arm_sdk` refuses to engage.
 
 **What PARAR sends, and when it damps.** The zero-velocity burst goes first: about 20 zero
@@ -1276,7 +1276,7 @@ and the result says nothing was gripped.
 
 Put them in `apps/bridge/.env` once settled, not on the command line, so the answer
 survives the next session. Head-yaw turning and the walk axis are not gated — they ride on
-`_locomotion.send_velocity_async`, which already carries the hardware clamp and sits above
+`locomotion.send_velocity_async`, which already carries the hardware clamp and sits above
 the firmware's own `duration` deadman.
 
 ⚠️ **The teleop stream has never run against the robot.**

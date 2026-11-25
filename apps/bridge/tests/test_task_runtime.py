@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 
-from bridge.skills.task_runtime import TaskRegistry
+from bridge.task_runtime import TaskRegistry
 
 
 def test_create_assigns_unique_ids_and_running_status():

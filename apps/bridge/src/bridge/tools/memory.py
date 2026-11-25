@@ -244,7 +244,7 @@ async def look_around(
     """
     from bridge import estop
     from bridge.object_memory import get_object_memory
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
     from bridge.skills.walk_to import active_walk
 
     if memory_pose()[0] is None:

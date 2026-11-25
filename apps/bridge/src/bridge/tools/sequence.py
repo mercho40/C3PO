@@ -155,7 +155,7 @@ async def run_sequence(
     for i, step in enumerate(steps):
         name = str(step.get("tool") or "") if isinstance(step, dict) else ""
         args = (step.get("args") or {}) if isinstance(step, dict) else None
-        tool = mcp._tool_manager.get_tool(name) if name in SEQUENCE_TOOLS else None
+        tool = mcp.registered_tool(name) if name in SEQUENCE_TOOLS else None
         if tool is None or not isinstance(args, dict):
             return {"status": "failed", "reason": "invalid_step", "step": i, "tool": name}
         together = bool(step.get("with_previous"))
@@ -188,7 +188,7 @@ async def run_sequence(
     async def call(i: int) -> Any:
         name, args, _checked, _tool, _with = planned[i]
         try:
-            return await mcp._tool_manager.call_tool(name, args, context=ctx)
+            return await mcp.call_tool_ungated(name, args, context=ctx)
         except Exception as exc:  # noqa: BLE001 - the chain reports which step, never half-silent
             return {"status": "failed", "error": str(exc)[:300], "_raised": True}
 
@@ -243,6 +243,6 @@ async def run_sequence(
 
 async def call_release_after_sequence(ctx: Context) -> Any:
     try:
-        return await mcp._tool_manager.call_tool("release_arm_control", {}, context=ctx)
+        return await mcp.call_tool_ungated("release_arm_control", {}, context=ctx)
     except Exception as exc:  # noqa: BLE001 - reported, the chain itself already completed
         return {"status": "failed", "error": str(exc)[:300]}

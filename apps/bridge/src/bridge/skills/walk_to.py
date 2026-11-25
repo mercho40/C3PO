@@ -1,7 +1,7 @@
 """walk_to: drive the G1 toward a world-frame XY target until within stop_distance.
 
 Uses Isaac Sim's velocity command channel `rt/run_command/cmd` (see
-`_locomotion.py`). The walk policy is body-frame, so we rotate the
+`locomotion.py`). The walk policy is body-frame, so we rotate the
 world-frame error into the robot's frame each loop iteration.
 
 Integrates with `task_runtime.TaskRegistry`: cancellable via the task's
@@ -19,7 +19,7 @@ from typing import Any
 import structlog
 
 from bridge import motion_announce
-from bridge.skills._locomotion import (
+from bridge.locomotion import (
     DEFAULT_HEIGHT,
     KP_LIN,
     KP_YAW,
@@ -38,7 +38,7 @@ from bridge.skills._locomotion import (
     send_velocity_async,
     stop_motion,
 )
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
 

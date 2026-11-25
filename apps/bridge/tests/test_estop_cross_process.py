@@ -41,21 +41,21 @@ def test_no_stop_ever_reads_as_zero():
 def test_a_stop_is_visible_afterwards():
     before = time.time()
     assert estop.signal_stop() is True
-    assert estop._file_stop_at() >= before
+    assert estop.file_stop_at() >= before
 
 
 def test_a_second_stop_is_distinguishable_from_the_first():
     estop.signal_stop()
-    first = estop._file_stop_at()
+    first = estop.file_stop_at()
     time.sleep(0.05)
     estop.signal_stop()
-    assert estop._file_stop_at() > first
+    assert estop.file_stop_at() > first
 
 
 def test_the_in_process_copy_and_the_file_agree():
     estop.signal_stop()
-    assert estop._file_stop_at() == pytest.approx(estop._signalled_at, abs=1e-3)
-    assert estop.last_stop_at() == pytest.approx(estop._file_stop_at(), abs=1e-3)
+    assert estop.file_stop_at() == pytest.approx(estop._signalled_at, abs=1e-3)
+    assert estop.last_stop_at() == pytest.approx(estop.file_stop_at(), abs=1e-3)
 
 
 def test_signalling_never_raises_on_an_unwritable_path(monkeypatch, tmp_path):
@@ -66,7 +66,7 @@ def test_signalling_never_raises_on_an_unwritable_path(monkeypatch, tmp_path):
     before = time.time()
     assert estop.signal_stop() is False  # must not raise
     # ...and must not unlatch this process: the stop it failed to write still stands.
-    assert estop._file_stop_at() == 0.0
+    assert estop.file_stop_at() == 0.0
     assert estop.last_stop_at() >= before
     assert estop.stop_is_standing() is True
 
@@ -112,7 +112,7 @@ def test_stop_everything_signals_the_sentinel(tmp_path, monkeypatch):
     result = asyncio.run(stop_everything.run())
 
     assert result["sentinel_written"] is True
-    assert estop._file_stop_at() >= before, (
+    assert estop.file_stop_at() >= before, (
         "stop_everything did not signal across processes — a teleop stream in "
         "another process would keep driving the robot."
     )
@@ -154,12 +154,13 @@ async def test_a_stop_from_another_process_cancels_a_walk_running_here(tmp_path,
     import asyncio
 
     from bridge.sdk import g1_rpc
-    from bridge.skills import _locomotion, stop_everything, walk_velocity
-    from bridge.skills.task_runtime import get_registry
+    from bridge import locomotion
+    from bridge.skills import stop_everything, walk_velocity
+    from bridge.task_runtime import get_registry
 
     monkeypatch.setattr(stop_everything, "stop_motion_sync", lambda **kw: (20, 20))
     monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (0, ""))
 
     watcher = asyncio.create_task(stop_everything.watch_foreign_stops())
@@ -174,7 +175,7 @@ async def test_a_stop_from_another_process_cancels_a_walk_running_here(tmp_path,
             check=True,
             capture_output=True,
         )
-        stamped = estop._file_stop_at()
+        stamped = estop.file_stop_at()
         assert stamped > 0.0
         started = time.monotonic()
         while not task.cancel_event.is_set() and time.monotonic() - started < 2.0:
@@ -188,7 +189,7 @@ async def test_a_stop_from_another_process_cancels_a_walk_running_here(tmp_path,
 
     assert cancelled_after < 0.3
     assert result["status"] == "cancelled"
-    assert estop._file_stop_at() == stamped, "re-stamped: /safety/ack would answer 409"
+    assert estop.file_stop_at() == stamped, "re-stamped: /safety/ack would answer 409"
     assert estop._signalled_at == 0.0
     assert estop.stop_is_standing() is True
 
@@ -361,7 +362,7 @@ async def test_a_foreign_stop_beside_this_process_own_is_harmless(monkeypatch):
     import asyncio
 
     from bridge.skills import stop_everything
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     monkeypatch.setattr(stop_everything, "stop_motion_sync", lambda **kw: (20, 20))
     monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")

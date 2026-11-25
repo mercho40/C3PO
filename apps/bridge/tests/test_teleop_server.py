@@ -42,7 +42,7 @@ def sent(monkeypatch):
     async def fake_send(vx, vy, vyaw, height):
         commands.append((vx, vy, vyaw, height))
 
-    monkeypatch.setattr("bridge.skills._locomotion.send_velocity_async", fake_send)
+    monkeypatch.setattr("bridge.locomotion.send_velocity_async", fake_send)
     return commands
 
 

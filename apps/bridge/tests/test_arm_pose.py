@@ -15,7 +15,7 @@ import math
 import pytest
 
 from bridge.skills import arm_pose
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 from bridge.teleop import arm_sdk
 from bridge.teleop.retarget import JOINT_NAMES, ArmAngles
 

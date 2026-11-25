@@ -122,12 +122,28 @@ class GovernedMCP(FastMCP):
     functions skip it; nothing that speaks MCP can.
     """
 
+    # FastMCP keeps its registry private (`_tool_manager`). These are the only
+    # ways the rest of the bridge reaches it, so a FastMCP upgrade that moves
+    # it breaks one class, and an ungated call is named as one where it is made.
+
+    def registered_tool(self, name: str) -> Tool | None:
+        """The registered tool called `name`, for its metadata and argument model."""
+        return self._tool_manager.get_tool(name)
+
+    def registered_tools(self) -> list[Tool]:
+        return self._tool_manager.list_tools()
+
+    async def call_tool_ungated(self, name: str, arguments: dict[str, Any], *, context: Any) -> Any:
+        """Run a tool WITHOUT `call_tool`'s gate. Only for a caller that has run the
+        gate itself: run_sequence, whose steps pass `confirmed_step_refusal` first."""
+        return await self._tool_manager.call_tool(name, arguments, context=context)
+
     async def call_tool(self, name, arguments):  # noqa: ANN001, ANN201 - FastMCP's signature
         from mcp.server.fastmcp.exceptions import ToolError
 
         from bridge import estop
 
-        tool = self._tool_manager.get_tool(name)
+        tool = self.registered_tool(name)
         meta = tool.meta if tool else None
         # Validated once: the grant is bound to it and the warning reads it.
         parsed: BaseModel | None = None

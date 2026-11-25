@@ -9,7 +9,7 @@ calls are how continuous motion is built up, not a single unbounded one).
 
 Re-issued, not sent once with `duration=duration_s`: one 3 s setpoint was a 3 s
 deadman, so a bridge that died mid-call left the robot walking for up to three
-seconds. Every setpoint now goes through `_locomotion.send_velocity` — the 1 s
+seconds. Every setpoint now goes through `locomotion.send_velocity` — the 1 s
 firmware duration and the safety governor (bridge/safety.py) — like every other
 velocity on this robot.
 
@@ -29,7 +29,7 @@ from typing import Any
 import structlog
 
 from bridge import safety
-from bridge.skills._locomotion import (
+from bridge.locomotion import (
     DEFAULT_HEIGHT,
     TELEOP_TAKEOVER,
     arm_hold_conflict,
@@ -37,7 +37,7 @@ from bridge.skills._locomotion import (
     send_velocity_async,
     teleop_conflict,
 )
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 from bridge.skills.walk_to import WALK_SKILLS
 
 log = structlog.get_logger(__name__)
@@ -46,12 +46,12 @@ log = structlog.get_logger(__name__)
 # locomotion scheme (0.3, see xr_teleoperate issue #135) — not a sim-tuned
 # number, an actual precedent for "safe on this real hardware."
 #
-# NOTE: walk_to/turn (`_locomotion.py`) use a *different*, 3-5x higher cap
+# NOTE: walk_to/turn (`locomotion.py`) use a *different*, 3-5x higher cap
 # set (MAX_FWD_VEL=1.0, MAX_YAW_VEL=1.57) tuned against Isaac Sim. That's
 # harmless today because walk_to/turn publish to a sim-only channel that's
 # unsubscribed on real hardware. Once real-mode pose is wired for walk_to/
 # turn (README "Phase 1b"), reconcile these two cap sets before they can
-# both fire against real hardware — see `_locomotion.py`'s matching note.
+# both fire against real hardware — see `locomotion.py`'s matching note.
 MAX_LINEAR_VEL = 0.3  # m/s, vx/vy
 MAX_YAW_VEL = 0.3  # rad/s
 

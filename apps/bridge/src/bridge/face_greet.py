@@ -27,7 +27,7 @@ from typing import Any
 import structlog
 
 from bridge import estop, face_gate
-from bridge.safety import _env_float
+from bridge.env_file import env_float
 
 log = structlog.get_logger(__name__)
 
@@ -35,8 +35,8 @@ GREETING = os.environ.get("C3PO_FACE_GREETING") or "Hola {name}, ¿qué querés 
 GREETING_UNKNOWN = (
     os.environ.get("C3PO_FACE_GREETING_UNKNOWN") or "Hola, no te conozco. ¿Cómo te llamás?"
 )
-COOLDOWN_S = _env_float("C3PO_FACE_GREET_COOLDOWN_S", 300.0)
-UNKNOWN_COOLDOWN_S = _env_float("C3PO_FACE_GREET_UNKNOWN_COOLDOWN_S", 120.0)
+COOLDOWN_S = env_float("C3PO_FACE_GREET_COOLDOWN_S", 300.0)
+UNKNOWN_COOLDOWN_S = env_float("C3PO_FACE_GREET_UNKNOWN_COOLDOWN_S", 120.0)
 TICK_S = 1.0
 
 _running = False

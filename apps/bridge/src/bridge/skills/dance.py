@@ -38,7 +38,7 @@ import structlog
 
 from bridge.sdk import g1_protocol, g1_rpc
 from bridge.skills.gesture import _release_after
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
 

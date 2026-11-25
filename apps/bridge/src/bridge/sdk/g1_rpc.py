@@ -183,11 +183,6 @@ def speak(text: str, speaker_id: int = g1_protocol.Speaker.ENGLISH) -> tuple[int
     return _get_voice_client().call_raw(g1_protocol.API_ID_VOICE_TTS, param)
 
 
-def get_volume() -> tuple[int, str | None]:
-    """Read the robot's speaker volume. Getter, safe."""
-    return _get_voice_client().call_raw(g1_protocol.API_ID_VOICE_GET_VOLUME, json.dumps({}))
-
-
 # Our own app_name, and it is not cosmetic. PlayStop is scoped by app_name, so
 # this is the reason gemm-ai cannot stop our speech and we cannot stop theirs —
 # they publish on this same service as "gemm-ai". Sharing a name would let two
@@ -380,13 +375,13 @@ def call_set_velocity(
     `duration` is how long the firmware honours this setpoint before stopping
     on its own. Keep it small and re-issue at loop rate: it is the robot's
     built-in deadman, and the reason a crashed bridge stops the robot instead
-    of leaving it walking. See `_locomotion.VELOCITY_DURATION_S`.
+    of leaving it walking. See `locomotion.VELOCITY_DURATION_S`.
 
     This is a high-level setpoint — the same one the joystick produces. The
     G1's own controller decides how to walk; we are not doing leg control.
 
     **Known hazard, not yet resolved on hardware.** This call currently *waits
-    for an ack*, and `_locomotion.send_velocity` issues it at 50 Hz inside the
+    for an ack*, and `locomotion.send_velocity` issues it at 50 Hz inside the
     walk_to/turn control loop. Velocity acked promptly when measured (unlike
     gestures, which ack on completion — see ARM_TIMEOUT_S), so it works today,
     but any per-call latency multiplies by the loop rate, and if the firmware

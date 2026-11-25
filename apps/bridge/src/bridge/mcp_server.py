@@ -19,7 +19,7 @@ Modes:
   `rt/run_command/cmd` with a body-frame velocity loop.
 
 Long-running tools (today: `walk_to`) use the shared task lifecycle in
-`bridge.skills.task_runtime`: each invocation creates a `Task` row, the
+`bridge.task_runtime`: each invocation creates a `Task` row, the
 skill checks `task.cancel_event` between iterations, and progress is
 emitted through MCP's `ctx.report_progress` when a `Context` is passed.
 The companion `cancel_task` and `list_active_tasks` tools provide
@@ -140,7 +140,7 @@ def main() -> None:
     ``http://{BRIDGE_HOST}:{BRIDGE_PORT}/mcp`` — how ``apps/back`` connects.
     """
     if face_gate.GATED:
-        face_gate.check_config(t.name for t in mcp._tool_manager.list_tools())
+        face_gate.check_config(t.name for t in mcp.registered_tools())
     _warm_face()
     _open_hands_at_boot()
     # Operator-link watchdog (docs/ARCHITECTURE.md §7). Real hardware only, and OFF unless

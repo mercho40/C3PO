@@ -10,7 +10,7 @@ every frame; the two shapes do not belong in the same transport.
 
 So this package runs its own WebSocket ingest (`server.py`, port 8767) beside
 the MCP server, and reuses the skill layer only where the semantics genuinely
-match: locomotion still goes through `skills._locomotion.send_velocity_async`,
+match: locomotion still goes through `locomotion.send_velocity_async`,
 so the hardware velocity clamp and the firmware deadman apply to teleop
 exactly as they apply to `walk_to`.
 

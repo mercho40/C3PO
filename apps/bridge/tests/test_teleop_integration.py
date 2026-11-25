@@ -29,7 +29,7 @@ def sent(monkeypatch):
     async def fake_send(vx, vy, vyaw, height):
         commands.append((vx, vy, vyaw, height))
 
-    monkeypatch.setattr("bridge.skills._locomotion.send_velocity_async", fake_send)
+    monkeypatch.setattr("bridge.locomotion.send_velocity_async", fake_send)
     return commands
 
 
@@ -290,7 +290,7 @@ async def test_teardown_does_not_wait_out_an_unanswered_stop(sent, monkeypatch):
         started.set()
         await asyncio.sleep(30)  # the ack that never comes
 
-    monkeypatch.setattr("bridge.skills._locomotion.send_velocity_async", never_acks)
+    monkeypatch.setattr("bridge.locomotion.send_velocity_async", never_acks)
 
     server, url = await _serve()
     async with server:

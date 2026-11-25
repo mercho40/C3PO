@@ -20,7 +20,7 @@ import time
 import pytest
 
 from bridge.skills import stop_everything
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 from bridge.teleop import server as srv
 from bridge.teleop.protocol import PROTOCOL_VERSION, parse_frame
 from bridge.teleop.server import TeleopSession
@@ -60,9 +60,9 @@ def sent(monkeypatch):
     async def fake_send(vx, vy, vyaw, height):
         commands.append((vx, vy, vyaw, height))
 
-    monkeypatch.setattr("bridge.skills._locomotion.send_velocity_async", fake_send)
+    monkeypatch.setattr("bridge.locomotion.send_velocity_async", fake_send)
     # `stop_everything` imports this into its own namespace, so patching it on
-    # `_locomotion` is a no-op there -- it would reach real DDS.
+    # `locomotion` is a no-op there -- it would reach real DDS.
     monkeypatch.setattr(stop_everything, "stop_motion_sync", lambda **kwargs: None)
     monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
     return commands

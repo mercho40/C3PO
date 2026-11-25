@@ -147,7 +147,7 @@ async def test_look_around_stops_at_the_first_failed_turn(monkeypatch, mem):
 
 
 def _look_around_tasks():
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     return [t for t in get_registry().list_active() if t.skill_name == "look_around"]
 
@@ -157,7 +157,7 @@ async def test_a_cancel_during_a_dwell_ends_the_sweep_at_once(monkeypatch, mem):
     """PARAR's soft path (soft_stop) cancels every registry task; a dwell must hear it."""
     import asyncio
 
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     monkeypatch.setattr(config, "SIM_MODE", "real")  # real dwells
     monkeypatch.setattr(memory_tools, "LOOK_DWELL_S", 5.0)
@@ -180,7 +180,7 @@ async def test_a_cancel_mid_turn_stops_the_turn(monkeypatch, mem):
     """cancel_task on look_around: the turn in progress is its own task and must hear it too."""
     import asyncio
 
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     turns = []
 
@@ -255,7 +255,7 @@ def test_a_failing_listener_does_not_cost_the_report():
 
 @pytest.mark.asyncio
 async def test_look_around_is_refused_while_a_walk_runs(monkeypatch, mem):
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     fake = FakeTurn()
     monkeypatch.setattr(locomotion, "turn", fake)

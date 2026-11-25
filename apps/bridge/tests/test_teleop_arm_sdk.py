@@ -134,7 +134,7 @@ async def test_the_waist_is_held_where_it_was_measured_at_engage(driver, enabled
 async def test_refuses_while_a_gesture_is_running(driver, enabled):
     # The arm action service is itself built on rt/arm_sdk; two owners of that
     # topic is the documented cause of error 7400.
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     task = get_registry().create("dance")
     try:

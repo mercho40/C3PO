@@ -45,7 +45,7 @@ def ran(monkeypatch):
 
 
 def _grant(steps):
-    listed = mcp_server.mcp._tool_manager.get_tool("run_sequence")
+    listed = mcp_server.mcp.registered_tool("run_sequence")
     args = server.canonical_args(listed, {"steps": steps})
     safety.grant_confirmation("run_sequence", args, via="console")
 
@@ -109,10 +109,10 @@ async def test_parar_still_stops_each_step(ran):
 
 def test_every_chainable_tool_exists_and_none_walks():
     for name in sequence.SEQUENCE_TOOLS:
-        tool = mcp_server.mcp._tool_manager.get_tool(name)
+        tool = mcp_server.mcp.registered_tool(name)
         assert tool is not None, name
         assert tool.meta["c3po"]["classification"] in ("gesture", "speech"), name
-    tier = mcp_server.mcp._tool_manager.get_tool("run_sequence").meta["c3po"]["tier"]
+    tier = mcp_server.mcp.registered_tool("run_sequence").meta["c3po"]["tier"]
     assert tier == "T2"  # always confirmed, and offered by voice like the arm and hand
 
 
@@ -177,7 +177,7 @@ async def test_a_raised_arm_comes_down_by_itself_after_the_sequence(ran, monkeyp
 @pytest.mark.asyncio
 async def test_keep_arm_up_or_an_explicit_release_skips_the_lowering(ran, monkeypatch):
     monkeypatch.setattr(sequence, "SEQUENCE_ARM_HOLD_S", 0.3)
-    listed = mcp_server.mcp._tool_manager.get_tool("run_sequence")
+    listed = mcp_server.mcp.registered_tool("run_sequence")
     args = server.canonical_args(listed, {"steps": STEPS, "keep_arm_up": True})
     safety.grant_confirmation("run_sequence", args, via="console")
     out = await mcp_server.mcp.call_tool("run_sequence", {"steps": STEPS, "keep_arm_up": True})

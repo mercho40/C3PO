@@ -419,7 +419,7 @@ async def test_stop_skills_are_never_gated(scene, monkeypatch):
 def _catalogue() -> dict:
     from bridge import mcp_server
 
-    return {t.name: t.meta for t in mcp_server.mcp._tool_manager.list_tools()}
+    return {t.name: t.meta for t in mcp_server.mcp.registered_tools()}
 
 
 def test_the_confirm_class_gates_every_tool_that_needs_a_confirmation(monkeypatch):
@@ -490,7 +490,7 @@ async def test_the_confirmation_gate_still_comes_first(scene, monkeypatch):
 def _confirm(tool: str, args: dict) -> str:
     from bridge import mcp_server, safety
 
-    key = server.canonical_args(mcp_server.mcp._tool_manager.get_tool(tool), args)
+    key = server.canonical_args(mcp_server.mcp.registered_tool(tool), args)
     safety.grant_confirmation(tool, key, via="console")
     return key
 

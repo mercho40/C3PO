@@ -162,7 +162,7 @@ async def test_a_cancel_during_the_hold_still_releases_the_arm(monkeypatch):
     stayed latched in the pose, with the task pinned at "running"."""
     import asyncio
 
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     monkeypatch.setattr(gesture, "SIM_MODE", "real")
     sent: list[int] = []

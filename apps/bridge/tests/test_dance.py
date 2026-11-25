@@ -150,7 +150,7 @@ async def test_cancel_stops_before_next_step(monkeypatch):
 
     monkeypatch.setattr(g1_rpc, "call_arm", fake_call_arm)
 
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     async def run_and_cancel():
         run_coro = dance.run()

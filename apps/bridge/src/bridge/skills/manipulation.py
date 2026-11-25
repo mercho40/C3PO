@@ -46,7 +46,7 @@ import structlog
 
 from bridge import estop, kinematics, motion_announce, safety
 from bridge.skills import arm_pose
-from bridge.skills.task_runtime import Task, get_registry
+from bridge.task_runtime import Task, get_registry
 from bridge.teleop import arm_sdk, hands
 from bridge.teleop.retarget import ArmAngles
 
@@ -854,13 +854,13 @@ def label_tier(label: str, query: str) -> int | None:
     """0: the same label (case/accents ignored). 1: the whole query's singular or Spanish
     translation ('cups', 'taza' -> 'cup'). None otherwise — never a partial match: 'Dixie cup'
     is not 'cup', and grabbing a different object is worse than asking."""
-    from bridge.object_memory import _STOPWORDS, SYNONYMS, _fold, _singular
+    from bridge.object_memory import STOPWORDS, SYNONYMS, fold_label, singular
 
-    have, want = _fold(label), _fold(query)
+    have, want = fold_label(label), fold_label(query)
     if have == want:
         return 0
-    phrase = " ".join(w for w in want.split() if w not in _STOPWORDS)
-    forms = {phrase, _singular(phrase)}
+    phrase = " ".join(w for w in want.split() if w not in STOPWORDS)
+    forms = {phrase, singular(phrase)}
     if have in forms or any(have in SYNONYMS.get(f, ()) for f in forms):
         return 1
     return None
@@ -1432,9 +1432,9 @@ def _plan_pick(
 
 
 def upright(label: Any) -> bool:
-    from bridge.object_memory import _fold
+    from bridge.object_memory import fold_label
 
-    words = _fold(str(label or "")).split()
+    words = fold_label(str(label or "")).split()
     return bool(words) and words[-1] in UPRIGHT_LABELS
 
 

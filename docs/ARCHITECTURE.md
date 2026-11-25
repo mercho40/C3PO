@@ -228,7 +228,7 @@ gets built, mind the pgvector `CREATE EXTENSION` gotcha in
 2. `task_runtime` creates a `Task` (id, status, progress, phase, cancel event).
 3. `walk_to` reads pose from the state sampler (`sdk/state.py`) and computes
    the world→body error.
-4. Every 20 ms (50 Hz) it calls `_locomotion.send_velocity(vx, vy, vyaw,
+4. Every 20 ms (50 Hz) it calls `locomotion.send_velocity(vx, vy, vyaw,
 height)` — proportional gains, velocity caps clamped.
 5. `send_velocity` publishes the string `"[vx, vy, vyaw, h]"` to the sim's
    `run_command` topic.
@@ -247,7 +247,7 @@ height)` — proportional gains, velocity caps clamped.
   carrying `{"velocity": [vx, vy, omega], "duration": 1.0}`. The sim channel
   does not exist on real firmware — publishing there would be a silent no-op.
 
-The divergence is deliberately confined to `_locomotion.send_velocity` (plus
+The divergence is deliberately confined to `locomotion.send_velocity` (plus
 the pose parsers), so `walk_to` and `turn` contain no target-specific code at
 all. The velocity caps and gains are fitted to the sim walk policy and will
 not transfer to hardware unmeasured — see `apps/bridge/README.md` and
@@ -319,7 +319,7 @@ both targets, all in `apps/bridge/src/bridge/`:
   client registers the ones it uses. Timeouts are sized per service — some
   services ack on completion of the motion, not on receipt
   (`docs/ROBOT-API.md`).
-- **`_locomotion.send_velocity`** — the one function that knows how each
+- **`locomotion.send_velocity`** — the one function that knows how each
   target takes velocity (§4).
 
 An earlier design specified a formal `Transport` Protocol class
@@ -348,7 +348,7 @@ task from another connection. A `Task` serializes as `{task_id, skill_name,
 status, progress, phase, result, error}` with `status ∈ running | completed |
 cancelled | failed`. True fire-and-forget (return the `task_id` immediately,
 poll for progress) is the planned next step — see
-`skills/task_runtime.py`.
+`task_runtime.py`.
 
 **Bridge → robot**:
 
@@ -381,7 +381,7 @@ Six layers, outermost first. Each is independent — that is the point.
    the strongest guarantee we have. The vendor's continuous mode
    (`duration=864000`) would instead leave a crashed bridge's robot walking
    with its last setpoint — never use it. (Constant and rationale live in
-   `apps/bridge/src/bridge/skills/_locomotion.py`.)
+   `apps/bridge/src/bridge/locomotion.py`.)
 3. **`stop_everything`.** Cancels every running task and sends a
    zero-velocity burst (dispatched per target, so it is real on hardware too).
    On real hardware it damps **only if the robot acknowledged none of that
@@ -407,7 +407,7 @@ Six layers, outermost first. Each is independent — that is the point.
    full reasoning is in the module docstring; the arming flag is in
    `apps/bridge/.env.example`.
 6. **Safety governor** (`apps/bridge/src/bridge/safety.py`, autonomy PLAN
-   0.2). Every real `SET_VELOCITY` passes it inside `_locomotion.send_velocity`:
+   0.2). Every real `SET_VELOCITY` passes it inside `locomotion.send_velocity`:
    speed/yaw caps (0.3 by default, never above 0.5 m/s / 0.8 rad/s),
    an acceleration cap that never limits braking, and the person-distance
    rule — a fresh `person` detection inside 1.5 m slows the base to ×0.4,

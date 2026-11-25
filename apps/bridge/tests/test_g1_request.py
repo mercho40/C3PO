@@ -340,7 +340,7 @@ async def test_a_cancelled_request_is_not_left_running(monkeypatch):
     import asyncio
     import time as _time
 
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     monkeypatch.setattr(_g1_request, "SIM_MODE", "real")
     monkeypatch.setattr(g1_rpc, "call_sport_api", lambda api_id, data: _time.sleep(0.3) or (0, ""))
