@@ -55,7 +55,7 @@ def cancel_task(
     `walk_to`/`turn` loop — that needs live pose data (sim or real hardware)
     to produce a task that runs long enough to interrupt.
     """
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     registry = get_registry()
     ok = registry.cancel(task_id)
@@ -101,7 +101,7 @@ def list_active_tasks(
     ] = False,
 ) -> dict:
     """List running tasks (and optionally recently-completed ones)."""
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     # The other operator-liveness poll -- see the note in `get_state`. This is
     # the call a fire-and-forget client makes while waiting on a long skill,

@@ -39,7 +39,7 @@ def unproven(request):  # noqa: ANN001, ANN202 - starlette types
 def confirmable(name: str) -> Tool | None:
     """The tool called `name` if a call of it takes an operator's confirmation
     (safety.needs_confirmation), else None: unknown, or not gated."""
-    listed = mcp._tool_manager.get_tool(name)
+    listed = mcp.registered_tool(name)
     return listed if listed is not None and safety.needs_confirmation(listed.meta) else None
 
 

@@ -1,7 +1,7 @@
 """Tests for the open-loop velocity skill (`bridge.skills.walk_velocity`).
 
 All DDS calls are mocked via `bridge.sdk.g1_rpc.call_set_velocity`, reached
-through `_locomotion.send_velocity` (so the safety governor is in the path, as
+through `locomotion.send_velocity` (so the safety governor is in the path, as
 on the robot) — these test the skill's clamping/task-lifecycle logic, not the
 RPC dispatch itself.
 """
@@ -13,12 +13,13 @@ import asyncio
 import pytest
 
 from bridge.sdk import g1_rpc
-from bridge.skills import _locomotion, walk_velocity
+from bridge import locomotion
+from bridge.skills import walk_velocity
 
 
 @pytest.fixture(autouse=True)
 def real_dispatch(monkeypatch):
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
 
 
 def _record(monkeypatch, code=0):
@@ -78,7 +79,7 @@ async def test_no_setpoint_outlives_the_firmware_deadman(monkeypatch):
     await walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=0.3)
 
     assert len(calls) > 2
-    assert all(d <= _locomotion.VELOCITY_DURATION_S <= 1.0 for *_, d in calls)
+    assert all(d <= locomotion.VELOCITY_DURATION_S <= 1.0 for *_, d in calls)
     assert calls[-1][:3] == (0.0, 0.0, 0.0)
 
 
@@ -102,7 +103,7 @@ async def test_cancel_stops_early_and_sends_zero_velocity(monkeypatch):
     task = asyncio.ensure_future(walk_velocity.run(vx=0.1, vy=0.0, vyaw=0.0, duration_s=2.0))
     # Let it start and register in the task registry, then cancel almost immediately.
     await asyncio.sleep(0.05)
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     active = get_registry().list_active()
     assert len(active) == 1
@@ -151,7 +152,7 @@ async def test_a_stop_still_goes_out_while_the_arms_are_held(monkeypatch):
 
 def _agent_walk(skill: str, events: list[str]):
     """A registry task like walk_to's, whose loop ends (after its stop burst) when cancelled."""
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     task = get_registry().create(skill)
 

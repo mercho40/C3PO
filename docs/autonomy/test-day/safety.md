@@ -10,7 +10,7 @@ was tested offline only (`uv run pytest`).
 ## What changed, in one paragraph
 
 Every real `SET_VELOCITY` now goes through one governor in
-`_locomotion.send_velocity`: speed and yaw caps (0.3 m/s, 0.3 rad/s, the same
+`locomotion.send_velocity`: speed and yaw caps (0.3 m/s, 0.3 rad/s, the same
 numbers as before; no setting can push them past 0.5 m/s or 0.8 rad/s), an
 acceleration cap (1.0 m/s², 1.0 rad/s², braking is never limited), and the
 person rule (a `person` closer than 1.5 m means ×0.4, closer than 0.5 m means

@@ -10,7 +10,7 @@ import pytest
 
 from bridge import kinematics, safety
 from bridge.sdk import perception_link
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 from bridge.skills import manipulation as m
 from bridge.teleop import arm_sdk, hands
 from bridge.teleop.retarget import ArmAngles

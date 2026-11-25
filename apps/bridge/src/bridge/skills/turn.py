@@ -20,7 +20,7 @@ from typing import Any
 
 import structlog
 
-from bridge.skills._locomotion import (
+from bridge.locomotion import (
     DEFAULT_HEIGHT,
     KP_YAW,
     LOOP_PERIOD_S,
@@ -35,7 +35,7 @@ from bridge.skills._locomotion import (
     send_velocity_async,
     stop_motion,
 )
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
 

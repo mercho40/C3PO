@@ -21,7 +21,7 @@ import pytest
 
 from bridge import estop
 from bridge.skills import turn, walk_to
-from bridge.skills._locomotion import teleop_conflict
+from bridge.locomotion import teleop_conflict
 
 
 @pytest.fixture(autouse=True)
@@ -130,7 +130,7 @@ def tsession(monkeypatch):
     async def fake_send(vx, vy, vyaw, height):
         return None
 
-    monkeypatch.setattr("bridge.skills._locomotion.send_velocity_async", fake_send)
+    monkeypatch.setattr("bridge.locomotion.send_velocity_async", fake_send)
     s = srv.TeleopSession()
     s.hands = NullHandDriver("test")
     seq = iter(range(1, 10_000))

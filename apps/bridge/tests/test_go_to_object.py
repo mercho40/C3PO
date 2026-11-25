@@ -87,7 +87,7 @@ def tool(monkeypatch):
     from bridge import object_memory
     from bridge.sdk import nav_link, perception_link, state
     from bridge.skills import walk_to
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     def current_pose():
         p = t.state["pose"]
@@ -363,7 +363,7 @@ def nav_status(*, ready=True, pose=(5.0, 5.0, math.pi / 2)):
 
 async def test_nav2_gets_the_stop_short_goal_in_its_own_frame(tool, monkeypatch):
     from bridge.skills import stop_everything
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     tool.nav._ingest_status(nav_status())
     tool.gate.enable(reason="operator", ttl_s=60)
@@ -427,7 +427,7 @@ async def test_nav2_is_not_used_while_the_headset_drives(tool, monkeypatch):
 
 
 async def test_nav2_is_not_used_while_a_walk_is_running(tool):
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     walking = get_registry().create("walk_to")
     tool.nav._ingest_status(nav_status())
@@ -443,7 +443,7 @@ async def test_nav2_is_not_used_while_a_walk_is_running(tool):
 
 async def test_a_running_goal_is_replaced_not_refused(tool):
     """Like navigate_to itself (_nav_refusal): a new goal supersedes the running one."""
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     old = get_registry().create("navigate_to")
     tool.nav._ingest_status(nav_status())
@@ -522,7 +522,7 @@ async def test_nav2_gets_the_near_face_goal_with_the_body_front(tool):
     assert (goal["x"], goal["y"]) == pytest.approx(
         (5.0, 5.0 + 1.6 - 0.7 - g.BODY_FRONT_M), abs=1e-9
     )
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     get_registry().cancel(out["task_id"])  # the goal's watcher would outlive the test
     await asyncio.sleep(0.05)

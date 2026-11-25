@@ -596,6 +596,7 @@ class StateSampler:
 
 
 _sampler_singleton: StateSampler | None = None
+_sampler_lock = threading.Lock()
 
 
 def existing_sampler() -> StateSampler | None:
@@ -604,9 +605,19 @@ def existing_sampler() -> StateSampler | None:
 
 
 def get_sampler() -> StateSampler:
-    """Lazy module-level singleton — bridges the MCP tool to the subscriber."""
+    """Lazy module-level singleton — bridges the MCP tool to the subscriber.
+
+    Locked: tools run on worker threads, and two first calls racing here would
+    each start a sampler, two lowstate subscriptions with one of them orphaned.
+    Published only once started, so `existing_sampler` never hands out one
+    that has no subscription yet.
+    """
     global _sampler_singleton
-    if _sampler_singleton is None:
-        _sampler_singleton = StateSampler()
-        _sampler_singleton.start()
-    return _sampler_singleton
+    if (sampler := _sampler_singleton) is not None:
+        return sampler
+    with _sampler_lock:
+        if _sampler_singleton is None:
+            sampler = StateSampler()
+            sampler.start()
+            _sampler_singleton = sampler
+        return _sampler_singleton

@@ -21,8 +21,10 @@ every setpoint then passes `bridge.safety.govern` — tighter caps, the
 person-distance rule and an acceleration limit — which is the conservative
 direction to be wrong in.
 
-`_` prefix on the module: skills inside `bridge.skills` import freely; this
-isn't part of the bridge's public API.
+Not under `skills/`: walk_to and turn use it, and so do the teleop server and
+Nav2's cmd_vel (`sdk/perception_link`), which must not import from `skills`.
+It still asks teleop's arm driver whether the arms are held; that import stays
+local to the check.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from typing import Any
 
 import structlog
 
-from bridge.skills.task_runtime import Task
+from bridge.task_runtime import Task
 from bridge import estop
 
 log = structlog.get_logger(__name__)
@@ -85,19 +87,28 @@ KP_YAW = 1.2
 DEFAULT_HEIGHT = 0.78
 
 _publisher: Any = None
+_publisher_lock = threading.Lock()
 
 
 def _get_publisher() -> Any:
-    """Lazy ChannelPublisher for `rt/run_command/cmd`."""
-    global _publisher
-    if _publisher is None:
-        from unitree_sdk2py.core.channel import ChannelPublisher
-        from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
+    """Lazy ChannelPublisher for `rt/run_command/cmd`.
 
-        _publisher = ChannelPublisher(CMD_TOPIC, String_)
-        _publisher.Init()
-        log.info("locomotion.publisher.ready", topic=CMD_TOPIC)
-    return _publisher
+    Locked, and published only after Init(): a second caller must neither build
+    a second writer on the topic nor write through one that is not up yet.
+    """
+    global _publisher
+    if (publisher := _publisher) is not None:
+        return publisher
+    with _publisher_lock:
+        if _publisher is None:
+            from unitree_sdk2py.core.channel import ChannelPublisher
+            from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
+
+            publisher = ChannelPublisher(CMD_TOPIC, String_)
+            publisher.Init()
+            _publisher = publisher
+            log.info("locomotion.publisher.ready", topic=CMD_TOPIC)
+        return _publisher
 
 
 def send_velocity(
@@ -349,7 +360,6 @@ def fsm_conflict() -> str | None:
     """
     from bridge.sdk import g1_protocol
     from bridge.sdk.state import existing_sampler
-    from bridge.skills._g1_request import WALK_FSM_IDS
     from bridge.teleop.arm_sdk import MAX_FSM_AGE_S
 
     sampler = existing_sampler()
@@ -357,7 +367,7 @@ def fsm_conflict() -> str | None:
         return None
     state = sampler.get_arm_state()
     fsm_id, age = state["fsm_id"], state["fsm_age_s"]
-    if fsm_id is None or age is None or age > MAX_FSM_AGE_S or fsm_id in WALK_FSM_IDS:
+    if fsm_id is None or age is None or age > MAX_FSM_AGE_S or fsm_id in g1_protocol.WALK_FSM_IDS:
         return None
     return (
         f"the robot is in FSM {fsm_id} ({g1_protocol.mode_label(fsm_id)}), not a walk "

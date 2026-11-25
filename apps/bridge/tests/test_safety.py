@@ -1,7 +1,7 @@
 """The safety governor (`bridge.safety`) and the gates it puts on the MCP path.
 
 Every test here is about a path the LLM drives: velocity reaches the legs only
-through `_locomotion.send_velocity`, and a tool runs only through the MCP
+through `locomotion.send_velocity`, and a tool runs only through the MCP
 server's `call_tool`. If either can be walked around, a test here fails.
 """
 
@@ -17,7 +17,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from bridge import safety, server
 from bridge.sdk import g1_rpc, perception_link
-from bridge.skills import _locomotion, stop_everything
+from bridge import locomotion
+from bridge.skills import stop_everything
 
 
 class FakeLink:
@@ -67,7 +68,7 @@ def link(monkeypatch):
 @pytest.fixture
 def sent(monkeypatch):
     """What reached SET_VELOCITY, through the real dispatch path."""
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     calls: list[tuple[float, float, float, float]] = []
     monkeypatch.setattr(
         g1_rpc,
@@ -82,7 +83,7 @@ def sent(monkeypatch):
 
 def test_dispatch_caps_speed_and_yaw(sent, link):
     # Diagonal: the speed over the floor is capped, not each axis (that was 0.42 m/s).
-    _locomotion.send_velocity(2.0, -2.0, 5.0, height=0.78)
+    locomotion.send_velocity(2.0, -2.0, 5.0, height=0.78)
     edge = safety.MAX_LINEAR_MPS / 2**0.5
     assert sent[-1][:3] == pytest.approx((edge, -edge, safety.MAX_YAW_RPS))
     assert sent[-1][3] <= 1.0  # the firmware deadman, on every setpoint
@@ -150,10 +151,10 @@ def test_a_reversal_brakes_to_zero_then_ramps(link, monkeypatch):
 )
 def test_person_distance_scales_every_source(sent, link, range_m, expected):
     link.report = _report(person(range_m), {"label": "chair", "range_m": 0.2})
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)  # manual
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)  # manual
     assert sent[-1][0] == pytest.approx(expected)
     safety.reset()
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
     assert sent[-1][0] == pytest.approx(expected)
 
 
@@ -170,10 +171,10 @@ def test_stale_perception_stops_autonomous_motion_only(
     monkeypatch.setattr(safety, "PERSON_RULE", person_rule)
     monkeypatch.setattr(safety, "STALE_POLICY", policy)
     link.report, link.age = report, age
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
     assert sent[-1][0] == 0.3  # the console walk pad works without perception
     safety.reset()
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
     assert sent[-1][0] == 0.0
     assert safety.status()["last_reason"] == "perception_stale"
 
@@ -203,7 +204,7 @@ def test_a_stale_person_in_a_fresh_report_is_unknown_not_clear(sent, link):
 def test_a_stale_but_close_person_still_stops_the_base_and_blocks_the_arm(sent, link):
     """Review 2026-11-04: 'not fresh' must not read as 'clear' for someone known to be close."""
     link.report = _report(dict(person(0.4), age_s=1.2))
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)  # manual driving
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)  # manual driving
     assert sent[-1][0] == 0.0
     assert safety.status()["last_reason"] == "person_within_stop_distance"
     link.report = _report(dict(person(0.6), age_s=1.2))
@@ -214,7 +215,7 @@ def test_a_stale_but_close_person_still_stops_the_base_and_blocks_the_arm(sent, 
 def test_a_fresh_or_unaged_person_still_slows_and_blocks_reach(sent, link, extra):
     link.report = _report(dict(person(1.0), **extra))
     assert safety.person_proximity() == (1.0, True)
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
     assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
     link.report = _report(dict(person(0.6), **extra))
     assert "inside arm's reach" in (safety.tool_refusal("set_hand", {"c3po": {"tier": "T2"}}) or "")
@@ -253,7 +254,7 @@ def _grant(tool, args):
     """Grant the way /safety/confirm does: bound to the real canonical arguments."""
     from bridge import mcp_server
 
-    listed = mcp_server.mcp._tool_manager.get_tool(tool)
+    listed = mcp_server.mcp.registered_tool(tool)
     return safety.grant_confirmation(tool, server.canonical_args(listed, args), via="console")
 
 
@@ -546,7 +547,7 @@ def test_the_refusal_offers_the_face_unless_it_is_off(monkeypatch):
     from bridge import mcp_server
 
     def refusal(name):
-        return safety.tool_refusal(name, mcp_server.mcp._tool_manager.get_tool(name).meta, "{}")
+        return safety.tool_refusal(name, mcp_server.mcp.registered_tool(name).meta, "{}")
 
     face = "mostrale la cara de un operador a la cámara"
     assert face in refusal("arm_navigation")
@@ -646,10 +647,10 @@ def test_no_velocity_leaves_the_bridge_while_parar_stands(sent, link):
     from bridge import estop
 
     estop.signal_stop()
-    _locomotion.send_velocity(0.2, 0.0, 0.3, height=0.78)  # e.g. look_around -> turn, internally
+    locomotion.send_velocity(0.2, 0.0, 0.3, height=0.78)  # e.g. look_around -> turn, internally
     assert sent[-1][:3] == (0.0, 0.0, 0.0)
     estop.record_ack()
-    _locomotion.send_velocity(0.2, 0.0, 0.0, height=0.78)
+    locomotion.send_velocity(0.2, 0.0, 0.0, height=0.78)
     assert sent[-1][0] > 0.0
 
 
@@ -708,7 +709,7 @@ def test_a_stop_that_cannot_be_written_still_latches(sent, link, monkeypatch, tm
     assert estop.signal_stop() is False
     assert safety.status()["stop_standing"] is True
     assert "PARAR" in safety.tool_refusal("walk_velocity", {"c3po": {"tier": "T1"}})
-    _locomotion.send_velocity(0.2, 0.0, 0.3, height=0.78)
+    locomotion.send_velocity(0.2, 0.0, 0.3, height=0.78)
     assert sent[-1][:3] == (0.0, 0.0, 0.0)
     assert estop.record_ack() is False  # an ack that cannot land leaves it standing
     assert safety.status()["stop_standing"] is True
@@ -760,7 +761,7 @@ def _refusal(tool, mcp_tools):
 def listed(mcp):
     from bridge import mcp_server
 
-    return {t.name: t for t in mcp_server.mcp._tool_manager.list_tools()}
+    return {t.name: t for t in mcp_server.mcp.registered_tools()}
 
 
 def test_low_battery_refuses_exactly_the_long_and_arm_tools(listed, monkeypatch):
@@ -829,18 +830,18 @@ def test_nav2_does_not_drive_blind(sent, link, report, age):
     assert safety.status()["last_reason"] == "obstacle_source_stale"
     # People driving still move: the console pad and walk_to are not Nav2.
     safety.reset()
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
     assert sent[-1][0] == 0.3
 
 
 def test_go_to_object_walks_with_the_lidar_faulted(sent, link):
     """d6acd8b's blind rule is Nav2's: go_to_object steers on the camera, not the costmap."""
     link.report = _report(lidar_online=False)  # the Mid-360S scan fault, detector fresh
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
     assert sent[-1][0] == 0.3
     # ...and the person rule still applies to it.
     link.report = _report(person(1.0), lidar_online=False)
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
     assert sent[-1][0] == pytest.approx(0.3 * safety.PERSON_SLOW_FACTOR)
 
 
@@ -909,7 +910,7 @@ def test_nav2_is_zeroed_outside_the_fence_but_people_still_drive(sent, link, odo
     assert safety.geofence()["inside"] is False
     # Teleop is never fenced: it is how the operator brings the robot back.
     _from_rest()
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78)
     assert sent[-1][0] == 0.3
 
 
@@ -979,7 +980,7 @@ def test_the_fence_is_off_at_zero_radius(sent, link, odom, monkeypatch):
 def test_an_unarmed_autonomous_walk_is_not_fenced(sent, link, odom):
     """go_to_object's walk_to is autonomous but not Nav2: no arm, no centre."""
     odom.pose = None
-    _locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
+    locomotion.send_velocity(0.3, 0.0, 0.0, height=0.78, autonomous=True)
     assert sent[-1][0] == 0.3
 
 

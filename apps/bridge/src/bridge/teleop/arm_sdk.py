@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import threading
 import time
 from typing import Any
 
@@ -361,7 +362,7 @@ class ArmSdkDriver:
                 "loaded at all — run motion_switcher CheckMode."
             )
 
-        from bridge.skills.task_runtime import get_registry
+        from bridge.task_runtime import get_registry
 
         gestures = [t for t in get_registry().list_active() if t.skill_name in _GESTURE_SKILLS]
         if gestures:
@@ -640,11 +641,20 @@ _GESTURE_SKILLS = frozenset({"dance", "wave", "shake_hand", "hug", "clap", "poin
 
 
 _driver: ArmSdkDriver | None = None
+_driver_lock = threading.Lock()
 
 
 def get_driver() -> ArmSdkDriver:
-    """Process-wide driver. One publisher, one weight, one owner of the arms."""
+    """Process-wide driver. One publisher, one weight, one owner of the arms.
+
+    Locked because "one" is the safety property: two first callers racing here
+    would each get a driver, and a stop that releases one leaves the other's
+    arm_sdk weight engaged.
+    """
     global _driver
-    if _driver is None:
-        _driver = ArmSdkDriver()
-    return _driver
+    if (driver := _driver) is not None:
+        return driver
+    with _driver_lock:
+        if _driver is None:
+            _driver = ArmSdkDriver()
+        return _driver

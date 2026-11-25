@@ -38,7 +38,7 @@ from typing import Any
 import structlog
 
 from bridge.sdk import g1_protocol
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
 
@@ -81,9 +81,8 @@ async def _await_fsm(target: int, timeout_s: float) -> int | None:
 
 SIM_MODE = os.environ.get("SIM_MODE", "stub")
 
-# The walk programs a refused enable is explained for (500 is a no-op on this
-# chassis, but asks for the same preconditions).
-WALK_FSM_IDS = (500, 501)
+# The walk programs a refused enable is explained for. Defined with the FSM ids.
+WALK_FSM_IDS = g1_protocol.WALK_FSM_IDS
 
 
 def _read_fsm_mode() -> int | None:

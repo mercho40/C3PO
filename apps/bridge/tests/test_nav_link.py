@@ -26,7 +26,7 @@ from bridge import config
 from bridge.sdk import nav_link as nl  # noqa: E402
 from bridge.sdk import perception_link as pl  # noqa: E402
 from bridge.skills import landmarks as lm  # noqa: E402
-from bridge.skills.task_runtime import get_registry  # noqa: E402
+from bridge.task_runtime import get_registry  # noqa: E402
 
 
 class Clock:
@@ -440,10 +440,11 @@ async def test_a_new_goal_still_replaces_the_running_one(rig):
 async def test_operator_velocity_preempting_a_goal_cancels_it_in_nav2(rig, monkeypatch):
     """11.6b: walk_velocity cancels navigate_to's task, and the goal must not stay active in Nav2."""
     from bridge.sdk import g1_rpc
-    from bridge.skills import _locomotion, walk_velocity
+    from bridge import locomotion
+    from bridge.skills import walk_velocity
 
     server, nav, _gate, sent, _ = await _armed(rig)
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (0, ""))
     out = await server.navigate_to(x=1.0, y=0.0)
     nav._ingest_status(status(goal_rec(out["goal_id"], "active", dist=1.0)))
@@ -458,10 +459,11 @@ async def test_operator_velocity_preempting_a_goal_cancels_it_in_nav2(rig, monke
 async def test_operator_velocity_preempting_a_goal_closes_the_gate(rig, monkeypatch):
     """11.6b: a cancel event alone left Nav2's cmd_vel reaching the legs beside the operator's."""
     from bridge.sdk import g1_rpc
-    from bridge.skills import _locomotion, walk_velocity
+    from bridge import locomotion
+    from bridge.skills import walk_velocity
 
     server, nav, gate, _sent, _ = await _armed(rig)
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (0, ""))
     forwarded: list[tuple[float, float, float]] = []
     monkeypatch.setattr(gate, "_forward", lambda *v: forwarded.append(v))

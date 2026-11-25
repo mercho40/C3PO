@@ -9,7 +9,7 @@ nobody can explain.
 So this scans `src/` with `ast` for every read:
 
   * `os.environ.get("X")`, `os.getenv("X")`, `os.environ["X"]`, `"X" in os.environ`
-  * a helper that passes its own parameter to one of those (`_env_float("X", 1.0)`,
+  * a helper that passes its own parameter to one of those (`env_float("X", 1.0)`,
     `_env_flag("X")`) — found by shape, not by name, so a new helper is covered
   * a module constant as the key (`ALLOW_PICK_ENV = "C3PO_ALLOW_PICK"`), and a loop over a
     tuple of them (`for k in CAMERA_ENV`)
@@ -213,7 +213,7 @@ def test_the_scan_finds_every_kind_of_read():
     # Guards the scanner: one name per shape it claims to handle.
     found, _ = scan()
     assert "SIM_MODE" in found  # os.environ.get("…")
-    assert "SAFETY_MAX_LINEAR_MPS" in found  # a helper, safety._env_float
+    assert "SAFETY_MAX_LINEAR_MPS" in found  # a helper, env_file.env_float
     assert "C3PO_ALLOW_PICK" in found  # a module constant as the key
     assert "C3PO_CAMERA_PITCH_DEG" in found  # a loop over a tuple constant
     assert "STOP_EVERYTHING_DAMP" in found

@@ -300,6 +300,11 @@ class Mode(IntEnum):
     CLIMB = 812
 
 
+# The walk programs: the FSMs in which the legs take velocity. 500 is a no-op
+# on this chassis, but asks for the same preconditions.
+WALK_FSM_IDS: Final[tuple[int, int]] = (Mode.WALK, Mode.WALK_WAIST)
+
+
 # Human-readable label per mode index (covers the variants too).
 MODE_LABEL: Final[dict[int, str]] = {
     Mode.ZERO_TORQUE: "zero_torque",

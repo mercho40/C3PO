@@ -95,7 +95,7 @@ async def test_the_stop_tools_are_t0_and_pass_the_gate_while_parar_stands(
 ):
     from bridge.mcp_server import mcp
 
-    tool = mcp._tool_manager.get_tool(name)
+    tool = mcp.registered_tool(name)
     assert tool.meta["c3po"]["classification"] == "safety"
     assert tool.meta["c3po"]["tier"] == "T0"
     out = await mcp.call_tool(name, {})
@@ -155,5 +155,5 @@ def test_the_spoken_stop_and_the_stop_tool_are_one_function():
     from bridge.routes import voice
     from bridge.tools import stop
 
-    assert mcp._tool_manager.get_tool("stop_everything").fn is stop.stop_everything
+    assert mcp.registered_tool("stop_everything").fn is stop.stop_everything
     assert "stop.stop_everything()" in inspect.getsource(voice._local_stop)

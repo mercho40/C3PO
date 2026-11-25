@@ -125,10 +125,16 @@ class TaskRegistry:
 
 
 _registry_singleton: TaskRegistry | None = None
+_registry_lock = threading.Lock()
 
 
 def get_registry() -> TaskRegistry:
+    """Process-wide registry. Locked so two first callers cannot each make one
+    and lose the other's tasks to a registry nobody reads."""
     global _registry_singleton
-    if _registry_singleton is None:
-        _registry_singleton = TaskRegistry()
-    return _registry_singleton
+    if (registry := _registry_singleton) is not None:
+        return registry
+    with _registry_lock:
+        if _registry_singleton is None:
+            _registry_singleton = TaskRegistry()
+        return _registry_singleton

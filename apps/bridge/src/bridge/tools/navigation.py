@@ -490,7 +490,7 @@ def _nav_refusal() -> dict | None:
     """Why a goal must not be sent right now, or None if it may."""
     from bridge.sdk.nav_link import get_nav_link
     from bridge.sdk.perception_link import get_link
-    from bridge.skills._locomotion import arm_hold_conflict, teleop_conflict
+    from bridge.locomotion import arm_hold_conflict, teleop_conflict
     from bridge.skills.walk_to import active_walk
 
     status, _ = get_nav_link().latest_status()
@@ -525,7 +525,7 @@ async def _monitor_navigation(task, goal_id: str) -> None:
     from bridge.estop import teleop_is_driving
     from bridge.sdk.nav_link import get_nav_link
     from bridge.sdk.perception_link import get_link
-    from bridge.skills._locomotion import TELEOP_TAKEOVER
+    from bridge.locomotion import TELEOP_TAKEOVER
 
     nav, gate = get_nav_link(), get_link()
     started = time.monotonic()
@@ -601,7 +601,7 @@ async def _start_navigation(
 ) -> dict:
     """Refuse, or send one goal and return its task_id immediately."""
     from bridge.sdk.nav_link import get_nav_link
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     refusal = _nav_refusal()
     if refusal is not None:
@@ -781,7 +781,7 @@ def navigation_status() -> dict:
         return {"relay_online": False, "env": config.SIM_MODE, "stub": True}
     from bridge.sdk.nav_link import get_nav_link
     from bridge.sdk.perception_link import get_link
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     status, age = get_nav_link().latest_status()
     gate = get_link().status()
@@ -822,7 +822,7 @@ def cancel_navigation() -> dict:
     cmd_vel gate is left as it is; `stop_everything` is the harder stop — it
     also cancels the goal, closes the gate and halts the gait.
     """
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     log.warning("cancel_navigation.called", sim_mode=config.SIM_MODE)
     registry = get_registry()

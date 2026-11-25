@@ -73,7 +73,7 @@ from typing import Any
 import structlog
 
 from bridge import safety
-from bridge.safety import _env_float
+from bridge.env_file import env_float
 
 log = structlog.get_logger(__name__)
 
@@ -123,7 +123,7 @@ def _parse(raw: str) -> frozenset[str]:
 
 
 GATED = _parse(os.environ.get("C3PO_FACE_GATE", ""))
-MAX_M = _env_float("C3PO_FACE_GATE_MAX_M", 1.2)
+MAX_M = env_float("C3PO_FACE_GATE_MAX_M", 1.2)
 FACE_DIR = Path(os.environ.get("C3PO_FACE_DIR") or Path.home() / ".c3po" / "face")
 YUNET = "face_detection_yunet_2023mar.onnx"
 SFACE = "face_recognition_sface_2021dec.onnx"

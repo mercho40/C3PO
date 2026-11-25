@@ -134,7 +134,7 @@ SYNONYMS: dict[str, tuple[str, ...]] = {
     "paraguas": ("umbrella",),
     "pelota": ("sports ball",),
 }
-_STOPWORDS = {"el", "la", "los", "las", "un", "una", "mi", "mis", "tu", "the", "a", "my", "de"}
+STOPWORDS = {"el", "la", "los", "las", "un", "una", "mi", "mis", "tu", "the", "a", "my", "de"}
 
 
 def default_path() -> Path:
@@ -195,12 +195,13 @@ def report_pose(report: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
 # -- label matching --------------------------------------------------------------
 
 
-def _fold(text: str) -> str:
+def fold_label(text: str) -> str:
+    """Lower case, accents stripped, underscores as spaces: the form labels compare in."""
     decomposed = unicodedata.normalize("NFKD", text.lower().replace("_", " "))
     return "".join(c for c in decomposed if not unicodedata.combining(c)).strip()
 
 
-def _singular(word: str) -> str:
+def singular(word: str) -> str:
     if word.endswith("es") and len(word) > 4 and word[:-2] in SYNONYMS:
         return word[:-2]
     if word.endswith("s") and len(word) > 3:
@@ -210,19 +211,19 @@ def _singular(word: str) -> str:
 
 def query_labels(query: str) -> set[str]:
     """Everything a query could mean as a detector label, folded."""
-    words = [w for w in _fold(query).split() if w not in _STOPWORDS]
+    words = [w for w in fold_label(query).split() if w not in STOPWORDS]
     out: set[str] = set()
     if words:
         out.add(" ".join(words))
     for word in words:
-        for form in (word, _singular(word)):
+        for form in (word, singular(word)):
             out.add(form)
             out.update(SYNONYMS.get(form, ()))
     return out
 
 
 def label_matches(label: str, query: str) -> bool:
-    folded = _fold(label)
+    folded = fold_label(label)
     wanted = query_labels(query)
     # "glass" finds "wine glass"; whole words only, so "cup" never finds "cupboard".
     return folded in wanted or any(w in folded.split() for w in wanted)
@@ -472,9 +473,9 @@ class ObjectMemory:
 
     def _nearest_locked(self, label: str, x: float, y: float, frame: str) -> MemoryEntry | None:
         best, best_d = None, MERGE_RADIUS_M
-        folded = _fold(label)
+        folded = fold_label(label)
         for e in self._entries.values():
-            if e.frame != frame or _fold(e.label) != folded:
+            if e.frame != frame or fold_label(e.label) != folded:
                 continue
             d = math.hypot(e.x_m - x, e.y_m - y)
             if d <= best_d:

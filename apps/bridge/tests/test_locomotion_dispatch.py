@@ -1,9 +1,9 @@
-"""Tests for velocity dispatch (`bridge.skills._locomotion`).
+"""Tests for velocity dispatch (`bridge.locomotion`).
 
 This fails *silently* in production — a velocity command sent to the wrong
 channel is a no-op — so it is worth pinning down in tests that never touch DDS.
 
-`_locomotion.SIM_MODE` is read once at import, so tests monkeypatch the module
+`locomotion.SIM_MODE` is read once at import, so tests monkeypatch the module
 attribute rather than the environment.
 
 The DDS interface pin used to be tested here too; it lives in
@@ -19,7 +19,7 @@ import time
 import pytest
 
 from bridge.sdk import g1_protocol, g1_rpc
-from bridge.skills import _locomotion
+from bridge import locomotion
 
 
 # --------------------------------------------------------------------------
@@ -28,7 +28,7 @@ from bridge.skills import _locomotion
 
 
 def test_real_mode_sends_set_velocity_rpc(monkeypatch):
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     seen: dict = {}
 
     def fake_call_set_velocity(vx, vy, omega, duration):
@@ -40,14 +40,14 @@ def test_real_mode_sends_set_velocity_rpc(monkeypatch):
     # Values chosen inside the real-hardware envelope so this test covers
     # dispatch shape only -- clamping is asserted separately below. (It used
     # to pass 0.4 vx, which now clamps to 0.3 and would conflate the two.)
-    _locomotion.send_velocity(0.2, -0.1, 0.2, height=0.78)
+    locomotion.send_velocity(0.2, -0.1, 0.2, height=0.78)
 
     assert seen["vx"] == 0.2
     assert seen["vy"] == -0.1
     assert seen["omega"] == 0.2
     # The firmware-side deadman. If this ever reads 864000, the robot keeps
     # walking after the bridge dies.
-    assert seen["duration"] == _locomotion.VELOCITY_DURATION_S
+    assert seen["duration"] == locomotion.VELOCITY_DURATION_S
     assert seen["duration"] <= 2.0
 
 
@@ -62,7 +62,7 @@ def test_real_mode_clamps_to_hardware_vetted_caps(monkeypatch):
     """
     from bridge.skills.walk_velocity import MAX_LINEAR_VEL, MAX_YAW_VEL
 
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     seen: dict = {}
     monkeypatch.setattr(
         g1_rpc,
@@ -71,8 +71,8 @@ def test_real_mode_clamps_to_hardware_vetted_caps(monkeypatch):
     )
 
     # Ask for the sim caps, which is exactly what a saturated controller does.
-    _locomotion.send_velocity(
-        _locomotion.MAX_FWD_VEL, _locomotion.MAX_LAT_VEL, _locomotion.MAX_YAW_VEL, height=0.78
+    locomotion.send_velocity(
+        locomotion.MAX_FWD_VEL, locomotion.MAX_LAT_VEL, locomotion.MAX_YAW_VEL, height=0.78
     )
     # Saturated on both axes: the governor caps the vector (safety.govern), so each is cap/sqrt(2).
     edge = MAX_LINEAR_VEL / 2**0.5
@@ -86,8 +86,8 @@ def test_real_mode_clamps_to_hardware_vetted_caps(monkeypatch):
     from bridge import safety
 
     safety.reset()
-    _locomotion.send_velocity(
-        _locomotion.MAX_BACK_VEL, -_locomotion.MAX_LAT_VEL, -_locomotion.MAX_YAW_VEL, height=0.78
+    locomotion.send_velocity(
+        locomotion.MAX_BACK_VEL, -locomotion.MAX_LAT_VEL, -locomotion.MAX_YAW_VEL, height=0.78
     )
     assert seen["vx"] == pytest.approx(-edge)
     assert seen["vy"] == pytest.approx(-edge)
@@ -97,72 +97,72 @@ def test_real_mode_clamps_to_hardware_vetted_caps(monkeypatch):
 def test_sim_mode_is_not_clamped_to_the_real_caps(monkeypatch):
     # The sim caps are tuned and exercised against Isaac Sim; tightening them
     # there would change validated sim behaviour for no safety gain.
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "isaac")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "isaac")
     written: list = []
 
     class FakePublisher:
         def Write(self, msg):
             written.append(msg.data)
 
-    monkeypatch.setattr(_locomotion, "_get_publisher", lambda: FakePublisher())
+    monkeypatch.setattr(locomotion, "_get_publisher", lambda: FakePublisher())
 
-    _locomotion.send_velocity(_locomotion.MAX_FWD_VEL, 0.0, 0.0, height=0.78)
+    locomotion.send_velocity(locomotion.MAX_FWD_VEL, 0.0, 0.0, height=0.78)
 
-    assert json.loads(written[0].replace("'", '"'))[0] == _locomotion.MAX_FWD_VEL
+    assert json.loads(written[0].replace("'", '"'))[0] == locomotion.MAX_FWD_VEL
 
 
 def test_real_mode_never_touches_the_sim_publisher(monkeypatch):
     # The sim channel `rt/run_command/cmd` isn't subscribed by real firmware,
     # so reaching the publisher at all on real hardware is the bug this whole
     # change exists to fix.
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (0, ""))
 
     def explode():
         raise AssertionError("sim publisher must not be constructed on real")
 
-    monkeypatch.setattr(_locomotion, "_get_publisher", explode)
+    monkeypatch.setattr(locomotion, "_get_publisher", explode)
 
-    _locomotion.send_velocity(0.1, 0.0, 0.0, height=0.78)
+    locomotion.send_velocity(0.1, 0.0, 0.0, height=0.78)
 
 
 def test_real_mode_rpc_error_does_not_raise(monkeypatch):
     # Called at 50 Hz inside a control loop: one bad setpoint must not abort
     # the skill before it runs its own stop sequence.
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (3104, None))
 
-    _locomotion.send_velocity(0.1, 0.0, 0.0, height=0.78)
+    locomotion.send_velocity(0.1, 0.0, 0.0, height=0.78)
 
 
 @pytest.mark.parametrize("mode", ["isaac", "mujoco_local"])
 def test_sim_modes_publish_list_string_to_run_command(monkeypatch, mode):
-    monkeypatch.setattr(_locomotion, "SIM_MODE", mode)
+    monkeypatch.setattr(locomotion, "SIM_MODE", mode)
     written: list = []
 
     class FakePublisher:
         def Write(self, msg):
             written.append(msg.data)
 
-    monkeypatch.setattr(_locomotion, "_get_publisher", lambda: FakePublisher())
+    monkeypatch.setattr(locomotion, "_get_publisher", lambda: FakePublisher())
     monkeypatch.setattr(
         g1_rpc,
         "call_set_velocity",
         lambda *a: pytest.fail("sim must not use the real RPC path"),
     )
 
-    _locomotion.send_velocity(0.5, 0.25, -0.75, height=0.8)
+    locomotion.send_velocity(0.5, 0.25, -0.75, height=0.8)
 
     assert written == ["[0.5, 0.25, -0.75, 0.8]"]
 
 
 def test_stop_motion_sync_zeroes_velocity_on_real(monkeypatch):
     # stop_everything's safety fallback runs through here.
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     calls: list = []
     monkeypatch.setattr(g1_rpc, "call_set_velocity", lambda *a: (calls.append(a), (0, ""))[1])
 
-    _locomotion.stop_motion_sync(height=0.78, duration_s=0.05)
+    locomotion.stop_motion_sync(height=0.78, duration_s=0.05)
 
     assert calls, "stop must emit at least one setpoint"
     assert all(c[:3] == (0, 0, 0) for c in calls)
@@ -170,14 +170,14 @@ def test_stop_motion_sync_zeroes_velocity_on_real(monkeypatch):
 
 def _timed_burst(monkeypatch, call_set_velocity):
     """Run a real-mode 0.4 s stop burst; returns `(sent, acked, elapsed_s)`."""
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     monkeypatch.setattr(g1_rpc, "call_set_velocity", call_set_velocity)
     # The burst warms the vendor client first. Left real, that is an SDK import and a DDS
     # Init that fails on a laptop, and under load it alone outlasted the time bound below.
     # The cold client has its own test (test_a_burst_on_a_cold_sport_client_is_still_heard).
     monkeypatch.setattr(g1_rpc, "_get_sport_client", lambda: None)
     started = time.monotonic()
-    sent, acked = _locomotion.stop_motion_sync(height=0.78, duration_s=0.4)
+    sent, acked = locomotion.stop_motion_sync(height=0.78, duration_s=0.4)
     return sent, acked, time.monotonic() - started
 
 
@@ -200,7 +200,7 @@ def test_a_hung_reply_does_not_hold_the_stop_burst(monkeypatch):
     finally:
         hang.set()
 
-    assert elapsed < 0.4 + _locomotion.STOP_ACK_GRACE_S + 0.5
+    assert elapsed < 0.4 + locomotion.STOP_ACK_GRACE_S + 0.5
     assert sent >= 10, "the zero setpoints keep their 50 Hz schedule"
     assert sent - 3 <= acked <= sent - 1
 
@@ -217,7 +217,7 @@ def test_a_burst_nobody_answers_ends_on_time_with_no_ack(monkeypatch):
     finally:
         hang.set()
 
-    assert elapsed < 0.4 + _locomotion.STOP_ACK_GRACE_S + 0.5
+    assert elapsed < 0.4 + locomotion.STOP_ACK_GRACE_S + 0.5
     assert sent >= 10
     assert acked == 0
 
@@ -247,11 +247,11 @@ def test_a_burst_on_a_cold_sport_client_is_still_heard(monkeypatch):
         def call_raw(self, api_id, parameter):
             return 0, ""
 
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
     monkeypatch.setattr(g1_rpc, "_sport_client", None)
     monkeypatch.setattr(g1_rpc, "_G1Client", ColdClient)
 
-    sent, acked = _locomotion.stop_motion_sync(height=0.78, duration_s=0.4)
+    sent, acked = locomotion.stop_motion_sync(height=0.78, duration_s=0.4)
 
     assert sent >= 10
     assert acked == sent

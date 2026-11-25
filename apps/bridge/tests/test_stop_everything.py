@@ -14,8 +14,9 @@ import time
 import pytest
 
 from bridge.sdk import g1_protocol, g1_rpc
-from bridge.skills import _locomotion, stop_everything, walk_velocity
-from bridge.skills.task_runtime import get_registry
+from bridge import locomotion
+from bridge.skills import stop_everything, walk_velocity
+from bridge.task_runtime import get_registry
 
 
 @pytest.fixture(autouse=True)
@@ -44,8 +45,8 @@ async def test_stop_everything_cancels_in_flight_walk_velocity(monkeypatch):
         lambda vx, vy, vyaw, duration: velocity_calls.append((vx, vy, vyaw, duration)) or (0, ""),
     )
     monkeypatch.setattr(stop_everything, "SIM_MODE", "stub")
-    # walk_velocity dispatches through _locomotion, which is real-only here.
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
+    # walk_velocity dispatches through locomotion, which is real-only here.
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
 
     # Start a long-ish walk_velocity task in the background, same as a real
     # in-flight command would be.
@@ -229,7 +230,7 @@ async def test_cancellation_is_signalled_before_any_blocking_rpc(monkeypatch):
     _burst_unacknowledged(monkeypatch)
 
     from bridge.sdk import g1_rpc
-    from bridge.skills.task_runtime import get_registry
+    from bridge.task_runtime import get_registry
 
     registry = get_registry()
     task = registry.create("fake_walk")
@@ -391,8 +392,8 @@ async def test_a_wall_clock_step_does_not_cut_the_damp_retries_short(monkeypatch
 def _real_burst(monkeypatch, call_set_velocity):
     """The real stop_motion_sync (the autouse fixture fakes it) on a fake link."""
     monkeypatch.setattr(stop_everything, "SIM_MODE", "real")
-    monkeypatch.setattr(_locomotion, "SIM_MODE", "real")
-    monkeypatch.setattr(stop_everything, "stop_motion_sync", _locomotion.stop_motion_sync)
+    monkeypatch.setattr(locomotion, "SIM_MODE", "real")
+    monkeypatch.setattr(stop_everything, "stop_motion_sync", locomotion.stop_motion_sync)
     monkeypatch.setattr(g1_rpc, "call_set_velocity", call_set_velocity)
 
 

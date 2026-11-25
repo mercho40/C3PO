@@ -945,7 +945,7 @@ Consequences we have already acted on:
 - **Send `duration = 1.0` and re-send every loop iteration (20 ms — ~50× headroom). Never
   use 864000 for anything an LLM can trigger.** If the commanding process dies mid-stride,
   a 1 s duration brakes the robot within a second; 864000 walks it into a wall for ten
-  days. `_locomotion.py` encodes this; the vendor's blocking C++ client (up to 5 s per
+  days. `locomotion.py` encodes this; the vendor's blocking C++ client (up to 5 s per
   call) is unusable at loop rate, so the sends are fire-and-forget with the deadman as the
   backstop.
 - **The bridge's link watchdog is a second layer, not the primary**, and is off by
@@ -977,7 +977,7 @@ Consequences we have already acted on:
   as a conservative **ceiling**, never a target. **[web]**
 - **The response body is never parsed** by any vendor client, so a `code 0` from 7105
   means "the request was accepted", not "the robot moved". **[src]**
-- **Real velocity scaling is unmeasured.** The sim gains in `_locomotion.py` are fitted to
+- **Real velocity scaling is unmeasured.** The sim gains in `locomotion.py` are fitted to
   an Isaac walk policy that runs at ~10–15 % of commanded velocity and will **not**
   transfer to hardware.
 
@@ -1989,7 +1989,7 @@ source.) **[web]** + **[src]**
 ## 11. State and actuation per target (sim vs real)
 
 The same skill code runs against Isaac Sim and the real G1; the divergence is confined to
-the topic profile (`g1_protocol.topics_for(SIM_MODE)`) and `_locomotion.send_velocity`.
+the topic profile (`g1_protocol.topics_for(SIM_MODE)`) and `locomotion.send_velocity`.
 Architecture and command→motion walkthrough: `docs/ARCHITECTURE.md`.
 
 ### What we can know

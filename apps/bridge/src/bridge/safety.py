@@ -7,7 +7,7 @@ environment variable on the robot.
 
 Two gates live here, and both sit on a path the LLM cannot route around:
 
-1. **Base velocity** — `govern()` is called from `_locomotion.send_velocity`,
+1. **Base velocity** — `govern()` is called from `locomotion.send_velocity`,
    the one function every real `SET_VELOCITY` (7105) goes out through: walk_to,
    turn, walk_velocity, the headset stream, the console walk pad and Nav2's
    cmd_vel all reach the legs there. It applies, in order:
@@ -30,7 +30,7 @@ Two gates live here, and both sit on a path the LLM cannot route around:
    * an acceleration cap. Braking toward zero is never rate-limited.
 
    The firmware's 1 s `duration` deadman stays underneath all of it
-   (`_locomotion.VELOCITY_DURATION_S`): it is the part that still works when
+   (`locomotion.VELOCITY_DURATION_S`): it is the part that still works when
    this process is dead.
 
 2. **Risk tiers** — every MCP tool carries a tier derived from its metadata
@@ -63,6 +63,8 @@ import time
 from typing import Any, Literal, TypedDict
 
 import structlog
+
+from bridge.env_file import env_float
 
 log = structlog.get_logger(__name__)
 
@@ -156,14 +158,6 @@ class StopAcknowledged(StopLatch):
     was_standing: bool
 
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, "") or default)
-    except ValueError:
-        log.warning("safety.env_unparseable", name=name, default=default)
-        return default
-
-
 def _env_on(name: str, default: bool = True) -> bool:
     raw = os.environ.get(name, "").strip().lower()
     if not raw:
@@ -180,17 +174,17 @@ HARD_MAX_YAW_RPS = 0.8
 
 # The operating caps. 0.3 is the only speed vetted on this robot
 # (walk_velocity's cap, from xr_teleoperate #135) and exactly what
-# `_locomotion.send_velocity` clamped to before this module existed — raise
+# `locomotion.send_velocity` clamped to before this module existed — raise
 # them only after measuring, and never past the ceilings above.
-MAX_LINEAR_MPS = min(_env_float("SAFETY_MAX_LINEAR_MPS", 0.3), HARD_MAX_LINEAR_MPS)
-MAX_YAW_RPS = min(_env_float("SAFETY_MAX_YAW_RPS", 0.3), HARD_MAX_YAW_RPS)
+MAX_LINEAR_MPS = min(env_float("SAFETY_MAX_LINEAR_MPS", 0.3), HARD_MAX_LINEAR_MPS)
+MAX_YAW_RPS = min(env_float("SAFETY_MAX_YAW_RPS", 0.3), HARD_MAX_YAW_RPS)
 
 # Acceleration caps. Per command, speed may grow by at most MAX_ACCEL × dt,
 # where dt is the time since the previous command capped at ACCEL_DT_CAP_S. So a
 # 20-50 Hz stream (Nav2, teleop, walk_to) ramps, while a command from rest may
 # step straight to the cap — which is what every manual path does today.
-MAX_ACCEL_MPS2 = _env_float("SAFETY_MAX_ACCEL_MPS2", 1.0)
-MAX_YAW_ACCEL_RPS2 = _env_float("SAFETY_MAX_YAW_ACCEL_RPS2", 1.0)
+MAX_ACCEL_MPS2 = env_float("SAFETY_MAX_ACCEL_MPS2", 1.0)
+MAX_YAW_ACCEL_RPS2 = env_float("SAFETY_MAX_YAW_ACCEL_RPS2", 1.0)
 ACCEL_DT_CAP_S = 0.3
 # After this long the firmware has dropped the last setpoint by itself (its
 # 1 s `duration`), so the robot is at rest and that is the ramp's start point.
@@ -219,7 +213,7 @@ STALE_POLICY = os.environ.get("SAFETY_STALE_POLICY", "slow").strip().lower()
 # (vendor odometry, the frame walk_to uses). 0 or less turns it off; an
 # unparseable or non-finite value falls back to the default, never to off.
 GEOFENCE_DEFAULT_M = 3.0
-_geofence_env = _env_float("SAFETY_GEOFENCE_M", GEOFENCE_DEFAULT_M)
+_geofence_env = env_float("SAFETY_GEOFENCE_M", GEOFENCE_DEFAULT_M)
 GEOFENCE_M = _geofence_env if math.isfinite(_geofence_env) else GEOFENCE_DEFAULT_M
 # Odometry arrives at ~50 Hz or more, so 1 s is dozens of missed messages.
 POSE_STALE_S = 1.0

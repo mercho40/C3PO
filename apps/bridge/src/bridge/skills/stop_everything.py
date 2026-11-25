@@ -5,11 +5,11 @@ Safety-critical, and fast in the common case (<1s). Two parts:
      skills observe `cancel_event` between iterations and stop motion
      themselves before returning.
   2. Independently send a zero-velocity burst for ~0.4 s via
-     `_locomotion.stop_motion_sync`, in case no skill is currently looping
+     `locomotion.stop_motion_sync`, in case no skill is currently looping
      (e.g. the policy is still moving from the last command) or in case
      the registry is out of sync with what's actually publishing. This
      goes out `rt/run_command/cmd` in sim, or as a real `SET_VELOCITY` RPC
-     burst on real hardware (`_locomotion.send_velocity` dispatches on
+     burst on real hardware (`locomotion.send_velocity` dispatches on
      `SIM_MODE` — see that module).
 
 **It stops; it damps only when the stop did not land.** On real hardware Damp
@@ -74,8 +74,8 @@ import structlog
 
 from bridge import estop, motion_announce
 from bridge.estop import signal_stop
-from bridge.skills._locomotion import DEFAULT_HEIGHT, stop_motion_sync
-from bridge.skills.task_runtime import get_registry
+from bridge.locomotion import DEFAULT_HEIGHT, stop_motion_sync
+from bridge.task_runtime import get_registry
 
 log = structlog.get_logger(__name__)
 
@@ -444,14 +444,14 @@ async def watch_foreign_stops() -> None:
     clock steps back, every new stamp is older than the last, and ordering
     them ignored every headset PARAR.
     """
-    seen = estop._file_stop_at()
+    seen = estop.file_stop_at()
     while True:
         await asyncio.sleep(FOREIGN_STOP_POLL_S)
-        stamp = estop._file_stop_at()
+        stamp = estop.file_stop_at()
         if stamp == seen or not stamp:
             continue  # unchanged, or no file to read (deleted, or a failed stat)
         seen = stamp
-        if abs(stamp - estop._signalled_at) <= 1e-3:
+        if abs(stamp - estop.own_stop_at()) <= 1e-3:
             continue  # this process's own stop: its run() did the work
         log.warning("stop_everything.foreign_stop", stamped_at=stamp)
         try:

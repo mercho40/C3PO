@@ -208,7 +208,7 @@ def test_a_setpoint_inside_the_limits_is_not_counted_as_clamped():
 
 
 def test_the_deadman_is_shorter_than_the_firmwares():
-    from bridge.skills._locomotion import VELOCITY_DURATION_S
+    from bridge.locomotion import VELOCITY_DURATION_S
 
     assert pl.CMD_VEL_DEADMAN_S < VELOCITY_DURATION_S
     assert pl.CMD_VEL_DEADMAN_S + pl.BRAKE_AFTER_STALE_S < VELOCITY_DURATION_S
@@ -593,12 +593,12 @@ def test_the_nav_gate_stays_under_the_sim_fitted_caps():
     """The invariant `perception_link` states about itself, pinned.
 
     `CLAMP_VX/VY/WZ` are described as "deliberately below the sim-fitted MAX_* in
-    skills/_locomotion.py" — they are the ENFORCING backstop for a mis-edited
+    locomotion.py" — they are the ENFORCING backstop for a mis-edited
     nav2_params.yaml, whose own max_vel_x is only advisory. A backstop above the
     thing it backs up is not one.
     """
     from bridge.sdk import perception_link as pl
-    from bridge.skills import _locomotion as loc
+    from bridge import locomotion as loc
 
     assert pl.CLAMP_VX[1] < loc.MAX_FWD_VEL
     assert pl.CLAMP_VX[0] > loc.MAX_BACK_VEL

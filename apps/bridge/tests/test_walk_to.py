@@ -6,7 +6,7 @@ this one loops, integrates live pose feedback, and must cancel promptly.
 No real DDS or physics: `sampler.get_state()` is faked with a scripted
 sequence of poses simulating approach to the target, and `send_velocity`/
 `stop_motion` (imported directly into walk_to's own namespace, so patched
-there rather than on `_locomotion`) are stubbed to avoid touching DDS.
+there rather than on `locomotion`) are stubbed to avoid touching DDS.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import asyncio
 import pytest
 
 from bridge.skills import walk_to
-from bridge.skills.task_runtime import get_registry
+from bridge.task_runtime import get_registry
 
 
 class _FakeSampler:

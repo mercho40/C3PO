@@ -27,10 +27,11 @@ back. `.env` is the default, not the authority.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
-__all__ = ["parse_env_file", "load_env_file"]
+__all__ = ["parse_env_file", "load_env_file", "env_float"]
 
 
 def _strip_inline_comment(value: str) -> str:
@@ -109,3 +110,19 @@ def load_env_file(path: str | os.PathLike[str], *, override: bool = False) -> di
         os.environ[name] = value
         applied[name] = value
     return applied
+
+
+def env_float(name: str, default: float) -> float:
+    """`name` as a float, or `default` when it is unset, empty or not a number.
+
+    A typo in a tuning value falls back to the default with a warning, rather
+    than stopping the bridge at import.
+    """
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        # stdlib logging, not structlog: this module stays on the system-python floor.
+        logging.getLogger(__name__).warning(
+            "env.unparseable: %s=%r is not a number, using %s", name, os.environ.get(name), default
+        )
+        return default

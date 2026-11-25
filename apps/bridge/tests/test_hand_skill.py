@@ -256,7 +256,7 @@ def test_confirmation_is_bound_to_the_fingers():
     """A grant for one finger set must not cover another: fingers are in the canonical args."""
     from bridge import mcp_server
 
-    tool = mcp_server.mcp._tool_manager.get_tool("set_hand")
+    tool = mcp_server.mcp.registered_tool("set_hand")
     plain = server.canonical_args(tool, {"side": "right"})
     index = server.canonical_args(tool, {"side": "right", "fingers": {"index": 1}})
     pinky = server.canonical_args(tool, {"side": "right", "fingers": {"pinky": 1}})
@@ -268,7 +268,7 @@ def test_tool_schema_rejects_unknown_finger_and_range():
 
     from bridge import mcp_server
 
-    tool = mcp_server.mcp._tool_manager.get_tool("set_hand")
+    tool = mcp_server.mcp.registered_tool("set_hand")
     for bad in ({"indice": 1}, {"ring": 1.5}):
         with pytest.raises(pydantic.ValidationError):
             server.canonical_args(tool, {"side": "right", "fingers": bad})
@@ -288,5 +288,5 @@ def test_saludo_peronista_is_the_v_sign_by_name():
     from bridge import mcp_server
 
     assert hands.SHAPES["saludo_peronista"] == hands.SHAPES["v_sign"]
-    schema = mcp_server.mcp._tool_manager.get_tool("set_hand").parameters
+    schema = mcp_server.mcp.registered_tool("set_hand").parameters
     assert "saludo_peronista" in json.dumps(schema["properties"]["shape"])
